@@ -1,12 +1,35 @@
+//! Tests for the `update_activity` agent tool path.
+//!
+//! History
+//! ───────
+//! This file pre-existed (last touched April 2026 per git blame) but
+//! was never registered in any test_runner.zig, so its tests were
+//! silently compiled out. The pre-existing tests referenced helpers
+//! (`llm_history.upsertWorker`, `llm_history.get_active_workers`)
+//! that don't exist in the current codebase — so the file never
+//! compiled when wired up.
+//!
+//! Migration 073 — `session_activity` append-only log — needs to
+//! verify that `llm_history.recordSessionActivity` works end-to-end,
+//! so this file is now imported from
+//! `src/ai_workflow/tui/test_runner.zig`. The dead-code pre-existing
+//! tests are removed (they never ran anyway); the two
+//! `recordSessionActivity` regression tests below are the canonical
+//! behavioural checks for the new helper.
+//!
+//! Plan: docs/superpowers/plans/2026-08-13-session-activity-table.md
+//! Task: task_1786629034327 ("new table session_activity")
+
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const llm_history = nalarcore.llm_history;
 
-/// Simple test setup: create the tables needed for worker operations
-fn setupWorkerTables(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
-    // Create sessions table (needed by upsertWorker)
-    try db.exec(allocator, 
+/// Test fixture: create the tables needed for session_activity +
+/// worker operations. Mirrors the canonical CREATE TABLE bodies so
+/// the test DB doesn't have to walk the migration chain.
+fn setupTables(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !void {
+    try db.exec(allocator,
         \\CREATE TABLE IF NOT EXISTS sessions (
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT,
@@ -18,9 +41,8 @@ fn setupWorkerTables(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !v
         \\    created_at TEXT DEFAULT (datetime('now'))
         \\)
     , &.{});
-    
-    // Create worker table
-    try db.exec(allocator, 
+
+    try db.exec(allocator,
         \\CREATE TABLE IF NOT EXISTS worker (
         \\    id TEXT PRIMARY KEY,
         \\    session_id TEXT NOT NULL,
@@ -29,132 +51,77 @@ fn setupWorkerTables(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend) !v
         \\    last_activity_description TEXT
         \\)
     , &.{});
+
+    // session_activity table (Migration 073). Mirrors the canonical
+    // CREATE TABLE body — tests use it directly because the test DB
+    // doesn't walk the migration chain.
+    try db.exec(allocator,
+        \\CREATE TABLE IF NOT EXISTS session_activity (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    description TEXT NOT NULL,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
 }
 
-test "update_activity updates worker by session_id" {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+// ============================================================================
+// Migration 073 — recordSessionActivity regression tests
+// ============================================================================
 
-    // Create in-memory SQLite database
-    var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
-    try db.init(":memory:");
-    defer db.deinit();
-
-    // Setup only the worker table (no full migration needed)
-    try setupWorkerTables(allocator, &db);
-
-    const session_id = "test_session_12345";
-
-    // Register a worker using upsertWorker (this is what workflow does)
-    try llm_history.upsertWorker(allocator, &db, session_id, session_id, "/test/cwd");
-
-    // Verify worker was created
-    const workers = try llm_history.get_active_workers(allocator, &db);
-    try std.testing.expect(workers.len > 0);
-
-    // Find our worker
-    var found_worker: bool = false;
-    for (workers) |worker| {
-        if (std.mem.eql(u8, worker.session_id, session_id)) {
-            found_worker = true;
-            // Verify initial description is empty
-            try std.testing.expectEqual(worker.last_activity_description.len, 0);
-        }
-        allocator.free(worker.session_id);
-        allocator.free(worker.working_directory);
-        allocator.free(worker.last_activity_description);
-    }
-    try std.testing.expect(found_worker);
-
-    // Update activity with description
-    const test_thought = "[2025-01-20 16:50] test_session_12345 @ /test/cwd | Testing | Testing update_activity";
-    try llm_history.updateWorkerActivityWithDescription(allocator, &db, session_id, test_thought);
-
-    // Fetch workers again and verify description was updated
-    const updated_workers = try llm_history.get_active_workers(allocator, &db);
-    for (updated_workers) |worker| {
-        if (std.mem.eql(u8, worker.session_id, session_id)) {
-            try std.testing.expect(worker.last_activity_description.len > 0);
-            try std.testing.expect(std.mem.eql(u8, worker.last_activity_description, test_thought));
-            std.debug.print("✓ Worker description updated: {s}\n", .{worker.last_activity_description});
-        }
-        allocator.free(worker.session_id);
-        allocator.free(worker.working_directory);
-        allocator.free(worker.last_activity_description);
-    }
-}
-
-test "update_activity fails gracefully with mismatched worker_id" {
+test "recordSessionActivity inserts a row into session_activity for the given session_id" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
-    try db.init(":memory:");
+    try db.init(std.testing.io, ":memory:");
     defer db.deinit();
 
-    // Setup only the worker table
-    try setupWorkerTables(allocator, &db);
+    try setupTables(allocator, &db);
 
-    const session_id = "test_session_12345";
-    const wrong_worker_id = "worker_test_session_12345"; // This is the WRONG format
+    const session_id = "test_session_abc";
+    const description = "[2026-08-13 10:00] test @ /test | Thinking | Working on it";
 
-    // Register a worker with session_id as worker_id
-    try llm_history.upsertWorker(allocator, &db, session_id, session_id, "/test/cwd");
+    try llm_history.recordSessionActivity(allocator, std.testing.io, &db, session_id, description);
 
-    // Try to update with wrong worker_id - this should fail (UPDATE matches 0 rows)
-    llm_history.updateWorkerActivityWithDescription(allocator, &db, wrong_worker_id, "test") catch {
-        // This is expected - the UPDATE fails because worker_id doesn't exist
-        std.debug.print("✓ Correctly failed to update non-existent worker_id\n", .{});
-    };
+    // Exactly 1 row, with the exact session_id + description.
+    var q = try db.query(allocator,
+        "SELECT session_id, description FROM session_activity WHERE session_id = ?",
+        &.{session_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(allocator);
+    try std.testing.expectEqualStrings(session_id, row.values[0]);
+    try std.testing.expectEqualStrings(description, row.values[1]);
 
-    // Verify the original worker still has empty description
-    const workers = try llm_history.get_active_workers(allocator, &db);
-    for (workers) |worker| {
-        if (std.mem.eql(u8, worker.session_id, session_id)) {
-            try std.testing.expectEqual(worker.last_activity_description.len, 0);
-            std.debug.print("✓ Original worker still has empty description (bug confirmed)\n", .{});
-        }
-        allocator.free(worker.session_id);
-        allocator.free(worker.working_directory);
-        allocator.free(worker.last_activity_description);
-    }
+    // No further rows.
+    try std.testing.expect((try q.next()) == null);
 }
 
-test "update_activity succeeds with matching worker_id" {
+test "recordSessionActivity appends a new row each call (same description -> two rows)" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
 
     var db: sqlite.SqliteBackend = sqlite.SqliteBackend{};
-    try db.init(":memory:");
+    try db.init(std.testing.io, ":memory:");
     defer db.deinit();
 
-    // Setup only the worker table
-    try setupWorkerTables(allocator, &db);
+    try setupTables(allocator, &db);
 
-    const session_id = "test_session_12345";
+    const session_id = "test_session_xyz";
+    const description = "[2026-08-13 10:00] test @ /test | Repeated thought";
 
-    // Register a worker with session_id as worker_id (correct approach)
-    try llm_history.upsertWorker(allocator, &db, session_id, session_id, "/test/cwd");
+    try llm_history.recordSessionActivity(allocator, std.testing.io, &db, session_id, description);
+    try llm_history.recordSessionActivity(allocator, std.testing.io, &db, session_id, description);
 
-    // Update with matching session_id - this should succeed
-    const test_thought = "[2025-01-20 16:50] test @ /test | Testing";
-    try llm_history.updateWorkerActivityWithDescription(allocator, &db, session_id, test_thought);
-
-    // Verify the update worked
-    const workers = try llm_history.get_active_workers(allocator, &db);
-    var found = false;
-    for (workers) |worker| {
-        if (std.mem.eql(u8, worker.session_id, session_id)) {
-            found = true;
-            try std.testing.expect(std.mem.eql(u8, worker.last_activity_description, test_thought));
-            std.debug.print("✓ Successfully updated worker with matching session_id\n", .{});
-        }
-        allocator.free(worker.session_id);
-        allocator.free(worker.working_directory);
-        allocator.free(worker.last_activity_description);
-    }
-    try std.testing.expect(found);
+    // Exactly 2 rows for this session_id.
+    var q = try db.query(allocator,
+        "SELECT COUNT(*) FROM session_activity WHERE session_id = ?",
+        &.{session_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(allocator);
+    try std.testing.expectEqualStrings("2", row.values[0]);
 }

@@ -144,4 +144,5 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // save_memory + load_memory helpers (Task 2 of
     // docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md).
     _ = @import("agent_memories_test.zig");
+    _ = @import("update_activity_test.zig"); // Migration 073 — session_activity wiring + recordSessionActivity
 }
