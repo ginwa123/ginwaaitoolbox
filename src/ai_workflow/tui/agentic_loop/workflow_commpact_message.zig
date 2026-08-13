@@ -14,6 +14,7 @@ const Logger = nalarcore.loggermod.Logger;
 const timestampIso = nalarcore.loggermod.timestampIso;
 const xml_escape = nalarcore.helpers.xml_escape;
 const saveMessage = @import("../llm_history.zig").saveMessage;
+const llm_history = @import("../llm_history.zig");
 
 /// Bundle of inputs to `shouldCompactDefault` — the threshold decision that
 /// tests can swap via `CompactDeps.should_compact`. Carries enough context that
@@ -201,6 +202,7 @@ pub fn compactMessageInMemoryNew(
     // Build the compacted summary content with XML wrapping
     const summary_content = try buildCompactionEnvelope(
         allocator,
+        db,
         messages.items[1..],
         total,
         session_id,
@@ -287,8 +289,73 @@ pub fn compactMessageInMemoryNew(
 /// Caller owns the returned string and must free with `allocator.free`.
 const MAX_INDEX_ENTRIES: usize = 50;
 
+/// Hard cap on the `<recent_activities>` section — keeps the envelope
+/// bounded on long sessions where the activity log could be thousands
+/// of rows. The agent only needs the most recent context.
+const RECENT_ACTIVITIES_LIMIT: u32 = 20;
+
+/// Emit a `<recent_activities>...</recent_activities>` XML section to
+/// `env`, listing the most recent `limit` session_activity rows for
+/// `session_id` in chronological order (oldest first). The section is
+/// omitted entirely when there are no prior activities — `<recent_activities>`
+/// is never rendered as an empty tag.
+///
+/// Per PR #226 review feedback: this section is how the next-cycle agent
+/// learns what was happening during the now-compacted-away messages.
+/// Compaction does NOT write a row to `session_activity` itself — the
+/// activity log is for things the agent DID, not metadata about internal
+/// machinery.
+fn appendRecentActivitiesXml(
+    env: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    limit: u32,
+) !void {
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
+    defer allocator.free(limit_str);
+
+    // Most recent first (for the LIMIT-bounded query), then reverse to
+    // chronological (oldest first) so the agent reads them as a timeline.
+    var rows = try db.query(allocator,
+        "SELECT description FROM session_activity WHERE session_id = ? " ++
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+        &.{ session_id, limit_str });
+    defer rows.deinit();
+
+    var activities: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (activities.items) |a| allocator.free(a);
+        activities.deinit(allocator);
+    }
+    while (try rows.next()) |row| {
+        const desc_dup = try allocator.dupe(u8, row.values[0]);
+        errdefer allocator.free(desc_dup);
+        try activities.append(allocator, desc_dup);
+        row.deinit(allocator);
+    }
+
+    if (activities.items.len == 0) return;
+
+    std.mem.reverse([]const u8, activities.items);
+
+    const count_str = try std.fmt.allocPrint(allocator, "{d}", .{activities.items.len});
+    defer allocator.free(count_str);
+
+    try env.print(allocator,
+        "  <recent_activities count=\"{s}\">\n",
+        .{count_str});
+    for (activities.items) |desc| {
+        const escaped = try xml_escape(allocator, desc);
+        defer allocator.free(escaped);
+        try env.print(allocator, "    <activity>{s}</activity>\n", .{escaped});
+    }
+    try env.appendSlice(allocator, "  </recent_activities>\n");
+}
+
 fn buildCompactionEnvelope(
     allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
     dropped_messages: []const agent.AgentMessage,
     original_count: usize,
     session_id: []const u8,
@@ -380,6 +447,10 @@ fn buildCompactionEnvelope(
 
     try env.appendSlice(allocator, "  </message_index>\n");
 
+    // --- recent_activities (what the agent was thinking) ---
+    // See `appendRecentActivitiesXml` for the design rationale.
+    try appendRecentActivitiesXml(&env, allocator, db, session_id, RECENT_ACTIVITIES_LIMIT);
+
     // --- summary (the compactor's output) ---
     // Hard cap as a safety net — the real budget should be enforced via
     // the compactor prompt itself, but we never want a misbehaving model
@@ -412,6 +483,7 @@ fn buildCompactionEnvelope(
         "[COMPACTION] envelope size: {d} bytes, {d}/{d} index entries shown, summary {d}/{d} bytes",
         .{ result.len, show_count, dropped_messages.len, summary_to_embed.len, compacted_xml.len },
     );
+
     return result;
 }
 
