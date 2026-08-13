@@ -1843,6 +1843,12 @@ pub const allMigrations: []const Migration = &.{
     // docs/superpowers/plans/2026-08-15-extract-kanban-columns-to-kanban-table.md.
     // Task: task_1786527996378.
     .{ .version = Migration072ExtractKanbanTable.version, .name = Migration072ExtractKanbanTable.name, .up = Migration072ExtractKanbanTable.up },
+    // Migration 073 — session_activity append-only log
+    // (update_activity + buildCompactionEnvelope now INSERT here in
+    // addition to the existing worker.last_activity_description
+    // UPDATE). Plan: docs/superpowers/plans/2026-08-13-session-activity-table.md.
+    // Task: task_1786629034327 ("new table session_activity").
+    .{ .version = Migration073AddSessionActivity.version, .name = Migration073AddSessionActivity.name, .up = Migration073AddSessionActivity.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -2935,6 +2941,71 @@ pub const Migration072ExtractKanbanTable = struct {
         // ANALYZE so the query planner sees the new index (mirrors
         // Migration 051 / 041 / 042 / 043 / 048 / 049 / 050).
         try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
+// ============================================================================
+// Migration 073 — `session_activity` append-only log.
+// ============================================================================
+//
+// What this migration creates
+// ────────────────────────────
+// A per-session activity log that records two kinds of events:
+//   1. Every `update_activity` tool call (the agent's `thought` string).
+//   2. Every compaction event (`buildCompactionEnvelope` summary).
+//
+// Until now the only record of agent activity was
+// `worker.last_activity_description` — a single row per worker that
+// gets OVERWRITTEN on every update. That column is the live "what the
+// worker is doing RIGHT NOW" for the sidebar UI (consumed by
+// `prompts_make_activity_info_context.zig`). The new
+// `session_activity` table is the per-session HISTORICAL log — every
+// thought + every compaction event, ordered by `created_at`.
+//
+// Why `id` is TEXT, not INTEGER
+// ──────────────────────────────
+// Project-wide convention: every id column is TEXT (see
+// `llm_history.id` Migration 001, `agent_memories.id` Migration 070,
+// `kanban.workspace_item_task_id` Migration 072,
+// `sessions.id`, `worker.id`). The helper
+// (`llm_history.recordSessionActivity`) generates the id in
+// application code from `std.Io.Timestamp.now(io, .real).nanoseconds`
+// — same pattern as `llm_history.saveMessage` (line 1094) and
+// `saveToolResultPlaceholder` (line 2448).
+//
+// Why no FK on `session_id`
+// ──────────────────────────
+// A session could be hard-deleted while keeping its history (matches
+// the `llm_history.session_id` precedent, also a bare TEXT).
+//
+// Plan: docs/superpowers/plans/2026-08-13-session-activity-table.md
+// Task: task_1786629034327 ("new table session_activity")
+pub const Migration073AddSessionActivity = struct {
+    pub const version: u32 = 73;
+    pub const name = "add_session_activity";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. Source table — append-only log, no UNIQUE constraint.
+        //    `description` is NOT NULL (callers must supply) but has
+        //    no DEFAULT — an empty description would defeat the
+        //    purpose of the log.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_activity (
+            \\    id TEXT PRIMARY KEY,
+            \\    session_id TEXT NOT NULL,
+            \\    description TEXT NOT NULL,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+
+        // 2. Per-session newest-first index. Matches the index name
+        //    pattern used elsewhere (`idx_llm_history_session`,
+        //    `idx_session_skills_session`, `idx_agent_memories_updated`).
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_session_activity_session_created " ++
+                "ON session_activity(session_id, created_at DESC)",
+            &[_][]const u8{},
+        );
     }
 };
 
