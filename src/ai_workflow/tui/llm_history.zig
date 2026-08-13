@@ -2213,6 +2213,42 @@ pub fn updateWorkerActivityWithDescription(
     }) catch {};
 }
 
+/// Append a single row to the `session_activity` per-session log
+/// (Migration 073). Called by:
+///   - `tools_exec_update_activity.zig::execUpdateActivity` after the
+///     existing `updateWorkerActivityWithDescription` UPDATE — every
+///     `update_activity` tool call appends one row.
+///   - `workflow_commpact_message.zig::buildCompactionEnvelope` after
+///     the envelope is built — every compaction event appends one row.
+///
+/// Failure mode: on INSERT error, propagate to the caller — the
+/// caller wraps the call in `catch |err| { logger.warnFmt(...) }`
+/// (matches the SSE `catch {}` pattern in
+/// `updateWorkerActivityWithDescription`). Best-effort is enforced at
+/// the call site, not here.
+///
+/// The TEXT `id` is generated from
+/// `std.Io.Timestamp.now(io, .real).nanoseconds` — same pattern as
+/// `llm_history.saveMessage` (line 1094) and
+/// `saveToolResultPlaceholder` (line 2448). Project-wide convention is
+/// TEXT ids (see Migration 001 llm_history.id, Migration 070
+/// agent_memories.id, Migration 072 kanban.workspace_item_task_id).
+pub fn recordSessionActivity(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    description: []const u8,
+) !void {
+    const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(id);
+
+    try db.exec(allocator,
+        "INSERT INTO session_activity (id, session_id, description) VALUES (?, ?, ?)",
+        &.{ id, session_id, description },
+    );
+}
+
 /// Remove a worker
 pub fn removeWorker(
     allocator: std.mem.Allocator,
