@@ -193,6 +193,84 @@ pub fn build(b: *std.Build) void {
     // `linkSystemLibrary("curl", .{})` calls in this file, no more
     // `linkCurlIncludePath()` helper. The package owns its own deps.
 
+    // === System-deps probe ===
+    // Run the same probe as the `databases` and `custom_http_client`
+    // packages to decide whether to attach the vendor fetch steps.
+    // The packages ALSO run their own probes (to decide their own
+    // link line). Running the probe twice is intentional — keeps
+    // each package self-contained (no API dependency on the root
+    // build.zig's probe result). ~50 ms total per `zig build` —
+    // negligible.
+    //
+    // The fetch steps themselves are idempotent (no-op when vendor
+    // dir is populated), but the CROSS-COMPILE cost on a fresh
+    // checkout is ~30 min for curl + openssl. On a host with system
+    // libs, we don't need any of that — skipping the fetch steps
+    // saves ~30 min on first build.
+    //
+    // Implementation: we duplicate the probe here (in root build.zig)
+    // because Zig's package API doesn't expose build.zig helpers
+    // across the module-graph boundary. The probe is ~30 lines; the
+    // duplication is acceptable.
+    const dbs_uses_system = blk: {
+        if (target.result.os.tag != .linux or b.graph.host.result.os.tag != .linux) break :blk false;
+        const probe_script =
+            \\{ \
+            \\  s=$(test -f /usr/include/sqlite3.h && echo 1 || echo 0); \
+            \\  q=$(test -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
+            \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
+            \\  echo "use_system=$s$q$h"; \
+            \\}
+        ;
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{
+                .argv = &.{ "sh", "-c", probe_script },
+                .stdout_limit = .limited(256),
+                .stderr_limit = .limited(256),
+            },
+        ) catch break :blk false;
+        defer b.allocator.free(result.stdout);
+        defer b.allocator.free(result.stderr);
+        // All three: sqlite3 header, libpq header (either layout),
+        // openssl header. Library side is verified by the package's
+        // own probe; here we just check that the headers exist (the
+        // worst case of "header but no lib" is rare on dev hosts).
+        break :blk std.mem.indexOf(u8, result.stdout, "use_system=111") != null;
+    };
+
+    const curl_uses_system = blk: {
+        if (target.result.os.tag != .linux or b.graph.host.result.os.tag != .linux) break :blk false;
+        const probe_script =
+            \\{ \
+            \\  c=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0); \
+            \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
+            \\  echo "use_system=$c$h"; \
+            \\}
+        ;
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{
+                .argv = &.{ "sh", "-c", probe_script },
+                .stdout_limit = .limited(256),
+                .stderr_limit = .limited(256),
+            },
+        ) catch break :blk false;
+        defer b.allocator.free(result.stdout);
+        defer b.allocator.free(result.stderr);
+        // Both: curl.h + openssl/ssl.h. libssl/libcrypto verification
+        // is done by the package's own probe (it does the full
+        // header+lib check).
+        break :blk std.mem.indexOf(u8, result.stdout, "use_system=11") != null;
+    };
+
+    std.debug.print(
+        "[build.zig] system-deps probe: databases_uses_system={}, custom_http_client_uses_system={}\n",
+        .{ dbs_uses_system, curl_uses_system },
+    );
+
     // === Auto-fetch vendor/sqlite3 if missing ===
     // The amalgamation (`src/modules/databases/vendor/sqlite3/sqlite3.c`
     // ~10 MB + 2 headers) is gitignored (per .gitignore — the
@@ -206,15 +284,35 @@ pub fn build(b: *std.Build) void {
     // The `fetch-vendor-sqlite3` step is depended on by `test_step` (and
     // every `install:*` cross-compile target) so a fresh checkout Just
     // Works without a separate `bash bootstrap-vendor.sh` invocation.
+    //
+    // SKIP-WHEN-SYSTEM-PRESENT: when the probe above detects system
+    // sqlite3 (the typical Arch / Debian / Ubuntu / Fedora dev host),
+    // the fetch step is replaced with a no-op so `zig build` doesn't
+    // spend ~30 s downloading + verifying the amalgamation on a fresh
+    // checkout. The databases package's `build.zig` already uses
+    // `linkSystemLibrary("sqlite3")` instead of compiling the .c.
     const vendor_sqlite3_step = b.step(
         "fetch-vendor-sqlite3",
-        "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout.",
+        "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout. SKIPPED when the host has system sqlite3 (see system-deps probe output).",
     );
-    const vendor_sqlite3_fetch = b.addSystemCommand(&.{
-        "bash", "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
-    });
-    vendor_sqlite3_fetch.setCwd(b.path(""));
-    vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
+    if (dbs_uses_system) {
+        // System sqlite3 present — replace the fetch with a no-op
+        // message so `zig build --verbose` shows WHY the step was
+        // skipped. The step still exists in --list-steps so any
+        // external automation that depends on it doesn't break.
+        const skip_msg = b.addSystemCommand(&.{
+            "sh", "-c",
+            \\echo "[fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected)."
+        ,
+        });
+        vendor_sqlite3_step.dependOn(&skip_msg.step);
+    } else {
+        const vendor_sqlite3_fetch = b.addSystemCommand(&.{
+            "bash", "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
+        });
+        vendor_sqlite3_fetch.setCwd(b.path(""));
+        vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
+    }
 
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
@@ -255,16 +353,30 @@ pub fn build(b: *std.Build) void {
     // b.installArtifact would mean the default install doesn't
     // trigger the fetch, leaving the build broken on fresh checkouts
     // (where vendor/curl/ is gitignored + empty).
+    //
+    // SKIP-WHEN-SYSTEM-PRESENT: same pattern as fetch-vendor-sqlite3.
+    // On a Linux host with system libcurl + openssl, the fetch step
+    // is replaced with a no-op so `zig build` doesn't spend ~30 min
+    // cross-compiling curl + openssl from source.
     const fetch_vendor_curl_step = b.step(
         "fetch-vendor-curl",
         "Build src/modules/custom_http_client/vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
-            "Auto-runs on `zig build` or any install:* target when the vendor dir is missing.",
+            "Auto-runs on `zig build` or any install:* target when the vendor dir is missing. SKIPPED when the host has system libcurl + ssl + crypto (see system-deps probe output).",
     );
-    const fetch_vendor_curl_run = b.addSystemCommand(&.{
-        "bash", "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
-    });
-    fetch_vendor_curl_run.setCwd(b.path(""));
-    fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
+    if (curl_uses_system) {
+        const skip_msg = b.addSystemCommand(&.{
+            "sh", "-c",
+            \\echo "[fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected)."
+        ,
+        });
+        fetch_vendor_curl_step.dependOn(&skip_msg.step);
+    } else {
+        const fetch_vendor_curl_run = b.addSystemCommand(&.{
+            "bash", "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
+        });
+        fetch_vendor_curl_run.setCwd(b.path(""));
+        fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
+    }
 
     b.installArtifact(exe);
     // Make the default `install` step (which `zig build` runs)
@@ -648,6 +760,16 @@ pub fn build(b: *std.Build) void {
     });
     cli_exe.root_module.linkSystemLibrary("c", .{});
     cli_exe.root_module.link_libc = true;
+    // Same linkPlatformDeps treatment as the main exe: on Linux
+    // native builds, the linker needs `/usr/lib` on its search path
+    // to find the system libcurl / libssl / libcrypto .so files
+    // (the ones added by `custom_http_client_mod` going system via
+    // its probe). Without this, the CLI link fails with
+    // "unable to find dynamic system library 'curl'" (same as the
+    // main exe's pre-probe behavior). Vendored path didn't need this
+    // because the static archive was embedded directly via
+    // addObjectFile — no dynamic linker search required.
+    linkPlatformDeps(b, cli_exe, target);
     // libcurl is linked via custom_http_client_mod's transitive deps
     // (the vendored prebuilt archive is added in the package's own
     // build.zig). No need to call linkCurlIncludePath here — the
