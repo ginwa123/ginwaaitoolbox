@@ -16,6 +16,8 @@ const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const Logger = logger_mod.Logger;
 const xml_escape = nalarcore.helpers.xml_escape;
+const llm_history = @import("../llm_history.zig");
+const migration = @import("../../../migrations/migration.zig");
 
 /// One user-turn row from `llm_history`. Used to embed the full user
 /// history into the compacted envelope so the next iteration of the
@@ -225,25 +227,57 @@ pub fn fetchRecentActivities(
     return turns;
 }
 
-/// Embed the user history, read_file paths, and recent session
-/// activities into the compacted XML. Returns a new `[]u8` allocated
-/// from `allocator`; caller owns it. The original `compacted_xml` is
-/// left untouched (the helper dups content during the embed).
+/// Fetch all session skills loaded for `session_id` via the `session_skills`
+/// table. Each row in that table is what the `add_skill` tool wrote during
+/// the session; embedding them into the compacted envelope gives the
+/// post-compaction agent continuity on guidance that may not appear in
+/// the compactor's summary (skill files are large, free-form reference
+/// material that the compactor is unlikely to summarize verbatim).
 ///
-/// Hard caps: 100 user turns, 2000 chars per turn, 20 recent
-/// activities (caller is expected to slice `recent_activities` to the
-/// desired limit before calling). Read paths are deduplicated
-/// (first occurrence wins, insertion order preserved).
+/// Returns an empty slice when `session_id` is empty OR the session has
+/// no skills — both `getSessionSkills` callers see the same shape,
+/// so the caller can elide the empty-session check.
+///
+/// Caller owns the returned slice AND each skill's `skill_name` /
+/// `content` fields. Cleanup pattern:
+///   defer {
+///       for (skills) |s| s.deinit(allocator);
+///       allocator.free(skills);
+///   }
+pub fn fetchSessionSkills(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]llm_history.SkillInfo {
+    return llm_history.getSessionSkills(allocator, db, session_id);
+}
+
+/// Embed the user history, read_file paths, recent session activities,
+/// and loaded session skills into the compacted XML. Returns a new
+/// `[]u8` allocated from `allocator`; caller owns it. The original
+/// `compacted_xml` is left untouched (the helper dups content during
+/// the embed).
+///
+/// Hard caps:
+///   - 100 user turns, 2000 chars per turn
+///   - 50 session skills, 10_000 chars per skill content
+///   - 20 recent activities (caller is expected to slice
+///     `recent_activities` to the desired limit before calling)
+///   - read_file paths are deduped (first occurrence wins, insertion order
+///     preserved); no explicit count cap on read_files
 pub fn enrichCompactionXml(
     allocator: std.mem.Allocator,
     compacted_xml: []const u8,
     user_turns: []const UserTurn,
     read_files: []const ReadFileTurn,
     recent_activities: []const RecentActivity,
+    session_skills: []const llm_history.SkillInfo,
     cwd: []const u8,
 ) ![]u8 {
     const MAX_USER_TURNS: usize = 100;
     const MAX_USER_CONTENT_CHARS: usize = 2000;
+    const MAX_SKILLS: usize = 50;
+    const MAX_SKILL_CONTENT_CHARS: usize = 10_000;
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -312,6 +346,53 @@ pub fn enrichCompactionXml(
         try out.appendSlice(allocator, "  </recent_activities>\n");
     }
 
+    // ── session_skills (loaded-once guidance material) ────────────
+    // Skills are typically large, free-form reference material that the
+    // compactor is unlikely to summarize verbatim. Embedding them here
+    // keeps the post-compaction agent operating under the same guidance
+    // the pre-compaction agent had. Content is wrapped in CDATA so the
+    // raw `<`, `>`, `&` inside skill files can never break the envelope.
+    try out.appendSlice(allocator, "  <session_skills");
+    if (session_skills.len > MAX_SKILLS) {
+        try out.print(allocator, " truncated_by=\"{d}\"", .{session_skills.len - MAX_SKILLS});
+    }
+    try out.appendSlice(allocator, ">\n");
+    const show_skill_count = @min(session_skills.len, MAX_SKILLS);
+    for (session_skills[0..show_skill_count]) |skill| {
+        const name_escaped = try xml_escape(allocator, skill.skill_name);
+        defer allocator.free(name_escaped);
+        try out.print(allocator, "    <skill name=\"{s}\"", .{name_escaped});
+        if (skill.loaded_at) |ts| {
+            try out.print(allocator, " loaded_at=\"{d}\"", .{ts});
+        }
+        try out.appendSlice(allocator, ">\n");
+        const truncated = if (skill.content.len > MAX_SKILL_CONTENT_CHARS)
+            skill.content[0..MAX_SKILL_CONTENT_CHARS]
+        else
+            skill.content;
+        // CDATA escape: XML CDATA sections cannot contain the literal
+        // sequence `]]>`. To embed a skill body that contains `]]>`, split
+        // it into adjacent CDATA sections: close the current section with
+        // `]]>` (the two `]` already in the data), then re-open with
+        // `<![CDATA[` and emit the literal `>` as content of the new
+        // section. On the wire this looks like `...]]><![CDATA[>...`.
+        try out.appendSlice(allocator, "      <content><![CDATA[\n");
+        if (std.mem.indexOf(u8, truncated, "]]>") == null) {
+            try out.appendSlice(allocator, truncated);
+        } else {
+            var rest = truncated;
+            while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
+                try out.appendSlice(allocator, rest[0..idx]); // up to but NOT incl "]]"
+                try out.appendSlice(allocator, "]]><![CDATA[>"); // close current, reopen, literal '>'
+                rest = rest[idx + 3 ..];
+            }
+            try out.appendSlice(allocator, rest);
+        }
+        try out.appendSlice(allocator, "\n      ]]></content>\n");
+        try out.appendSlice(allocator, "    </skill>\n");
+    }
+    try out.appendSlice(allocator, "  </session_skills>\n");
+
     // ── summary (the original compactor output, wrapped in CDATA) ─
     try out.appendSlice(allocator, "  <summary><![CDATA[\n");
     try out.appendSlice(allocator, compacted_xml);
@@ -328,6 +409,14 @@ fn resolvePath(allocator: std.mem.Allocator, path: []const u8, cwd: []const u8) 
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+//
+// Convention: walk ALL migrations from scratch so the schema under test is
+// GUARANTEED to match production. No hand-rolled CREATE TABLE.
+// (Project memory `llm-history-test-use-migrations-module.md` — reviewer's
+// recurring "use migrations module" feedback pattern.)
+//
+// Plan: docs/superpowers/plans/2026-08-13-fetch-session-skills-on-compaction.md
+// Task: task_1786641731741
 
 const testing = std.testing;
 
@@ -343,30 +432,11 @@ fn setupDb() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try db.exec(alloc,
-        "CREATE TABLE llm_history (" ++
-            "  id TEXT PRIMARY KEY," ++
-            "  session_id TEXT NOT NULL," ++
-            "  model TEXT," ++
-            "  response_content TEXT," ++
-            "  role TEXT," ++
-            "  tool_name TEXT," ++
-            "  is_input INTEGER DEFAULT 0," ++
-            "  is_output INTEGER DEFAULT 0," ++
-            "  is_feed_to_llm INTEGER DEFAULT 1," ++
-            "  created_at TEXT DEFAULT (datetime('now'))" ++
-            ")",
-        &[_][]const u8{},
-    );
-    try db.exec(alloc,
-        "CREATE TABLE session_activity (" ++
-            "  id TEXT PRIMARY KEY," ++
-            "  session_id TEXT NOT NULL," ++
-            "  description TEXT NOT NULL," ++
-            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP" ++
-            ")",
-        &[_][]const u8{},
-    );
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -634,6 +704,7 @@ test "enrichCompactionXml with empty user history and empty read files returns t
         &.{},
         &.{},
         &.{},
+        &.{},
         "/tmp",
     );
     defer alloc.free(result);
@@ -666,6 +737,7 @@ test "enrichCompactionXml embeds user history and read files with the right cont
         &user_turns,
         &read_files,
         &.{},
+        &.{},
         "/home/user",
     );
     defer alloc.free(result);
@@ -695,6 +767,7 @@ test "enrichCompactionXml emits all 50 user turns when the cap is hit" {
         &turns,
         &.{},
         &.{},
+        &.{},
         "/tmp",
     );
     defer alloc.free(result);
@@ -720,6 +793,7 @@ test "enrichCompactionXml deduplicates read_file on the same path" {
         "summary",
         &.{},
         &read_files,
+        &.{},
         &.{},
         "/home/user",
     );
@@ -748,6 +822,7 @@ test "enrichCompactionXml embeds recent_activities inside <compaction_context>" 
         &.{},
         &.{},
         &recent_activities,
+        &.{},
         "/tmp",
     );
     defer alloc.free(result);
@@ -784,11 +859,260 @@ test "enrichCompactionXml omits <recent_activities> when the slice is empty" {
         &.{},
         &.{},
         &.{},
+        &.{},
         "/tmp",
     );
     defer alloc.free(result);
 
     try testing.expect(std.mem.indexOf(u8, result, "<recent_activities") == null);
+}
+
+// ─── session_skills tests ───────────────────────────────────────────────────
+
+fn seedSkill(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    skill_name: []const u8,
+    content: []const u8,
+    loaded_at: ?i64,
+) !void {
+    if (loaded_at) |ts| {
+        const ts_str = try std.fmt.allocPrint(alloc, "{d}", .{ts});
+        defer alloc.free(ts_str);
+        try db.exec(
+            alloc,
+            "INSERT INTO session_skills (session_id, skill_name, content, loaded_at) " ++
+                "VALUES (?, ?, ?, ?)",
+            &.{ session_id, skill_name, content, ts_str },
+        );
+    } else {
+        try db.exec(
+            alloc,
+            "INSERT INTO session_skills (session_id, skill_name, content, loaded_at) " ++
+                "VALUES (?, ?, ?, NULL)",
+            &.{ session_id, skill_name, content },
+        );
+    }
+}
+
+test "fetchSessionSkills returns only matching session's skills in insertion order" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try seedSkill(alloc, &s.db, "sess_a", "alpha", "first skill body", 100);
+    try seedSkill(alloc, &s.db, "sess_a", "beta", "second skill body", 200);
+    try seedSkill(alloc, &s.db, "sess_a", "gamma", "third skill body", null);
+    try seedSkill(alloc, &s.db, "sess_b", "delta", "different session", 300);
+
+    const skills = try fetchSessionSkills(alloc, &s.db, "sess_a");
+    defer {
+        for (skills) |s2| s2.deinit(alloc);
+        alloc.free(skills);
+    }
+
+    try testing.expectEqual(@as(usize, 3), skills.len);
+    try testing.expectEqualStrings("alpha", skills[0].skill_name);
+    try testing.expectEqualStrings("first skill body", skills[0].content);
+    try testing.expectEqual(@as(i64, 100), skills[0].loaded_at.?);
+    try testing.expectEqualStrings("beta", skills[1].skill_name);
+    try testing.expectEqualStrings("gamma", skills[2].skill_name);
+    try testing.expect(skills[2].loaded_at == null);
+}
+
+test "fetchSessionSkills returns empty slice when session has no skills" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    const skills = try fetchSessionSkills(alloc, &s.db, "sess_empty");
+    defer {
+        for (skills) |sk| sk.deinit(alloc);
+        alloc.free(skills);
+    }
+    try testing.expectEqual(@as(usize, 0), skills.len);
+}
+
+test "fetchSessionSkills returns empty slice when session_id is empty" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    const skills = try fetchSessionSkills(alloc, &s.db, "");
+    defer {
+        for (skills) |sk| sk.deinit(alloc);
+        alloc.free(skills);
+    }
+    try testing.expectEqual(@as(usize, 0), skills.len);
+}
+
+test "enrichCompactionXml embeds session_skills with name, loaded_at, and CDATA-wrapped content" {
+    const alloc = testing.allocator;
+    const skills = [_]llm_history.SkillInfo{
+        .{
+            .skill_name = try alloc.dupe(u8, "code-review"),
+            .content = try alloc.dupe(u8, "always check the test before merging"),
+            .loaded_at = 1700000000,
+        },
+        .{
+            .skill_name = try alloc.dupe(u8, "no-yolo"),
+            .content = try alloc.dupe(u8, "never skip writing tests"),
+            .loaded_at = null,
+        },
+    };
+    defer for (skills) |s2| s2.deinit(alloc);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &.{},
+        &.{},
+        &.{},
+        &skills,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<session_skills>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<skill name=\"code-review\" loaded_at=\"1700000000\">") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<content><![CDATA[\nalways check the test before merging\n      ]]></content>") != null);
+    // Skill without loaded_at omits the attribute entirely.
+    try testing.expect(std.mem.indexOf(u8, result, "<skill name=\"no-yolo\">") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<content><![CDATA[\nnever skip writing tests\n      ]]></content>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</session_skills>") != null);
+}
+
+test "enrichCompactionXml escapes XML special chars in skill name" {
+    const alloc = testing.allocator;
+    const skills = [_]llm_history.SkillInfo{
+        .{
+            .skill_name = try alloc.dupe(u8, "fix<this> & \"that\""),
+            .content = try alloc.dupe(u8, "body"),
+            .loaded_at = null,
+        },
+    };
+    defer for (skills) |s2| s2.deinit(alloc);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &.{},
+        &.{},
+        &.{},
+        &skills,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<skill name=\"fix&lt;this&gt; &amp; &quot;that&quot;\">") != null);
+}
+
+test "enrichCompactionXml splits skill content CDATA on ']]>' boundary" {
+    const alloc = testing.allocator;
+    const skills = [_]llm_history.SkillInfo{
+        .{
+            .skill_name = try alloc.dupe(u8, "weird-content"),
+            .content = try alloc.dupe(u8, "before ]]> middle ]]> after"),
+            .loaded_at = null,
+        },
+    };
+    defer for (skills) |s2| s2.deinit(alloc);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &.{},
+        &.{},
+        &.{},
+        &skills,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // The two ]]> sequences must be split into adjacent CDATA sections
+    // so the envelope is still well-formed XML, with the literal '>'
+    // reappearing between them.
+    try testing.expect(std.mem.indexOf(u8, result, "before ]]><![CDATA[> middle ]]><![CDATA[> after") != null);
+}
+
+test "enrichCompactionXml adds truncated_by when session_skills exceeds the 50-cap" {
+    const alloc = testing.allocator;
+    var skills: [51]llm_history.SkillInfo = undefined;
+    var owned_names: [51][]u8 = undefined;
+    var owned_contents: [51][]u8 = undefined;
+    for (&skills, &owned_names, &owned_contents, 0..) |*s2, *owned_name, *owned_content, i| {
+        owned_name.* = try std.fmt.allocPrint(alloc, "skill-{d}", .{i});
+        owned_content.* = try alloc.dupe(u8, "body");
+        s2.* = .{
+            .skill_name = owned_name.*,
+            .content = owned_content.*,
+            .loaded_at = null,
+        };
+    }
+    // Only free the underlying slices (owned_names/owned_contents) — the
+    // SkillInfo structs themselves are stack-allocated and SkillInfo.deinit
+    // would free the same memory again. skills[i].skill_name and
+    // skills[i].content are aliases for owned_names[i] / owned_contents[i].
+    defer for (owned_names) |n| alloc.free(n);
+    defer for (owned_contents) |c| alloc.free(c);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &.{},
+        &.{},
+        &.{},
+        &skills,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<session_skills truncated_by=\"1\">") != null);
+    // Only the first 50 are embedded.
+    try testing.expect(std.mem.indexOf(u8, result, "<skill name=\"skill-0\">") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<skill name=\"skill-49\">") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<skill name=\"skill-50\">") == null);
+}
+
+test "enrichCompactionXml positions session_skills between read_files and summary" {
+    const alloc = testing.allocator;
+    const read_files = [_]ReadFileTurn{
+        .{ .path = "/home/user/foo.zig", .raw_content = "", .created_at = "t1" },
+    };
+    const skills = [_]llm_history.SkillInfo{
+        .{
+            .skill_name = try alloc.dupe(u8, "guide"),
+            .content = try alloc.dupe(u8, "how to behave"),
+            .loaded_at = null,
+        },
+    };
+    defer for (skills) |s2| s2.deinit(alloc);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary",
+        &.{},
+        &read_files,
+        &.{},
+        &skills,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // Order: <compaction_context> <user_history> </user_history>
+    // <read_files> </read_files> <session_skills> </session_skills>
+    // <summary> </summary> </compaction_context>
+    const idx_user_history = std.mem.indexOf(u8, result, "<user_history>").?;
+    const idx_read_files = std.mem.indexOf(u8, result, "<read_files>").?;
+    const idx_session_skills = std.mem.indexOf(u8, result, "<session_skills>").?;
+    const idx_summary = std.mem.indexOf(u8, result, "<summary>").?;
+    try testing.expect(idx_user_history < idx_read_files);
+    try testing.expect(idx_read_files < idx_session_skills);
+    try testing.expect(idx_session_skills < idx_summary);
 }
 
 fn countSubstring(hay: []const u8, needle: []const u8) usize {

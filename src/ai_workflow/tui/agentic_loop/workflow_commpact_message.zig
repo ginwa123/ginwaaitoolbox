@@ -165,6 +165,20 @@ pub fn maybeCompactMessagesNew(
         for (recent_activities.items) |a| a.deinit(allocator);
         recent_activities.deinit(allocator);
     }
+    // Session skills (loaded via the `add_skill` tool) are stable
+    // guidance material the compactor is unlikely to summarize verbatim.
+    // Embedding them here gives the post-compaction agent continuity on
+    // what skills were active before compaction. Fetched before
+    // mark_history_not_for_llmrun so the next iteration's enriched
+    // INSERT can carry them forward alongside the rest of the context.
+    const session_skills = compaction_context.fetchSessionSkills(allocator, db, session_id) catch |err| blk: {
+        logger.warnFmt("[COMPACTION] fetchSessionSkills failed: {s}", .{@errorName(err)});
+        break :blk &.{};
+    };
+    defer {
+        for (session_skills) |s| s.deinit(allocator);
+        allocator.free(session_skills);
+    }
 
     const enriched_xml = compaction_context.enrichCompactionXml(
         allocator,
@@ -172,6 +186,7 @@ pub fn maybeCompactMessagesNew(
         user_turns.items,
         read_files.items,
         recent_activities.items,
+        session_skills,
         cwd,
     ) catch |err| {
         logger.warnFmt("[COMPACTION] enrichCompactionXml failed: {s}", .{@errorName(err)});
