@@ -1148,31 +1148,61 @@ pub const Agent = struct {
         // For `max_tokens < 1025` the floor (1024) collides with the
         // strict-less-than constraint (budget must be < max_tokens),
         // so Anthropic literally cannot accept a thinking-enabled
-        // request with that budget. Rather than silently emitting
-        // an invalid request, force thinking off for this call and
-        // log a warning — the alternative (clamps to 0, or to
-        // some value >= max_tokens) would either be a 400 from the
-        // server or violate the Anthropic invariant.
+        // request with that budget. Two valid responses:
+        //
+        //   1. AUTO-BUMP — if the caller did NOT pass `params.max_tokens`
+        //      explicitly (so the small value came from `self.maxTokens`
+        //      default), bump it up to 1025 for this call so thinking
+        //      can fire. Logged at .info so the bump is visible.
+        //
+        //   2. FORCE-THINKING-OFF — if the caller DID pass an explicit
+        //      small `max_tokens`, respect their constraint and turn
+        //      thinking off for this call. Logged at .warn so the
+        //      conflict is visible.
+        //
+        // We pick option (1) over the prior behaviour because silently
+        // killing thinking for every request whose default `maxTokens`
+        // is too small would surprise users who expect extended thinking
+        // to "just work" out of the box. The bump only affects this
+        // call — `self.maxTokens` is NOT mutated.
         const thinking_on: bool = blk: {
             if (!self.thinkingEnabled) break :blk false;
-            if (resolved_max_tokens < 1025) {
-                self.log_fmt(.warn, "buildJsonAnthropicRequest: thinkingEnabled=true but max_tokens={d} (<1025) — Anthropic requires budget_tokens >= 1024 AND < max_tokens, so thinking is forced off for this request. Raise max_tokens to >=1025 to re-enable.", .{resolved_max_tokens});
+            if (resolved_max_tokens >= 1025) break :blk true;
+
+            // resolved_max_tokens < 1025 — decide auto-bump vs force-off
+            // based on whether the caller set `max_tokens` explicitly.
+            if (params.max_tokens == null) {
+                self.log_fmt(.info, "buildJsonAnthropicRequest: thinkingEnabled=true with default max_tokens={d} (<1025) — auto-bumping to 1025 for this call so budget_tokens=1024 satisfies Anthropic's `< max_tokens` constraint. Pass AgentCall.max_tokens explicitly to suppress the bump.", .{resolved_max_tokens});
+                break :blk true;
+            } else {
+                self.log_fmt(.warn, "buildJsonAnthropicRequest: thinkingEnabled=true with explicit max_tokens={d} (<1025) — Anthropic requires budget_tokens >= 1024 AND < max_tokens, so thinking is forced off for this request. Raise max_tokens to >=1025 to re-enable.", .{resolved_max_tokens});
                 break :blk false;
             }
-            break :blk true;
+        };
+
+        // The effective `max_tokens` we'll send on the wire + use for
+        // the budget_tokens calculation. When the auto-bump branch
+        // above fires, this is 1025 (one above the Anthropic floor);
+        // otherwise it equals `resolved_max_tokens`. Note that we do
+        // NOT mutate `self.maxTokens` — the bump is per-call only.
+        const effective_max_tokens: usize = blk: {
+            if (thinking_on and params.max_tokens == null and resolved_max_tokens < 1025) {
+                break :blk 1025;
+            }
+            break :blk resolved_max_tokens;
         };
 
         const thinking_budget: usize = blk: {
             if (!thinking_on) break :blk 0;
-            // 50% of max_tokens, with the 1024 floor and the
-            // (max_tokens - 1) ceiling. We use `-|` saturating
-            // subtraction: when max_tokens == 1025, the
-            // `max_tokens - 1` ceiling is 1024, and the floor is
-            // also 1024, so the result is exactly 1024 (which is
+            // 50% of effective_max_tokens, with the 1024 floor and the
+            // (effective_max_tokens - 1) ceiling. We use `-|` saturating
+            // subtraction: when effective_max_tokens == 1025, the
+            // `effective_max_tokens - 1` ceiling is 1024, and the floor
+            // is also 1024, so the result is exactly 1024 (which is
             // valid: 1024 < 1025).
-            const half = resolved_max_tokens / 2;
+            const half = effective_max_tokens / 2;
             const floor_constrained = if (half < 1024) 1024 else half;
-            const ceiling = resolved_max_tokens -| 1;
+            const ceiling = effective_max_tokens -| 1;
             break :blk if (floor_constrained < ceiling) floor_constrained else ceiling;
         };
 
@@ -1194,7 +1224,7 @@ pub const Agent = struct {
         const json_request = AnthropicRequest{
             .model = self.model,
             .messages = json_messages[0..json_message_count],
-            .max_tokens = resolved_max_tokens,
+            .max_tokens = effective_max_tokens,
             .stream = stream,
             .tools = json_tools,
             .thinking = if (thinking_on) .{

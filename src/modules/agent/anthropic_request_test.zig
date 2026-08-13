@@ -216,9 +216,11 @@ test "buildJsonAnthropicRequest: thinkingEnabled=false omits thinking field enti
 // Bug 2 — small-max_tokens guard
 // ============================================================================
 
-test "buildJsonAnthropicRequest: thinkingEnabled=true with max_tokens<1025 forces thinking off (no budget that violates the floor)" {
-    // max_tokens=1024 → can't be thinking-enabled: floor would be 1024,
-    // but must be < max_tokens. Expect thinking omitted from output.
+test "buildJsonAnthropicRequest: thinkingEnabled=true with default max_tokens=1024 AUTO-BUMPS to 1025 (thinking fires, budget_tokens=1024 is valid)" {
+    // When `params.max_tokens` is null and `self.maxTokens < 1025`,
+    // the builder auto-bumps max_tokens to 1025 for this call so the
+    // 1024 budget_tokens floor satisfies Anthropic's `< max_tokens`
+    // constraint. `self.maxTokens` is NOT mutated.
     var a = makeAgent(.{ .maxTokens = 1024 });
     defer a.deinit();
 
@@ -226,7 +228,53 @@ test "buildJsonAnthropicRequest: thinkingEnabled=true with max_tokens<1025 force
     const raw = try buildAnthropicBodyRaw(&a, &messages, null, null);
     defer testing.allocator.free(raw);
 
+    // thinking IS enabled...
+    try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":") != null);
+    // budget_tokens = 1024 (the floor) since (1025/2) = 512 < 1024...
+    try testing.expect(std.mem.indexOf(u8, raw, "\"budget_tokens\":1024") != null);
+    // ...and max_tokens was bumped to 1025 (one above the 1024 floor
+    // so budget_tokens=1024 satisfies `< max_tokens`).
+    try testing.expect(std.mem.indexOf(u8, raw, "\"max_tokens\":1025") != null);
+}
+
+test "buildJsonAnthropicRequest: thinkingEnabled=true with EXPLICIT max_tokens=1024 forces thinking off (respects caller constraint)" {
+    // When the caller passes an explicit small max_tokens via
+    // `AgentCall.max_tokens`, we don't bump it (would surprise the
+    // caller); instead we force thinking off and warn.
+    var a = makeAgent(.{ .maxTokens = 4096 });
+    defer a.deinit();
+
+    const messages = [_]agent.AgentMessage{userMsg("hi")};
+    // Caller explicitly pins max_tokens=1024 via AgentCall.
+    const raw = try a.buildJsonAnthropicRequest(
+        .{ .tools = &.{}, .messages = &messages, .temperature = null, .max_tokens = 1024 },
+        true,
+    );
+    defer testing.allocator.free(raw);
+
+    // thinking IS forced off...
     try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\"") == null);
+    // ...and max_tokens = 1024 (the caller's value, NOT bumped).
+    try testing.expect(std.mem.indexOf(u8, raw, "\"max_tokens\":1024") != null);
+}
+
+test "buildJsonAnthropicRequest: thinkingEnabled=true with EXPLICIT max_tokens=4096 keeps max_tokens=4096 (no bump needed)" {
+    // Sanity: explicit max_tokens that ALREADY satisfies the floor
+    // doesn't get bumped. (The bump only fires for max_tokens < 1025.)
+    var a = makeAgent(.{ .maxTokens = 4096 });
+    defer a.deinit();
+
+    const messages = [_]agent.AgentMessage{userMsg("hi")};
+    const raw = try a.buildJsonAnthropicRequest(
+        .{ .tools = &.{}, .messages = &messages, .temperature = null, .max_tokens = 4096 },
+        true,
+    );
+    defer testing.allocator.free(raw);
+
+    // No bump — max_tokens stays at 4096.
+    try testing.expect(std.mem.indexOf(u8, raw, "\"max_tokens\":4096") != null);
+    // thinking is on with budget_tokens = 4096/2 = 2048.
+    try testing.expect(std.mem.indexOf(u8, raw, "\"budget_tokens\":2048") != null);
 }
 
 // ============================================================================
