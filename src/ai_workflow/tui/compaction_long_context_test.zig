@@ -6,7 +6,11 @@ const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("llm_history.zig");
 const logger_mod = @import("nalarcore").loggermod;
 const compactMessageInMemoryNew = @import("agentic_loop/workflow_commpact_message.zig").compactMessageInMemoryNew;
+const migration = @import("../../migrations/migration.zig");
 
+/// Walk ALL migrations from 001 → latest (per project memory
+/// `llm-history-test-use-migrations-module.md`). No hand-rolled
+/// CREATE TABLE — the migration chain is the source of truth.
 fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     const alloc = testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
@@ -16,43 +20,11 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try db.exec(alloc,
-        \\CREATE TABLE llm_history (
-        \\  id TEXT PRIMARY KEY,
-        \\  session_id TEXT NOT NULL,
-        \\  model TEXT,
-        \\  response_content TEXT,
-        \\  finish_reason TEXT,
-        \\  role TEXT,
-        \\  tool_calls_json TEXT,
-        \\  tool_call_id TEXT,
-        \\  reasoning_content TEXT,
-        \\  is_feed_to_llm INTEGER DEFAULT 1,
-        \\  agent TEXT,
-        \\  loop_index INTEGER DEFAULT 0,
-        \\  temperature REAL DEFAULT 0.2,
-        \\  is_thinking INTEGER DEFAULT 0,
-        \\  created_at TEXT DEFAULT (datetime('now')),
-        \\  updated_at TEXT DEFAULT (datetime('now')),
-        \\  parent_session_id TEXT,
-        \\  parent_id TEXT,
-        \\  prompt_tokens INTEGER DEFAULT 0,
-        \\  completion_tokens INTEGER DEFAULT 0,
-        \\  total_tokens INTEGER DEFAULT 0,
-        \\  is_input INTEGER DEFAULT 0,
-        \\  is_output INTEGER DEFAULT 0,
-        \\  tool_name TEXT,
-        \\  diffview_before TEXT,
-        \\  diffview_after TEXT,
-        \\  image_url TEXT,
-        \\  -- Mirrors Migration 059: regular TEXT column populated by
-        \\  -- application code (defaults to now UTC in tests).
-        \\  created_iso TEXT DEFAULT (datetime('now'))
-        \\)
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, name TEXT, status TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')))
-    , &.{});
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
     return .{ .db = db, .threaded = threaded };
 }
 

@@ -5,11 +5,13 @@ const agent = @import("nalarcore").agent;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("../llm_history.zig");
 const logger_mod = @import("nalarcore").loggermod;
+const migration = @import("../../../migrations/migration.zig");
 
-/// Build a minimal in-memory SQLite DB with the tables that
-/// compactMessageInMemoryNew touches: llm_history (for saveMessage +
-/// markMessageNotForLlmRun) and sessions (for the cwd UPDATE).
-/// Mirrors the test setup in src/ai_workflow/tui/llm_history_routines_test.zig.
+/// Build a fresh in-memory DB by walking ALL migrations from 001 →
+/// latest, so the schema under test is GUARANTEED to match production
+/// (per project memory `llm-history-test-use-migrations-module.md`).
+/// No hand-rolled CREATE TABLE — the migration chain is the source of
+/// truth.
 fn setupDb() !struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -22,54 +24,10 @@ fn setupDb() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    // Minimal schema — exactly the columns saveMessage writes and
-    // markMessageNotForLlmRun updates. ORDER matches the production
-    // CREATE TABLE in src/migrations/migration.zig (latest rev).
-    try db.exec(alloc,
-        \\CREATE TABLE llm_history (
-        \\  id TEXT PRIMARY KEY,
-        \\  session_id TEXT NOT NULL,
-        \\  model TEXT,
-        \\  response_content TEXT,
-        \\  finish_reason TEXT,
-        \\  role TEXT,
-        \\  tool_calls_json TEXT,
-        \\  tool_call_id TEXT,
-        \\  reasoning_content TEXT,
-        \\  is_feed_to_llm INTEGER DEFAULT 1,
-        \\  agent TEXT,
-        \\  loop_index INTEGER DEFAULT 0,
-        \\  temperature REAL DEFAULT 0.2,
-        \\  is_thinking INTEGER DEFAULT 0,
-        \\  created_at TEXT DEFAULT (datetime('now')),
-        \\  updated_at TEXT DEFAULT (datetime('now')),
-        \\  parent_session_id TEXT,
-        \\  parent_id TEXT,
-        \\  prompt_tokens INTEGER DEFAULT 0,
-        \\  completion_tokens INTEGER DEFAULT 0,
-        \\  total_tokens INTEGER DEFAULT 0,
-        \\  is_input INTEGER DEFAULT 0,
-        \\  is_output INTEGER DEFAULT 0,
-        \\  tool_name TEXT,
-        \\  diffview_before TEXT,
-        \\  diffview_after TEXT,
-        \\  image_url TEXT,
-        \\  -- Mirrors Migration 059 in production: a regular TEXT column
-        \\  -- populated by application code (NOT triggers). Default
-        \\  -- to `datetime('now')` UTC for tests that don't pass it.
-        \\  created_iso TEXT DEFAULT (datetime('now'))
-        \\)
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE TABLE sessions (
-        \\  id TEXT PRIMARY KEY,
-        \\  cwd TEXT,
-        \\  name TEXT,
-        \\  status TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now')),
-        \\  updated_at TEXT DEFAULT (datetime('now'))
-        \\)
-    , &.{});
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
 
     return .{ .db = db, .threaded = threaded };
 }
@@ -565,4 +523,138 @@ test "end-to-end: compacted rows are findable via getCompactedMessages after com
         }
         try testing.expect(matched); // id was recoverable from the session
     }
+}
+
+// ============================================================================
+// Migration 073 — buildCompactionEnvelope embeds recent session activities
+// ============================================================================
+//
+// Per PR #226 review comment:
+//   "dont recorsessionactivty, but get the activity, so the next cycle
+//    agent is know the activity aftert compaction"
+// — the envelope must READ prior session_activity rows (recorded by
+// `update_activity`) and embed them in a `<recent_activities>` section,
+// NOT record a new "[COMPACTION] Compacted..." row.
+
+test "compactMessageInMemoryNew: envelope embeds prior session_activity rows in <recent_activities>" {
+    // Seed ≥5 messages (the total <= 4 early return guard won't fire)
+    // PLUS 3 prior update_activity rows for this session. After
+    // compaction, the envelope returned to compactMessageInMemoryNew
+    // must contain a `<recent_activities>` section listing all 3
+    // activity descriptions (chronological, oldest first), AND the
+    // session_activity table must have NO new row for the compaction
+    // event itself.
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const session_id = "sess_recent_activities";
+
+    // Pre-seed the session_activity table with 3 thoughts (the
+    // agent's update_activity log for this session). Insert them in
+    // NON-chronological order to verify the envelope sorts them.
+    // created_at is auto-populated by DEFAULT CURRENT_TIMESTAMP; we
+    // can't pin exact timestamps from outside, but they're inserted
+    // sequentially so row order = time order.
+    const thoughts = [_][]const u8{
+        "[2026-08-13 10:00] test @ /tmp | Thinking | planning the migration",
+        "[2026-08-13 10:01] test @ /tmp | Editing | writing the test",
+        "[2026-08-13 10:02] test @ /tmp | Implementing | wiring it in",
+    };
+    var counter: u32 = 0;
+    for (thoughts) |t| {
+        counter += 1;
+        const id = try std.fmt.allocPrint(alloc, "act_{d}", .{counter});
+        defer alloc.free(id);
+        const sid = try alloc.dupe(u8, session_id);
+        defer alloc.free(sid);
+        const desc = try alloc.dupe(u8, t);
+        defer alloc.free(desc);
+        try s.db.exec(alloc,
+            "INSERT INTO session_activity (id, session_id, description) VALUES (?, ?, ?)",
+            &.{ id, sid, desc });
+    }
+
+    // Build messages and trigger compaction.
+    var messages: std.ArrayList(agent.AgentMessage) = .empty;
+    try messages.append(alloc, .{ .role = .system, .content = try alloc.dupe(u8, "sys") });
+    try messages.append(alloc, .{ .role = .user, .content = try alloc.dupe(u8, "hello 1") });
+    try messages.append(alloc, .{ .role = .assistant, .content = try alloc.dupe(u8, "reply 1") });
+    try messages.append(alloc, .{ .role = .user, .content = try alloc.dupe(u8, "hello 2") });
+    try messages.append(alloc, .{ .role = .assistant, .content = try alloc.dupe(u8, "reply 2") });
+
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    const new_messages = try workflow.compactMessageInMemoryNew(
+        alloc, messages, "compacted summary", session_id, "gpt-4o", "/tmp",
+        &s.db, s.threaded.io(), &lg,
+    );
+    defer {
+        for (new_messages.items) |*m| m.deinit(alloc);
+        var nm_owned = new_messages;
+        nm_owned.deinit(alloc);
+    }
+
+    // The envelope is the user-role message in new_messages (index 1;
+    // index 0 is the system message copy).
+    const envelope = new_messages.items[1].content.?;
+    try testing.expect(std.mem.indexOf(u8, envelope, "<recent_activities") != null);
+    try testing.expect(std.mem.indexOf(u8, envelope, "planning the migration") != null);
+    try testing.expect(std.mem.indexOf(u8, envelope, "writing the test") != null);
+    try testing.expect(std.mem.indexOf(u8, envelope, "wiring it in") != null);
+    // The activities must appear in chronological (oldest first) order:
+    // planning < writing < wiring.
+    const planning_pos = std.mem.indexOf(u8, envelope, "planning the migration").?;
+    const writing_pos = std.mem.indexOf(u8, envelope, "writing the test").?;
+    const wiring_pos = std.mem.indexOf(u8, envelope, "wiring it in").?;
+    try testing.expect(planning_pos < writing_pos);
+    try testing.expect(writing_pos < wiring_pos);
+
+    // The session_activity table must NOT have grown — the compaction
+    // event is NOT recorded (per review feedback).
+    {
+        const sid_dup = try alloc.dupe(u8, session_id);
+        defer alloc.free(sid_dup);
+        const args = [_][]const u8{sid_dup};
+        var q = try s.db.query(alloc,
+            "SELECT COUNT(*) FROM session_activity WHERE session_id = ?",
+            &args);
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("3", row.values[0]); // still just the 3 pre-seeded rows
+    }
+}
+
+test "compactMessageInMemoryNew: no <recent_activities> section when session has no prior activity" {
+    // When there are no prior session_activity rows for the session,
+    // the envelope must OMIT the <recent_activities> section entirely
+    // (rather than emit an empty one).
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    var messages: std.ArrayList(agent.AgentMessage) = .empty;
+    try messages.append(alloc, .{ .role = .system, .content = try alloc.dupe(u8, "sys") });
+    try messages.append(alloc, .{ .role = .user, .content = try alloc.dupe(u8, "hello 1") });
+    try messages.append(alloc, .{ .role = .assistant, .content = try alloc.dupe(u8, "reply 1") });
+    try messages.append(alloc, .{ .role = .user, .content = try alloc.dupe(u8, "hello 2") });
+    try messages.append(alloc, .{ .role = .assistant, .content = try alloc.dupe(u8, "reply 2") });
+
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    const new_messages = try workflow.compactMessageInMemoryNew(
+        alloc, messages, "compacted summary", "sess_no_activity", "gpt-4o", "/tmp",
+        &s.db, s.threaded.io(), &lg,
+    );
+    defer {
+        for (new_messages.items) |*m| m.deinit(alloc);
+        var nm_owned = new_messages;
+        nm_owned.deinit(alloc);
+    }
+
+    const envelope = new_messages.items[1].content.?;
+    try testing.expect(std.mem.indexOf(u8, envelope, "<recent_activities") == null);
 }

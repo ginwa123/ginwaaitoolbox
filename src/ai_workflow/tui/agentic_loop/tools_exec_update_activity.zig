@@ -28,6 +28,17 @@ pub fn execUpdateActivity(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     // Update worker activity with the thought
     if (llm_history.updateWorkerActivityWithDescription(ctx.allocator, ctx.db, worker_id, parsed.value.thought)) |_| {
         ctx.logger.infoFmt("[update_activity] Updated activity for {s}: {s}", .{ worker_id, parsed.value.thought });
+
+        // Also append to the per-session session_activity log (Migration 073).
+        // Best-effort: if the INSERT fails (table missing on a pre-073 DB,
+        // disk full, etc.) the agent tool call still succeeds — the live
+        // worker.last_activity_description update is the load-bearing UI
+        // signal, this log is historical/nice-to-have. Matches the SSE
+        // `catch {}` pattern in `updateWorkerActivityWithDescription`.
+        llm_history.recordSessionActivity(ctx.allocator, ctx.io, ctx.db, ctx.session_id, parsed.value.thought) catch |err| {
+            ctx.logger.warnFmt("[update_activity] Failed to record session_activity row for {s}: {}", .{ ctx.session_id, err });
+        };
+
         const inner = update_activity_mod.xmlSuccess(ctx.allocator, parsed.value.thought);
         const output = try wrapToolOutput(ctx.allocator, "update_activity", tc.function.arguments, true, null, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
