@@ -601,12 +601,21 @@ pub fn executeCreateKanbanTaskToString(
     //     and/or profile are set (Migrations 063 + 040). Uses the
     //     same `task.id == session.id` convention as the HTTP
     //     handler at `task_create.zig:587-605` so downstream SELECTs
-    //     that join `sessions` see a consistent id/name pair.
+    //     that join `sessions` see a consistent id pair.
     //     Dynamic SQL builder: include only the columns that have
     //     a value so an empty `is_auto_retry_until_stop` + empty
     //     `selected_profile_model` produces a minimal row that
     //     still satisfies the (id, name) uniqueness on concurrent
     //     chat-spawn INSERTs.
+    //
+    //     NEW (plan: docs/superpowers/plans/2026-08-13-kanban-task-
+    //     session-name-match.md): `sessions.name` is bound to
+    //     `trimmed_name` (NOT `task_id`), so the sidebar / chat
+    //     header / kanban card all show the user-facing title the
+    //     user typed. The `task.id == session.id` convention still
+    //     holds for the id column; only the name differs. trimmed_name
+    //     is already non-empty after the step-1 validation, so this
+    //     is safe.
     if (input.is_auto_retry_until_stop != null or (input.selected_profile_model != null and input.selected_profile_model.?.len > 0)) {
         var cols_buf: std.ArrayList(u8) = .empty;
         defer cols_buf.deinit(allocator);
@@ -618,7 +627,7 @@ pub fn executeCreateKanbanTaskToString(
         try cols_buf.appendSlice(allocator, "(id, name, status");
         try vals_buf.appendSlice(allocator, "(?, ?, 'active'");
         try bind_values.append(allocator, task_id); // id
-        try bind_values.append(allocator, task_id); // name (task.id == session.id convention)
+        try bind_values.append(allocator, trimmed_name); // name = user-facing title
 
         if (input.is_auto_retry_until_stop) |flag| {
             const normalized: []const u8 = if (std.mem.eql(u8, flag, "1")) "1" else "0";
