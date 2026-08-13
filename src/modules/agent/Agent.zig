@@ -617,6 +617,16 @@ pub const Usage = struct {
     prompt_tokens: usize = 0,
     completion_tokens: usize = 0,
     total_tokens: usize = 0,
+    /// Anthropic-only: tokens used to write a cache entry on this call.
+    /// Billed at the cache-write rate (typically ~1.25× input rate), so
+    /// DO add this to any billing formula. 0 for non-Anthropic profiles.
+    cache_creation_input_tokens: usize = 0,
+    /// Anthropic-only: tokens read from a cache entry on this call.
+    /// Billed at the cache-read rate (typically ~0.1× input rate) — but
+    /// still tokens the model processed, so this IS included in
+    /// `prompt_tokens` and `total_tokens` (matching OpenAI's semantic
+    /// of "tokens the LLM saw"). 0 for non-Anthropic profiles.
+    cache_read_input_tokens: usize = 0,
 };
 
 pub const ToolCallDelta = struct {

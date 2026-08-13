@@ -417,6 +417,40 @@ test "parse_stream_chunk (anthropic): cache_read_input_tokens is NOT added to to
 }
 
 // ============================================================================
+// Task 1 contract — Agent.Usage struct surface area. Pin the new
+// Anthropic cache field names so Tasks 2 + 4 + 5 + 6 can lean on them.
+// (OpenAI rows always carry 0 in both fields.)
+// ============================================================================
+
+test "Agent.Usage struct has cache_creation_input_tokens + cache_read_input_tokens fields (structural contract)" {
+    const u: agent.Usage = .{};
+    // New fields default to 0 — no breakage for OpenAI.
+    try expectEqual(@as(usize, 0), u.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 0), u.cache_read_input_tokens);
+    // Existing fields still work.
+    try expectEqual(@as(usize, 0), u.prompt_tokens);
+    try expectEqual(@as(usize, 0), u.completion_tokens);
+    try expectEqual(@as(usize, 0), u.total_tokens);
+}
+
+test "Agent.Usage can be constructed with explicit cache values" {
+    // Mirrors what parse_anthropic_stream_chunk emits at message_delta
+    // when both cache fields are non-zero.
+    const u: agent.Usage = .{
+        .prompt_tokens = 6500,
+        .completion_tokens = 1000,
+        .total_tokens = 7500,
+        .cache_creation_input_tokens = 500,
+        .cache_read_input_tokens = 5000,
+    };
+    try expectEqual(@as(usize, 6500), u.prompt_tokens);
+    try expectEqual(@as(usize, 1000), u.completion_tokens);
+    try expectEqual(@as(usize, 7500), u.total_tokens);
+    try expectEqual(@as(usize, 500), u.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 5000), u.cache_read_input_tokens);
+}
+
+// ============================================================================
 // Regression test — reproduce the iter-2 SEGV in buildJsonAnthropicRequest
 // (the slice-header 0xAA-poisoning crash seen when an Anthropic chat hits
 // iter 2 after the model emits tool_calls in iter 1). Build the request
