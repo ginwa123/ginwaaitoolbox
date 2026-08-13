@@ -1348,6 +1348,16 @@ pub const Agent = struct {
         var line_arena = std.heap.ArenaAllocator.init(self.allocator);
         defer line_arena.deinit();
 
+        // Raw SSE sample buffer. Populated when parse_stream_chunk returns null
+        // AND chunk_count stays at 0 — lets us surface the server's actual
+        // payload in the StreamInterrupted error message instead of hiding
+        // everything behind "0 chunk(s)". Capped at 2 KiB; we keep the FIRST
+        // bytes so the user sees the start of the stream (auth errors and
+        // framework-specific envelopes tend to appear there).
+        var raw_sse_sample: std.ArrayList(u8) = .empty;
+        defer raw_sse_sample.deinit(self.allocator);
+        const max_raw_sse_sample_len: usize = 2048;
+
         var chunk_count: usize = 0;
         var stream_ended_cleanly = false;
 
@@ -1419,6 +1429,15 @@ pub const Agent = struct {
                         aggregator.process_chunk(chunk) catch {};
                     } else {
                         self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for: {s}", .{data});
+                        // Capture the raw SSE line for the final-error message —
+                        // only while chunk_count == 0 (i.e. the server's first lines
+                        // are still unparsed). Once we successfully parse ANY chunk
+                        // we know the format is one we understand, so additional raw
+                        // samples would just be noise.
+                        if (chunk_count == 0 and raw_sse_sample.items.len < max_raw_sse_sample_len) {
+                            raw_sse_sample.appendSlice(self.allocator, data) catch {};
+                            raw_sse_sample.append(self.allocator, '\n') catch {};
+                        }
                     }
                 }
                 continue;
@@ -1444,11 +1463,34 @@ pub const Agent = struct {
             // how far it got, so the user can distinguish "the server cut
             // us off after a few tokens" from "it never started streaming
             // at all" — both surface as StreamInterrupted today.
-            const detail = std.fmt.allocPrint(
-                self.allocator,
-                "stream ended without finish_reason after {d} chunk(s)",
-                .{chunk_count},
-            ) catch null;
+            //
+            // When chunk_count stayed at 0 BUT we received SOME SSE lines,
+            // the server is speaking a format we don't understand (most
+            // commonly: a profile configured with the wrong `url_style`,
+            // e.g. an OpenAI-compatible relay configured as `anthropic`).
+            // In that case we fold a truncated raw sample into the error
+            // message so the user can SEE what the server actually sent,
+            // instead of staring at an opaque "0 chunk(s)".
+            const sample_truncated = raw_sse_sample.items.len >= max_raw_sse_sample_len;
+            const sample_for_msg: []const u8 = if (raw_sse_sample.items.len > 0)
+                if (sample_truncated)
+                    raw_sse_sample.items[0 .. max_raw_sse_sample_len - 3] ++ "..."
+                else
+                    raw_sse_sample.items
+            else
+                "";
+            const detail: ?[]u8 = if (sample_for_msg.len > 0)
+                std.fmt.allocPrint(
+                    self.allocator,
+                    "stream ended without finish_reason after {d} chunk(s); first server lines: {s}",
+                    .{ chunk_count, sample_for_msg },
+                ) catch null
+            else
+                std.fmt.allocPrint(
+                    self.allocator,
+                    "stream ended without finish_reason after {d} chunk(s)",
+                    .{chunk_count},
+                ) catch null;
             if (detail) |d| {
                 if (self.last_error_message) |prev| self.allocator.free(prev);
                 self.last_error_message = d;
