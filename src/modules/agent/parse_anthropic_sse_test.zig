@@ -289,6 +289,134 @@ test "parse_stream_chunk (anthropic): usage emitted exactly once across multiple
 }
 
 // ============================================================================
+// Anthropic usage handling — make total_tokens match OpenAI's semantic
+// (prompt_tokens + completion_tokens) so llm_history / compaction
+// code that consumes CallResponse.usage gets the same numbers it would
+// from an OpenAI profile.
+// ============================================================================
+
+test "parse_stream_chunk (anthropic): message_delta usage emits total = input + output (strict API shape — no input in message_delta)" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start caches input_tokens=42 (canonical input — strict API).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":42,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta with ONLY output_tokens (strict Anthropic API doesn't
+    // repeat input_tokens here). prompt must stay 42 (from message_start),
+    // total = 42 + 7.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":7}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 42), chunk.?.usage.?.prompt_tokens);
+    try expectEqual(@as(usize, 7), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 49), chunk.?.usage.?.total_tokens);
+}
+
+test "parse_stream_chunk (anthropic): message_delta input_tokens OVERRIDES message_start (some relays send input=0 at message_start then correct value at message_delta)" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start with input_tokens=0 (this relay returns 0 here).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta with the AUTHORITATIVE input_tokens=54 (this relay).
+    // The handler must prefer this over the cached 0 from message_start.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54,"output_tokens":23}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 54), chunk.?.usage.?.prompt_tokens);
+    try expectEqual(@as(usize, 23), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 77), chunk.?.usage.?.total_tokens);
+}
+
+test "parse_stream_chunk (anthropic): message_delta includes cache_creation_input_tokens in total (cache writes ARE billable)" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start: input_tokens=10 (excludes cache_creation).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta: cache_creation_input_tokens=5 (a cache write — billable).
+    // billable total = 10 (input) + 5 (cache_creation) + 8 (output) = 23.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"cache_creation_input_tokens":5,"output_tokens":8}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 15), chunk.?.usage.?.prompt_tokens); // 10 + 5
+    try expectEqual(@as(usize, 8), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 23), chunk.?.usage.?.total_tokens); // 15 + 8
+}
+
+test "parse_stream_chunk (anthropic): cache_read_input_tokens is NOT added to total (cache reads are FREE)" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start: input_tokens=54, cache_read_input_tokens=128 (free read).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":54,"cache_read_input_tokens":128,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta: output_tokens=23.
+    // billable total = 54 (input only — cache_read is FREE) + 0 + 23 = 77.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54,"output_tokens":23}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 54), chunk.?.usage.?.prompt_tokens);
+    try expectEqual(@as(usize, 23), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 77), chunk.?.usage.?.total_tokens);
+}
+
+// ============================================================================
 // Regression test — reproduce the iter-2 SEGV in buildJsonAnthropicRequest
 // (the slice-header 0xAA-poisoning crash seen when an Anthropic chat hits
 // iter 2 after the model emits tool_calls in iter 1). Build the request

@@ -389,11 +389,21 @@ const AnthropicMessage = struct {
 
 const AnthropicThinking = struct {
     type: []const u8 = "enabled",
+    /// Required by Anthropic when `type == "enabled"`. Minimum value
+    /// is 1024 and it must be strictly less than `max_tokens` —
+    /// the call site in `buildJsonAnthropicRequest` derives this from
+    /// the resolved `max_tokens` and falls back to the 1024 floor when
+    /// `max_tokens` is large enough to accommodate it (and forces
+    /// thinking off when `max_tokens < 1025` so we never emit an
+    /// unsatisfiable budget).
+    budget_tokens: usize,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
         try stringify.objectField("type");
         try stringify.write(self.type);
+        try stringify.objectField("budget_tokens");
+        try stringify.write(self.budget_tokens);
         try stringify.endObject();
     }
 };
@@ -463,6 +473,12 @@ const AnthropicRequest = struct {
     tools: ?[]const AnthropicTool = null,
     thinking: ?AnthropicThinking = null,
     temperature: ?f32 = null,
+    /// Top-level system prompt. Anthropic rejects `role: "system"`
+    /// inside `messages` (400s) — system instructions belong here.
+    /// Built by `buildJsonAnthropicRequest` from `params.messages`
+    /// entries with `role == .system`. `null` when no system prompt
+    /// is in scope (the field is omitted entirely from the wire).
+    system: ?[]const u8 = null,
 
     /// Optional metadata block. Currently emits `{"user_id": "..."}`
     /// from `Agent.userIdentifier`. See
@@ -473,6 +489,13 @@ const AnthropicRequest = struct {
         try stringify.beginObject();
         try stringify.objectField("model");
         try stringify.write(self.model);
+        // Anthropic accepts `system` as a plain string or as an array
+        // of content blocks; a string is sufficient for the
+        // `role == .system` join the builder does today.
+        if (self.system) |s| {
+            try stringify.objectField("system");
+            try stringify.write(s);
+        }
         try stringify.objectField("messages");
         try stringify.write(self.messages);
         try stringify.objectField("max_tokens");
@@ -492,8 +515,12 @@ const AnthropicRequest = struct {
         if (self.stream) {
             try stringify.objectField("stream");
             try stringify.write(true);
-            try stringify.objectField("stream_options");
-            try stringify.write(.{ .include_usage = true });
+            // NOTE: do NOT emit `stream_options` here. Anthropic has
+            // no request-side toggle for usage tracking — usage
+            // comes through SSE `message_start` / `message_delta`
+            // events unconditionally. Emitting a `stream_options`
+            // key (a copy-paste leftover from the OpenAI serializer)
+            // would 400 against the strict Anthropic API.
         }
         if (self.metadata) |m| {
             try stringify.objectField("metadata");
@@ -915,18 +942,43 @@ pub const Agent = struct {
         });
 
         const json_messages = try arena_alloc.alloc(AnthropicMessage, params.messages.len);
-        for (params.messages, 0..) |msg, i| {
+        // `params.messages` may contain entries with `role == .system`.
+        // Anthropic rejects `role: "system"` inside `messages`, so we
+        // join system-typed messages into a single top-level
+        // `system` string and DROP them from `json_messages` (don't
+        // count them in the allocation index).
+        //
+        // `json_message_count` is the live write index for
+        // `json_messages`; it can be lower than
+        // `params.messages.len` once system entries are filtered.
+        // `system_text` accumulates the joined system prompt (arena-
+        // backed; no manual free needed because the arena is torn
+        // down by `defer arena.deinit()` at the top of this fn).
+        var json_message_count: usize = 0;
+        var system_text: std.ArrayList(u8) = .empty;
+        for (params.messages) |msg| {
+            if (msg.role == .system) {
+                if (msg.content) |c| {
+                    if (system_text.items.len > 0) {
+                        try system_text.appendSlice(arena_alloc, "\n\n");
+                    }
+                    try system_text.appendSlice(arena_alloc, c);
+                }
+                continue; // skip — already joined into top-level "system"
+            }
             if (msg.role == .assistant and msg.tool_calls != null) {
                 var content_blocks: []AnthropicContentBlock = &.{};
-                // NOTE: content_blocks is stored into json_messages[i].content
-                // below and must stay alive until the whole request has been
-                // serialized by std.json.fmt in this function. It's an
-                // arena allocation — the arena is torn down by the `defer
-                // arena.deinit()` above once this function returns, so it
-                // must NOT be freed early here. (Freeing it early via
-                // arena_alloc.free() would rewind the arena's bump pointer
-                // and let it get silently overwritten by later allocations
-                // in this same function — e.g. the next message's content
+                // NOTE: content_blocks is stored into
+                // json_messages[json_message_count].content below and
+                // must stay alive until the whole request has been
+                // serialized by std.json.fmt in this function. It's
+                // an arena allocation — the arena is torn down by
+                // the `defer arena.deinit()` above once this function
+                // returns, so it must NOT be freed early here.
+                // (Freeing it early via arena_alloc.free() would
+                // rewind the arena's bump pointer and let it get
+                // silently overwritten by later allocations in this
+                // same function — e.g. the next message's content
                 // blocks, or the tools array.)
 
                 if (msg.reasoning_content) |rc| {
@@ -964,7 +1016,7 @@ pub const Agent = struct {
                     };
                 }
 
-                json_messages[i] = .{
+                json_messages[json_message_count] = .{
                     .role = "assistant",
                     .content = .{ .array = content_blocks },
                 };
@@ -978,19 +1030,24 @@ pub const Agent = struct {
                         .content = msg.content orelse "",
                     },
                 };
-                json_messages[i] = .{
+                json_messages[json_message_count] = .{
                     .role = "user",
                     .content = .{ .array = tool_content },
                 };
             } else {
-                // User / system messages (or any role whose
-                // `content_parts` carries multimodal content, e.g. an
-                // attached image). We build an `AnthropicContentBlock`
-                // array so the image survives onto the wire —
-                // previously `buildJsonAnthropicRequest` only read
-                // `msg.content` and silently dropped `content_parts`,
-                // which is why `url_style: "anthropic"` profiles
-                // couldn't see user-attached images.
+                // User messages (or any role whose `content_parts`
+                // carries multimodal content, e.g. an attached
+                // image). We build an `AnthropicContentBlock` array
+                // so the image survives onto the wire — previously
+                // `buildJsonAnthropicRequest` only read `msg.content`
+                // and silently dropped `content_parts`, which is why
+                // `url_style: "anthropic"` profiles couldn't see
+                // user-attached images.
+                //
+                // NOTE: system-typed messages are filtered out at
+                // the top of this loop, so this branch only sees
+                // user / assistant / tool roles here (the `tool`
+                // branch above already handled tool).
                 //
                 // Anthropic API accepts `data:image/<mime>;base64,...`
                 // URLs as `source: { type: "url", url: "data:..." }`,
@@ -1045,17 +1102,18 @@ pub const Agent = struct {
                             non_assistant_blocks[j].text = "";
                         }
                     }
-                    json_messages[i] = .{
+                    json_messages[json_message_count] = .{
                         .role = msg.role.to_str(),
                         .content = .{ .array = non_assistant_blocks },
                     };
                 } else {
-                    json_messages[i] = .{
+                    json_messages[json_message_count] = .{
                         .role = msg.role.to_str(),
                         .content = .{ .single = .{ .text = msg.content orelse "" } },
                     };
                 }
             }
+            json_message_count += 1;
         }
 
         var json_tools: ?[]AnthropicTool = null;
@@ -1079,14 +1137,72 @@ pub const Agent = struct {
             json_tools = tool_slice;
         }
 
+        const resolved_max_tokens: usize = params.max_tokens orelse self.maxTokens;
+
+        // Anthropic requires `budget_tokens` to be >= 1024 AND
+        // strictly less than `max_tokens`. The simpler 50%-of-max
+        // heuristic wins for typical `max_tokens` values; clamp the
+        // upper bound to `max_tokens - 1` so we never emit an
+        // unsatisfiable request.
+        //
+        // For `max_tokens < 1025` the floor (1024) collides with the
+        // strict-less-than constraint (budget must be < max_tokens),
+        // so Anthropic literally cannot accept a thinking-enabled
+        // request with that budget. Rather than silently emitting
+        // an invalid request, force thinking off for this call and
+        // log a warning — the alternative (clamps to 0, or to
+        // some value >= max_tokens) would either be a 400 from the
+        // server or violate the Anthropic invariant.
+        const thinking_on: bool = blk: {
+            if (!self.thinkingEnabled) break :blk false;
+            if (resolved_max_tokens < 1025) {
+                self.log_fmt(.warn, "buildJsonAnthropicRequest: thinkingEnabled=true but max_tokens={d} (<1025) — Anthropic requires budget_tokens >= 1024 AND < max_tokens, so thinking is forced off for this request. Raise max_tokens to >=1025 to re-enable.", .{resolved_max_tokens});
+                break :blk false;
+            }
+            break :blk true;
+        };
+
+        const thinking_budget: usize = blk: {
+            if (!thinking_on) break :blk 0;
+            // 50% of max_tokens, with the 1024 floor and the
+            // (max_tokens - 1) ceiling. We use `-|` saturating
+            // subtraction: when max_tokens == 1025, the
+            // `max_tokens - 1` ceiling is 1024, and the floor is
+            // also 1024, so the result is exactly 1024 (which is
+            // valid: 1024 < 1025).
+            const half = resolved_max_tokens / 2;
+            const floor_constrained = if (half < 1024) 1024 else half;
+            const ceiling = resolved_max_tokens -| 1;
+            break :blk if (floor_constrained < ceiling) floor_constrained else ceiling;
+        };
+
+        // Anthropic requires `temperature` to be omitted (or exactly
+        // 1) when `thinking.type == "enabled"`. Drop the caller's
+        // value rather than overriding it with 1 — Anthropic's
+        // default under thinking is already 1, so omitting doesn't
+        // change server behavior. Log at .debug so callers can see
+        // WHY their temperature was ignored without this being a
+        // silent behavior change.
+        if (thinking_on) {
+            if (params.temperature) |t| {
+                if (t != 1.0) {
+                    self.log_fmt(.debug, "buildJsonAnthropicRequest: dropping temperature={d} because thinkingEnabled=true (Anthropic requires temperature omitted or 1 when thinking is enabled)", .{t});
+                }
+            }
+        }
+
         const json_request = AnthropicRequest{
             .model = self.model,
-            .messages = json_messages,
-            .max_tokens = params.max_tokens orelse self.maxTokens,
+            .messages = json_messages[0..json_message_count],
+            .max_tokens = resolved_max_tokens,
             .stream = stream,
             .tools = json_tools,
-            .thinking = if (self.thinkingEnabled) .{ .type = "enabled" } else null,
-            .temperature = params.temperature,
+            .thinking = if (thinking_on) .{
+                .type = "enabled",
+                .budget_tokens = thinking_budget,
+            } else null,
+            .temperature = if (thinking_on) null else params.temperature,
+            .system = if (system_text.items.len > 0) system_text.items else null,
             .metadata = if (self.userIdentifier.len > 0)
                 .{ .user_id = self.userIdentifier }
             else
@@ -1478,16 +1594,58 @@ pub const Agent = struct {
                     chunk.finish_reason = FinishReason.from_str(map_anthropic_stop_reason(sr.string));
                 }
             }
+            // Anthropic's `message_delta.usage` carries the AUTHORITATIVE
+            // token counts for the call. The strict Anthropic API sends
+            // `output_tokens` + `cache_creation_input_tokens` here
+            // (input_tokens was already cached from `message_start`).
+            //
+            // Some relays (e.g. api.minimax.io/anthropic) ALSO send
+            // `input_tokens` here — and may return 0 at `message_start`
+            // before delivering the real value here. Always prefer the
+            // `message_delta` value when present, falling back to the
+            // cached `message_start` value (via `_anthropic_input_tokens`)
+            // otherwise. This makes the parser robust to BOTH the strict
+            // API shape and the relay quirk without code branches.
+            //
+            // Billable total = input_tokens + cache_creation_input_tokens
+            // + output_tokens. Cache reads (`cache_read_input_tokens`)
+            // are FREE — they don't add to billing — so they're
+            // deliberately NOT included in `total_tokens`. This matches
+            // OpenAI's `prompt_tokens` semantic (which includes cached
+            // tokens at full count for the `prompt_tokens_details` view
+            // but not for the billable total).
+            //
+            // We do NOT override `self._anthropic_input_tokens` here
+            // even when message_delta supplies input_tokens — that
+            // cached field is used by the first-delta usage chunk above
+            // and would race with this later message_delta usage chunk
+            // for the aggregator if mutated. The fresh value wins for
+            // the final message_delta usage emission, which is what
+            // CallResponse.usage actually persists (the aggregator's
+            // StreamingAggregator.process_chunk uses the LAST seen usage
+            // chunk for `total_tokens` only when total > 0).
             if (root.object.get("usage")) |usage_val| {
                 if (usage_val == .object) {
+                    var input_tokens: u32 = self._anthropic_input_tokens;
+                    var cache_creation_tokens: u32 = 0;
+                    var output_tokens: u32 = 0;
+
+                    if (usage_val.object.get("input_tokens")) |it| {
+                        if (it == .integer) input_tokens = @intCast(it.integer);
+                    }
+                    if (usage_val.object.get("cache_creation_input_tokens")) |cc| {
+                        if (cc == .integer) cache_creation_tokens = @intCast(cc.integer);
+                    }
                     if (usage_val.object.get("output_tokens")) |ot| {
-                        if (ot == .integer) {
-                            chunk.usage = .{
-                                .prompt_tokens = self._anthropic_input_tokens,
-                                .completion_tokens = @intCast(ot.integer),
-                                .total_tokens = self._anthropic_input_tokens + @as(u32, @intCast(ot.integer)),
-                            };
-                        }
+                        if (ot == .integer) output_tokens = @intCast(ot.integer);
+                    }
+
+                    if (output_tokens > 0) {
+                        chunk.usage = .{
+                            .prompt_tokens = input_tokens + cache_creation_tokens,
+                            .completion_tokens = output_tokens,
+                            .total_tokens = input_tokens + cache_creation_tokens + output_tokens,
+                        };
                     }
                 }
             }

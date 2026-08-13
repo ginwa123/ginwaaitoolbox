@@ -14,6 +14,10 @@ test {
     // Agent request-body userIdentifier tests
     _ = @import("agent_request_user_id_test.zig");
 
+    // Anthropic request-body shape tests (system/top-level, budget_tokens,
+// temperature/thinking conflict, stream_options removal)
+    _ = @import("anthropic_request_test.zig");
+
     // Prompt builder tests
     _ = @import("prompts_test.zig");
 
