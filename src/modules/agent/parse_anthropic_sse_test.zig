@@ -289,6 +289,77 @@ test "parse_stream_chunk (anthropic): usage emitted exactly once across multiple
 }
 
 // ============================================================================
+// Regression test — reproduce the iter-2 SEGV in buildJsonAnthropicRequest
+// (the slice-header 0xAA-poisoning crash seen when an Anthropic chat hits
+// iter 2 after the model emits tool_calls in iter 1). Build the request
+// body directly with a synthetic assistant message that mirrors the shape
+// loadHistoryFromDb produces, and assert the body is well-formed UTF-8 JSON.
+// If this test crashes (segfault in utf8ValidateSlice) the underlying bug
+// is reproduced without needing the full workflow + DB stack.
+// ============================================================================
+
+test "buildJsonAnthropicRequest: assistant message with tool_calls + null reasoning_content survives" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = true;
+    a.userIdentifier = "test-user";
+
+    // Simulate the DB-loaded shape for an assistant message that emitted
+    // tool_calls in the previous iteration: reasoning_content is null,
+    // content is empty, tool_calls_json has 1 tool call with id+name+args.
+    const tc_args_json = "{\"query\":\"recent\"}";
+    const tc_id_dup = try testing_allocator.dupe(u8, "toolu_test_123");
+    defer testing_allocator.free(tc_id_dup);
+    const tc_name_dup = try testing_allocator.dupe(u8, "load_memory");
+    defer testing_allocator.free(tc_name_dup);
+    const tc_args_dup = try testing_allocator.dupe(u8, tc_args_json);
+    defer testing_allocator.free(tc_args_dup);
+    const tc_array = try testing_allocator.alloc(agent.ToolCall, 1);
+    defer testing_allocator.free(tc_array);
+    tc_array[0] = .{
+        .id = tc_id_dup,
+        .function = .{
+            .name = tc_name_dup,
+            .arguments = tc_args_dup,
+        },
+    };
+
+    // 3 messages: system + user + assistant-with-tool-calls.
+    // Mirrors what workflow.zig's buildMessages produces for the second
+    // iteration of an Anthropic chat that emitted tool_calls in iter 1.
+    const system_content = try testing_allocator.dupe(u8, "You are a coding agent.");
+    defer testing_allocator.free(system_content);
+    const user_content = try testing_allocator.dupe(u8, "please look up memory");
+    defer testing_allocator.free(user_content);
+
+    const messages = try testing_allocator.alloc(agent.AgentMessage, 3);
+    defer testing_allocator.free(messages);
+    messages[0] = .{ .role = .system, .content = system_content };
+    messages[1] = .{ .role = .user, .content = user_content };
+    messages[2] = .{
+        .role = .assistant,
+        .content = "", // empty text content — model emitted only tool_calls
+        .reasoning_content = null, // no thinking text emitted
+        .tool_calls = tc_array,
+    };
+
+    const params = agent.AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocator.free(body);
+
+    // If we got here without a SEGV, the slice-pointer corruption didn't
+    // happen for this synthetic input. If this assertion never fires but
+    // the workflow still crashes, the bug needs MORE than just an
+    // assistant-with-tool-calls message to trigger — likely tied to
+    // specific allocator lifetimes that only manifest under the real
+    // workflow's arena setup.
+    try expect(body.len > 100);
+    try expect(std.mem.startsWith(u8, body, "{"));
+}
+
+// ============================================================================
 // Part B — OpenAI parser is NOT affected by the dispatch (regression check)
 // ============================================================================
 

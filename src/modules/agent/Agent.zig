@@ -873,11 +873,31 @@ pub const Agent = struct {
         for (params.messages, 0..) |msg, i| {
             if (msg.role == .assistant and msg.tool_calls != null) {
                 var content_blocks: []AnthropicContentBlock = &.{};
-                defer arena_alloc.free(content_blocks);
+                // NOTE: content_blocks is stored into json_messages[i].content
+                // below and must stay alive until the whole request has been
+                // serialized by std.json.fmt in this function. It's an
+                // arena allocation — the arena is torn down by the `defer
+                // arena.deinit()` above once this function returns, so it
+                // must NOT be freed early here. (Freeing it early via
+                // arena_alloc.free() would rewind the arena's bump pointer
+                // and let it get silently overwritten by later allocations
+                // in this same function — e.g. the next message's content
+                // blocks, or the tools array.)
 
                 if (msg.reasoning_content) |rc| {
                     content_blocks = try arena_alloc.realloc(content_blocks, content_blocks.len + 1);
-                    content_blocks[content_blocks.len - 1] = .{ .text = rc };
+                    // CRITICAL: explicitly set ALL three optional fields. In
+                    // Zig 0.16, `.{ .text = rc }` only initializes .text — the
+                    // other fields stay as whatever was in the arena's
+                    // uninitialized memory (0xAA debug poison from previous
+                    // occupants), and `AnthropicContentBlock.jsonStringify`'s
+                    // `if (self.text)` reads the poisoned bytes as a slice
+                    // pointer → SEGV in utf8ValidateSlice.
+                    content_blocks[content_blocks.len - 1] = .{
+                        .text = rc,
+                        .tool_use = null,
+                        .tool_result = null,
+                    };
                 }
 
                 for (msg.tool_calls.?) |tc| {
@@ -889,11 +909,13 @@ pub const Agent = struct {
                     };
                     content_blocks = try arena_alloc.realloc(content_blocks, content_blocks.len + 1);
                     content_blocks[content_blocks.len - 1] = .{
+                        .text = null,
                         .tool_use = .{
                             .id = tc.id,
                             .name = tc.function.name,
                             .input = input_value,
                         },
+                        .tool_result = null,
                     };
                 }
 
@@ -902,8 +924,10 @@ pub const Agent = struct {
                     .content = .{ .array = content_blocks },
                 };
             } else if (msg.role == .tool) {
-                var tool_content: []AnthropicContentBlock = try arena_alloc.alloc(AnthropicContentBlock, 1);
+                const tool_content = try arena_alloc.alloc(AnthropicContentBlock, 1);
                 tool_content[0] = .{
+                    .text = null,
+                    .tool_use = null,
                     .tool_result = .{
                         .tool_use_id = msg.tool_call_id orelse "",
                         .content = msg.content orelse "",
