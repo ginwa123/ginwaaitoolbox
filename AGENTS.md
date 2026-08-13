@@ -54,3 +54,7 @@ Before exploring or making changes in an unfamiliar or large codebase, use the `
 
 **Why:** Graphify combines Tree-sitter static analysis with LLM-driven semantic extraction to produce an interactive `graph.html`, a queryable `graph.json`, and a `GRAPH_REPORT.md` audit report in `graphify-out/`. It only sends semantic descriptions to the AI model — never raw source code.
 
+
+## Recent changes
+
+- **Anthropic profile SSE parsing + raw-error surfacing** (2026-08-13): `src/modules/agent/Agent.zig` now parses Anthropic's `/v1/messages` SSE events (`message_start` / `content_block_delta` / `content_block_start` / `message_delta` / `message_stop`) and surfaces raw server output in the retry-log error message when parsing fails. 3 commits on `worktree/anthropic-sse-parsing`: `4a783794` (raw SSE sample), `c137ebc9` (Anthropic SSE parser + UrlStyle dispatch), `c4d6853e` (also capture non-SSE lines). Plan: `docs/superpowers/plans/2026-08-13-anthropic-profile-sse-parsing.md`.
