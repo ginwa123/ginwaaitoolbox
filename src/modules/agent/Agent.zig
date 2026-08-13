@@ -1624,15 +1624,28 @@ pub const Agent = struct {
                         aggregator.process_chunk(chunk) catch {};
                     } else {
                         self.log_fmt(.err, "[STREAM] parse_stream_chunk returned null for: {s}", .{data});
-                        // Capture the raw SSE line for the final-error message —
-                        // only while chunk_count == 0 (i.e. the server's first lines
-                        // are still unparsed). Once we successfully parse ANY chunk
-                        // we know the format is one we understand, so additional raw
-                        // samples would just be noise.
+                        // Capture the raw SSE data line for the final-error
+                        // message — only while chunk_count == 0 (i.e. the
+                        // server's first lines are still unparsed). Once we
+                        // successfully parse ANY chunk we know the format
+                        // is one we understand, so additional raw samples
+                        // would just be noise.
                         if (chunk_count == 0 and raw_sse_sample.items.len < max_raw_sse_sample_len) {
                             raw_sse_sample.appendSlice(self.allocator, data) catch {};
                             raw_sse_sample.append(self.allocator, '\n') catch {};
                         }
+                    }
+                } else {
+                    // parse_sse_line returned null: this line isn't a `data: …`
+                    // payload. Could be `event: …` (Anthropic) or `id:`/`retry:`
+                    // (SSE boilerplate) or — more importantly for diagnosis —
+                    // a non-SSE response the server returned anyway (e.g. a
+                    // 404 HTML body when the URL was wrong). Capture the full
+                    // raw line so the final error message reveals the actual
+                    // server output, not just "0 chunk(s)".
+                    if (chunk_count == 0 and raw_sse_sample.items.len < max_raw_sse_sample_len) {
+                        raw_sse_sample.appendSlice(self.allocator, line) catch {};
+                        raw_sse_sample.append(self.allocator, '\n') catch {};
                     }
                 }
                 continue;
