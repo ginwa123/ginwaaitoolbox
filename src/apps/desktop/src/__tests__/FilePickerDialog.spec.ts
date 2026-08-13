@@ -256,8 +256,12 @@ describe('FilePickerDialog — selection (folder mode)', () => {
     vi.restoreAllMocks()
   })
 
-  it('Select button is disabled when nothing is selected', async () => {
-    wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder' })
+  // RENAMED + initialPath changed from '/home/user' to '/' to assert the
+  // "disabled at root" invariant. Previously: "Select button is disabled
+  // when nothing is selected". Plan:
+  // docs/superpowers/plans/2026-08-13-folder-picker-select-button-current-folder.md
+  it('Select button is disabled at root when nothing is selected', async () => {
+    wrapper = mountDialog({ initialPath: '/', mode: 'folder' })
     await wrapper.setProps({ modelValue: true })
     await flushPromises()
     const btn = findInDom('[data-testid="file-picker-select"]') as HTMLButtonElement | null
@@ -302,13 +306,26 @@ describe('FilePickerDialog — selection (folder mode)', () => {
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
   })
 
+  // UPDATED (plan: 2026-08-13-folder-picker-select-button-current-folder.md).
+  // The footer now reflects effectiveSelection (currentPath fallback), so
+  // at /home/user the footer shows the current folder even before any
+  // click. The new contract — clicking a file in folder mode does NOT
+  // select it — is unchanged: handleItemClick leaves selectedPath empty
+  // for non-expandable items in folder mode, so effectiveSelection stays
+  // on currentPath. The test now asserts the pre-click fallback (current
+  // folder shown) then the post-click invariant (footer still shows
+  // current folder, since the file click was a no-op).
   it('clicking a file in folder mode does NOT select it (mode restricts)', async () => {
     wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder' })
     await wrapper.setProps({ modelValue: true })
     await flushPromises()
+    // Pre-click: the footer shows the current folder via the fallback.
+    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('/home/user')
     clickInDom('[data-testid="file-picker-item-/home/user/readme.md"]')
     await flushPromises()
-    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('(none)')
+    // Post-click: file click is a no-op in folder mode, so the footer
+    // still reflects currentPath (no explicit click selected the file).
+    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('/home/user')
   })
 })
 
@@ -871,5 +888,139 @@ describe('FilePickerDialog — address bar (type a path)', () => {
     // Still at /home/user — the user/notes child is NOT in the DOM.
     expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).toBeNull()
     expect(findInDom('[data-testid="file-picker-crumb-1"]')?.textContent).toBe('user')
+  })
+})
+
+// ─── Select button — current folder fallback (folder mode) ─────────────────
+//
+// Plan: docs/superpowers/plans/2026-08-13-folder-picker-select-button-current-folder.md
+//
+// The Select button is enabled whenever the user has a meaningful folder
+// in scope — either because they clicked a folder in the content pane
+// (explicit selectedPath) OR because they navigated to a folder via the
+// tree / breadcrumb / Up / Backspace / address bar (currentPath). The
+// root path '/' is treated as "no selection" and does NOT enable the
+// button. The footer "Selected:" shows what will be emitted, and a tiny
+// "← current folder" hint appears when the fallback path is in use.
+describe('FilePickerDialog — Select when current folder is open (folder mode)', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  it('Select button is DISABLED at root when nothing is clicked', async () => {
+    wrapper = mountDialog({ initialPath: '/', mode: 'folder' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    const btn = findInDom('[data-testid="file-picker-select"]') as HTMLButtonElement | null
+    expect(btn?.disabled).toBe(true)
+  })
+
+  it('Select button is ENABLED when the user navigates into a non-root folder (no click)', async () => {
+    // The fix: navigateTo() resets selectedPath but the new effectiveSelection
+    // falls back to currentPath. The button is enabled because /home/user is
+    // a real folder, even though the user never clicked a row in the content pane.
+    wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    const btn = findInDom('[data-testid="file-picker-select"]') as HTMLButtonElement | null
+    expect(btn?.disabled).toBe(false)
+    // The footer reflects the fallback (currentPath).
+    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('/home/user')
+    // The hint is visible because the fallback is in use (no explicit click).
+    expect(findInDom('[data-testid="file-picker-selected-hint"]')).not.toBeNull()
+  })
+
+  it('Select button STAYS enabled after navigating Up via the Up button', async () => {
+    // Mirrors the bug report: user opens picker at /home/user, clicks Up,
+    // lands at /home. The button should still be enabled — /home is a real
+    // folder they just navigated to.
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-up"]')
+    await flushPromises()
+    const btn = findInDom('[data-testid="file-picker-select"]') as HTMLButtonElement | null
+    expect(btn?.disabled).toBe(false)
+    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('/home')
+  })
+
+  it('Select button is DISABLED after navigating to root via Up', async () => {
+    // D3: '/' is treated as "no selection". The fallback is gated on
+    // currentPath !== '/'.
+    const loadItems = makeLoadItems()
+    wrapper = mountDialog({ initialPath: '/home', mode: 'folder', loadItems })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-up"]')
+    await flushPromises()
+    const btn = findInDom('[data-testid="file-picker-select"]') as HTMLButtonElement | null
+    expect(btn?.disabled).toBe(true)
+    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('(none)')
+  })
+
+  it('clicking Select with the fallback emits currentPath (no explicit click)', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder', closeOnSelect: true })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-select"]')
+    await flushPromises()
+    expect(wrapper.emitted('select')?.[0]).toEqual(['/home/user'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
+  })
+
+  it('explicit click on a folder OVERRIDES the fallback in the footer', async () => {
+    // D2: selectedPath (explicit) wins over currentPath (fallback). User
+    // navigates to /home/user, then clicks /home/user/docs in the content
+    // pane. The footer should show /home/user/docs, NOT /home/user.
+    wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-item-/home/user/docs"]')
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-selected-path"]')?.textContent).toBe('/home/user/docs')
+    // The hint is HIDDEN because the explicit click is in play.
+    expect(findInDom('[data-testid="file-picker-selected-hint"]')).toBeNull()
+  })
+
+  it('file-mode: Select is still disabled at a non-root folder (no fallback in file mode)', async () => {
+    // D1: only folder mode gets the fallback. In file mode, currentPath is a
+    // directory, not a selectable file — Select must wait for an explicit
+    // file click.
+    wrapper = mountDialog({ initialPath: '/home/user', mode: 'file' })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    const btn = findInDom('[data-testid="file-picker-select"]') as HTMLButtonElement | null
+    expect(btn?.disabled).toBe(true)
+  })
+
+  it('Enter key on the dialog (no highlight) emits currentPath via the fallback', async () => {
+    // R10: pressing Enter without first pressing ArrowDown calls
+    // handleSelect() in the `else if (canSelect.value)` branch. With the
+    // fix, canSelect is true at /home/user, and Enter emits /home/user.
+    //
+    // The dialog auto-focuses the search input on open
+    // (FilePickerDialog.vue:613 `searchInput.value?.focus()`). While the
+    // search input is focused, Enter submits the first match (line 500-507)
+    // — i.e. it behaves like search-Enter, NOT dialog-Enter. To exercise
+    // the dialog-Enter branch we must move focus elsewhere first (blurring
+    // the search input). The plan covers R10 conceptually; the test must
+    // mirror the actual code path.
+    wrapper = mountDialog({ initialPath: '/home/user', mode: 'folder', closeOnSelect: true })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    // Blur the search input so the dialog-level Enter handler fires.
+    const search = findInDom('[data-testid="file-picker-search"]') as HTMLInputElement
+    search?.blur()
+    await flushPromises()
+    keydownInDom('Enter')
+    await flushPromises()
+    expect(wrapper.emitted('select')?.[0]).toEqual(['/home/user'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
   })
 })
