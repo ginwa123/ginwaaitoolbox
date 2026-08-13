@@ -706,11 +706,23 @@ pub fn build(b: *std.Build) void {
     // embedded/ directory is populated with the latest assets.
     desktop_exe.step.dependOn(&codegen.step);
 
-    // `zig build nalar-desktop` alias — depends on the install step (which
-    // already includes desktop_exe via b.installArtifact above), so the
-    // binary ends up in zig-out/bin/.
-    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary");
+    // `zig build nalar-desktop` alias — depends on:
+    //   - the install step (which includes `nalar` via b.installArtifact
+    //     above, so the nalar service binary that nalar-desktop would
+    //     auto-spawn ends up in zig-out/bin/)
+    //   - desktop_install (the nalar-desktop binary itself, captured
+    //     separately because adding b.installArtifact(desktop_exe)
+    //     directly to getInstallStep() would put it in the default
+    //     `zig build` install path too — the comment at desktop_install
+    //     explains why we don't want that).
+    // Without this, `zig build nalar-desktop` only produces the `nalar`
+    // binary — the desktop binary is skipped because it's only attached
+    // to `build_all_step`. CI's "Verify desktop + service binaries (Linux)"
+    // step checks both exist after `zig build nalar-desktop`, so this
+    // would fail with "✗ zig-out/bin/nalar-desktop missing".
+    const build_nalar_desktop = b.step("nalar-desktop", "Build the nalar-desktop binary (and the nalar service binary it auto-spawns)");
     build_nalar_desktop.dependOn(b.getInstallStep());
+    build_nalar_desktop.dependOn(&desktop_install.step);
 
     const run_desktop = b.step("run:desktop-app", "Run the nalar desktop wrapper");
     const run_desktop_cmd = b.addRunArtifact(desktop_exe);
