@@ -27,6 +27,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
     _ = @import("http_handlers/task_create_description_test.zig");  // Migration 062 description in create path
+    _ = @import("http_handlers/task_create_test.zig");              // kanban task name = session name (plan 2026-08-13)
     _ = @import("http_handlers/tags_validation.zig");                  // Migration 067 tags validation helper (Task 7) — inline tests in the source file
     _ = @import("http_handlers/task_update_routines_test.zig");
     _ = @import("http_handlers/routines_run_test.zig");

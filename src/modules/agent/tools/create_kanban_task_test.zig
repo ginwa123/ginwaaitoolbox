@@ -891,6 +891,69 @@ test "executeCreateKanbanTaskToString writes both unattended and profile in sing
     try testing.expectEqualStrings("my-profile", profile);
 }
 
+// ─── Kanban task name = session name (plan: 2026-08-13-kanban-task-session-name-match.md) ──
+//
+// Pre-fix, the tool INSERT OR IGNORE INTO sessions keyed by task_id
+// bound `name = task_id` (the literal id like "task_1786626864861"),
+// while the kanban card showed the user-facing title. The sidebar
+// (ChatsList / session_name) and the chat header (ChatView.chatName)
+// read sessions.name and therefore displayed a different string than
+// the kanban card. Post-fix the bind is `trimmed_name` so all three
+// views show the same string the user typed.
+//
+// Behavioural regression: assert SELECT name FROM sessions WHERE id = task_id
+// returns the trimmed user-facing title in both the unattended-only
+// and profile-only code paths.
+
+test "executeCreateKanbanTaskToString persists sessions.name == trimmed task name (unattended)" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "workspace item task nama and session name",
+        .is_auto_retry_until_stop = "1",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT name FROM sessions WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    // Pre-fix this returned task_id (the literal task id). Post-fix it
+    // must equal the trimmed user-facing title.
+    try testing.expectEqualStrings("workspace item task nama and session name", stored);
+}
+
+test "executeCreateKanbanTaskToString persists sessions.name == trimmed task name (profile)" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        // Leading/trailing whitespace; the tool trims before INSERT
+        // (see executeCreateKanbanTaskToString line 463-466), so the
+        // sessions.name must be the trimmed value.
+        .name = "   my chatty task   ",
+        .selected_profile_model = "fast-model",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const stored = try readColumn(alloc, &s.db,
+        "SELECT name FROM sessions WHERE id = ?",
+        &.{task_id});
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("my chatty task", stored);
+}
+
 test "executeCreateKanbanTaskToString rejects malformed tags" {
     const alloc = testing.allocator;
     var s = try setupDb();
