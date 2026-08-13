@@ -360,6 +360,203 @@ test "buildJsonAnthropicRequest: assistant message with tool_calls + null reason
 }
 
 // ============================================================================
+// Part C — Anthropic request body preserves `image_url` content_parts
+// (smoke test 2026-08-13: "i cannot send image" with profile `url_style:
+// "anthropic"`. Symptom: model says "Sepertinya belum ada gambar yang
+// masuk di percakapan ini — saya hanya melihat pesan teks saja" while
+// the image is correctly stored in `llm_history.image_urls` and is
+// displayed in the frontend UI.
+// Root cause: `buildJsonAnthropicRequest` only emits `content` as a
+// single-text string OR content_blocks (for assistant tool_use). It
+// never reads `msg.content_parts`, so user-attached images are silently
+// dropped before the wire.
+// Fix: when `msg.content_parts` is set, build `AnthropicContentBlock`
+// entries for each part — `text` → `{type:"text", text:...}` and
+// `image_url` → `{type:"image", source:{type:"url", url:"data:..."}}`
+// (Anthropic accepts the OpenAI-flavored `data:image/...;base64,...`
+// URL via its `source.url` field; this matches what every OpenAI-
+// compatible Anthropic relay like api.minimax.io/anthropic expects).
+// ============================================================================
+
+test "buildJsonAnthropicRequest: user message with image content_parts preserves the image URL" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = false;
+    a.userIdentifier = "test-user";
+
+    // Synthetic data: text + 1 image, mirroring what
+    // `transformLLMHistoryToAgentMessage` produces from a DB row with
+    // `image_urls` populated.
+    const text_dup = try testing_allocator.dupe(u8, "ini gambar apa ?");
+    defer testing_allocator.free(text_dup);
+    const url_dup = try testing_allocator.dupe(
+        u8,
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    );
+    defer testing_allocator.free(url_dup);
+
+    const parts = try testing_allocator.alloc(agent.ContentPart, 2);
+    defer testing_allocator.free(parts);
+    parts[0] = .{
+        .part_type = "text",
+        .text = text_dup,
+        .image_url = null,
+    };
+    parts[1] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{ .url = url_dup, .detail = null },
+    };
+
+    const messages = try testing_allocator.alloc(agent.AgentMessage, 2);
+    defer testing_allocator.free(messages);
+    messages[0] = .{ .role = .system, .content = "You are a helpful assistant." };
+    messages[1] = .{
+        .role = .user,
+        .content = null, // text lives in content_parts[0]
+        .content_parts = parts,
+    };
+
+    const params = agent.AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocator.free(body);
+
+    // The body MUST include the user-attached image (otherwise the LLM
+    // — and `api.minimax.io/anthropic` — sees an empty user message and
+    // replies "i don't see an image"). Before the fix, the only
+    // `"type"` strings in the body are `text` / `tool_use` /
+    // `tool_result`; the image was silently dropped.
+    try expect(std.mem.indexOf(u8, body, "\"type\":\"image\"") != null);
+    try expect(std.mem.indexOf(u8, body, url_dup) != null);
+    try expect(std.mem.indexOf(u8, body, text_dup) != null);
+
+    // Sanity: the body's still valid JSON with the user message
+    // emitted as `role: "user"`.
+    try expect(std.mem.startsWith(u8, body, "{"));
+    try expect(std.mem.indexOf(u8, body, "\"role\":\"user\"") != null);
+}
+
+test "buildJsonAnthropicRequest: user message with ONLY image (no text) is preserved" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = false;
+
+    const url_dup = try testing_allocator.dupe(
+        u8,
+        "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD",
+    );
+    defer testing_allocator.free(url_dup);
+
+    const parts = try testing_allocator.alloc(agent.ContentPart, 1);
+    defer testing_allocator.free(parts);
+    parts[0] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{ .url = url_dup, .detail = null },
+    };
+
+    const messages = try testing_allocator.alloc(agent.AgentMessage, 2);
+    defer testing_allocator.free(messages);
+    messages[0] = .{ .role = .system, .content = "Helper." };
+    messages[1] = .{
+        .role = .user,
+        .content = null,
+        .content_parts = parts,
+    };
+
+    const params = agent.AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocator.free(body);
+
+    try expect(std.mem.indexOf(u8, body, "\"type\":\"image\"") != null);
+    try expect(std.mem.indexOf(u8, body, url_dup) != null);
+}
+
+test "buildJsonAnthropicRequest: user message with plain text (no image) still emits single-text content (regression)" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = false;
+
+    const content_dup = try testing_allocator.dupe(u8, "halo dunia");
+    defer testing_allocator.free(content_dup);
+
+    const messages = try testing_allocator.alloc(agent.AgentMessage, 2);
+    defer testing_allocator.free(messages);
+    messages[0] = .{ .role = .system, .content = "Helper." };
+    messages[1] = .{
+        .role = .user,
+        .content = content_dup,
+        .content_parts = null,
+    };
+
+    const params = agent.AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocator.free(body);
+
+    // No images: `content` MUST serialize as a top-level string (the
+    // legacy shape Anthropic accepts), not as an array. We assert that
+    // by checking the substring `"content":"halo dunia"` is in the
+    // body. (It would be `"content":["text:..."]` if we'd broken the
+    // backwards-compat path.)
+    try expect(std.mem.indexOf(u8, body, "\"content\":\"halo dunia\"") != null);
+    try expect(std.mem.indexOf(u8, body, "\"type\":\"image\"") == null);
+}
+
+test "buildJsonAnthropicRequest: image content uses Anthropic-native source.url wrapper" {
+    // The OpenAI wire format puts the data URL straight under
+    // `image_url: { url: "data:..." }`; Anthropic wraps it under
+    // `source: { type: "url", url: "data:..." }` inside an
+    // `image`-typed content block. This test pins that exact shape
+    // so a future refactor can't accidentally emit OpenAI-style
+    // blocks onto Anthropic.
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+
+    const url_dup = try testing_allocator.dupe(u8, "data:image/png;base64,abc123");
+    defer testing_allocator.free(url_dup);
+    const parts = try testing_allocator.alloc(agent.ContentPart, 1);
+    defer testing_allocator.free(parts);
+    parts[0] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{ .url = url_dup, .detail = null },
+    };
+
+    const messages = try testing_allocator.alloc(agent.AgentMessage, 1);
+    defer testing_allocator.free(messages);
+    messages[0] = .{
+        .role = .user,
+        .content = null,
+        .content_parts = parts,
+    };
+
+    const params = agent.AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocator.free(body);
+
+    // The Anthropic-native wrapper: `"image"` block + `"source"` with
+    // `"type":"url"`. Confirms our serializer emits the right shape
+    // (vs. accidentally emitting the OpenAI-flat `"image_url":...`
+    // which Anthropic would reject with a 400).
+    try expect(std.mem.indexOf(u8, body, "\"type\":\"image\"") != null);
+    try expect(std.mem.indexOf(u8, body, "\"source\":{") != null);
+    try expect(std.mem.indexOf(u8, body, "\"type\":\"url\"") != null);
+    try expect(std.mem.indexOf(u8, body, "\"url\":\"data:image/png;base64,abc123\"") != null);
+
+    // And the OpenAI-style flat shape MUST NOT appear.
+    try expect(std.mem.indexOf(u8, body, "\"image_url\":") == null);
+    try expect(std.mem.indexOf(u8, body, "\"type\":\"image_url\"") == null);
+}
+
+// ============================================================================
 // Part B — OpenAI parser is NOT affected by the dispatch (regression check)
 // ============================================================================
 
