@@ -2064,6 +2064,16 @@ pub const Agent = struct {
         };
 
         // 12. Cost tracking (matches Agent.zig's pricing).
+        // NOTE (2026-08-13, fix-anthropic-total-tokens plan): this
+        // formula treats `prompt_tokens` as if it were billed at the
+        // full input rate. After Task 2 of that plan, Anthropic
+        // `prompt_tokens` now ALSO includes `cache_read_input_tokens`
+        // (billed at ~0.1× input rate) and `cache_creation_input_tokens`
+        // (billed at ~1.25× input rate), so this formula overcharges
+        // Anthropic cached-read calls by ~10× and undercharges cache
+        // writes by ~25%. The breakdown is preserved on
+        // `Usage.cache_*_input_tokens` so a future PR can fix the
+        // formula properly. OUT OF SCOPE for this plan.
         const prompt_cost = @as(f64, @floatFromInt(stream_response.usage.prompt_tokens)) * 0.000003;
         const completion_cost = @as(f64, @floatFromInt(stream_response.usage.completion_tokens)) * 0.000015;
         const total_cost = prompt_cost + completion_cost;
