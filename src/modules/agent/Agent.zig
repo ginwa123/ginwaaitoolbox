@@ -789,6 +789,17 @@ pub const Agent = struct {
     /// from an auth failure from a transport glitch.
     last_error_message: ?[]const u8 = null,
 
+    /// Anthropic-only: cached input_tokens from the `message_start` event.
+    /// Emitted on the first `content_block_delta` chunk so the aggregator
+    /// sees a single usage event (mirrors how the OpenAI parser uses
+    /// `stream_options.include_usage=true` to get a trailing usage chunk).
+    /// Reset to 0 at the top of every `callStreaming` invocation.
+    _anthropic_input_tokens: u32 = 0,
+    /// Anthropic-only: guard so the cached input_tokens are sent exactly
+    /// once per call (on the first delta). Reset to false at the top of
+    /// every `callStreaming` invocation.
+    _anthropic_usage_emitted: bool = false,
+
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Agent {
         return Agent{
             .allocator = allocator,
@@ -1096,7 +1107,15 @@ pub const Agent = struct {
         return data;
     }
 
-    pub fn parse_stream_chunk(self: Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
+    pub fn parse_stream_chunk(self: *Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
+        // Anthropic uses a different SSE event shape (`event:` + `data:`
+        // pairs with a `type` field, not `choices[0].delta`). Dispatch on
+        // UrlStyle so the rest of the pipeline (StreamingAggregator,
+        // CallResponse, the workflow loop) sees the same StreamChunk shape
+        // regardless of provider.
+        if (std.mem.eql(u8, self.UrlStyle, "anthropic")) {
+            return self.parse_anthropic_stream_chunk(data, arena);
+        }
         const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
             const max_data_len = 200;
             const truncated = data.len > max_data_len;
@@ -1189,6 +1208,176 @@ pub const Agent = struct {
         return chunk;
 
     }
+
+    /// Anthropic streaming-SSE → StreamChunk mapper.
+    ///
+    /// Anthropic's /v1/messages streams `event:` + `data:` pairs (the wire
+    /// shape the OpenAI parser doesn't understand). We translate the events
+    /// the workflow cares about into the same `StreamChunk` shape the
+    /// OpenAI parser produces, so the rest of the pipeline
+    /// (StreamingAggregator, CallResponse, the workflow loop) doesn't need
+    /// to know which provider it's talking to.
+    ///
+    /// Event → StreamChunk mapping (see
+    /// docs/superpowers/plans/2026-08-13-anthropic-profile-sse-parsing.md
+    /// for the full spec):
+    ///   message_start           → caches input_tokens (no chunk emitted)
+    ///   content_block_delta     → text_delta|thinking_delta|input_json_delta
+    ///   content_block_start     → tool_use → tool_calls_delta[i] with id+name
+    ///   message_delta           → finish_reason + output_tokens (usage chunk)
+    ///   message_stop            → no-op (signal-only)
+    ///   content_block_stop      → no-op (signal-only)
+    ///   anything else           → return null
+    ///
+    /// Per-call scratch state lives on the Agent struct (reset at the top
+    /// of `callStreaming`): `_anthropic_input_tokens` (cached from
+    /// message_start) and `_anthropic_usage_emitted` (guard so the cached
+    /// input_tokens are emitted on the first delta only).
+    fn parse_anthropic_stream_chunk(
+        self: *Agent,
+        data: []const u8,
+        arena: std.mem.Allocator,
+    ) ?StreamChunk {
+        const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
+            const max_data_len = 200;
+            const truncated = data.len > max_data_len;
+            const data_to_log = if (truncated) data[0..max_data_len] else data;
+            if (truncated) {
+                self.log_fmt(.err, "Anthropic SSE JSON parse failed: {s}\nData (truncated): {s}...", .{ @errorName(err), data_to_log });
+            } else {
+                self.log_fmt(.err, "Anthropic SSE JSON parse failed: {s}\nData: {s}", .{ @errorName(err), data_to_log });
+            }
+            return null;
+        };
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        const type_val = root.object.get("type") orelse return null;
+        if (type_val != .string) return null;
+        const event_type = type_val.string;
+
+        if (std.mem.eql(u8, event_type, "message_start")) {
+            // Cache input_tokens from message.message.usage.input_tokens.
+            // Emit no chunk — the first delta will carry the usage.
+            const message = root.object.get("message") orelse return null;
+            if (message != .object) return null;
+            const usage = message.object.get("usage") orelse return null;
+            if (usage != .object) return null;
+            if (usage.object.get("input_tokens")) |it| {
+                if (it == .integer) self._anthropic_input_tokens = @intCast(it.integer);
+            }
+            return null;
+        }
+
+        var chunk: StreamChunk = .{};
+
+        if (std.mem.eql(u8, event_type, "content_block_start")) {
+            const index = root.object.get("index") orelse return null;
+            const cb = root.object.get("content_block") orelse return null;
+            if (index != .integer or cb != .object) return null;
+            const cb_type = cb.object.get("type") orelse return null;
+            if (cb_type != .string) return null;
+            // Only tool_use blocks need a tool_calls_delta here (text /
+            // thinking blocks just carry content deltas — handled below).
+            if (!std.mem.eql(u8, cb_type.string, "tool_use")) return null;
+
+            const id_val = cb.object.get("id") orelse return null;
+            const name_val = cb.object.get("name") orelse return null;
+            if (id_val != .string or name_val != .string) return null;
+
+            const delta_slice = arena.alloc(ToolCallDelta, 1) catch return null;
+            delta_slice[0] = .{
+                .index = @intCast(index.integer),
+                .id = id_val.string,
+                .function_name = name_val.string,
+            };
+            chunk.tool_calls_delta = delta_slice;
+        } else if (std.mem.eql(u8, event_type, "content_block_delta")) {
+            const index_val = root.object.get("index") orelse return null;
+            const delta = root.object.get("delta") orelse return null;
+            if (index_val != .integer or delta != .object) return null;
+            const index: usize = @intCast(index_val.integer);
+
+            const delta_type = delta.object.get("type") orelse return null;
+            if (delta_type != .string) return null;
+
+            if (std.mem.eql(u8, delta_type.string, "text_delta")) {
+                const text = delta.object.get("text") orelse return null;
+                if (text != .string) return null;
+                chunk.content = text.string;
+            } else if (std.mem.eql(u8, delta_type.string, "thinking_delta")) {
+                const thinking = delta.object.get("thinking") orelse return null;
+                if (thinking != .string) return null;
+                chunk.reasoning_content = thinking.string;
+            } else if (std.mem.eql(u8, delta_type.string, "input_json_delta")) {
+                const partial = delta.object.get("partial_json") orelse return null;
+                if (partial != .string) return null;
+                const delta_slice = arena.alloc(ToolCallDelta, 1) catch return null;
+                delta_slice[0] = .{
+                    .index = index,
+                    .function_arguments = partial.string,
+                };
+                chunk.tool_calls_delta = delta_slice;
+            } else {
+                return null; // unknown delta.type — ignore
+            }
+
+            // Emit a usage chunk on the FIRST delta so the aggregator sees
+            // the cached input_tokens count. Mirrors the OpenAI parser's
+            // use of `stream_options.include_usage=true`.
+            if (self._anthropic_input_tokens > 0 and !self._anthropic_usage_emitted) {
+                chunk.usage = .{
+                    .prompt_tokens = self._anthropic_input_tokens,
+                    .completion_tokens = 0,
+                    .total_tokens = self._anthropic_input_tokens,
+                };
+                self._anthropic_usage_emitted = true;
+            }
+        } else if (std.mem.eql(u8, event_type, "message_delta")) {
+            const delta = root.object.get("delta") orelse return null;
+            if (delta != .object) return null;
+            if (delta.object.get("stop_reason")) |sr| {
+                if (sr == .string) {
+                    chunk.finish_reason = FinishReason.from_str(map_anthropic_stop_reason(sr.string));
+                }
+            }
+            if (root.object.get("usage")) |usage_val| {
+                if (usage_val == .object) {
+                    if (usage_val.object.get("output_tokens")) |ot| {
+                        if (ot == .integer) {
+                            chunk.usage = .{
+                                .prompt_tokens = self._anthropic_input_tokens,
+                                .completion_tokens = @intCast(ot.integer),
+                                .total_tokens = self._anthropic_input_tokens + @as(u32, @intCast(ot.integer)),
+                            };
+                        }
+                    }
+                }
+            }
+        } else {
+            // message_stop, content_block_stop, ping, anything else — no-op.
+            return null;
+        }
+
+        return chunk;
+    }
+
+    /// Anthropic's stop_reason strings don't match OpenAI's. Map them so
+    /// the workflow's finish_reason handling stays provider-agnostic:
+    ///   end_turn       → "stop"
+    ///   tool_use       → "tool_calls"
+    ///   max_tokens     → "length"
+    ///   stop_sequence  → "stop"
+    ///   refusal        → "content_filter"
+    fn map_anthropic_stop_reason(s: []const u8) ?[]const u8 {
+        if (std.mem.eql(u8, s, "end_turn")) return "stop";
+        if (std.mem.eql(u8, s, "tool_use")) return "tool_calls";
+        if (std.mem.eql(u8, s, "max_tokens")) return "length";
+        if (std.mem.eql(u8, s, "stop_sequence")) return "stop";
+        if (std.mem.eql(u8, s, "refusal")) return "content_filter";
+        return null;
+    }
+
     pub fn callStreaming(
         self: *Agent,
         params: AgentCall,
@@ -1198,6 +1387,12 @@ pub const Agent = struct {
         self.log_fmt(.info, "[STREAM START] model={s} | messages={} | tools={} | streaming=true", .{
             self.model, params.messages.len, params.tools.len,
         });
+
+        // Reset per-call Anthropic parser scratch state. The Agent is reused
+        // across many calls; without this reset, the second call would see
+        // stale input_tokens + a stuck `_usage_emitted` flag.
+        self._anthropic_input_tokens = 0;
+        self._anthropic_usage_emitted = false;
 
         // 1. Build JSON body (unchanged from Agent.zig).
         var json_body: []u8 = undefined;
