@@ -94,19 +94,26 @@ test "search: respect_ignore_files = false does NOT return a validation error" {
     const allocator = testing.allocator;
     const io = testing.io;
 
-    const result = search.executeSearch(allocator, io, "/tmp", .{
+    if (search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "anything",
         .path = ".",
         .respect_ignore_files = false,
-    });
-
-    // Either success (Ok with possibly 0 matches in /tmp) or a rg-spawn
-    // error is acceptable. What matters is NO SearchError domain variant
-    // fires (those would mean validation rejected the field).
-    _ = result catch |err| switch (err) {
+    })) |r| {
+        // Success — release the SearchResult's heap allocations
+        // (matches.items[].file + .snippet, and content). Without
+        // this the test leaks ~102 allocations on the CI runner
+        // (root's /tmp contains many matching files; local user
+        // /tmp is usually smaller so leaks went undetected).
+        var owned = r;
+        defer owned.deinit(allocator);
+    } else |err| switch (err) {
+        // Either success (Ok with possibly 0 matches in /tmp) or a
+        // rg-spawn error is acceptable. What matters is NO
+        // SearchError domain variant fires (those would mean
+        // validation rejected the field).
         error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
-    };
+    }
 }
 
 test "search: word_boundary = true does NOT return a validation error" {
@@ -118,19 +125,17 @@ test "search: word_boundary = true does NOT return a validation error" {
     // is plumbed through correctly (no compile error on the struct init)
     // and that the call attempts to spawn rg (rather than rejecting the
     // input with a SearchError variant).
-    const result = search.executeSearch(allocator, io, "/tmp", .{
+    if (search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "anything",
         .path = ".",
         .word_boundary = true,
-    });
-
-    // Either success (Ok with possibly 0 matches in /tmp) or a rg-spawn
-    // error is acceptable. What matters is NO SearchError domain variant
-    // fires (those would mean validation rejected the field).
-    _ = result catch |err| switch (err) {
+    })) |r| {
+        var owned = r;
+        defer owned.deinit(allocator);
+    } else |err| switch (err) {
         error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
-    };
+    }
 }
 
 test "search: literal = true does NOT return a validation error" {
@@ -142,19 +147,17 @@ test "search: literal = true does NOT return a validation error" {
     // plumbed through correctly (no compile error on the struct init)
     // and that the call attempts to spawn rg with -F (rather than
     // rejecting the input with a SearchError variant).
-    const result = search.executeSearch(allocator, io, "/tmp", .{
+    if (search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "anything",
         .path = ".",
         .literal = true,
-    });
-
-    // Either success (Ok with possibly 0 matches in /tmp) or a rg-spawn
-    // error is acceptable. What matters is NO SearchError domain variant
-    // fires (those would mean validation rejected the field).
-    _ = result catch |err| switch (err) {
+    })) |r| {
+        var owned = r;
+        defer owned.deinit(allocator);
+    } else |err| switch (err) {
         error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
-    };
+    }
 }
 
 test "search: only_matching = true does NOT return a validation error" {
@@ -166,19 +169,17 @@ test "search: only_matching = true does NOT return a validation error" {
     // plumbed through correctly (no compile error on the struct init)
     // and that the call attempts to spawn rg with -o (rather than
     // rejecting the input with a SearchError variant).
-    const result = search.executeSearch(allocator, io, "/tmp", .{
+    if (search.executeSearch(allocator, io, "/tmp", .{
         .pattern = "anything",
         .path = ".",
         .only_matching = true,
-    });
-
-    // Either success (Ok with possibly 0 matches in /tmp) or a rg-spawn
-    // error is acceptable. What matters is NO SearchError domain variant
-    // fires (those would mean validation rejected the field).
-    _ = result catch |err| switch (err) {
+    })) |r| {
+        var owned = r;
+        defer owned.deinit(allocator);
+    } else |err| switch (err) {
         error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
         else => return err,
-    };
+    }
 }
 
 // =============================================================================
@@ -332,11 +333,17 @@ test "search: cwd that doesn't exist returns an error" {
 
     // Either PathError (from our mapping) or some spawn-level error
     // bubbles up. Both are acceptable — what matters is the call FAILS
-    // and doesn't hang or silently return empty results.
-    _ = result catch |err| switch (err) {
+    // and doesn't hang or silently return empty results. If we do get
+    // a successful SearchResult, free it (matches + content) — the
+    // pattern matches the 4 other tests above that also call rg with
+    // a possibly-empty /tmp.
+    if (result) |r| {
+        var owned = r;
+        defer owned.deinit(allocator);
+    } else |err| switch (err) {
         error.PathError, error.FileNotFound, error.AccessDenied, error.NotDir, error.IsDir => {},
         else => return err,
-    };
+    }
 }
 
 test "search: binary snippet is sanitized to valid UTF-8" {
