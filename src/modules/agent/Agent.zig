@@ -1594,16 +1594,58 @@ pub const Agent = struct {
                     chunk.finish_reason = FinishReason.from_str(map_anthropic_stop_reason(sr.string));
                 }
             }
+            // Anthropic's `message_delta.usage` carries the AUTHORITATIVE
+            // token counts for the call. The strict Anthropic API sends
+            // `output_tokens` + `cache_creation_input_tokens` here
+            // (input_tokens was already cached from `message_start`).
+            //
+            // Some relays (e.g. api.minimax.io/anthropic) ALSO send
+            // `input_tokens` here — and may return 0 at `message_start`
+            // before delivering the real value here. Always prefer the
+            // `message_delta` value when present, falling back to the
+            // cached `message_start` value (via `_anthropic_input_tokens`)
+            // otherwise. This makes the parser robust to BOTH the strict
+            // API shape and the relay quirk without code branches.
+            //
+            // Billable total = input_tokens + cache_creation_input_tokens
+            // + output_tokens. Cache reads (`cache_read_input_tokens`)
+            // are FREE — they don't add to billing — so they're
+            // deliberately NOT included in `total_tokens`. This matches
+            // OpenAI's `prompt_tokens` semantic (which includes cached
+            // tokens at full count for the `prompt_tokens_details` view
+            // but not for the billable total).
+            //
+            // We do NOT override `self._anthropic_input_tokens` here
+            // even when message_delta supplies input_tokens — that
+            // cached field is used by the first-delta usage chunk above
+            // and would race with this later message_delta usage chunk
+            // for the aggregator if mutated. The fresh value wins for
+            // the final message_delta usage emission, which is what
+            // CallResponse.usage actually persists (the aggregator's
+            // StreamingAggregator.process_chunk uses the LAST seen usage
+            // chunk for `total_tokens` only when total > 0).
             if (root.object.get("usage")) |usage_val| {
                 if (usage_val == .object) {
+                    var input_tokens: u32 = self._anthropic_input_tokens;
+                    var cache_creation_tokens: u32 = 0;
+                    var output_tokens: u32 = 0;
+
+                    if (usage_val.object.get("input_tokens")) |it| {
+                        if (it == .integer) input_tokens = @intCast(it.integer);
+                    }
+                    if (usage_val.object.get("cache_creation_input_tokens")) |cc| {
+                        if (cc == .integer) cache_creation_tokens = @intCast(cc.integer);
+                    }
                     if (usage_val.object.get("output_tokens")) |ot| {
-                        if (ot == .integer) {
-                            chunk.usage = .{
-                                .prompt_tokens = self._anthropic_input_tokens,
-                                .completion_tokens = @intCast(ot.integer),
-                                .total_tokens = self._anthropic_input_tokens + @as(u32, @intCast(ot.integer)),
-                            };
-                        }
+                        if (ot == .integer) output_tokens = @intCast(ot.integer);
+                    }
+
+                    if (output_tokens > 0) {
+                        chunk.usage = .{
+                            .prompt_tokens = input_tokens + cache_creation_tokens,
+                            .completion_tokens = output_tokens,
+                            .total_tokens = input_tokens + cache_creation_tokens + output_tokens,
+                        };
                     }
                 }
             }
