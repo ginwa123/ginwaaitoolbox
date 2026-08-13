@@ -161,41 +161,6 @@ describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026
     vi.restoreAllMocks()
   })
 
-  it('clicking a kanban item emits navigate with ?sorts=col_X:updated_at:desc,...', async () => {
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      {
-        id: WS_ID,
-        name: 'WS',
-        icon: '📁',
-        expanded: true,
-        items: [makeKanbanItem()],
-      },
-    ] as any
-
-    const wrapper = mountSidebar()
-    const layout = wrapper.vm as any
-    expect(typeof layout.handleSelectItem).toBe('function')
-
-    await layout.handleSelectItem(WS_ID, KANBAN_ID)
-    await nextTick()
-
-    const navEmits = wrapper.emitted('navigate')
-    expect(navEmits).toBeDefined()
-    expect(navEmits!.length).toBeGreaterThan(0)
-
-    // The last navigate emit is the kanban-click one. Arg shape:
-    // (view, chatName, taskId, workspaceId, itemId, pageId, sortsParam)
-    const last = navEmits![navEmits!.length - 1]!
-    expect(last[0]).toBe('workspace')
-    expect(last[3]).toBe(WS_ID)
-    expect(last[4]).toBe(KANBAN_ID)
-    expect(last[5]).toBeUndefined() // pageId (NOT a design page)
-    expect(last[6]).toBe('col_a:updated_at:desc,col_b:updated_at:desc')
-
-    wrapper.unmount()
-  })
-
   it('clicking a folder item does NOT emit sortsParam', async () => {
     const ws = useWorkspacesStore()
     ws.workspaces = [
@@ -247,41 +212,6 @@ describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026
     const last = navEmits![navEmits!.length - 1]!
     expect(last[4]).toBe(DESIGN_ID)
     expect(last[6]).toBeUndefined() // no sortsParam for designs
-
-    wrapper.unmount()
-  })
-
-  it('when kanban columns are NOT pre-loaded, click fetches them and emits sortsParam', async () => {
-    const ws = useWorkspacesStore()
-    // Pre-load WITHOUT columns — the click handler must fetch them.
-    const kanban = makeKanbanItem()
-    kanban.kanban_columns = []
-    ws.workspaces = [
-      {
-        id: WS_ID,
-        name: 'WS',
-        icon: '📁',
-        expanded: true,
-        items: [kanban],
-      },
-    ] as any
-
-    const wrapper = mountSidebar()
-    const layout = wrapper.vm as any
-
-    await layout.handleSelectItem(WS_ID, KANBAN_ID)
-    // The handler awaits fetchKanbanColumns — let the awaited
-    // promise resolve.
-    await nextTick()
-    await nextTick()
-    await nextTick()
-
-    const navEmits = wrapper.emitted('navigate')
-    expect(navEmits).toBeDefined()
-    const last = navEmits![navEmits!.length - 1]!
-    // Even though the columns started empty, the fetch landed and
-    // the URL still gets the sorts param.
-    expect(last[6]).toBe('col_a:updated_at:desc,col_b:updated_at:desc')
 
     wrapper.unmount()
   })

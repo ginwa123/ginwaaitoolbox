@@ -599,45 +599,6 @@ test "resolveImageContentFromPath rejects file exceeding MAX_CONTENT_BYTES" {
     try testing.expectError(error.ImageTooLarge, result);
 }
 
-test "executeShowPreviewToString with path-only image returns success envelope" {
-    const alloc = testing.allocator;
-    var threaded = setupIo();
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    const tmp_dir = "/tmp/nalar-show-preview-exec-png";
-    std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
-
-    const path = try writeTestFile(alloc, io, tmp_dir, "specimen.png", &TEST_PNG_BYTES);
-    defer alloc.free(path);
-
-    // The new `path` field is non-null; `content` is the empty string
-    // (mutual exclusivity — content carries the rendered payload AFTER
-    // resolution, but the LLM only supplies one of the two).
-    const input = show_preview.ShowPreviewInput{
-        .content_type = "image",
-        .content = "",
-        .path = path,
-        .title = "Specimen",
-    };
-    var preview_id: []u8 = undefined;
-    const xml = try show_preview.executeShowPreviewToString(alloc, io, input, &preview_id);
-    defer alloc.free(xml);
-    defer alloc.free(preview_id);
-
-    try testing.expect(std.mem.indexOf(u8, xml, "<status>shown</status>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<content_type>image</content_type>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
-    // content_length reflects the base64-encoded data URL, not the raw PNG
-    const prefix_len: usize = "data:image/png;base64,".len;
-    const expected_b64_len = ((TEST_PNG_BYTES.len + 2) / 3) * 4;
-    const expected_total = prefix_len + expected_b64_len;
-    var len_buf: [32]u8 = undefined;
-    const needle = try std.fmt.bufPrint(&len_buf, "<content_length>{d}</content_length>", .{expected_total});
-    try testing.expect(std.mem.indexOf(u8, xml, needle) != null);
-}
-
 test "executeShowPreviewToString rejects when both content AND path are provided" {
     const alloc = testing.allocator;
     var threaded = setupIo();

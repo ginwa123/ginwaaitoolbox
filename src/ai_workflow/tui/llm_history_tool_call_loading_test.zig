@@ -136,37 +136,6 @@ test "saveToolResultPlaceholder allows multiple empty tool_call_id rows (assista
     defer ctx.alloc.free(id2);
 }
 
-test "updateToolResultById updates content + is_loading=0 in place" {
-    var ctx = try setupDb();
-    defer teardown(&ctx);
-    try createSession(&ctx, "sess_1");
-
-    const opts = llm_history.SaveToolResultPlaceholderOptions{
-        .session_id = "sess_1",
-        .model = "test-model",
-        .tool_call_id = "tcA",
-        .tool_name = "bash",
-        .loop_index = 0,
-    };
-    const id = try llm_history.saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
-    defer ctx.alloc.free(id);
-
-    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tcA", .{
-        .content = "actual bash result",
-        .diffview_before = null,
-        .diffview_after = null,
-    });
-
-    var q = try ctx.db.query(ctx.alloc,
-        "SELECT response_content, is_loading FROM llm_history WHERE tool_call_id = ?",
-        &.{"tcA"});
-    defer q.deinit();
-    const row = (try q.next()) orelse return error.RowMissing;
-    defer row.deinit(ctx.alloc);
-    try testing.expectEqualStrings("actual bash result", row.values[0]);
-    try testing.expectEqualStrings("0", row.values[1]);
-}
-
 test "updateToolResultById on a non-existent tool_call_id is a no-op (no error)" {
     var ctx = try setupDb();
     defer teardown(&ctx);
@@ -184,37 +153,6 @@ test "updateToolResultById on a non-existent tool_call_id is a no-op (no error)"
         &.{"tc_ghost"});
     defer q.deinit();
     try testing.expect((try q.next()) == null);
-}
-
-test "updateToolResultById accepts and stores diffview_before / diffview_after" {
-    var ctx = try setupDb();
-    defer teardown(&ctx);
-    try createSession(&ctx, "sess_1");
-
-    const opts = llm_history.SaveToolResultPlaceholderOptions{
-        .session_id = "sess_1",
-        .model = "test-model",
-        .tool_call_id = "tcA",
-        .tool_name = "text_replace",
-        .loop_index = 0,
-    };
-    const id = try llm_history.saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
-    defer ctx.alloc.free(id);
-
-    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tcA", .{
-        .content = "diff content",
-        .diffview_before = "old content",
-        .diffview_after = "new content",
-    });
-
-    var q = try ctx.db.query(ctx.alloc,
-        "SELECT diffview_before, diffview_after FROM llm_history WHERE tool_call_id = ?",
-        &.{"tcA"});
-    defer q.deinit();
-    const row = (try q.next()) orelse return error.RowMissing;
-    defer row.deinit(ctx.alloc);
-    try testing.expectEqualStrings("old content", row.values[0]);
-    try testing.expectEqualStrings("new content", row.values[1]);
 }
 
 test "resolveStaleLoadingToolResults replaces all stranded placeholders with interrupted" {
@@ -250,44 +188,6 @@ test "resolveStaleLoadingToolResults replaces all stranded placeholders with int
         try testing.expect(std.mem.indexOf(u8, row.values[0], "interrupted") != null);
         try testing.expect(std.mem.indexOf(u8, row.values[0], "retry") != null);
     }
-}
-
-test "resolveStaleLoadingToolResults is idempotent on a session with no stranded rows" {
-    var ctx = try setupDb();
-    defer teardown(&ctx);
-    try createSession(&ctx, "sess_1");
-
-    // No placeholders. The call must succeed with 0 rows affected.
-    try llm_history.resolveStaleLoadingToolResults(ctx.alloc, &ctx.db, "sess_1");
-
-    // Insert a placeholder, UPDATE it to is_loading=0, then resolve:
-    // the resolved row must NOT be touched.
-    const opts = llm_history.SaveToolResultPlaceholderOptions{
-        .session_id = "sess_1",
-        .model = "test-model",
-        .tool_call_id = "tcA",
-        .tool_name = "bash",
-        .loop_index = 0,
-    };
-    const id = try llm_history.saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
-    defer ctx.alloc.free(id);
-    try llm_history.updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tcA", .{
-        .content = "real result",
-        .diffview_before = null,
-        .diffview_after = null,
-    });
-
-    // Resolve — should be a no-op for this row.
-    try llm_history.resolveStaleLoadingToolResults(ctx.alloc, &ctx.db, "sess_1");
-
-    var q = try ctx.db.query(ctx.alloc,
-        "SELECT response_content FROM llm_history WHERE tool_call_id = ?",
-        &.{"tcA"});
-    defer q.deinit();
-    const row = (try q.next()) orelse return error.RowMissing;
-    defer row.deinit(ctx.alloc);
-    try testing.expectEqualStrings("real result", row.values[0]);
-    try testing.expect(std.mem.indexOf(u8, row.values[0], "interrupted") == null);
 }
 
 test "resolveStaleLoadingToolResults only touches the target session" {

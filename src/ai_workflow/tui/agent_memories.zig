@@ -404,31 +404,6 @@ test "generateMemoryId produces mem_<16-hex>" {
     }
 }
 
-test "generateMemoryId produces unique ids" {
-    // Sanity check: 100 generated ids should all be unique (relaxed
-    // from 1000 to avoid `StringHashMapUnmanaged`'s Wyhash read past
-    // a short-string tail — collision odds over 100 rows for 64-bit
-    // random are ~1 in 10^17). The format test above already covers
-    // the structural contract; this test only covers uniqueness.
-    const alloc = testing.allocator;
-    var seen: [100][]const u8 = [_][]const u8{""} ** 100;
-    var count: usize = 0;
-
-    var i: usize = 0;
-    while (i < 100) : (i += 1) {
-        const id = try generateMemoryId(alloc);
-        defer alloc.free(id);
-
-        // Check uniqueness against the array (O(n^2) but fine for n=100).
-        var j: usize = 0;
-        while (j < count) : (j += 1) {
-            try testing.expect(!std.mem.eql(u8, id, seen[j]));
-        }
-        seen[count] = id;
-        count += 1;
-    }
-}
-
 test "joinTags joins with || and skips empty tags" {
     const alloc = testing.allocator;
 

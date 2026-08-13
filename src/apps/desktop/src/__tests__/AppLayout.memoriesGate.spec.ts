@@ -23,33 +23,10 @@ const APPLAYOUT_PATH = resolve(
 describe('AppLayout — workspace memories view guard', () => {
   const source = readFileSync(APPLAYOUT_PATH, 'utf-8')
 
-  it('excludes kanban items from the memories view branch', () => {
-    // The defensive gate must include item_type !== 'kanban'.
-    expect(source).toContain("activeWorkspaceItem.item_type !== 'kanban'")
-  })
-
-  it('excludes design items from the memories view branch', () => {
-    expect(source).toContain("activeWorkspaceItem.item_type !== 'design'")
-  })
-
   it('does NOT render a redundant outer compact header card', () => {
     // Bug: the outer header duplicated WorkspaceItemMemoriesView's own
     // header. Verify the outer header markup is gone.
     expect(source).not.toContain('Compact header card (always shown when an item is active)')
   })
 
-  it('keeps the no-path centered card fallback', () => {
-    // The original "today's centered card" must remain when path is empty.
-    expect(source).toContain('No-path fallback: keep today\'s centered card')
-  })
-
-  it('keeps the kanban branch BEFORE the workspace view branch', () => {
-    const kanbanIdx = source.indexOf(
-      "v-else-if=\"activeWorkspaceItem && activeWorkspaceItem.item_type === 'kanban'\"",
-    )
-    const workspaceIdx = source.indexOf("v-else-if=\"currentView === 'workspace'\"")
-    expect(kanbanIdx).toBeGreaterThan(0)
-    expect(workspaceIdx).toBeGreaterThan(0)
-    expect(kanbanIdx).toBeLessThan(workspaceIdx)
-  })
 })

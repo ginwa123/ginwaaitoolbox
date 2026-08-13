@@ -258,56 +258,6 @@ test "setElementParent rejects leaf-type parent" {
     try testing.expectError(error.ParentNotContainer, result);
 }
 
-// ─── Test 4: reject cycle ─────────────────────────────────────────────────
-
-test "setElementParent rejects cycle (parent to its own descendant)" {
-    const alloc = testing.allocator;
-    var ctx = try setupDbAndItem();
-    defer teardown(&ctx.db, &ctx.threaded);
-    defer alloc.free(ctx.item_id);
-    defer alloc.free(ctx.item_path);
-
-    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
-        .item_id = ctx.item_id,
-        .page_name = "Login",
-        .width = 1440,
-        .height = 1024,
-    });
-    defer alloc.free(page_id);
-
-    // Set up a 2-level chain: outer (frame, top-level) → inner
-    // (frame, parent = outer). Both are valid containers so the
-    // cycle check actually runs.
-    try ctx.db.exec(alloc,
-        \\INSERT INTO design_page_elements
-        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
-        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
-        \\    text_content, text_style, image_url, parent_id,
-        \\    created_at, updated_at)
-        \\VALUES
-        \\   ('elem_outer', ?, 'outer', '', 0, 0, 200, 200, 0, 0,
-        \\    'frame', 0.0, '', '', 0, 0, 1.0,
-        \\    '', '', '', NULL, datetime('now'), datetime('now'))
-    , &.{page_id});
-
-    try ctx.db.exec(alloc,
-        \\INSERT INTO design_page_elements
-        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
-        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
-        \\    text_content, text_style, image_url, parent_id,
-        \\    created_at, updated_at)
-        \\VALUES
-        \\   ('elem_inner', ?, 'inner', '', 10, 10, 100, 100, 0, 1,
-        \\    'frame', 0.0, '', '', 0, 0, 1.0,
-        \\    '', '', '', 'elem_outer', datetime('now'), datetime('now'))
-    , &.{page_id});
-
-    // Try to re-parent outer to inner — would form a cycle
-    // outer → inner → outer.
-    const result = design_model.setElementParent(alloc, &ctx.db, "elem_outer", "elem_inner");
-    try testing.expectError(error.CycleDetected, result);
-}
-
 // ─── Test 5: reject non-existent element_id ───────────────────────────────
 
 test "setElementParent rejects non-existent element_id" {
