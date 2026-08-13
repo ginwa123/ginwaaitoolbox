@@ -129,9 +129,9 @@ pub fn maybeCompactMessagesNew(
         return false;
     };
 
-    // Fetch user chat history + read_file paths BEFORE the
-    // mark_history_not_for_llmrun step takes them offline. The new INSERT
-    // into llm_history (inside compactMessagesInMemory) carries the
+    // Fetch user chat history + read_file paths + recent activities BEFORE
+    // the mark_history_not_for_llmrun step takes them offline. The new
+    // INSERT into llm_history (inside compactMessagesInMemory) carries the
     // enriched context forward to the next agent iteration.
     var user_turns = compaction_context.fetchUserChatHistory(allocator, db, session_id) catch |err| blk: {
         logger.warnFmt("[COMPACTION] fetchUserChatHistory failed: {s}", .{@errorName(err)});
@@ -149,12 +149,29 @@ pub fn maybeCompactMessagesNew(
         for (read_files.items) |rf| rf.deinit(allocator);
         read_files.deinit(allocator);
     }
+    // Recent activities: what the agent was thinking/doing at the tail of
+    // the now-compacted-away messages. Mirrors user_turns/read_files: an
+    // empty list is fine (the enrich helper omits the section entirely),
+    // a DB error is logged + skipped (better to lose the section than to
+    // abort the whole compaction). Capped at 20 rows so the envelope
+    // stays bounded on long sessions where the activity log could be
+    // thousands of rows — the agent only needs the most recent tail.
+    const RECENT_ACTIVITIES_LIMIT: u32 = 20;
+    var recent_activities = compaction_context.fetchRecentActivities(allocator, db, session_id, RECENT_ACTIVITIES_LIMIT) catch |err| blk: {
+        logger.warnFmt("[COMPACTION] fetchRecentActivities failed: {s}", .{@errorName(err)});
+        break :blk std.ArrayList(compaction_context.RecentActivity).empty;
+    };
+    defer {
+        for (recent_activities.items) |a| a.deinit(allocator);
+        recent_activities.deinit(allocator);
+    }
 
     const enriched_xml = compaction_context.enrichCompactionXml(
         allocator,
         compacted_xml,
         user_turns.items,
         read_files.items,
+        recent_activities.items,
         cwd,
     ) catch |err| {
         logger.warnFmt("[COMPACTION] enrichCompactionXml failed: {s}", .{@errorName(err)});
@@ -202,7 +219,6 @@ pub fn compactMessageInMemoryNew(
     // Build the compacted summary content with XML wrapping
     const summary_content = try buildCompactionEnvelope(
         allocator,
-        db,
         messages.items[1..],
         total,
         session_id,
@@ -289,73 +305,8 @@ pub fn compactMessageInMemoryNew(
 /// Caller owns the returned string and must free with `allocator.free`.
 const MAX_INDEX_ENTRIES: usize = 50;
 
-/// Hard cap on the `<recent_activities>` section — keeps the envelope
-/// bounded on long sessions where the activity log could be thousands
-/// of rows. The agent only needs the most recent context.
-const RECENT_ACTIVITIES_LIMIT: u32 = 20;
-
-/// Emit a `<recent_activities>...</recent_activities>` XML section to
-/// `env`, listing the most recent `limit` session_activity rows for
-/// `session_id` in chronological order (oldest first). The section is
-/// omitted entirely when there are no prior activities — `<recent_activities>`
-/// is never rendered as an empty tag.
-///
-/// Per PR #226 review feedback: this section is how the next-cycle agent
-/// learns what was happening during the now-compacted-away messages.
-/// Compaction does NOT write a row to `session_activity` itself — the
-/// activity log is for things the agent DID, not metadata about internal
-/// machinery.
-fn appendRecentActivitiesXml(
-    env: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    limit: u32,
-) !void {
-    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
-    defer allocator.free(limit_str);
-
-    // Most recent first (for the LIMIT-bounded query), then reverse to
-    // chronological (oldest first) so the agent reads them as a timeline.
-    var rows = try db.query(allocator,
-        "SELECT description FROM session_activity WHERE session_id = ? " ++
-            "ORDER BY created_at DESC, id DESC LIMIT ?",
-        &.{ session_id, limit_str });
-    defer rows.deinit();
-
-    var activities: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (activities.items) |a| allocator.free(a);
-        activities.deinit(allocator);
-    }
-    while (try rows.next()) |row| {
-        const desc_dup = try allocator.dupe(u8, row.values[0]);
-        errdefer allocator.free(desc_dup);
-        try activities.append(allocator, desc_dup);
-        row.deinit(allocator);
-    }
-
-    if (activities.items.len == 0) return;
-
-    std.mem.reverse([]const u8, activities.items);
-
-    const count_str = try std.fmt.allocPrint(allocator, "{d}", .{activities.items.len});
-    defer allocator.free(count_str);
-
-    try env.print(allocator,
-        "  <recent_activities count=\"{s}\">\n",
-        .{count_str});
-    for (activities.items) |desc| {
-        const escaped = try xml_escape(allocator, desc);
-        defer allocator.free(escaped);
-        try env.print(allocator, "    <activity>{s}</activity>\n", .{escaped});
-    }
-    try env.appendSlice(allocator, "  </recent_activities>\n");
-}
-
 fn buildCompactionEnvelope(
     allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
     dropped_messages: []const agent.AgentMessage,
     original_count: usize,
     session_id: []const u8,
@@ -446,10 +397,6 @@ fn buildCompactionEnvelope(
     }
 
     try env.appendSlice(allocator, "  </message_index>\n");
-
-    // --- recent_activities (what the agent was thinking) ---
-    // See `appendRecentActivitiesXml` for the design rationale.
-    try appendRecentActivitiesXml(&env, allocator, db, session_id, RECENT_ACTIVITIES_LIMIT);
 
     // --- summary (the compactor's output) ---
     // Hard cap as a safety net — the real budget should be enforced via
@@ -862,10 +809,11 @@ test "compact_messages_in_memory error propagates to caller" {
 
 // ─── Better-compaction-context integration tests ──────────────────────────
 
-/// In-memory DB with just the columns `fetchUserChatHistory` and
-/// `fetchReadFilePaths` read. The mock `compactMessagesInMemory` is
-/// `db`-agnostic, so we don't need the full sessions/llm_history schema
-/// the real `compactMessageInMemoryNew` requires.
+/// In-memory DB with just the columns `fetchUserChatHistory`,
+/// `fetchReadFilePaths`, and `fetchRecentActivities` read. The mock
+/// `compactMessagesInMemory` is `db`-agnostic, so we don't need the
+/// full sessions/llm_history schema the real
+/// `compactMessageInMemoryNew` requires.
 fn setupDbForEnrichmentTest() !struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -890,6 +838,15 @@ fn setupDbForEnrichmentTest() !struct {
             "  is_output INTEGER DEFAULT 0," ++
             "  is_feed_to_llm INTEGER DEFAULT 1," ++
             "  created_at TEXT DEFAULT (datetime('now'))" ++
+            ")",
+        &[_][]const u8{},
+    );
+    try db.exec(alloc,
+        "CREATE TABLE session_activity (" ++
+            "  id TEXT PRIMARY KEY," ++
+            "  session_id TEXT NOT NULL," ++
+            "  description TEXT NOT NULL," ++
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP" ++
             ")",
         &[_][]const u8{},
     );
@@ -932,6 +889,22 @@ fn seedReadFileForEnrichmentTest(
             "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
             "VALUES (?, ?, 'test-model', ?, 'tool', 'read_file', 0, 1, 1, ?)",
         &.{ id, session_id, content, created_at },
+    );
+}
+
+fn seedRecentActivityForEnrichmentTest(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    session_id: []const u8,
+    description: []const u8,
+    created_at: []const u8,
+) !void {
+    try db.exec(
+        alloc,
+        "INSERT INTO session_activity (id, session_id, description, created_at) " ++
+            "VALUES (?, ?, ?, ?)",
+        &.{ id, session_id, description, created_at },
     );
 }
 
@@ -1025,5 +998,135 @@ test "compaction still proceeds when fetchUserChatHistory returns empty (no user
     // The enrich helper wraps the bare compacted_xml in <compaction_context>.
     try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<compaction_context>") != null);
     try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "GOAL: ship X") != null);
+}
+
+// ─── Migration 073 — recent_activities integration tests ────────────────────
+//
+// Per PR #226 review feedback: the compaction flow must READ prior
+// session_activity rows (recorded by `update_activity`) and embed them
+// in a `<recent_activities>` section inside the <compaction_context>
+// enrichment, NOT record a new "[COMPACTION] Compacted..." row.
+//
+// After the refactor that lifted recent_activities fetch + embed from
+// buildCompactionEnvelope into maybeCompactMessagesNew, these tests
+// exercise the FULL path through maybeCompactMessagesNew so we
+// actually verify the DB fetch + enrich step, not just the envelope
+// builder.
+
+test "happy path embeds prior session_activity rows in <recent_activities>" {
+    resetMockState();
+    const alloc = testing.allocator;
+    const cfg = buildTestConfig(alloc);
+
+    var s = try setupDbForEnrichmentTest();
+    defer teardownDbForEnrichmentTest(&s);
+
+    // Pre-seed 3 prior update_activity rows for this session. Insert
+    // them in NON-chrono order to verify the envelope sorts them
+    // (oldest first).
+    try seedRecentActivityForEnrichmentTest(alloc, &s.db, "a3", "sess_recent", "wiring it in", "2026-01-01 00:00:03");
+    try seedRecentActivityForEnrichmentTest(alloc, &s.db, "a1", "sess_recent", "planning the migration", "2026-01-01 00:00:01");
+    try seedRecentActivityForEnrichmentTest(alloc, &s.db, "a2", "sess_recent", "writing the test", "2026-01-01 00:00:02");
+
+    var messages = try buildMessages(alloc);
+    defer freeMessages(alloc, &messages);
+    var lg = Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    mock_state.should_compact_result = true;
+    mock_state.next_compact_xml = "GOAL: ship X";
+    defer releaseLastCompactedXml();
+
+    const result = try maybeCompactMessagesNew(
+        mockCompactDeps,
+        alloc,
+        200_000,
+        "test-model",
+        true,
+        &messages,
+        "sk-test",
+        "https://test.example",
+        "/tmp",
+        "sess_recent",
+        &s.db,
+        std.testing.io,
+        &lg,
+        &cfg,
+    );
+
+    try testing.expect(result);
+    try testing.expectEqual(@as(u32, 1), mock_state.compact_messages_in_memory_calls);
+    // The <recent_activities> section is embedded inside
+    // <compaction_context> by enrichCompactionXml.
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<recent_activities") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "planning the migration") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "writing the test") != null);
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "wiring it in") != null);
+    // The activities must appear in chronological (oldest first) order.
+    const planning_pos = std.mem.indexOf(u8, mock_state.last_compacted_xml, "planning the migration").?;
+    const writing_pos = std.mem.indexOf(u8, mock_state.last_compacted_xml, "writing the test").?;
+    const wiring_pos = std.mem.indexOf(u8, mock_state.last_compacted_xml, "wiring it in").?;
+    try testing.expect(planning_pos < writing_pos);
+    try testing.expect(writing_pos < wiring_pos);
+
+    // The session_activity table must NOT have grown — the compaction
+    // event is NOT recorded (per review feedback).
+    {
+        const sid_dup = try alloc.dupe(u8, "sess_recent");
+        defer alloc.free(sid_dup);
+        const args = [_][]const u8{sid_dup};
+        var q = try s.db.query(alloc,
+            "SELECT COUNT(*) FROM session_activity WHERE session_id = ?",
+            &args);
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("3", row.values[0]); // still just the 3 pre-seeded rows
+    }
+}
+
+test "omits <recent_activities> when session has no prior activity" {
+    // When there are no prior session_activity rows for the session,
+    // the enriched XML must OMIT the <recent_activities> section
+    // entirely (rather than emit an empty one).
+    resetMockState();
+    const alloc = testing.allocator;
+    const cfg = buildTestConfig(alloc);
+
+    var s = try setupDbForEnrichmentTest();
+    defer teardownDbForEnrichmentTest(&s);
+
+    // No session_activity rows seeded for sess_no_activity.
+
+    var messages = try buildMessages(alloc);
+    defer freeMessages(alloc, &messages);
+    var lg = Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    mock_state.should_compact_result = true;
+    mock_state.next_compact_xml = "GOAL: ship X";
+    defer releaseLastCompactedXml();
+
+    const result = try maybeCompactMessagesNew(
+        mockCompactDeps,
+        alloc,
+        200_000,
+        "test-model",
+        true,
+        &messages,
+        "sk-test",
+        "https://test.example",
+        "/tmp",
+        "sess_no_activity",
+        &s.db,
+        std.testing.io,
+        &lg,
+        &cfg,
+    );
+
+    try testing.expect(result);
+    try testing.expectEqual(@as(u32, 1), mock_state.compact_messages_in_memory_calls);
+    // <recent_activities> should be omitted entirely (no empty tag).
+    try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<recent_activities") == null);
 }
 

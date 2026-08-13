@@ -31,6 +31,21 @@ pub const UserTurn = struct {
     }
 };
 
+/// One row from the `session_activity` per-session log (Migration 073).
+/// Embedded into the compacted envelope so the next iteration of the
+/// agent sees what the previous agent was thinking/doing at the tail
+/// of the now-compacted-away messages — without these rows, the next
+/// iteration has no signal about the recent internal-state context.
+pub const RecentActivity = struct {
+    description: []const u8,
+    created_at: []const u8,
+
+    pub fn deinit(self: RecentActivity, allocator: std.mem.Allocator) void {
+        allocator.free(self.description);
+        allocator.free(self.created_at);
+    }
+};
+
 /// One read_file tool-result row from `llm_history`. `path` is the
 /// extracted value from the `<path>...</path>` tag in the XML envelope.
 /// `raw_content` is kept for debugging and for tests that assert on the
@@ -157,18 +172,74 @@ pub fn fetchReadFilePaths(
     return turns;
 }
 
-/// Embed the user history and read_file paths into the compacted XML.
-/// Returns a new `[]u8` allocated from `allocator`; caller owns it.
-/// The original `compacted_xml` is left untouched (the helper dups
-/// content during the embed).
+/// Fetch the most recent `limit` rows from `session_activity` for
+/// `session_id`, in chronological order (oldest first — same direction
+/// the agent reads them as a timeline).
 ///
-/// Hard caps: 100 user turns, 2000 chars per turn. Read paths are
-/// deduplicated (first occurrence wins, insertion order preserved).
+/// `session_activity` is an append-only log written by the
+/// `update_activity` tool (Migration 073). It records what the agent
+/// was thinking/doing at each user message boundary, and the next
+/// iteration of the agent (after compaction) needs the tail of this
+/// log to recover the recent internal-state context that the
+/// compacted-away messages no longer carry.
+pub fn fetchRecentActivities(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    limit: u32,
+) !std.ArrayList(RecentActivity) {
+    var turns: std.ArrayList(RecentActivity) = .empty;
+    errdefer {
+        for (turns.items) |t| t.deinit(allocator);
+        turns.deinit(allocator);
+    }
+
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{limit});
+    defer allocator.free(limit_str);
+
+    // Two-step approach (vs. a single DESC+reverse): the production
+    // path is a small-N recent tail, so doing the LIMIT first then
+    // reversing in Zig is both correct and lets us reuse the existing
+    // `idx_session_activity_session_created` index.
+    var rows = try db.query(
+        allocator,
+        "SELECT description, created_at FROM session_activity " ++
+            "WHERE session_id = ? " ++
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+        &.{ session_id, limit_str },
+    );
+    defer rows.deinit();
+
+    while (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        const desc_dup = try allocator.dupe(u8, row.values[0]);
+        const created_at_dup = try allocator.dupe(u8, row.values[1]);
+        try turns.append(allocator, .{
+            .description = desc_dup,
+            .created_at = created_at_dup,
+        });
+    }
+
+    // Reverse in-place to chronological (oldest first).
+    std.mem.reverse(RecentActivity, turns.items);
+    return turns;
+}
+
+/// Embed the user history, read_file paths, and recent session
+/// activities into the compacted XML. Returns a new `[]u8` allocated
+/// from `allocator`; caller owns it. The original `compacted_xml` is
+/// left untouched (the helper dups content during the embed).
+///
+/// Hard caps: 100 user turns, 2000 chars per turn, 20 recent
+/// activities (caller is expected to slice `recent_activities` to the
+/// desired limit before calling). Read paths are deduplicated
+/// (first occurrence wins, insertion order preserved).
 pub fn enrichCompactionXml(
     allocator: std.mem.Allocator,
     compacted_xml: []const u8,
     user_turns: []const UserTurn,
     read_files: []const ReadFileTurn,
+    recent_activities: []const RecentActivity,
     cwd: []const u8,
 ) ![]u8 {
     const MAX_USER_TURNS: usize = 100;
@@ -220,6 +291,27 @@ pub fn enrichCompactionXml(
     }
     try out.appendSlice(allocator, "  </read_files>\n");
 
+    // ── recent_activities (omitted entirely when empty) ───────────
+    // Mirrors the user_history / read_files pattern: the section is
+    // useful for "what was the agent doing/thinking at the tail of the
+    // compacted-away messages" (Migration 073 / PR #226 — the agent's
+    // own activity log, NOT a metadata row for the compaction itself).
+    if (recent_activities.len > 0) {
+        try out.appendSlice(allocator, "  <recent_activities");
+        try out.print(allocator, " count=\"{d}\"", .{recent_activities.len});
+        try out.appendSlice(allocator, ">\n");
+        for (recent_activities) |a| {
+            const escaped = try xml_escape(allocator, a.description);
+            defer allocator.free(escaped);
+            try out.print(
+                allocator,
+                "    <activity created_at=\"{s}\">{s}</activity>\n",
+                .{ a.created_at, escaped },
+            );
+        }
+        try out.appendSlice(allocator, "  </recent_activities>\n");
+    }
+
     // ── summary (the original compactor output, wrapped in CDATA) ─
     try out.appendSlice(allocator, "  <summary><![CDATA[\n");
     try out.appendSlice(allocator, compacted_xml);
@@ -263,6 +355,15 @@ fn setupDb() !struct {
             "  is_output INTEGER DEFAULT 0," ++
             "  is_feed_to_llm INTEGER DEFAULT 1," ++
             "  created_at TEXT DEFAULT (datetime('now'))" ++
+            ")",
+        &[_][]const u8{},
+    );
+    try db.exec(alloc,
+        "CREATE TABLE session_activity (" ++
+            "  id TEXT PRIMARY KEY," ++
+            "  session_id TEXT NOT NULL," ++
+            "  description TEXT NOT NULL," ++
+            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP" ++
             ")",
         &[_][]const u8{},
     );
@@ -455,11 +556,82 @@ test "fetchReadFilePaths returns only matching session's read_file outputs, with
     try testing.expect(std.mem.indexOf(u8, turns.items[0].raw_content, "foo body") != null);
 }
 
+test "fetchRecentActivities returns the most recent N rows in chrono order" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const alloc = testing.allocator;
+
+    // Seed 5 rows for sess_a in NON-chrono order; the helper must
+    // return them sorted by created_at ASC (oldest first).
+    const sess_a_rows = [_]struct {
+        id: []const u8,
+        description: []const u8,
+        created_at: []const u8,
+    }{
+        .{ .id = "a3", .description = "wiring it in", .created_at = "2026-01-01 00:00:03" },
+        .{ .id = "a1", .description = "planning the migration", .created_at = "2026-01-01 00:00:01" },
+        .{ .id = "a5", .description = "shipping it", .created_at = "2026-01-01 00:00:05" },
+        .{ .id = "a2", .description = "writing the test", .created_at = "2026-01-01 00:00:02" },
+        .{ .id = "a4", .description = "reviewing", .created_at = "2026-01-01 00:00:04" },
+    };
+    for (sess_a_rows) |r| {
+        try s.db.exec(alloc,
+            "INSERT INTO session_activity (id, session_id, description, created_at) " ++
+                "VALUES (?, ?, ?, ?)",
+            &.{ r.id, "sess_a", r.description, r.created_at });
+    }
+    // Other-session row — must be filtered out by the WHERE clause.
+    try s.db.exec(alloc,
+        "INSERT INTO session_activity (id, session_id, description, created_at) " ++
+            "VALUES (?, ?, ?, ?)",
+        &.{ "a_x", "sess_b", "wrong session", "2026-01-01 00:00:01" });
+
+    var turns = try fetchRecentActivities(alloc, &s.db, "sess_a", 3);
+    defer {
+        for (turns.items) |t| t.deinit(alloc);
+        turns.deinit(alloc);
+    }
+
+    // limit=3 → the SQL fetches the 3 newest (DESC) then the helper
+    // reverses in-place to chronological (oldest first). The 3 newest
+    // rows by created_at are a5, a4, a3; after reverse that's
+    // a3, a4, a5 → wiring it in, reviewing, shipping it.
+    try testing.expectEqual(@as(usize, 3), turns.items.len);
+    try testing.expectEqualStrings("wiring it in", turns.items[0].description);
+    try testing.expectEqualStrings("reviewing", turns.items[1].description);
+    try testing.expectEqualStrings("shipping it", turns.items[2].description);
+
+    // limit larger than the row count returns all sess_a rows
+    // (sess_b's row is filtered out by WHERE) in chrono order.
+    var all = try fetchRecentActivities(alloc, &s.db, "sess_a", 100);
+    defer {
+        for (all.items) |t| t.deinit(alloc);
+        all.deinit(alloc);
+    }
+    try testing.expectEqual(@as(usize, 5), all.items.len);
+    try testing.expectEqualStrings("planning the migration", all.items[0].description);
+    try testing.expectEqualStrings("shipping it", all.items[4].description);
+}
+
+test "fetchRecentActivities returns an empty list when the session has no activity" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const alloc = testing.allocator;
+
+    var turns = try fetchRecentActivities(alloc, &s.db, "sess_no_activity", 20);
+    defer turns.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 0), turns.items.len);
+}
+
 test "enrichCompactionXml with empty user history and empty read files returns the original compacted_xml wrapped in <summary>" {
     const alloc = testing.allocator;
     const result = try enrichCompactionXml(
         alloc,
         "GOAL: ship X\nNEXT: test",
+        &.{},
         &.{},
         &.{},
         "/tmp",
@@ -493,6 +665,7 @@ test "enrichCompactionXml embeds user history and read files with the right cont
         "GOAL: ship X",
         &user_turns,
         &read_files,
+        &.{},
         "/home/user",
     );
     defer alloc.free(result);
@@ -521,6 +694,7 @@ test "enrichCompactionXml emits all 50 user turns when the cap is hit" {
         "summary",
         &turns,
         &.{},
+        &.{},
         "/tmp",
     );
     defer alloc.free(result);
@@ -546,6 +720,7 @@ test "enrichCompactionXml deduplicates read_file on the same path" {
         "summary",
         &.{},
         &read_files,
+        &.{},
         "/home/user",
     );
     defer alloc.free(result);
@@ -555,6 +730,65 @@ test "enrichCompactionXml deduplicates read_file on the same path" {
     try testing.expect(std.mem.indexOf(u8, result, "<path abs=\"/home/user/bar.zig\">/home/user/bar.zig</path>") != null);
     try testing.expect(std.mem.indexOf(u8, result, "<path abs=\"/home/user/baz.zig\">/home/user/baz.zig</path>") != null);
     try testing.expect(std.mem.indexOf(u8, result, "truncated_by") == null);
+}
+
+test "enrichCompactionXml embeds recent_activities inside <compaction_context>" {
+    // Regression: when recent_activities are non-empty, the enrich
+    // helper MUST emit a `<recent_activities>` section alongside
+    // <user_history> + <read_files>, with one <activity> per row,
+    // each row's description XML-escaped.
+    const alloc = testing.allocator;
+    const recent_activities = [_]RecentActivity{
+        .{ .description = "[2026-08-13 10:00] planning the migration", .created_at = "2026-08-13 10:00:00" },
+        .{ .description = "[2026-08-13 10:01] <bold>writing</bold> the test", .created_at = "2026-08-13 10:01:00" },
+    };
+    const result = try enrichCompactionXml(
+        alloc,
+        "GOAL: ship X",
+        &.{},
+        &.{},
+        &recent_activities,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // Section header is present, and the section lives INSIDE
+    // <compaction_context> (not at top level).
+    try testing.expect(std.mem.indexOf(u8, result, "<recent_activities") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</recent_activities>") != null);
+    // Activities live BETWEEN <recent_activities> and </recent_activities>.
+    const header_pos = std.mem.indexOf(u8, result, "<recent_activities").?;
+    // Both descriptions are embedded.
+    try testing.expect(std.mem.indexOfPos(u8, result, header_pos, "planning the migration") != null);
+    try testing.expect(std.mem.indexOfPos(u8, result, header_pos, "<bold>writing</bold> the test") == null); // XML-escaped
+    try testing.expect(std.mem.indexOfPos(u8, result, header_pos, "&lt;bold&gt;writing&lt;/bold&gt; the test") != null);
+    // Activities appear in chrono order (oldest first) — the same order
+    // they were passed in (caller is responsible for sorting, matching
+    // the existing user_history/read_files ordering rule).
+    const planning_pos = std.mem.indexOfPos(u8, result, header_pos, "planning the migration").?;
+    const writing_pos = std.mem.indexOfPos(u8, result, header_pos, "writing").?;
+    try testing.expect(planning_pos < writing_pos);
+    // The section is INSIDE <compaction_context>, not at top level.
+    const ctx_open = std.mem.indexOf(u8, result, "<compaction_context>").?;
+    try testing.expect(ctx_open < header_pos);
+}
+
+test "enrichCompactionXml omits <recent_activities> when the slice is empty" {
+    // Mirrors the existing "omit when empty" pattern for user_history
+    // and read_files sections: emitting an empty <recent_activities/>
+    // would add no information and pollute the envelope.
+    const alloc = testing.allocator;
+    const result = try enrichCompactionXml(
+        alloc,
+        "GOAL: ship X",
+        &.{},
+        &.{},
+        &.{},
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<recent_activities") == null);
 }
 
 fn countSubstring(hay: []const u8, needle: []const u8) usize {
