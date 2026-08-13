@@ -1849,6 +1849,7 @@ pub const allMigrations: []const Migration = &.{
     // UPDATE). Plan: docs/superpowers/plans/2026-08-13-session-activity-table.md.
     // Task: task_1786629034327 ("new table session_activity").
     .{ .version = Migration073AddSessionActivity.version, .name = Migration073AddSessionActivity.name, .up = Migration073AddSessionActivity.up },
+    .{ .version = Migration074AddLlmHistoryCacheTokenColumns.version, .name = Migration074AddLlmHistoryCacheTokenColumns.name, .up = Migration074AddLlmHistoryCacheTokenColumns.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3006,6 +3007,20 @@ pub const Migration073AddSessionActivity = struct {
                 "ON session_activity(session_id, created_at DESC)",
             &[_][]const u8{},
         );
+    }
+};
+
+/// Migration 074 — Add `cache_creation_input_tokens` + `cache_read_input_tokens` columns to `llm_history` so the Anthropic profile's cache breakdown survives from the SSE parser to the persistent row. OpenAI rows always carry 0. Idempotent via `addColumnIfMissing` (probes `pragma_table_info` first; matches the Migration 013/020 pattern). Plan: docs/superpowers/plans/2026-08-13-fix-anthropic-total-tokens.md. Task: task_1786640688092.
+pub const Migration074AddLlmHistoryCacheTokenColumns = struct {
+    pub const version: u32 = 74;
+    pub const name = "add_llm_history_cache_token_columns";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Anthropic cache WRITE breakdown (billed at ~1.25x input rate). Default 0 for legacy rows + non-Anthropic profiles.
+        try addColumnIfMissing(db, allocator, "llm_history", "cache_creation_input_tokens", "cache_creation_input_tokens INTEGER DEFAULT 0");
+
+        // Anthropic cache READ breakdown (billed at ~0.1x input rate, but still tokens the model processed -- folded into `prompt_tokens` + `total_tokens` by Agent.parse_anthropic_stream_chunk). Default 0 for legacy rows + non-Anthropic profiles.
+        try addColumnIfMissing(db, allocator, "llm_history", "cache_read_input_tokens", "cache_read_input_tokens INTEGER DEFAULT 0");
     }
 };
 
