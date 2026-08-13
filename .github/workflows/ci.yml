@@ -97,6 +97,24 @@ jobs:
         #                     compiles its own amalgamation, but the
         #                     system sqlite3.h is a useful fallback for
         #                     any cimport from outside the package)
+        #   postgresql-libs — dev headers + libpq for the `databases`
+        #                     package's `linkSystemLibrary("pq", ...)`
+        #                     (Postgres client; required by zig build test
+        #                     since the `databases` module's Linux branch
+        #                     unconditionally adds -lpq to the link line —
+        #                     see src/modules/databases/build.zig:84).
+        #                     Arch package name is `postgresql-libs`;
+        #                     Debian/Ubuntu equivalent is `libpq-dev`.
+        #   ripgrep         — `rg` binary for `src/modules/agent/tools/
+        #                     search.zig` (PRIMARY agent search tool).
+        #                     Without `rg`, every test in
+        #                     `search_test.zig` fails with
+        #                     `error.FileNotFound` from `processSpawn`
+        #                     when the test tries to spawn `rg` —
+        #                     observed on CI run 31719585425 (Linux job)
+        #                     where `zig build test` completed for the
+        #                     first time but `search_test.zig` errors
+        #                     all hit `error.FileNotFound`.
         #   pkgconf         — pkg-config for the "Show toolchain versions"
         #                     diagnostic step
         #   webkit2gtk-4.1  — runtime + headers for the nalar-desktop
@@ -109,8 +127,16 @@ jobs:
         #                     but the self-hosted Arch runner image does not.
         run: |
           set -u
+          # Refresh the package DB FIRST. The self-hosted runner's
+          # cached package DB can list versions that are no longer on
+          # the mirrors (observed on CI run 31718984987:
+          # `postgresql-libs-18.4-3-x86_64.pkg.tar.zst` 404'd from
+          # every mirror). `pacman -Sy` syncs the DB with all configured
+          # mirrors; without it, the next `pacman -S` may try to
+          # download a phantom package version.
+          sudo -n pacman -Sy --noconfirm
           missing=()
-          for pkg in base-devel openssl sqlite pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip; do
+          for pkg in base-devel openssl sqlite postgresql-libs ripgrep pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip; do
             if pacman -Q "$pkg" >/dev/null 2>&1; then
               echo "  ✓ $pkg"
             else

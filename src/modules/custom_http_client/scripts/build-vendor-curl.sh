@@ -79,6 +79,23 @@ OPENSSL_VERSION="3.4.0"
 OPENSSL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
 OPENSSL_SRC_DIR="${TMP}/openssl-${OPENSSL_VERSION}"
 
+# === Target selection ===
+# Only build the targets reachable on this host. Cross-compiling macOS
+# via `zig cc -target aarch64-macos` works on a Linux host, but each
+# macOS target adds ~5-10 min of OpenSSL build + ~10-15 min of curl
+# cross-compile — 30+ min of pure waste on a Linux CI runner that
+# only needs the Linux build.
+#
+# Override with CURL_TARGETS="linux-x86_64 macos-arm64 macos-x86_64"
+# (or any subset) to build for non-host targets. Default: only the
+# targets that match the host OS.
+case "$(uname -s)" in
+    Linux)   DEFAULT_TARGETS="linux-x86_64" ;;
+    Darwin)  DEFAULT_TARGETS="macos-arm64 macos-x86_64" ;;
+    *)       DEFAULT_TARGETS="linux-x86_64" ;;
+esac
+TARGETS="${CURL_TARGETS:-${DEFAULT_TARGETS}}"
+
 # === Common configure flags for a standard curl build ===
 # We keep TLS enabled (linked against our vendored OpenSSL) and the
 # normal protocol set. We still disable pieces that would require
@@ -149,10 +166,21 @@ COMMON_CONFIGURE_FLAGS=(
 # catch the "thin archive" regression.
 if [[ "${FORCE:-0}" != "1" ]]; then
     needs_build=0
-    for target in linux-x86_64 macos-arm64 macos-x86_64; do
+    for target in ${TARGETS}; do
         ct="${CURL_VENDOR_DIR}/${target}"
         ot="${OPENSSL_VENDOR_DIR}/${target}"
-        obj_count=$(ar t "${ct}/lib/libcurl.a" 2>/dev/null | wc -l)
+        # NOTE: GNU `ar` exits with code 9 when the archive is missing
+        # (this is the documented "fatal error" code in binutils). With
+        # `set -euo pipefail` + `pipefail`, a non-zero exit from `ar t`
+        # inside a `$(...)` substitution causes the whole script to
+        # exit with that code BEFORE the substitution value is captured
+        # — even though an assignment to a regular variable is
+        # normally a `set -e` no-op. The supsequent `[[ ! -f ... ]]`
+        # check (which is the canonical way to detect a missing file
+        # anyway) makes the `ar t` probe redundant; swallow its exit
+        # code with `|| true` so the cache skip-check doesn't kill the
+        # script on a fresh checkout.
+        obj_count=$(ar t "${ct}/lib/libcurl.a" 2>/dev/null | wc -l || true)
         if [[ ! -f "${ct}/lib/libcurl.a" ]] || \
            [[ "${obj_count}" -lt 500 ]] || \
            [[ ! -d "${ct}/include/curl" ]] || \
@@ -165,7 +193,7 @@ if [[ "${FORCE:-0}" != "1" ]]; then
         fi
     done
     if [[ "${needs_build}" -eq 0 ]]; then
-        echo "Already built (fat libcurl.a + libssl.a + libcrypto.a + headers present for all targets)."
+        echo "Already built (fat libcurl.a + libssl.a + libcrypto.a + headers present for ${TARGETS})."
         echo "Run with FORCE=1 to rebuild."
         exit 0
     fi
@@ -233,9 +261,37 @@ build_openssl_target() {
 
     mkdir -p "${out_dir}/lib" "${out_dir}/include"
     cp libssl.a libcrypto.a "${out_dir}/lib/"
-    cp -r include/openssl "${out_dir}/include/"
+    # Copy the headers in two passes:
+    #   1. ALL plain .h files from the source tree's include/openssl/
+    #      (e.g. pem.h, ssl.h, evp.h — ~113 headers that don't go
+    #      through Configure substitution). These are missing from the
+    #      build dir because OpenSSL's build process only generates the
+    #      `.h` files from `.h.in` templates INTO the build dir; it
+    #      doesn't copy the verbatim source headers.
+    #   2. The 28 generated .h files from the build dir's include/openssl/
+    #      (the result of Configure substituting @VAR@ tokens in the
+    #      source's .h.in templates). These OVERLAY the source's `.h`
+    #      counterparts where both exist (e.g. asn1.h, ssl.h).
+    #
+    # Without step 1, the vendored include/openssl/ is missing pem.h and
+    # ~84 other plain headers. Curl's configure picks up the SYSTEM
+    # /usr/include/openssl/ instead (the missing header causes a fatal
+    # build error like "unknown type name 'OSSL_i2d_of_void_ctx'" —
+    # observed on CI run 31706196476 after fixing the test-step race;
+    # see docs/superpowers/plans/2026-08-13-fix-ci-linux-vendor-race.md
+    # for the full failure chain).
+    cp -r "${OPENSSL_SRC_DIR}/include/openssl" "${out_dir}/include/"
+    # Copy generated headers on top (rsync-style overlay). Use cp -n
+    # (no-clobber) to preserve step-1 plain headers; only overwrite
+    # when the build dir has a fresher .h (the Configure-generated one).
+    if [[ -d "include/openssl" ]]; then
+        cp -rn include/openssl/. "${out_dir}/include/openssl/" 2>/dev/null || \
+            cp -rf include/openssl/. "${out_dir}/include/openssl/"
+    fi
+    # Clean up .h.in templates — they're never meant to be included.
+    find "${out_dir}/include/openssl" -name '*.h.in' -delete 2>/dev/null || true
     echo "  archived: ${out_dir}/lib/{libssl.a,libcrypto.a}"
-    echo "  headers:  ${out_dir}/include/openssl/"
+    echo "  headers:  ${out_dir}/include/openssl/ ($(find "${out_dir}/include/openssl" -name '*.h' | wc -l) .h files)"
 }
 
 # === Build curl for a specific target ===
@@ -368,22 +424,36 @@ build_curl_target() {
         return 1
     fi
     if [[ -z "${host_triple}" ]]; then
-        nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep 'T curl_easy_init' > "${TMP}/nm_match" || true
-        if [[ ! -s "${TMP}/nm_match" ]]; then
+        # nm on an archive reports only UNDEFINED references (`U`), not
+        # the defined symbols in its members — so `nm libcurl.a | grep 'T foo'`
+        # would always miss `foo` even when the symbol is defined in one
+        # of the 1200+ merged .o files. The robust check is to extract
+        # the archive to a tempdir and run nm on each member.
+        local nm_check_dir="${TMP}/libcurl-obj-check"
+        rm -rf "${nm_check_dir}"
+        mkdir -p "${nm_check_dir}"
+        ( cd "${nm_check_dir}" && ${ar_cmd} x "${out_dir}/lib/libcurl.a" ) || true
+        # Single concatenated nm pass over every .o — easier to scan
+        # than per-file nm in a loop (1200+ files = 1200+ nm spawns).
+        local all_nm
+        all_nm=$(find "${nm_check_dir}" -name '*.o' -exec nm {} \; 2>/dev/null)
+
+        if ! grep -qE "[Tt] curl_easy_init" <<<"${all_nm}"; then
             echo "  ERROR: Linux libcurl.a does not export curl_easy_init"
             return 1
         fi
-        nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep -q 'Curl_ossl_' \
-            || echo "  WARNING: curl_easy_init found but no Curl_ossl_* symbols — HTTPS glue may not be compiled in"
+        if ! grep -qE "Curl_ossl_" <<<"${all_nm}"; then
+            echo "  WARNING: curl_easy_init found but no Curl_ossl_* symbols — HTTPS glue may not be compiled in"
+        fi
         # Confirm ERR_peek_error / SSL_CTX_set_keylog_callback are
-        # actually DEFINED ("T"/"t") in the fat archive, not merely
+        # actually DEFINED ("T"/"t") in the merged archive, not merely
         # referenced. A merge bug (e.g. AR pointing at the wrong tool,
         # or the extract step silently producing zero .o files) would
         # leave these referenced-but-undefined, which nm alone on the
         # archive won't flag — only the final `zig build` link would
         # (as undefined symbol errors). Checking here catches it early.
         for sym in ERR_peek_error SSL_CTX_set_keylog_callback; do
-            if ! nm "${out_dir}/lib/libcurl.a" 2>/dev/null | grep -qE "[Tt] ${sym}$"; then
+            if ! grep -qE "[Tt] ${sym}$" <<<"${all_nm}"; then
                 echo "  ERROR: ${sym} not defined in merged libcurl.a — OpenSSL objects did not merge correctly"
                 return 1
             fi
@@ -397,21 +467,49 @@ build_curl_target() {
 mkdir -p "${CURL_VENDOR_DIR}" "${OPENSSL_VENDOR_DIR}"
 
 # === Step 1: OpenSSL for each target ===
-build_openssl_target "${OPENSSL_VENDOR_DIR}/linux-x86_64" "linux-x86_64"
-build_openssl_target "${OPENSSL_VENDOR_DIR}/macos-arm64" "darwin64-arm64-cc" \
-    "-target" "aarch64-macos" "-fuse-ld=lld"
-build_openssl_target "${OPENSSL_VENDOR_DIR}/macos-x86_64" "darwin64-x86_64-cc" \
-    "-target" "x86_64-macos" "-fuse-ld=lld"
+# Only build the targets in TARGETS (set above based on host OS or
+# CURL_TARGETS override). See the comment at TARGETS for rationale.
+echo "Building for target(s): ${TARGETS}"
+
+for target in ${TARGETS}; do
+    case "${target}" in
+        linux-x86_64)
+            build_openssl_target "${OPENSSL_VENDOR_DIR}/linux-x86_64" "linux-x86_64"
+            ;;
+        macos-arm64)
+            build_openssl_target "${OPENSSL_VENDOR_DIR}/macos-arm64" "darwin64-arm64-cc" \
+                "-target" "aarch64-macos" "-fuse-ld=lld"
+            ;;
+        macos-x86_64)
+            build_openssl_target "${OPENSSL_VENDOR_DIR}/macos-x86_64" "darwin64-x86_64-cc" \
+                "-target" "x86_64-macos" "-fuse-ld=lld"
+            ;;
+        *)
+            echo "ERROR: unknown target '${target}' (expected: linux-x86_64, macos-arm64, macos-x86_64)" >&2
+            exit 9
+            ;;
+    esac
+done
 
 # === Step 2: curl for each target, linked against the OpenSSL above ===
-build_curl_target "${CURL_VENDOR_DIR}/linux-x86_64" "" \
-    "${OPENSSL_VENDOR_DIR}/linux-x86_64"
-build_curl_target "${CURL_VENDOR_DIR}/macos-arm64" "aarch64-apple-darwin" \
-    "${OPENSSL_VENDOR_DIR}/macos-arm64" \
-    "-target" "aarch64-macos" "-fuse-ld=lld"
-build_curl_target "${CURL_VENDOR_DIR}/macos-x86_64" "x86_64-apple-darwin" \
-    "${OPENSSL_VENDOR_DIR}/macos-x86_64" \
-    "-target" "x86_64-macos" "-fuse-ld=lld"
+for target in ${TARGETS}; do
+    case "${target}" in
+        linux-x86_64)
+            build_curl_target "${CURL_VENDOR_DIR}/linux-x86_64" "" \
+                "${OPENSSL_VENDOR_DIR}/linux-x86_64"
+            ;;
+        macos-arm64)
+            build_curl_target "${CURL_VENDOR_DIR}/macos-arm64" "aarch64-apple-darwin" \
+                "${OPENSSL_VENDOR_DIR}/macos-arm64" \
+                "-target" "aarch64-macos" "-fuse-ld=lld"
+            ;;
+        macos-x86_64)
+            build_curl_target "${CURL_VENDOR_DIR}/macos-x86_64" "x86_64-apple-darwin" \
+                "${OPENSSL_VENDOR_DIR}/macos-x86_64" \
+                "-target" "x86_64-macos" "-fuse-ld=lld"
+            ;;
+    esac
+done
 
 echo ""
 echo "=== Done. Run 'zig build' to verify ==="

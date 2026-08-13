@@ -784,9 +784,25 @@ pub fn build(b: *std.Build) void {
     // on a clean checkout fails with "file not found" for
     // vendor/sqlite3/sqlite3.c (databases package) and/or
     // vendor/curl/<target>/lib/libcurl.a (custom_http_client package).
-    test_step.dependOn(fetch_vendor_curl_step);
-    test_step.dependOn(vendor_sqlite3_step);
+    //
+    // The deps MUST be on the COMPILE step (`mod_tests.step`), not
+    // just on `test_step` or on the wrap step (`run_mod_tests.step`).
+    // `addRunArtifact(mod_tests)` wraps the Compile step in a Run
+    // step; the Compile step and any deps we attach to the Run step
+    // become siblings under that Run step. Zig's build runner
+    // dispatches siblings of a parent step in parallel (see
+    // `compiler/build_runner.zig:1408-1410`), so attaching the fetch
+    // deps to `run_mod_tests.step` makes them parallel to the compile
+    // step — the compile then races the curl build script and loses
+    // (failure observed on CI run 31706196476: `error: .../vendor/curl/
+    // linux_x86_64/lib/libcurl.a: file not found`). Attaching the deps
+    // to `mod_tests.step` (the Compile step itself) makes them
+    // ordering constraints of the Compile step — the build runner's
+    // `pending_deps` counter (see compiler/build_runner.zig:1413-1418)
+    // gates the compile on fetch completion.
     test_step.dependOn(&run_mod_tests.step);
+    mod_tests.step.dependOn(fetch_vendor_curl_step);
+    mod_tests.step.dependOn(vendor_sqlite3_step);
 
     const ai_workflow_tui_test_mod = b.addTest(.{
         .root_module = mod_tests_module,
@@ -794,7 +810,16 @@ pub fn build(b: *std.Build) void {
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
+    // Same race-condition fix as `test_step` above — the TUI test
+    // reuses `mod_tests_module` (which transitively imports the
+    // vendored libcurl.a + sqlite3.c), so the COMPILE step
+    // (`ai_workflow_tui_test_mod.step`) must wait for the fetch
+    // steps to complete. Attaching to the Run step (the wrap) is
+    // wrong — it would make the fetch a sibling of the compile, not
+    // a prerequisite.
     test_ai_workflow_tui_step.dependOn(&run_ai_workflow_tui_tests.step);
+    ai_workflow_tui_test_mod.step.dependOn(fetch_vendor_curl_step);
+    ai_workflow_tui_test_mod.step.dependOn(vendor_sqlite3_step);
 
     const linux_step = b.step("install:linux", "Build for Linux x86_64");
     const linux_target = b.resolveTargetQuery(.{
@@ -812,6 +837,12 @@ pub fn build(b: *std.Build) void {
     // linkCurlIncludePath here — the module graph handles it.
     linux_exe.root_module.link_libc = true;
     linux_step.dependOn(fetch_vendor_curl_step);
+    // Race-condition fix: depend on the fetch steps from the COMPILE
+    // step (not just the parent step) so the build runner's
+    // pending_deps counter gates the compile on the fetch completion.
+    // Same rationale as the comment on `test_step` above.
+    linux_exe.step.dependOn(fetch_vendor_curl_step);
+    linux_exe.step.dependOn(vendor_sqlite3_step);
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
 
@@ -838,6 +869,10 @@ pub fn build(b: *std.Build) void {
     // dir gets built (currently fails — see MinGW note above).
     windows_step.dependOn(fetch_vendor_curl_step);
     windows_step.dependOn(vendor_sqlite3_step);
+    // Race-condition fix: depend on the fetch steps from the COMPILE
+    // step. See the `test_step` comment for the full rationale.
+    windows_exe.step.dependOn(fetch_vendor_curl_step);
+    windows_exe.step.dependOn(vendor_sqlite3_step);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -851,6 +886,10 @@ pub fn build(b: *std.Build) void {
     macos_exe.root_module.link_libc = true;
     macos_step.dependOn(fetch_vendor_curl_step);
     macos_step.dependOn(vendor_sqlite3_step);
+    // Race-condition fix: depend on the fetch steps from the COMPILE
+    // step. See the `test_step` comment for the full rationale.
+    macos_exe.step.dependOn(fetch_vendor_curl_step);
+    macos_exe.step.dependOn(vendor_sqlite3_step);
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -864,6 +903,10 @@ pub fn build(b: *std.Build) void {
     macos_arm_exe.root_module.link_libc = true;
     macos_arm_step.dependOn(fetch_vendor_curl_step);
     macos_arm_step.dependOn(vendor_sqlite3_step);
+    // Race-condition fix: depend on the fetch steps from the COMPILE
+    // step. See the `test_step` comment for the full rationale.
+    macos_arm_exe.step.dependOn(fetch_vendor_curl_step);
+    macos_arm_exe.step.dependOn(vendor_sqlite3_step);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
 
@@ -875,6 +918,10 @@ pub fn build(b: *std.Build) void {
     linux_system_exe.root_module.link_libc = true;
     linux_system_step.dependOn(fetch_vendor_curl_step);
     linux_system_step.dependOn(vendor_sqlite3_step);
+    // Race-condition fix: depend on the fetch steps from the COMPILE
+    // step. See the `test_step` comment for the full rationale.
+    linux_system_exe.step.dependOn(fetch_vendor_curl_step);
+    linux_system_exe.step.dependOn(vendor_sqlite3_step);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
     linux_system_step.dependOn(&install_linux_system.step);
@@ -904,6 +951,10 @@ pub fn build(b: *std.Build) void {
     // libcurl is linked via custom_http_client_mod's transitive deps.
     dev_exe.root_module.link_libc = true;
     dev_linux_system_step.dependOn(fetch_vendor_curl_step);
+    // Race-condition fix: depend on the fetch steps from the COMPILE
+    // step. See the `test_step` comment for the full rationale.
+    dev_exe.step.dependOn(fetch_vendor_curl_step);
+    dev_exe.step.dependOn(vendor_sqlite3_step);
     linkPlatformDeps(b, dev_exe, target);
     if (target.result.os.tag == .windows) {
     }
