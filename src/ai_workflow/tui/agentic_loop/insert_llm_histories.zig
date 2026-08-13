@@ -108,6 +108,8 @@ pub fn inserLLMHistories(
         \\    prompt_tokens,
         \\    completion_tokens,
         \\    total_tokens,
+        \\    cache_creation_input_tokens,
+        \\    cache_read_input_tokens,
         \\    is_input,
         \\    is_output,
         \\    tool_name,
@@ -117,7 +119,7 @@ pub fn inserLLMHistories(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -156,6 +158,10 @@ pub fn inserLLMHistories(
     defer allocator.free(completion_tokens_str);
     const total_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.total_tokens});
     defer allocator.free(total_tokens_str);
+    const cache_creation_input_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.cache_creation_input_tokens});
+    defer allocator.free(cache_creation_input_tokens_str);
+    const cache_read_input_tokens_str = try std.fmt.allocPrint(allocator, "{}", .{input.cache_read_input_tokens});
+    defer allocator.free(cache_read_input_tokens_str);
     const copy_diffview_before = try allocator.dupe(u8, input.diffview_before orelse "");
     defer allocator.free(copy_diffview_before);
     const copy_diffview_after = try allocator.dupe(u8, input.diffview_after orelse "");
@@ -181,7 +187,7 @@ pub fn inserLLMHistories(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     if (!is_skip_db) {
         try db.exec(allocator, sql, sqlArgs);

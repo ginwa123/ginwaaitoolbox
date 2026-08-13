@@ -433,6 +433,8 @@ pub fn handle_tool(
             .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
             .completion_tokens = res_dynamic_agent.usage.completion_tokens,
             .total_tokens = res_dynamic_agent.usage.total_tokens,
+            .cache_creation_input_tokens = res_dynamic_agent.usage.cache_creation_input_tokens,
+            .cache_read_input_tokens = res_dynamic_agent.usage.cache_read_input_tokens,
             .is_input = true,
             .is_output = false,
             .tool_name = try std.mem.join(allocator, ",", toolNames.items),
