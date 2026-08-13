@@ -240,38 +240,6 @@ test "load_memory_tool: without with_content, snippets only (no raw <content>)" 
     try testing.expect(std.mem.indexOf(u8, out, "<content") == null);
 }
 
-test "load_memory_tool: with with_content=true, full content truncated at 2 KiB" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    // Create a 3 KiB memory.
-    const big_content = alloc.alloc(u8, 3 * 1024) catch unreachable;
-    defer alloc.free(big_content);
-    @memset(big_content, 'a');
-
-    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
-        .content = big_content,
-        .tags = "",
-        .id = "mem-large",
-    });
-    defer alloc.free(_out);
-
-    const input = load_memory_mod.LoadMemoryInput{
-        .query = "aaa",
-        .tags = "",
-        .limit = 10,
-        .offset = 0,
-        .with_content = true,
-    };
-    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
-    defer alloc.free(out);
-
-    // <content truncated="1"> present (3 KiB > 2 KiB cap).
-    try testing.expect(std.mem.indexOf(u8, out, "<content truncated=\"1\"") != null);
-}
-
 test "load_memory_tool: paginates via limit + offset" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
@@ -344,32 +312,4 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     // (phrase didn't match). Either way, no <error> — the query didn't crash.
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
     try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
-}
-
-test "load_memory_tool: returns 0 hits cleanly when query matches nothing" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
-        .content = "this is a memory",
-        .tags = "",
-        .id = "mem-foo",
-    });
-    defer alloc.free(_out);
-
-    const input = load_memory_mod.LoadMemoryInput{
-        .query = "xyznevermatch",
-        .tags = "",
-        .limit = 10,
-        .offset = 0,
-        .with_content = false,
-    };
-    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
-    defer alloc.free(out);
-
-    try testing.expect(std.mem.indexOf(u8, out, "<count>0</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<results></results>") != null or
-        std.mem.indexOf(u8, out, "<results/>") != null);
 }

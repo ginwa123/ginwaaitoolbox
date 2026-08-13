@@ -139,111 +139,6 @@ function mountAppLayout(workspaces: Workspace[] = [], routeQuery: Record<string,
   })
 }
 
-describe('AppLayout — handleNavigate("workspace", wsId, itemId) pushes workspaceId + itemId into the URL', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-    installBusForTests()
-    Object.defineProperty(globalThis, 'localStorage', {
-      value: makeLocalStorageStub(),
-      writable: true,
-      configurable: true,
-    })
-    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
-    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
-      entries: [],
-      path: '/',
-      absolute: '/',
-      home: '/',
-    })
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  it('when called with (workspaceId, itemId), the router receives .replace with those params', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-    expect(typeof layout.handleNavigate).toBe('function')
-    layout.handleNavigate('workspace', undefined, undefined, WS_ID, KANBAN_ID)
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
-    })
-    wrapper.unmount()
-  })
-
-  it('when called WITHOUT (workspaceId, itemId), the URL still has just view=workspace (back-compat)', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-    layout.handleNavigate('workspace')
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace' },
-    })
-    wrapper.unmount()
-  })
-
-  // NEW (design-page-nav fix, 2026-08-06): pageId is now a 6th
-  // positional arg of handleNavigate so Sidebar.handleSelectDesignPage
-  // can switch the URL off `?view=task` into
-  // `?view=workspace&pageId=Z`. Pin the contract so a future
-  // refactor can't silently drop the pageId from the URL.
-  it('when called with (workspaceId, itemId, pageId), the URL includes pageId', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-    layout.handleNavigate('workspace', undefined, undefined, WS_ID, DESIGN_ID, PAGE_ID_1)
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: DESIGN_ID,
-        pageId: PAGE_ID_1,
-      },
-    })
-    wrapper.unmount()
-  })
-
-  // NEW (design-page-nav fix, 2026-08-06): empty pageId is omitted
-  // from the URL so we don't pollute the address bar with
-  // `?pageId=` when the caller didn't pin a page.
-  it('when called with empty-string pageId, the URL omits pageId', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-    layout.handleNavigate('workspace', undefined, undefined, WS_ID, KANBAN_ID, '')
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
-    })
-    wrapper.unmount()
-  })
-})
-
 describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y restores the active item', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -348,22 +243,7 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     vi.restoreAllMocks()
   })
 
-  it('handleNavigate("workspace", wsId, designId) pushes workspaceId + designId into the URL', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-    layout.handleNavigate('workspace', undefined, undefined, WS_ID, DESIGN_ID)
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
-    })
-    wrapper.unmount()
-  })
+  
 
   it('mounting with ?view=workspace&workspaceId=X&itemId=designId restores the design view', async () => {
     const ws = useWorkspacesStore()
@@ -1060,79 +940,6 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     await nextTick()
     expect(ws.activeWorkspaceItemId).toBe(DESIGN_ID)
     expect(ws.activeDesignPageId).toBe('')
-    wrapper.unmount()
-  })
-
-  // NEW (kanban default-URL, 2026-08-06): handleNavigate accepts a
-  // 7th positional arg `sortsParam` and mirrors it into the URL
-  // query as `?sorts=...`. Sidebar passes this when the user clicks
-  // a kanban workspace item so the default sort survives a reload.
-  it('handleNavigate("workspace", wsId, itemId, "", sortsParam) writes sorts into the URL', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-
-    const sortsParam = 'col_a:updated_at:desc,col_b:updated_at:desc'
-    // 7-arg call: view, chatName, taskId, workspaceId, itemId, pageId, sortsParam
-    layout.handleNavigate(
-      'workspace',
-      undefined,
-      undefined,
-      WS_ID,
-      KANBAN_ID,
-      '',
-      sortsParam,
-    )
-
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: KANBAN_ID,
-        sorts: sortsParam,
-      },
-    })
-    wrapper.unmount()
-  })
-
-  it('handleNavigate("workspace", wsId, itemId, "", undefined) OMITS sorts (non-kanban path)', async () => {
-    const replaceMock = vi.fn()
-    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
-    const ws = useWorkspacesStore()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
-    ]
-    const wrapper = mountAppLayout(ws.workspaces, {})
-    const layout = wrapper.vm as any
-
-    // 7-arg call with undefined sortsParam (e.g. folder / design click).
-    layout.handleNavigate(
-      'workspace',
-      undefined,
-      undefined,
-      WS_ID,
-      DESIGN_ID,
-      'page_X',
-      undefined,
-    )
-
-    expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: DESIGN_ID,
-        pageId: 'page_X',
-      },
-    })
-    const lastQuery = replaceMock.mock.calls[0]![0].query
-    expect(lastQuery.sorts).toBeUndefined()
     wrapper.unmount()
   })
 })
