@@ -17,6 +17,7 @@ const logger_mod = nalarcore.loggermod;
 const Logger = logger_mod.Logger;
 const xml_escape = nalarcore.helpers.xml_escape;
 const llm_history = @import("../llm_history.zig");
+const migration = @import("../../../migrations/migration.zig");
 
 /// One user-turn row from `llm_history`. Used to embed the full user
 /// history into the compacted envelope so the next iteration of the
@@ -408,6 +409,14 @@ fn resolvePath(allocator: std.mem.Allocator, path: []const u8, cwd: []const u8) 
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
+//
+// Convention: walk ALL migrations from scratch so the schema under test is
+// GUARANTEED to match production. No hand-rolled CREATE TABLE.
+// (Project memory `llm-history-test-use-migrations-module.md` — reviewer's
+// recurring "use migrations module" feedback pattern.)
+//
+// Plan: docs/superpowers/plans/2026-08-13-fetch-session-skills-on-compaction.md
+// Task: task_1786641731741
 
 const testing = std.testing;
 
@@ -423,39 +432,11 @@ fn setupDb() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try db.exec(alloc,
-        "CREATE TABLE llm_history (" ++
-            "  id TEXT PRIMARY KEY," ++
-            "  session_id TEXT NOT NULL," ++
-            "  model TEXT," ++
-            "  response_content TEXT," ++
-            "  role TEXT," ++
-            "  tool_name TEXT," ++
-            "  is_input INTEGER DEFAULT 0," ++
-            "  is_output INTEGER DEFAULT 0," ++
-            "  is_feed_to_llm INTEGER DEFAULT 1," ++
-            "  created_at TEXT DEFAULT (datetime('now'))" ++
-            ")",
-        &[_][]const u8{},
-    );
-    try db.exec(alloc,
-        "CREATE TABLE session_activity (" ++
-            "  id TEXT PRIMARY KEY," ++
-            "  session_id TEXT NOT NULL," ++
-            "  description TEXT NOT NULL," ++
-            "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP" ++
-            ")",
-        &[_][]const u8{},
-    );
-    try db.exec(alloc,
-        "CREATE TABLE session_skills (" ++
-            "  session_id TEXT NOT NULL," ++
-            "  skill_name TEXT NOT NULL," ++
-            "  content TEXT NOT NULL," ++
-            "  loaded_at INTEGER" ++
-            ")",
-        &[_][]const u8{},
-    );
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
     return .{ .db = db, .threaded = threaded };
 }
 
