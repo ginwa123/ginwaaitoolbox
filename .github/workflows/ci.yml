@@ -630,7 +630,6 @@ jobs:
           echo "✓ nalar-desktop --smoke-test passed"
 
       - name: "Functional tests: real-data isolation suites"
-        if: runner.os != 'Windows'
         # 8 functional test suites exercising the real nalar HTTP API
         # against non-trivial data shapes. Each test boots a fresh
         # nalar binary against an isolated tmpdir HOME (mktemp),
@@ -643,11 +642,17 @@ jobs:
         # Wall-clock: ~5 min total (each test = ~10s including
         # boot + teardown).
         #
-        # Same gate as the existing smoke tests: only the
-        # Linux-native and macOS-native cells (matrix.target.step
-        # != '__SKIP__'). The cross-compile cells don't have a
-        # runnable nalar binary on the runner.
-        if: matrix.target.step != '__SKIP__'
+        # Two gates:
+        #   1. runner.os != 'Windows' — the Python pytest harness's
+        #      is_safe_tmp() allow-list is currently POSIX-only
+        #      (/tmp/, /private/tmp/, /private/var/folders/). Win temp
+        #      paths (C:/Users/.../AppData/Local/Temp) aren't matched.
+        #      Cross-platform allow-list is a separate follow-up.
+        #   2. matrix.target.step != '__SKIP__' — preserves the
+        #      existing cross-compile-cell guard from before this PR.
+        if: |
+          runner.os != 'Windows' &&
+          matrix.target.step != '__SKIP__'
         shell: bash
         run: |
           set -u
