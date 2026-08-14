@@ -320,6 +320,7 @@ onBeforeUnmount(() => {
     :is-expandable="(e: any) => e.is_directory as boolean"
     :label-for="(e: any) => e.name as string"
     :close-on-select="true"
+    :enable-recent-history="true"
     title="Select Kanban Project Root"
     @select="handleFolderSelected"
   />

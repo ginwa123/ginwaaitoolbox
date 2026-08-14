@@ -1185,6 +1185,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                     :initial-path="cwdSession || props.cwd || '/'"
                     :selected-path="cwdSession || props.cwd || ''"
                     title="Select Per-Task Project Root"
+                    :enable-recent-history="true"
                     @select="selectCwd"
                   />
                 </div>

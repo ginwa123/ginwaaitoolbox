@@ -1,0 +1,573 @@
+<style>
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2e2c2c; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #4a4747; }
+  * { scrollbar-width: thin; scrollbar-color: #2e2c2c transparent; }
+
+  body {
+    background: transparent;
+    color: #e6e4e4;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    margin: 0;
+    padding: 0;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .picker {
+    background: #1a1818;
+    border: 1px solid #2a2929;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 16px 50px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.02);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  /* === Header === */
+  .head {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    gap: 10px;
+    border-bottom: 1px solid #242222;
+  }
+  .head .icon { color: #d97706; font-size: 14px; flex-shrink: 0; }
+  .head .title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e6e4e4;
+  }
+  .head .spacer { flex: 1; }
+  .head .close {
+    background: transparent;
+    border: none;
+    color: #777;
+    cursor: pointer;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .head .close:hover { background: #2a2929; color: #fff; }
+
+  /* === Mode tabs === */
+  .mode-tabs {
+    display: flex;
+    background: #1d1b1b;
+    border-bottom: 1px solid #242222;
+    padding: 0 12px;
+    gap: 2px;
+  }
+  .mode-tab {
+    padding: 8px 14px;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.1s;
+  }
+  .mode-tab:hover { color: #e6e4e4; }
+  .mode-tab.active {
+    color: #d97706;
+    border-bottom-color: #d97706;
+    background: linear-gradient(to bottom, transparent, rgba(217,119,6,0.04));
+  }
+  .mode-tab .count {
+    background: #2a2929;
+    color: #888;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .mode-tab.active .count {
+    background: rgba(217,119,6,0.18);
+    color: #d97706;
+  }
+  .mode-tabs .spacer { flex: 1; }
+  .mode-tabs .hint {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    color: #666;
+    font-size: 10.5px;
+    padding: 0 4px;
+  }
+  .mode-tabs .hint .kbd {
+    background: #2a2929;
+    color: #aaa;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+  }
+
+  /* === Search bar (shared) === */
+  .search {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    gap: 8px;
+    border-bottom: 1px solid #242222;
+  }
+  .search-wrap {
+    flex: 1;
+    position: relative;
+  }
+  .search-wrap::before {
+    content: '🔍';
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    opacity: 0.6;
+  }
+  .search input {
+    width: 100%;
+    box-sizing: border-box;
+    background: #0f0e0e;
+    border: 1px solid #2a2929;
+    color: #e6e4e4;
+    padding: 6px 10px 6px 28px;
+    border-radius: 4px;
+    font-size: 12px;
+    outline: none;
+  }
+  .search input:focus { border-color: #d97706; }
+  .search input::placeholder { color: #666; }
+  .search .view-toggle {
+    display: flex;
+    background: #0f0e0e;
+    border: 1px solid #2a2929;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .search .view-toggle button {
+    background: transparent;
+    border: none;
+    color: #888;
+    padding: 6px 9px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .search .view-toggle button.active {
+    background: #2a2929;
+    color: #d97706;
+  }
+
+  /* === Recent section === */
+  .recent {
+    padding: 8px 12px 10px;
+    background: #1d1b1b;
+  }
+  .recent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .rec {
+    display: grid;
+    grid-template-columns: 22px 1fr auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    background: #181616;
+    border: 1px solid #232222;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  .rec:hover {
+    background: #221f1f;
+    border-color: #d97706;
+  }
+  .rec.selected {
+    background: #d97706;
+    border-color: #d97706;
+    color: #1a1818;
+  }
+  .rec .ico { font-size: 13px; }
+  .rec .name {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: #e6e4e4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rec.selected .name { color: #1a1818; }
+  .rec .name .badge {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(217,119,6,0.15);
+    color: #d97706;
+    letter-spacing: 0.4px;
+  }
+  .rec.selected .name .badge {
+    background: rgba(0,0,0,0.2);
+    color: #1a1818;
+  }
+  .rec .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: #888;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rec.selected .sub { color: #1a1818; opacity: 0.7; }
+  .rec .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #888;
+    font-size: 10.5px;
+    flex-shrink: 0;
+  }
+  .rec.selected .meta { color: #1a1818; opacity: 0.7; }
+  .rec .star {
+    color: #d97706;
+    font-size: 11px;
+    width: 14px;
+    text-align: center;
+  }
+  .rec:not(.pinned) .star { color: #3a3838; }
+
+  /* === Simple folder picker === */
+  .simple-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    padding: 7px 12px;
+    gap: 4px;
+    border-top: 1px solid #242222;
+    background: #161515;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: #888;
+    flex-wrap: wrap;
+  }
+  .breadcrumb .crumb {
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    color: #888;
+    transition: all 0.1s;
+  }
+  .breadcrumb .crumb:hover { background: #2a2929; color: #e6e4e4; }
+  .breadcrumb .crumb.current { color: #d97706; font-weight: 600; }
+  .breadcrumb .sep { color: #555; font-size: 10px; }
+  .breadcrumb .go {
+    margin-left: auto;
+    background: transparent;
+    border: 1px solid #2a2929;
+    color: #888;
+    padding: 2px 9px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 10.5px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-family: -apple-system, sans-serif;
+  }
+  .breadcrumb .go:hover { background: #d97706; color: #1a1818; border-color: #d97706; }
+
+  .tree {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1.1fr;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .pane {
+    overflow-y: auto;
+    border-right: 1px solid #242222;
+  }
+  .pane:last-child { border-right: none; }
+  .pane-head {
+    padding: 5px 12px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #666;
+    background: #161515;
+    border-bottom: 1px solid #242222;
+    font-weight: 700;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .node {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 12px 3px 8px;
+    cursor: pointer;
+    color: #ccc;
+    font-size: 12px;
+    user-select: none;
+  }
+  .node:hover { background: #232121; }
+  .node.selected { background: rgba(217,119,6,0.15); color: #d97706; }
+  .node .arrow {
+    width: 12px;
+    color: #666;
+    font-size: 9px;
+    flex-shrink: 0;
+    text-align: center;
+    transition: transform 0.1s;
+  }
+  .node.open .arrow { transform: rotate(90deg); }
+  .node .ico { font-size: 13px; flex-shrink: 0; }
+  .node .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .indent { display: inline-block; width: 12px; flex-shrink: 0; }
+
+  /* === Footer === */
+  .foot {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-top: 1px solid #242222;
+    background: #161515;
+    font-size: 10.5px;
+    color: #777;
+    gap: 14px;
+  }
+  .foot .sel {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .foot .sel .lbl { color: #666; flex-shrink: 0; font-family: -apple-system, sans-serif; }
+  .foot .sel .path {
+    color: #d97706;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .foot .btn {
+    padding: 4px 12px;
+    border-radius: 4px;
+    border: 1px solid #2a2929;
+    background: transparent;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .foot .btn:hover { background: #2a2929; color: #fff; }
+  .foot .btn.primary {
+    background: #d97706;
+    color: #1a1818;
+    border-color: #d97706;
+  }
+  .foot .btn.primary:hover { background: #f59e0b; }
+</style>
+
+<div class="picker">
+  <div class="head">
+    <span class="icon">📁</span>
+    <span class="title">Select Per-Task Project Root</span>
+    <span class="spacer"></span>
+    <button class="close" title="Close (esc)">✕</button>
+  </div>
+
+  <!-- Mode tabs at top -->
+  <div class="mode-tabs">
+    <div class="mode-tab active" onclick="setMode(this, 'recent')">
+      <span>⚡</span>
+      <span>Recent</span>
+      <span class="count">12</span>
+    </div>
+    <div class="mode-tab" onclick="setMode(this, 'simple')">
+      <span>📂</span>
+      <span>Browse</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="hint">
+      <span>↑↓ nav</span>
+      <span class="kbd">↵</span>
+      <span>select</span>
+    </div>
+  </div>
+
+  <div class="search">
+    <div class="search-wrap">
+      <input type="text" placeholder="Search... (press / to focus)" />
+    </div>
+    <div class="view-toggle">
+      <button class="active" title="Tree view">🌳</button>
+      <button title="Grid view">▦</button>
+    </div>
+  </div>
+
+  <!-- ============ RECENT MODE ============ -->
+  <div class="recent" id="recentSection">
+    <div class="recent-list">
+      <div class="rec pinned" data-path="/home/ginwa/ginwaaitoolbox" onclick="pickRecent(this)">
+        <span class="ico">📁</span>
+        <div>
+          <div class="name">ginwaaitoolbox <span class="badge">⭐ PINNED</span></div>
+          <div class="sub">/home/ginwa/ginwaaitoolbox</div>
+        </div>
+        <span class="meta">now</span>
+        <span class="star">★</span>
+      </div>
+      <div class="rec" data-path="/home/ginwa/ginwasaas" onclick="pickRecent(this)">
+        <span class="ico">📁</span>
+        <div>
+          <div class="name">ginwasaas</div>
+          <div class="sub">/home/ginwa/ginwasaas</div>
+        </div>
+        <span class="meta">2h</span>
+        <span class="star">☆</span>
+      </div>
+      <div class="rec" data-path="/home/ginwa/projects/api-server" onclick="pickRecent(this)">
+        <span class="ico">📁</span>
+        <div>
+          <div class="name">api-server</div>
+          <div class="sub">/home/ginwa/projects/api-server</div>
+        </div>
+        <span class="meta">yest</span>
+        <span class="star">☆</span>
+      </div>
+      <div class="rec" data-path="/home/ginwa/projects/dashboard" onclick="pickRecent(this)">
+        <span class="ico">📁</span>
+        <div>
+          <div class="name">dashboard</div>
+          <div class="sub">/home/ginwa/projects/dashboard</div>
+        </div>
+        <span class="meta">3d</span>
+        <span class="star">☆</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SIMPLE / BROWSE MODE ============ -->
+  <div class="simple-body" id="simpleSection" style="display:none">
+    <div class="breadcrumb">
+      <span class="crumb" onclick="crumbClick(this)">/</span>
+      <span class="sep">›</span>
+      <span class="crumb" onclick="crumbClick(this)">home</span>
+      <span class="sep">›</span>
+      <span class="crumb" onclick="crumbClick(this)">ginwa</span>
+      <span class="sep">›</span>
+      <span class="crumb current" onclick="crumbClick(this)">ginwaaitoolbox</span>
+      <button class="go">🍵 Go</button>
+    </div>
+
+    <div class="tree">
+      <div class="pane">
+        <div class="pane-head">Tree</div>
+        <div class="node open" onclick="toggleNode(this)"><span class="arrow">▶</span><span class="ico">📁</span><span class="name">/</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▶</span><span class="ico">📁</span><span class="name">boot</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▶</span><span class="ico">📁</span><span class="name">dev</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▶</span><span class="ico">📁</span><span class="name">etc</span></div>
+        <div class="node open" onclick="toggleNode(this)"><span class="indent"></span><span class="arrow">▶</span><span class="ico">📁</span><span class="name">home</span></div>
+        <div class="node open" onclick="toggleNode(this)"><span class="indent"></span><span class="indent"></span><span class="arrow">▶</span><span class="ico">📁</span><span class="name">ginwa</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">agentic_coding_zig</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">anakmagangweb</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">contexts</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">Desktop</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">Documents</span></div>
+        <div class="node selected" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">ginwaaitoolbox</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">ginwasaas</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">go</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">Projects</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="indent"></span><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">work</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">mnt</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">opt</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">proc</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">root</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">run</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">srv</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">sys</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">tmp</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">usr</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="indent"></span><span class="arrow">▷</span><span class="ico">📁</span><span class="name">var</span></div>
+      </div>
+
+      <div class="pane">
+        <div class="pane-head">Contents of ginwaaitoolbox</div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">bin</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">docs</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">node_modules</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">scripts</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">src</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">tests</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow">▷</span><span class="ico">📁</span><span class="name">tools</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">AGENTS.md</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">build.zig</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">build.zig.zon</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">CLAUDE.md</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">NALAR.md</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">pytest.ini</span></div>
+        <div class="node" onclick="selectNode(this)"><span class="arrow" style="visibility:hidden">▷</span><span class="ico">📄</span><span class="name">README.md</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="sel">
+      <span class="lbl">Selected:</span>
+      <span class="path" id="selPath">/home/ginwa/ginwaaitoolbox/</span>
+    </div>
+    <button class="btn">Cancel</button>
+    <button class="btn primary">Select</button>
+  </div>
+</div>
+
+<script>
+  function setMode(tab, mode) {
+    document.querySelectorAll('.mode-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('recentSection').style.display = (mode === 'recent') ? 'block' : 'none';
+    document.getElementById('simpleSection').style.display = (mode === 'simple') ? 'flex' : 'none';
+  }
+
+  function pickRecent(rec) {
+    document.querySelectorAll('.rec').forEach(r => r.classList.remove('selected'));
+    rec.classList.add('selected');
+    document.getElementById('selPath').textContent = rec.getAttribute('data-path') + '/';
+  }
+
+  function selectNode(node) {
+    document.querySelectorAll('.pane .node').forEach(n => n.classList.remove('selected'));
+    node.classList.add('selected');
+    document.getElementById('selPath').textContent = node.querySelector('.name').textContent + '/';
+  }
+
+  function toggleNode(node) {
+    node.classList.toggle('open');
+  }
+
+  function crumbClick(c) {
+    document.querySelectorAll('.breadcrumb .crumb').forEach(x => x.classList.remove('current'));
+    c.classList.add('current');
+  }
+</script>

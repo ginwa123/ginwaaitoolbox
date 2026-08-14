@@ -1132,6 +1132,7 @@ const handleCreateTaskSave = async (payload: {
     :is-expandable="(e: any) => e.is_directory as boolean"
     :label-for="(e: any) => e.name as string"
     :close-on-select="false"
+    :enable-recent-history="true"
     title="Select Project Root for this Kanban"
     @select="handleProjectRootSelected"
   />

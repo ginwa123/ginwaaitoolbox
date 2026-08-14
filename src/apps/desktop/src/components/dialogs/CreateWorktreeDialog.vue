@@ -306,6 +306,7 @@ onBeforeUnmount(() => {
       :label-for="(item: FolderEntry) => item.name"
       :initial-path="parentDir"
       :selected-path="parentDir"
+      :enable-recent-history="true"
       title="Select parent directory"
       @select="handleFolderSelected"
     />
