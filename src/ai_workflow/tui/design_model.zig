@@ -2065,6 +2065,11 @@ pub fn groupElements(
     var min_y: i64 = std.math.maxInt(i64);
     var max_x: i64 = std.math.minInt(i64);
     var max_y: i64 = std.math.minInt(i64);
+    // Track min_z so the new container can be placed BEHIND its
+    // children (a group/frame is a container, not a peer — it must
+    // not occlude its contents). min_z starts at the same sentinels
+    // as min_x/min_y so a single-child page still works.
+    var min_z: i64 = std.math.maxInt(i64);
     var max_z: i64 = 0;
     var max_pos: i64 = -1;
     for (children.items) |c| {
@@ -2072,6 +2077,7 @@ pub fn groupElements(
         if (c.y < min_y) min_y = c.y;
         if (c.x + c.width > max_x) max_x = c.x + c.width;
         if (c.y + c.height > max_y) max_y = c.y + c.height;
+        if (c.z_index < min_z) min_z = c.z_index;
         if (c.z_index > max_z) max_z = c.z_index;
         if (c.position > max_pos) max_pos = c.position;
     }
@@ -2122,7 +2128,13 @@ pub fn groupElements(
     defer allocator.free(width_str);
     const height_str = try std.fmt.allocPrint(allocator, "{d}", .{group_height});
     defer allocator.free(height_str);
-    const z_index_str = try std.fmt.allocPrint(allocator, "{d}", .{max_z + 1});
+    // The new container must render BEHIND its children. Using the
+    // highest child z_index plus one would put the group on top of its
+    // contents, so an opaque `fill` like the user's template #181616
+    // would occlude the children inside it. min_z - 1 slides the
+    // container one slot below the earliest child so the children
+    // paint on top. (See task_1786693066547 / plan 2026-08-14.)
+    const z_index_str = try std.fmt.allocPrint(allocator, "{d}", .{min_z - 1});
     defer allocator.free(z_index_str);
     const position_str = try std.fmt.allocPrint(allocator, "{d}", .{max_pos + 1});
     defer allocator.free(position_str);
