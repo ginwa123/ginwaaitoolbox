@@ -60,6 +60,38 @@ fn linkPlatformDeps(
     }
 }
 
+/// Resolve the active macOS SDK path via `xcrun --show-sdk-path`.
+///
+/// WHY THIS EXISTS: this build.zig's `target` (see `standardTargetOptions`
+/// below) always fills in an explicit `.os_tag` in its default_target query
+/// — even on native builds, where Zig would normally leave it null. Zig's
+/// automatic macOS-SDK autodetection (the thing that fills in framework
+/// search paths for `linkFramework` calls) only fires when it can tell the
+/// target query is genuinely native (i.e. os_tag left unset). Because this
+/// file always sets os_tag explicitly, that autodetection path never runs,
+/// and `linkFramework("Cocoa")` / `linkFramework("WebKit")` fail with
+/// "searched paths: none" — there's no SDK path filled in at all.
+///
+/// The fix: resolve the SDK path ourselves via `xcrun` and wire the
+/// framework/include/library search paths manually before linking.
+///
+/// NOTE: this only works when building ON a macOS host (xcrun is an Xcode/
+/// CLT tool). If this project ever needs to cross-compile TO macOS from a
+/// non-mac host, this will need a vendored SDK instead, following the same
+/// pattern as the vendored curl/sqlite3 fetch steps elsewhere in this file.
+fn getMacosSdkPath(b: *std.Build) []const u8 {
+    const result = std.process.run(
+        b.allocator,
+        b.graph.io,
+        .{
+            .argv = &.{ "xcrun", "--show-sdk-path" },
+            .stdout_limit = .limited(1024),
+            .stderr_limit = .limited(1024),
+        },
+    ) catch @panic("`xcrun --show-sdk-path` failed — is Xcode or the Command Line Tools installed? Run `xcode-select --install` or `sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer`.");
+    return std.mem.trim(u8, result.stdout, " \n\r\t");
+}
+
 fn createPlatformExe(
     b: *std.Build,
     mod: *std.Build.Module,
@@ -734,6 +766,28 @@ pub fn build(b: *std.Build) void {
             // Zig 0.16 (not on the Compile step like in older versions) —
             // see the Linux branch above for the matching addCSourceFile
             // pattern.
+            //
+            // FIX: Zig doesn't auto-detect the macOS SDK here because
+            // `target`'s query has an explicit .os_tag (see the
+            // standardTargetOptions default_target block near the top of
+            // `build`), which disables Zig's native-SDK autodetection
+            // fast path — that path only runs when os_tag is left null.
+            // Without it, `linkFramework` has nowhere to look and fails
+            // with "unable to find framework 'Cocoa'. searched paths: none".
+            // We resolve the SDK path ourselves via `xcrun` and wire the
+            // framework/include/library search paths manually before
+            // linking. See `getMacosSdkPath` above for more detail.
+            const sdk_path = getMacosSdkPath(b);
+            desktop_exe.root_module.addSystemFrameworkPath(.{
+                .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk_path}),
+            });
+            desktop_exe.root_module.addSystemIncludePath(.{
+                .cwd_relative = b.fmt("{s}/usr/include", .{sdk_path}),
+            });
+            desktop_exe.root_module.addLibraryPath(.{
+                .cwd_relative = b.fmt("{s}/usr/lib", .{sdk_path}),
+            });
+
             const mm_file = b.path("src/apps/desktop_app/platform/macos/nalar_webview.mm");
             desktop_exe.root_module.addCSourceFile(.{ .file = mm_file, .flags = &.{"-ObjC++"} });
             desktop_exe.root_module.linkFramework("Cocoa", .{});
