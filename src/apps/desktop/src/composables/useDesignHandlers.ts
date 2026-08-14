@@ -1,6 +1,7 @@
 import { useNotificationStore } from '../stores/notifications'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { designLogger } from '../helpers/designLogger'
+import type { DesignElement, DesignElementType } from '../api'
 
 /**
  * AppLayout's design-mode handlers, extracted into a composable so
@@ -200,6 +201,54 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       notificationStore.notifyError('Failed to delete element', message)
+    }
+  }
+
+  /**
+   * NEW (regression fix, 2026-08-14, "design mode, add element manual
+   * not working"). Routes the `createElement({ name, type, html })`
+   * payload from the AddDesignElementDialog to the
+   * workspacesStore.addDesignElement action → POST /elements endpoint.
+   * The active page id is read from the store (mirrored by DesignView
+   * on mount + every tab switch). On error, surfaces an Error toast;
+   * on success, returns the persisted DesignElement so callers can
+   * capture it in the history composable without re-fetching.
+   *
+   * Quiet no-op when activeDesignPageId is empty (matches the pattern
+   * of `updateElement` / `deleteElement` / `translateElement`) — we
+   * never want a race-condition create to land on the wrong page.
+   */
+  async function createElement(
+    workspaceId: string,
+    itemId: string,
+    body: {
+      name: string
+      type: DesignElementType
+      html: string
+      [k: string]: unknown
+    },
+  ): Promise<DesignElement | null> {
+    const pageId = workspacesStore.activeDesignPageId
+    if (!pageId) {
+      console.warn('[useDesignHandlers.createElement] no activeDesignPageId; ignoring', {
+        workspaceId,
+        itemId,
+        name: body.name,
+        type: body.type,
+      })
+      return null
+    }
+    try {
+      return await workspacesStore.addDesignElement(
+        workspaceId,
+        itemId,
+        pageId,
+        body,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      notificationStore.notifyError('Failed to add element', message)
+      return null
     }
   }
 
@@ -515,6 +564,7 @@ export function useDesignHandlers(args?: UseDesignHandlersArgs) {
     translateElement,
     resizeElement,
     deleteElement,
+    createElement,
     groupSelection,
     ungroupSelection,
     leaveGroup,

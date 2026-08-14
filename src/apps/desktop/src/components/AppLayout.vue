@@ -25,6 +25,7 @@ import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
 import { useDesignSseStore } from '../stores/designSse'
 import * as api from '../api'
+import type { DesignElement as DesignElementApi } from '../api'
 import {
   OPEN_IN_CODE_EDITOR_KEY,
   type OpenInCodeEditorFn,
@@ -1541,6 +1542,38 @@ const handleDesignDeleteElement = async (elementId: string): Promise<void> => {
   await designHandlers.deleteElement(ws.id, item.id, elementId)
 }
 
+/**
+ * NEW (regression fix, 2026-08-14, "design mode, add element manual
+ * not working"). `<DesignView>` fires this with the body returned by
+ * the AddDesignElementDialog's `create` emit:
+ *   { name: string; type: DesignElementApi['type']; html: string }
+ *
+ * Pre-fix: AppLayout's <DesignView> did NOT subscribe to
+ * `@create-element`, so the emit went nowhere. The dialog closed
+ * (the `@close` handler was wired) but no element was added — the
+ * canvas appeared unchanged. The user reported this as "Add element
+ * manual not working".
+ *
+ * Post-fix: routes through `useDesignHandlers.createElement` which
+ * reads the active page id from `workspacesStore.activeDesignPageId`
+ * (mirrored from DesignView's local `activePageId` ref), POSTs to
+ * `/design/pages/:pageId/elements`, and mirrors the created element
+ * into `item.design_elements[]` so the canvas re-renders without a
+ * manual refresh. Errors surface as a notification toast.
+ */
+const handleDesignCreateElement = async (
+  body: {
+    name: string
+    type: DesignElementApi['type']
+    html: string
+  },
+): Promise<void> => {
+  const ws = activeWorkspace.value
+  const item = activeWorkspaceItem.value
+  if (!ws || !item) return
+  await designHandlers.createElement(ws.id, item.id, body)
+}
+
 // Right sidebar cwd - show when chat is open OR task is active
 const rightSidebarCwd = computed(() => {
   if (activeTask.value && activeWorkspaceItem.value?.path) {
@@ -1686,8 +1719,15 @@ watch(chatSessionCwd, (newCwd) => {
 // user clicking the 💬 button in DesignView (which emits `openChat`).
 // In production, this is reached via the DesignView emit chain —
 // tests don't render DesignView because they stub it. Cheap seam.
+//
+// 2026-08-14: also expose `handleDesignCreateElement` for the same
+// reason — the integration test for the "+ Element" dialog →
+// addDesignElement wire invokes the handler directly because tests
+// stub the DesignView child. Keeping the seam tiny: just one more
+// named export.
 defineExpose({
   handleDesignOpenChat,
+  handleDesignCreateElement,
 })
 </script>
 
@@ -1964,6 +2004,7 @@ defineExpose({
         :item-id="activeWorkspaceItem.id"
         @select-page="handleDesignSelectPage"
         @select-element="handleDesignSelectElement"
+        @create-element="handleDesignCreateElement"
         @update-element="handleDesignUpdateElement"
         @translate-element="handleDesignTranslateElement"
         @resize-element="handleDesignResizeElement"

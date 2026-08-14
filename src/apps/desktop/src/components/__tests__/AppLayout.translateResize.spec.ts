@@ -18,6 +18,12 @@
  *   (a) the store method is invoked with the right (ws, item, page, id, dx/dy)
  *   (b) the store method is invoked with the right (ws, item, page, id, patch)
  *
+ * CHUNK 7.5 (REGRESSION for "design mode, add element manual not working"):
+ * a createElement() handler is also tested alongside translate / resize.
+ * Before the fix, AppLayout's <DesignView> did not subscribe to
+ * `@create-element`, so the AddDesignElementDialog's submit emit went
+ * nowhere — the dialog closed silently and the canvas did not update.
+ *
  * If a test fails here, the bug is in AppLayout → useDesignHandlers →
  * workspacesStore wiring (which was just freshly added in the
  * split-move-resize PR).
