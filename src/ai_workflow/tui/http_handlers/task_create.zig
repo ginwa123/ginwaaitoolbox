@@ -625,7 +625,7 @@ fn createStandardTask(
     };
 }
 
-fn useCase(
+pub fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
     input: TaskCreateInput,
