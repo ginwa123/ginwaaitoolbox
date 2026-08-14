@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { useNavigationStore } from './navigation'
+import { useNotificationStore } from './notifications'
 import { useSseBus } from '../helpers/sseBus'
 import { designLogger } from '../helpers/designLogger'
 import type { DesignElement, DesignPage } from '../api'
@@ -2784,6 +2785,81 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Kanban-specific task create. Replaces the addTask + runAgentOnNewTask
+  // dance that KanbanView.handleCreateTaskSave used to do. The backend's
+  // POST /api/workspaces/:wid/items/:iid/kanban/tasks handles both modes
+  // (mode='create' for plain create, mode='create_and_run' for create +
+  // start the agent) in one round-trip.
+  //
+  // Behaviour:
+  //   - mode='create'         → forwards mode + (optionally) tags / cwd /
+  //                              unattended. Returns { task, session: null }.
+  //   - mode='create_and_run' → forwards mode + queue_message +
+  //                              selected_profile_model. Returns
+  //                              { task, session }.
+  //   - mode='create_and_run' failure → notifyError + returns
+  //                              { task: null, session: null }. The host
+  //                              shows a partial-success toast and keeps
+  //                              the local card (the backend's INSERT
+  //                              succeeded even if the agent start failed).
+  //   - mode='create' failure → RE-THROWS (no partial-success path —
+  //                              there's nothing to fall back to).
+  //
+  // Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
+  async function addKanbanTask(
+    workspaceId: string,
+    itemId: string,
+    mode: 'create' | 'create_and_run',
+    params: {
+      name: string
+      description?: string
+      queue_message?: string
+      tags?: string[]
+      imageUrls?: string[]
+      cwd?: string
+      isAutoRetryUntilStop?: string
+      selected_profile_model?: string
+    },
+  ): Promise<api.KanbanCreateResponse> {
+    const wirePayload: api.KanbanCreateTaskPayload | api.KanbanCreateAndRunPayload =
+      mode === 'create_and_run'
+        ? {
+            mode: 'create_and_run',
+            name: params.name,
+            description: params.description,
+            queue_message: params.queue_message ?? '',
+            tags: params.tags,
+            imageUrls: params.imageUrls,
+            cwd: params.cwd,
+            isAutoRetryUntilStop: params.isAutoRetryUntilStop,
+            selected_profile_model: params.selected_profile_model,
+          }
+        : {
+            mode: 'create',
+            name: params.name,
+            description: params.description,
+            tags: params.tags,
+            imageUrls: params.imageUrls,
+            cwd: params.cwd,
+            isAutoRetryUntilStop: params.isAutoRetryUntilStop,
+          }
+
+    try {
+      return await api.createKanbanTask(workspaceId, itemId, wirePayload)
+    } catch (err) {
+      if (mode === 'create_and_run') {
+        // Partial-success path: the backend's task INSERT may have
+        // succeeded even when the run step failed (the session INSERT
+        // might have failed but the task row is still there). Surface
+        // the error as a toast so the user can click the card to retry.
+        const msg = err instanceof Error ? err.message : String(err)
+        useNotificationStore().notifyError(msg, 'Task created — agent did not start')
+        return { task: null as any, session: null }
+      }
+      throw err
+    }
+  }
+
   // PATCH-equivalent for routine tasks. The backend's
   // updateTaskSimple accepts name + routine fields, so this is
   // a thin wrapper that calls the API and updates the local
@@ -3874,6 +3950,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     refreshTask,
     runRoutine,
     runAgentOnNewTask,
+    addKanbanTask,
     updateRoutine,
     pinTask,
     reorderPinnedTasks,
