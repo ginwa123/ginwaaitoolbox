@@ -21,7 +21,16 @@ env:
 
 jobs:
   backend:
-    name: backend (${{ matrix.os }})
+    # matrix.os is an array `[self-hosted, <OS>, <ARCH>]` — GitHub
+    # Actions can't stringify an array into a job name, so the old
+    # `name: backend (${{ matrix.os }})` rendered as the literal
+    # "backend (Array)" on every cell (observed on CI run 31828424315
+    # — 5 cells all showed "backend (Array)" so users couldn't tell
+    # which runner failed at a glance). `matrix.os[1]` is the OS name
+    # (Linux / macOS / Windows), `matrix.os[2]` is the arch (X64 /
+    # ARM64). `runs-on` still takes the full array — that's the label
+    # set the runner itself is registered with, not a display string.
+    name: backend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
