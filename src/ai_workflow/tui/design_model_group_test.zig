@@ -304,6 +304,61 @@ test "groupElements uses union bbox geometry (min_x, min_y, max_x, max_y)" {
     }
 }
 
+// ─── Contract 2b: group z_index sits BELOW its children ──────────────────
+//
+// Fix 2026-08-14 (task_1786693066547): a group's natural visual stacking
+// must be BEHIND its children, otherwise the group's body occludes the
+// children inside it (the user reported the dark fill #181616 hiding the
+// 9 children until they set the group's fill to transparent).
+//
+// Implementation: track `min_z` and compute the group's z_index as
+// `min_z - 1` so the container paints behind the children. Behavioural
+// contract: the source must reference `min_z - 1` and must NOT use
+// `max_z + 1` inside the groupElements function body.
+
+test "groupElements sets z_index below children (min_z - 1, not max_z + 1)" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    // Find the NEXT `pub fn ` after groupElements so the window
+    // covers ONLY groupElements' body (not unrelated functions like
+    // reorderElements that also use `max_z + 1` for Bring-to-front).
+    const after = source[idx..];
+    const fn_marker = "pub fn ";
+    const fn_after = std.mem.indexOfPos(u8, after, "pub fn ".len, fn_marker) orelse after.len;
+    const window = after[0..fn_after];
+
+    const has_min_z = std.mem.indexOf(u8, window, "min_z") != null;
+    const has_min_z_minus_1 = std.mem.indexOf(u8, window, "min_z - 1") != null;
+    const has_max_z_plus_1 = std.mem.indexOf(u8, window, "max_z + 1") != null;
+
+    if (!has_min_z) {
+        std.debug.print(
+            "\n!! groupElements must track min_z across children !!\n",
+            .{});
+        return error.GroupZIndexMinZMissing;
+    }
+    if (!has_min_z_minus_1) {
+        std.debug.print(
+            "\n!! groupElements must allocate z_index_str from `min_z - 1` !!\n" ++
+                "   A container must render BEHIND its children; otherwise the\n" ++
+                "   group's opaque fill occludes the children inside it.\n",
+            .{});
+        return error.GroupZIndexAboveChildren;
+    }
+    if (has_max_z_plus_1) {
+        std.debug.print(
+            "\n!! groupElements must NOT use `max_z + 1` for the group's z_index !!\n" ++
+                "   Reversed: a container drawn on top of its contents occludes them.\n",
+            .{});
+        return error.GroupZIndexAboveChildren;
+    }
+}
+
 // ─── Contract 3: error set ───────────────────────────────────────────────
 
 test "groupElements error set declares ChildAcrossDifferentPages and ChildAlreadyParented" {
@@ -402,6 +457,11 @@ test "groupElements creates a new parent element and reparents the children" {
     try testing.expectEqual(@as(i64, 200), parent.width);
     try testing.expectEqual(@as(i64, 150), parent.height);
     try testing.expectEqual(@as(usize, 0), parent.parent_id.len);
+
+    // The group must render BEHIND its children — otherwise an opaque
+    // fill occludes its contents. Children default to z_index 0, so the
+    // group must sit at -1 (min_z - 1).
+    try testing.expectEqual(@as(i64, -1), parent.z_index);
 
     // Each child should now have parent_id set to the new parent.
     const a_after = try design_model.getElement(alloc, &ctx.db, child_a);
