@@ -8,6 +8,7 @@ const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 const static_files = nalarcore.static_files;
 const migration = nalarcore.migrations_mod.migration;
+const cleanup_stale_worker = @import("schedulers/cleanup_stale_worker.zig");
 
 // state_file and main_service are re-exported from nalarcore (see src/root.zig).
 // Access them via nalarcore.* to avoid duplicating the module symbol
@@ -16,10 +17,6 @@ const state_file = nalarcore.state_file;
 const main_service = nalarcore.main_service;
 
 pub fn main(init: std.process.Init) !void {
-    // const arena_allocator = init.arena;
-    // defer arena_allocator.deinit();
-    // const allocator = arena_allocator.allocator();
-
     const gpa_allocator = init.gpa;
     var arena_allocator = std.heap.ArenaAllocator.init(gpa_allocator);
     const allocator = arena_allocator.allocator();
@@ -501,11 +498,22 @@ pub fn main(init: std.process.Init) !void {
     ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;
 
     std.debug.print("Agent is ready to serve!\n", .{});
-    try gs.listen();
+
+    const boot_unix = std.Io.Clock.now(.real, io).toSeconds();
+    _ = gs.cronjob_manager.register(
+        "* * * * *", // every minute, on the minute
+        "cleanup_stale_worker",
+        cleanup_stale_worker.handle,
+        null,
+        boot_unix,
+    ) catch |err| {
+        std.debug.print("Failed to register heartbeat cron: {s}\n", .{@errorName(err)});
+    };
+
+    try gs.listen(); // blocks until the server is stopped
 
     // Clean shutdown after listen() returns (after shutdown endpoint is called)
     gs.sse_manager.stop();
-
 }
 
 /// Dispatch the `nalar service {start,stop,status,restart}` subcommand.
