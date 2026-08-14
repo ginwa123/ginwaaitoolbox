@@ -95,6 +95,18 @@ pub fn maybeCompactMessagesNew(
     messages: *std.ArrayList(agent.AgentMessage),
     api_key: []const u8,
     base_url: []const u8,
+    /// URL style of the calling profile (`"openai"` or `"anthropic"`).
+    /// Propagated to `callCompactAgent` so the CompactionAgent sends
+    /// the SAME wire format as the main loop. Without this, an
+    /// `url_style: "anthropic"` profile (e.g. "900 ribu antropic")
+    /// sends an OpenAI-shaped JSON body to an Anthropic endpoint,
+    /// the upstream rejects it, and `callCompactAgent` silently
+    /// returns null — so the threshold check fires every iteration
+    /// but compaction never completes (sessions balloon past the
+    /// threshold forever). Defaults to `"openai"` for back-compat
+    /// with callers that haven't been updated. Plan: this file's
+    /// task card.
+    url_style: []const u8,
     cwd: []const u8,
     session_id: []const u8,
     db: *sqlite.SqliteBackend,
@@ -123,6 +135,7 @@ pub fn maybeCompactMessagesNew(
             .api_key = api_key,
             .model = model,
             .base_url = base_url,
+            .url_style = url_style,
             .logger = logger,
         },
     ) orelse {
@@ -469,6 +482,7 @@ const MockState = struct {
     last_agent_model: []const u8 = "",
     last_agent_api_key: []const u8 = "",
     last_agent_base_url: []const u8 = "",
+    last_agent_url_style: []const u8 = "",
     last_agent_messages_len: usize = 0,
     next_compact_xml: ?[]const u8 = null, // null → mock returns null
 
@@ -521,6 +535,7 @@ fn mockCallCompactAgent(obj: CallCompactAgentInput) ?[]const u8 {
     mock_state.last_agent_model = obj.model;
     mock_state.last_agent_api_key = obj.api_key;
     mock_state.last_agent_base_url = obj.base_url;
+    mock_state.last_agent_url_style = obj.url_style;
     mock_state.last_agent_messages_len = obj.messages.items.len;
     return mock_state.next_compact_xml;
 }
@@ -620,6 +635,7 @@ test "shouldCompact dep is called with the right context (force, tokens, model)"
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_mock",
         undefined, // db — not reached when shouldCompact=false
@@ -654,6 +670,7 @@ test "shouldCompact returning false short-circuits — no other deps called" {
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_mock",
         undefined,
@@ -689,6 +706,7 @@ test "shouldCompact returning true routes through callCompactAgent" {
         &messages,
         "sk-bespoke",
         "https://bespoke.example",
+        "openai",
         "/tmp",
         "sess_mock",
         undefined, // db — not reached when callCompactAgent returns null
@@ -706,6 +724,7 @@ test "shouldCompact returning true routes through callCompactAgent" {
     try testing.expectEqualStrings("test-model", mock_state.last_agent_model);
     try testing.expectEqualStrings("sk-bespoke", mock_state.last_agent_api_key);
     try testing.expectEqualStrings("https://bespoke.example", mock_state.last_agent_base_url);
+    try testing.expectEqualStrings("openai", mock_state.last_agent_url_style);
     try testing.expectEqual(@as(usize, 6), mock_state.last_agent_messages_len);
 }
 
@@ -730,6 +749,7 @@ test "callCompactAgent returning null short-circuits — compact_messages_in_mem
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_mock",
         undefined,
@@ -767,6 +787,7 @@ test "full happy path: all three deps called, returns true" {
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_bespoke",
         &s.db,
@@ -811,6 +832,7 @@ test "compact_messages_in_memory error propagates to caller" {
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_mock",
         &s.db,
@@ -953,6 +975,7 @@ test "happy path embeds user history and read_file paths into the compaction XML
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/home/user",
         "sess_embed",
         &s.db,
@@ -1000,6 +1023,7 @@ test "compaction still proceeds when fetchUserChatHistory returns empty (no user
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/home/user",
         "sess_empty",
         &s.db,
@@ -1061,6 +1085,7 @@ test "happy path embeds prior session_activity rows in <recent_activities>" {
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_recent",
         &s.db,
@@ -1131,6 +1156,7 @@ test "omits <recent_activities> when session has no prior activity" {
         &messages,
         "sk-test",
         "https://test.example",
+        "openai",
         "/tmp",
         "sess_no_activity",
         &s.db,

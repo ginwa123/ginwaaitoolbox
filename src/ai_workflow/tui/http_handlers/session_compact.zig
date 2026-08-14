@@ -43,6 +43,15 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const api_key = live_cfg.api_key;
     const model = live_cfg.model;
     const base_url = live_cfg.base_url;
+    // url_style must be propagated to `maybeCompactMessagesNew` so the
+    // CompactionAgent sends the SAME wire format as the calling
+    // session — otherwise an `url_style: "anthropic"` profile sends
+    // an OpenAI-shaped JSON body to an Anthropic endpoint and the
+    // compaction silently fails (returns null from callCompactAgent).
+    // For the manual `Compact` button the user clicks from the UI,
+    // this fixes the same root cause as the workflow.zig propagation
+    // fix (PR companion).
+    const url_style = live_cfg.url_style;
 
     // Load the DB-stored message history and turn it into the in-memory
     // agent-message form that the compact agent operates on.
@@ -79,6 +88,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         messagesLists,
         api_key,
         base_url,
+        url_style,
         cwd,
         session_id,
         sqlite_db,
