@@ -27,22 +27,17 @@ jobs:
       fail-fast: false
       matrix:
         # Cross-platform CI matrix, scoped to the runners we actually have:
-        #   - self-hosted, Linux, X64      → install:linux:system (native Linux build)
-        #   - self-hosted, macOS, ARM64    → install:macos        (native macOS build, Apple Silicon)
-        # There is currently no Windows self-hosted runner registered, so the
-        # Windows cell/job was removed entirely rather than left to queue
-        # forever waiting for a matching runner. Re-add it once a
-        # `[self-hosted, windows]`-labeled runner exists. The Windows
-        # cross-compile artifact build (`zig build install:windows`) is
-        # also broken on a Linux host because the `databases` module's
-        # deps leak Linux system libs into the Windows link line — see
-        # AGENTS.md "Cross-platform pitfalls" for details. To enable
-        # Windows CI, fix BOTH the runner AND the cross-compile build.
-        # The exclude block filters the full cross-product (2 OSes × 2 targets
-        # = 4 cells) down to the 2 native-target cells.
+        #   - self-hosted, Linux, X64      → install:linux:system (native Linux build, pacman deps)
+        #   - self-hosted, macOS, ARM64    → install:macos-arm    (native macOS build, brew deps)
+        #   - self-hosted, Windows, X64    → install:windows-nat  (native Windows build, vcpkg deps)
+        #
+        # Each OS cell picks one target (its native target) — the exclude
+        # block strips the cross-product cells that aren't reachable on the
+        # registered runners.
         os:
         - [self-hosted, Linux, X64]
         - [self-hosted, macOS, ARM64]
+        - [self-hosted, Windows, X64]
         target:
           # Linux native — uses the host's installed glibc / openssl /
           # sqlite3 via the `databases` package's link line.
@@ -53,11 +48,29 @@ jobs:
           # x86_64 binary that the ARM64 runner rejects with "Bad CPU
           # type in executable").
           - { zig: aarch64-macos,          step: install:macos-arm }
+          # Windows native — just `zig build` (no install:* prefix).
+          # Zig's default target follows b.graph.host.result on a Windows
+          # host (build.zig:100), and the `build_all_step` builds the
+          # `install` step which already produces
+          # `zig-out/bin/nalar.exe` + `zig-out/bin/nalar-desktop.exe`.
+          # The system-deps step installs vcpkg + the curl/openssl/sqlite3
+          # ports, and the package's probe locates them at the standard
+          # vcpkg sysroot path (C:\vcpkg\installed\x64-windows).
+          - { zig: x86_64-windows-gnu,     step: __SKIP__ }
         exclude:
+          # 6 cross-product cells pruned down to 3 native cells.
           - os: [self-hosted, Linux, X64]
             target: { zig: aarch64-macos, step: install:macos-arm }
+          - os: [self-hosted, Linux, X64]
+            target: { zig: x86_64-windows-gnu, step: install:windows-nat }
           - os: [self-hosted, macOS, ARM64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
+          - os: [self-hosted, macOS, ARM64]
+            target: { zig: x86_64-windows-gnu, step: install:windows-nat }
+          - os: [self-hosted, Windows, X64]
+            target: { zig: x86_64-linux-gnu, step: install:linux:system }
+          - os: [self-hosted, Windows, X64]
+            target: { zig: aarch64-macos, step: install:macos-arm }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -208,7 +221,147 @@ jobs:
           # too; either way, exporting PATH ensures we pick the right one.
           echo "PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
+      - name: Install system dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Mirror Linux's pacman + macOS's brew: provide curl/openssl/libpq/
+        # sqlite3 + MSVC via vcpkg. The `custom_http_client` and `databases`
+        # packages each probe the vcpkg sysroot at
+        # C:\vcpkg\installed\x64-windows and link system libs when found —
+        # same pattern as the Arch/pacman Linux native flow.
+        #
+        # vcpkg setup has 3 stages:
+        #  1. Install vcpkg + integrate install (registers the
+        #     C:\vcpkg\lib paths with MSVC's LIB env var so `linkSystemLibrary`
+        #     resolves libcurl.lib / libssl.lib).
+        #  2. Install the 4 ports we need (curl, openssl, libpq, sqlite3).
+        #     vcpkg's `--triplet=x64-windows` builds static-link import libs
+        #     (.lib stubs + headers), so Zig's link line resolves them
+        #     directly without an explicit `addLibraryPath` for each lib —
+        #     BUT the package probe still adds it as a fallback for hosts
+        #     where `vcpkg integrate install` hasn't been run.
+        #  3. vcpkg needs MSVC's link.exe on PATH for the static-link import
+        #     libs. `setup-msbuild` installs the MSVC Build Tools + sets up
+        #     vcvars64.bat; sourcing it puts link.exe + cl.exe on PATH.
+        #     Without this step, vcpkg's `vcpkg install` fails with
+        #     "Could not locate a suitable MSVC toolset" on bare Windows
+        #     runners that only have Visual Studio Code / no build tools.
+        #
+        # WebView2 (the runtime + DLL for nalar-desktop on Windows) is the
+        # only port that's NOT vcpkg — it's bundled as part of Windows 10+
+        # out of the box, AND the NuGet package's WebView2Loader.dll +
+        # WebView2.h must be extracted into
+        # `src/apps/desktop_app/platform/windows/` so nalar-desktop can
+        # include them. nuget.exe ships with Windows 10+ out of the box.
+        run: |
+          # 1. Install vcpkg via winget (built-in on Win 10/11). Idempotent:
+          #    if vcpkg is already at C:\vcpkg the winget install is a no-op.
+          if (-not (Test-Path "C:\vcpkg\vcpkg.exe")) {
+            Write-Host "Installing vcpkg..."
+            winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements --silent
+            git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          } else {
+            Write-Host "vcpkg already installed at C:\vcpkg (skipping install)"
+          }
+
+          # 2. Pull the 4 ports. Each is independent so this can run in
+          #    parallel (~minutes vs sequential). vcpkg's build also needs
+          #    a working C compiler; we source vcvars64.bat from BuildTools
+          #    if VS install dir exists.
+          $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          $useMSVC = $false
+          if ($vsInstaller) {
+            Write-Host "Setting up MSVC environment via $($vsInstaller.FullName)"
+            cmd /c "`"$($vsInstaller.FullName)`" && set" | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
+              $name, $value = $_ -split "=", 2
+              Set-Item -Path "Env:$name" -Value $value
+            }
+            $useMSVC = $true
+          } else {
+            Write-Host "No MSVC Build Tools detected — falling back to vcpkg's triplet auto-detection"
+          }
+
+          # vcpkg env caching: VCPKG_DEFAULT_BINARY_CACHE + VCPKG_DOWNLOADS
+          # give us a stable source/binary cache across CI runs (saves the
+          # ~5-min curl-ssl-libpq compilation on subsequent runs when the
+          # per-port hashes match).
+          $env:VCPKG_BINARY_SOURCES = "clear;files`"$env:USERPROFILE\.cache\vcpkg-binary`",readwrite"
+          New-Item -Path "$env:USERPROFILE\.cache\vcpkg-binary" -ItemType Directory -Force | Out-Null
+
+          # 3. Install the 4 ports in parallel via Start-Job. Each port
+          #    fetches source + compiles a small import lib + headers; the
+          #    bottleneck is MSVC link time (~30-60s each), not network.
+          $ports = @("curl", "openssl", "libpq", "sqlite3")
+          $jobs = @()
+          foreach ($port in $ports) {
+            $jobs += Start-Job -ArgumentList $port,$useMSVC -ScriptBlock {
+              param([string]$p, [bool]$msvc)
+              if ($msvc) { & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" }
+              & "C:\vcpkg\vcpkg.exe" install $p`:x64-windows --recurse
+            }
+          }
+          Write-Host "Waiting for $($jobs.Count) parallel vcpkg installs..."
+          $jobs | ForEach-Object { $_ | Wait-Job | Out-Null }
+          $jobs | ForEach-Object {
+            $output = Receive-Job -Job $_
+            if ($_.State -ne "Completed") {
+              Write-Error "vcpkg install job failed for one port. Output: $output"
+              exit 1
+            }
+            Remove-Job $_
+          }
+
+          # 4. Verify each port's install location before the build runs.
+          $expected = @{
+            "curl"    = "C:\vcpkg\installed\x64-windows\include\curl\curl.h"
+            "openssl" = "C:\vcpkg\installed\x64-windows\include\openssl\ssl.h"
+            "libpq"   = "C:\vcpkg\installed\x64-windows\include\libpq-fe.h"
+            "sqlite3" = "C:\vcpkg\installed\x64-windows\include\sqlite3.h"
+          }
+          foreach ($port in $expected.Keys) {
+            if (-not (Test-Path $expected[$port])) {
+              Write-Error "vcpkg port $port missing expected file: $($expected[$port])"
+              exit 1
+            }
+            Write-Host "  ✓ $port installed at $($expected[$port])"
+          }
+
+          # 5. WebView2 NuGet (only needed for nalar-desktop, NOT for the
+          #    service binary nalar.exe). Extract the headers + DLL into
+          #    src/apps/desktop_app/platform/windows/ — Zig's build.zig
+          #    looks for them there via include path probing. If
+          #    nalar-desktop isn't built (e.g. skip-windows-desktop in
+          #    a future matrix), this step becomes a no-op.
+          $nugetVersion = "1.0.2651.78"
+          $webview2Src = "$env:USERPROFILE\.nuget\packages\microsoft.web.webview2\$nugetVersion"
+          $webview2Dst = "src\apps\desktop_app\platform\windows"
+          if (-not (Test-Path "$webview2Src\build\native\include\WebView2.h")) {
+            Write-Host "Fetching WebView2 NuGet $nugetVersion..."
+            nuget install Microsoft.Web.WebView2 -Version $nugetVersion -OutputDirectory "$env:USERPROFILE\.nuget" -ForceEnglishOutput
+          } else {
+            Write-Host "WebView2 NuGet $nugetVersion already in cache"
+          }
+          Copy-Item -Force "$webview2Src\build\native\include\WebView2.h" "$webview2Dst\WebView2.h"
+          Copy-Item -Force "$webview2Src\build\native\include\WebView2Loader.h" "$webview2Dst\WebView2Loader.h"
+          Copy-Item -Force "$webview2Src\runtimes\win-x64\native\WebView2Loader.dll" "$webview2Dst\WebView2Loader.dll"
+          # Symlink (or copy) the import lib so Zig's MSVC linker resolves
+          # it directly via addLibraryPath or vcpkg's LIB search paths.
+          if (Test-Path "$webview2Src\build\native\lib\x64\WebView2Loader.dll.lib") {
+            Copy-Item -Force "$webview2Src\build\native\lib\x64\WebView2Loader.dll.lib" "$webview2Dst\WebView2Loader.lib"
+          } elseif (Test-Path "$webview2Src\build\native\WebView2Loader.dll.lib") {
+            Copy-Item -Force "$webview2Src\build\native\WebView2Loader.dll.lib" "$webview2Dst\WebView2Loader.lib"
+          }
+          Write-Host "✓ WebView2 headers + WebView2Loader.dll/lib staged at $webview2Dst"
+
+          # 6. vcpkg integrate install (registers C:\vcpkg\lib with MSVC's
+          #    LIB env var globally for the user account). Idempotent.
+          C:\vcpkg\vcpkg.exe integrate install
+          Write-Host "✓ vcpkg integrated with MSVC"
+
       - name: Show toolchain versions
+        shell: bash
         # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
         # because the macOS build uses the vendored sqlite3 amalgamation and
         # does NOT link system openssl (build.zig's macOS branch in
@@ -223,6 +376,13 @@ jobs:
         # self-hosted runner should show all 4 libs as "installed" —
         # the probe will then skip the vendor fetch steps entirely
         # (saves ~30 min on a fresh checkout).
+        #
+        # Windows: pkg-config isn't on PATH after vcpkg-integrated install
+        # (vcpkg ships its own .pc files under installed\x64-windows\lib\pkgconfig
+        # but doesn't drop pkg-config.exe on PATH). The toolchain versions
+        # diagnostic is informational — fall back to "not installed" so
+        # Windows doesn't fail the build step.
+        if: runner.os != 'Windows'
         run: |
           zig version
           cc --version | head -n 1
@@ -230,6 +390,58 @@ jobs:
           pkg-config --modversion openssl  2>/dev/null || echo "openssl.pc:  not installed (not linked on macOS)"
           pkg-config --modversion libpq   2>/dev/null || echo "libpq.pc:    not installed (not linked on macOS)"
           pkg-config --modversion libcurl 2>/dev/null || echo "libcurl.pc:  not installed (vendored archive is used on macOS)"
+
+      - name: Show toolchain versions (Windows)
+        shell: pwsh
+        if: runner.os == 'Windows'
+        # PowerShell-native diagnostic. Verifies the 4 port headers exist
+        # at C:\vcpkg\installed\x64-windows\include\*.h AND that Zig 0.16
+        # and MSVC's cl.exe are on PATH (after the vcvars64.bat step above).
+        # Each line that fails exits the step with code 1 — the build then
+        # fails with a clear "vcpkg port X missing" message rather than
+        # a confusing Zig link error.
+        run: |
+          $zig = Get-Command zig -ErrorAction SilentlyContinue
+          if (-not $zig) {
+            Write-Error "zig not on PATH — did mlugg/setup-zig@v2 run?"
+            exit 1
+          }
+          & zig version
+
+          $cl = Get-Command cl -ErrorAction SilentlyContinue
+          $link = Get-Command link -ErrorAction SilentlyContinue
+          if (-not $cl -or -not $link) {
+            Write-Warning "MSVC cl.exe / link.exe not on PATH — nalar-desktop link step will fail. Re-source vcvars64.bat from Build Tools."
+          } else {
+            & cl 2>&1 | Select-Object -First 1
+            & link 2>&1 | Select-Object -First 1
+          }
+
+          $r = "C:\vcpkg\installed\x64-windows"
+          $checks = @{
+            "sqlite3" = "$r\include\sqlite3.h"
+            "openssl" = "$r\include\openssl\ssl.h"
+            "libpq"   = "$r\include\libpq-fe.h"
+            "libcurl" = "$r\include\curl\curl.h"
+          }
+          foreach ($lib in $checks.Keys) {
+            if (Test-Path $checks[$lib]) {
+              Write-Host "  ✓ $lib  ($($checks[$lib]))"
+            } else {
+              Write-Error "$lib header missing at $($checks[$lib]) — install `vcpkg install $($lib):x64-windows --recurse`"
+              exit 1
+            }
+          }
+
+          # WebView2 — only needed for nalar-desktop, not for nalar.exe.
+          $wv2 = "src\apps\desktop_app\platform\windows"
+          foreach ($f in @("WebView2.h", "WebView2Loader.h", "WebView2Loader.dll", "WebView2Loader.lib")) {
+            if (-not (Test-Path "$wv2\$f")) {
+              Write-Warning "$wv2\$f missing — nalar-desktop will link with an empty stub or skip WebView2 init. The 'nalar-desktop --smoke-test' path may not be headless-checked."
+            } else {
+              Write-Host "  ✓ $wv2\$f"
+            }
+          }
 
       # Note: the sqlite3 amalgamation fetch is now handled by
       # build.zig's `vendor_sqlite3_step` (wired into `test_step` and
@@ -374,8 +586,14 @@ jobs:
         # and migration_009_test.zig for the canonical regression).
         run: |
           set -u
+          # On Windows runners the binary has a .exe suffix; on Linux/macOS
+          # the build.zig host_binary_name switch (build.zig:1223) drops the
+          # suffix. Probe for both shapes so the criterion check works on
+          # either platform.
           if [ -x "zig-out/bin/nalar" ]; then
             NALAR_BIN="./zig-out/bin/nalar"
+          elif [ -x "zig-out/bin/nalar.exe" ]; then
+            NALAR_BIN="./zig-out/bin/nalar.exe"
           elif [ -x "zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
             NALAR_BIN="./zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')"
           else
@@ -394,10 +612,16 @@ jobs:
         shell: bash
         run: |
           set -u
-          timeout 10 ./zig-out/bin/nalar-desktop --smoke-test > /tmp/desktop-smoke.log 2>&1
+          DESKTOP_BIN="./zig-out/bin/nalar-desktop"
+          [[ -x "$DESKTOP_BIN.exe" ]] && DESKTOP_BIN="$DESKTOP_BIN.exe"
+          if [[ ! -x "$DESKTOP_BIN" ]]; then
+            echo "✗ smoke test: $DESKTOP_BIN missing" >&2
+            exit 1
+          fi
+          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1
           rc=$?
           if [[ $rc -ne 0 ]]; then
-            echo "✗ nalar-desktop --smoke-test exited $rc"
+            echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
             cat /tmp/desktop-smoke.log
             exit 1
           fi
@@ -406,6 +630,7 @@ jobs:
           echo "✓ nalar-desktop --smoke-test passed"
 
       - name: "Functional tests: real-data isolation suites"
+        if: runner.os != 'Windows'
         # 8 functional test suites exercising the real nalar HTTP API
         # against non-trivial data shapes. Each test boots a fresh
         # nalar binary against an isolated tmpdir HOME (mktemp),
@@ -455,15 +680,19 @@ jobs:
         # installs both. The `nalar` service binary is also useful as a
         # standalone (for users who only want the REST API + Vue webapp
         # served by nalar itself, no GTK).
-        # The artifact name uses matrix.target.zig so both cells produce
-        # distinct artifact names. Both cell artifacts are visible on the
-        # same commit. retention=14d matches the PR #71 baseline.
+        # The artifact name uses matrix.target.zig so each cell produces
+        # a distinct artifact name. All 3 cell artifacts are visible on
+        # the same commit. Path glob catches both `nalar` (Linux/macOS)
+        # and `nalar.exe` (Windows) plus `nalar-desktop` / `nalar-desktop.exe`.
+        # retention=14d matches the PR #71 baseline.
         uses: actions/upload-artifact@v4
         with:
           name: nalar-${{ matrix.target.zig }}-${{ github.sha }}
           path: |
             zig-out/bin/nalar
+            zig-out/bin/nalar.exe
             zig-out/bin/nalar-desktop
+            zig-out/bin/nalar-desktop.exe
           retention-days: 14
 
   # frontend: REMOVED in 2026-07-04 plan (docs/superpowers/plans/2026-07-04-nalar-desktop-ci-cd.md).
