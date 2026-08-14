@@ -100,3 +100,8 @@ zig-cache/
 core
 core.*
 *.core
+
+
+
+
+src/apps/desktop_app/embedded/webapp_assets.zig
