@@ -590,6 +590,25 @@ fn wsEchoHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, server_pt
     }
 }
 
+// ============================================================================
+// Cronjob demo — a single callback that fires every minute.
+//
+// Why this is the canonical example:
+//   - It shows the `register` API (expression + name + callback + now anchor)
+//   - The callback itself is trivial (a log line) so the demo is easy to
+//     read end-to-end without domain-specific noise.
+//
+// The cronjob manager is started automatically by `gs.listen()` — see the
+// "Cronjob manager running (1s tick)" log line below.
+// ============================================================================
+
+/// Callback invoked by the cronjob manager when the scheduled time arrives.
+/// Receives the current Unix timestamp (seconds) as `now_unix`. Runs on
+/// the cronjob background thread — keep it short and non-blocking.
+fn heartbeatLogger(_: ?*anyopaque, now_unix: i64) void {
+    std.debug.print("[cronjob] heartbeat fired at now={d}\n", .{now_unix});
+}
+
 pub fn run(init: std.process.Init) !void {
     // const arena_allocator = init.arena;
     // defer arena_allocator.deinit();
@@ -643,6 +662,29 @@ pub fn run(init: std.process.Init) !void {
     try gs.router.sse("/stream", sseStreamHandler);
     // WebSocket endpoint — echo + broadcast demo. See wsEchoHandler above.
     try gs.router.ws("/ws", wsEchoHandler);
+
+    // ---------------------------------------------------------------------
+    // Cronjob demo — register a "every minute" job BEFORE listen() so the
+    // tick thread can pick it up immediately. The cron manager is started
+    // by `listen()` (see the "Cronjob manager running (1s tick)" log line).
+    //
+    // Pattern:
+    //   1. Capture the current Unix time as the "last fired" anchor so the
+    //      first fire is the FIRST minute strictly after registration.
+    //   2. Pass the expression, name, callback, ctx, and anchor to register.
+    //   3. The callback runs on the cronjob background thread (NOT on a
+    //      request handler thread) — keep it short and non-blocking.
+    // ---------------------------------------------------------------------
+    const boot_unix = std.Io.Clock.now(.real, io).toSeconds();
+    _ = gs.cronjob_manager.register(
+        "* * * * *",        // every minute, on the minute
+        "heartbeat",
+        heartbeatLogger,
+        null,
+        boot_unix,
+    ) catch |err| {
+        std.debug.print("Failed to register heartbeat cron: {s}\n", .{@errorName(err)});
+    };
 
     std.debug.print("WebSocket listening on ws://127.0.0.1:29590/ws\n", .{});
 
