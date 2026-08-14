@@ -1145,3 +1145,333 @@ test "omits <recent_activities> when session has no prior activity" {
     try testing.expect(std.mem.indexOf(u8, mock_state.last_compacted_xml, "<recent_activities") == null);
 }
 
+// ─── shouldCompactDefault unit tests (Anthropic + OpenAI styles) ───────────
+//
+// `shouldCompactDefault` is the production wiring inside `defaultCompactDeps`:
+//   1. if `ctx.force` is true, return true unconditionally (manual endpoint);
+//   2. otherwise defer to `agent.LLMModels.shouldCompact(total_tokens,
+//      max_capacity, threshold_percent)` — equivalent to
+//      `total_tokens >= max_capacity * threshold_percent / 100` (defaults to
+//      80% when threshold is null).
+//
+// These tests exercise the function directly (no CompactDeps mock plumbing)
+// against two style profiles:
+//
+//   * Anthropic style: url_style="anthropic", model="claude-sonnet-4-5"
+//     (200K context via the built-in fallback — there is no per-model entry
+//     for Claude today, so the function relies on the same 200_000 fallback
+//     any unknown model uses).
+//
+//   * OpenAI style: url_style="openai", model="gpt-4o" with a top-level
+//     `max_capacity_token_model` override of 128_000 (matches gpt-4o's real
+//     128K context window — without the override, the 200K fallback would
+//     over-provision and skip compaction past 128K).
+//
+// Together these cover the two real-world URL styles the production
+// workflow actually drives (`url_style` flows through `defaultCompactDeps`
+// unchanged — `shouldCompactDefault` does NOT branch on it, but the tests
+// assert the function is `url_style`-agnostic so a future regression that
+// tries to encode the style into the decision would be caught).
+
+/// Build a stack-allocated `LlmConfig` suitable for direct
+/// `shouldCompactDefault` tests. Mirrors `buildTestConfig` but adds
+/// `model`, `max_capacity_token_model`, `compaction_threshold_percent`, and
+/// `url_style` overrides so a single test can target a specific
+/// profile-style scenario.
+///
+/// The returned value uses static-literal strings (no allocator-backed
+/// slices) and empty hashmaps, so it does NOT need `deinit` — `deinit`
+/// would try to `free` the static literals, which is undefined behaviour.
+/// Mirrors the no-deinit pattern used by `buildTestConfig` in the
+/// maybeCompactMessagesNew tests above.
+fn buildShouldCompactTestConfig(
+    allocator: std.mem.Allocator,
+    model: []const u8,
+    max_capacity_override: ?u32,
+    threshold_percent_override: ?u8,
+    url_style: []const u8,
+) LlmConfig {
+    return .{
+        .allocator = allocator,
+        .api_key = "sk-test",
+        .model = model,
+        .base_url = "https://test.example",
+        .url_style = url_style,
+        .model_compaction_size_kb = 100,
+        .mcpServers_parsed = null,
+        .mcp_servers = LlmConfig.McpServersMap.init(allocator),
+        .profiles_models = LlmConfig.ProfilesMap.init(allocator),
+        .sub_agents = &.{},
+        .max_capacity_token_model = max_capacity_override,
+        .compaction_threshold_percent = threshold_percent_override,
+    };
+}
+
+// ─── force=true short-circuit ────────────────────────────────────────────────
+
+test "shouldCompactDefault: force=true → true regardless of total_tokens (Anthropic claude-sonnet-4-5, 0 tokens)" {
+    // The manual endpoint always wins — even at 0 tokens, force=true must
+    // trigger compaction. This is the only path where the token count is
+    // irrelevant.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+    try testing.expect(shouldCompactDefault(.{
+        .force = true,
+        .total_tokens = 0,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: force=true → true regardless of total_tokens (OpenAI gpt-4o, 1 token)" {
+    // Symmetric Anthropic/OpenAI coverage: a 1-token request under
+    // url_style="openai" must still compact when the manual endpoint
+    // passes force=true.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, null, "openai");
+    try testing.expect(shouldCompactDefault(.{
+        .force = true,
+        .total_tokens = 1,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+// ─── Anthropic style: claude-sonnet-4-5 (200K fallback, 80% default) ────────
+
+test "shouldCompactDefault: Anthropic claude-sonnet-4-5, 0 tokens → false (built-in 80% threshold)" {
+    // No tokens consumed → strictly below the 200K * 80% = 160K threshold.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 0,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: Anthropic claude-sonnet-4-5, just below 80% (159_999) → false" {
+    // 200_000 * 80 / 100 = 160_000; 159_999 is strictly below.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 159_999,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: Anthropic claude-sonnet-4-5, at 80% (160_000) → true" {
+    // Boundary: `>=` semantics. 160_000 == 200_000 * 80 / 100 must trigger.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 160_000,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: Anthropic claude-sonnet-4-5, above 80% (180_000) → true" {
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 180_000,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: Anthropic claude-sonnet-4-5, custom threshold_percent=50, below 50% → false" {
+    // Override top-level `compaction_threshold_percent` to 50%. With the
+    // 200K fallback, threshold = 200_000 * 50 / 100 = 100_000.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, 50, "anthropic");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 99_999,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: Anthropic claude-sonnet-4-5, custom threshold_percent=50, at 50% → true" {
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, 50, "anthropic");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 100_000,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+// ─── OpenAI style: gpt-4o with override max_capacity=128_000, 80% default ───
+
+test "shouldCompactDefault: OpenAI gpt-4o (max_capacity=128K), 0 tokens → false" {
+    // gpt-4o's real context window is 128K, so the production workflow
+    // uses `max_capacity_token_model = 128_000` in the config. Without
+    // that override, the 200K fallback would let the session over-grow
+    // by 56% before compacting.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, null, "openai");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 0,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: OpenAI gpt-4o (max_capacity=128K), just below 80% (102_399) → false" {
+    // 128_000 * 80 / 100 = 102_400; 102_399 is strictly below.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, null, "openai");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 102_399,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: OpenAI gpt-4o (max_capacity=128K), at 80% (102_400) → true" {
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, null, "openai");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 102_400,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: OpenAI gpt-4o (max_capacity=128K), above 80% (110_000) → true" {
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, null, "openai");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 110_000,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: OpenAI gpt-4o (max_capacity=128K), custom threshold=90, below → false" {
+    // Override threshold to 90%. 128_000 * 90 / 100 = 115_200. 110_000 < 115_200.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, 90, "openai");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 110_000,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: OpenAI gpt-4o (max_capacity=128K), custom threshold=90, at → true" {
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", 128_000, 90, "openai");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 115_200,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: OpenAI gpt-4o WITHOUT override (200K fallback), 130_000 → false" {
+    // If the user forgets to set max_capacity_token_model, the function
+    // falls back to getModelTokenCount("gpt-4o") which returns 200_000
+    // (the codebase's universal fallback). 130_000 < 200_000 * 80% = 160_000.
+    // This is the documented quirk that motivates the override.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "gpt-4o", null, null, "openai");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 130_000,
+        .model = "gpt-4o",
+        .llm_config = &cfg,
+    }));
+}
+
+// ─── Built-in model table coverage (MiniMax-M2.7 + MiniMax-M3) ──────────────
+
+test "shouldCompactDefault: MiniMax-M2.7 (built-in 200K), at 80% (160_000) → true" {
+    // Built-in MINIMAX_2_7.token_count = 200_000. Boundary check.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "MiniMax-M2.7", null, null, "openai");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 160_000,
+        .model = "MiniMax-M2.7",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: MiniMax-M2.7 (built-in 200K), just below 80% (159_999) → false" {
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "MiniMax-M2.7", null, null, "openai");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 159_999,
+        .model = "MiniMax-M2.7",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: MiniMax-M3 (built-in 500K), at 80% (400_000) → true" {
+    // Built-in MINIMAX_3.token_count = 500_000. 500_000 * 80 / 100 = 400_000.
+    // The 500K model has a much larger threshold — at 200K (which would
+    // trigger on M2.7), it does NOT compact.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "MiniMax-M3", null, null, "openai");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 400_000,
+        .model = "MiniMax-M3",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: MiniMax-M3 (built-in 500K), 200_000 → false (same token count as M2.7 trigger, but M3 has 2.5× capacity)" {
+    // Regression-style: 200_000 triggers on M2.7 (200K * 80% = 160K threshold)
+    // but NOT on M3 (500K * 80% = 400K threshold). Different model → different
+    // decision at the same token count.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "MiniMax-M3", null, null, "openai");
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 200_000,
+        .model = "MiniMax-M3",
+        .llm_config = &cfg,
+    }));
+}
+
+// ─── Edge cases ─────────────────────────────────────────────────────────────
+
+test "shouldCompactDefault: threshold_percent=0 → total_tokens >= 0 always triggers (compact on every iter)" {
+    // 200_000 * 0 / 100 = 0. `total_tokens >= 0` is true for any u32, so
+    // 0 tokens already trips compaction. Useful for tests that want to
+    // force compaction deterministically.
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, 0, "anthropic");
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 0,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+    }));
+}
+
+test "shouldCompactDefault: url_style is ignored by the decision (Anthropic config + OpenAI-style model)" {
+    // Regression guard: `shouldCompactDefault` MUST NOT branch on `url_style`.
+    // It only feeds the model name into `getModelTokenCount` (and any
+    // max_capacity / threshold overrides). Mixing a claude-sonnet-4-5 model
+    // under url_style="openai" (an unusual config but a real one) must give
+    // the same result as the same model under url_style="anthropic".
+    const cfg_openai = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "openai");
+    const cfg_anthropic = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+    const ctx_openai: ThresholdCtx = .{
+        .force = false,
+        .total_tokens = 159_999,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg_openai,
+    };
+    const ctx_anthropic: ThresholdCtx = .{
+        .force = false,
+        .total_tokens = 159_999,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg_anthropic,
+    };
+    try testing.expectEqual(
+        shouldCompactDefault(ctx_anthropic),
+        shouldCompactDefault(ctx_openai),
+    );
+    try testing.expect(!shouldCompactDefault(ctx_openai));
+}
+
