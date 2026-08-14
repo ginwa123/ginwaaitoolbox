@@ -68,14 +68,25 @@ jobs:
           - { zig: x86_64-windows-gnu,     step: __SKIP__ }
         exclude:
           # 6 cross-product cells pruned down to 3 native cells.
+          # NOTE: the Windows target uses `step: __SKIP__` (NOT
+          # `install:windows-nat`) because the Windows native build
+          # uses b.graph.host.result as the target — `install:windows`
+          # was only the cross-compile step on a Linux host, and we
+          # removed it from the matrix in PR #242. Matching the actual
+          # `target:` declaration is required for `exclude:` to drop
+          # the cell — a typo (e.g. `install:windows-nat` here when
+          # the target list says `__SKIP__`) silently fails open and
+          # every cell runs (observed on CI run 31838283325: 5 cells
+          # instead of the expected 3 — Linux ran twice, macOS ran
+          # twice, Windows once).
           - os: [self-hosted, Linux, X64]
             target: { zig: aarch64-macos, step: install:macos-arm }
           - os: [self-hosted, Linux, X64]
-            target: { zig: x86_64-windows-gnu, step: install:windows-nat }
+            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
           - os: [self-hosted, macOS, ARM64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: [self-hosted, macOS, ARM64]
-            target: { zig: x86_64-windows-gnu, step: install:windows-nat }
+            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
           - os: [self-hosted, Windows, X64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: [self-hosted, Windows, X64]
