@@ -235,7 +235,37 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
         run: |
-          brew install pkg-config openssl@3 curl coreutils
+          # Mirrors Linux's pacman list (base-devel + openssl + curl +
+          # sqlite + postgresql-libs + ripgrep + pkgconf + webkit2gtk-4.1
+          # + gtk3 + libsoup3 + unzip). The macOS-specific subset:
+          #   - base-devel         → Xcode CLI tools (pre-installed on
+          #                          the runner host)
+          #   - openssl@3          → libssl + libcrypto (keg-only;
+          #                          CPPFLAGS/LDFLAGS exported below)
+          #   - curl               → libcurl (keg-only; probe picks it up)
+          #   - sqlite3            → vendored amalgamation via build.zig
+          #                          (fetched at runtime; system sqlite is
+          #                          NOT used on macOS)
+          #   - postgresql-libs    → NOT installed: the `databases`
+          #                          package's macOS branch doesn't link
+          #                          libpq (probe returns libpq=false;
+          #                          same as CI run 31828424315). Adding
+          #                          it here would be a wasted keg.
+          #   - ripgrep            → src/modules/agent/tools/search.zig
+          #                          spawns `rg`; without it every
+          #                          search_test.zig test fails with
+          #                          error.FileNotFound (CI run
+          #                          31719585425 was the Linux catch).
+          #   - pkgconf            → pkg-config (for the "Show toolchain
+          #                          versions" diagnostic step's
+          #                          `pkg-config --modversion` calls).
+          #   - webkit2gtk-4.1/gtk3/libsoup3 → Linux-only (GTK stack).
+          #                          macOS uses Cocoa + WebKit.framework
+          #                          (built-in), no brew install needed.
+          #   - unzip              → BSD unzip is pre-installed on
+          #                          macOS; `oven-sh/setup-bun` extracts
+          #                          the Bun release tarball without it.
+          brew install pkg-config openssl@3 curl coreutils ripgrep
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
@@ -252,7 +282,15 @@ jobs:
 
       - name: Install system dependencies (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        # The self-hosted Windows runner (WIN-53JVAKR3O5B) only has
+        # Windows PowerShell 5.1 (`powershell.exe`) pre-installed — NOT
+        # PowerShell Core 7+ (`pwsh`). The original `shell: pwsh`
+        # failed on every CI run with `pwsh: command not found` (CI
+        # run 31828424315, run 31838283325). Switch to `shell: powershell`
+        # so the install runs out of the box; PowerShell 5.1 supports
+        # every cmdlet the step uses (Get-ChildItem, Test-Path,
+        # Start-Job, Copy-Item, winget, nuget, Expand-Archive).
+        shell: powershell
         # Mirror Linux's pacman + macOS's brew: provide curl/openssl/libpq/
         # sqlite3 + MSVC via vcpkg. The `custom_http_client` and `databases`
         # packages each probe the vcpkg sysroot at
@@ -389,6 +427,26 @@ jobs:
           C:\vcpkg\vcpkg.exe integrate install
           Write-Host "✓ vcpkg integrated with MSVC"
 
+          # 7. Install ripgrep via winget — mirrors Linux's
+          #    `pacman -S --needed ripgrep` and macOS's `brew install ripgrep`.
+          #    src/modules/agent/tools/search.zig spawns `rg`; without it,
+          #    every search_test.zig test fails with error.FileNotFound
+          #    when the test tries to spawn `rg`. winget ships BurntSushi's
+          #    MSVC build of ripgrep (the same binary GitHub ships in
+          #    `actions/setup-ripgrep`). Idempotent: skipped if `rg`
+          #    already resolves on PATH.
+          $rg = Get-Command rg -ErrorAction SilentlyContinue
+          if (-not $rg) {
+            Write-Host "Installing ripgrep via winget..."
+            winget install --id BurntSushi.ripgrep.MSVC -e --accept-source-agreements --accept-package-agreements --silent
+            # Refresh the session's PATH so the rest of the workflow
+            # sees `rg` without needing a new shell.
+            $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'User') + ';' + [System.Environment]::GetEnvironmentVariable('PATH', 'Process')
+            Write-Host "✓ ripgrep installed"
+          } else {
+            Write-Host "✓ ripgrep already at $($rg.Source)"
+          }
+
       - name: Show toolchain versions
         shell: bash
         # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
@@ -421,7 +479,7 @@ jobs:
           pkg-config --modversion libcurl 2>/dev/null || echo "libcurl.pc:  not installed (vendored archive is used on macOS)"
 
       - name: Show toolchain versions (Windows)
-        shell: pwsh
+        shell: powershell
         if: runner.os == 'Windows'
         # PowerShell-native diagnostic. Verifies the 4 port headers exist
         # at C:\vcpkg\installed\x64-windows\include\*.h AND that Zig 0.16
