@@ -17,9 +17,24 @@
  * - `attachTo: document.body` is required for the Teleport to work in jsdom.
  * - `flushPromises` waits for the expandAncestors() chain to complete after modelValue flips.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
 import FilePickerDialog from '../components/FilePickerDialog.vue'
+import { makeLocalStorageStub } from './helpers'
+
+// Pinia + localStorage setup is required for FilePickerDialog because the
+// component now imports `useRecentFoldersStore` (the recent-folders tab).
+// Pinia requires an active instance; jsdom 29 dropped localStorage from
+// its default globals. Each test file gets a fresh Pinia + a fresh stub.
+beforeEach(() => {
+  setActivePinia(createPinia())
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: makeLocalStorageStub(),
+    writable: true,
+    configurable: true,
+  })
+})
 
 // Helpers — query the document directly because the dialog is teleported AND inside a Transition stub
 function findInDom<T extends Element = Element>(selector: string): T | null {
@@ -1022,5 +1037,221 @@ describe('FilePickerDialog — Select when current folder is open (folder mode)'
     await flushPromises()
     expect(wrapper.emitted('select')?.[0]).toEqual(['/home/user'])
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
+  })
+})
+
+// ─── Recent tab + tabstrip + pin ────────────────────────────────────────────
+//
+// Plan: docs/superpowers/plans/2026-08-14-folder-picker-recent-history.md
+//
+// The dialog opens on the Recent tab by default. The user sees a flat list
+// of folders they've picked before (most recent first, pinned at top). Click
+// a row to select; click the star to toggle pin. The Browse tab is one click
+// away and shows the existing two-pane tree + content layout.
+describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  it('opens on the Recent tab by default', async () => {
+    // mountDialog does NOT pass enableRecentHistory — that's the "omitted"
+    // case the default-on branch needs to handle. Vue 3.5's runtime default
+    // for `boolean?` is `false`, so `props.enableRecentHistory` reads as
+    // `false` here even though the caller didn't pass anything. The
+    // computed treats `undefined` as "default on" but `mountDialog`'s
+    // implicit spread of the override doesn't preserve `undefined`.
+    // To exercise the default-on branch, mount with `enableRecentHistory: undefined`
+    // explicitly:
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: undefined })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    // The Recent tab is active, the Browse tab is not.
+    const recentTab = findInDom('[data-testid="file-picker-tab-recent"]')
+    expect(recentTab).not.toBeNull()
+    expect(recentTab?.getAttribute('aria-selected')).toBe('true')
+    expect(findInDom('[data-testid="file-picker-tab-browse"]')?.getAttribute('aria-selected')).toBe('false')
+  })
+
+  it('opens on the Recent tab when enableRecentHistory is explicitly true', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: true })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-tab-recent"]')).not.toBeNull()
+  })
+
+  it('shows the empty state on the Recent tab when localStorage is empty', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: undefined })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    // The Recent tab is visible; the empty-state copy is rendered.
+    const text = findInDom('[data-testid="file-picker-recent-empty"]')?.textContent ?? ''
+    expect(text).toContain('No recent folders yet')
+  })
+
+  it('renders a row for each recent entry (pinned first)', async () => {
+    // Seed the store via the persistence key.
+    localStorage.setItem(
+      'nalar-folder-picker-recent:v1',
+      JSON.stringify([
+        { path: '/home/me/a', lastUsedAt: Date.now() - 1000, pinned: false },
+        { path: '/home/me/b', lastUsedAt: Date.now() - 60_000, pinned: true },
+      ]),
+    )
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: undefined })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-recent-row-/home/me/a"]')).not.toBeNull()
+    expect(findInDom('[data-testid="file-picker-recent-row-/home/me/b"]')).not.toBeNull()
+    // Pinned first.
+    const list = findInDom('[data-testid="file-picker-recent-list"]')
+    const rows = list?.querySelectorAll('[data-testid^="file-picker-recent-row-"]') ?? []
+    expect(rows[0]?.getAttribute('data-testid')).toBe('file-picker-recent-row-/home/me/b')
+    expect(rows[1]?.getAttribute('data-testid')).toBe('file-picker-recent-row-/home/me/a')
+  })
+
+  it('clicking a recent row emits select and closes (closeOnSelect: true)', async () => {
+    localStorage.setItem(
+      'nalar-folder-picker-recent:v1',
+      JSON.stringify([
+        { path: '/home/me/picked', lastUsedAt: Date.now() - 1000, pinned: false },
+      ]),
+    )
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'folder',
+      closeOnSelect: true,
+      enableRecentHistory: undefined,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-recent-row-/home/me/picked"]')
+    await flushPromises()
+    expect(wrapper.emitted('select')?.[0]).toEqual(['/home/me/picked'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
+  })
+
+  it('clicking a recent row records the path in the store (debounced write)', async () => {
+    localStorage.setItem(
+      'nalar-folder-picker-recent:v1',
+      JSON.stringify([
+        { path: '/home/me/picked', lastUsedAt: Date.now() - 1000, pinned: false },
+      ]),
+    )
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'folder',
+      enableRecentHistory: undefined,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-recent-row-/home/me/picked"]')
+    await flushPromises()
+    // The store should have the path with a fresh lastUsedAt.
+    await new Promise((r) => setTimeout(r, 250)) // wait for the 200ms debounce
+    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    expect(raw).not.toBeNull()
+    const entries = JSON.parse(raw!)
+    const entry = entries.find((e: { path: string }) => e.path === '/home/me/picked')
+    expect(entry).toBeTruthy()
+    // The bumped lastUsedAt should be very close to Date.now().
+    expect(Date.now() - entry.lastUsedAt).toBeLessThan(1000)
+  })
+
+  it('clicking the star toggles the pin (no select emitted)', async () => {
+    localStorage.setItem(
+      'nalar-folder-picker-recent:v1',
+      JSON.stringify([
+        { path: '/home/me/foo', lastUsedAt: Date.now() - 1000, pinned: false },
+      ]),
+    )
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'folder',
+      enableRecentHistory: undefined,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    clickInDom('[data-testid="file-picker-recent-pin-/home/me/foo"]')
+    await flushPromises()
+    expect(wrapper.emitted('select')).toBeFalsy()
+    await new Promise((r) => setTimeout(r, 250))
+    const raw = localStorage.getItem('nalar-folder-picker-recent:v1')
+    const entries = JSON.parse(raw!)
+    expect(entries[0]!.pinned).toBe(true)
+  })
+
+  it('switching to the Browse tab shows the existing tree + content layout', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: undefined })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    // Default is Recent.
+    expect(findInDom('[data-testid="file-picker-tab-recent"]')?.getAttribute('aria-selected')).toBe('true')
+    clickInDom('[data-testid="file-picker-tab-browse"]')
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-tab-browse"]')?.getAttribute('aria-selected')).toBe('true')
+    // The Browse tab's tree pane is visible.
+    expect(findInDom('[data-testid="file-picker-tree"]')).not.toBeNull()
+    // The Browse tab's content pane is visible.
+    expect(findInDom('[data-testid="file-picker-content"]')).not.toBeNull()
+  })
+
+  it('the tab count badge shows the number of recent entries', async () => {
+    localStorage.setItem(
+      'nalar-folder-picker-recent:v1',
+      JSON.stringify([
+        { path: '/home/me/a', lastUsedAt: Date.now() - 1000, pinned: false },
+        { path: '/home/me/b', lastUsedAt: Date.now() - 2000, pinned: false },
+        { path: '/home/me/c', lastUsedAt: Date.now() - 3000, pinned: true },
+      ]),
+    )
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: undefined })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    const badge = findInDom('[data-testid="file-picker-tab-recent-count"]')
+    expect(badge?.textContent).toBe('3')
+  })
+
+  it('enableRecentHistory: false falls back to the legacy single-pane Browse UX', async () => {
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: false })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    // No tabstrip.
+    expect(findInDom('[data-testid="file-picker-tab-recent"]')).toBeNull()
+    // The tree pane is visible immediately.
+    expect(findInDom('[data-testid="file-picker-tree"]')).not.toBeNull()
+  })
+
+  it('relative-time chip shows now / 2h / 1d / 3d via formatRelativeTime', async () => {
+    const now = Date.now()
+    localStorage.setItem(
+      'nalar-folder-picker-recent:v1',
+      JSON.stringify([
+        { path: '/home/me/now', lastUsedAt: now - 30_000, pinned: false },
+        { path: '/home/me/2h', lastUsedAt: now - 2 * 60 * 60_000, pinned: false },
+        { path: '/home/me/yest', lastUsedAt: now - 26 * 60 * 60_000, pinned: false },
+        { path: '/home/me/3d', lastUsedAt: now - 3 * 24 * 60 * 60_000, pinned: false },
+      ]),
+    )
+    wrapper = mountDialog({ initialPath: '/home/user', enableRecentHistory: undefined })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="file-picker-recent-time-/home/me/now"]')?.textContent,
+    ).toBe('now')
+    expect(
+      findInDom('[data-testid="file-picker-recent-time-/home/me/2h"]')?.textContent,
+    ).toBe('2h')
+    // 26h ago = 1 day floor. formatRelativeTime emits `1d` (not `yest`).
+    expect(
+      findInDom('[data-testid="file-picker-recent-time-/home/me/yest"]')?.textContent,
+    ).toBe('1d')
+    expect(
+      findInDom('[data-testid="file-picker-recent-time-/home/me/3d"]')?.textContent,
+    ).toBe('3d')
   })
 })
