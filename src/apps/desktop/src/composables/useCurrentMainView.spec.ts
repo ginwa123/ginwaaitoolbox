@@ -24,33 +24,55 @@ describe('useCurrentMainView', () => {
 
   it('returns chat view when URL is ?view=chat&session=X', () => {
     mockRoute({ view: 'chat', session: 'session_abc' })
-    // `!` asserts definite-assignment: setup() always assigns v.
     let v!: ReturnType<typeof useCurrentMainView>
-    // Composable needs a component context; use a fake `currentInstance`-less
-    // call by reading the route directly via the mock, then asserting the
-    // composable's return shape equivalent.
-    // Simpler: we test the route-derivation logic by minting a tiny harness
-    // that calls useRoute() inside a setup-like function.
     function setup() { v = useCurrentMainView() }
     setup()
     expect(v.value).toEqual({ kind: 'chat', sessionId: 'session_abc' })
   })
 
-  it('returns task view when URL is ?view=task&task=X', () => {
-    mockRoute({ view: 'task', task: 'task_xyz' })
+  it('returns workspace view with chatTaskId when URL is ?view=workspace&itemId=Y/chat/task_Z', () => {
+    mockRoute({
+      view: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_kanban/chat/task_xyz',
+    })
     let v!: ReturnType<typeof useCurrentMainView>
     function setup() { v = useCurrentMainView() }
     setup()
     expect(v.value).toEqual({
-      kind: 'task',
-      taskId: 'task_xyz',
-      workspaceId: undefined,
-      itemId: undefined,
+      kind: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_kanban',
+      pageId: undefined,
+      chatTaskId: 'task_xyz',
     })
   })
 
-  it('returns workspace view with pageId when URL is ?view=workspace&itemId=Y&pageId=Z', () => {
-    mockRoute({ view: 'workspace', workspaceId: 'ws_1', itemId: 'item_design', pageId: 'page_42' })
+  it('returns workspace view without chatTaskId when itemId is bare', () => {
+    mockRoute({
+      view: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_kanban',
+    })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() { v = useCurrentMainView() }
+    setup()
+    expect(v.value).toEqual({
+      kind: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_kanban',
+      pageId: undefined,
+      chatTaskId: undefined,
+    })
+  })
+
+  it('returns workspace view with pageId when URL has pageId', () => {
+    mockRoute({
+      view: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_design',
+      pageId: 'page_42',
+    })
     let v!: ReturnType<typeof useCurrentMainView>
     function setup() { v = useCurrentMainView() }
     setup()
@@ -59,6 +81,7 @@ describe('useCurrentMainView', () => {
       workspaceId: 'ws_1',
       itemId: 'item_design',
       pageId: 'page_42',
+      chatTaskId: undefined,
     })
   })
 
@@ -87,5 +110,17 @@ describe('useCurrentMainView', () => {
     route.query = { view: 'chat', session: 'session_now' }
     await nextTick()
     expect(v.value).toEqual({ kind: 'chat', sessionId: 'session_now' })
+  })
+
+  it('does NOT have a kind=task variant (legacy view=task URLs are auto-rewritten on mount)', () => {
+    // Sanity: the legacy shape ?view=task&task=X is not handled by
+    // this composable — AppLayout.onMounted silently rewrites those
+    // URLs to the new shape before the composable is consulted. This
+    // test pins the contract.
+    mockRoute({ view: 'task', task: 'task_old' })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() { v = useCurrentMainView() }
+    setup()
+    expect(v.value.kind).toBe('none')
   })
 })
