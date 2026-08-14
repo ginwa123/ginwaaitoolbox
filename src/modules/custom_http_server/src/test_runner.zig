@@ -57,4 +57,6 @@ test {
     _ = @import("context_test.zig");
     // Cronjob manager — pure-function parser + scheduler unit tests (no thread)
     _ = @import("cron_expression_test.zig");
+    // Cronjob manager — registry + thread start/stop tests
+    _ = @import("cronjob_manager_test.zig");
 }
