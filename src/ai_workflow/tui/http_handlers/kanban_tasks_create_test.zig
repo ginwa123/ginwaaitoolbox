@@ -211,22 +211,34 @@ test "kanban_tasks_create (mode=create) does NOT call emit_run_agent" {
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    // The handler is a thin orchestrator over task_create.zig's
-    // useCase; the actual agent run is kicked off elsewhere (the
-    // `session_created` SSE is consumed by the agentic_loop, which
-    // picks up the new session and starts the worker). The handler
-    // MUST NOT call any `emit_run_agent` helper itself — that's the
-    // scheduler's job. This test asserts the symbol is absent (so a
-    // future regression that wires a direct emit is caught).
-    if (std.mem.indexOf(u8, source, "emit_run_agent") != null) {
-        std.debug.print(
-            "\n!! {s} references `emit_run_agent` — that is the scheduler's job !!\n" ++
-                "   The handler must NOT directly kick off an agent run. The\n" ++
-                "   `session_created` SSE event is consumed by the agentic_loop\n" ++
-                "   which picks up the new session and starts the worker.\n",
-            .{HANDLER_PATH},
-        );
-        return error.EmitRunAgentShouldNotBeCalled;
+    // mode='create' must NOT call di.emit_run_agent. The handler
+    // is allowed (in fact required) to call it in the
+    // `mode='create_and_run'` branch — that's what kicks off the
+    // agent turn. This test asserts the create-only path is
+    // emission-free for the agent (the sessions INSERT + SSE are
+    // also gated by the same branch — see the `if
+    // (is_create_and_run)` checks at the INSERT site).
+    //
+    // We approximate "guarded by mode branch" by checking that
+    // every `emit_run_agent` literal in the source appears AFTER
+    // a `is_create_and_run` token (in source order). This is a
+    // weak proxy but catches a regression that wires emit into
+    // the unguarded create-only path.
+    const guard_token = "is_create_and_run";
+    if (std.mem.indexOfPos(u8, source, 0, "emit_run_agent")) |pos| {
+        // Walk backwards from `pos` looking for the most recent
+        // `is_create_and_run` token. If none exists before `pos`,
+        // the emit is unconditional → fail.
+        const before = source[0..pos];
+        if (std.mem.lastIndexOf(u8, before, guard_token) == null) {
+            std.debug.print(
+                "\n!! {s} calls `emit_run_agent` outside the `is_create_and_run` branch !!\n" ++
+                    "   mode='create' must NOT directly kick off an agent run.\n" ++
+                    "   Wrap the emit in `if (is_create_and_run) {{ ... }}`.\n",
+                .{HANDLER_PATH},
+            );
+            return error.EmitRunAgentUnguarded;
+        }
     }
 }
 

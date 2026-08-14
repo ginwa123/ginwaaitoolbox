@@ -200,11 +200,16 @@ pub fn kanbanTasksCreateHandler(
     };
 
     // 5. If mode='create_and_run', insert the sessions row keyed by
-    // task.id and emit the session_created SSE event. Mirrors the
-    // existing session_create.zig path: task.id == session.id per
-    // Migration 052. The INSERT OR IGNORE means a concurrent row is
-    // a no-op (defense in depth — the worker pool may have already
-    // created the row from a parallel request).
+    // task.id, call `di.emit_run_agent(...)` to queue the agent turn,
+    // then emit the session_created SSE event. Mirrors
+    // session_create.zig's path verbatim. The `emit_run_agent` call
+    // is what actually starts the agent: it heap-dupes each string
+    // into `di.allocator` (synchronously) and enqueues a RunParamsNew
+    // event on the `ai_worker_flow` channel; CallbackAiWorkerFlow in
+    // main.zig picks it up and runs runAgenticMultiStepnew. Without
+    // this call, the row exists but the worker pool never picks it
+    // up — the user-visible symptom is exactly what the user
+    // reported: task gets created, agent never starts.
     if (is_create_and_run) {
         const normalized: []const u8 = blk: {
             if (parsed.is_auto_retry_until_stop) |f| {
@@ -213,6 +218,10 @@ pub fn kanbanTasksCreateHandler(
             break :blk "0";
         };
         const profile = parsed.selected_profile_model orelse "";
+        const queue_message = parsed.queue_message orelse "";
+        // image_urls on the wire is `||`-joined (Migration 069
+        // shape); pass through to the worker pool verbatim.
+        const image_urls_wire = parsed.image_urls orelse "";
 
         sqlite_db.exec(
             allocator,
@@ -232,15 +241,30 @@ pub fn kanbanTasksCreateHandler(
             });
         };
 
+        // Queue the agent turn. Borrowed slices here are safe
+        // because emit_run_agent heap-dupes them before the
+        // concurrent worker task reads them.
+        di.emit_run_agent(.{
+            .session_id = standard_result.task_id,
+            .session_name = standard_result.name,
+            .queue_message = queue_message,
+            .cwd = standard_result.cwd,
+            .body_message = "",
+            .allowed_tools = "all",
+            .image_urls = image_urls_wire,
+            .selected_profile_model = profile,
+            .is_auto_retry_until_stop = normalized,
+        }) catch |err| {
+            std.log.warn("kanban_tasks_create: emit_run_agent failed (non-fatal): {s}", .{@errorName(err)});
+        };
+
         // Emit the session_created SSE so the sidebar's ChatsList
         // gets the new session without a manual refetch. Mirrors
         // session_create.zig::insertWorker's onEventSendSessions
-        // call (action='created'). The agentic_loop subscribes to
-        // this channel and picks up the new session, which kicks
-        // off the worker. NOTE: we re-derive the session name from
-        // standard_result.name (the bound task name) to match
-        // task.id == session.id + session.name = task.name per the
-        // 2026-08-13-kanban-task-session-name-match plan.
+        // call (action='created'). NOTE: we re-derive the session
+        // name from standard_result.name (the bound task name) to
+        // match task.id == session.id + session.name = task.name
+        // per the 2026-08-13-kanban-task-session-name-match plan.
         const on_event_sent = nalarcore.ai_mod.on_event_sent;
         on_event_sent.onEventSendSessions(allocator, .{
             .action = "created",
