@@ -20,7 +20,10 @@ pub fn main(init: std.process.Init) !void {
     // defer arena_allocator.deinit();
     // const allocator = arena_allocator.allocator();
 
-    const allocator = init.gpa;
+    const gpa_allocator = init.gpa;
+    var arena_allocator = std.heap.ArenaAllocator.init(gpa_allocator);
+    const allocator = arena_allocator.allocator();
+    defer arena_allocator.deinit();
     const environment = init.environ_map;
     const io = init.io;
 
@@ -503,10 +506,6 @@ pub fn main(init: std.process.Init) !void {
     // Clean shutdown after listen() returns (after shutdown endpoint is called)
     gs.sse_manager.stop();
 
-    // Free the live LlmConfig (and any "previous" pointer from a swap that
-    // happened during this session). Must run AFTER `gs.sse_manager.stop()`
-    // and BEFORE `ctxParent` is destroyed, so no reader is still in flight.
-    nalarcore.freeAllLlmConfigs(ctxParent);
 }
 
 /// Dispatch the `nalar service {start,stop,status,restart}` subcommand.
