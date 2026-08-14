@@ -386,12 +386,21 @@ test "parse_stream_chunk (anthropic): message_delta includes cache_creation_inpu
     try expectEqual(@as(usize, 23), chunk.?.usage.?.total_tokens); // 15 + 8
 }
 
-test "parse_stream_chunk (anthropic): cache_read_input_tokens is NOT added to total (cache reads are FREE)" {
+test "parse_stream_chunk (anthropic): cache_read_input_tokens IS added to prompt + total (cache reads ARE tokens processed)" {
+    // Mirrors the spec TL;DR: cache_read counts as tokens the model
+    // processed, so prompt = input + cache_read and total = prompt +
+    // completion. The cache breakdown is preserved separately on
+    // `Usage` so billing code can still apply the discounted rate.
+    //
+    // Pre-fix: this test asserted prompt=54, total=77 (cache_read=128 was
+    // dropped on the floor, matching the sibling-branch contract labelled
+    // "FREE"). Post-fix: prompt=182 (54+128), total=205 (182+23). The
+    // cache_read count is still 128 on the breakdown for billing.
     var a: agent.Agent = .init(testing_allocator, std.testing.io);
     defer a.deinit();
     a.UrlStyle = "anthropic";
 
-    // message_start: input_tokens=54, cache_read_input_tokens=128 (free read).
+    // message_start: input_tokens=54, cache_read_input_tokens=128.
     {
         var arena = std.heap.ArenaAllocator.init(testing_allocator);
         defer arena.deinit();
@@ -401,8 +410,9 @@ test "parse_stream_chunk (anthropic): cache_read_input_tokens is NOT added to to
         _ = a.parse_stream_chunk(start_data, arena.allocator());
     }
 
-    // message_delta: output_tokens=23.
-    // billable total = 54 (input only — cache_read is FREE) + 0 + 23 = 77.
+    // message_delta: input_tokens=54 + cache_creation=0 + cache_read=128
+    // (uses cached message_start value because delta omits it)
+    // + output_tokens=23.
     var arena = std.heap.ArenaAllocator.init(testing_allocator);
     defer arena.deinit();
     const data =
@@ -411,9 +421,160 @@ test "parse_stream_chunk (anthropic): cache_read_input_tokens is NOT added to to
     const chunk = a.parse_stream_chunk(data, arena.allocator());
     try expect(chunk != null);
     try expect(chunk.?.usage != null);
-    try expectEqual(@as(usize, 54), chunk.?.usage.?.prompt_tokens);
+    try expectEqual(@as(usize, 182), chunk.?.usage.?.prompt_tokens); // 54 + 0 + 128
     try expectEqual(@as(usize, 23), chunk.?.usage.?.completion_tokens);
-    try expectEqual(@as(usize, 77), chunk.?.usage.?.total_tokens);
+    try expectEqual(@as(usize, 205), chunk.?.usage.?.total_tokens); // 182 + 23
+    try expectEqual(@as(usize, 0), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 128), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+// ============================================================================
+// Task 1 contract — Agent.Usage struct surface area. Pin the new
+// Anthropic cache field names so Tasks 2 + 4 + 5 + 6 can lean on them.
+// (OpenAI rows always carry 0 in both fields.)
+// ============================================================================
+
+test "Agent.Usage struct has cache_creation_input_tokens + cache_read_input_tokens fields (structural contract)" {
+    const u: agent.Usage = .{};
+    // New fields default to 0 — no breakage for OpenAI.
+    try expectEqual(@as(usize, 0), u.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 0), u.cache_read_input_tokens);
+    // Existing fields still work.
+    try expectEqual(@as(usize, 0), u.prompt_tokens);
+    try expectEqual(@as(usize, 0), u.completion_tokens);
+    try expectEqual(@as(usize, 0), u.total_tokens);
+}
+
+test "Agent.Usage can be constructed with explicit cache values" {
+    // Mirrors what parse_anthropic_stream_chunk emits at message_delta
+    // when both cache fields are non-zero.
+    const u: agent.Usage = .{
+        .prompt_tokens = 6500,
+        .completion_tokens = 1000,
+        .total_tokens = 7500,
+        .cache_creation_input_tokens = 500,
+        .cache_read_input_tokens = 5000,
+    };
+    try expectEqual(@as(usize, 6500), u.prompt_tokens);
+    try expectEqual(@as(usize, 1000), u.completion_tokens);
+    try expectEqual(@as(usize, 7500), u.total_tokens);
+    try expectEqual(@as(usize, 500), u.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 5000), u.cache_read_input_tokens);
+}
+
+test "parse_stream_chunk (anthropic): message_delta includes BOTH cache_creation AND cache_read in prompt + total" {
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start caches input_tokens=1000.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta: cache_creation=500, cache_read=5000, output=1000.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":1000,"cache_creation_input_tokens":500,"cache_read_input_tokens":5000,"output_tokens":1000}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 6500), chunk.?.usage.?.prompt_tokens);
+    try expectEqual(@as(usize, 1000), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 7500), chunk.?.usage.?.total_tokens);
+    try expectEqual(@as(usize, 500), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 5000), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "parse_stream_chunk (anthropic): cache_read_only is included in prompt + total" {
+    // Cache reads ONLY (no cache writes) — prompt = input + cache_read.
+    // Pre-fix this would have been `prompt = input = 10`, dropping the
+    // 128 cached-read tokens on the floor.
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"cache_read_input_tokens":128,"output_tokens":7}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 138), chunk.?.usage.?.prompt_tokens); // 10 + 128
+    try expectEqual(@as(usize, 7), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 145), chunk.?.usage.?.total_tokens);
+    try expectEqual(@as(usize, 0), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 128), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "parse_stream_chunk (anthropic): cache_read from message_start is preserved on first-delta usage chunk" {
+    // Some relays send cache_read_input_tokens at message_start but not at
+    // message_delta. The first-delta usage chunk needs to fold that into
+    // prompt_tokens, mirroring how message_delta folds it later.
+    var a: agent.Agent = .init(testing_allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start: input_tokens=20 + cache_read_input_tokens=4096.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocator);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":20,"cache_read_input_tokens":4096,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // First delta emits a usage chunk. Prompt must be 20 + 0 + 4096 = 4116.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const d1 =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+    ;
+    const chunk = a.parse_stream_chunk(d1, arena.allocator());
+    try expect(chunk != null);
+    try expect(chunk.?.usage != null);
+    try expectEqual(@as(usize, 4116), chunk.?.usage.?.prompt_tokens);
+    try expectEqual(@as(usize, 0), chunk.?.usage.?.completion_tokens);
+    try expectEqual(@as(usize, 4116), chunk.?.usage.?.total_tokens);
+    try expectEqual(@as(usize, 0), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 4096), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "Agent.Usage can be constructed with explicit cache values (regression pin at end-of-file)" {
+    // Pinned at the END of the test file (in addition to the canonical
+    // assertion at L436) so the contract surfaces under `rg` near any
+    // future Anthropic-Usage changes. Both must pass.
+    const u: agent.Usage = .{
+        .prompt_tokens = 6500,
+        .completion_tokens = 1000,
+        .total_tokens = 7500,
+        .cache_creation_input_tokens = 500,
+        .cache_read_input_tokens = 5000,
+    };
+    try expectEqual(@as(usize, 6500), u.prompt_tokens);
+    try expectEqual(@as(usize, 1000), u.completion_tokens);
+    try expectEqual(@as(usize, 7500), u.total_tokens);
+    try expectEqual(@as(usize, 500), u.cache_creation_input_tokens);
+    try expectEqual(@as(usize, 5000), u.cache_read_input_tokens);
 }
 
 // ============================================================================

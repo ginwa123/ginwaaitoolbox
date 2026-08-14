@@ -39,7 +39,13 @@ fn setupDb() !struct {
         \\  -- schema must include it. The seedMessage helper below
         \\  -- explicitly populates `created_iso` (mirrors the
         \\  -- application code in `saveMessage`).
-        \\  created_iso TEXT
+        \\  created_iso TEXT,
+        \\  -- Anthropic cache breakdown columns (Migration 074). The
+        \\  -- saveMessage INSERT must reference both columns, so the
+        \\  -- test fixture mirrors the production schema even when the
+        \\  -- test doesn't read them.
+        \\  cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\  cache_read_input_tokens INTEGER DEFAULT 0
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded };
@@ -355,6 +361,8 @@ test "saveMessage: writes a correct-year (2026-ish) created_iso from current tim
         \\    prompt_tokens INTEGER,
         \\    completion_tokens INTEGER,
         \\    total_tokens INTEGER,
+        \\    cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\    cache_read_input_tokens INTEGER DEFAULT 0,
         \\    is_input INTEGER,
         \\    is_output INTEGER,
         \\    tool_name TEXT,
@@ -438,6 +446,8 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
         \\    prompt_tokens INTEGER,
         \\    completion_tokens INTEGER,
         \\    total_tokens INTEGER,
+        \\    cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\    cache_read_input_tokens INTEGER DEFAULT 0,
         \\    is_input INTEGER,
         \\    is_output INTEGER,
         \\    tool_name TEXT,

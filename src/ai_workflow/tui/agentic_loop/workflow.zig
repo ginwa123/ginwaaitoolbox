@@ -1217,6 +1217,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .prompt_tokens = @intCast(res_dynamic_agent.usage.prompt_tokens),
                     .completion_tokens = @intCast(res_dynamic_agent.usage.completion_tokens),
                     .total_tokens = @intCast(res_dynamic_agent.usage.total_tokens),
+                    .cache_creation_input_tokens = @intCast(res_dynamic_agent.usage.cache_creation_input_tokens),
+                    .cache_read_input_tokens = @intCast(res_dynamic_agent.usage.cache_read_input_tokens),
                     .parent_id = copy_parent_session_id,
                     .parent_session_id = copy_parent_session_id,
                     .is_input = false,
@@ -1586,6 +1588,8 @@ fn callDynamicAgentNew(
         .prompt_tokens = res_dynamic_agent.usage.prompt_tokens,
         .completion_tokens = res_dynamic_agent.usage.completion_tokens,
         .total_tokens = res_dynamic_agent.usage.total_tokens,
+        .cache_creation_input_tokens = res_dynamic_agent.usage.cache_creation_input_tokens,
+        .cache_read_input_tokens = res_dynamic_agent.usage.cache_read_input_tokens,
     };
     return .{
         .allocator = res_dynamic_agent.allocator,

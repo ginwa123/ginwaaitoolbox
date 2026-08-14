@@ -617,6 +617,16 @@ pub const Usage = struct {
     prompt_tokens: usize = 0,
     completion_tokens: usize = 0,
     total_tokens: usize = 0,
+    /// Anthropic-only: tokens used to write a cache entry on this call.
+    /// Billed at the cache-write rate (typically ~1.25× input rate), so
+    /// DO add this to any billing formula. 0 for non-Anthropic profiles.
+    cache_creation_input_tokens: usize = 0,
+    /// Anthropic-only: tokens read from a cache entry on this call.
+    /// Billed at the cache-read rate (typically ~0.1× input rate) — but
+    /// still tokens the model processed, so this IS included in
+    /// `prompt_tokens` and `total_tokens` (matching OpenAI's semantic
+    /// of "tokens the LLM saw"). 0 for non-Anthropic profiles.
+    cache_read_input_tokens: usize = 0,
 };
 
 pub const ToolCallDelta = struct {
@@ -871,6 +881,17 @@ pub const Agent = struct {
     /// once per call (on the first delta). Reset to false at the top of
     /// every `callStreaming` invocation.
     _anthropic_usage_emitted: bool = false,
+    /// Anthropic-only: cached `cache_read_input_tokens` from message_start.
+    /// Some relays send the cache-read count at message_start but not at
+    /// message_delta — keep it around so the first-delta usage chunk can
+    /// fold it into `prompt_tokens`. Reset to 0 at the top of every
+    /// `callStreaming` invocation.
+    _anthropic_cache_read_tokens: u32 = 0,
+    /// Anthropic-only: cached `cache_creation_input_tokens` from
+    /// message_start. The strict API sends the cache-write count only
+    /// at message_delta, but some relays include it earlier. Reset to
+    /// 0 at the top of every `callStreaming` invocation.
+    _anthropic_cache_creation_tokens: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) Agent {
         return Agent{
@@ -1519,6 +1540,15 @@ pub const Agent = struct {
             if (usage.object.get("input_tokens")) |it| {
                 if (it == .integer) self._anthropic_input_tokens = @intCast(it.integer);
             }
+            // Cache the cache-shaped fields too — some relays send them at
+            // message_start but not at message_delta, and the first-delta
+            // usage chunk below folds both into prompt_tokens.
+            if (usage.object.get("cache_read_input_tokens")) |cr| {
+                if (cr == .integer) self._anthropic_cache_read_tokens = @intCast(cr.integer);
+            }
+            if (usage.object.get("cache_creation_input_tokens")) |cc| {
+                if (cc == .integer) self._anthropic_cache_creation_tokens = @intCast(cc.integer);
+            }
             return null;
         }
 
@@ -1577,12 +1607,22 @@ pub const Agent = struct {
 
             // Emit a usage chunk on the FIRST delta so the aggregator sees
             // the cached input_tokens count. Mirrors the OpenAI parser's
-            // use of `stream_options.include_usage=true`.
+            // use of `stream_options.include_usage=true`. We include the
+            // cached cache_creation + cache_read tokens too (from
+            // message_start), so the first-delta chunk has the same
+            // shape as the final message_delta chunk — which matters when
+            // the message_delta never fires (rare but possible on
+            // mid-stream death).
             if (self._anthropic_input_tokens > 0 and !self._anthropic_usage_emitted) {
+                const cached_creation = self._anthropic_cache_creation_tokens;
+                const cached_read = self._anthropic_cache_read_tokens;
+                const prompt_first_delta: u32 = self._anthropic_input_tokens + cached_creation + cached_read;
                 chunk.usage = .{
-                    .prompt_tokens = self._anthropic_input_tokens,
+                    .prompt_tokens = prompt_first_delta,
                     .completion_tokens = 0,
-                    .total_tokens = self._anthropic_input_tokens,
+                    .total_tokens = prompt_first_delta,
+                    .cache_creation_input_tokens = cached_creation,
+                    .cache_read_input_tokens = cached_read,
                 };
                 self._anthropic_usage_emitted = true;
             }
@@ -1607,27 +1647,32 @@ pub const Agent = struct {
             // otherwise. This makes the parser robust to BOTH the strict
             // API shape and the relay quirk without code branches.
             //
-            // Billable total = input_tokens + cache_creation_input_tokens
-            // + output_tokens. Cache reads (`cache_read_input_tokens`)
-            // are FREE — they don't add to billing — so they're
-            // deliberately NOT included in `total_tokens`. This matches
-            // OpenAI's `prompt_tokens` semantic (which includes cached
-            // tokens at full count for the `prompt_tokens_details` view
-            // but not for the billable total).
+            // `prompt_tokens` includes ALL input-shaped tokens the model
+            // processed — input_tokens + cache_creation_input_tokens +
+            // cache_read_input_tokens — so that `total_tokens = prompt +
+            // completion` matches OpenAI's semantic ("tokens the LLM
+            // saw"). Cache reads are billed at a discounted rate (so
+            // they're NOT included in any future billing formula that
+            // multiplies by the input rate), but they ARE tokens the
+            // model still had to attend to — dropping them from
+            // `prompt_tokens` made Anthropic totals ~5× lower than
+            // equivalent OpenAI calls.
             //
-            // We do NOT override `self._anthropic_input_tokens` here
-            // even when message_delta supplies input_tokens — that
-            // cached field is used by the first-delta usage chunk above
-            // and would race with this later message_delta usage chunk
-            // for the aggregator if mutated. The fresh value wins for
-            // the final message_delta usage emission, which is what
-            // CallResponse.usage actually persists (the aggregator's
+            // We do NOT override `self._anthropic_input_tokens` /
+            // `_anthropic_cache_*_tokens` here even when message_delta
+            // supplies them — those cached fields are used by the
+            // first-delta usage chunk above and would race with this
+            // later message_delta usage chunk for the aggregator if
+            // mutated. The fresh value wins for the final message_delta
+            // usage emission, which is what `CallResponse.usage`
+            // actually persists (the aggregator's
             // StreamingAggregator.process_chunk uses the LAST seen usage
             // chunk for `total_tokens` only when total > 0).
             if (root.object.get("usage")) |usage_val| {
                 if (usage_val == .object) {
                     var input_tokens: u32 = self._anthropic_input_tokens;
-                    var cache_creation_tokens: u32 = 0;
+                    var cache_creation_tokens: u32 = self._anthropic_cache_creation_tokens;
+                    var cache_read_tokens: u32 = self._anthropic_cache_read_tokens;
                     var output_tokens: u32 = 0;
 
                     if (usage_val.object.get("input_tokens")) |it| {
@@ -1636,15 +1681,21 @@ pub const Agent = struct {
                     if (usage_val.object.get("cache_creation_input_tokens")) |cc| {
                         if (cc == .integer) cache_creation_tokens = @intCast(cc.integer);
                     }
+                    if (usage_val.object.get("cache_read_input_tokens")) |cr| {
+                        if (cr == .integer) cache_read_tokens = @intCast(cr.integer);
+                    }
                     if (usage_val.object.get("output_tokens")) |ot| {
                         if (ot == .integer) output_tokens = @intCast(ot.integer);
                     }
 
                     if (output_tokens > 0) {
+                        const prompt_tokens: u32 = input_tokens + cache_creation_tokens + cache_read_tokens;
                         chunk.usage = .{
-                            .prompt_tokens = input_tokens + cache_creation_tokens,
+                            .prompt_tokens = prompt_tokens,
                             .completion_tokens = output_tokens,
-                            .total_tokens = input_tokens + cache_creation_tokens + output_tokens,
+                            .total_tokens = prompt_tokens + output_tokens,
+                            .cache_creation_input_tokens = cache_creation_tokens,
+                            .cache_read_input_tokens = cache_read_tokens,
                         };
                     }
                 }
@@ -1688,6 +1739,8 @@ pub const Agent = struct {
         // stale input_tokens + a stuck `_usage_emitted` flag.
         self._anthropic_input_tokens = 0;
         self._anthropic_usage_emitted = false;
+        self._anthropic_cache_read_tokens = 0;
+        self._anthropic_cache_creation_tokens = 0;
 
         // 1. Build JSON body (unchanged from Agent.zig).
         var json_body: []u8 = undefined;
@@ -2011,6 +2064,16 @@ pub const Agent = struct {
         };
 
         // 12. Cost tracking (matches Agent.zig's pricing).
+        // NOTE (2026-08-13, fix-anthropic-total-tokens plan): this
+        // formula treats `prompt_tokens` as if it were billed at the
+        // full input rate. After Task 2 of that plan, Anthropic
+        // `prompt_tokens` now ALSO includes `cache_read_input_tokens`
+        // (billed at ~0.1× input rate) and `cache_creation_input_tokens`
+        // (billed at ~1.25× input rate), so this formula overcharges
+        // Anthropic cached-read calls by ~10× and undercharges cache
+        // writes by ~25%. The breakdown is preserved on
+        // `Usage.cache_*_input_tokens` so a future PR can fix the
+        // formula properly. OUT OF SCOPE for this plan.
         const prompt_cost = @as(f64, @floatFromInt(stream_response.usage.prompt_tokens)) * 0.000003;
         const completion_cost = @as(f64, @floatFromInt(stream_response.usage.completion_tokens)) * 0.000015;
         const total_cost = prompt_cost + completion_cost;

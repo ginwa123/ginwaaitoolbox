@@ -22,6 +22,14 @@ pub const LLMHistory = struct {
     prompt_tokens: u32 = 0,
     completion_tokens: u32 = 0,
     total_tokens: u32 = 0,
+    /// Anthropic-only: cache WRITE tokens (cache_creation_input_tokens).
+    /// Billed at ~1.25x input rate. 0 for OpenAI rows.
+    cache_creation_input_tokens: u32 = 0,
+    /// Anthropic-only: cache READ tokens (cache_read_input_tokens).
+    /// Billed at ~0.1x input rate, but already folded into
+    /// `prompt_tokens` + `total_tokens` by Agent.parse_anthropic_stream_chunk.
+    /// 0 for OpenAI rows.
+    cache_read_input_tokens: u32 = 0,
     is_input: bool = false,
     is_output: bool = false,
     diffview_before: ?[]const u8 = null,
@@ -78,6 +86,8 @@ test "LLMHistory default fields are safe to read without explicit init" {
     try testing.expectEqual(@as(u32, 0), h.prompt_tokens);
     try testing.expectEqual(@as(u32, 0), h.completion_tokens);
     try testing.expectEqual(@as(u32, 0), h.total_tokens);
+    try testing.expectEqual(@as(u32, 0), h.cache_creation_input_tokens);
+    try testing.expectEqual(@as(u32, 0), h.cache_read_input_tokens);
     try testing.expect(!h.is_input);
     try testing.expect(!h.is_output);
     try testing.expect(h.reasoning_content == null);
