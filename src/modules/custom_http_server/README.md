@@ -135,6 +135,11 @@ src/
 - `WsManager`: thread-safe client registry (register, remove, broadcast, sendToClient)
 - `WsClient`: per-client state (id, fd, arena, write callback)
 
+**cronjob_manager.zig**
+- `CronExpression`: 5-field cron parser (minute, hour, dom, month, dow) with `*`, `N`, `N-M`, `*/N`, `N,M,K` syntax
+- `CronjobManager`: thread-safe registry of cron-scheduled callbacks; background thread ticks every 1s
+- `nextFireAfter`: minute-by-minute calculator used by tests and the tick loop
+
 **http_parser.zig**
 - `HttpRequest`: Parsed request with method, path, headers, body
 - `HttpResponse`: Response builder with body and JSON support
@@ -208,6 +213,54 @@ try gs.sse_manager.sendToClient(client_id, "message");
 // Get connected client count
 const count = gs.sse_manager.clientCount();
 ```
+
+### Cronjob Manager
+
+Register a callback against a standard 5-field cron expression. The
+background thread ticks every 1 second and fires any job whose next
+scheduled time has arrived.
+
+```zig
+fn housekeeping(_: ?*anyopaque, now_unix: i64) void {
+    std.log.info("housekeeping fired at {d}", .{now_unix});
+}
+
+// Register — the cron expression is validated at register time and
+// returns CronError if malformed.
+const now_unix = std.Io.Clock.now(.real, gs.io).toSeconds();
+const id = try gs.cronjob_manager.register(
+    "*/5 * * * *",     // every 5 minutes
+    "housekeeping",
+    housekeeping,
+    null,
+    now_unix,           // initial anchor — first fire is strictly after this
+);
+
+// Unregister by id (idempotent).
+gs.cronjob_manager.unregister(id);
+
+// Inspect registered jobs.
+for (gs.cronjob_manager.list()) |job| {
+    std.debug.print("job {d}: {s}\n", .{job.id, job.name});
+}
+```
+
+Supported expression syntax:
+
+| Token | Meaning |
+|---|---|
+| `*` | every value in range |
+| `N` | exactly N |
+| `N-M` | range (inclusive) |
+| `*/N` | step (every N units, starting at min) |
+| `N,M,K` | list (any of N, M, K) |
+
+Standard 5 fields: `minute hour dom month dow`. UTC only. Minute
+precision. No persistence — jobs are dropped on server restart.
+
+The manager is automatically started by `GinwaServer.listen()` and
+stopped by `GinwaServer.deinit()`. Callers do not need to (and should
+not) call `start` / `stop` themselves.
 
 ## Running Tests
 
