@@ -156,3 +156,74 @@ test "deleteFileIfExists removes an existing file" {
     const stat_after_result = tmp.dir.statFile(testing.io, "to-delete.html", .{});
     try testing.expectError(error.FileNotFound, stat_after_result);
 }
+
+// ─── deleteDirectoryIfEmpty ───────────────────────────────────────────────
+
+test "deleteDirectoryIfEmpty removes an empty directory" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const tmpdir_path: []const u8 = dir_buf[0..dir_len];
+    const empty_path = try std.fs.path.join(testing.allocator, &.{ tmpdir_path, "empty" });
+    defer testing.allocator.free(empty_path);
+
+    // Create the empty directory inside the test tmpdir. Uses
+    // Io.Dir.cwd().createDirPath which is the Io-native mkdir-p
+    // (per project memory zig-0.16-stdfs-cwd-removed.md).
+    try std.Io.Dir.cwd().createDirPath(testing.io, empty_path);
+
+    // Sanity: it exists.
+    const stat_before = try tmp.dir.statFile(testing.io, "empty", .{});
+    try testing.expect(stat_before.kind == .directory);
+
+    // deleteDirectoryIfEmpty should succeed.
+    try design_io.deleteDirectoryIfEmpty(testing.allocator, empty_path);
+
+    // After: directory is gone.
+    const stat_after_result = tmp.dir.statFile(testing.io, "empty", .{});
+    try testing.expectError(error.FileNotFound, stat_after_result);
+}
+
+test "deleteDirectoryIfEmpty succeeds when the path does not exist (no-op)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const tmpdir_path: []const u8 = dir_buf[0..dir_len];
+    const never_existed = try std.fs.path.join(testing.allocator, &.{ tmpdir_path, "never-existed" });
+    defer testing.allocator.free(never_existed);
+
+    // Should NOT error — ENOENT is swallowed.
+    try design_io.deleteDirectoryIfEmpty(testing.allocator, never_existed);
+}
+
+test "deleteDirectoryIfEmpty returns DirNotEmpty when a file remains inside" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const tmpdir_path: []const u8 = dir_buf[0..dir_len];
+    const non_empty_path = try std.fs.path.join(testing.allocator, &.{ tmpdir_path, "non-empty" });
+    defer testing.allocator.free(non_empty_path);
+    const user_note_path = try std.fs.path.join(testing.allocator, &.{ non_empty_path, "user-note.txt" });
+    defer testing.allocator.free(user_note_path);
+
+    // Create a directory that contains a user file. The contract:
+    // deleteDirectoryIfEmpty must NOT remove the directory if a file
+    // remains — that's how we preserve user-dropped files (.DS_Store,
+    // README.md, screenshots, etc.) inside a deleted page folder.
+    try std.Io.Dir.cwd().createDirPath(testing.io, non_empty_path);
+    try design_io.atomicWriteFile(testing.allocator, user_note_path, "user file");
+
+    // deleteDirectoryIfEmpty should refuse (DirNotEmpty) — protecting
+    // the user's file from being swept away with the page.
+    try testing.expectError(error.DirNotEmpty, design_io.deleteDirectoryIfEmpty(testing.allocator, non_empty_path));
+
+    // The user's file MUST still exist.
+    const stat_after = try tmp.dir.statFile(testing.io, "non-empty/user-note.txt", .{});
+    try testing.expect(stat_after.kind == .file);
+}

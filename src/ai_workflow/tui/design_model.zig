@@ -3455,6 +3455,50 @@ pub fn deletePage(
         design_io.deleteFileIfExists(allocator, fp) catch {};
     }
 
+    // After unlinking every tracked HTML file, attempt to remove the
+    // now-empty page directory itself (`<item_path>/.nalar/design/<page>/`).
+    //
+    // Why this step
+    // ──────────────
+    // The per-file loop above intentionally skips user-dropped files
+    // (e.g. `.DS_Store`, `README.md`, screenshots). If those exist,
+    // the rmdir below MUST be a no-op (we don't want to leave a
+    // dangling empty dir behind, but we also don't want to fail the
+    // call when the dir is non-empty for unrelated reasons).
+    //
+    // We derive the page directory from the FIRST surviving file_path
+    // — every element's file_path lives under `<dir>/<elem>.html`, so
+    // `std.fs.path.dirname(first_file)` is the page dir. If no element
+    // had a file_path (the page had zero elements), there's nothing
+    // to rmdir; skip silently.
+    //
+    // The rmdir is best-effort:
+    //   - ENOENT (already gone): no-op
+    //   - ENOTEMPTY (user files remain): no-op
+    //   - any other error: log + continue (the user's primary action
+    //     — delete the page — already succeeded)
+    if (file_paths.items.len > 0) {
+        if (std.fs.path.dirname(file_paths.items[0])) |page_dir| {
+            // deleteDirectoryIfEmpty's possible errors:
+            //   DirNotEmpty    — user-dropped files remain (preserve them)
+            //   NotADirectory  — race with another rmdir or filesystem oddity
+            //   PathTooLong    — file_path exceeded max_path_bytes
+            //   RmdirFailed    — permissions / IO failure
+            // All four are non-fatal: the user's primary action —
+            // delete the page — already succeeded; the page folder
+            // either will be left in place (preserves user files) or
+            // was already gone (race) or has a pathological path
+            // (PathTooLong). Log and continue.
+            design_io.deleteDirectoryIfEmpty(allocator, page_dir) catch |err| switch (err) {
+                error.DirNotEmpty, error.NotADirectory, error.PathTooLong => {},
+                error.RmdirFailed => std.log.warn(
+                    "design_model.deletePage: rmdir {s} failed: {s}",
+                    .{ page_dir, @errorName(err) },
+                ),
+            };
+        }
+    }
+
     // Emit SSE event AFTER the SQL DELETE succeeded. Best-effort: if
     // the event_bus is not initialized or the JSON serialization
     // fails, the caller still gets a successful return value — SSE

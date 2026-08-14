@@ -351,6 +351,72 @@ pub fn deleteFileIfExists(allocator: std.mem.Allocator, path: []const u8) !void 
     }
 }
 
+/// Remove `path` if it is an EMPTY directory. Used by `deletePage`
+/// after it has unlinked every tracked HTML file inside the page
+/// folder: we want the page folder itself gone too, but we must NOT
+/// remove it if the user has dropped unrelated files (`.DS_Store`,
+/// `README.md`, screenshots) into it.
+///
+/// Semantics:
+///   - Path does not exist            → no-op (returns `void`)
+///   - Path exists, but is non-empty  → `error.DirNotEmpty` (caller
+///                                       can choose to log+ignore — the
+///                                       user files are preserved)
+///   - Path exists, empty             → rmdir succeeds, returns `void`
+///   - Path exists, but is a file     → `error.NotADirectory`
+///   - rmdir fails for any other reason (permissions, IO) → `error.RmdirFailed`
+///
+/// Cross-platform: POSIX uses `rmdir(2)` (returns -1 with errno=ENOTEMPTY
+/// when the dir is non-empty); Windows uses `RemoveDirectoryW` (returns 0
+/// with `GetLastError` = ERROR_DIR_NOT_EMPTY = 145 when non-empty).
+pub fn deleteDirectoryIfEmpty(allocator: std.mem.Allocator, path: []const u8) !void {
+    _ = allocator;
+    switch (builtin.os.tag) {
+        .linux, .macos => return deleteDirectoryIfEmptyPosix(path),
+        .windows => return deleteDirectoryIfEmptyWindows(path),
+        else => @compileError("design_io.deleteDirectoryIfEmpty: unsupported platform " ++ @tagName(builtin.os.tag)),
+    }
+}
+
+fn deleteDirectoryIfEmptyPosix(path: []const u8) !void {
+    // NUL-terminate into a stack buffer.
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const path_z_len = std.fmt.bufPrint(path_buf[0..path_buf.len - 1], "{s}", .{path}) catch
+        return error.PathTooLong;
+    path_buf[path_z_len.len] = 0;
+
+    const rc = c.rmdir(&path_buf);
+    if (rc == 0) return; // success — directory was empty and is now gone
+    const err = c.errno(rc);
+    switch (err) {
+        .NOENT => return, // missing → no-op
+        .NOTEMPTY, .EXIST => return error.DirNotEmpty, // preserve user files
+        .NOTDIR => return error.NotADirectory,
+        else => return error.RmdirFailed,
+    }
+}
+
+fn deleteDirectoryIfEmptyWindows(path: []const u8) !void {
+    var path_w_buf: [std.fs.max_path_bytes]u16 = undefined;
+    const path_w = try pathToWideZ(path, &path_w_buf);
+
+    // RemoveDirectoryW returns nonzero on success, 0 on failure. Error
+    // codes we care about:
+    //   2  = ERROR_FILE_NOT_FOUND (path missing)        → no-op
+    //   145 = ERROR_DIR_NOT_EMPTY (user files remain)   → DirNotEmpty
+    //   267 = ERROR_DIRECTORY (path is a file)          → NotADirectory
+    // anything else → RmdirFailed.
+    const ok = win32_apis.RemoveDirectoryW(path_w.ptr);
+    if (ok != 0) return;
+    const err = win32_apis.GetLastError();
+    switch (err) {
+        2 => return,
+        145 => return error.DirNotEmpty,
+        267 => return error.NotADirectory,
+        else => return error.RmdirFailed,
+    }
+}
+
 fn deleteFileIfExistsPosix(path: []const u8) !void {
     // NUL-terminate into a stack buffer.
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;

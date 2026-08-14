@@ -93,13 +93,16 @@ def _create_workspace(harness: FunctionalHarness, name: str = "sse-ws") -> str:
 
 
 def _create_kanban(harness: FunctionalHarness, ws_id: str, name: str = "sse-kanban") -> str:
+    # Backend returns the wrapped `{item, columns}` envelope (the
+    # frontend's `api.createKanban` destructure relies on it). See
+    # `workspace_items_create_kanban.zig::CreateKanbanResponseFull`.
     r = harness.http(
         "POST",
         f"/api/workspaces/{ws_id}/items/kanban",
         json_body={"name": name},
         expect=201,
     )
-    return r.json()["id"]
+    return r.json()["item"]["id"]
 
 
 # ─── Test 1: /api/events returns 200 with text/event-stream ─────────────
