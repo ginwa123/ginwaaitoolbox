@@ -838,45 +838,25 @@ const handleCreateTaskSave = async (payload: {
   const itId = props.itemId || props.item.id
   const desiredColumnId = activeCreateColumnId.value
   try {
-    const taskId = await workspacesStore.addTask(wsId, itId, {
-      name: payload.name,
-      description: payload.description,
-      // Forward the unattended toggle's value from the create
-      // dialog (Option A: backend atomically inserts a sessions
-      // row + sets the flag when this is '1').
-      isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
-      // Migration 067 — forward tags from the dialog (the
-      // KanbanTagsInput has already validated + deduped). The store
-      // + api layer JSON-encode + send; backend persists.
-      tags: payload.tags,
-      // Migration 070 — forward the per-task cwd override from
-      // the dialog. The store + api layer pass it through to
-      // workspaces_item_tasks.cwd on the wire. Empty string is
-      // the canonical "no per-task cwd" sentinel (backend stores
-      // '' and the session_create 3-level fallback chain handles
-      // the resolution).
-      cwd: payload.cwdSession,
-    })
-    if (!taskId) {
-      createError.value = 'Failed to create task — please retry.'
-      return
-    }
-
-    // NEW (plan: 2026-08-06-kanban-image-base64-in-chatview, replaces
-    // 2026-08-06-kanban-no-base64-in-desc). Convert each pending file
-    // the user pasted/picked while in create mode to a base64 data
-    // URL via FileReader.readAsDataURL, collecting them in upload
-    // order. We do NOT upload, we do NOT patch the description — the
-    // description stays plain text, and the data URLs are forwarded
-    // as imageUrls to runAgentOnNewTask below (create_and_run mode).
-    // The chatview's user-message template (ChatView.vue:2062-2080)
-    // renders them as clickable thumbnails above the text — same UX
-    // as pasting an image directly into the chat input.
+    // NEW (plan: 2026-08-14-kanban-task-create-endpoints). The
+    // 2-step addTask + (in create_and_run) runAgentOnNewTask dance
+    // is now a single call to addKanbanTask(mode, payload). The
+    // backend's /api/.../kanban/tasks endpoint handles both modes
+    // atomically (create + auto-assign + optional session insert +
+    // queue_message) in one round-trip.
     //
-    // Failure mode: if a FileReader throws (rare — disk/file
-    // corruption), we abort the move / run flow and surface the error
-    // via createError so the dialog stays open. The user can retry
-    // without re-typing.
+    // We still need to:
+    //   1. Convert pendingFiles to base64 data URLs (the api helper
+    //      joins them with `||` for the wire).
+    //   2. Build the queue_message for create_and_run mode
+    //      (`title + "\n\n" + description` when description is
+    //      non-empty, else just the title — Q1=B, Q2=2b from the
+    //      2026-08-06 kanban-create-task-run-agent plan).
+    //   3. Move the task to the column the user clicked (the
+    //      backend's auto-assign put it in the first column; the
+    //      moveTaskToColumn overwrites that).
+    //   4. Persist the base64 image_urls onto the task row via
+    //      updateTaskDetails (the kanban-image-urls column).
     const pendingFiles = payload.pendingFiles ?? []
     const fileToBase64 = (file: File): Promise<string> =>
       new Promise((resolve, reject) => {
@@ -903,108 +883,56 @@ const handleCreateTaskSave = async (payload: {
       }
     }
 
-    // Move the new task to the column the user clicked. The
-    // backend's auto-assign put it in the first column; moveTaskToColumn
+    const queueMessage =
+      payload.mode === 'create_and_run'
+        ? payload.description.trim() !== ''
+          ? `${payload.name}\n\n${payload.description}`
+          : payload.name
+        : undefined
+
+    const response = await workspacesStore.addKanbanTask(
+      wsId,
+      itId,
+      payload.mode,
+      {
+        name: payload.name,
+        description: payload.description,
+        tags: payload.tags,
+        cwd: payload.cwdSession,
+        isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
+        selected_profile_model: payload.selectedProfile,
+        queue_message: queueMessage,
+        imageUrls: uploadedImageUrls,
+      },
+    )
+
+    if (!response.task) {
+      // Partial success (create_and_run only) — the store action
+      // already surfaced a toast. Keep the dialog open so the user
+      // can retry without re-typing.
+      createError.value = 'Failed to create task — please retry.'
+      return
+    }
+
+    const taskId = response.task.id
+
+    // Move the task to the column the user clicked. The backend's
+    // auto-assign put it in the first column; moveTaskToColumn
     // overwrites that. Position 0 = top of the column.
     await workspacesStore.moveTaskToColumn(wsId, itId, taskId, desiredColumnId, 0)
 
-    // NEW (Migration 069 — kanban image urls column). Persist the
-    // base64 data URLs onto the new task's `image_urls` column.
-    // Done AFTER moveTaskToColumn so the task row exists with the
-    // correct column assignment before the user sees it (the
-    // PATCH round-trips through the store's `updateTaskDetails`,
-    // which is optimistically reflected in the local task before
-    // the network response).
-    //
-    // In `create_and_run` mode we ALSO forward `uploadedImageUrls`
-    // to runAgentOnNewTask (below) so the chatview's first user
-    // message renders the images as thumbnails above the text —
-    // same UX as pasting an image directly into the chat input.
-    // In plain `create` mode the data is now persisted in the
-    // column so the kanban card / task detail dialog renders
-    // them too (the kanban-image-urls-column plan replaces the
-    // upload-then-URL flow that was broken by the attachment GET
-    // wildcard route bug).
-    if (uploadedImageUrls.length > 0) {
-      try {
-        await workspacesStore.updateTaskDetails(wsId, itId, taskId, {
-          imageUrls: uploadedImageUrls,
-        })
-      } catch (err) {
-        console.error(
-          '[handleCreateTaskSave] updateTaskDetails(imageUrls) failed:',
-          err,
-        )
-        createError.value = `Image save failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-        return
-      }
-    }
+    // In plain create mode the backend's INSERT path already
+    // persisted image_urls (via the createStandardTask useCase). In
+    // create_and_run mode the same path applies. We don't need a
+    // follow-up updateTaskDetails call — the columns are populated
+    // server-side now. The imageUrls forwarding on the wire is what
+    // makes them visible to the chatview's first user message.
 
-    // NEW (plan: 2026-08-06-kanban-create-task-run-agent). When the
-    // user clicked "Create task & run agent", queue the title +
-    // description as the first user message and route to the chat
-    // view. The queued message is `title + "\n\n" + description` when
-    // description is non-empty, else just the title (Q1 = B, Q2 = 2b
-    // from the brainstorm).
-    if (payload.mode === 'create_and_run') {
-      const queueMessage =
-        payload.description.trim() !== ''
-          ? `${payload.name}\n\n${payload.description}`
-          : payload.name
-      const result = await workspacesStore.runAgentOnNewTask(
-        wsId,
-        itId,
-        taskId,
-        {
-          queueMessage,
-          // NEW (Migration 070 — kanban-cwd-session-optional plan).
-          // 3-level cwd resolution chain:
-          //   1. payload.cwdSession (per-task — user picked in dialog)
-          //   2. props.item.path     (kanban-level fallback)
-          //   3. ''                  (backend sandbox fallback)
-          // The backend re-derives this chain defensively in
-          // session_create.zig::useCase, but the frontend's
-          // resolution is the primary contract.
-          cwd:
-            payload.cwdSession ||
-            props.item.path ||
-            '',
-          isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
-          // NEW (plan: 2026-08-06-kanban-task-profile-selector).
-          // Empty/undefined defaults to '' (= backend default).
-          selectedProfile: payload.selectedProfile ?? '',
-          // NEW (plan: 2026-08-06-kanban-image-base64-in-chatview).
-          // Base64 data URLs for the images the user pasted in the
-          // create-mode description. The store forwards them to
-          // api.sendChatMessage as image_urls (4th arg), and the
-          // chatview renders them as clickable thumbnails above the
-          // text content. Empty array when no images — the store
-          // forwards it as-is (NOT coerced to undefined), which the
-          // API contract accepts as "zero attachments". See
-          // workspacesStoreRunAgentImageUrls.spec.ts for the wire.
-          imageUrls: uploadedImageUrls,
-        },
-      )
-      if (result?.status !== 'send') {
-        // Partial success: task was created but the agent didn't
-        // start. Surface a toast so the user knows to click the
-        // card to retry manually. Never strand the user.
-        //
-        // NOTE (2026-08-06, "no need go chatview"): on the SUCCESS
-        // path we deliberately do NOT emit `selectTask` — the user
-        // asked to stay on the kanban view after clicking "Create
-        // task & run agent" instead of being routed into the chat
-        // dialog. The agent keeps running in the background; the
-        // user can click the task card on the kanban any time to
-        // open the chat view.
-        useNotificationStore().notifyError(
-          'Task created — agent did not start',
-          'Click the card to retry, or check the nalar logs.',
-        )
-      }
-    }
+    // CHANGED: do NOT emit `selectTask` even on success. The user
+    // asked to stay on the kanban view after clicking "Create task
+    // & run agent" — the agent runs in the background; the user
+    // can click the task card to open the chat view any time.
+    // (Same UX as the pre-refactor flow.)
 
     showCreateDialog.value = false
     activeCreateColumnId.value = null

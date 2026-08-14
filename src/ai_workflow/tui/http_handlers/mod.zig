@@ -53,6 +53,10 @@ pub const workspaceItemsCreateDesignHandler = @import("design_items_create.zig")
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
 pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;
 pub const kanbanColumnsCreateHandler = @import("kanban_columns_create.zig").kanbanColumnsCreateHandler;
+// POST /api/workspaces/:workspace_id/items/:item_id/kanban/tasks with
+// `mode` discriminator ('create' | 'create_and_run'). See
+// docs/superpowers/plans/2026-08-13-kanban-task-create-endpoint.md (Task 1).
+pub const kanbanTasksCreateHandler = @import("kanban_tasks_create.zig").kanbanTasksCreateHandler;
 pub const kanbanColumnsUpdateHandler = @import("kanban_columns_update.zig").kanbanColumnsUpdateHandler;
 pub const kanbanColumnsDeleteHandler = @import("kanban_columns_delete.zig").kanbanColumnsDeleteHandler;
 // Copy a kanban's column spec (names + descriptions, preserving order)

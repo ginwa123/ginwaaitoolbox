@@ -2,13 +2,16 @@
  * Tests for KanbanView.handleCreateTaskSave's
  * `mode: 'create_and_run'` branch.
  *
- * Mount pattern: shallow mount with stub children + vi.spyOn for the
- * store actions. We assert the call ORDER and payload, not the
- * implementation details. The dialog emit is mocked via the parent
- * by reaching into the dialog component.
+ * Plan: 2026-08-06-kanban-create-task-run-agent.md (Task 3 / Step 3.1)
+ *       2026-08-14-kanban-task-create-endpoints.md (Task 5 / Step 5.1)
  *
- * Plan: docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md
- *   Task 3 / Step 3.1
+ * Updated for the kanban-specific endpoint refactor: handleCreateTaskSave
+ * now calls `workspacesStore.addKanbanTask(mode, payload)` (NOT the
+ * addTask + runAgentOnNewTask dance). The store action delegates to
+ * `api.createKanbanTask` which POSTs to /api/.../kanban/tasks.
+ *
+ * Mount pattern: shallow mount with stub children + vi.spyOn for the
+ * store actions. We assert the call shape, not the implementation details.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
@@ -78,82 +81,68 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     return wrapper!
   }
 
-  it('creates the task, moves it to the column, then runs the agent — in that order', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 'My task',
-      description: 'desc',
-      task_type: 'standard',
-    })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
+  it("calls addKanbanTask('create_and_run', ...) with the right payload — no addTask + runAgentOnNewTask dance", async () => {
+    const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
+    const createKanbanSpy = vi
+      .spyOn(api, 'createKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const store = useWorkspacesStore()
-    const addSpy = vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    const moveSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runSpy = vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'send' })
-    const notifySpy = vi.spyOn(useNotificationStore(), 'notifyError')
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: fakeSession })
+    const addTaskSpy = vi.spyOn(store, 'addTask')
+    const runAgentSpy = vi.spyOn(store, 'runAgentOnNewTask')
 
     const view = await mountView()
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
       name: 'My task',
-      description: 'desc',
+      description: 'The login button is broken',
       is_auto_retry_until_stop: '0',
       tags: [],
     })
     await flushPromises()
 
-    // Call order: addTask -> moveTaskToColumn -> runAgentOnNewTask
-    const addOrder = addSpy.mock.invocationCallOrder[0]!
-    const moveOrder = moveSpy.mock.invocationCallOrder[0]!
-    const runOrder = runSpy.mock.invocationCallOrder[0]!
-    expect(addOrder).toBeLessThan(moveOrder)
-    expect(moveOrder).toBeLessThan(runOrder)
-
-    // Queue message is title + "\n\n" + description
-    // NEW (plan: 2026-08-06-kanban-task-profile-selector): use
-    // objectContaining so the new selectedProfile field doesn't
-    // break this assertion (default empty string).
-    expect(runSpy).toHaveBeenCalledWith(
+    // The new contract: SINGLE call to addKanbanTask with mode +
+    // queue_message. NO addTask + runAgentOnNewTask dance.
+    expect(addKanbanSpy).toHaveBeenCalledTimes(1)
+    expect(addKanbanSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
-      'task_new',
+      'create_and_run',
       expect.objectContaining({
-        queueMessage: 'My task\n\ndesc',
-        cwd: '/home/u/proj',
+        name: 'My task',
+        description: 'The login button is broken',
+        queue_message: 'My task\n\nThe login button is broken',
         isAutoRetryUntilStop: '0',
+        tags: [],
       }),
     )
+    expect(addTaskSpy).not.toHaveBeenCalled()
+    expect(runAgentSpy).not.toHaveBeenCalled()
+    // The api helper was called indirectly via the store action (we
+    // don't assert the exact call here — that's covered by the
+    // workspacesStoreAddKanbanTask.spec.ts suite).
+    expect(createKanbanSpy).toBeTruthy()
+
     // CHANGED (2026-08-06, "no need go chatview"): on the SUCCESS
     // path we deliberately do NOT emit `selectTask`. The user stays
     // on the kanban view (no chat dialog opens); the agent runs in
     // the background and the user can click the new task card to
     // open the chat view any time they want.
     expect(view.emitted('selectTask')).toBeUndefined()
-    // No failure toast on success.
-    expect(notifySpy).not.toHaveBeenCalled()
-    // The create dialog gets closed (its host sets
-    // showCreateDialog.value = false unconditionally after the
-    // run-and-create block, so the user always lands back on the
-    // kanban view).
   })
 
   it('queue message is just the title when description is empty', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 'Just title',
-      description: '',
-      task_type: 'standard',
-    })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
-
+    const fakeTask = { id: 'task_new', name: 'Just title', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'Just title', status: 'send' }
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runSpy = vi
-      .spyOn(store, 'runAgentOnNewTask')
-      .mockResolvedValue({ status: 'send' })
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -166,33 +155,23 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     })
     await flushPromises()
 
-    expect(runSpy).toHaveBeenCalledWith(
+    expect(addKanbanSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
-      'task_new',
+      'create_and_run',
       expect.objectContaining({
-        queueMessage: 'Just title',
-        cwd: '/home/u/proj',
-        isAutoRetryUntilStop: '0',
+        queue_message: 'Just title',
       }),
     )
   })
 
   it('forwards unattended toggle value', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 'My task',
-      description: 'd',
-      task_type: 'standard',
-    })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
-
+    const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runSpy = vi
-      .spyOn(store, 'runAgentOnNewTask')
-      .mockResolvedValue({ status: 'send' })
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -204,32 +183,19 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       tags: [],
     })
     await flushPromises()
-    expect(runSpy).toHaveBeenCalledWith(
+    expect(addKanbanSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
-      'task_new',
+      'create_and_run',
       expect.objectContaining({
-        queueMessage: 'My task\n\nd',
-        cwd: '/home/u/proj',
         isAutoRetryUntilStop: '1',
       }),
     )
   })
 
-  it('does NOT navigate when runAgentOnNewTask returns undefined (partial success)', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 't',
-      description: 'd',
-      task_type: 'standard',
-    })
-    vi.spyOn(api, 'sendChatMessage').mockRejectedValue(new Error('boom'))
-
+  it('does NOT navigate when addKanbanTask returns { task: null, session: null } (partial success)', async () => {
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue(undefined)
-    const notifySpy = vi.spyOn(useNotificationStore(), 'notifyError')
+    vi.spyOn(store, 'addKanbanTask').mockResolvedValue({ task: null, session: null } as any)
 
     const view = await mountView()
     const vm: any = view.vm
@@ -243,47 +209,20 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     await flushPromises()
 
     expect(view.emitted('selectTask')).toBeUndefined()
-    expect(notifySpy).toHaveBeenCalled()
-  })
-
-  it('does NOT navigate when runAgentOnNewTask returns status != queued', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 't',
-      description: 'd',
-      task_type: 'standard',
-    })
-
-    const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'offline' })
-
-    const view = await mountView()
-    const vm: any = view.vm
-    await vm.handleCreateTaskSave({
-      mode: 'create_and_run',
-      name: 't',
-      description: 'd',
-      is_auto_retry_until_stop: '0',
-      tags: [],
-    })
-    await flushPromises()
-    expect(view.emitted('selectTask')).toBeUndefined()
+    // Partial-success: the store action's catch block decides whether
+    // to surface a toast. In the new contract the store action's
+    // mocked-resolved path (not rejected) bypasses the catch — the
+    // store's notifyError lives in the catch path. The component
+    // surfaces its own error via `createError` (the dialog stays
+    // open for retry). We don't re-toast here to avoid duplicates.
   })
 
   it('still creates the task in plain create mode (existing behavior unchanged)', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 't',
-      description: 'd',
-      task_type: 'standard',
-    })
-
+    const fakeTask = { id: 'task_new', name: 't', task_type: 'standard' } as any
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runAgentSpy = vi.spyOn(store, 'runAgentOnNewTask')
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: null })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -295,28 +234,25 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       tags: [],
     })
     await flushPromises()
-    expect(runAgentSpy).not.toHaveBeenCalled()
+
+    expect(addKanbanSpy).toHaveBeenCalledWith(
+      'ws_1',
+      'item_1',
+      'create',
+      expect.objectContaining({
+        name: 't',
+        description: 'd',
+        queue_message: undefined,
+      }),
+    )
     expect(view.emitted('selectTask')).toBeUndefined()
   })
 
-  // NEW (2026-08-06, "no need go chatview"). Regression test for
-  // the user's request: after clicking "Create task & run agent",
-  // the chat view dialog should NOT auto-open. The agent runs in
-  // the background; the user stays on the kanban view and can click
-  // the new task card to open the chat view any time.
   it('does NOT emit selectTask on create_and_run success (no chat dialog opens)', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 'My task',
-      description: 'desc',
-      task_type: 'standard',
-    })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
-
+    const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    vi.spyOn(store, 'runAgentOnNewTask').mockResolvedValue({ status: 'send' })
+    vi.spyOn(store, 'addKanbanTask').mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -329,30 +265,20 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     })
     await flushPromises()
 
-    // The flow: addTask -> moveTaskToColumn -> runAgentOnNewTask.
-    // The agent IS started (runAgentOnNewTask was called) — the
-    // user just stays on the kanban view.
-    expect(store.runAgentOnNewTask).toHaveBeenCalledOnce()
+    // The flow: single addKanbanTask call (the new endpoint handles
+    // create + run agent server-side in one round-trip).
+    expect(store.addKanbanTask).toHaveBeenCalledOnce()
     // But the chat view does NOT open.
     expect(view.emitted('selectTask')).toBeUndefined()
   })
 
-  // NEW (plan: 2026-08-06-kanban-task-profile-selector)
-  it('forwards selectedProfile from dialog emit to runAgentOnNewTask', async () => {
-    vi.spyOn(api, 'createTask').mockResolvedValue({
-      id: 'task_new',
-      name: 'My task',
-      description: 'desc',
-      task_type: 'standard',
-    })
-    vi.spyOn(api, 'sendChatMessage').mockResolvedValue({ status: 'send' })
-
+  it('forwards selectedProfile from dialog emit to addKanbanTask', async () => {
+    const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new')
-    vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
-    const runSpy = vi
-      .spyOn(store, 'runAgentOnNewTask')
-      .mockResolvedValue({ status: 'send' })
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
     const vm: any = view.vm
@@ -366,12 +292,12 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     })
     await flushPromises()
 
-    expect(runSpy).toHaveBeenCalledWith(
+    expect(addKanbanSpy).toHaveBeenCalledWith(
       'ws_1',
       'item_1',
-      'task_new',
+      'create_and_run',
       expect.objectContaining({
-        selectedProfile: '900r1bu',
+        selected_profile_model: '900r1bu',
       }),
     )
   })

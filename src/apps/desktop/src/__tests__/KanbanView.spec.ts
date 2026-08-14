@@ -648,22 +648,19 @@ describe('KanbanView — create-task flow', () => {
     return wrapper!
   }
 
-  it('saves the new task via addTask and moves it to the chosen column at position 0', async () => {
+  it('saves the new task via addKanbanTask and moves it to the chosen column at position 0', async () => {
     const w = await mountAndOpenDialog()
 
-    // Capture the store instance via the global Pinia accessor used
-    // inside KanbanView (useWorkspacesStore). The store lives on the
-    // active Pinia, which beforeEach set up.
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    const addTaskSpy = vi
-      .spyOn(store, 'addTask')
-      .mockResolvedValue('task_new_1')
+    const fakeTask = { id: 'task_new_1', name: 'My new task', task_type: 'standard' }
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask as any, session: null })
     const moveTaskSpy = vi
       .spyOn(store, 'moveTaskToColumn')
       .mockResolvedValue(undefined)
 
-    // Type a name and submit.
     const nameInput = document.querySelector<HTMLInputElement>(
       '[data-testid="kanban-task-detail-create-name"]',
     )
@@ -677,17 +674,15 @@ describe('KanbanView — create-task flow', () => {
       )!
       .click()
     await flushPromises()
-    // Wait one more microtask flush for the await chain inside
-    // handleCreateTaskSave (addTask → moveTaskToColumn).
     await flushPromises()
 
-    expect(addTaskSpy).toHaveBeenCalledTimes(1)
-    expect(addTaskSpy).toHaveBeenCalledWith(
+    expect(addKanbanSpy).toHaveBeenCalledTimes(1)
+    expect(addKanbanSpy).toHaveBeenCalledWith(
       WS_ID,
       ITEM_ID,
+      'create',
       expect.objectContaining({ name: 'My new task' }),
     )
-    // Move to the user's chosen column at position 0.
     expect(moveTaskSpy).toHaveBeenCalledWith(
       WS_ID,
       ITEM_ID,
@@ -696,21 +691,19 @@ describe('KanbanView — create-task flow', () => {
       0,
     )
 
-    // Dialog closes on success.
     expect(
       document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
     ).toBeNull()
     void w
   })
 
-  it('keeps the dialog open + shows error banner when addTask fails', async () => {
+  it('keeps the dialog open + shows error banner when addKanbanTask throws (plain create)', async () => {
     await mountAndOpenDialog()
 
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockRejectedValue(new Error('network down'))
+    vi.spyOn(store, 'addKanbanTask').mockRejectedValue(new Error('network down'))
 
-    // Submit with a name.
     const nameInput = document.querySelector<HTMLInputElement>(
       '[data-testid="kanban-task-detail-create-name"]',
     )
@@ -726,12 +719,10 @@ describe('KanbanView — create-task flow', () => {
     await flushPromises()
     await flushPromises()
 
-    // Dialog still in the DOM (user can retry).
     const dialog = document.querySelector(
       '[data-testid="kanban-task-detail-dialog"]',
     )
     expect(dialog).not.toBeNull()
-    // Error banner visible with the error message.
     const banner = document.querySelector(
       '[data-testid="kanban-task-detail-error"]',
     )
@@ -739,15 +730,14 @@ describe('KanbanView — create-task flow', () => {
     expect(banner?.textContent).toContain('network down')
   })
 
-  it('does not call moveTaskToColumn when addTask returns undefined', async () => {
-    // Defensive: if the store returns undefined (offline fallback
-    // shape), we should set the error message and NOT call the
-    // move — there's no taskId to move.
+  it('does not call moveTaskToColumn when addKanbanTask returns { task: null, session: null }', async () => {
     await mountAndOpenDialog()
 
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    const addTaskSpy = vi.spyOn(store, 'addTask').mockResolvedValue(undefined)
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: null, session: null } as any)
     const moveTaskSpy = vi.spyOn(store, 'moveTaskToColumn')
 
     const nameInput = document.querySelector<HTMLInputElement>(
@@ -765,7 +755,7 @@ describe('KanbanView — create-task flow', () => {
     await flushPromises()
     await flushPromises()
 
-    expect(addTaskSpy).toHaveBeenCalledTimes(1)
+    expect(addKanbanSpy).toHaveBeenCalledTimes(1)
     expect(moveTaskSpy).not.toHaveBeenCalled()
     expect(
       document.querySelector('[data-testid="kanban-task-detail-error"]'),
@@ -777,7 +767,7 @@ describe('KanbanView — create-task flow', () => {
 
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    const addTaskSpy = vi.spyOn(store, 'addTask')
+    const addKanbanSpy = vi.spyOn(store, 'addKanbanTask')
 
     document
       .querySelector<HTMLButtonElement>(
@@ -786,30 +776,23 @@ describe('KanbanView — create-task flow', () => {
       .click()
     await flushPromises()
 
-    expect(addTaskSpy).not.toHaveBeenCalled()
+    expect(addKanbanSpy).not.toHaveBeenCalled()
     expect(
       document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
     ).toBeNull()
   })
 
-  // Regression: kanban task tags were silently dropped on insert
-  // because handleCreateTaskSave's payload type omitted `tags` and
-  // the tag array was never forwarded to addTask. The user types
-  // tags in the chip input, clicks Save, sees a task created
-  // without tags. This test reproduces that exact flow and asserts
-  // the tags are forwarded end-to-end through KanbanView →
-  // workspacesStore.addTask.
-  it('forwards tags payload to addTask when the dialog emits tags (create mode)', async () => {
+  it('forwards tags payload to addKanbanTask when the dialog emits tags (create mode)', async () => {
     const w = await mountAndOpenDialog()
 
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    const addTaskSpy = vi
-      .spyOn(store, 'addTask')
-      .mockResolvedValue('task_new_tags')
+    const fakeTask = { id: 'task_new_tags', name: 'Tagged task', task_type: 'standard' }
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockResolvedValue({ task: fakeTask as any, session: null })
     vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
 
-    // Type the task name.
     const nameInput = document.querySelector<HTMLInputElement>(
       '[data-testid="kanban-task-detail-create-name"]',
     )
@@ -817,11 +800,6 @@ describe('KanbanView — create-task flow', () => {
     nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
-    // Type a tag into the chip input WITHOUT pressing Enter/comma.
-    // The bug was: this draft would not be committed by Save clicks,
-    // and even if it were committed, the handler did not forward it.
-    // The fix wires both: KanbanTagsInput's @blur + handleSave's
-    // explicit commitDraft() call.
     const tagInput = document.querySelector<HTMLInputElement>(
       '[data-testid="kanban-task-detail-create-tags-field"]',
     )
@@ -830,10 +808,6 @@ describe('KanbanView — create-task flow', () => {
     tagInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
-    // Click Save — the click moves focus, which fires @blur on the
-    // tag input → the draft commits → tags.value = ['sadsad'] → the
-    // dialog's handleSave emits { ..., tags: ['sadsad'] } → KanbanView
-    // forwards to addTask.
     document
       .querySelector<HTMLButtonElement>(
         '[data-testid="kanban-task-detail-save"]',
@@ -842,10 +816,11 @@ describe('KanbanView — create-task flow', () => {
     await flushPromises()
     await flushPromises()
 
-    expect(addTaskSpy).toHaveBeenCalledTimes(1)
-    expect(addTaskSpy).toHaveBeenCalledWith(
+    expect(addKanbanSpy).toHaveBeenCalledTimes(1)
+    expect(addKanbanSpy).toHaveBeenCalledWith(
       WS_ID,
       ITEM_ID,
+      'create',
       expect.objectContaining({
         name: 'Tagged task',
         tags: ['sadsad'],
@@ -1014,7 +989,8 @@ describe('KanbanView — header + Add task button', () => {
     await flushPromises()
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    vi.spyOn(store, 'addTask').mockResolvedValue('task_new_1')
+    const fakeTask = { id: 'task_new_1', name: 'My new task', task_type: 'standard' }
+    vi.spyOn(store, 'addKanbanTask').mockResolvedValue({ task: fakeTask as any, session: null })
     const moveTaskSpy = vi
       .spyOn(store, 'moveTaskToColumn')
       .mockResolvedValue(undefined)
@@ -1048,7 +1024,7 @@ describe('KanbanView — header + Add task button', () => {
       .querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!
       .click()
     await flushPromises()
-    await flushPromises()  // await handleCreateTaskSave await chain
+    await flushPromises()
 
     // moveTaskToColumn uses col_y (the chosen column), not col_x.
     expect(moveTaskSpy).toHaveBeenCalledWith(
