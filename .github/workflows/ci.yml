@@ -186,14 +186,23 @@ jobs:
         # `pkg-config --modversion sqlite3/openssl` for parity with Linux.
         # macOS GitHub Actions runner images do NOT ship pkg-config.
         #
-        # openssl@3 is keg-only; export paths explicitly so pkg-config
-        # and the Zig build can find it. These lines are idempotent
-        # (--prefix returns the same value whether or not the package
-        # was just installed).
+        # openssl@3 + curl are keg-only; export paths explicitly so
+        # pkg-config and the Zig build can find them. These lines are
+        # idempotent (--prefix returns the same value whether or not the
+        # package was just installed). The Zig build's system-deps probe
+        # (src/modules/custom_http_client/build.zig) looks at exactly
+        # these keg-only paths under /opt/homebrew/opt/<name>/ — see the
+        # "system-deps-first" plan. With both openssl@3 AND curl installed,
+        # the probe returns use_system=true and the build skips the
+        # ~5-10 min `bash build-vendor-curl.sh` cross-compile that
+        # previously failed on the Mac runner with
+        # "fatal error: SystemConfiguration/SCDynamicStoreCopySpecific.h
+        # file not found" (the macOS SDK isn't available to zig cc on a
+        # Mac runner that doesn't have Xcode CLI tools).
         env:
           HOMEBREW_NO_AUTO_UPDATE: '1'
         run: |
-          brew install pkg-config openssl@3 coreutils
+          brew install pkg-config openssl@3 curl coreutils
           echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
           echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV

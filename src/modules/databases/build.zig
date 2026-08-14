@@ -59,9 +59,11 @@ const SystemLibs = struct {
 /// returns "no system libs" because the host's libs are for the host
 /// OS, not the target OS.
 pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLibs {
-    // Only Linux native (target == host == linux) goes system-only.
-    // Anything else falls back to the vendored amalgamation.
-    if (target.result.os.tag != .linux or b.graph.host.result.os.tag != .linux) {
+    // Only native (target == host) goes system-only. Cross-compile
+    // (Linux host → macOS target, or vice versa) always falls back
+    // to the vendored amalgamation because the host's libs are for
+    // the host OS, not the target OS.
+    if (target.result.os.tag != b.graph.host.result.os.tag) {
         return .{
             .use_system_sqlite3 = false,
             .use_system_pq = false,
@@ -70,10 +72,17 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         };
     }
 
-    // libpq-fe.h location varies by distro: Arch Linux has it at
-    // /usr/include/libpq-fe.h directly, Debian/Ubuntu at
+    // Linux: libpq-fe.h location varies by distro — Arch Linux has it
+    // at /usr/include/libpq-fe.h directly, Debian/Ubuntu at
     // /usr/include/postgresql/libpq-fe.h. Check both.
-    const probe_script =
+    //
+    // macOS: Homebrew ships keg-only sqlite3 + libpq at
+    // /opt/homebrew/opt/<name>/{include,lib}/. There is no ldconfig
+    // on macOS — we test the .dylib file directly. The probe accepts
+    // either the keg-only path OR the system /usr/include (rare but
+    // documented for completeness).
+    const probe_script = switch (b.graph.host.result.os.tag) {
+        .linux =>
         \\{ \
         \\  echo "sqlite_hdr=$(test -f /usr/include/sqlite3.h && echo 1 || echo 0)"; \
         \\  echo "sqlite_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libsqlite3\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
@@ -83,7 +92,35 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         \\  echo "ssl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libssl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
         \\  echo "crypto_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcrypto\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
         \\}
-    ;
+        ,
+        .macos =>
+        // `pq` is not currently used by macOS targets (the project
+        // doesn't ship libpq-backed code on Mac). The probe still
+        // returns it as a hint — if a future commit adds libpq usage
+        // on macOS, the brew probe is already wired.
+        \\{ \
+        \\  echo "sqlite_hdr=$(test -f /opt/homebrew/opt/sqlite3/include/sqlite3.h -o -f /usr/include/sqlite3.h && echo 1 || echo 0)"; \
+        \\  echo "sqlite_lib=$(test -f /opt/homebrew/opt/sqlite3/lib/libsqlite3.dylib -o -f /usr/lib/libsqlite3.dylib && echo 1 || echo 0)"; \
+        \\  echo "pq_hdr=$(test -f /opt/homebrew/opt/libpq/include/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0)"; \
+        \\  echo "pq_lib=$(test -f /opt/homebrew/opt/libpq/lib/libpq.dylib -o -f /usr/lib/libpq.dylib && echo 1 || echo 0)"; \
+        \\  echo "ssl_hdr=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
+        \\  echo "ssl_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libssl.dylib -o -f /opt/homebrew/opt/openssl/lib/libssl.dylib -o -f /usr/lib/libssl.dylib && echo 1 || echo 0)"; \
+        \\  echo "crypto_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libcrypto.dylib -o -f /opt/homebrew/opt/openssl/lib/libcrypto.dylib -o -f /usr/lib/libcrypto.dylib && echo 1 || echo 0)"; \
+        \\}
+        ,
+        else =>
+        // Windows + any other host: skip the probe (assume all 0).
+        \\{ \
+        \\  echo "sqlite_hdr=0"; \
+        \\  echo "sqlite_lib=0"; \
+        \\  echo "pq_hdr=0"; \
+        \\  echo "pq_lib=0"; \
+        \\  echo "ssl_hdr=0"; \
+        \\  echo "ssl_lib=0"; \
+        \\  echo "crypto_lib=0"; \
+        \\}
+        ,
+    };
 
     const result = std.process.run(
         b.allocator,
@@ -204,7 +241,12 @@ pub fn build(b: *std.Build) void {
         mod.addIncludePath(b.path(vendor_dir));
     } else {
         // Explicit /usr/include for cimport (most distros have it by
-        // default but cross-compile toolchains may not).
+        // default but cross-compile toolchains may not). On macOS we
+        // also need the brew keg-only path because the probe accepted
+        // either layout.
+        if (target.result.os.tag == .macos) {
+            mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite3/include" });
+        }
         mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
     }
 
@@ -254,11 +296,20 @@ pub fn build(b: *std.Build) void {
             if (sys.use_system_crypto) mod.linkSystemLibrary("crypto", .{});
         },
         .macos => {
-            // macOS: always use vendored amalgamation (no Homebrew
-            // path handling in the probe yet). macOS doesn't currently
-            // use libpq or openssl — those are wired in the linux
-            // branch only.
-            mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
+            // macOS native: prefer the system sqlite3 from Homebrew
+            // (keg-only at /opt/homebrew/opt/sqlite3/) when the probe
+            // finds it. Otherwise fall back to the vendored
+            // amalgamation (works on every host with a C compiler).
+            // macOS doesn't currently use libpq or openssl via this
+            // package — ssl/crypto are wired only in custom_http_client
+            // (the libcurl backend needs them for https://).
+            if (sys.use_system_sqlite3) {
+                mod.linkSystemLibrary("sqlite3", .{});
+                mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite3/lib" });
+                mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+            } else {
+                mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
+            }
         },
         .windows => {
             mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });

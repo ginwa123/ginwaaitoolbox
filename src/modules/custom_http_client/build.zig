@@ -90,13 +90,22 @@ const SystemLibs = struct {
 /// could fail in non-obvious ways (e.g. undefined symbol
 /// `SSL_CTX_set_keylog_callback` if libssl.so is missing).
 ///
-/// Only Linux is probed. macOS Homebrew libcurl is keg-only
-/// (`/opt/homebrew/opt/curl/` — not on the default link path), and
-/// Windows needs explicit .lib paths; both fall back to vendor.
+/// Only Linux + macOS (native) are probed. Windows needs explicit
+/// .lib paths and falls back to vendor. Cross-compile (Linux host →
+/// macOS target, or vice versa) also falls back to vendor because the
+/// host's libs are for the host OS, not the target OS.
+///
+/// On macOS the probe checks Homebrew's keg-only paths under
+/// `/opt/homebrew/opt/<name>/{include,lib}/`. The CI yml installs
+/// `pkg-config openssl@3 coreutils` (but NOT curl) on Mac runners and
+/// exports LDFLAGS/CPPFLAGS from `brew --prefix openssl@3`. For
+/// system libcurl on Mac, add `brew install curl` to the CI yml — the
+/// probe will then pick it up at `/opt/homebrew/opt/curl/`.
 pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLibs {
-    // Only Linux native (target == host == linux) goes system-only.
-    // Anything else falls back to the vendored path.
-    if (target.result.os.tag != .linux or b.graph.host.result.os.tag != .linux) {
+    // Only native (target == host) goes system-only. Cross-compile
+    // (Linux host → macOS target, or vice versa) always falls back to
+    // vendor — the host's libs are for the host OS.
+    if (target.result.os.tag != b.graph.host.result.os.tag) {
         return .{
             .use_system = false,
             .found_curl = false,
@@ -108,13 +117,17 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     // Probe via a single shell command. Each line of output is
     // `<key>=<0|1>` — the parser below reads 5 keys.
     //
-    // The probe uses `command -v` (POSIX) for the .so detection on
-    // the off chance `ldconfig` is missing (Android, some containers),
-    // and falls back to `command -v` which is always on POSIX paths.
-    // The `grep -E "libcurl\.so(\.[0-9]+)*$"` matches libcurl.so
-    // (unversioned) AND libcurl.so.4 (versioned) — both are valid
-    // linker names.
-    const probe_script =
+    // Linux: checks /usr/include + /usr/lib (Arch / Debian /
+    // Ubuntu / Fedora layouts). `ldconfig -p` matches both unversioned
+    // `libcurl.so` and versioned `libcurl.so.4`.
+    //
+    // macOS: Homebrew installs keg-only libs at
+    // `/opt/homebrew/opt/<name>/{include,lib}/`. There is no
+    // ldconfig equivalent on macOS — we test for the .dylib file
+    // directly at the canonical brew path. We also accept a system
+    // `/usr/include` install (rare, but documented for completeness).
+    const probe_script = switch (b.graph.host.result.os.tag) {
+        .linux =>
         \\{ \
         \\  echo "curl_hdr=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0)"; \
         \\  echo "curl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcurl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
@@ -122,7 +135,31 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         \\  echo "ssl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libssl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
         \\  echo "crypto_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcrypto\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
         \\}
-    ;
+        ,
+        .macos =>
+        // Accept either Homebrew's keg-only paths OR a system
+        // /usr/include install. CI runners need `brew install curl`
+        // (currently NOT in ci.yml — see fix-ci-mac plan) for the
+        // curl half to be picked up; openssl@3 is already installed.
+        \\{ \
+        \\  echo "curl_hdr=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0)"; \
+        \\  echo "curl_lib=$(test -f /opt/homebrew/opt/curl/lib/libcurl.dylib -o -f /opt/homebrew/opt/curl/lib/libcurl.4.dylib -o -f /usr/lib/libcurl.dylib && echo 1 || echo 0)"; \
+        \\  echo "ssl_hdr=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
+        \\  echo "ssl_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libssl.dylib -o -f /opt/homebrew/opt/openssl/lib/libssl.dylib -o -f /usr/lib/libssl.dylib && echo 1 || echo 0)"; \
+        \\  echo "crypto_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libcrypto.dylib -o -f /opt/homebrew/opt/openssl/lib/libcrypto.dylib -o -f /usr/lib/libcrypto.dylib && echo 1 || echo 0)"; \
+        \\}
+        ,
+        else =>
+        // Windows + any other host: skip the probe (assume all 0).
+        \\{ \
+        \\  echo "curl_hdr=0"; \
+        \\  echo "curl_lib=0"; \
+        \\  echo "ssl_hdr=0"; \
+        \\  echo "ssl_lib=0"; \
+        \\  echo "crypto_lib=0"; \
+        \\}
+        ,
+    };
 
     const result = std.process.run(
         b.allocator,
@@ -243,13 +280,42 @@ pub fn build(b: *std.Build) void {
         // System libs path. `linkSystemLibrary("curl")` does NOT auto-
         // pull libssl/libcrypto (no pkg-config Requires honour), so we
         // link them explicitly. The cimport for `curl/curl.h` needs
-        // `/usr/include` on the include path (Debian/Ubuntu put curl.h
-        // at `/usr/include/curl/curl.h` and the cimport does
+        // `/usr/include` on the include path on Linux (Debian/Ubuntu
+        // put curl.h at `/usr/include/curl/curl.h` and the cimport does
         // `#include <curl/curl.h>`, so /usr/include must be on the
         // search path). Most distros add /usr/include by default, but
         // some configurations (e.g. cross-compile toolchains) don't —
         // add it explicitly so the cimport works everywhere.
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        //
+        // On macOS, the probe only returns `use_system=true` when both
+        // /opt/homebrew/opt/curl/include/curl/curl.h AND
+        // /opt/homebrew/opt/openssl@3/include/openssl/ssl.h exist.
+        // We mirror those paths here so the cimport resolves
+        // <curl/curl.h> and <openssl/ssl.h> regardless of which
+        // include-path probe happens to win the search.
+        switch (target.result.os.tag) {
+            .linux => {
+                mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+            },
+            .macos => {
+                // Probe uses an OR-of-paths predicate, but link only
+                // succeeds against the path that actually has the .dylib.
+                // /opt/homebrew/opt/curl/include and
+                // /opt/homebrew/opt/openssl@3/include are the canonical
+                // keg-only Homebrew paths on Apple Silicon.
+                mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/curl/include" });
+                mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
+                // Library search paths so linkSystemLibrary can find
+                // the .dylib (it's keg-only — not on the default search
+                // path). The /usr/lib fallback covers system-wide installs.
+                mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/curl/lib" });
+                mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
+                mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+            },
+            else => {
+                mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+            },
+        }
         mod.linkSystemLibrary("curl", .{});
         mod.linkSystemLibrary("ssl", .{});
         mod.linkSystemLibrary("crypto", .{});
