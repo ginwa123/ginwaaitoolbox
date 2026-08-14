@@ -33,6 +33,86 @@ const expectError = std.testing.expectError;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const testing_allocator = std.testing.allocator;
 
+// ===== Regression test for 2026-08-15 "bash tool leak" ===============
+//
+// The user posted a leaked tool_call record with a bash `arguments`
+// payload of literally `$'\xaa\xaa\xaa...'` (22 bytes of 0xAA — Zig's
+// DebugAllocator free-fill byte, octal 252). Fix: make `CallResponse`
+// arena-owned. Caller passes the per-iteration arena's allocator to
+// `Agent.init`. The SSE parser allocates everything on that arena.
+// `StreamingAggregator.finalize` returns slice headers that point
+// straight at the arena — no copy, no separate `deinit`. Any
+// accidental `free`-then-read under DebugAllocator would have
+// produced the 0xAA poison the user observed.
+//
+// Pins the contract:
+//   1. `process_chunk` stores inner bytes on the caller's arena.
+//   2. `finalize` returns slice headers that point at the SAME arena
+//      bytes (no second dupe).
+//   3. Reading the returned bytes BEFORE the arena is destroyed
+//      returns the real arguments — not 0xAA.
+//   4. `CallResponse.deinit` is a documented no-op.
+test "CallResponse arena ownership: tool_call.function.arguments points at caller's arena (no .deinit needed)" {
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var agg = agent.StreamingAggregator.init(arena_alloc);
+    defer agg.deinit();
+
+    // Stage 1: content_block_start arrives with id + name.
+    try agg.process_chunk(.{
+        .tool_calls_delta = &[_]agent.ToolCallDelta{.{
+            .index = 0,
+            .id = "toolu_leak_test",
+            .function_name = "bash",
+        }},
+    });
+
+    // Stage 2: two input_json_delta chunks concatenate to the bash
+    // arguments JSON. Real Anthropic / OpenAI streams could carry
+    // any byte sequence (including legitimate binary data with
+    // 0xAA); the contract must hold regardless of payload content.
+    const args_payload =
+        \\{"command":"cd /tmp && echo hello","cwd":"/tmp"}
+    ;
+    try agg.process_chunk(.{
+        .tool_calls_delta = &[_]agent.ToolCallDelta{.{
+            .index = 0,
+            .function_arguments = args_payload[0..20],
+        }},
+    });
+    try agg.process_chunk(.{
+        .tool_calls_delta = &[_]agent.ToolCallDelta{.{
+            .index = 0,
+            .function_arguments = args_payload[20..],
+        }},
+    });
+
+    const response = try agg.finalize();
+    defer response.deinit();
+
+    try expect(response.tool_calls != null);
+    try expectEqual(@as(usize, 1), response.tool_calls.?.len);
+    const tc = &response.tool_calls.?[0];
+    try expectEqualStrings("toolu_leak_test", tc.id);
+    try expectEqualStrings("bash", tc.function.name);
+
+    // CRITICAL: `tc.function.arguments` points at the same arena
+    // memory the aggregator's internal `arguments` ArrayList holds.
+    // Pre-fix the bytes would have been 0xAA (DebugAllocator free-
+    // fill) because a per-inner-slice `free` fired before the
+    // consumer read the bytes.
+    try expectEqualStrings(args_payload, tc.function.arguments);
+
+    // Belt-and-suspenders: pin the contract by asserting no
+    // `0xAA` byte appears in the returned slice. Legitimate
+    // ASCII/UTF-8/JSON cannot contain this byte.
+    try expect(std.mem.indexOfScalar(u8, tc.function.arguments, 0xAA) == null);
+}
+
+// ===================================================================
+
 // ============================================================================
 // Part B — parse_stream_chunk for Anthropic SSE
 // ============================================================================

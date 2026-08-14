@@ -651,10 +651,23 @@ pub const StreamingAggregator = struct {
     allocator: std.mem.Allocator,
     content: std.ArrayList(u8),
     reasoning_content: std.ArrayList(u8),
-    tool_calls: std.ArrayList(ToolCall),
     finish_reason: ?FinishReason = null,
     usage: Usage = .{},
 
+    // Per-LLM-tool-call intermediate buffer. The `id` + `name` slices
+    // and the `arguments.items` ArrayList all live on `self.allocator`
+    // (the caller's arena, which is also the arena passed to
+    // `Agent.init(allocator, …)`). The `finalize` method hands the
+    // arena-allocated `[]ToolCall` slice headers back to the caller
+    // unchanged — the arena owns the lifetime wholesale.
+    //
+    // Note: the legacy `tool_calls: std.ArrayList(ToolCall)` field is
+    // gone. The pre-fix code wrote tool calls to BOTH `tool_calls` AND
+    // `tool_call_buffers` (via `tool_calls.append` here + populate-
+    // buffer in `process_chunk`), then read `tool_calls.items` inside
+    // `finalize` to dup each entry AGAIN into `tool_calls_copy`. That
+    // 2-deep-dup pattern is what produced the 2026-08-15 "bash tool
+    // leak" — see the `CallResponse.deinit` doc for the full story.
     tool_call_buffers: std.AutoHashMap(usize, struct {
         id: ?[]const u8 = null,
         name: ?[]const u8 = null,
@@ -666,29 +679,22 @@ pub const StreamingAggregator = struct {
             .allocator = allocator,
             .content = .empty,
             .reasoning_content = .empty,
-            .tool_calls = .empty,
             .tool_call_buffers = .init(allocator),
         };
     }
 
-    pub fn deinit(self: *StreamingAggregator) void {
-        self.content.deinit(self.allocator);
-        self.reasoning_content.deinit(self.allocator);
-        for (self.tool_calls.items) |*tc| {
-            self.allocator.free(tc.id);
-            self.allocator.free(tc.function.name);
-            self.allocator.free(tc.function.arguments);
-        }
-        self.tool_calls.deinit(self.allocator);
-
-        var iter = self.tool_call_buffers.iterator();
-        while (iter.next()) |entry| {
-            if (entry.value_ptr.id) |id| self.allocator.free(id);
-            if (entry.value_ptr.name) |name| self.allocator.free(name);
-            entry.value_ptr.arguments.deinit(self.allocator);
-        }
-        self.tool_call_buffers.deinit();
-    }
+    /// NO-OP. Lifetime is arena-owned by the caller (see `CallResponse`
+    /// doc). Kept as a `pub fn` so existing `defer aggregator.deinit()`
+    /// call sites stay valid — but the body does nothing now.
+    ///
+    /// Pre-fix code free'd `tool_call_buffers` hash-map values one by one
+    /// (`id`, `name`, `arguments` ArrayList), then called
+    /// `tool_call_buffers.deinit()`. Under the arena allocator that's
+    /// wasted work; under `testing.allocator` it actively corrupts state
+    /// (see 2026-08-15 "bash tool leak" bug — the same pattern repeated
+    /// in `CallResponse.deinit` is what produced 0xAA-poisoned slice
+    /// headers that reached the bash tool as `ls -la $'\xaa…'`).
+    pub fn deinit(_: *StreamingAggregator) void {}
 
     pub fn process_chunk(self: *StreamingAggregator, chunk: StreamChunk) !void {
         if (chunk.done) return;
@@ -745,18 +751,40 @@ pub const StreamingAggregator = struct {
         }
         std.sort.pdq(usize, sorted_indices.items, {}, std.sort.asc(usize));
 
-        for (sorted_indices.items) |idx| {
-            const buffer = self.tool_call_buffers.get(idx).?;
-            if (buffer.id) |id| {
-                const tool_call = ToolCall{
-                    .id = try self.allocator.dupe(u8, id),
-                    .function = .{
-                        .name = if (buffer.name) |n| try self.allocator.dupe(u8, n) else try self.allocator.dupe(u8, ""),
-                        .arguments = try self.allocator.dupe(u8, buffer.arguments.items),
-                    },
-                };
-                try self.tool_calls.append(self.allocator, tool_call);
+        // Allocate the final `[]ToolCall` slice ONCE on `self.allocator`
+        // (the caller's arena) and copy each inner slice header into it.
+        // The inner slices (id, function.name, function.arguments) come
+        // straight from `tool_call_buffers` — they were `dupe`d into
+        // `self.allocator` during `process_chunk`, so they already live on
+        // the same arena. No second dupe pass needed.
+        //
+        // This replaces the previous 2-deep-dup pattern (which duped into
+        // `self.tool_calls`, then duped AGAIN into `tool_calls_copy`),
+        // each duplication creating another slice header with an arena
+        // pointer that the previous production code tried to `free` one
+        // at a time — see the 2026-08-15 "bash tool leak" bug where the
+        // defer ordering left a dangling `tool_call.function.arguments`
+        // slice header that the bash tool then executed as a literal
+        // `ls -la $'\xaa…'` shell command.
+        var tool_calls_out: ?[]ToolCall = null;
+        if (sorted_indices.items.len > 0) {
+            const count = sorted_indices.items.len;
+            const tool_call_slice = try self.allocator.alloc(ToolCall, count);
+            var out_i: usize = 0;
+            for (sorted_indices.items) |idx| {
+                const buffer = self.tool_call_buffers.get(idx).?;
+                if (buffer.id) |id| {
+                    tool_call_slice[out_i] = .{
+                        .id = id,
+                        .function = .{
+                            .name = if (buffer.name) |n| n else "",
+                            .arguments = buffer.arguments.items,
+                        },
+                    };
+                    out_i += 1;
+                }
             }
+            tool_calls_out = tool_call_slice[0..out_i];
         }
 
         var content_copy: ?[]const u8 = null;
@@ -769,24 +797,10 @@ pub const StreamingAggregator = struct {
             reasoning_copy = try self.allocator.dupe(u8, self.reasoning_content.items);
         }
 
-        var tool_calls_copy: ?[]ToolCall = null;
-        if (self.tool_calls.items.len > 0) {
-            tool_calls_copy = try self.allocator.alloc(ToolCall, self.tool_calls.items.len);
-            for (self.tool_calls.items, 0..) |tc, i| {
-                tool_calls_copy.?[i] = .{
-                    .id = try self.allocator.dupe(u8, tc.id),
-                    .function = .{
-                        .name = try self.allocator.dupe(u8, tc.function.name),
-                        .arguments = try self.allocator.dupe(u8, tc.function.arguments),
-                    },
-                };
-            }
-        }
-
         return .{
             .allocator = self.allocator,
             .content = content_copy,
-            .tool_calls = tool_calls_copy,
+            .tool_calls = tool_calls_out,
             .finish_reason = self.finish_reason,
             .reasoning_content = reasoning_copy,
             .usage = self.usage,
