@@ -542,7 +542,17 @@ pub fn build(b: *std.Build) void {
         .name = "codegen_webapp_assets",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
-            .target = b.graph.host,
+            // Cross-compile for the same target as the main binary (NOT
+            // b.graph.host) to avoid the Zig 0.16 + GCC 16 host-native
+            // link failure: GCC 16's crt1.o has a `.sframe` section with
+            // R_X86_64_PC64 relocations that Zig 0.16's bundled LLD does
+            // not support ("unhandled relocation type R_X86_64_PC64 at
+            // offset 0x1c, in /usr/lib/.../crt1.o:.sframe"). CI failed on
+            // this with the host target — the target's glibc 2.38
+            // crt1.o doesn't have the sframe section, so the cross-
+            // compile link succeeds. The tool is a one-shot CLI that
+            // uses std.c (libc), so cross-compiling is safe.
+            .target = target,
             .link_libc = true,
         }),
     }));
@@ -565,7 +575,11 @@ pub fn build(b: *std.Build) void {
         .name = "codegen_webapp_assets",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/codegen_webapp_assets.zig"),
-            .target = b.graph.host,
+            // Cross-compile for the same target as the main binary (NOT
+            // b.graph.host) to avoid the Zig 0.16 + GCC 16 host-native
+            // link failure (see the webapp_rebuild_codegen step above
+            // for the full rationale).
+            .target = target,
             .link_libc = true,
         }),
     }));
