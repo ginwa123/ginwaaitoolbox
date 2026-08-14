@@ -306,10 +306,17 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     const kanban = makeKanbanItem({
       tasks: [makeTask({ kanban_column_id: 'col_todo' })],
     })
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the URL is now
+    // ?view=workspace&itemId=Y/chat/task_X (the legacy view=task
+    // shape has been collapsed into the workspace URL).
     const routeObj = reactive({
-      query: { view: 'task', task: TASK_ID } as Record<string, string>,
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: `${KANBAN_ID}/chat/${TASK_ID}`,
+      } as Record<string, string>,
       path: '/app',
-      fullPath: `/app?view=task&task=${TASK_ID}`,
+      fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${KANBAN_ID}/chat/${TASK_ID}`,
     })
     useRouteMock.mockReturnValue(routeObj as any)
     const wrapper = mountAppLayout([
@@ -346,10 +353,16 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
       tasks: [makeTask({ id: 'task_in_folder', kanban_column_id: null })],
     })
     const kanban = makeKanbanItem({ id: KANBAN_ID }) // no tasks in this kanban
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the URL is now
+    // ?view=workspace&itemId=Y/chat/task_X.
     const routeObj = reactive({
-      query: { view: 'task', task: 'task_in_folder' } as Record<string, string>,
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: `${FOLDER_ID}/chat/task_in_folder`,
+      } as Record<string, string>,
       path: '/app',
-      fullPath: `/app?view=task&task=task_in_folder`,
+      fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${FOLDER_ID}/chat/task_in_folder`,
     })
     useRouteMock.mockReturnValue(routeObj as any)
     const wrapper = mountAppLayout([
@@ -365,12 +378,13 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     ws.setActiveWorkspaceItem(KANBAN_ID) // kanban is the active WS item
     ws.setActiveTask('task_in_folder') // ...but the active task lives in the folder
     await nextTick()
-    // activeTaskWorkspaceItemId === FOLDER_ID, not KANBAN_ID — and
-    // currentView === 'task'. The single-column ChatView branch
-    // wins (`v-else-if="currentView === 'task' && activeTask"`),
-    // so KanbanView does NOT render. The chat-pane branch inside
-    // KanbanView (data-kanban-with-chat) is irrelevant because
-    // KanbanView isn't mounted at all.
+    // activeTaskWorkspaceItemId === FOLDER_ID, not KANBAN_ID. The
+    // KanbanChatDialog branch's last condition
+    // (`activeTaskWorkspaceItemId === activeWorkspaceItem.id`) is
+    // false — the dialog does NOT mount. The KanbanView mount does
+    // render (the kanban is the active workspace item) but without
+    // the chat pane. This is the canonical "clicked a card whose
+    // parent is a folder while viewing a kanban" edge case.
     const view = wrapper.find('[data-kanban-view="stub"]')
     expect(view.exists()).toBe(false)
     const threeCol = wrapper.find('[data-kanban-with-chat]')
