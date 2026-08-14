@@ -1149,16 +1149,24 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             }
             continue;
         };
-        // Always free the CallResponse's heap-owned slices (`content`,
-        // `reasoning_content`, each `tool_calls[i].{id, function.name,
-        // function.arguments}`, the `tool_calls` slice itself) when this
-        // iteration ends. On the per-iteration arena allocator the
-        // `.free()` calls inside `CallResponse.deinit` are no-ops and the
-        // arena `.deinit()` reaps everything anyway — but the explicit
-        // defer is the correct hygiene: future allocator swaps (e.g.
-        // `testing.allocator` in a new test) would otherwise silently
-        // leak. Fires before `arenaAllocatorWhileLoop.deinit` in LIFO
-        // order, so no use-after-free.
+        // Lifecycle: `CallResponse` (and everything it points at —
+        // `content`, `reasoning_content`, each
+        // `tool_calls[i].{id, function.name, function.arguments}`, the
+        // `tool_calls` slice itself) is allocated from THIS iteration’s
+        // arena (`arenaAllocatorWhileLoop` declared at the top of the
+        // loop, deferred `deinit` runs at end-of-iteration in LIFO
+        // order). `CallResponse.deinit` is a documented no-op (see
+        // `Agent.zig` CallResponse doc), so the explicit `defer` here
+        // is purely cosmetic — it’s kept as `res_dynamic_agent.deinit()`
+        // so the call site stays readable, but the arena does the real
+        // work.
+        //
+        // The pre-fix code free’d every inner slice by hand, which
+        // under the arena was a no-op but under `testing.allocator`
+        // (Debug, fill-poisoned freed memory with 0xAA) corrupted the
+        // very slices the downstream `handle_tool → execBash` consumer
+        // was about to read — see the 2026-08-15 “bash tool leak” bug
+        // where 22 0xAA bytes ended up as `ls -la $'ʪ…'`.
         defer res_dynamic_agent.deinit();
 
         const llm_duration_ms = @divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds - checkpoint_llm_start_ns, std.time.ns_per_ms);

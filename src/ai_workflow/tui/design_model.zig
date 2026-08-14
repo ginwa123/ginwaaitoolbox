@@ -672,7 +672,7 @@ pub fn addElement(
     defer allocator.free(opacity_str);
     const elem_type_str = @tagName(input.elem_type);
 
-    try db.exec(allocator,
+    db.exec(allocator,
         \\INSERT INTO design_page_elements (
         \\    id, page_id, name, file_path, x, y, width, height, z_index, position,
         \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
@@ -694,7 +694,19 @@ pub fn addElement(
         // not pass parent_id. See project memory
         // `sqlite-backend-empty-slice-binds-as-null`.
         parent_id_to_bind,
-    });
+    }) catch |err| {
+        // Surface the actual sqlite error so a 500 "Failed to create
+        // element" tells the user whether it was a FK error, a NOT
+        // NULL violation, a uniqueness collision, a bind error, or
+        // something else. The pre-fix code did nothing here, so the
+        // caller saw only a generic `error.DbError` from a catch-all
+        // downstream — actionable only by reading the backend log.
+        std.log.err(
+            "addElement: INSERT failed for page_id={s} name={s} type={s} err={s}",
+            .{ input.page_id, input.name, elem_type_str, @errorName(err) },
+        );
+        return error.DbError;
+    };
 
     // Emit SSE event AFTER the SQL INSERT succeeded. Best-effort: if
     // the event_bus is not initialized (e.g. in unit tests without a
