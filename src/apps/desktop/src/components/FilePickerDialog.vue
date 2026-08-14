@@ -24,6 +24,8 @@
 -->
 <script setup lang="ts" generic="T">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { useRecentFoldersStore } from '../stores/recentFolders'
+import { formatRelativeTime } from '../helpers/relativeTime'
 
 type Mode = 'folder' | 'file' | 'both'
 type FilterMode = 'all' | 'folders' | 'files'
@@ -72,6 +74,15 @@ const props = defineProps<{
   selectButtonText?: string
   /** Pre-select this path on open. */
   selectedPath?: string
+  /** NEW: show the Recent tab + tabstrip. Pass `true` to enable (the
+   *  default), omit to keep the default, pass `false` to opt out for
+   *  the single-pane tree. Vue 3.5's runtime default for `boolean?`
+   *  is `false`, so the JS-side computed below treats `undefined`
+   *  (caller didn't pass anything) as "default on" — this is the
+   *  inverse of Vue's runtime default. No caller today passes
+   *  `false`; the legacy opt-out is supported for symmetry with the
+   *  existing `showHidden?: boolean` prop. */
+  enableRecentHistory?: boolean
 }>()
 
 // Defaults applied at use sites (avoid withDefaults quirks with function-typed optional props)
@@ -79,6 +90,17 @@ const mode = computed<Mode>(() => props.mode ?? 'folder')
 const initialPath = computed(() => props.initialPath || '/')
 const showHiddenDefault = computed(() => props.showHidden ?? false)
 const selectLabel = computed(() => props.selectButtonText ?? 'Select')
+// Default enableRecentHistory to true (Recent tab is the user's primary
+// flow). Vue 3.5's runtime default for `boolean?` is `false`, so we
+// treat `false` AND `undefined` as "use default" and `true` as "on".
+// An explicit `false` is therefore ambiguous — callers who want to opt
+// out today would also need to pass `false` AND see it preserved. To
+// disambiguate, callers must NOT pass `false` (they pass `undefined` or
+// nothing). For now, this is consistent with the existing
+// `showHidden?: boolean` which Vue 3.5 also defaults to false on absence.
+const enableRecent = computed<boolean>(() =>
+  props.enableRecentHistory === undefined ? true : !!props.enableRecentHistory,
+)
 
 // ─── Emits ─────────────────────────────────────────────────────────────────
 
@@ -361,6 +383,41 @@ const showCurrentFolderHint = computed<boolean>(
     !!effectiveSelection.value,
 )
 
+// ─── Tab state (Recent / Browse) ─────────────────────────────────────────────
+//
+// Default: Recent. The Recent tab is the user's primary path — most-of-the-time
+// they pick a folder they've picked before. The Browse tab is the
+// power-user / unfamiliar-folder flow.
+//
+// The active tab is a ref (not persisted) — the user always re-enters via
+// Recent on each open.
+const activeTab = ref<'recent' | 'browse'>('recent')
+const recentStore = useRecentFoldersStore()
+const recentList = computed(() => recentStore.list())
+const recentCount = computed(() => recentList.value.length)
+
+// Record every selection in the recent store (Recent rows AND Browse rows
+// both go through handleSelect). The store dedupes by path.
+watch(effectiveSelection, (path) => {
+  if (path) recentStore.addRecent(path)
+})
+
+function handleRecentRowClick(path: string): void {
+  selectedPath.value = path
+  handleSelect()
+}
+
+function handleRecentPinClick(path: string): void {
+  recentStore.togglePin(path)
+}
+
+// Format a Unix-ms timestamp as the SQLite UTC string `formatRelativeTime`
+// expects (`'YYYY-MM-DD HH:MM:SS'`). See plan R12.
+function toSqliteUtc(ms: number): string {
+  const d = new Date(ms)
+  return d.toISOString().replace('T', ' ').slice(0, 19)
+}
+
 // ─── Filtered view ─────────────────────────────────────────────────────────
 
 const filteredContent = computed<ContentItem[]>(() => {
@@ -606,6 +663,9 @@ async function openDialog() {
   showHiddenLocal.value = showHiddenDefault.value
   isPathEditing.value = false
   pathDraft.value = ''
+  // Reset to the Recent tab on every open. The user always re-enters
+  // through Recent — the Browse tab is one click away when they need it.
+  activeTab.value = 'recent'
 
   await expandAncestors(startPath)
 
@@ -846,8 +906,72 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <!-- Toolbar -->
+          <!--
+            Tab strip (Recent / Browse). Sits between the breadcrumb and
+            the toolbar. Active tab is underlined violet (matches
+            NalarTabStrip.vue). The default tab is `recent` for the user's
+            primary flow. The toolbar (search + hidden + refresh) is
+            visible only under Browse — Recent has no use for it.
+          -->
           <div
+            v-if="enableRecent"
+            class="px-5 py-1 flex items-center gap-1 shrink-0"
+            style="border-bottom: 1px solid var(--color-border);"
+            role="tablist"
+            aria-label="Folder picker view"
+          >
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === 'recent'"
+              data-testid="file-picker-tab-recent"
+              @click="activeTab = 'recent'"
+              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5"
+              :style="{
+                color: activeTab === 'recent' ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
+              }"
+            >
+              <span class="relative z-10">Recent</span>
+              <span
+                v-if="recentCount > 0"
+                data-testid="file-picker-tab-recent-count"
+                class="text-[10px] px-1.5 rounded font-mono"
+                :style="{
+                  backgroundColor: activeTab === 'recent' ? 'var(--color-violet)' : 'var(--semantic-text-muted)',
+                  color: 'var(--color-bg)',
+                }"
+              >{{ recentCount }}</span>
+              <span
+                v-if="activeTab === 'recent'"
+                class="absolute left-2 right-2 bottom-0 h-0.5"
+                style="background-color: var(--color-violet);"
+                aria-hidden="true"
+              />
+            </button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === 'browse'"
+              data-testid="file-picker-tab-browse"
+              @click="activeTab = 'browse'"
+              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5"
+              :style="{
+                color: activeTab === 'browse' ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
+              }"
+            >
+              <span class="relative z-10">📂 Browse</span>
+              <span
+                v-if="activeTab === 'browse'"
+                class="absolute left-2 right-2 bottom-0 h-0.5"
+                style="background-color: var(--color-violet);"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+
+          <!-- Toolbar (Browse only) -->
+          <div
+            v-if="!enableRecent || activeTab === 'browse'"
             class="px-5 py-2 flex items-center gap-2 shrink-0"
             style="border-bottom: 1px solid var(--color-border)"
           >
@@ -939,8 +1063,11 @@ onBeforeUnmount(() => {
             <slot name="toolbar" />
           </div>
 
-          <!-- Two-pane body -->
-          <div class="flex-1 flex overflow-hidden">
+          <!-- Two-pane body (Browse only) -->
+          <div
+            v-if="!enableRecent || activeTab === 'browse'"
+            class="flex-1 flex overflow-hidden"
+          >
             <!-- Tree pane -->
             <div
               class="shrink-0 overflow-y-auto py-1"
@@ -1139,6 +1266,129 @@ onBeforeUnmount(() => {
                   </slot>
                 </button>
               </template>
+            </div>
+          </div>
+
+          <!--
+            Recent tab body. A flat list of cards, each row is a folder
+            the user has picked before. The row is a single <button> for
+            keyboard nav (Tab-able, Enter to select). The star toggles
+            pin. The body scroll is contained in the
+            [data-testid="file-picker-recent-list"] wrapper.
+          -->
+          <div
+            v-if="enableRecent && activeTab === 'recent'"
+            class="flex-1 flex flex-col overflow-hidden"
+            data-testid="file-picker-recent-body"
+          >
+            <!-- Empty state -->
+            <div
+              v-if="recentCount === 0"
+              class="flex-1 flex flex-col items-center justify-center gap-3 px-5 py-8 text-center"
+              data-testid="file-picker-recent-empty"
+            >
+              <div class="text-3xl" aria-hidden="true">📁</div>
+              <p class="text-sm" style="color: var(--semantic-text)">
+                No recent folders yet
+              </p>
+              <p class="text-xs" style="color: var(--semantic-text-dim)">
+                Pick one in Browse to save it here for next time.
+              </p>
+              <button
+                type="button"
+                @click="activeTab = 'browse'"
+                data-testid="file-picker-recent-open-browse"
+                class="px-3 py-1.5 text-xs rounded-lg font-medium transition-all duration-200 hover:opacity-80"
+                style="
+                  background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+                  color: var(--color-bg);
+                "
+              >
+                Open Browse
+              </button>
+            </div>
+
+            <!-- The list -->
+            <div
+              v-else
+              class="flex-1 overflow-y-auto px-5 py-2"
+              data-testid="file-picker-recent-list"
+            >
+              <button
+                v-for="entry in recentList"
+                :key="entry.path"
+                type="button"
+                @click="handleRecentRowClick(entry.path)"
+                :data-testid="`file-picker-recent-row-${entry.path}`"
+                :title="entry.pinned ? `${entry.path} (pinned)` : entry.path"
+                class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left transition-colors duration-150 hover:opacity-80"
+                style="color: var(--semantic-text);"
+              >
+                <!-- Folder icon -->
+                <span class="text-base shrink-0" aria-hidden="true">📁</span>
+                <!-- Name + path stack -->
+                <span class="flex-1 min-w-0 flex flex-col gap-0.5">
+                  <span class="font-medium truncate">
+                    {{ entry.path.split('/').pop() || entry.path }}
+                    <span
+                      v-if="entry.pinned"
+                      class="ml-1 text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold"
+                      style="background-color: var(--color-violet); color: var(--color-bg);"
+                      data-testid="file-picker-recent-pinned-badge"
+                    >⭐ PINNED</span>
+                  </span>
+                  <span
+                    class="text-xs font-mono truncate"
+                    style="color: var(--semantic-text-muted)"
+                  >
+                    {{ entry.path }}
+                  </span>
+                </span>
+                <!-- Right column: time + pin star -->
+                <span class="flex items-center gap-2 shrink-0">
+                  <span
+                    :data-testid="`file-picker-recent-time-${entry.path}`"
+                    class="text-xs font-mono"
+                    style="color: var(--semantic-text-dim)"
+                  >
+                    {{ formatRelativeTime(toSqliteUtc(entry.lastUsedAt)) }}
+                  </span>
+                  <button
+                    type="button"
+                    @click.stop="handleRecentPinClick(entry.path)"
+                    :data-testid="`file-picker-recent-pin-${entry.path}`"
+                    :title="entry.pinned ? 'Unpin' : 'Pin to keep at top'"
+                    :aria-label="entry.pinned ? 'Unpin folder' : 'Pin folder'"
+                    class="w-7 h-7 rounded flex items-center justify-center transition-opacity duration-150 hover:opacity-80"
+                    :style="{
+                      color: entry.pinned ? 'var(--color-violet)' : 'var(--semantic-text-dim)',
+                    }"
+                  >
+                    <svg
+                      v-if="entry.pinned"
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                      class="w-4 h-4"
+                      aria-hidden="true"
+                    >
+                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.957a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.957c.3.921-.755 1.688-1.54 1.118l-3.366-2.446a1 1 0 00-1.176 0l-3.366 2.446c-.784.57-1.838-.197-1.539-1.118l1.286-3.957a1 1 0 00-.364-1.118L2.066 9.384c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.957z" />
+                    </svg>
+                    <svg
+                      v-else
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      class="w-4 h-4"
+                      aria-hidden="true"
+                    >
+                      <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.286 3.957a1 1 0 00.95.69h4.162c.969 0 1.371 1.24.588 1.81l-3.367 2.446a1 1 0 00-.364 1.118l1.286 3.957c.3.921-.755 1.688-1.54 1.118l-3.366-2.446a1 1 0 00-1.176 0l-3.366 2.446c-.784.57-1.838-.197-1.539-1.118l1.286-3.957a1 1 0 00-.364-1.118L2.066 9.384c-.783-.57-.38-1.81.588-1.81h4.162a1 1 0 00.95-.69l1.286-3.957z" />
+                    </svg>
+                  </button>
+                </span>
+              </button>
             </div>
           </div>
 
