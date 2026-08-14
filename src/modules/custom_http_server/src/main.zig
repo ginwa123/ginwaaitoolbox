@@ -591,7 +591,16 @@ fn wsEchoHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, server_pt
 }
 
 // ============================================================================
-// Cronjob demo — a single callback that fires every minute.
+// Cronjob demo — a single in-process callback that fires every minute.
+//
+// This is a normal cron job (server-internal scheduling), NOT an HTTP
+// endpoint. The cronjob manager is a private subsystem of GinwaServer —
+// callbacks run on a background thread inside the process, and there is
+// intentionally no HTTP API to register / unregister / inspect jobs.
+//
+// To inspect what jobs are running, use the in-process `list()` API from
+// another piece of server code (e.g. a startup log line, a debug command
+// run from a separate channel, or a test).
 //
 // Why this is the canonical example:
 //   - It shows the `register` API (expression + name + callback + now anchor)
