@@ -312,6 +312,80 @@ test "addElement creates a row + writes the HTML file" {
     try testing.expectEqualStrings("<div>Login</div>", content);
 }
 
+// ─── Test: addElement with empty fill succeeds (NOT NULL constraint) ─────
+//
+// REGRESSION (2026-08-14, "design mode, add element manual not
+// working" — second wave). The HTTP handler resolves `fill` to the
+// empty string when the user doesn't provide one (see
+// design_elements_create.zig:278 `.fill = parsed.fill orelse ""`).
+// The project's `sqlite-backend-empty-slice-binds-as-null`
+// optimization then binds that empty string as SQL NULL. But the
+// `fill` column is `TEXT NOT NULL DEFAULT ''` — the constraint
+// rejects the INSERT with `NOT NULL constraint failed:
+// design_page_elements.fill`, the handler maps to error.DbError,
+// the useCase to 500, the user sees "Failed to create element" and
+// the dialog closes without adding anything.
+//
+// The production INSERT was reachable when the production server
+// sent the request through the wire (pre-fix, the entire
+// @create-element binding was missing — fixed earlier). The empty
+// fill path is now the only reachable bug for the "+ Element → Add"
+// flow. The first regression test ensures the fix sticks.
+//
+// Why no whitespace coercion at the handler: that would mask the
+// symptom in one place while other NOT NULL columns (text_content /
+// text_style / image_url — all currently passed as literals, but
+// `fill` is the first NOT NULL column the bind layer sees) could
+// regress the same way. The fix is at the SQL: COALESCE(?, '') on
+// the `fill` parameter so a NULL bind lands as the column's own
+// default (empty string), which is what the schema author intended.
+test "addElement with empty fill succeeds (NOT NULL fill column)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // The pre-fix bug: passing fill="" with the empty-slice-binds-
+    // as-null optimization makes sqlite3_bind_null fire, which the
+    // NOT NULL constraint rejects. The test asserts this path
+    // succeeds end-to-end (creates a row, getElement reads it back).
+    const element_id = try design_model.addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "kotak",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0,
+        .y = 0,
+        .width = 375,
+        .height = 667,
+        .fill = "", // <- the bug-trigger. Empty slice → bind NULL → NOT NULL fail.
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    // Read it back and confirm the row is sane.
+    const row = try design_model.getElement(alloc, &ctx.db, element_id);
+    defer design_model.freeElement(alloc, row);
+    try testing.expectEqualStrings("kotak", row.name);
+    try testing.expectEqualStrings("rectangle", row.elem_type);
+    // The column default is '' — empty string in storage is the
+    // schema's intent. The fix normalizes the bind-NULL leak into
+    // either '' (already the default) or the user's value.
+    try testing.expectEqual(@as(usize, 0), row.fill.len);
+}
+
 // ─── Test: loadElementHtml round-trips the original HTML ─────────────────
 
 test "loadElementHtml returns the original HTML body" {

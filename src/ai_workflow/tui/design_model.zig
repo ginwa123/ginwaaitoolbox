@@ -682,7 +682,7 @@ pub fn addElement(
         \\    ?, ?, ?, ?, ?, ?, ?, ?, 0,
         \\    COALESCE((SELECT MAX(de.position) FROM design_page_elements de
         \\        WHERE de.page_id = ?), -1) + 1,
-        \\    ?, ?, ?, '', 0, ?, ?, '', '', '', ?,
+        \\    ?, ?, COALESCE(?, ''), '', 0, ?, ?, '', '', '', ?,
         \\    datetime('now'), datetime('now')
         \\)
     , &.{
@@ -690,9 +690,16 @@ pub fn addElement(
         x_str, y_str, width_str, height_str, input.page_id,
         elem_type_str, rotation_str, input.fill, corner_radius_str, opacity_str,
         // SqliteBackend.exec binds an empty slice as SQL NULL — that's
-        // exactly what we want for `parent_id = ?` when the user did
-        // not pass parent_id. See project memory
+        // exactly what we want for `parent_id = ?` (nullable column)
+        // when the user did not pass parent_id. See project memory
         // `sqlite-backend-empty-slice-binds-as-null`.
+        //
+        // For `fill` (NOT NULL DEFAULT ''), the same empty-slice bind
+        // would land as NULL and trip the NOT NULL constraint. The
+        // COALESCE(?, '') above maps the NULL bind back to the
+        // column's own default, which is the schema author's intent.
+        // (regression test: design_model_test.zig "addElement with
+        // empty fill succeeds".)
         parent_id_to_bind,
     }) catch |err| {
         // Surface the actual sqlite error so a 500 "Failed to create
