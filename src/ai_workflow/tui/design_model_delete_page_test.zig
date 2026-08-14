@@ -371,3 +371,97 @@ test "deletePage cascade-deletes the paired workspace_item_tasks row" {
     const task_row = try q2.next();
     try testing.expect(task_row == null);
 }
+
+test "deletePage rmdirs the empty page directory (cleans up after per-file unlink)" {
+    // Why this test exists
+    // ─────────────────────
+    // The per-file unlink step (`deleteFileIfExists`) leaves an empty
+    // `<page>/` directory behind — which was the root cause of the
+    // 2026-08-13 functional-test regression (every DELETE /pages/:pid
+    // left a stale empty folder, so `test_delete_page_removes_entire_directory`
+    // failed because the dir still existed). This test pins the
+    // post-fix contract: `deletePage` MUST rmdir the page folder after
+    // unlinking its tracked HTML files, so the directory disappears
+    // when nothing user-dropped remains inside.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Clean",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Clean" });
+    defer alloc.free(page_dir);
+    const elem_path = try insertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_clean_a", page_id, page_dir, "elem-clean-a",
+    );
+    defer alloc.free(elem_path);
+
+    // Sanity: page directory exists.
+    try testing.expect(dirExists(ctx.threaded.io(), page_dir));
+
+    const was_deleted = try design_model.deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    // After delete: the page directory itself is gone (rmdir succeeded
+    // because no user-dropped files remain inside).
+    try testing.expect(!dirExists(ctx.threaded.io(), page_dir));
+}
+
+test "deletePage preserves a user-dropped file inside the page directory" {
+    // The companion to the rmdir-cleanup test: when the user has
+    // dropped a file (`.DS_Store`, `README.md`, screenshot, etc.)
+    // into the page folder, deletePage MUST keep it. The
+    // `deleteDirectoryIfEmpty` step refuses to rmdir non-empty
+    // directories — the user file survives, the page DB rows still
+    // get deleted.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try design_model.setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Mixed",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Mixed" });
+    defer alloc.free(page_dir);
+    const elem_path = try insertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_mixed_a", page_id, page_dir, "elem-mixed-a",
+    );
+    defer alloc.free(elem_path);
+
+    // User drops a README.md into the page folder (not tracked in DB).
+    const stray_path = try std.fs.path.join(alloc, &.{ page_dir, "user-note.txt" });
+    defer alloc.free(stray_path);
+    {
+        const f = try std.Io.Dir.cwd().createFile(ctx.threaded.io(), stray_path, .{});
+        f.close(ctx.threaded.io());
+        try std.Io.Dir.cwd().writeFile(
+            ctx.threaded.io(),
+            .{ .sub_path = stray_path, .data = "user-added note" },
+        );
+    }
+
+    const was_deleted = try design_model.deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    // DB-tracked file is gone.
+    try testing.expect(!fileExists(ctx.threaded.io(), elem_path));
+    // User's file is still there (preserves user-dropped files).
+    try testing.expect(fileExists(ctx.threaded.io(), stray_path));
+    // Page directory still exists (we couldn't rmdir a non-empty dir).
+    try testing.expect(dirExists(ctx.threaded.io(), page_dir));
+}

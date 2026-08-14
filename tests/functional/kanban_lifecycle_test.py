@@ -28,6 +28,11 @@ def _create_workspace(harness: FunctionalHarness, name: str = "kanban-ws") -> st
 def _create_kanban(
     harness: FunctionalHarness, workspace_id: str, name: str = "sprint"
 ) -> str:
+    # The backend wraps the kanban in a `{item, columns}` envelope
+    # so the frontend's `const { item, columns } = await createKanban(...)`
+    # destructure renders the board immediately on the client (no
+    # second round-trip for the seeded default columns).
+    # See `workspace_items_create_kanban.zig::CreateKanbanResponseFull`.
     r = harness.http(
         "POST",
         f"/api/workspaces/{workspace_id}/items/kanban",
@@ -35,10 +40,23 @@ def _create_kanban(
         expect=201,
     )
     body = r.json()
-    assert body["item_type"] == "kanban", (
-        f"created item should be type 'kanban', got {body.get('item_type')!r}"
+    item = body.get("item")
+    assert item is not None, (
+        f"created kanban response missing 'item' envelope: {body!r}"
     )
-    return body["id"]
+    assert item["item_type"] == "kanban", (
+        f"created item should be type 'kanban', got {item.get('item_type')!r}"
+    )
+    assert item["id"].startswith("item_"), (
+        f"created item id should start with 'item_', got {item.get('id')!r}"
+    )
+    # The envelope also returns the 3 freshly-seeded default columns
+    # — sanity-check the contract is honoured (not part of the bug
+    # fix, but cheap to assert and catches regressions).
+    assert isinstance(body.get("columns"), list), (
+        f"created kanban envelope should include a 'columns' list, got {body!r}"
+    )
+    return item["id"]
 
 
 def _list_columns(
