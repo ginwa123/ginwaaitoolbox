@@ -931,6 +931,14 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     })
     await nextTick()
     await nextTick()
+    // AppLayout.onMounted calls initializeFromSystemFolder() which
+    // calls init() which overwrites `workspaces.value` with the
+    // (empty) API mock result. Re-set workspaces so the URL
+    // watcher's lookup of activeWorkspace succeeds.
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    await nextTick()
     replaceMock.mockClear()
     ws.setActiveDesignPage(PAGE_ID_1)
     await nextTick()
