@@ -1,10 +1,18 @@
 // AppLayout — kanban chat dialog mount wiring.
 //
-// When the user navigates to a kanban task (via URL `?view=task&task=<id>`
-// or by clicking a task card), AppLayout's existing wiring sets
+// When the user navigates to a kanban task (via URL
+// `?view=workspace&...&itemId=Y/chat/task_<id>` or by clicking a task
+// card), AppLayout's existing wiring sets
 // `workspacesStore.activeTask` + `activeTaskWorkspaceItemId`. The new
 // `<KanbanChatDialog>` mount reads those store refs and renders centered
 // on top of the kanban board.
+//
+// SIMPLIFY-URL-BROWSER (2026-08-15): the legacy `?view=task&task=<id>`
+// URL has been collapsed into the workspace URL with the chat task id
+// encoded as `/chat/<taskId>` on `itemId`. This spec drives the
+// `setActiveTask` path directly via the store, so the URL shape
+// doesn't matter for these assertions — the dialog mount is gated on
+// `activeWorkspaceItem.item_type === 'kanban' && activeTask`.
 //
 // This spec verifies the mount gates correctly:
 //   - No active task → dialog not rendered
