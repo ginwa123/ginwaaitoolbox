@@ -296,15 +296,25 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     wrapper.unmount()
   })
 
-  it('activeWorkspaceItem → URL watcher does NOT overwrite the URL when on view=task', async () => {
+  it('activeWorkspaceItem → URL watcher does NOT overwrite the URL when the chat suffix is present', async () => {
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the legacy view=task shape
+    // is gone. The chat-open state is encoded as /chat/<taskId> on
+    // itemId while view=workspace. The watcher's chat-suffix guard
+    // MUST preserve the suffix on every write.
     const replaceMock = vi.fn()
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
-    // URL is on view=task — the watcher must NOT clobber it.
-    const wrapper = mountAppLayout(ws.workspaces, { view: 'task', task: 'task_xyz' })
+    // URL carries view=workspace + the chat suffix on itemId. The
+    // watcher must NOT clobber the suffix when activeWorkspaceItem
+    // changes underneath it.
+    const wrapper = mountAppLayout(ws.workspaces, {
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: `${DESIGN_ID}/chat/task_xyz`,
+    })
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
@@ -893,26 +903,46 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     wrapper.unmount()
   })
 
-  it('URL mirror does NOT overwrite non-workspace views (view=task) when activeDesignPageId changes', async () => {
+  it('URL mirror does NOT clobber the chat suffix when activeDesignPageId changes', async () => {
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the chat suffix on itemId
+    // must survive every URL write by the watcher. This pins the
+    // invariant: even if `setActiveDesignPage` fires (which changes
+    // activeDesignPageId), the watcher's write must NOT drop the
+    // suffix from itemId.
     const replaceMock = vi.fn()
     useRouteMock.mockReturnValue({
-      query: { view: 'task', task: 'task_xyz' },
+      query: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: `${DESIGN_ID}/chat/task_xyz`,
+      },
       path: '/app',
-      fullPath: '/app?view=task&task=task_xyz',
+      fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${DESIGN_ID}/chat/task_xyz`,
     } as any)
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
-    const wrapper = mountAppLayout(ws.workspaces, { view: 'task', task: 'task_xyz' })
+    const wrapper = mountAppLayout(ws.workspaces, {
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: `${DESIGN_ID}/chat/task_xyz`,
+    })
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
     ws.setActiveDesignPage(PAGE_ID_1)
     await nextTick()
     await nextTick()
-    expect(replaceMock).not.toHaveBeenCalled()
+    // If the watcher DID fire, every write's itemId must still carry
+    // the chat suffix. The pre-fix watcher overwrote itemId with
+    // `DESIGN_ID` (bare) on every setActiveDesignPage call, which
+    // closed the chat dialog. Post-fix it preserves the suffix.
+    for (const call of replaceMock.mock.calls) {
+      const q = call[0].query as Record<string, string>
+      expect(q.itemId).toBe(`${DESIGN_ID}/chat/task_xyz`)
+    }
     wrapper.unmount()
   })
 
