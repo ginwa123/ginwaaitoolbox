@@ -131,12 +131,21 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     expect(bullet.attributes('style')).toContain('--semantic-text-dim')
   })
 
-  it('applies active styling (aqua bullet + active background) when URL is ?view=task&task=X', async () => {
-    // Mock useRoute to return ?view=task matching this task's id.
+  it('applies active styling (aqua bullet + active background) when URL is ?view=workspace&itemId=Y/chat/task_X', async () => {
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the URL is now
+    // ?view=workspace&itemId=Y/chat/task_X. useCurrentMainView
+    // parses the /chat/ suffix and exposes chatTaskId on the
+    // workspace view variant. The task row's active highlight
+    // reads kind='workspace' + chatTaskId.
+    const ITEM_ID = 'item_test'
     useRouteMock.mockReturnValue({
-      query: { view: 'task', task: baseTask.id },
+      query: {
+        view: 'workspace',
+        workspaceId: 'ws_test',
+        itemId: `${ITEM_ID}/chat/${baseTask.id}`,
+      },
       path: '/app',
-      fullPath: `/app?view=task&task=${baseTask.id}`,
+      fullPath: `/app?view=workspace&workspaceId=ws_test&itemId=${ITEM_ID}/chat/${baseTask.id}`,
     } as any)
     const { wrapper } = mountTask()
     const rowButton = wrapper.find('button.group\\/task')
