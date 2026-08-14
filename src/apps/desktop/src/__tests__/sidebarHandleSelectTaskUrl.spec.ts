@@ -1,6 +1,11 @@
 /**
- * Behavioural tests for `Sidebar.handleSelectTask` URL behaviour
- * (plan 2026-08-06-better-url-browser.md).
+ * Behavioural tests for `Sidebar.handleSelectTask` URL behaviour.
+ *
+ * Plans:
+ *   - 2026-08-06-better-url-browser: click appends (not replaces) the URL.
+ *   - 2026-08-06-add-workspace-id-params: task URLs include workspaceId.
+ *   - 2026-08-15-simplify-url-browser: collapse view=task into the
+ *     workspace URL with /chat/<taskId> suffix on itemId.
  *
  * **Bug fixed (2026-08-06):** "when click task in kanban, no need
  * replace url, but append the url browser" — clicking a kanban task
@@ -193,10 +198,11 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
 
     const pushArg = lastPushCall()
     expect(pushArg.path).toBe('/app')
-    // The new URL must include the task + view info.
-    expect(pushArg.query.view).toBe('task')
-    expect(pushArg.query.task).toBe(TASK_ID)
-    expect(pushArg.query.itemId).toBe(ITEM_ID)
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the chat task id is
+    // encoded as /chat/<taskId> on itemId; view is 'workspace' (not
+    // 'task') and the legacy `task=` param is dropped.
+    expect(pushArg.query.view).toBe('workspace')
+    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
     // The new URL must PRESERVE the workspace context (the kanban
     // URL is "appended" to the task URL, not replaced).
     expect(pushArg.query.workspaceId).toBe(WS_ID)
@@ -259,8 +265,9 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    expect(pushArg.query.view).toBe('task')
-    expect(pushArg.query.task).toBe(TASK_ID)
+    // SIMPLIFY-URL-BROWSER (2026-08-15)
+    expect(pushArg.query.view).toBe('workspace')
+    expect(pushArg.query.itemId).toBe(`item_design/chat/${TASK_ID}`)
     expect(pushArg.query.workspaceId).toBe(WS_ID)
     expect(pushArg.query.pageId).toBe('page_first')
 
@@ -281,9 +288,9 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     // and the user wanted it added so the URL bar shows the
     // kanban / design context (share / refresh / back work).
     setRouteQuery({
-      view: 'task',
-      task: 'task_older',
-      itemId: ITEM_ID,
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: `${ITEM_ID}/chat/task_older`,
     })
 
     const wrapper = mountSidebar()
@@ -292,10 +299,10 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    expect(pushArg.query.view).toBe('task')
-    expect(pushArg.query.task).toBe(TASK_ID)
-    expect(pushArg.query.itemId).toBe(ITEM_ID)
-    // NEW: workspaceId IS included (from the active store state
+    // SIMPLIFY-URL-BROWSER (2026-08-15)
+    expect(pushArg.query.view).toBe('workspace')
+    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
+    // workspaceId IS included (from the active store state
     // auto-discovered by setActiveTask's parent-item lookup).
     expect(pushArg.query.workspaceId).toBe(WS_ID)
     // No sorts was in the URL before — must not be appended.
@@ -349,9 +356,9 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     // wants the URL to be repaired with workspaceId once they click
     // a task.
     setRouteQuery({
-      view: 'task',
-      task: 'task_stale',
-      itemId: ITEM_ID,
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: `${ITEM_ID}/chat/task_stale`,
     })
 
     const wrapper = mountSidebar()
@@ -360,11 +367,11 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    expect(pushArg.query.view).toBe('task')
-    expect(pushArg.query.task).toBe(TASK_ID)
-    expect(pushArg.query.itemId).toBe(ITEM_ID)
-    // NEW: workspaceId IS included (from the active store state
-    // set by `setActiveWorkspaceItem(ITEM_ID)` above).
+    // SIMPLIFY-URL-BROWSER (2026-08-15)
+    expect(pushArg.query.view).toBe('workspace')
+    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
+    // workspaceId IS included (from the active store state set by
+    // `setActiveWorkspaceItem(ITEM_ID)` above).
     expect(pushArg.query.workspaceId).toBe(WS_ID)
 
     wrapper.unmount()
@@ -390,11 +397,11 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
 
     const pushArg = lastPushCall()
     // The URL should include the kanban-mode breadcrumb:
-    //   ?view=task&task=X&workspaceId=W&itemId=K&sorts=S
-    expect(pushArg.query.view).toBe('task')
-    expect(pushArg.query.task).toBe(TASK_ID)
+    //   ?view=workspace&workspaceId=W&itemId=K/chat/task_X&sorts=S
+    // SIMPLIFY-URL-BROWSER (2026-08-15)
+    expect(pushArg.query.view).toBe('workspace')
     expect(pushArg.query.workspaceId).toBe(WS_ID)
-    expect(pushArg.query.itemId).toBe(ITEM_ID)
+    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
     expect(pushArg.query.sorts).toBe('col_a:updated_at:desc')
 
     wrapper.unmount()
@@ -426,10 +433,10 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    expect(pushArg.query.view).toBe('task')
-    expect(pushArg.query.task).toBe(TASK_ID)
+    // SIMPLIFY-URL-BROWSER (2026-08-15)
+    expect(pushArg.query.view).toBe('workspace')
     expect(pushArg.query.workspaceId).toBe(WS_ID)
-    expect(pushArg.query.itemId).toBe('item_design')
+    expect(pushArg.query.itemId).toBe(`item_design/chat/${TASK_ID}`)
     // pageId preserved from URL (the URL is the source of truth for
     // design page state, mirrored from the store's activeDesignPageId
     // via DesignView's onMount + tab switch watcher).
