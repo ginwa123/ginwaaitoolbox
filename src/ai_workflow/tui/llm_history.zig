@@ -3035,15 +3035,63 @@ else
 
 extern "c" fn gettimeofday(tv: ?*PosixTimeval, tz: ?*anyopaque) c_int;
 
+/// `struct timeval { time_t tv_sec; suseconds_t tv_usec; }` (POSIX/UCRT).
+///
+/// CRITICAL: `suseconds_t` is platform-sized:
+///   - Linux:    `i64` (typedef of `long` on LP64) = 8 bytes
+///   - macOS:    `i32` (`__darwin_suseconds_t` = `__int32_t`) = 4 bytes
+///   - Windows:  `i32` (UCRT typedef) = 4 bytes
+///
+/// The previous shared `usec: Clong` field declared both fields as i64
+/// (8 bytes), which on macOS / Windows misread the 4-byte `tv_usec` plus
+/// 4 bytes of uninitialised stack padding as a single i64 — the high 32
+/// bits of `tv.usec` were whatever the stack happened to contain. With
+/// garbage in the high bits, `tv.usec / 1000` could be a huge or
+/// negative number, and `tv.sec * 1000 + tv.usec / 1000` could flip
+/// sign, producing negative or zero unix-ms. The downstream
+/// `.format("lowercase d")` on this stale value emitted strings like
+/// `"-8..."` or `"0"` — the COALESCE test asserts the first byte is a
+/// digit, fails on a `-` prefix.
+///
+/// Per-platform `Usect` below matches the actual C ABI for each OS so
+/// the read is byte-for-byte identical to the libc write.
+const Usect = switch (builtin.os.tag) {
+    .linux => i64,
+    .macos, .windows => i32,
+    else => @compileError("unixMillisNow: unsupported platform " ++ @tagName(builtin.os.tag)),
+};
+
 const PosixTimeval = extern struct {
     sec: Clong,
-    usec: Clong,
+    usec: Usect,
 };
 
 pub fn unixMillisNow() i64 {
     var tv: PosixTimeval = undefined;
     _ = gettimeofday(&tv, null);
     return @as(i64, tv.sec) * 1000 + @divFloor(@as(i64, tv.usec), 1000);
+}
+
+test "unixMillisNow: returns positive value within sane range (catches macOS suseconds_t = i32 struct-layout fix)" {
+    // On macOS ARM64, `suseconds_t` is `__int32_t` (4 bytes), not
+    // `__int64_t`. The previous shared `usec: Clong` (i64) read 8 bytes
+    // starting at offset 8 — the lower 4 bytes were the actual tv_usec
+    // value, but the upper 4 bytes were uninitialised stack padding
+    // (whatever happened to be at that memory location). With garbage
+    // in the high 32 bits, `tv.usec` could be a huge positive or
+    // negative number, and `tv.sec * 1000 + tv.usec / 1000` could
+    // overflow sign. Observed on CI run 31828424315: `last_human_touched_at`
+    // test failed because the formatted stamp was a negative number.
+    //
+    // The fix: declare `usec: Usect` matching the actual C ABI per OS
+    // (i64 on Linux, i32 on macOS / Windows). After the fix, this
+    // test passes on every supported platform.
+    //
+    // Sanity bounds: 2020-01-01 ≈ 1_577_836_800_000 ms.
+    //               2100-01-01 ≈ 4_102_444_800_000 ms.
+    const ts = unixMillisNow();
+    try std.testing.expect(ts > 1_577_836_800_000);
+    try std.testing.expect(ts < 4_102_444_800_000);
 }
 
 /// Update session selected_profile_model (the name of a profile in
