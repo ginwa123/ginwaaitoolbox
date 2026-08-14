@@ -9,6 +9,7 @@ pub const sse_manager = @import("sse_manager.zig");
 pub const ws_manager = @import("websocket_manager.zig");
 pub const ws_frames = @import("websocket_frames.zig");
 pub const ws_handshake = @import("websocket_handshake.zig");
+pub const cronjob_manager = @import("cronjob_manager.zig");
 pub const Template = @import("template.zig");
 pub const readHtml = @import("read_html.zig").readHtml;
 pub const context = @import("context.zig");
@@ -23,6 +24,7 @@ pub const contextFromRequest = context.contextFromRequest;
 pub const response = http_parser;
 pub const SseManager = sse_manager.SseManager;
 pub const WsManager = ws_manager.WsManager;
+pub const CronjobManager = cronjob_manager.CronjobManager;
 pub const WsOpcode = ws_frames.Opcode;
 pub const WsConnection = ws_manager.WsClient;
 
@@ -215,6 +217,9 @@ pub const GinwaServer = struct {
     router: router.Router,
     sse_manager: SseManager,
     ws_manager: *WsManager,
+    /// In-process scheduler for cron-syntax callbacks. Started by
+    /// `listen()` and stopped by `deinit()`. See `cronjob_manager.zig`.
+    cronjob_manager: CronjobManager,
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
     is_running: bool = false,
@@ -267,6 +272,7 @@ pub const GinwaServer = struct {
             .router = router.Router.init(allocator),
             .sse_manager = try SseManager.init(allocator, allocator, io),
             .ws_manager = try WsManager.init(allocator, allocator, io),
+            .cronjob_manager = CronjobManager.init(allocator, io),
             .ctx = null,
             .environment = null,
         };
@@ -293,6 +299,10 @@ pub const GinwaServer = struct {
     }
 
     pub fn deinit(self: *GinwaServer) void {
+        // Order matters: stop the cronjob thread BEFORE freeing its
+        // registry (the tick thread holds a pointer to `self`).
+        self.cronjob_manager.stop();
+        self.cronjob_manager.deinit();
         self.sse_manager.gracefulShutdown();
         self.sse_manager.deinit();
         self.ws_manager.destroy();
@@ -317,6 +327,16 @@ pub const GinwaServer = struct {
         } else {
             const rc = socket.listen(self.address.sock_fd, 128);
             if (rc < 0) return error.ListenFailed;
+        }
+
+        // Start the cronjob tick thread BEFORE accepting connections so
+        // scheduled jobs can begin firing immediately. A start failure
+        // is logged but does not abort listening — the manager is
+        // best-effort (callers can still drive jobs manually via `tick`).
+        if (self.cronjob_manager.start()) |_| {
+            std.debug.print("Cronjob manager running (1s tick)\n", .{});
+        } else |err| {
+            std.debug.print("HTTP_SERVER: cronjob manager start failed: {s}\n", .{@errorName(err)});
         }
 
         var group: std.Io.Group = .init;
