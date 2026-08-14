@@ -46,16 +46,23 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 const props = defineProps<TaskComponentProps>()
 
 // URL-driven "what is the main content area showing?". Active styling
-// for this task row derives from the URL (?view=task&task=X) rather
-// than from workspacesStore.activeTaskId. The store flag is still
-// mutated by AppLayout for view-routing (it must stay — removing it
-// would break the kanban-side task navigation), but the visual "is
-// this row active?" is now sourced from the URL so refresh / deep
-// links / browser back / forward all keep the row's highlight
-// consistent.
+// for this task row derives from the URL
+// (?view=workspace&itemId=Y/chat/task_X) rather than from
+// workspacesStore.activeTaskId. The store flag is still mutated by
+// AppLayout for view-routing (it must stay — removing it would break
+// the kanban-side task navigation), but the visual "is this row
+// active?" is now sourced from the URL so refresh / deep links /
+// browser back / forward all keep the row's highlight consistent.
+//
+// SIMPLIFY-URL-BROWSER (2026-08-15): the legacy `kind: 'task'`
+// variant has been dropped from useCurrentMainView. The chat-open
+// state is encoded as `chatTaskId` on the `kind: 'workspace'`
+// variant. The bare `itemId` field on workspace is what the parent
+// workspace item row reads — we don't compare it here.
 const currentMainView = useCurrentMainView()
 const isActive = computed(() =>
-  currentMainView.value.kind === 'task' && currentMainView.value.taskId === props.task.id,
+  currentMainView.value.kind === 'workspace' &&
+    currentMainView.value.chatTaskId === props.task.id,
 )
 
 const emit = defineEmits<{
