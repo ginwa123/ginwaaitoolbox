@@ -411,6 +411,10 @@ pub fn main(init: std.process.Init) !void {
     // params: ?limit=N (default 8, max 50) &offset=K. Response:
     // { tags: [{name,count,last_used_at}], has_more }.
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/tags", ai_mod.http_handlers.kanbanTagsListHandler);
+    // Kanban-scoped task create endpoint with mode='create' | mode='create_and_run' discriminator.
+    // Mirrors the generic /tasks POST but rejects 404 when the parent item is not a kanban.
+    // Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/tasks", ai_mod.http_handlers.kanbanTasksCreateHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
     try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     // Migration 069 (2026-08-06) removed the filesystem-backed
