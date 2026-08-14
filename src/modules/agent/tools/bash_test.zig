@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const testing = std.testing;
 
 const bash = @import("bash.zig");
+const schemas = @import("schemas.zig");
 
 test "bash_tool: foreground echo command runs on host OS" {
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
@@ -128,6 +129,109 @@ test "bash_tool: many long lines (head -n 30) byte-truncated to max_output" {
     else
         0;
     try testing.expect(fd_diff == 0);
+}
+
+test "bash_tool: default max_output is the safety cap, not 1 MiB" {
+    // Regression test for the user report "fix bash tool truncated" (2026-08-14):
+    //
+    // The agent ran `grep -rn 'kanban/copy_spec\|kanban/columns\|kanban_columns_create' \
+    //   /home/ginwa/ginwaaitoolbox/src --include='*.zig' 2>&1 | head -n 30`.
+    // `head -n 30` caps the LINE count but each `grep -n` line can be megabytes
+    // long when a match lands inside a minified JS blob embedded as a Zig
+    // source string — the ginwaaitoolbox repo's `webapp_assets.zig` contains
+    // a single ~1.7 MiB minified line. Total output was ~1.88 MiB.
+    //
+    // Root cause: `BashInput.max_output` defaulted to `1024 * 1024` (1 MiB)
+    // in schemas.zig. Because `std.json.parseFromSlice` fills missing JSON
+    // fields with the struct default, the LLM never had a reason to pass
+    // `max_output` explicitly, and bash.zig's defensive `orelse 20 * 1024`
+    // fallback was unreachable dead code. The byte cap that actually fired
+    // was 1 MiB per stream, and a single tool call flooded the LLM context.
+    //
+    // The fix is two-fold:
+    //   1. schemas.zig BashInput.max_output defaults to 20 KiB (this test).
+    //   2. bash.zig keeps the `orelse 20 * 1024` as defense-in-depth for
+    //      callers that construct BashInput programmatically.
+    //
+    // Contract verified by this test:
+    //   - Constructing BashInput{} (no max_output field) and parsing
+    //     `{"command": "...", "cwd": "...", "mandatory_timeout": 5}`
+    //     produces max_output == 20 * 1024, not 1024 * 1024.
+    //   - When the LLM omits max_output, the reader caps the output to
+    //     ≤ 20 KiB even though head -n 30 returns 30 long lines.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    // 1. Schema default is 20 KiB. Verify by parsing a JSON args string
+    //    that omits max_output — std.json.parseFromSlice fills it in.
+    {
+        const args_json =
+            \\{"command":"echo hi","cwd":"/tmp","mandatory_timeout":5}
+        ;
+        const parsed = try std.json.parseFromSlice(
+            schemas.BashInput,
+            allocator,
+            args_json,
+            .{ .allocate = .alloc_always },
+        );
+        defer parsed.deinit();
+        try testing.expectEqual(@as(usize, 20 * 1024), parsed.value.max_output.?);
+    }
+
+    // 2. End-to-end: a command whose output would exceed 1 MiB if the
+    //    reader honored the old 1 MiB default is instead capped at
+    //    ≤ 20 KiB because of the schema default.
+    //
+    //    `yes 'AAAA...' | head -n 30` produces 30 lines of ~80 KiB each
+    //    (~2.4 MiB total). With the new 20 KiB schema default the bash
+    //    reader caps each stream at 20 KiB. The truncated=true flag fires
+    //    and stdout_lines reports the true pre-truncation line count.
+    {
+        const fd_count_before = try countOpenFds();
+
+        // 80 KiB per line × 30 lines = ~2.4 MiB raw. head -n 30 caps the
+        // LINE count, not the BYTE count.
+        const long_line = "A" ** (80 * 1024);
+        const result = try bash.execute_bash(allocator, io, .{
+            .command = "yes '" ++ long_line ++ "' | head -n 30",
+            .cwd = "/tmp",
+            // Deliberately omit max_output — the schema default of 20 KiB
+            // must take effect. We also raise max_lines so the line cap
+            // doesn't fire first (we want the BYTE cap under test).
+            .max_lines = 999_999,
+            .mandatory_timeout = 5,
+        });
+        defer {
+            allocator.free(result.command);
+            allocator.free(result.stdout);
+            allocator.free(result.stderr);
+        }
+
+        const fd_count_after = try countOpenFds();
+
+        // 1. The truncation flag MUST fire — 2.4 MiB was definitely
+        //    capped at 20 KiB.
+        try testing.expect(result.truncated == true);
+        // 2. Hard cap at the schema default (20 KiB). Allow up to a few
+        //    hundred bytes of slack because the reader caps at the
+        //    boundary of the most recent 4 KiB read buffer, not the
+        //    exact byte. Crucially we verify the cap is in the right
+        //    ballpark — the old 1 MiB default would fail this check.
+        try testing.expect(result.stdout.len <= 22 * 1024);
+        try testing.expect(result.stdout.len > 0);
+        // 3. Line count reflects what head -n 30 actually produced, not
+        //    what survived truncation. LLM needs this to know the output
+        //    was cut.
+        try testing.expect(result.stdout_lines >= 30);
+        // 4. NO FD leak.
+        const fd_diff: usize = if (fd_count_after > fd_count_before)
+            fd_count_after - fd_count_before
+        else
+            0;
+        try testing.expect(fd_diff == 0);
+    }
 }
 
 test "bash_tool: timeout fires on long-running command" {

@@ -14,7 +14,16 @@ pub const BashInput = struct {
     /// flags), so it is honored even when the main thread is otherwise busy.
     mandatory_timeout: ?u32 = null,
     cwd: ?[]const u8 = null,
-    max_output: ?usize = 1024 * 1024, // default 1MB
+    // Default cap is intentionally low (20 KiB) so a single tool call cannot
+    // blow up the LLM context window when stdout contains very long lines
+    // (e.g. minified JS embedded as a source file, a minified JSON dump, etc.).
+    // `head -n 30` bounds the LINE count but NOT the BYTE count — a single
+    // 1.7 MiB minified line will exceed 1 MiB and flood context. The bash
+    // reader truncates by BYTE count at read-time, so this 20 KiB cap is
+    // always enforced as long as the schema default is below the reader's
+    // byte cap. See bash.zig `execute_bash` ReadContext for the byte cap.
+    // LLMs that need more output MUST pass `max_output` explicitly.
+    max_output: ?usize = 20 * 1024, // default 20 KiB (safety cap)
     stdin_data: ?[]const u8 = null, // optional stdin input, null = close stdin
     background: bool = false, // run in background using nohup
     max_lines: ?usize = 1000, // default 1000 lines per output stream

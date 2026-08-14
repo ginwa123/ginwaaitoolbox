@@ -371,7 +371,15 @@ pub fn execute_bash(allocator: std.mem.Allocator, io: std.Io, input: BashInput) 
     }
 
     // --- Foreground mode ---
-    const max_output = input.max_output orelse 20 * 1024; // 20KB default
+    // `input.max_output` defaults to 20 KiB in the schema (see schemas.zig),
+    // so the `orelse` fallback here is a defense-in-depth — it would only
+    // fire if someone constructs BashInput programmatically without going
+    // through the JSON schema (e.g. tests, internal callers). When the LLM
+    // passes `max_output` explicitly via the JSON arguments, that value
+    // wins. This protects against `head -n 30` returning only a few
+    // lines whose total BYTE count is still megabytes (e.g. minified JS
+    // embedded in a source file).
+    const max_output = input.max_output orelse 20 * 1024; // 20 KiB defense-in-depth fallback
     const max_lines = input.max_lines orelse 1000;
     // Mandatory: validated at the top of execute_bash.
     const timeout_sec = input.mandatory_timeout.?;
@@ -875,7 +883,14 @@ pub const bash_tool = AgentTool{
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Maximum stdout+stderr bytes. Default: 20480 (20KB). Output exceeding this limit is truncated.",
+                    .description =
+                        \\Maximum stdout+stderr bytes per stream. Default: 20480 (20 KiB).
+                        \\Output exceeding this limit is truncated at read-time
+                        \\to keep a single tool call from blowing up the LLM
+                        \\context window. Set this explicitly when you need more
+                        \\(e.g. when running `cat` on a large file or `head -n 1`
+                        \\of a minified file where each line can exceed 20 KiB).
+                    ,
                 },
                 .{
                     .name = "stdin_data",
