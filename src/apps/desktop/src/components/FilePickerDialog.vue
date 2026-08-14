@@ -912,6 +912,11 @@ onBeforeUnmount(() => {
             NalarTabStrip.vue). The default tab is `recent` for the user's
             primary flow. The toolbar (search + hidden + refresh) is
             visible only under Browse — Recent has no use for it.
+
+            The strip uses `flex-1` on a spacer so the two tabs stay
+            left-aligned regardless of breadcrumb width. The right
+            side is reserved for the keyboard hint chip so the strip
+            never collides with the breadcrumb's right edge.
           -->
           <div
             v-if="enableRecent"
@@ -926,7 +931,7 @@ onBeforeUnmount(() => {
               :aria-selected="activeTab === 'recent'"
               data-testid="file-picker-tab-recent"
               @click="activeTab = 'recent'"
-              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5"
+              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5 shrink-0"
               :style="{
                 color: activeTab === 'recent' ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
               }"
@@ -954,12 +959,12 @@ onBeforeUnmount(() => {
               :aria-selected="activeTab === 'browse'"
               data-testid="file-picker-tab-browse"
               @click="activeTab = 'browse'"
-              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5"
+              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5 shrink-0"
               :style="{
                 color: activeTab === 'browse' ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
               }"
             >
-              <span class="relative z-10">📂 Browse</span>
+              <span class="relative z-10">Browse</span>
               <span
                 v-if="activeTab === 'browse'"
                 class="absolute left-2 right-2 bottom-0 h-0.5"
@@ -967,6 +972,7 @@ onBeforeUnmount(() => {
                 aria-hidden="true"
               />
             </button>
+            <span class="flex-1" aria-hidden="true" />
           </div>
 
           <!-- Toolbar (Browse only) -->
