@@ -746,7 +746,7 @@ onBeforeUnmount(() => {
               0 1px 2px rgba(0, 0, 0, 0.4),
               0 8px 24px rgba(0, 0, 0, 0.35),
               0 24px 64px rgba(137, 146, 167, 0.06);
-            max-height: 80vh;
+            max-height: min(80vh, 720px);
             min-height: 480px;
           "
           data-testid="file-picker-dialog"
