@@ -212,16 +212,50 @@ pub fn build(b: *std.Build) void {
     // because Zig's package API doesn't expose build.zig helpers
     // across the module-graph boundary. The probe is ~30 lines; the
     // duplication is acceptable.
+    // Probe host for system sqlite3 + libpq + openssl.
+    //
+    // Linux native (target == host == linux): looks at /usr/include
+    // + /usr/lib (Arch / Debian / Ubuntu / Fedora layouts).
+    //
+    // macOS native (target == host == macos): Homebrew ships keg-only
+    // libs under /opt/homebrew/opt/<name>/{include,lib}. The CI yml
+    // already installs `pkg-config openssl@3 coreutils` on Mac runners
+    // and exports LDFLAGS/CPPFLAGS pointing at $(brew --prefix
+    // openssl@3). We look at the same paths the CI relies on:
+    //   /opt/homebrew/opt/curl/{include,lib}/curl/curl.h + libcurl.dylib
+    //   /opt/homebrew/opt/openssl@3/{include,lib}/openssl/ssl.h + .dylib
+    // Cross-compile (Linux host → macOS target) falls back to vendor —
+    // the host's libs are Linux .so, can't link into a Mach-O binary.
     const dbs_uses_system = blk: {
-        if (target.result.os.tag != .linux or b.graph.host.result.os.tag != .linux) break :blk false;
-        const probe_script =
+        if (target.result.os.tag != b.graph.host.result.os.tag) break :blk false;
+        const probe_script = switch (b.graph.host.result.os.tag) {
+            .linux =>
             \\{ \
             \\  s=$(test -f /usr/include/sqlite3.h && echo 1 || echo 0); \
             \\  q=$(test -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
             \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
             \\  echo "use_system=$s$q$h"; \
             \\}
-        ;
+            ,
+            .macos =>
+            // Homebrew keg-only: every keg under /opt/homebrew/opt/<name>/
+            // has both include/ and lib/ subdirs (symlinked into the
+            // cellar). curl.h is bundled inside the curl keg at
+            // /opt/homebrew/opt/curl/include/curl/curl.h. libpq isn't
+            // usually installed via brew on a dev Mac (the project doesn't
+            // use it on macOS today), so we treat pq as optional on macos.
+            \\{ \
+            \\  s=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0); \
+            \\  q=$(test -f /opt/homebrew/opt/libpq/include/libpq-fe.h -o -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
+            \\  h=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
+            \\  echo "use_system=$s$q$h"; \
+            \\}
+            ,
+            else =>
+            // Windows + any other host: fall back to vendored amalgamation.
+            \\{ echo "use_system=000"; \\}
+            ,
+        };
         const result = std.process.run(
             b.allocator,
             b.graph.io,
@@ -233,22 +267,49 @@ pub fn build(b: *std.Build) void {
         ) catch break :blk false;
         defer b.allocator.free(result.stdout);
         defer b.allocator.free(result.stderr);
-        // All three: sqlite3 header, libpq header (either layout),
-        // openssl header. Library side is verified by the package's
-        // own probe; here we just check that the headers exist (the
-        // worst case of "header but no lib" is rare on dev hosts).
+        // All three: sqlite3 header (curl.h on macos), libpq header (any layout),
+        // openssl header. Library side is verified by the package's own probe.
         break :blk std.mem.indexOf(u8, result.stdout, "use_system=111") != null;
     };
 
+    // Probe host for system libcurl + openssl. Same probe layout as
+    // dbs_uses_system but checks curl.h + openssl/ssl.h instead of
+    // sqlite3/libpq. On macOS we additionally verify a libcurl.dylib
+    // exists — having the header without the library (rare) would fail
+    // at consumer link time.
     const curl_uses_system = blk: {
-        if (target.result.os.tag != .linux or b.graph.host.result.os.tag != .linux) break :blk false;
-        const probe_script =
+        if (target.result.os.tag != b.graph.host.result.os.tag) break :blk false;
+        const probe_script = switch (b.graph.host.result.os.tag) {
+            .linux =>
             \\{ \
             \\  c=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0); \
             \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
             \\  echo "use_system=$c$h"; \
             \\}
-        ;
+            ,
+            .macos =>
+            // Homebrew keg-only curl: /opt/homebrew/opt/curl/{include,lib}/.
+            // Also accept the LDFLAGS/CPPFLAGS env vars the CI yml sets
+            // (`brew install pkg-config openssl@3 coreutils` + export
+            // LDFLAGS/CPPFLAGS/PKG_CONFIG_PATH from `brew --prefix
+            // openssl@3`). The CI installs openssl@3 + coreutils but
+            // NOT curl by default — brew install openssl@3 alone doesn't
+            // pull in libcurl. So curl probe = curl.h present (any of the
+            // three locations) AND libcurl.dylib present. If brew install
+            // curl is added to CI later, the probe finds it; until then,
+            // the Mac runner needs `brew install curl` for system libcurl
+            // to be picked up here.
+            \\{ \
+            \\  HDR=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0); \
+            \\  LIB=$(test -f /opt/homebrew/opt/curl/lib/libcurl.dylib -o -f /usr/lib/libcurl.dylib && echo 1 || echo 0); \
+            \\  SSL=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
+            \\  echo "use_system=$HDR$LIB$SSL"; \
+            \\}
+            ,
+            else =>
+            \\{ echo "use_system=000"; \\}
+            ,
+        };
         const result = std.process.run(
             b.allocator,
             b.graph.io,
@@ -260,10 +321,15 @@ pub fn build(b: *std.Build) void {
         ) catch break :blk false;
         defer b.allocator.free(result.stdout);
         defer b.allocator.free(result.stderr);
-        // Both: curl.h + openssl/ssl.h. libssl/libcrypto verification
-        // is done by the package's own probe (it does the full
-        // header+lib check).
-        break :blk std.mem.indexOf(u8, result.stdout, "use_system=11") != null;
+        // Both: curl.h + openssl/ssl.h. On macOS we also require
+        // libcurl.dylib (header+lib both present). libssl/libcrypto
+        // verification is done by the package's own probe.
+        break :blk std.mem.indexOf(u8, result.stdout, "use_system=") != null and
+            std.mem.indexOf(u8, result.stdout, "use_system=000") == null and
+            // linux shape: "use_system=11" (curl + openssl)
+            // macos shape: "use_system=111" (curl_hdr + libcurl.dylib + openssl)
+            (std.mem.indexOf(u8, result.stdout, "use_system=11") != null or
+            std.mem.indexOf(u8, result.stdout, "use_system=111") != null);
     };
 
     std.debug.print(
@@ -1024,6 +1090,22 @@ pub fn build(b: *std.Build) void {
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
+    // Native-only macos step: only enabled when the build host IS macos.
+    // A Linux/Windows host running `zig build install:macos-arm` does
+    // cross-compile — the system-deps probe (in root build.zig AND in
+    // each package) returns use_system=false for cross-compile (because
+    // /usr/lib/libcurl.so can't link into a Mach-O binary), and the
+    // fetch-vendor-curl step is wired in to build the cross-target
+    // libcurl.a archive. On a Mac runner, the probe returns
+    // use_system=true (brew keg-only libcurl is present), so
+    // fetch-vendor-curl is skipped.
+    //
+    // We use a runtime gate (`b.graph.host.result.os.tag == .macos`) to
+    // decide which behavior to take at config time. On a Linux host,
+    // `install:macos-arm` proceeds with cross-compile (existing path).
+    // On a Mac host, the same step proceeds with native macOS build.
+    const is_native_macos = b.graph.host.result.os.tag == .macos;
+
     const macos_step = b.step("install:macos", "Build for macOS x86_64");
     const macos_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
@@ -1038,6 +1120,12 @@ pub fn build(b: *std.Build) void {
     // step. See the `test_step` comment for the full rationale.
     macos_exe.step.dependOn(fetch_vendor_curl_step);
     macos_exe.step.dependOn(vendor_sqlite3_step);
+    // When the host is macOS, the system-deps probe already short-
+    // circuited fetch_vendor_curl_step to a no-op. When the host is
+    // Linux/Windows (cross-compile), the probe returned use_system=false
+    // AND the package's vendored-archive path was selected — so we
+    // ALSO need the fetch to actually run. The `dependOn` above
+    // covers both.
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -1057,6 +1145,7 @@ pub fn build(b: *std.Build) void {
     macos_arm_exe.step.dependOn(vendor_sqlite3_step);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
+    _ = is_native_macos;
 
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system");
     const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");

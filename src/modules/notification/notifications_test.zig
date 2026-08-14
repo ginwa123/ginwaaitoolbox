@@ -159,12 +159,20 @@ test "notifyWithPath returns BinaryNotFound for an empty path" {
 // ---------------------------------------------------------------------------
 
 test "notifyWithPath with /bin/true returns success and does not leak" {
-    if (builtin.os.tag == .windows) return; // /bin/true not on Windows
+    if (builtin.os.tag == .windows) return; // no `true` binary on Windows
     const allocator = testing.allocator;
-    // /bin/true exits immediately. If the function blocks on a
+    // `/bin/true` exists on Linux but NOT on macOS — BSD true lives at
+    // `/usr/bin/true` (modern macOS no longer carries the legacy
+    // `/bin` symlink alias, so a hardcoded `/bin/true` spawn fails
+    // with error.FileNotFound on the Mac CI runner — observed on CI
+    // run 31828424315 / 31838283325). Pick the per-OS path that
+    // actually resolves: macOS uses `/usr/bin/true`, Linux keeps the
+    // historical `/bin/true`.
+    const true_bin: []const u8 = if (builtin.os.tag == .macos) "/usr/bin/true" else "/bin/true";
+    // true exits immediately. If the function blocks on a
     // synchronous child.wait, the test still passes (the wait is
     // microseconds).
-    try notifications.notifyWithPath(testing.io, allocator, "/bin/true", "T", "B");
+    try notifications.notifyWithPath(testing.io, allocator, true_bin, "T", "B");
     // No explicit assertion needed: returning from notifyWithPath
     // without error is the success criterion.
 }
