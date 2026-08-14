@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref } from 'vue'
 import { mount } from '@vue/test-utils'
+import { createApp } from 'vue'
 import AppLayout from '../components/AppLayout.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem, Task } from '../stores/workspaces'
@@ -70,7 +71,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
 
 function installBusForTests() {
   __resetSseBus()
-  installSseBus({})
+  installSseBus(createApp({}))
   __setSseBusGlobalClient(makeStubClient() as SseClient)
 }
 
@@ -109,7 +110,12 @@ describe('AppLayout — chat suffix round-trip', () => {
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
     vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
-    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({ entries: [], home_dir: '', cwd: '' })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      path: '/',
+      absolute: '/',
+      home: '/',
+      entries: [],
+    } as any)
     useRouteMock.mockReset()
     useRouterMock.mockReset()
   })

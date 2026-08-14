@@ -344,13 +344,17 @@ watch(
     // mutation) but the chat task id is preserved.
     const existingItemIdRaw = (route.query.itemId as string) ?? ''
     const parsedExisting = parseItemIdWithChat(existingItemIdRaw)
+    // `itemId` comes from `activeWorkspaceItemId` which is `string | null`.
+    // The no-op comparison below treats `null` as equivalent to `''` —
+    // it just means "the active item is unset, don't write the URL".
+    const safeItemId = itemId ?? ''
     const rewrittenItemId = parsedExisting.chatTaskId
-      ? buildItemIdWithChat(itemId, parsedExisting.chatTaskId)
-      : itemId
+      ? buildItemIdWithChat(safeItemId, parsedExisting.chatTaskId)
+      : safeItemId
 
     if (urlWsId === wsId && urlItemId === rewrittenItemId && urlPageId === pageId) return
     const query: Record<string, string> = { view: 'workspace' }
-    if (wsId && itemId) {
+    if (wsId && safeItemId) {
       query.workspaceId = wsId
       query.itemId = rewrittenItemId
       // pageId is design-item-scoped — only include it when the active

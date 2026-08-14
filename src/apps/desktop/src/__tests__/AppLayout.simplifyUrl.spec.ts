@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import { ref } from 'vue'
+import { createApp, ref } from 'vue'
 import AppLayout from '../components/AppLayout.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { WorkspaceItem, Task } from '../stores/workspaces'
@@ -78,7 +78,7 @@ const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
 
 function installBusForTests() {
   __resetSseBus()
-  installSseBus({})
+  installSseBus(createApp({}))
   __setSseBusGlobalClient(makeStubClient() as SseClient)
 }
 
@@ -130,7 +130,12 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
     vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
-    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({ entries: [], home_dir: '', cwd: '' })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      path: '/',
+      absolute: '/',
+      home: '/',
+      entries: [],
+    } as any)
     useRouteMock.mockReset()
     useRouterMock.mockReset()
   })
@@ -193,7 +198,9 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     })
     await flushPromises()
     expect(replaceMock).toHaveBeenCalled()
-    const call = replaceMock.mock.calls[0][0]
+    const firstCall = replaceMock.mock.calls[0]
+    expect(firstCall).toBeDefined()
+    const call = firstCall![0] as { query: Record<string, string> }
     expect(call.query.view).toBe('workspace')
     expect(call.query.itemId).toBe(`${KANBAN_ITEM_ID}/chat/${TASK_ID}`)
   })
@@ -219,7 +226,9 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     })
     await flushPromises()
     expect(replaceMock).toHaveBeenCalled()
-    const call = replaceMock.mock.calls[0][0]
+    const secondCall = replaceMock.mock.calls[0]
+    expect(secondCall).toBeDefined()
+    const call = secondCall![0] as { query: Record<string, string> }
     expect(call.query.view).toBe('workspace')
     expect(call.query.itemId).toBe(`${KANBAN_ITEM_ID}/chat/${TASK_ID}`)
   })
