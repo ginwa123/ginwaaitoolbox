@@ -765,6 +765,99 @@ export async function createTask(
   })
 }
 
+/**
+ * Kanban-specific task create endpoint.
+ *
+ * The backend (POST /api/workspaces/:wid/items/:iid/kanban/tasks) accepts
+ * a `mode` discriminator:
+ *   - mode='create'         — create the task only (analogous to /tasks POST)
+ *   - mode='create_and_run' — create + insert sessions row + queue the
+ *                             first message (analogous to /llm/session POST
+ *                             with session_id=task.id). Returns the session
+ *                             in `response.session`.
+ *
+ * The endpoint rejects 404 when the parent item is not a kanban (the
+ * generic /tasks route is the fallback for non-kanban items).
+ *
+ * Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
+ */
+export type KanbanCreateMode = 'create' | 'create_and_run'
+
+export interface KanbanCreateTaskPayload {
+  mode: 'create'
+  name: string
+  description?: string
+  tags?: string[]
+  imageUrls?: string[]
+  // Migration 070 — per-task cwd override. Absolute path on disk or '' for cwd-less.
+  cwd?: string
+  // Migration 063 — only meaningful for create_and_run; for plain create,
+  // the backend atomically inserts the sessions row when this is '1'.
+  isAutoRetryUntilStop?: string
+}
+
+export interface KanbanCreateAndRunPayload {
+  mode: 'create_and_run'
+  name: string
+  description?: string
+  /** Required when mode='create_and_run'. The first user message the agent sees. */
+  queue_message: string
+  tags?: string[]
+  imageUrls?: string[]
+  cwd?: string
+  isAutoRetryUntilStop?: string
+  /** Backend persists onto the sessions row. Empty/undefined = backend default. */
+  selected_profile_model?: string
+}
+
+export interface KanbanSessionInfo {
+  id: string
+  name: string
+  status: string
+}
+
+export interface KanbanCreateResponse {
+  task: Task
+  session: KanbanSessionInfo | null
+}
+
+export async function createKanbanTask(
+  workspaceId: string,
+  itemId: string,
+  payload: KanbanCreateTaskPayload | KanbanCreateAndRunPayload,
+): Promise<KanbanCreateResponse> {
+  const body: Record<string, unknown> = {
+    mode: payload.mode,
+    name: payload.name,
+    description: payload.description,
+  }
+  if (payload.tags && payload.tags.length > 0) {
+    body.tags = JSON.stringify(payload.tags)
+  }
+  if (payload.imageUrls && payload.imageUrls.length > 0) {
+    body.image_urls = payload.imageUrls.join('||')
+  }
+  if (payload.cwd !== undefined) {
+    body.cwd = payload.cwd
+  }
+  if (payload.isAutoRetryUntilStop !== undefined) {
+    body.is_auto_retry_until_stop = payload.isAutoRetryUntilStop
+  }
+  if (payload.mode === 'create_and_run') {
+    body.queue_message = payload.queue_message
+    if (payload.selected_profile_model !== undefined) {
+      body.selected_profile_model = payload.selected_profile_model
+    }
+  }
+  return apiFetch<KanbanCreateResponse>(
+    `/workspaces/${workspaceId}/items/${itemId}/kanban/tasks`,
+    {
+      method: 'POST',
+      body,
+    },
+  )
+}
+
 export async function updateTask(
   workspaceId: string,
   itemId: string,
