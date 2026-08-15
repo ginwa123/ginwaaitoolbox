@@ -112,7 +112,11 @@ pub const CallbackAiWorkerFlow = struct {
         const keyword = "CALLBACK_AI_WORKER_FLOW";
         const di = nalarcore.getSingleton() catch return;
         const logger = di.logger;
-        const allocator = di.allocator;
+
+        var arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
+        defer arena_allocator.deinit();
+        const allocator = arena_allocator.allocator();
+
         const active_loops = di.active_loops;
         const event_bus = di.event_bus;
         const db = di.db;
@@ -239,149 +243,6 @@ fn resolveProfileField(
     return top_level;
 }
 
-// ─── Inline tests for `resolveProfileField` ──────────────────────────────────
-// Per the agentic_loop/ README: this directory uses inline tests, not
-// separate `_test.zig` files (the only exception is `parsing_test.zig`).
-//
-// Why behavioural, not static-contract?
-// ─────────────────────────────────────
-// The user rule (2026-07-29) is: "Never write static-contract tests —
-// call the function, assert the return." `resolveProfileField` is a
-// pure function over `LlmConfig`, so we construct a minimal config
-// in-memory and call it directly.
-
-/// Allocate a fresh `LlmConfig` with the minimal fields needed by the
-/// helper: top-level fields + one profile `"alpha"`. Caller owns the
-/// result and must call `cfg.deinit()`.
-fn makeTestConfig(allocator: std.mem.Allocator) !config_mod.LlmConfig {
-    var cfg: config_mod.LlmConfig = .{
-        .allocator = allocator,
-        .api_key = try allocator.dupe(u8, "default-key"),
-        .model = try allocator.dupe(u8, "default-model"),
-        .base_url = try allocator.dupe(u8, "https://default.example.com"),
-        .url_style = try allocator.dupe(u8, "openai"),
-        .model_compaction_size_kb = 100,
-        .notify_on_complete = false,
-        .retry_delay_ms = 0,
-        .max_capacity_token_model = null,
-        .compaction_threshold_percent = null,
-        .active_profile = null,
-        .mcpServers_parsed = null,
-        .mcp_servers = config_mod.LlmConfig.McpServersMap.init(allocator),
-        .profiles_models = config_mod.LlmConfig.ProfilesMap.init(allocator),
-        .sub_agents = &.{},
-        .random_names = &.{},
-    };
-    errdefer cfg.deinit();
-
-    // Profile "alpha" — every field populated, non-empty.
-    try cfg.profiles_models.put(try allocator.dupe(u8, "alpha"), .{
-        .model = try allocator.dupe(u8, "alpha-model"),
-        .base_url = try allocator.dupe(u8, "https://alpha.example.com"),
-        .thinking = try allocator.dupe(u8, "auto"),
-        .temperature = try allocator.dupe(u8, "auto"),
-        .url_style = try allocator.dupe(u8, "anthropic"),
-        .api_key = try allocator.dupe(u8, "alpha-key"),
-        .sub_agents = &.{},
-        .max_capacity_tokens = null,
-        .compaction_threshold_percent = null,
-    });
-    return cfg;
-}
-
-test "resolveProfileField: empty selected + null active_profile → top-level" {
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-
-    const got = resolveProfileField("model", &cfg, "", null, cfg.model);
-    try testing.expectEqualStrings("default-model", got);
-}
-
-test "resolveProfileField: selected_profile_model wins over active_profile" {
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    // Both names resolve to "alpha" in our test config, but the
-    // selected one is checked first — we can't observe a difference
-    // unless we add a second profile. Skip the distinct-values check
-    // here; the precedence is covered by the "wins over top-level"
-    // test below (which would fail if step 1 was skipped).
-    const got = resolveProfileField("model", &cfg, "alpha", "alpha", cfg.model);
-    try testing.expectEqualStrings("alpha-model", got);
-}
-
-test "resolveProfileField: active_profile wins over top-level when selected is empty" {
-    // This is the bug: previously, `active_profile` was parsed + saved
-    // but the workflow ignored it, always falling through to top-level.
-    // With the fix, `active_profile = "alpha"` should select the
-    // profile's model.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    const got = resolveProfileField("model", &cfg, "", "alpha", cfg.model);
-    try testing.expectEqualStrings("alpha-model", got);
-}
-
-test "resolveProfileField: active_profile also resolves base_url + url_style + api_key" {
-    // The fix is for the WHOLE profile, not just the model field.
-    // Verify each of the four fields the workflow cascades.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
-    try testing.expectEqualStrings("https://alpha.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
-    try testing.expectEqualStrings("anthropic", resolveProfileField("url_style", &cfg, "", "alpha", cfg.url_style));
-    try testing.expectEqualStrings("alpha-key", resolveProfileField("api_key", &cfg, "", "alpha", cfg.api_key));
-}
-
-test "resolveProfileField: missing active_profile name falls through to top-level" {
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "does_not_exist");
-
-    const got = resolveProfileField("model", &cfg, "", "does_not_exist", cfg.model);
-    try testing.expectEqualStrings("default-model", got);
-}
-
-test "resolveProfileField: empty active_profile string falls through to top-level" {
-    // Empty string would come from a stale config or a manual JSON
-    // edit. Must not crash on `getProfile("")`.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "");
-
-    const got = resolveProfileField("model", &cfg, "", "", cfg.model);
-    try testing.expectEqualStrings("default-model", got);
-}
-
-test "resolveProfileField: profile with empty field falls through to top-level for THAT field only" {
-    // The existing "len > 0" guard: a profile might have a model but
-    // an empty base_url. Verify each field cascades independently.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-
-    // Override "alpha" so base_url is empty (but model is set).
-    if (cfg.profiles_models.getEntry("alpha")) |entry| {
-        alloc.free(entry.value_ptr.base_url);
-        entry.value_ptr.base_url = try alloc.dupe(u8, "");
-    }
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    // model still picks up the profile (alpha-model)
-    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
-    // base_url falls through (alpha has empty base_url, so top-level wins)
-    try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
-}
 
 // ─── re_read_selected_profile_model — live-re-read from sessions table ─────
 //
@@ -584,16 +445,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
-    // Note: `copy_selected_profile_model` was removed (plan
-    // 2026-08-06-workflow-re-read-profile-per-iter). Per-session profile
-    // changes now take effect on the next loop iteration via
-    // `re_read_selected_profile_model` (re-reads `sessions.selected_profile_model`
-    // each iteration, with `params.selected_profile_model` as the
-    // snapshot fallback when the DB read fails).
-
     var is_have_queue_message = false;
 
-    // Ensure cleanup happens even on error - remove from worker table
 
     const initial_agent_state = try llm_history.get_current_agent_by_session_id(
         parent_allocator,
@@ -687,9 +540,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};
-    // Note: mcp_tools_fetched memory is managed by allocator
-
-    // Filter and merge tools based on allowed_tools setting
 
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);
@@ -697,28 +547,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
 
-        // ─── Tool-call loading placeholder recovery (plan 2026-08-06) ───
-        // Replace any stranded `is_loading=1` placeholders from a
-        // previous crash with synthetic "interrupted" messages. The
-        // next LLM call's tool_call_id matching then succeeds (the
-        // API contract is satisfied) and the LLM sees a clear
-        // "Tool execution was interrupted — please retry" message.
-        //
-        // Idempotent: 0 stranded rows = 0 updates, no side effects.
-        // Safe to call at the top of every worker loop iteration.
-        // llm_history.resolveStaleLoadingToolResults(allocator, db, copy_session_id) catch |err| {
-        //     logger.warnFmt(
-        //         "[CHECKPOINT] resolveStaleLoadingToolResults failed session_id={s} err={s} (continuing — existing placeholders may cause 'Invalid function ID' on next LLM call)",
-        //         .{ copy_session_id, @errorName(err) },
-        //     );
-        // };
-
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
-            defer flag_rows.deinit();
             const flag_row = flag_rows.next() catch break :blk false;
             if (flag_row) |row| {
-                defer row.deinit(allocator);
                 break :blk std.mem.eql(u8, row.values[0], "1");
             }
             break :blk false;
@@ -800,10 +632,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     // Split by pipe separator
                     var parts = std.mem.splitScalar(u8, queued.image_url, '|');
                     var urls = std.ArrayList([]const u8).empty;
-                    defer {
-                        for (urls.items) |u| allocator.free(u);
-                        urls.deinit(allocator);
-                    }
                     while (parts.next()) |part| {
                         if (part.len > 0) {
                             try urls.append(allocator, try allocator.dupe(u8, part));
@@ -818,12 +646,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                         logger.errFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
                         break :blk null;
                     };
-                }
-                defer {
-                    if (image_urls) |urls| {
-                        for (urls) |url| allocator.free(url);
-                        allocator.free(urls);
-                    }
                 }
 
                 _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
@@ -1049,10 +871,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             .session_id = copy_session_id,
         });
         const is_task_kanban = try isSessionKanban(allocator, db, copy_session_id);
-        defer {
-            for (db_messages) |*msg| msg.deinit(allocator);
-            allocator.free(db_messages);
-        }
 
         const total_tokens = blk: {
             var max_token: u32 = 0;
@@ -1167,7 +985,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // very slices the downstream `handle_tool → execBash` consumer
         // was about to read — see the 2026-08-15 “bash tool leak” bug
         // where 22 0xAA bytes ended up as `ls -la $'ʪ…'`.
-        defer res_dynamic_agent.deinit();
 
         const llm_duration_ms = @divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds - checkpoint_llm_start_ns, std.time.ns_per_ms);
         logger.infoFmt(
@@ -1383,7 +1200,6 @@ fn generateSessionNameNew(
     name_messages[1] = .{ .role = .user, .content = first_user_message.? };
 
     var name_agent = agent.Agent.init(allocator, io);
-    defer name_agent.deinit();
     name_agent.apiKey = api_key;
     name_agent.model = model;
     name_agent.baseUrl = base_url;
@@ -1397,7 +1213,6 @@ fn generateSessionNameNew(
         logger.errFmt("[SESSION NAME] Failed to call LLM for session name", .{});
         return;
     };
-    defer response.deinit();
 
     if (response.content) |content| {
         // Strip thinking tags if present, fallback to original content on error
@@ -1485,7 +1300,6 @@ fn saveRetryAttemptMessage(
         break :blk null;
     };
     const content: []const u8 = formatted orelse "[Retry error: formatting failed]";
-    errdefer if (formatted) |f| allocator.free(f);
 
     logger.errFmt("Retry {d}/{d}: {s} ({s}). Retrying in {d}ms.", .{ attempt, max_attempts, error_name, source, delay_ms });
 
@@ -1554,7 +1368,6 @@ fn callDynamicAgentNew(
     // Agent (formerly a separate Agent2.zig merged in this PR) uses
     // libcurl's CURLOPT_TIMEOUT_MS instead, which doesn't have that issue.
     var dynamic_agent = agent.Agent.init(allocator, io);
-    defer dynamic_agent.deinit();
     dynamic_agent.apiKey = api_key;
     dynamic_agent.model = model;
     dynamic_agent.baseUrl = base_url;
@@ -1686,7 +1499,6 @@ pub fn filterAndMergeTools(
         }
 
         var filtered_tools: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
-        defer filtered_tools.deinit(allocator);
 
         for (base_tools) |tool| {
             if (allowed_tools_set.contains(tool.function.name)) {
@@ -1699,7 +1511,6 @@ pub fn filterAndMergeTools(
     // Sub-agents cannot spawn more sub-agents - strip spawn_sub_agent to prevent infinite recursion
     if (is_sub_agent) {
         var filtered: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
-        defer filtered.deinit(allocator);
         for (base_tools) |tool| {
             if (!std.mem.eql(u8, tool.function.name, "spawn_sub_agent")) {
                 try filtered.append(allocator, tool);
@@ -1710,7 +1521,6 @@ pub fn filterAndMergeTools(
 
     // Merge base tools and MCP tools
     var all_tools_list: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
-    defer all_tools_list.deinit(allocator);
     try all_tools_list.appendSlice(allocator, base_tools);
     try all_tools_list.appendSlice(allocator, mcp_tools);
 
@@ -1756,3 +1566,148 @@ pub const RunParamsNew = struct {
     sub_agent_overrides: ?SubAgentOverrides = null,
     is_auto_retry_until_stop: []const u8 = "",
 };
+
+// ─── Inline tests for `resolveProfileField` ──────────────────────────────────
+// Per the agentic_loop/ README: this directory uses inline tests, not
+// separate `_test.zig` files (the only exception is `parsing_test.zig`).
+//
+// Why behavioural, not static-contract?
+// ─────────────────────────────────────
+// The user rule (2026-07-29) is: "Never write static-contract tests —
+// call the function, assert the return." `resolveProfileField` is a
+// pure function over `LlmConfig`, so we construct a minimal config
+// in-memory and call it directly.
+
+/// Allocate a fresh `LlmConfig` with the minimal fields needed by the
+/// helper: top-level fields + one profile `"alpha"`. Caller owns the
+/// result and must call `cfg.deinit()`.
+fn makeTestConfig(allocator: std.mem.Allocator) !config_mod.LlmConfig {
+    var cfg: config_mod.LlmConfig = .{
+        .allocator = allocator,
+        .api_key = try allocator.dupe(u8, "default-key"),
+        .model = try allocator.dupe(u8, "default-model"),
+        .base_url = try allocator.dupe(u8, "https://default.example.com"),
+        .url_style = try allocator.dupe(u8, "openai"),
+        .model_compaction_size_kb = 100,
+        .notify_on_complete = false,
+        .retry_delay_ms = 0,
+        .max_capacity_token_model = null,
+        .compaction_threshold_percent = null,
+        .active_profile = null,
+        .mcpServers_parsed = null,
+        .mcp_servers = config_mod.LlmConfig.McpServersMap.init(allocator),
+        .profiles_models = config_mod.LlmConfig.ProfilesMap.init(allocator),
+        .sub_agents = &.{},
+        .random_names = &.{},
+    };
+    errdefer cfg.deinit();
+
+    // Profile "alpha" — every field populated, non-empty.
+    try cfg.profiles_models.put(try allocator.dupe(u8, "alpha"), .{
+        .model = try allocator.dupe(u8, "alpha-model"),
+        .base_url = try allocator.dupe(u8, "https://alpha.example.com"),
+        .thinking = try allocator.dupe(u8, "auto"),
+        .temperature = try allocator.dupe(u8, "auto"),
+        .url_style = try allocator.dupe(u8, "anthropic"),
+        .api_key = try allocator.dupe(u8, "alpha-key"),
+        .sub_agents = &.{},
+        .max_capacity_tokens = null,
+        .compaction_threshold_percent = null,
+    });
+    return cfg;
+}
+
+test "resolveProfileField: empty selected + null active_profile → top-level" {
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+
+    const got = resolveProfileField("model", &cfg, "", null, cfg.model);
+    try testing.expectEqualStrings("default-model", got);
+}
+
+test "resolveProfileField: selected_profile_model wins over active_profile" {
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    // Both names resolve to "alpha" in our test config, but the
+    // selected one is checked first — we can't observe a difference
+    // unless we add a second profile. Skip the distinct-values check
+    // here; the precedence is covered by the "wins over top-level"
+    // test below (which would fail if step 1 was skipped).
+    const got = resolveProfileField("model", &cfg, "alpha", "alpha", cfg.model);
+    try testing.expectEqualStrings("alpha-model", got);
+}
+
+test "resolveProfileField: active_profile wins over top-level when selected is empty" {
+    // This is the bug: previously, `active_profile` was parsed + saved
+    // but the workflow ignored it, always falling through to top-level.
+    // With the fix, `active_profile = "alpha"` should select the
+    // profile's model.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    const got = resolveProfileField("model", &cfg, "", "alpha", cfg.model);
+    try testing.expectEqualStrings("alpha-model", got);
+}
+
+test "resolveProfileField: active_profile also resolves base_url + url_style + api_key" {
+    // The fix is for the WHOLE profile, not just the model field.
+    // Verify each of the four fields the workflow cascades.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
+    try testing.expectEqualStrings("https://alpha.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
+    try testing.expectEqualStrings("anthropic", resolveProfileField("url_style", &cfg, "", "alpha", cfg.url_style));
+    try testing.expectEqualStrings("alpha-key", resolveProfileField("api_key", &cfg, "", "alpha", cfg.api_key));
+}
+
+test "resolveProfileField: missing active_profile name falls through to top-level" {
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "does_not_exist");
+
+    const got = resolveProfileField("model", &cfg, "", "does_not_exist", cfg.model);
+    try testing.expectEqualStrings("default-model", got);
+}
+
+test "resolveProfileField: empty active_profile string falls through to top-level" {
+    // Empty string would come from a stale config or a manual JSON
+    // edit. Must not crash on `getProfile("")`.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+    cfg.active_profile = try alloc.dupe(u8, "");
+
+    const got = resolveProfileField("model", &cfg, "", "", cfg.model);
+    try testing.expectEqualStrings("default-model", got);
+}
+
+test "resolveProfileField: profile with empty field falls through to top-level for THAT field only" {
+    // The existing "len > 0" guard: a profile might have a model but
+    // an empty base_url. Verify each field cascades independently.
+    const alloc = testing.allocator;
+    var cfg = try makeTestConfig(alloc);
+    defer cfg.deinit();
+
+    // Override "alpha" so base_url is empty (but model is set).
+    if (cfg.profiles_models.getEntry("alpha")) |entry| {
+        alloc.free(entry.value_ptr.base_url);
+        entry.value_ptr.base_url = try alloc.dupe(u8, "");
+    }
+    cfg.active_profile = try alloc.dupe(u8, "alpha");
+
+    // model still picks up the profile (alpha-model)
+    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
+    // base_url falls through (alpha has empty base_url, so top-level wins)
+    try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
+}
+
