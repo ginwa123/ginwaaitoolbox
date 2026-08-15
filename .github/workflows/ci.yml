@@ -342,19 +342,36 @@ jobs:
           if ($vsInstaller) {
             Write-Host "Setting up MSVC environment via $($vsInstaller.FullName)"
             # Source vcvars64.bat and capture the resulting env vars.
-            # PowerShell 5.1's backtick-double-quote escape pattern
-            # (`"`"..."`") doesn't survive a YAML heredoc + PowerShell
-            # 5.1 parser round-trip reliably (observed on CI run
-            # 31841182154 + 31860331820 with MissingEndCurlyBrace
-            # errors). Workaround: build the .bat content with a
-            # here-string (no escaping needed), write to a temp file,
-            # and invoke it. The cmd quoting stays inside the .bat.
+            # PowerShell 5.1's backtick-double-quote + backtick-r-n
+            # escape patterns (originally used for inline multi-line
+            # .bat content via `Set-Content -Value "@echo off`r`n..."`)
+            # don't survive a YAML heredoc + PowerShell 5.1 parser
+            # round-trip reliably (observed on CI run 31841182154 +
+            # 31860331820 with MissingEndCurlyBrace errors). The
+            # @"..."@ here-string fallback broke the YAML file itself
+            # because the closing `"@` marker MUST sit at column 0
+            # of the line, which is exactly where YAML's `|` block
+            # scalar's indent ends (CI run 31862667065 failed in 0s
+            # with "workflow file issue"). The working fix is below:
+            # build the .bat content via string concatenation with
+            # [Environment]::NewLine as the line separator — single
+            # quotes, no interpolation, no escape sequences.
             $vcvarsBat = Join-Path $env:TEMP 'vcvars64-source.bat'
-            $batContent = @"
-@echo off
-call "$($vsInstaller.FullName)"
-set
-"@
+            # Build .bat content via single-quoted string concatenation
+            # (NOT @"..."@ here-string) — a YAML `|` block scalar cannot
+            # host a PowerShell here-string because the closing `"@` /
+            # `'@` marker MUST sit at column 0 of the line, which is
+            # exactly where YAML's block-scalar indent ends. YAML then
+            # re-parses the next line as an implicit mapping key and
+            # the workflow file silently fails ("This run likely failed
+            # because of a workflow file issue" — every push since
+            # commit 99b0ebdc has failed in 0s, blocking all CI
+            # feedback). Use [Environment]::NewLine + single-quoted
+            # strings (no interpolation, no escape sequences) so both
+            # YAML and PowerShell 5.1 stay happy. `$vsInstaller.FullName`
+            # sits BETWEEN concatenations as a bare expression, so
+            # PowerShell still expands it to the .bat file's actual path.
+            $batContent = '@echo off' + [Environment]::NewLine + 'call "' + $vsInstaller.FullName + '"' + [Environment]::NewLine + 'set' + [Environment]::NewLine
             [System.IO.File]::WriteAllText($vcvarsBat, $batContent, [System.Text.Encoding]::ASCII)
             cmd /c $vcvarsBat | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
               $name, $value = $_ -split "=", 2
