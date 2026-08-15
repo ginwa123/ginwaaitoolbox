@@ -235,6 +235,15 @@ const emit = defineEmits<{
   // this event — the task is already in a column, and migrating an
   // existing task to a new column is out of scope.
   'column-change': [columnId: string]
+  // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Edit mode
+  // only. Fires when the user picks a different cwd from the picker
+  // in edit mode. The host persists immediately via
+  // `api.updateTaskSimple(task.id, { cwd })`, matching the
+  // `update-unattended` immediate-save UX (iOS-style — no Save click
+  // required). In create mode the cwd selection is forwarded via the
+  // `create` / `create-and-run` emit's `cwdSession` field instead, so
+  // this emit is only meaningful in edit mode.
+  'update-cwd': [payload: { cwd: string }]
 }>()
 
 // ─── Form state ──────────────────────────────────────────────────────────
@@ -311,7 +320,16 @@ const selectColumn = (id: string) => {
 // string = "no per-task cwd" (falls back to kanban-level path +
 // sandbox). The picker writes the absolute path; the picker dialog's
 // "cancel" / backdrop-close leaves it empty.
-const cwdSession = ref<string>(props.cwd ?? '')
+//
+// Starts empty — populated lazily by the broader
+// `props.show, props.task?.id, props.mode` watcher below on dialog
+// open (with `immediate: true`). Initializing from the ref literal
+// (`ref<string>(props.cwd ?? '')`) used to work, but broke when the
+// parent re-mounted the dialog with a different cwd (the ref would
+// keep its first-mount value). The watcher handles BOTH initial
+// mount AND re-mount correctly. Plan:
+// docs/superpowers/plans/2026-08-14-kanban-task-detail-edit-cwd.md
+const cwdSession = ref<string>('')
 const isCwdPickerOpen = ref(false)
 const cwdPickerRef = ref<HTMLElement | null>(null)
 // Pre-populate from the parent kanban's `cwd` prop on dialog open.
@@ -320,26 +338,68 @@ const cwdPickerRef = ref<HTMLElement | null>(null)
 // to it (the user can change or skip). When the parent kanban is
 // cwd-less, the picker starts empty.
 //
+// NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd): in edit
+// mode, pre-populate from `props.task?.cwd` instead — the task's
+// persisted per-task cwd takes precedence over the kanban-level
+// fallback so the picker reflects "where does THIS task run"
+// rather than the kanban's project root.
+//
 // Initialized from the prop (NOT via the watcher below) so the picker
 // has the right value on the very first render — without the
 // initial-value read, the watcher needed `show` to flip false→true to
 // fire, which leaves the picker empty if the parent mounts the dialog
 // with `show=true` on the first tick (same pattern as
 // `selectedColumnId` above, which also initializes from its prop).
+//
+// NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Edit mode
+// initializer: when the dialog opens in edit mode, sync `cwdSession`
+// from the task's persisted `cwd` field (empty string for
+// cwd-less tasks, path for tasks with a per-task cwd set). Mirrors
+// the create-mode pre-population from `props.cwd` (the parent
+// kanban's path). Without this branch the picker would render the
+// empty-state placeholder on every edit-mode dialog open, making
+// "where does this task run?" an unanswerable question until the user
+// clicked the picker.
+//
+// Implementation note: the broader watcher below
+// (`props.show, props.task?.id, props.mode` with `immediate: true`)
+// handles the initial sync AND the rare "user clicks task A then
+// task B with the dialog already open" re-sync — cwd re-syncs
+// whenever show flips true OR the target task swaps.
+// This dedicated `props.show`-only watcher remains here for
+// defensiveness (the broader watcher runs on the same tick as
+// the dialog mount; the explicit show-watcher documents intent).
 watch(
   () => props.show,
   (show) => {
-    if (show && isCreateMode.value) {
+    if (!show) return
+    if (isCreateMode.value) {
       cwdSession.value = props.cwd ?? ''
+    } else {
+      // `task?.cwd ?? ''` coerces legacy tasks whose `cwd` field is
+      // `undefined` (predates Migration 070) to the empty-state
+      // placeholder, matching what the read-only strip showed
+      // before this fix.
+      cwdSession.value = props.task?.cwd ?? ''
     }
   },
 )
 const toggleCwdPicker = () => {
   isCwdPickerOpen.value = !isCwdPickerOpen.value
 }
+// NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). In edit mode
+// the picker fires `update-cwd` so the host persists immediately
+// (same iOS-style immediate-save UX as the unattended toggle). In
+// create mode the cwd selection is captured in `cwdSession` and
+// forwarded via the `create` / `create-and-run` emit's
+// `cwdSession` field on Save — `update-cwd` is a no-op there
+// because the task doesn't exist yet (no row to PATCH).
 const selectCwd = (path: string) => {
   cwdSession.value = path
   isCwdPickerOpen.value = false
+  if (!isCreateMode.value) {
+    emit('update-cwd', { cwd: path })
+  }
 }
 const handleDocumentClickCwd = (event: MouseEvent) => {
   if (!isCwdPickerOpen.value) return
@@ -425,6 +485,13 @@ watch(
       unattended.value = '0'
       tags.value = []  // NEW: start with empty tags in create mode
       selectedProfile.value = ''  // NEW: profile selector defaults to backend default
+      // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Sync
+      // cwdSession from the parent kanban's path on dialog open so
+      // the picker shows the kanban-level fallback by default.
+      // The legacy code initialized from the ref literal (`ref<string>(props.cwd ?? '')`)
+      // which silently broke when the parent passed a different
+      // cwd on a subsequent open with the same dialog instance.
+      cwdSession.value = props.cwd ?? ''
     } else if (props.task) {
       name.value = props.task.name
       description.value = props.task.description ?? ''
@@ -432,6 +499,18 @@ watch(
       // Migration 067 — prefill tags from the loaded task. tags?
       // is optional (legacy tasks may lack it); fallback to [].
       tags.value = props.task.tags ?? []
+      // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd).
+      // Sync the per-task cwd picker with the task's persisted cwd
+      // in edit mode. Equivalent to the create-mode
+      // `cwdSession.value = props.cwd ?? ''` for create, but reads
+      // the task row. `task?.cwd ?? ''` coerces legacy
+      // pre-Migration-070 tasks (whose `cwd` is undefined) to the
+      // empty-state placeholder — same UX as the read-only strip
+      // that lived in the metadata strip pre-fix. This branch
+      // also covers the rare "user clicks task A then task B with
+      // the dialog already open" case via the watcher source's
+      // `props.task?.id` dependency.
+      cwdSession.value = props.task.cwd ?? ''
       // Migration 069 — image_urls are loaded via the store's
       // normalizeTaskTags (which splits the `||`-joined wire
       // string into a `string[]`). imageUrls is a computed that
@@ -983,35 +1062,12 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               <span v-if="!isCreateMode && task?.is_pinned" data-testid="kanban-task-detail-pinned">
                 Pinned
               </span>
-              <!-- NEW (Migration 070 — kanban-cwd-session-optional
-                   plan). Edit mode: read-only strip showing the
-                   task's per-task cwd. The user can't change it
-                   here yet (edit-mode cwd change is out of scope
-                   for this PR — create + delete + recreate covers
-                   the common case; the kanban-level "Set project
-                   root" banner covers the rare case). The hint
-                   explains how to change it. Plan: docs/superpowers/
-                   plans/2026-08-06-kanban-cwd-session-optional.md -->
-              <span
-                v-if="!isCreateMode && (task?.cwd ?? '') !== ''"
-                class="ml-2 text-[11px] truncate max-w-[240px] inline-block align-middle font-mono"
-                style="color: var(--semantic-text-dim);"
-                :title="`Project root: ${task?.cwd}`"
-                data-testid="kanban-task-detail-cwd-readonly"
-              >
-                <span aria-hidden="true">📂</span>
-                <span class="ml-1">{{ task?.cwd }}</span>
-              </span>
-              <span
-                v-if="!isCreateMode && (task?.cwd ?? '') === ''"
-                class="ml-2 text-[11px]"
-                style="color: var(--semantic-text-dim);"
-                title="No per-task cwd set. Falls back to the kanban's project root (or per-session sandbox if neither is set)."
-                data-testid="kanban-task-detail-cwd-readonly-empty"
-              >
-                <span aria-hidden="true">📂</span>
-                <span class="ml-1">no project root</span>
-              </span>
+              <!-- The read-only cwd strip (legacy) was removed by the
+                   2026-08-14-kanban-task-detail-edit-cwd plan: the
+                   picker button label now shows the cwd in both
+                   modes, so the read-only span was redundant.
+                   Plan: docs/superpowers/plans/
+                   2026-08-14-kanban-task-detail-edit-cwd.md -->
             </div>
 
             <!-- Description — editor by default in both modes (preserves the
@@ -1115,24 +1171,30 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                  inserts a `sessions` row + sets the flag in one
                  transaction). Either way, the flag persists from
                  the moment the task is created. -->
-            <!-- Create mode: combined Profile + Unattended row (Q2 = 2a).
-                 Same row keeps the dialog compact; visually pairs the
-                 two controls (both shape how the agent runs). The
-                 picker is only in create mode (Q1 = 1a). -->
+            <!-- NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd).
+                 Per-task cwd picker row. Renders in BOTH create and
+                 edit modes (previously only in create mode). In
+                 create mode the picked cwd is forwarded via the
+                 `create` / `create-and-run` emit's `cwdSession` field
+                 on Save; in edit mode the picker fires `update-cwd`
+                 so the host persists immediately (same iOS-style
+                 immediate-save UX as the unattended toggle). The
+                 picker's button label reflects the current cwd (or
+                 the empty-state placeholder) so the user sees
+                 "where does this task run?" without opening the
+                 picker.
+                 Plan: docs/superpowers/plans/
+                 2026-08-14-kanban-task-detail-edit-cwd.md -->
             <div
-              v-if="isCreateMode"
-              class="mt-4 pt-4 flex items-center gap-4"
+              class="mt-4 pt-4 flex items-center gap-3"
               style="border-top: 1px solid var(--color-border);"
-              data-testid="kanban-task-detail-profile-and-unattended"
+              data-testid="kanban-task-detail-cwd-row"
             >
-              <!-- NEW (Migration 070 — kanban-cwd-session-optional
-                   plan). Per-task cwd picker (create mode only).
-                   Same trigger pattern as the profile picker (button
-                   toggle + click-outside close). Pre-populated from
-                   the parent kanban's path on dialog open; user can
-                   pick a different folder or skip. Empty string is
-                   the canonical "no per-task cwd" sentinel. Plan:
-                   docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md -->
+              <!-- Per-task cwd picker (NEW: now visible in edit mode
+                   too). Same trigger pattern as the profile picker
+                   (button toggle + click-outside close). Pre-populated
+                   from the parent kanban's path in create mode, or
+                   the task's persisted `cwd` field in edit mode. -->
               <div ref="cwdPickerRef" class="relative shrink-0">
                 <button
                   type="button"
@@ -1142,7 +1204,9 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   :title="
                     cwdSession
                       ? `Project root: ${cwdSession}`
-                      : 'No project root (optional)'
+                      : isCreateMode
+                        ? 'No project root (optional)'
+                        : 'No project root. Click to set a per-task cwd.'
                   "
                   data-testid="kanban-task-detail-cwd-picker"
                 >
@@ -1190,6 +1254,17 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   />
                 </div>
               </div>
+            </div>
+
+            <!-- Create mode: combined Profile + Unattended row (Q2 = 2a).
+                 Same row keeps the dialog compact; visually pairs the
+                 two controls (both shape how the agent runs). The
+                 picker is only in create mode (Q1 = 1a). -->
+            <div
+              v-if="isCreateMode"
+              class="mt-2 flex items-center gap-4"
+              data-testid="kanban-task-detail-profile-and-unattended"
+            >
               <!-- NEW (plan: 2026-08-06-kanban-task-profile-selector).
                    Profile-model picker. Loads from LlmConfig; mirrors
                    ChatView's picker pattern. -->
@@ -1304,7 +1379,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
             <!-- Edit mode: just the unattended toggle (unchanged) -->
             <div
               v-else
-              class="mt-4 pt-4 flex items-center justify-between gap-3"
+              class="mt-2 pt-2 flex items-center justify-between gap-3"
               style="border-top: 1px solid var(--color-border);"
               data-testid="kanban-task-detail-unattended"
             >
