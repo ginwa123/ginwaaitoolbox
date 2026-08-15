@@ -343,14 +343,19 @@ jobs:
             Write-Host "Setting up MSVC environment via $($vsInstaller.FullName)"
             # Source vcvars64.bat and capture the resulting env vars.
             # PowerShell 5.1's backtick-double-quote escape pattern
-            # (`"`"..."`") doesn't survive a YAML heredoc + Powershell
+            # (`"`"..."`") doesn't survive a YAML heredoc + PowerShell
             # 5.1 parser round-trip reliably (observed on CI run
             # 31841182154 + 31860331820 with MissingEndCurlyBrace
-            # errors). Workaround: write the call to a temp .bat
-            # file and invoke that, so the cmd quoting stays inside
-            # the .bat.
+            # errors). Workaround: build the .bat content with a
+            # here-string (no escaping needed), write to a temp file,
+            # and invoke it. The cmd quoting stays inside the .bat.
             $vcvarsBat = Join-Path $env:TEMP 'vcvars64-source.bat'
-            Set-Content -Path $vcvarsBat -Value "@echo off`r`ncall `"$($vsInstaller.FullName)`"`r`nset" -Encoding ASCII
+            $batContent = @"
+@echo off
+call "$($vsInstaller.FullName)"
+set
+"@
+            [System.IO.File]::WriteAllText($vcvarsBat, $batContent, [System.Text.Encoding]::ASCII)
             cmd /c $vcvarsBat | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
               $name, $value = $_ -split "=", 2
               Set-Item -Path "Env:$name" -Value $value
@@ -365,9 +370,13 @@ jobs:
           # give us a stable source/binary cache across CI runs (saves the
           # ~5-min curl-ssl-libpq compilation on subsequent runs when the
           # per-port hashes match).
+          #
+          # Skipped on the self-hosted runner — vcpkg's default cache
+          # (per-user %LOCALAPPDATA%\vcpkg\archives) is already on a fast
+          # local disk, and the VCPKG_BINARY_SOURCES=...;files pattern
+          # requires a custom syntax that's fragile on PowerShell 5.1.
           $vcpkgCacheDir = Join-Path $env:USERPROFILE '.cache\vcpkg-binary'
-          $env:VCPKG_BINARY_SOURCES = "clear;files`"$vcpkgCacheDir`",readwrite"
-          New-Item -Path "$env:USERPROFILE\.cache\vcpkg-binary" -ItemType Directory -Force | Out-Null
+          New-Item -Path $vcpkgCacheDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
           # 3. Install the 4 ports in parallel via Start-Job. Each port
           #    fetches source + compiles a small import lib + headers; the
