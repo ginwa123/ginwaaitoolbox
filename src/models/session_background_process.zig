@@ -1,0 +1,73 @@
+//! Data model for the `session_background_process` entity table.
+//!
+//! Tracks long-lived background processes (dev servers, file
+//! watchers, build daemons) spawned by the bash tool. The process
+//! monitor reads this table to surface running bg processes in the
+//! chat header and to clean up orphans on session end.
+//!
+//! Schema: Migration 011 (`add_background_process`).
+//!
+//! Composite PRIMARY KEY: (session_id, pid).
+//!
+//! Note: `started_at` is stored as INTEGER (unix-seconds), distinct
+//! from the DATETIME convention used by most other tables.
+
+const std = @import("std");
+
+pub const EntityId = struct {
+    session_id: []const u8,
+    pid: i64,
+};
+
+session_id: []u8,
+pid: i64,
+/// The full command string the bash tool spawned.
+command: []u8,
+/// Absolute path to the log file the bash tool redirected stdout
+/// + stderr into. Read by the chat header's "view output" link.
+log_path: []u8,
+/// Unix-seconds timestamp of the spawn event.
+started_at: i64,
+/// One of `"running"` | `"stopped"` | `"failed"`. The DB column
+/// has no CHECK constraint.
+status: []u8,
+
+const Self = @This();
+
+pub const InitArgs = struct {
+    session_id: []const u8,
+    pid: i64,
+    command: []const u8,
+    log_path: []const u8,
+    started_at: i64,
+    status: []const u8 = "running",
+};
+
+pub fn init(allocator: std.mem.Allocator, args: InitArgs) !Self {
+    return .{
+        .session_id = try allocator.dupe(u8, args.session_id),
+        .pid = args.pid,
+        .command = try allocator.dupe(u8, args.command),
+        .log_path = try allocator.dupe(u8, args.log_path),
+        .started_at = args.started_at,
+        .status = try allocator.dupe(u8, args.status),
+    };
+}
+
+pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    allocator.free(self.session_id);
+    allocator.free(self.command);
+    allocator.free(self.log_path);
+    allocator.free(self.status);
+}
+
+pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
+    return .init(allocator, .{
+        .session_id = self.session_id,
+        .pid = self.pid,
+        .command = self.command,
+        .log_path = self.log_path,
+        .started_at = self.started_at,
+        .status = self.status,
+    });
+}
