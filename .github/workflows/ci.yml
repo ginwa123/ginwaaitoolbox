@@ -341,10 +341,21 @@ jobs:
           $useMSVC = $false
           if ($vsInstaller) {
             Write-Host "Setting up MSVC environment via $($vsInstaller.FullName)"
-            cmd /c "`"$($vsInstaller.FullName)`" && set" | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
+            # Source vcvars64.bat and capture the resulting env vars.
+            # PowerShell 5.1's backtick-double-quote escape pattern
+            # (`"`"..."`") doesn't survive a YAML heredoc + Powershell
+            # 5.1 parser round-trip reliably (observed on CI run
+            # 31841182154 + 31860331820 with MissingEndCurlyBrace
+            # errors). Workaround: write the call to a temp .bat
+            # file and invoke that, so the cmd quoting stays inside
+            # the .bat.
+            $vcvarsBat = Join-Path $env:TEMP 'vcvars64-source.bat'
+            Set-Content -Path $vcvarsBat -Value "@echo off`r`ncall `"$($vsInstaller.FullName)`"`r`nset" -Encoding ASCII
+            cmd /c $vcvarsBat | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
               $name, $value = $_ -split "=", 2
               Set-Item -Path "Env:$name" -Value $value
             }
+            Remove-Item $vcvarsBat -Force -ErrorAction SilentlyContinue
             $useMSVC = $true
           } else {
             Write-Host "No MSVC Build Tools detected — falling back to vcpkg's triplet auto-detection"
@@ -354,7 +365,8 @@ jobs:
           # give us a stable source/binary cache across CI runs (saves the
           # ~5-min curl-ssl-libpq compilation on subsequent runs when the
           # per-port hashes match).
-          $env:VCPKG_BINARY_SOURCES = "clear;files`"$env:USERPROFILE\.cache\vcpkg-binary`",readwrite"
+          $vcpkgCacheDir = Join-Path $env:USERPROFILE '.cache\vcpkg-binary'
+          $env:VCPKG_BINARY_SOURCES = "clear;files`"$vcpkgCacheDir`",readwrite"
           New-Item -Path "$env:USERPROFILE\.cache\vcpkg-binary" -ItemType Directory -Force | Out-Null
 
           # 3. Install the 4 ports in parallel via Start-Job. Each port
