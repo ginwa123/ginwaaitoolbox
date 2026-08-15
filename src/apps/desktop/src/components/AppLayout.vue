@@ -33,6 +33,10 @@ import {
 } from '../composables/useCodeEditor'
 import { useDesignHandlers } from '../composables/useDesignHandlers'
 import { buildTaskUrlQuery } from '../helpers/buildTaskUrlQuery'
+import {
+  buildItemIdWithChat,
+  parseItemIdWithChat,
+} from '../helpers/buildItemIdWithChat'
 
 const router = useRouter()
 const route = useRoute()
@@ -49,6 +53,29 @@ onMounted(() => {
   const urlSessionId = route.query.session as string
   const urlTaskId = route.query.task as string
   const urlView = route.query.view as string
+  const rawItemId = (route.query.itemId as string | undefined) ?? ''
+
+  // SIMPLIFY-URL-BROWSER (2026-08-15): stale URL rewrite — if the
+  // URL is in the legacy `?view=task&task=X` shape, silently
+  // rewrite to `?view=workspace&itemId=Y/chat/task_X` via
+  // router.replace. Bookmarks / shared links from before this
+  // refactor land here exactly once. We do this BEFORE the normal
+  // mount branches so `pendingUrlRestore` (below) sees the new
+  // shape on its initial sync.
+  if (urlView === 'task' && urlTaskId && rawItemId) {
+    const newItemId = buildItemIdWithChat(rawItemId, urlTaskId)
+    router.replace({
+      path: '/app',
+      query: {
+        view: 'workspace',
+        workspaceId: (route.query.workspaceId as string | undefined) ?? '',
+        itemId: newItemId,
+      },
+    })
+    workspacesStore.setActiveTask(urlTaskId)
+    workspacesStore.initializeFromSystemFolder()
+    return
+  }
 
   if (urlSessionId && urlView === 'chat') {
     // Clear any workspace-item active state from a prior session — the URL
@@ -56,10 +83,22 @@ onMounted(() => {
     workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.setActiveChat(urlSessionId, navigationStore.activeChatName)
     fetchChatSessionCwd(urlSessionId)
-  } else if (urlTaskId && urlView === 'task') {
-    workspacesStore.setActiveTask(urlTaskId)
   } else {
     navigationStore.initFromUrl(urlSessionId || undefined, urlTaskId || undefined, urlView)
+  }
+
+  // SIMPLIFY-URL-BROWSER (2026-08-15): if the URL carries the
+  // /chat/<taskId> suffix on itemId, also set the active task so
+  // the chat dialog opens. The pendingUrlRestore watcher (below)
+  // already restores the bare item id; this branch restores the
+  // chat task id. Without this, refreshing a URL like
+  // `?view=workspace&itemId=Y/chat/task_X` lands on the workspace
+  // view without the dialog open.
+  if (urlView === 'workspace' && rawItemId) {
+    const parsed = parseItemIdWithChat(rawItemId)
+    if (parsed.chatTaskId) {
+      workspacesStore.setActiveTask(parsed.chatTaskId)
+    }
   }
 
   workspacesStore.initializeFromSystemFolder()
@@ -168,10 +207,15 @@ const pendingUrlRestore = ref<{
   (() => {
     const view = route.query.view as string | undefined
     const wsId = route.query.workspaceId as string | undefined
-    const itemId = route.query.itemId as string | undefined
+    const rawItemId = route.query.itemId as string | undefined
     const pageId = route.query.pageId as string | undefined
-    if (view === 'workspace' && wsId && itemId) {
-      return { workspaceId: wsId, itemId, pageId: pageId ?? '' }
+    if (view === 'workspace' && wsId && rawItemId) {
+      // SIMPLIFY-URL-BROWSER (2026-08-15): parse the wire-shape
+      // itemId (may carry /chat/<taskId> suffix). pendingUrlRestore
+      // only needs the bare id; the chat task id is restored
+      // separately in onMounted above.
+      const parsed = parseItemIdWithChat(rawItemId)
+      return { workspaceId: wsId, itemId: parsed.itemId, pageId: pageId ?? '' }
     }
     return null
   })(),
@@ -251,7 +295,7 @@ watch(
     // workspacesStore.setActiveTask(taskId) (which synchronously
     // mutates activeWorkspaceItemId to the task's parent item via
     // the parent-discovery loop in workspaces.ts:3031-3107) and then
-    // calls router.push({ view: 'task', task, workspaceId, itemId }).
+    // calls router.push({ view: 'workspace', workspaceId, itemId, .../chat/taskId }).
     // Vue Router resolves the push asynchronously (the route ref
     // updates after the navigation guard / scroll / etc.). This
     // watcher fires on the next microtask after the store mutation —
@@ -261,8 +305,8 @@ watch(
     // `if (currentView !== 'workspace' && currentView !== undefined) return`
     // does NOT return early, and the watcher clobbers the URL with
     // `router.replace({ view: 'workspace', workspaceId, itemId, ... })`.
-    // The pending `router.push({ view: 'task', ... })` is then
-    // applied AFTER the replace, but Vue Router's `replace`
+    // The pending `router.push({ view: 'workspace', ..., /chat/<taskId> })`
+    // is then applied AFTER the replace, but Vue Router's `replace`
     // semantics overwrite the push's history entry — the URL ends
     // up at view=workspace and the task never shows up.
     //
@@ -276,19 +320,43 @@ watch(
     // so the race window is closed. The flag is stored in the
     // workspaces store (the natural home for cross-component view
     // state).
+    //
+    // SIMPLIFY-URL-BROWSER (2026-08-15): the `view: 'task'` arm
+    // was removed from handleNavigate — the flag now guards the
+    // chat-open (view=workspace + /chat/<taskId>) navigation too.
     if (workspacesStore.isNavigatingToTask) return
     // Only sync when we're on the workspace view — all other views
-    // (chat, task, settings, gitfile, skill, code-editor) have their
+    // (chat, settings, gitfile, skill, code-editor) have their
     // own URL contract and should be preserved.
     if (currentView !== 'workspace' && currentView !== undefined) return
     const urlWsId = route.query.workspaceId as string | undefined
     const urlItemId = route.query.itemId as string | undefined
     const urlPageId = route.query.pageId as string | undefined
-    if (urlWsId === wsId && urlItemId === itemId && urlPageId === pageId) return
+
+    // SIMPLIFY-URL-BROWSER (2026-08-15): preserve the
+    // /chat/<taskId> suffix when mirroring activeWorkspaceItemId
+    // back to the URL. Pre-fix the watcher overwrote the URL with
+    // the bare item id, dropping the chat task id and effectively
+    // closing the chat dialog on every reactive update. The
+    // diff-comparison rewrites itemId with the existing chatTaskId
+    // (if any), so the watcher's no-op check passes when only the
+    // active item id changed (e.g. setActiveTask's parent-discovery
+    // mutation) but the chat task id is preserved.
+    const existingItemIdRaw = (route.query.itemId as string) ?? ''
+    const parsedExisting = parseItemIdWithChat(existingItemIdRaw)
+    // `itemId` comes from `activeWorkspaceItemId` which is `string | null`.
+    // The no-op comparison below treats `null` as equivalent to `''` —
+    // it just means "the active item is unset, don't write the URL".
+    const safeItemId = itemId ?? ''
+    const rewrittenItemId = parsedExisting.chatTaskId
+      ? buildItemIdWithChat(safeItemId, parsedExisting.chatTaskId)
+      : safeItemId
+
+    if (urlWsId === wsId && urlItemId === rewrittenItemId && urlPageId === pageId) return
     const query: Record<string, string> = { view: 'workspace' }
-    if (wsId && itemId) {
+    if (wsId && safeItemId) {
       query.workspaceId = wsId
-      query.itemId = itemId
+      query.itemId = rewrittenItemId
       // pageId is design-item-scoped — only include it when the active
       // item is a design. Empty pageId means "default to first page"
       // and is omitted from the URL to keep the URL clean. FIX
@@ -444,25 +512,6 @@ const handleNavigate = (
       if (sortsParam) query.sorts = sortsParam
     }
     router.push({ path: '/app', query })
-  } else if (view === 'task') {
-    navigationStore.setActiveTask(taskId || null)
-    chatSessionCwd.value = ''
-    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId
-    // + itemId + pageId from the active store state in the URL. Pre-fix
-    // this branch wrote only `?view=task&task=X`, dropping the kanban
-    // / design breadcrumb. The caller passes `workspaceId` / `itemId`
-    // / `pageId` as positional args; we fall back to the active store
-    // when those are absent (e.g. legacy call sites).
-    router.push({
-      path: '/app',
-      query: buildTaskUrlQuery({
-        taskId: taskId || '',
-        activeWorkspaceId: workspaceId ?? workspacesStore.activeWorkspace?.id ?? null,
-        activeWorkspaceItemId: itemId ?? workspacesStore.activeWorkspaceItemId,
-        activeDesignPageId: pageId ?? workspacesStore.activeDesignPageId,
-        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-      }),
-    })
   } else if (view === 'settings') {
     router.push({ path: '/app/settings' })
   }
@@ -841,6 +890,11 @@ const currentView = computed(() => {
   // code-editor view - check only the ref
   if (codeEditorFile.value) return 'code-editor'
 
+  // SIMPLIFY-URL-BROWSER (2026-08-15): the URL never says
+  // `view=task` anymore (legacy URLs are auto-rewritten on mount).
+  // The chat-open state is encoded as /chat/<taskId> on itemId
+  // when view=workspace, so `currentView` returns 'workspace' for
+  // both no-chat and chat-open states.
   const view = (route.query.view as string) || 'chat'
   console.log('[currentView] returning route view:', view)
   return view
@@ -1948,19 +2002,23 @@ defineExpose({
         :cwd="activeWorkspaceItem.path ?? ''"
         @close="handleCloseTaskView"
       />
-      <!-- Task view (non-kanban parents, e.g. chat tasks): single
-           column, no header. Preserved for backward compatibility. -->
-      <ChatView
-        v-else-if="currentView === 'task' && activeTask"
-        :key="'task-' + activeTask.id"
-        :chat-id="activeTask.id"
-        :chat-name="activeTask.name"
-        :type="'task'"
-        :cwd="activeWorkspaceItem?.path || ''"
-        :task-id="activeTask.id"
-        :task-name="activeTask.name"
-        :project-name="activeWorkspaceItem?.name || ''"
-      />
+      <!--
+        SIMPLIFY-URL-BROWSER (2026-08-15): the legacy
+        `<ChatView v-else-if="currentView === 'task' && activeTask">`
+        branch has been removed. Under the new URL scheme the URL
+        never says `view=task` — the chat dialog is always a
+        sub-state of the workspace view (gated by
+        `activeTaskWorkspaceItemId === activeWorkspaceItem.id` for
+        kanban, or `activeDesignChatTaskId` for design). The chat
+        rendering for non-kanban / non-design parents was the only
+        reachable path through that branch, and now goes through
+        the same dialog mechanism — the KanbanChatDialog mount
+        (above) is guarded by `item_type === 'kanban'`. Folder
+        tasks (whose parent is a folder, not a kanban / design)
+        are an explicit out-of-scope edge case; until a folder-task
+        UI is added, this branch is dead code per the
+        simplify-url-browser spec.
+      -->
       <!--
         STALE MOUNT removed (kanban-chat-as-dialog plan, 2026-08-06).
         This <KanbanView> mount was a v-else-if continuation of the

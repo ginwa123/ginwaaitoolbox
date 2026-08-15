@@ -12,15 +12,20 @@
  *
  * **Fix:** Sidebar.handleSelectTask snapshots the live `route.query
  * .sorts` into `workspacesStore.savedSortsParam` before navigating
- * to `?view=task&task=Y`. AppLayout.handleCloseTaskView reads
- * from that store field and writes it back into the URL. The
+ * to `?view=workspace&...&itemId=Y/chat/task_X`. AppLayout.handleCloseTaskView
+ * reads from that store field and writes it back into the URL. The
  * snapshot is consumed (cleared) on close so a subsequent close
  * without a fresh task-open doesn't accidentally restore a stale
  * sort.
  *
+ * SIMPLIFY-URL-BROWSER (2026-08-15): the legacy `?view=task&task=Y`
+ * URL shape has been collapsed into the workspace URL with the chat
+ * task id encoded as `/chat/<taskId>` on `itemId`. The sort
+ * round-trip invariant is preserved end-to-end.
+ *
  * This test mounts AppLayout, drives the router through
- * `?view=workspace&...&sorts=...` → `?view=task&task=Y` → close
- * → `?view=workspace&...`, and asserts that the `sorts` param
+ * `?view=workspace&...&sorts=...` → `?view=workspace&...&itemId=Y/chat/task_Y`
+ * → close → `?view=workspace&...`, and asserts that the `sorts` param
  * round-trips. No static-contract checks — every assertion is
  * on the live URL after a router push.
  */

@@ -221,25 +221,30 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     // path.
     ws.setActiveTask(TASK_ID)
     // Simulate handleSelectTask's router.push (the URL it would push
-    // is built by buildTaskUrlQuery; here we mimic the call shape).
+    // is built by buildTaskUrlQuery; here we mimic the new wire
+    // shape — /chat/<taskId> suffix on itemId, view=workspace).
     pushMock({
       path: '/app',
       query: {
-        view: 'task',
-        task: TASK_ID,
+        view: 'workspace',
         workspaceId: WS_ID,
-        itemId: FOLDER_ID,
+        itemId: `${FOLDER_ID}/chat/${TASK_ID}`,
       },
     })
     await nextTick()
     await nextTick()
 
-    // The URL sync watcher must NOT have called replace with
-    // view=workspace — that would clobber the task URL.
-    const replaceCallsWithViewWorkspace = replaceMock.mock.calls.filter(
-      (call: any[]) => call[0]?.query?.view === 'workspace',
+    // The URL sync watcher must NOT have called replace that would
+    // clobber the chat suffix. (view=workspace writes are still
+    // expected — the watcher's chat-suffix guard ensures itemId
+    // stays in the /chat/<taskId> form.)
+    const replaceCallsWithBareItemId = replaceMock.mock.calls.filter(
+      (call: any[]) => {
+        const q = call[0]?.query as Record<string, string> | undefined
+        return q && q.itemId === FOLDER_ID
+      },
     )
-    expect(replaceCallsWithViewWorkspace).toHaveLength(0)
+    expect(replaceCallsWithBareItemId).toHaveLength(0)
 
     wrapper.unmount()
   })
@@ -334,10 +339,9 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     pushMock({
       path: '/app',
       query: {
-        view: 'task',
-        task: TASK_ID,
+        view: 'workspace',
         workspaceId: WS_ID,
-        itemId: FOLDER_ID,
+        itemId: `${FOLDER_ID}/chat/${TASK_ID}`,
       },
     })
     await nextTick()

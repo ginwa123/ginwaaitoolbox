@@ -1,12 +1,19 @@
 /**
- * Behavioural tests for `buildTaskUrlQuery` and `pickBreadcrumbFromQuery`.
+ * Behavioural tests for `buildTaskUrlQuery` and `pickBreadcrumbFromChat`.
  *
- * Plan: docs/superpowers/plans/2026-08-06-add-workspace-id-params.md
+ * Plans:
+ *   - docs/superpowers/plans/2026-08-06-add-workspace-id-params.md (workspaceId always present)
+ *   - docs/superpowers/plans/2026-08-15-simplify-url-browser.md (collapse view=task into /chat/ suffix)
  *
  * The user's report (task_1785774094183): task URLs were missing
- * `workspaceId`. The helper centralises URL building for `view=task`
- * navigation so every call site gets the same behaviour: workspaceId
- * included whenever a workspace item is actively selected.
+ * `workspaceId`. The 2026-08-06 helper fixed that.
+ *
+ * The 2026-08-15 simplify-url-browser refactor changed the wire
+ * shape: the helper now emits `view=workspace` (NOT `view=task`)
+ * with the chat task id encoded as `/chat/<taskId>` suffix on
+ * `itemId`. The redundant `session` query param is dropped
+ * (per `task.id == session_id`, the chat task id in the suffix
+ * IS the session id).
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -14,23 +21,27 @@ import {
   pickBreadcrumbFromQuery,
 } from '../buildTaskUrlQuery'
 
-describe('buildTaskUrlQuery — always emits workspaceId when store has it (task_1785774094183)', () => {
-  it('includes workspaceId + itemId when active workspace + item are set', () => {
+const WS_ID = 'ws_a'
+const ITEM_ID = 'item_kanban'
+const TASK_ID = 'task_1'
+
+describe('buildTaskUrlQuery — emits view=workspace + /chat/<taskId> suffix (simplify-url-browser 2026-08-15)', () => {
+  it('includes workspaceId + itemId-with-chat-suffix when active store is set', () => {
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
-      activeWorkspaceId: 'ws_a',
-      activeWorkspaceItemId: 'item_kanban',
+      taskId: TASK_ID,
+      activeWorkspaceId: WS_ID,
+      activeWorkspaceItemId: ITEM_ID,
     })
-    expect(query.view).toBe('task')
-    expect(query.task).toBe('task_1')
-    expect(query.workspaceId).toBe('ws_a')
-    expect(query.itemId).toBe('item_kanban')
+    expect(query.view).toBe('workspace')
+    expect(query.workspaceId).toBe(WS_ID)
+    expect(query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
+    expect((query as Record<string, unknown>).task).toBeUndefined()
   })
 
   it('includes pageId only when active item is a design', () => {
     const design = buildTaskUrlQuery({
-      taskId: 'task_1',
-      activeWorkspaceId: 'ws_a',
+      taskId: TASK_ID,
+      activeWorkspaceId: WS_ID,
       activeWorkspaceItemId: 'item_design',
       activeDesignPageId: 'page_xyz',
       activeItemType: 'design',
@@ -38,8 +49,8 @@ describe('buildTaskUrlQuery — always emits workspaceId when store has it (task
     expect(design.pageId).toBe('page_xyz')
 
     const kanban = buildTaskUrlQuery({
-      taskId: 'task_1',
-      activeWorkspaceId: 'ws_a',
+      taskId: TASK_ID,
+      activeWorkspaceId: WS_ID,
       activeWorkspaceItemId: 'item_kanban',
       activeDesignPageId: 'page_xyz', // stale from a prior design
       activeItemType: 'kanban',
@@ -47,8 +58,8 @@ describe('buildTaskUrlQuery — always emits workspaceId when store has it (task
     expect(kanban.pageId).toBeUndefined()
 
     const folder = buildTaskUrlQuery({
-      taskId: 'task_1',
-      activeWorkspaceId: 'ws_a',
+      taskId: TASK_ID,
+      activeWorkspaceId: WS_ID,
       activeWorkspaceItemId: 'item_folder',
       activeDesignPageId: 'page_xyz', // stale from a prior design
       activeItemType: 'folder',
@@ -57,12 +68,9 @@ describe('buildTaskUrlQuery — always emits workspaceId when store has it (task
   })
 
   it('omits pageId when activeItemType is missing even if activeDesignPageId is set', () => {
-    // Defensive: callers that don't pass activeItemType shouldn't
-    // accidentally write pageId. The pageId leak fix relies on the
-    // caller knowing the active item's type.
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
-      activeWorkspaceId: 'ws_a',
+      taskId: TASK_ID,
+      activeWorkspaceId: WS_ID,
       activeWorkspaceItemId: 'item_kanban',
       activeDesignPageId: 'page_xyz',
       // activeItemType omitted
@@ -72,145 +80,171 @@ describe('buildTaskUrlQuery — always emits workspaceId when store has it (task
 
   it('omits workspaceId + itemId when neither store nor URL has them (deep-link)', () => {
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
+      taskId: TASK_ID,
     })
-    expect(query.view).toBe('task')
-    expect(query.task).toBe('task_1')
+    expect(query.view).toBe('workspace')
     expect(query.workspaceId).toBeUndefined()
     expect(query.itemId).toBeUndefined()
+    // No chat suffix when no item id at all
+    expect((query as Record<string, unknown>).task).toBeUndefined()
   })
 
   it('falls back to URL breadcrumb when store has no active workspace', () => {
-    // The user landed on the task via a deep link with workspaceId
-    // already in the URL. The new task URL must preserve that
-    // breadcrumb so a refresh / share keeps the context.
+    // The user landed on the chat via a deep link with workspaceId
+    // already in the URL (possibly the new shape). The new task URL
+    // must preserve that breadcrumb.
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
+      taskId: TASK_ID,
       currentQuery: {
-        view: 'task',
-        workspaceId: 'ws_a',
-        itemId: 'item_kanban',
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
         sorts: 'col_a:name:asc',
       },
     })
-    expect(query.workspaceId).toBe('ws_a')
-    expect(query.itemId).toBe('item_kanban')
+    expect(query.workspaceId).toBe(WS_ID)
+    expect(query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
     expect(query.sorts).toBe('col_a:name:asc')
   })
 
-  it('prefers active store state over URL breadcrumb when both exist', () => {
-    // The store is the source of truth. If the user is actively on
-    // ws_b/kanban_b but the URL still shows ws_a/kanban_a (stale
-    // deep-link reload), the new task URL must use the active state.
+  it('preserves an existing /chat/<taskId> suffix in the URL breadcrumb (re-navigation)', () => {
+    // The URL already carries the chat suffix from a previous click.
+    // The new URL must keep that suffix (not replace it with a new
+    // one for a different task that we don't know about — that's a
+    // caller bug). The helper reads the bare item id from the URL.
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
+      taskId: TASK_ID,
+      currentQuery: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: `${ITEM_ID}/chat/task_old`,
+        sorts: 'col_a:name:asc',
+      },
+    })
+    expect(query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
+  })
+
+  it('prefers active store state over URL breadcrumb when both exist', () => {
+    const query = buildTaskUrlQuery({
+      taskId: TASK_ID,
       activeWorkspaceId: 'ws_b',
       activeWorkspaceItemId: 'kanban_b',
       currentQuery: {
-        view: 'task',
+        view: 'workspace',
         workspaceId: 'ws_a',
         itemId: 'kanban_a',
       },
     })
     expect(query.workspaceId).toBe('ws_b')
-    expect(query.itemId).toBe('kanban_b')
+    expect(query.itemId).toBe(`kanban_b/chat/${TASK_ID}`)
   })
 
-  it('includes session when sessionId is passed (routine-run path)', () => {
+  it('drops the redundant session query param (session == taskId under the new shape)', () => {
+    // Pre-2026-08-15: `session` was emitted alongside `task`. The new
+    // wire shape encodes the task id in the itemId suffix, so `session`
+    // would be redundant. The helper must NOT emit it.
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
-      sessionId: 'task_1',
-      activeWorkspaceId: 'ws_a',
-      activeWorkspaceItemId: 'item_kanban',
-    })
-    expect(query.task).toBe('task_1')
-    expect(query.session).toBe('task_1')
-    expect(query.workspaceId).toBe('ws_a')
-  })
-
-  it('omits session when sessionId is not passed', () => {
-    const query = buildTaskUrlQuery({
-      taskId: 'task_1',
-      activeWorkspaceId: 'ws_a',
-      activeWorkspaceItemId: 'item_kanban',
+      taskId: TASK_ID,
+      sessionId: TASK_ID, // back-compat — callers may still pass it
+      activeWorkspaceId: WS_ID,
+      activeWorkspaceItemId: ITEM_ID,
     })
     expect(query.session).toBeUndefined()
+    expect((query as Record<string, unknown>).session).toBeUndefined()
   })
 
   it('handles empty-string active ids as "no active context" (falls back to URL)', () => {
-    // Defensive: Vue refs can be null OR empty string depending on
-    // the watcher chain. Both should behave the same.
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
+      taskId: TASK_ID,
       activeWorkspaceId: '',
       activeWorkspaceItemId: '',
       currentQuery: {
-        workspaceId: 'ws_a',
-        itemId: 'item_kanban',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
       },
     })
-    expect(query.workspaceId).toBe('ws_a')
-    expect(query.itemId).toBe('item_kanban')
+    expect(query.workspaceId).toBe(WS_ID)
+    expect(query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
   })
 
   it('handles null active ids as "no active context" (falls back to URL)', () => {
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
+      taskId: TASK_ID,
       activeWorkspaceId: null,
       activeWorkspaceItemId: null,
       currentQuery: {
-        workspaceId: 'ws_a',
-        itemId: 'item_kanban',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
       },
     })
-    expect(query.workspaceId).toBe('ws_a')
-    expect(query.itemId).toBe('item_kanban')
+    expect(query.workspaceId).toBe(WS_ID)
+    expect(query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
   })
 
   it('trims whitespace from active ids (defensive)', () => {
-    // Edge case: a stray whitespace string (e.g. " ws_a ") would
-    // otherwise be written verbatim to the URL.
     const query = buildTaskUrlQuery({
-      taskId: 'task_1',
+      taskId: TASK_ID,
       activeWorkspaceId: '  ws_a  ',
       activeWorkspaceItemId: '  item_kanban  ',
     })
     expect(query.workspaceId).toBe('ws_a')
-    expect(query.itemId).toBe('item_kanban')
+    expect(query.itemId).toBe('item_kanban/chat/task_1')
+  })
+
+  it('throws if the activeWorkspaceItemId contains /chat/ (defensive)', () => {
+    // Defensive: if a caller passes a wire-shape item id by mistake,
+    // the helper must NOT silently corrupt the URL. It throws.
+    expect(() =>
+      buildTaskUrlQuery({
+        taskId: TASK_ID,
+        activeWorkspaceId: WS_ID,
+        activeWorkspaceItemId: `${ITEM_ID}/chat/task_other`,
+      }),
+    ).toThrow(/item id cannot contain/)
   })
 })
 
 describe('pickBreadcrumbFromQuery — extracts breadcrumb scalars', () => {
   it('picks workspaceId, itemId, pageId, sorts when all are strings', () => {
     const out = pickBreadcrumbFromQuery({
-      workspaceId: 'ws_a',
-      itemId: 'item_kanban',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
       pageId: 'page_x',
       sorts: 'col_a:name:asc',
-      view: 'task', // not breadcrumb — ignored
-      session: 'task_1', // not breadcrumb — ignored
+      view: 'workspace', // not breadcrumb — ignored
     })
     expect(out).toEqual({
-      workspaceId: 'ws_a',
-      itemId: 'item_kanban',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
       pageId: 'page_x',
       sorts: 'col_a:name:asc',
     })
+  })
+
+  it('preserves a /chat/<taskId> suffix on itemId (callers strip if they need the bare id)', () => {
+    // The breadcrumb extraction is intentionally permissive — it
+    // doesn't strip the /chat/ suffix because callers may want to
+    // pass the wire value through (e.g. for re-navigation).
+    const out = pickBreadcrumbFromQuery({
+      workspaceId: WS_ID,
+      itemId: `${ITEM_ID}/chat/${TASK_ID}`,
+    })
+    expect(out.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
   })
 
   it('skips empty strings (does NOT coalesce empty to undefined)', () => {
     const out = pickBreadcrumbFromQuery({
       workspaceId: '',
-      itemId: 'item_kanban',
+      itemId: ITEM_ID,
     })
     expect(out.workspaceId).toBeUndefined()
-    expect(out.itemId).toBe('item_kanban')
+    expect(out.itemId).toBe(ITEM_ID)
   })
 
   it('skips non-string values (null, arrays)', () => {
     const out = pickBreadcrumbFromQuery({
       workspaceId: null,
-      itemId: ['item_a', 'item_b'] as unknown as string, // vue-router LocationQuery allows arrays
+      itemId: ['item_a', 'item_b'] as unknown as string,
     })
     expect(out.workspaceId).toBeUndefined()
     expect(out.itemId).toBeUndefined()
