@@ -6,6 +6,16 @@ const process = nalarcore.helpers.process;
 const getCurrentProcessId = process.getCurrentProcessId;
 const sqlite = nalarcore.sqlite;
 
+/// Process-local monotonic counter for workspace_id generation. The
+/// (PID ^ ts_ms)-only generator collided when 2+ workspaces were
+/// created in the same wall-clock millisecond from the same process
+/// — the 2nd and later hits returned HTTP 500 "Failed to create
+/// workspace" because the SQLite INSERT tripped the PRIMARY KEY
+/// constraint. Observed on Mac ARM64 CI run 31863092055's
+/// `test_reorder_workspaces_changes_position` (3 workspaces created
+/// in <1ms collectively) and `test_list_workspaces_returns_created`.
+var workspace_id_counter: std.atomic.Value(u64) = .init(0);
+
 pub const WorkspacesCreateError = error{
     OutOfMemory,
     InvalidJson,
@@ -71,11 +81,18 @@ fn useCase(
     const name = root.get("name") orelse return error.MissingName;
     if (name != .string) return error.NameNotString;
 
-    // Generate workspace ID — ts_nanos (ms) + PID-derived entropy.
+    // Generate workspace ID — ts_nanos (ms) + atomic counter suffix.
+    // The (PID ^ ts_ms) hash used previously collided when 2+
+    // workspaces were created in the same millisecond from the same
+    // process — the 2nd and later inserts returned HTTP 500
+    // "Failed to create workspace" (PRIMARY KEY violation). The
+    // atomic counter guarantees uniqueness within a single process;
+    // PIDs distinguish processes.
     const ts = std.Io.Timestamp.now(io, .real);
     const ts_nanos: i64 = @intCast(@divTrunc(ts.nanoseconds, 1_000_000));
+    const counter = workspace_id_counter.fetchAdd(1, .seq_cst);
     const pid = getCurrentProcessId();
-    const entropy: u64 = (@as(u64, @intCast(pid)) << 32) ^ @as(u64, @intCast(ts_nanos));
+    const entropy: u64 = (@as(u64, @intCast(pid)) << 32) ^ (@as(u64, @intCast(ts_nanos)) << 16) ^ @as(u64, @intCast(counter));
     var random_bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &random_bytes, entropy, .little);
     var hex_buf: [16]u8 = undefined;

@@ -44,6 +44,18 @@ const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
+
+/// Process-local monotonic counter for task_id generation. The ts-
+/// only generator (`task_<unix_ms>`) collided when 2+ tasks were
+/// created within the same wall-clock millisecond — the 2nd and
+/// later hits returned HTTP 500 "Failed to create task" because
+/// the SQLite INSERT tripped the PRIMARY KEY constraint. Observed
+/// on Mac ARM64 CI run 31863092055's
+/// `test_add_twelve_tasks_across_four_columns` (12 tasks created
+/// in <2ms collectively). `seq_cst` is overkill (a relaxed fetchAdd
+/// is sufficient for uniqueness), but it's two instructions either
+/// way on aarch64 and removes the need to argue about ordering.
+var task_id_counter: std.atomic.Value(u64) = .init(0);
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Domain-level error set for `useCase`. Each variant maps to a
@@ -217,10 +229,28 @@ const StandardResponse = struct {
 // Use case
 // =====================================================================
 
-/// Generate a unique `task_<unix_milliseconds>` id.
+/// Generate a unique `task_<unix_ms>_<intra_ms_counter>` id.
+///
+/// The millisecond prefix preserves wire-compat with previously-stored
+/// rows (`task_<ms>`) and keeps IDs roughly time-sortable. The atomic
+/// counter suffix guarantees uniqueness even when 2+ tasks are
+/// created in the same millisecond — without it, fast clients (a
+/// tight pytest loop on Apple Silicon, a bulk-import script, etc.)
+/// collide on the SQLite PRIMARY KEY and the 2nd+ insert returns
+/// HTTP 500 "Failed to create task" (CI run 31863092055,
+/// Mac ARM64: 3/64 functional tests failed for this reason —
+/// `test_add_twelve_tasks_across_four_columns` and friends).
+///
+/// The counter resets to 0 at process start. A single-process
+/// nalar can never have two threads call this with the same fetch
+/// result, so uniqueness is trivial. Restart = pid change, but
+/// new IDs start from 0 again which never collides with the
+/// previously-emitted ms (a long-lived workspace has many ms prefixes).
 fn generateTaskId(allocator: std.mem.Allocator, io: std.Io) TaskCreateError![]u8 {
     const ts = std.Io.Timestamp.now(io, .real);
-    return std.fmt.allocPrint(allocator, "task_{d}", .{@divTrunc(ts.nanoseconds, 1_000_000)}) catch return error.OutOfMemory;
+    const ms: i64 = @intCast(@divTrunc(ts.nanoseconds, std.time.ns_per_ms));
+    const counter = task_id_counter.fetchAdd(1, .seq_cst);
+    return std.fmt.allocPrint(allocator, "task_{d}_{d}", .{ ms, counter }) catch return error.OutOfMemory;
 }
 
 /// Routine branch. Inserts task row + routines row.
