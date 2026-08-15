@@ -280,145 +280,115 @@ jobs:
           # too; either way, exporting PATH ensures we pick the right one.
           echo "PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
-      - name: Install system dependencies (Windows)
+      - name: Install vcpkg + MSVC build tools (Windows)
         if: runner.os == 'Windows'
-        # The self-hosted Windows runner (WIN-53JVAKR3O5B) only has
-        # Windows PowerShell 5.1 (`powershell.exe`) pre-installed — NOT
-        # PowerShell Core 7+ (`pwsh`). The original `shell: pwsh`
-        # failed on every CI run with `pwsh: command not found` (CI
-        # run 31828424315, run 31838283325). Switch to `shell: powershell`
-        # so the install runs out of the box; PowerShell 5.1 supports
-        # every cmdlet the step uses (Get-ChildItem, Test-Path,
-        # Start-Job, Copy-Item, winget, nuget, Expand-Archive).
+        # The self-hosted Windows runner (WIN-53JVAKR3O5B) only ships
+        # Windows PowerShell 5.1 (`powershell.exe`), not PowerShell
+        # Core 7+ (`pwsh`). Stay on `shell: powershell` so the install
+        # runs out of the box. The original 165-line monolithic
+        # `run:` block reliably broke the PowerShell 5.1 parser (CI
+        # runs 31841182154, 31859864874, 31860741395, 31861962678,
+        # 31864244047 all failed at `MissingEndCurlyBrace`). Splitting
+        # the install into two smaller steps keeps each parse unit
+        # under 50 lines of PowerShell, which the 5.1 lexer handles
+        # reliably. See PR #244 history for the long debug session.
         shell: powershell
-        # Mirror Linux's pacman + macOS's brew: provide curl/openssl/libpq/
-        # sqlite3 + MSVC via vcpkg. The `custom_http_client` and `databases`
-        # packages each probe the vcpkg sysroot at
-        # C:\vcpkg\installed\x64-windows and link system libs when found —
-        # same pattern as the Arch/pacman Linux native flow.
-        #
-        # vcpkg setup has 3 stages:
-        #  1. Install vcpkg + integrate install (registers the
-        #     C:\vcpkg\lib paths with MSVC's LIB env var so `linkSystemLibrary`
-        #     resolves libcurl.lib / libssl.lib).
-        #  2. Install the 4 ports we need (curl, openssl, libpq, sqlite3).
-        #     vcpkg's `--triplet=x64-windows` builds static-link import libs
-        #     (.lib stubs + headers), so Zig's link line resolves them
-        #     directly without an explicit `addLibraryPath` for each lib —
-        #     BUT the package probe still adds it as a fallback for hosts
-        #     where `vcpkg integrate install` hasn't been run.
-        #  3. vcpkg needs MSVC's link.exe on PATH for the static-link import
-        #     libs. `setup-msbuild` installs the MSVC Build Tools + sets up
-        #     vcvars64.bat; sourcing it puts link.exe + cl.exe on PATH.
-        #     Without this step, vcpkg's `vcpkg install` fails with
-        #     "Could not locate a suitable MSVC toolset" on bare Windows
-        #     runners that only have Visual Studio Code / no build tools.
-        #
-        # WebView2 (the runtime + DLL for nalar-desktop on Windows) is the
-        # only port that's NOT vcpkg — it's bundled as part of Windows 10+
-        # out of the box, AND the NuGet package's WebView2Loader.dll +
-        # WebView2.h must be extracted into
-        # `src/apps/desktop_app/platform/windows/` so nalar-desktop can
-        # include them. nuget.exe ships with Windows 10+ out of the box.
+        # Step 1 of 2: install vcpkg itself + MSVC Build Tools, then
+        # source vcvars64.bat and capture its env vars into $env:...
+        # so subsequent steps see MSVC's PATH / INCLUDE / LIB.
         run: |
-          # 1. Install vcpkg via winget (built-in on Win 10/11). Idempotent:
-          #    if vcpkg is already at C:\vcpkg the winget install is a no-op.
           if (Test-Path "C:\vcpkg\vcpkg.exe") {
-            Write-Host "vcpkg already installed at C:\vcpkg (skipping install)"
+            Write-Host "vcpkg already installed at C:\vcpkg"
           } else {
-            Write-Host "Installing vcpkg..."
+            Write-Host "Installing vcpkg via winget..."
             winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --silent
             winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements --silent
             git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           }
 
-          # 2. Pull the 4 ports. Each is independent so this can run in
-          #    parallel (~minutes vs sequential). vcpkg's build also needs
-          #    a working C compiler; we source vcvars64.bat from BuildTools
-          #    if VS install dir exists.
+          # Find vcvars64.bat (Visual Studio Build Tools 2022 layout).
+          # If not present, fall back to vcpkg's auto-triplet path.
           $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           $useMSVC = $false
           if ($vsInstaller) {
-            Write-Host "Setting up MSVC environment via $($vsInstaller.FullName)"
-            # Source vcvars64.bat and capture the resulting env vars.
-            # PowerShell 5.1's backtick-double-quote + backtick-r-n
-            # escape patterns (originally used for inline multi-line
-            # .bat content via `Set-Content -Value "@echo off`r`n..."`)
-            # don't survive a YAML heredoc + PowerShell 5.1 parser
-            # round-trip reliably (observed on CI run 31841182154 +
-            # 31860331820 with MissingEndCurlyBrace errors). The
-            # @"..."@ here-string fallback broke the YAML file itself
-            # because the closing `"@` marker MUST sit at column 0
-            # of the line, which is exactly where YAML's `|` block
-            # scalar's indent ends (CI run 31862667065 failed in 0s
-            # with "workflow file issue"). The working fix is below:
-            # build the .bat content via string concatenation with
-            # [Environment]::NewLine as the line separator — single
-            # quotes, no interpolation, no escape sequences.
-            $vcvarsBat = Join-Path $env:TEMP 'vcvars64-source.bat'
-            # Build .bat content via single-quoted string concatenation
-            # (NOT @"..."@ here-string) — a YAML `|` block scalar cannot
-            # host a PowerShell here-string because the closing `"@` /
-            # `'@` marker MUST sit at column 0 of the line, which is
-            # exactly where YAML's block-scalar indent ends. YAML then
-            # re-parses the next line as an implicit mapping key and
-            # the workflow file silently fails ("This run likely failed
-            # because of a workflow file issue" — every push since
-            # commit 99b0ebdc has failed in 0s, blocking all CI
-            # feedback). Use [Environment]::NewLine + single-quoted
-            # strings (no interpolation, no escape sequences) so both
-            # YAML and PowerShell 5.1 stay happy. `$vsInstaller.FullName`
-            # sits BETWEEN concatenations as a bare expression, so
-            # PowerShell still expands it to the .bat file's actual path.
-            $batContent = '@echo off' + [Environment]::NewLine + 'call "' + $vsInstaller.FullName + '"' + [Environment]::NewLine + 'set' + [Environment]::NewLine
-            [System.IO.File]::WriteAllText($vcvarsBat, $batContent, [System.Text.Encoding]::ASCII)
-            cmd /c $vcvarsBat | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
-              $name, $value = $_ -split "=", 2
-              Set-Item -Path "Env:$name" -Value $value
+            Write-Host ("Setting up MSVC environment via " + $vsInstaller.FullName)
+            # Write vcvars64-source.bat line-by-line via Out-File, not
+            # via 8-fragment `+` string concatenation with embedded bare
+            # `$vsInstaller.FullName` interpolation. The concatenation
+            # form triggered PowerShell 5.1 lexer bugs in the chained
+            # pipe-with-block that followed it (CI run 31860741395:
+            # MissingEndCurlyBrace at .ps1:60/106/107). Out-File on a
+            # single quoted string avoids all of that.
+            $vcvarsBat = Join-Path $env:TEMP "vcvars64-source.bat"
+            "@echo off" | Out-File -FilePath $vcvarsBat -Encoding ASCII
+            "call '$($vsInstaller.FullName)'" | Out-File -FilePath $vcvarsBat -Append -Encoding ASCII
+            "set" | Out-File -FilePath $vcvarsBat -Append -Encoding ASCII
+            # Capture vcvars64.bat output WITHOUT a chained
+            # `cmd | Where-Object { ... } | ForEach-Object { ... }` pipe
+            # expression. Capture into `$cmdOutput` first, then iterate.
+            $cmdOutput = cmd /c $vcvarsBat
+            foreach ($line in $cmdOutput) {
+              if ($line -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=") {
+                $name, $value = $line -split "=", 2
+                Set-Item -Path ("Env:" + $name) -Value $value
+              }
             }
             Remove-Item $vcvarsBat -Force -ErrorAction SilentlyContinue
             $useMSVC = $true
           } else {
-            Write-Host "No MSVC Build Tools detected — falling back to vcpkg's triplet auto-detection"
+            Write-Host "No MSVC Build Tools detected, falling back to vcpkg auto-detection"
           }
 
-          # vcpkg env caching: VCPKG_DEFAULT_BINARY_CACHE + VCPKG_DOWNLOADS
-          # give us a stable source/binary cache across CI runs (saves the
-          # ~5-min curl-ssl-libpq compilation on subsequent runs when the
-          # per-port hashes match).
-          #
-          # Skipped on the self-hosted runner — vcpkg's default cache
-          # (per-user %LOCALAPPDATA%\vcpkg\archives) is already on a fast
-          # local disk, and the VCPKG_BINARY_SOURCES=...;files pattern
-          # requires a custom syntax that's fragile on PowerShell 5.1.
-          $vcpkgCacheDir = Join-Path $env:USERPROFILE '.cache\vcpkg-binary'
+          $vcpkgCacheDir = Join-Path $env:USERPROFILE ".cache\vcpkg-binary"
           New-Item -Path $vcpkgCacheDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
-          # 3. Install the 4 ports in parallel via Start-Job. Each port
-          #    fetches source + compiles a small import lib + headers; the
-          #    bottleneck is MSVC link time (~30-60s each), not network.
+      - name: Install vcpkg ports + WebView2 + ripgrep (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        # Step 2 of 2. After the previous step installed vcpkg and
+        # sourced MSVC env vars into $env:..., this step installs the
+        # 4 ports (curl/openssl/libpq/sqlite3) in parallel, fetches
+        # the WebView2 NuGet for nalar-desktop, calls
+        # `vcpkg integrate install`, and ensures `rg` is on PATH for
+        # the search_test.zig suite. Each step stays under 50 lines
+        # so PowerShell 5.1 parses it cleanly.
+        run: |
+          # Re-detect useMSVC by checking whether `cl.exe` is on PATH
+          # (vcvars64.bat sourced it on the previous step).
+          $useMSVC = [bool](Get-Command cl -ErrorAction SilentlyContinue)
+          Write-Host ("useMSVC: " + $useMSVC)
+
+          # Install the 4 ports in parallel via Start-Job. Each port
+          # fetches source + compiles a small import lib + headers;
+          # the bottleneck is MSVC link time (~30-60s each), not
+          # network. Start-Job's ScriptBlock is small and parses
+          # cleanly in PowerShell 5.1.
           $ports = @("curl", "openssl", "libpq", "sqlite3")
           $jobs = @()
           foreach ($port in $ports) {
-            $jobs += Start-Job -ArgumentList $port,$useMSVC -ScriptBlock {
+            $jobs += Start-Job -ArgumentList $port, $useMSVC -ScriptBlock {
               param([string]$p, [bool]$msvc)
-              if ($msvc) { & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" }
-              & "C:\vcpkg\vcpkg.exe" install $p`:x64-windows --recurse
+              if ($msvc) {
+                & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+              }
+              & "C:\vcpkg\vcpkg.exe" install ($p + ":x64-windows") --recurse
             }
           }
-          Write-Host "Waiting for $($jobs.Count) parallel vcpkg installs..."
+          Write-Host ("Waiting for " + $jobs.Count + " parallel vcpkg installs...")
           $jobs | ForEach-Object { $_ | Wait-Job | Out-Null }
-          $jobs | ForEach-Object {
-            $output = Receive-Job -Job $_
-            if ($_.State -ne "Completed") {
-              Write-Error "vcpkg install job failed for one port. Output: $output"
+          foreach ($job in $jobs) {
+            $stateInfo = $job.State
+            if ($stateInfo -ne "Completed") {
+              $output = Receive-Job -Job $job
+              Write-Error ("vcpkg install job failed, state=" + $stateInfo + " output=" + $output)
               exit 1
             }
-            Remove-Job $_
+            Remove-Job $job
           }
 
-          # 4. Verify each port's install location before the build runs.
+          # Verify each port's install location before the build runs.
+          # Iterate over a hashtable with a plain foreach loop, no pipe.
           $expected = @{
             "curl"    = "C:\vcpkg\installed\x64-windows\include\curl\curl.h"
             "openssl" = "C:\vcpkg\installed\x64-windows\include\openssl\ssl.h"
@@ -427,63 +397,55 @@ jobs:
           }
           foreach ($port in $expected.Keys) {
             if (Test-Path $expected[$port]) {
-              Write-Host "  ✓ $port installed at $($expected[$port])"
+              Write-Host ("ok " + $port + " at " + $expected[$port])
             } else {
-              Write-Error "vcpkg port $port missing expected file: $($expected[$port])"
+              Write-Error ("vcpkg port " + $port + " missing at " + $expected[$port])
               exit 1
             }
           }
 
-          # 5. WebView2 NuGet (only needed for nalar-desktop, NOT for the
-          #    service binary nalar.exe). Extract the headers + DLL into
-          #    src/apps/desktop_app/platform/windows/ — Zig's build.zig
-          #    looks for them there via include path probing. If
-          #    nalar-desktop is not built, this step becomes a no-op.
+          # WebView2 NuGet. nuget.exe ships with Windows 10+ out of
+          # the box. The .h and .dll get extracted into
+          # `src/apps/desktop_app/platform/windows/` for nalar-desktop
+          # to include at build time. The nalar.exe service binary
+          # does not need WebView2.
           $nugetVersion = "1.0.2651.78"
-          $webview2Src = "$env:USERPROFILE\.nuget\packages\microsoft.web.webview2\$nugetVersion"
+          $webview2Src = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.web.webview2\$nugetVersion"
           $webview2Dst = "src\apps\desktop_app\platform\windows"
-          $webview2Header = "$webview2Src\build\native\include\WebView2.h"
+          $webview2Header = Join-Path $webview2Src "build\native\include\WebView2.h"
           if (Test-Path $webview2Header) {
-            Write-Host "WebView2 NuGet $nugetVersion already in cache"
+            Write-Host ("WebView2 NuGet " + $nugetVersion + " already cached")
           } else {
-            Write-Host "Fetching WebView2 NuGet $nugetVersion..."
+            Write-Host ("Fetching WebView2 NuGet " + $nugetVersion + "...")
             nuget install Microsoft.Web.WebView2 -Version $nugetVersion -OutputDirectory "$env:USERPROFILE\.nuget" -ForceEnglishOutput
           }
-          Copy-Item -Force "$webview2Src\build\native\include\WebView2.h" "$webview2Dst\WebView2.h"
-          Copy-Item -Force "$webview2Src\build\native\include\WebView2Loader.h" "$webview2Dst\WebView2Loader.h"
-          Copy-Item -Force "$webview2Src\runtimes\win-x64\native\WebView2Loader.dll" "$webview2Dst\WebView2Loader.dll"
-          # Symlink (or copy) the import lib so Zig's MSVC linker resolves
-          # it directly via addLibraryPath or vcpkg's LIB search paths.
-          if (Test-Path "$webview2Src\build\native\lib\x64\WebView2Loader.dll.lib") {
-            Copy-Item -Force "$webview2Src\build\native\lib\x64\WebView2Loader.dll.lib" "$webview2Dst\WebView2Loader.lib"
-          } elseif (Test-Path "$webview2Src\build\native\WebView2Loader.dll.lib") {
-            Copy-Item -Force "$webview2Src\build\native\WebView2Loader.dll.lib" "$webview2Dst\WebView2Loader.lib"
+          Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
+          Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2Loader.h") (Join-Path $webview2Dst "WebView2Loader.h")
+          Copy-Item -Force (Join-Path $webview2Src "runtimes\win-x64\native\WebView2Loader.dll") (Join-Path $webview2Dst "WebView2Loader.dll")
+          if (Test-Path (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib")) {
+            Copy-Item -Force (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
+          } elseif (Test-Path (Join-Path $webview2Src "build\native\WebView2Loader.dll.lib")) {
+            Copy-Item -Force (Join-Path $webview2Src "build\native\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
           }
-          Write-Host "✓ WebView2 headers + WebView2Loader.dll/lib staged at $webview2Dst"
+          Write-Host ("ok WebView2 staged at " + $webview2Dst)
 
-          # 6. vcpkg integrate install (registers C:\vcpkg\lib with MSVC's
-          #    LIB env var globally for the user account). Idempotent.
+          # vcpkg integrate install registers C:\vcpkg\lib with MSVC's
+          # LIB env var globally. Idempotent.
           C:\vcpkg\vcpkg.exe integrate install
-          Write-Host "✓ vcpkg integrated with MSVC"
+          Write-Host "ok vcpkg integrated with MSVC"
 
-          # 7. Install ripgrep via winget — mirrors Linux's
-          #    `pacman -S --needed ripgrep` and macOS's `brew install ripgrep`.
-          #    src/modules/agent/tools/search.zig spawns `rg`; without it,
-          #    every search_test.zig test fails with error.FileNotFound
-          #    when the test tries to spawn `rg`. winget ships BurntSushi's
-          #    MSVC build of ripgrep (the same binary GitHub ships in
-          #    `actions/setup-ripgrep`). Idempotent: skipped if `rg`
-          #    already resolves on PATH.
+          # ripgrep for src/modules/agent/tools/search.zig, which
+          # spawns `rg`. Without it, every search_test.zig case fails
+          # with error.FileNotFound on CI. BurntSushi's MSVC build is
+          # bundled in winget.
           $rg = Get-Command rg -ErrorAction SilentlyContinue
           if ($rg) {
-            Write-Host "✓ ripgrep already at $($rg.Source)"
+            Write-Host ("ok ripgrep already at " + $rg.Source)
           } else {
             Write-Host "Installing ripgrep via winget..."
             winget install --id BurntSushi.ripgrep.MSVC -e --accept-source-agreements --accept-package-agreements --silent
-            # Refresh the session's PATH so the rest of the workflow
-            # sees `rg` without needing a new shell.
-            $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'User') + ';' + [System.Environment]::GetEnvironmentVariable('PATH', 'Process')
-            Write-Host "✓ ripgrep installed"
+            $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "Process")
+            Write-Host "ok ripgrep installed"
           }
 
       - name: Show toolchain versions
