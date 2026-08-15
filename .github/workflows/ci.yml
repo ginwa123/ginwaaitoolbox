@@ -323,14 +323,14 @@ jobs:
         run: |
           # 1. Install vcpkg via winget (built-in on Win 10/11). Idempotent:
           #    if vcpkg is already at C:\vcpkg the winget install is a no-op.
-          if (-not (Test-Path "C:\vcpkg\vcpkg.exe")) {
+          if (Test-Path "C:\vcpkg\vcpkg.exe") {
+            Write-Host "vcpkg already installed at C:\vcpkg (skipping install)"
+          } else {
             Write-Host "Installing vcpkg..."
             winget install --id Microsoft.VisualStudio.2022.BuildTools -e --accept-source-agreements --accept-package-agreements --silent
             winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements --silent
             git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-          } else {
-            Write-Host "vcpkg already installed at C:\vcpkg (skipping install)"
           }
 
           # 2. Pull the 4 ports. Each is independent so this can run in
@@ -341,10 +341,43 @@ jobs:
           $useMSVC = $false
           if ($vsInstaller) {
             Write-Host "Setting up MSVC environment via $($vsInstaller.FullName)"
-            cmd /c "`"$($vsInstaller.FullName)`" && set" | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
+            # Source vcvars64.bat and capture the resulting env vars.
+            # PowerShell 5.1's backtick-double-quote + backtick-r-n
+            # escape patterns (originally used for inline multi-line
+            # .bat content via `Set-Content -Value "@echo off`r`n..."`)
+            # don't survive a YAML heredoc + PowerShell 5.1 parser
+            # round-trip reliably (observed on CI run 31841182154 +
+            # 31860331820 with MissingEndCurlyBrace errors). The
+            # @"..."@ here-string fallback broke the YAML file itself
+            # because the closing `"@` marker MUST sit at column 0
+            # of the line, which is exactly where YAML's `|` block
+            # scalar's indent ends (CI run 31862667065 failed in 0s
+            # with "workflow file issue"). The working fix is below:
+            # build the .bat content via string concatenation with
+            # [Environment]::NewLine as the line separator — single
+            # quotes, no interpolation, no escape sequences.
+            $vcvarsBat = Join-Path $env:TEMP 'vcvars64-source.bat'
+            # Build .bat content via single-quoted string concatenation
+            # (NOT @"..."@ here-string) — a YAML `|` block scalar cannot
+            # host a PowerShell here-string because the closing `"@` /
+            # `'@` marker MUST sit at column 0 of the line, which is
+            # exactly where YAML's block-scalar indent ends. YAML then
+            # re-parses the next line as an implicit mapping key and
+            # the workflow file silently fails ("This run likely failed
+            # because of a workflow file issue" — every push since
+            # commit 99b0ebdc has failed in 0s, blocking all CI
+            # feedback). Use [Environment]::NewLine + single-quoted
+            # strings (no interpolation, no escape sequences) so both
+            # YAML and PowerShell 5.1 stay happy. `$vsInstaller.FullName`
+            # sits BETWEEN concatenations as a bare expression, so
+            # PowerShell still expands it to the .bat file's actual path.
+            $batContent = '@echo off' + [Environment]::NewLine + 'call "' + $vsInstaller.FullName + '"' + [Environment]::NewLine + 'set' + [Environment]::NewLine
+            [System.IO.File]::WriteAllText($vcvarsBat, $batContent, [System.Text.Encoding]::ASCII)
+            cmd /c $vcvarsBat | Where-Object { $_ -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=" } | ForEach-Object {
               $name, $value = $_ -split "=", 2
               Set-Item -Path "Env:$name" -Value $value
             }
+            Remove-Item $vcvarsBat -Force -ErrorAction SilentlyContinue
             $useMSVC = $true
           } else {
             Write-Host "No MSVC Build Tools detected — falling back to vcpkg's triplet auto-detection"
@@ -354,8 +387,13 @@ jobs:
           # give us a stable source/binary cache across CI runs (saves the
           # ~5-min curl-ssl-libpq compilation on subsequent runs when the
           # per-port hashes match).
-          $env:VCPKG_BINARY_SOURCES = "clear;files`"$env:USERPROFILE\.cache\vcpkg-binary`",readwrite"
-          New-Item -Path "$env:USERPROFILE\.cache\vcpkg-binary" -ItemType Directory -Force | Out-Null
+          #
+          # Skipped on the self-hosted runner — vcpkg's default cache
+          # (per-user %LOCALAPPDATA%\vcpkg\archives) is already on a fast
+          # local disk, and the VCPKG_BINARY_SOURCES=...;files pattern
+          # requires a custom syntax that's fragile on PowerShell 5.1.
+          $vcpkgCacheDir = Join-Path $env:USERPROFILE '.cache\vcpkg-binary'
+          New-Item -Path $vcpkgCacheDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
           # 3. Install the 4 ports in parallel via Start-Job. Each port
           #    fetches source + compiles a small import lib + headers; the
@@ -388,27 +426,28 @@ jobs:
             "sqlite3" = "C:\vcpkg\installed\x64-windows\include\sqlite3.h"
           }
           foreach ($port in $expected.Keys) {
-            if (-not (Test-Path $expected[$port])) {
+            if (Test-Path $expected[$port]) {
+              Write-Host "  ✓ $port installed at $($expected[$port])"
+            } else {
               Write-Error "vcpkg port $port missing expected file: $($expected[$port])"
               exit 1
             }
-            Write-Host "  ✓ $port installed at $($expected[$port])"
           }
 
           # 5. WebView2 NuGet (only needed for nalar-desktop, NOT for the
           #    service binary nalar.exe). Extract the headers + DLL into
           #    src/apps/desktop_app/platform/windows/ — Zig's build.zig
           #    looks for them there via include path probing. If
-          #    nalar-desktop isn't built (e.g. skip-windows-desktop in
-          #    a future matrix), this step becomes a no-op.
+          #    nalar-desktop is not built, this step becomes a no-op.
           $nugetVersion = "1.0.2651.78"
           $webview2Src = "$env:USERPROFILE\.nuget\packages\microsoft.web.webview2\$nugetVersion"
           $webview2Dst = "src\apps\desktop_app\platform\windows"
-          if (-not (Test-Path "$webview2Src\build\native\include\WebView2.h")) {
+          $webview2Header = "$webview2Src\build\native\include\WebView2.h"
+          if (Test-Path $webview2Header) {
+            Write-Host "WebView2 NuGet $nugetVersion already in cache"
+          } else {
             Write-Host "Fetching WebView2 NuGet $nugetVersion..."
             nuget install Microsoft.Web.WebView2 -Version $nugetVersion -OutputDirectory "$env:USERPROFILE\.nuget" -ForceEnglishOutput
-          } else {
-            Write-Host "WebView2 NuGet $nugetVersion already in cache"
           }
           Copy-Item -Force "$webview2Src\build\native\include\WebView2.h" "$webview2Dst\WebView2.h"
           Copy-Item -Force "$webview2Src\build\native\include\WebView2Loader.h" "$webview2Dst\WebView2Loader.h"
@@ -436,15 +475,15 @@ jobs:
           #    `actions/setup-ripgrep`). Idempotent: skipped if `rg`
           #    already resolves on PATH.
           $rg = Get-Command rg -ErrorAction SilentlyContinue
-          if (-not $rg) {
+          if ($rg) {
+            Write-Host "✓ ripgrep already at $($rg.Source)"
+          } else {
             Write-Host "Installing ripgrep via winget..."
             winget install --id BurntSushi.ripgrep.MSVC -e --accept-source-agreements --accept-package-agreements --silent
             # Refresh the session's PATH so the rest of the workflow
             # sees `rg` without needing a new shell.
             $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH', 'User') + ';' + [System.Environment]::GetEnvironmentVariable('PATH', 'Process')
             Write-Host "✓ ripgrep installed"
-          } else {
-            Write-Host "✓ ripgrep already at $($rg.Source)"
           }
 
       - name: Show toolchain versions
@@ -523,10 +562,10 @@ jobs:
           # WebView2 — only needed for nalar-desktop, not for nalar.exe.
           $wv2 = "src\apps\desktop_app\platform\windows"
           foreach ($f in @("WebView2.h", "WebView2Loader.h", "WebView2Loader.dll", "WebView2Loader.lib")) {
-            if (-not (Test-Path "$wv2\$f")) {
-              Write-Warning "$wv2\$f missing — nalar-desktop will link with an empty stub or skip WebView2 init. The 'nalar-desktop --smoke-test' path may not be headless-checked."
-            } else {
+            if (Test-Path "$wv2\$f") {
               Write-Host "  ✓ $wv2\$f"
+            } else {
+              Write-Warning "$wv2\$f missing — nalar-desktop will link with an empty stub or skip WebView2 init. The 'nalar-desktop --smoke-test' path may not be headless-checked."
             }
           }
 

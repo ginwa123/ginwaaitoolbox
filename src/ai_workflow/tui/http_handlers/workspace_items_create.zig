@@ -2,6 +2,13 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 
+/// Process-local monotonic counter for workspace_item id generation.
+/// Nanosecond-precision timestamps used previously COULD theoretically
+/// collide if the host clock had sub-ns request throughput (macOS
+/// fast-path under `test_add_twelve_tasks_across_four_columns`-style
+/// tight loops). The counter suffix guarantees uniqueness.
+var workspace_item_id_counter: std.atomic.Value(u64) = .init(0);
+
 pub const WorkspaceItemsCreateError = error{
     OutOfMemory,
     InvalidJson,
@@ -25,7 +32,8 @@ pub const WorkspaceItemsCreateError = error{
 fn generateItemId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     const ts = std.Io.Clock.now(.real, io);
     const timestamp_ns = ts.toNanoseconds();
-    return std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
+    const counter = workspace_item_id_counter.fetchAdd(1, .seq_cst);
+    return std.fmt.allocPrint(allocator, "item_{d}_{d}", .{ timestamp_ns, counter });
 }
 
 const WorkspaceItemsCreateResult = struct {

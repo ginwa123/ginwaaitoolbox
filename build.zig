@@ -696,6 +696,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/apps/desktop_app/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
             },
