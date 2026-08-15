@@ -732,6 +732,26 @@ const handleUnattendedToggle = async (payload: { value: '0' | '1'; previous: '0'
   }
 }
 
+// NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Edit-mode cwd
+// picker handler. Persists immediately via PUT
+// /api/workspaces/tasks/<id> with `cwd` — the field already
+// round-trips through the backend's `task_update.zig` validated_cwd
+// block (Migration 070). Same best-effort / SSE-corrected pattern
+// as `handleUnattendedToggle`: on PUT failure we log and let the
+// next SSE re-fetch paint the server-truth value into the picker.
+// We do NOT close the dialog or roll back the picker's local
+// `cwdSession` — the picker is the source of truth while the
+// dialog is open, and the user can re-pick if they want.
+const handleUpdateCwd = async (payload: { cwd: string }) => {
+  const taskId = activeTaskDetailId.value
+  if (!taskId) return
+  try {
+    await api.updateTaskSimple(taskId, { cwd: payload.cwd })
+  } catch (err) {
+    console.error('Failed to update task cwd:', err)
+  }
+}
+
 // ─── Create-task dialog (kanban-add-task-via-detail-dialog — Chunk 1) ────
 //
 // When the user clicks "+ Add" on a kanban column, we open the SAME
@@ -1151,6 +1171,7 @@ const handleCreateTaskSave = async (payload: {
     :workspace-id="workspaceId"
     @save="handleTaskDetailSave"
     @update-unattended="handleUnattendedToggle"
+    @update-cwd="handleUpdateCwd"
   />
   <!--
     Second KanbanTaskDetailDialog mount for the "+ Add" → create flow.

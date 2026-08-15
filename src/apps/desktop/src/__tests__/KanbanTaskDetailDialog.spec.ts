@@ -310,6 +310,182 @@ describe('KanbanTaskDetailDialog — metadata strip', () => {
     await flushPromises()
     expect(findInDom('[data-testid="kanban-task-detail-metadata"]')).toBeNull()
   })
+
+  // ─── Read-only cwd strip (removed by 2026-08-14-kanban-task-detail-edit-cwd)
+  //
+  // The read-only cwd strip was removed in favour of the always-visible
+  // cwd picker. These tests pin the removal: in edit mode the strip
+  // testids (`kanban-task-detail-cwd-readonly`,
+  // `kanban-task-detail-cwd-readonly-empty`) MUST NOT be rendered.
+  it('edit mode: does NOT render the legacy read-only cwd strip', async () => {
+    mountDialog({ ...TASK, cwd: '/home/foo/bar' })
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-readonly"]'),
+    ).toBeNull()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-readonly-empty"]'),
+    ).toBeNull()
+  })
+
+  it('edit mode: does NOT render the legacy empty read-only cwd strip', async () => {
+    mountDialog({ ...TASK, cwd: '' })
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-readonly"]'),
+    ).toBeNull()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-readonly-empty"]'),
+    ).toBeNull()
+  })
+})
+
+// ─── Edit-mode cwd picker (plan: 2026-08-14-kanban-task-detail-edit-cwd)
+//
+// The cwd picker was lifted out of the create-mode block so it renders
+// in BOTH modes. In edit mode the picker fires `update-cwd` so the
+// host can persist the change immediately (mirrors `update-unattended`).
+// The local `cwdSession` is initialized from `props.task?.cwd ?? ''`
+// so the picker label reflects the task's persisted cwd (or the
+// empty-state placeholder for cwd-less tasks).
+describe('KanbanTaskDetailDialog — edit-mode cwd picker', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) =>
+      el.remove(),
+    )
+  })
+
+  function mountEditDialogWithCwd(task: Task, cwd = '') {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, task, cwd },
+    })
+    return wrapper
+  }
+
+  it('renders the cwd picker button in edit mode', async () => {
+    mountEditDialogWithCwd(TASK)
+    await flushPromises()
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+  })
+
+  it('edit mode: picker button label shows the task cwd when set', async () => {
+    mountEditDialogWithCwd({ ...TASK, cwd: '/home/foo/bar' })
+    await flushPromises()
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    // The picker text reflects the cwd — NOT the create-mode "Skip"
+    // placeholder.
+    expect(picker!.textContent).toContain('/home/foo/bar')
+    expect(picker!.textContent).not.toContain('Skip (no project root)')
+    // Title attribute carries the path for hover-tooltip.
+    expect(picker!.getAttribute('title')).toContain('/home/foo/bar')
+  })
+
+  it('edit mode: picker button shows the empty-state placeholder when task.cwd === ""', async () => {
+    mountEditDialogWithCwd({ ...TASK, cwd: '' })
+    await flushPromises()
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    expect(picker!.textContent).toContain('no project root')
+    // The title for the empty state in edit mode tells the user they
+    // can click to set one (different from create-mode "optional").
+    expect(picker!.getAttribute('title') ?? '').toMatch(
+      /no project root/i,
+    )
+  })
+
+  it('edit mode: picker button shows the empty-state placeholder when task.cwd is undefined (legacy)', async () => {
+    // Legacy tasks predating Migration 070 don't have a `cwd` field at
+    // all — verify the picker's `task?.cwd ?? ''` coerce handles
+    // `undefined` (not just '').
+    const legacyTask = { ...TASK }
+    delete (legacyTask as { cwd?: string }).cwd
+    mountEditDialogWithCwd(legacyTask)
+    await flushPromises()
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker).not.toBeNull()
+    expect(picker!.textContent).toContain('no project root')
+  })
+
+  it('edit mode: opening the picker mounts the FilePickerDialog dropdown', async () => {
+    mountEditDialogWithCwd(TASK)
+    await flushPromises()
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    picker!.click()
+    await flushPromises()
+    // The dropdown wrapper testid is rendered immediately on open.
+    const dropdown = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker-dropdown"]',
+    )
+    expect(dropdown).not.toBeNull()
+  })
+
+  it('edit mode: emits update-cwd with the picked path on folder select', async () => {
+    // Drive the picker directly via its exposed handler. The
+    // FilePickerDialog is a Teleport-to-body component that uses an
+    // internal fetch pipeline — testing the full UI flow would mock
+    // global fetch (a brittle pattern). Instead we synthesise the
+    // `select` event that the dialog would emit on click, which is the
+    // exact contract the host relies on.
+    const w = mountEditDialogWithCwd({ ...TASK, cwd: '/home/old' })
+    await flushPromises()
+    // Grab a ref to the picker button — the FilePickerDialog's
+    // @select="selectCwd" handler is wired in the template, so we
+    // invoke selectCwd via the component instance.
+    const vm = w!.vm as unknown as {
+      selectCwd: (p: string) => void
+    }
+    vm.selectCwd('/home/new/path')
+    await flushPromises()
+    const emitted = w!.emitted('update-cwd')
+    expect(emitted).toBeTruthy()
+    expect(emitted![0]).toEqual([{ cwd: '/home/new/path' }])
+    // And the picker's local `cwdSession` updated to the new path
+    // (the picker label reflects it).
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )
+    expect(picker?.textContent).toContain('/home/new/path')
+  })
+
+  it('edit mode: emitting update-cwd clears the cwd when the user picks ""', async () => {
+    // The picker emits `''` when the user explicitly clears the
+    // per-task cwd (walks back to "kanban-level fallback" semantics).
+    // The backend's `task_update.zig` validated_cwd block treats '' as
+    // the explicit-clear sentinel — verify the dialog propagates it
+    // verbatim so the host can dispatch a clear-PUT.
+    const w = mountEditDialogWithCwd({ ...TASK, cwd: '/home/some/path' })
+    await flushPromises()
+    const vm = w!.vm as unknown as {
+      selectCwd: (p: string) => void
+    }
+    vm.selectCwd('')
+    await flushPromises()
+    const emitted = w!.emitted('update-cwd')
+    expect(emitted).toBeTruthy()
+    expect(emitted![emitted!.length - 1]).toEqual([{ cwd: '' }])
+  })
 })
 
 // ─── Create-mode tests (kanban-add-task-via-detail-dialog) ───────────────
@@ -1050,6 +1226,13 @@ describe('KanbanTaskDetailDialog — layout', () => {
       // Open the picker.
       clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
       await flushPromises()
+      // The picker opens on the Recent tab by default (per
+      // 2026-08-14-folder-picker-recent-history plan). Switch to
+      // Browse to assert that the cwd's children loaded — Recent
+      // is empty for a fresh test fixture so we can't see items
+      // there.
+      clickInDom('[data-testid="file-picker-tab-browse"]')
+      await flushPromises()
 
       // The cwd's children must be in the content pane — proving
       // expandAncestors walked the chain back to cwd_session (not
@@ -1072,6 +1255,10 @@ describe('KanbanTaskDetailDialog — layout', () => {
       mountCreateDialog('')
       await flushPromises()
       clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+      // Same Recent-vs-Browse dance — the picker opens on Recent
+      // by default, switch to Browse to assert root entries.
+      clickInDom('[data-testid="file-picker-tab-browse"]')
       await flushPromises()
 
       // No cwd → picker opens at "/" → listFolder('/') is called →
@@ -1096,6 +1283,8 @@ describe('KanbanTaskDetailDialog — layout', () => {
       mountCreateDialog('/home/user/projects/foo')
       await flushPromises()
       clickInDom('[data-testid="kanban-task-detail-cwd-picker"]')
+      await flushPromises()
+      clickInDom('[data-testid="file-picker-tab-browse"]')
       await flushPromises()
 
       // The footer "Selected:" line should reflect cwd_session so the
