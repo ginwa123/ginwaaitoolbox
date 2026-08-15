@@ -441,6 +441,94 @@ describe('KanbanTaskDetailDialog — edit-mode cwd picker', () => {
     expect(dropdown).not.toBeNull()
   })
 
+  // Regression for "click Browse → picker closes immediately".
+  // The cwd picker mounts a FilePickerDialog via `<Teleport to="body">`
+  // so the dialog's DOM is NOT a descendant of the cwd picker's
+  // template ref. The picker's click-outside handler used to treat
+  // any click outside the picker ref as a close signal — so clicking
+  // the Browse tab (which is inside the teleported FilePickerDialog)
+  // bubbled up to the document-click handler and closed the picker.
+  // Fix: the click-outside handler now allows the click target to be
+  // inside the teleported FilePickerDialog (matched by the
+  // `data-testid="file-picker-dialog"` testid on its root).
+  it('edit mode: clicking the Browse tab does NOT close the picker', async () => {
+    mountEditDialogWithCwd(TASK)
+    await flushPromises()
+    findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )!.click()
+    await flushPromises()
+    // Picker is now open. Click the Browse tab.
+    findInDom<HTMLElement>(
+      '[data-testid="file-picker-tab-browse"]',
+    )!.click()
+    await flushPromises()
+    // The picker dropdown wrapper must still be in the DOM.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-picker-dropdown"]'),
+    ).not.toBeNull()
+    // And the Search input (Browse-only toolbar) is now visible
+    // — proves the tab actually switched to Browse, not just that
+    // the dropdown stayed open.
+    expect(
+      findInDom('[data-testid="file-picker-search"]'),
+    ).not.toBeNull()
+  })
+
+  // Regression for "click outside picker → picker closes immediately".
+  // User feedback: clicking on the kanban column body, on another card,
+  // or anywhere outside the picker dropdown was silently closing the
+  // picker while the user was just reading context. The new contract:
+  // the picker stays open until the user clicks the picker trigger
+  // again, selects a folder, or presses Cancel inside the
+  // FilePickerDialog. (The KanbanTaskDetailDialog itself still
+  // closes on backdrop click — that's a different handler.)
+  it('edit mode: clicking outside the picker does NOT close it', async () => {
+    mountEditDialogWithCwd(TASK)
+    await flushPromises()
+    findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )!.click()
+    await flushPromises()
+    // Picker is now open. Synthesise a click somewhere completely
+    // outside the picker and outside the dialog (the kanban column
+    // body — a typical place the user might click while context-
+    // reading). The picker must NOT close on this click.
+    const outside = document.createElement('div')
+    outside.setAttribute('data-testid', 'kanban-column-body-fixture')
+    document.body.appendChild(outside)
+    outside.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-picker-dropdown"]'),
+    ).not.toBeNull()
+    outside.remove()
+  })
+
+  // Companion test: clicking the picker trigger again (toggle)
+  // DOES close the dropdown, since the user explicitly wants to
+  // dismiss the picker.
+  it('edit mode: clicking the picker trigger again toggles the picker closed', async () => {
+    mountEditDialogWithCwd(TASK)
+    await flushPromises()
+    const picker = findInDom<HTMLElement>(
+      '[data-testid="kanban-task-detail-cwd-picker"]',
+    )!
+    picker.click()
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-picker-dropdown"]'),
+    ).not.toBeNull()
+    // Click the trigger again — this should close it (the toggle
+    // handler runs the same logic but the trigger click is INSIDE
+    // the ref so the close-on-outside check doesn't fire).
+    picker.click()
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-cwd-picker-dropdown"]'),
+    ).toBeNull()
+  })
+
   it('edit mode: emits update-cwd with the picked path on folder select', async () => {
     // Drive the picker directly via its exposed handler. The
     // FilePickerDialog is a Teleport-to-body component that uses an
