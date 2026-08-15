@@ -407,9 +407,35 @@ const handleDocumentClickCwd = (event: MouseEvent) => {
   if (
     cwdPickerRef.value &&
     target &&
-    !cwdPickerRef.value.contains(target)
+    // Allow the FilePickerDialog dropdown contents to escape the
+    // ref's containment check. The picker teleports to <body> so
+    // it isn't a DOM descendant of cwdPickerRef — without this
+    // allow-list, any click inside the picker (including the Browse
+    // tab and the search input) closes the dropdown immediately,
+    // forcing the user to re-click the picker trigger to reopen
+    // it. Plan: docs/superpowers/plans/2026-08-14-kanban-task-detail-edit-cwd.md
+    !cwdPickerRef.value.contains(target) &&
+    // Walk up from the click target to see if any ancestor is the
+    // teleported FilePickerDialog root. The dialog root carries the
+    // `data-testid="file-picker-dialog"` testid, so we can match it
+    // (and its Teleport-portal descendants) without touching the
+    // picker ref.
+    !target?.closest?.('[data-testid="file-picker-dialog"]')
   ) {
-    isCwdPickerOpen.value = false
+    // User intent: clicking outside the picker should NOT close it
+    // by accident — the picker has explicit Cancel and Select affordances
+    // for closing. The legacy close-on-outside-click behaviour caught
+    // false positives every time the user clicked on the kanban column
+    // body, another card, the dialog backdrop, etc. while the picker
+    // was open (e.g. moving the mouse over to read context), forcing
+    // them to reopen it. The new contract: once open, the picker stays
+    // open until the user clicks the picker trigger again, selects a
+    // folder, or presses Cancel/Select inside the FilePickerDialog.
+    // (Backdrop click on the KanbanTaskDetailDialog itself still closes
+    // the whole dialog, but that's a different handler at the dialog
+    // root — see `@click.self="handleClose"` on the modal container.)
+    // Plan: docs/superpowers/plans/2026-08-14-kanban-task-detail-edit-cwd.md
+    return // no-op: explicitly do NOT close the picker on outside click
   }
 }
 
