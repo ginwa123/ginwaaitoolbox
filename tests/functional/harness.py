@@ -399,7 +399,7 @@ class FunctionalHarness:
     # ---- private helpers --------------------------------------------------
 
     def _stop_binary(self) -> None:
-        """SIGTERM the process group, fall back to SIGKILL after 5s.
+        """SIGTERM the process group, fall back to SIGKILL after 1s.
 
         All kill operations swallow OSError (covers ProcessLookupError,
         PermissionError, and ESRCH) — the process can die between any
@@ -415,6 +415,13 @@ class FunctionalHarness:
             maps to CREATE_NEW_PROCESS_GROUP, and TerminateProcess is
             the only way to kill a child we don't own. We skip the
             pgid dance and kill by pid directly.
+
+        Teardown budget (was 10s, now 3s) — the slim budget is
+        safe because ``/test/shutdown`` exits the process within
+        ~50ms in the common case. The SIGTERM/SIGKILL steps are the
+        safety net for the rare case where ShutdownTheader blocks
+        (e.g. a future regression that re-introduces a long-running
+        blocking call in the shutdown handler).
         """
         assert self.pid is not None
         # Use /test/shutdown for graceful exit; tolerate any failure.
@@ -427,47 +434,96 @@ class FunctionalHarness:
                 resp.read()
         except Exception:
             pass
-        # Wait up to 5s for graceful exit.
-        deadline = time.monotonic() + 5.0
+        if self._wait_dead(1.0, "post-shutdown"):
+            return
+        # Fall back to SIGTERM the whole group.
+        self._signal_group(signal.SIGTERM)
+        if self._wait_dead(1.0, "post-sigterm"):
+            return
+        # Last resort — SIGKILL.
+        self._signal_group(signal.SIGKILL)
+        self._wait_dead(1.0, "post-sigkill")  # best-effort final wait
+
+    def _wait_dead(self, timeout: float, label: str = "wait") -> bool:
+        """Return True iff the process exited within ``timeout`` seconds.
+
+        Uses ``os.waitpid(pid, WNOHANG)`` to detect exit. WNOHANG is
+        the correct call here — ``os.kill(pid, 0)`` returns 0 for
+        zombie processes (the process is dead but the parent hasn't
+        reaped it), so it would falsely report "alive" for a zombie
+        and stall the harness for the full SIGTERM/SIGKILL budget.
+
+        ``waitpid(WNOHANG)`` returns:
+          - ``(0, 0)``            — process is still running, no zombie
+          - ``(pid, status)``     — child has exited and we JUST reaped it
+          - raises ``OSError`` (ECHILD) — child doesn't exist (no zombie either)
+
+        On Windows, ``os.waitpid`` is unavailable; we fall back to
+        ``os.kill(pid, 0)``. The Windows backend doesn't have zombie
+        processes (CreateProcess+wait semantics differ), so the
+        heuristic is sufficient there.
+        """
+        assert self.pid is not None
+        has_waitpid = hasattr(os, "waitpid")
+        # WNOHANG may not exist on some platforms; fall back to 0
+        # (blocking) but we cap the loop with `timeout` so it's not
+        # actually blocking.
+        try:
+            wnohang = os.WNOHANG
+        except AttributeError:
+            wnohang = 0
+        t0 = time.monotonic()
+        deadline = time.monotonic() + timeout
+        polls = 0
         while time.monotonic() < deadline:
-            try:
-                os.kill(self.pid, 0)
-            except OSError:
-                return  # process is gone
-            time.sleep(0.1)
-        # SIGTERM the whole group on POSIX, or TerminateProcess on Windows.
+            polls += 1
+            if has_waitpid:
+                try:
+                    wpid, _status = os.waitpid(self.pid, wnohang)
+                except ChildProcessError:
+                    # ECHILD — no such process (already reaped and gone)
+                    return True
+                except OSError:
+                    # Some other error — treat as alive and retry
+                    pass
+                else:
+                    if wpid == self.pid:
+                        # We just reaped the zombie — process is really dead
+                        return True
+                    # wpid == 0 means still running, no zombie yet
+            else:
+                # Windows / fallback: kill(pid, 0) returns 0 if alive
+                # (including zombie — but Windows doesn't have those)
+                try:
+                    os.kill(self.pid, 0)
+                except OSError:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def _signal_group(self, sig: int) -> None:
+        """Signal the process group on POSIX, or the pid on Windows.
+
+        OSError is swallowed throughout — the process can die between
+        our queries, the OS may have recycled the pgid, or we may not
+        own the pid. None of those are the harness's concerns; we
+        made a best-effort attempt.
+        """
+        assert self.pid is not None
         if hasattr(os, "killpg"):
             try:
                 pgid = os.getpgid(self.pid)
             except OSError:
                 pgid = self.pid
             try:
-                os.killpg(pgid, signal.SIGTERM)
+                os.killpg(pgid, sig)
             except OSError:
                 pass
         else:
             # Windows: no killpg. Best effort — SIGTERM (which
             # Python maps to TerminateProcess for the child).
             try:
-                os.kill(self.pid, signal.SIGTERM)
-            except OSError:
-                pass
-        # Fall back to SIGKILL after another 5s.
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            try:
-                os.kill(self.pid, 0)
-            except OSError:
-                return
-            time.sleep(0.1)
-        if hasattr(os, "killpg"):
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except OSError:
-                pass
-        else:
-            try:
-                os.kill(self.pid, signal.SIGKILL)
+                os.kill(self.pid, sig)
             except OSError:
                 pass
 

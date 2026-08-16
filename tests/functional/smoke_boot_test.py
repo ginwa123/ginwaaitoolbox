@@ -141,3 +141,52 @@ def test_teardown_restores_home_and_keeps_orig_dir(
     assert real_home_before.exists() or not real_home_before.is_absolute() or True
     # (the assertion is tautological; the real coverage is in
     # harness_safety_test.py::test_teardown_with_safe_temp_dir_runs_rmtree)
+
+
+# ─── Teardown performance regression ──────────────────────────────────────────
+#
+# Regression guard for the "10s wasted teardown per test" bug.
+# Before the fix: /test/shutdown returns 200 but the process segfaults
+# 10s later (rc=-11) because the cronjob manager thread outlives main's
+# defers. The harness then waits the full SIGTERM + SIGKILL timeout
+# (5s + 5s) — 10s × 64 tests = ~10 min of CI waste.
+# After the fix: /test/shutdown actually exits the process (~50ms),
+# and the harness's polling loop is tightened to 1s + 1s + 1s.
+# Measured post-fix: teardown completes in ~0.2s. The 3s budget here
+# leaves 15× headroom for slow CI runners.
+
+
+def test_teardown_completes_within_3s() -> None:
+    """Functions fresh nalar → teardown must complete in <3s.
+
+    Pre-fix, this test took ~10s (the harness waited the full SIGTERM
+    + SIGKILL deadlines). If this regresses, the test suite will go
+    from ~3 min back to ~10 min — surface the failure as a perf
+    regression, not just a slow test.
+    """
+    import time
+
+    nalar_bin = os.environ.get("NALAR_BIN")
+    if nalar_bin:
+        nalar_bin_path = Path(nalar_bin)
+        if not nalar_bin_path.exists():
+            pytest.skip(f"NALAR_BIN does not exist: {nalar_bin_path}")
+    else:
+        from conftest import _resolve_nalar_bin
+        nalar_bin_path = _resolve_nalar_bin()
+
+    h = FunctionalHarness.boot(nalar_bin_path)
+    try:
+        # Drive a minimal API call so the binary is in a known state.
+        assert h.health() is True
+    finally:
+        t0 = time.monotonic()
+        h.teardown()
+        elapsed = time.monotonic() - t0
+    assert elapsed < 3.0, (
+        f"teardown took {elapsed:.2f}s — expected <3s. "
+        f"Re-run of the 10s teardown bug. Check that /test/shutdown "
+        f"actually exits the process (src/ai_workflow/tui/http_handlers/"
+        f"shutdown.zig) and that main.zig stops the cronjob manager "
+        f"before main returns."
+    )

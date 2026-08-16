@@ -1,12 +1,20 @@
 //! `POST /test/shutdown` — gracefully shut the server down.
 //!
 //! Triggers `di.server.shutdown()` and returns 200 with a status
-//! message. The server continues to serve in-flight requests after
-//! this returns; the actual process exit happens once the listener
-//! loop observes the shutdown flag.
+//! message. After the response is flushed, a detached thread calls
+//! `std.process.exit(0)` so the process actually terminates for the
+//! functional-test harness.
 //!
-//! Layered as `useCase` (call shutdown) and a thin handler that
-//! maps the outcome to the JSON response.
+//! Without the explicit exit, the listener loop alone does not cause
+//! the process to die — the cronjob manager thread started in
+//! `listen()` outlives main's defers and segfaults ~10s later
+//! (rc=-11). The harness would then wait full SIGTERM + SIGKILL
+//! deadlines (10s per test × 64 tests ≈ 10 min of CI waste). The
+//! `/test/shutdown` endpoint is a test-only convenience; production
+//! uses `SIGTERM` via the `nalar service` daemon.
+//!
+//! Layered as `useCase` (call shutdown + schedule exit) and a thin
+//! handler that maps the outcome to the JSON response.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -28,6 +36,27 @@ pub const ShutdownResponse = struct {
 fn useCase() ShutdownError!ShutdownResponse {
     const di = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
     di.server.shutdown();
+    // Spawn a detached thread that exits the process after a brief
+    // delay (so the HTTP response has time to flush over the wire).
+    // If the thread can't be spawned (resource exhaustion), fall back
+    // to a synchronous exit — the handler's contract is "shut the
+    // server down", and the client doesn't need a 200 response if
+    // we're going to immediately terminate anyway.
+    //
+    // NOTE: std.Thread.sleep doesn't exist in Zig 0.16 (the codebase
+    // uses std.c.nanosleep inline — see agent_memories_test.zig:89).
+    const spawn_fn = struct {
+        fn run() void {
+            var ts = std.c.timespec{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+            _ = std.c.nanosleep(&ts, null);
+            std.process.exit(0);
+        }
+    }.run;
+    if (std.Thread.spawn(.{}, spawn_fn, .{})) |_| {
+        // ok — exit will happen ~50ms after the response flushes
+    } else |_| {
+        std.process.exit(0);
+    }
     return .{ .message = "Server shutdown initiated" };
 }
 
