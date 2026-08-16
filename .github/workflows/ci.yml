@@ -393,22 +393,24 @@ jobs:
           New-Item -Path $vcpkgCacheDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
 
-      - name: Install vcpkg ports + WebView2 + ripgrep (Windows)
+      - name: Install vcpkg ports (Windows)
         if: runner.os == 'Windows'
         shell: powershell
-        # Step 2 of 2. After the previous step installed vcpkg and
-        # sourced MSVC env vars into $env:..., this step installs the
-        # 4 ports (curl/openssl/libpq/sqlite3) in parallel, fetches
-        # the WebView2 NuGet for nalar-desktop, calls
-        # `vcpkg integrate install`, and ensures `rg` is on PATH for
-        # the search_test.zig suite. Each step stays under 50 lines
-        # so PowerShell 5.1 parses it cleanly.
-                # Step 2 of 2. The previous step wrote PATH/INCLUDE/LIB/etc. to
-        # $GITHUB_ENV, so this step's process starts with MSVC already
-        # on PATH - `Get-Command cl` below should find it directly. The
-        # explicit vcvars64.bat re-source inside each Start-Job block is
-        # kept as a belt-and-suspenders fallback in case a given job's
+        # Step 2 of 3. After the previous step wrote PATH/INCLUDE/LIB/etc.
+        # to $GITHUB_ENV, this fresh powershell.exe process starts with
+        # MSVC already on PATH - `Get-Command cl` below finds it directly.
+        # The explicit vcvars64.bat re-source inside each Start-Job block
+        # below is a belt-and-suspenders fallback in case a Start-Job's
         # child process doesn't inherit env the same way.
+        #
+        # IMPORTANT: this script's body is ~70 lines. PowerShell 5.1 on
+        # the self-hosted WIN-53JVAKR3O5B runner has a known brace-counter
+        # bug when a script combines an inline Start-Job ScriptBlock with
+        # two or more sequential if/else chains on the same parse pass
+        # (CI run 31932470083 hit "Missing closing '}'" at line 111 char 8
+        # when ports + WebView2 + ripgrep all lived in one step).
+        # Keeping the script under ~80 lines dodges the bug; the next
+        # step handles WebView2 + ripgrep in a separate parse unit.
         run: |
           $useMSVC = [bool](Get-Command cl -ErrorAction SilentlyContinue)
           Write-Host ("useMSVC: " + $useMSVC)
@@ -419,8 +421,7 @@ jobs:
           # Install the 4 ports in parallel via Start-Job. Each port
           # fetches source + compiles a small import lib + headers;
           # the bottleneck is MSVC link time (~30-60s each), not
-          # network. Start-Job's ScriptBlock is small and parses
-          # cleanly in PowerShell 5.1.
+          # network.
           #
           # IMPORTANT: `& "C:\vcpkg\vcpkg.exe" install ...` returning a
           # non-zero exit code does NOT make the PowerShell job
@@ -429,11 +430,7 @@ jobs:
           # explicit `if ($LASTEXITCODE -ne 0) { throw ... }` below is
           # what turns a real vcpkg failure into something the
           # $job.State / $job.ChildJobs[0].Error check downstream can
-          # actually detect. Without this, a broken vcpkg install
-          # silently reports "Completed" (observed on CI: all 4 jobs
-          # completed, useMSVC was False, and only the later
-          # Test-Path verification loop caught that sqlite3.h was
-          # missing).
+          # actually detect.
           $ports = @("curl", "openssl", "libpq", "sqlite3")
           $jobs = @()
           foreach ($port in $ports) {
@@ -482,6 +479,18 @@ jobs:
             }
           }
 
+      - name: Stage WebView2 + integrate vcpkg + install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        # Step 3 of 3. Runs in a fresh powershell.exe process so the
+        # PowerShell 5.1 parser has its own brace-counter state. Even
+        # if Step 2 still trips the parser bug on a future change, this
+        # step is short enough (~40 lines) to parse reliably. The three
+        # concerns here are intentionally simple so each parses cleanly:
+        #   1. WebView2 NuGet (nuget.exe + Copy-Item)
+        #   2. vcpkg integrate install (single command, idempotent)
+        #   3. ripgrep via winget (or skip if already on PATH)
+        run: |
           # WebView2 NuGet. nuget.exe ships with Windows 10+ out of
           # the box. The .h and .dll get extracted into
           # `src/apps/desktop_app/platform/windows/` for nalar-desktop
@@ -524,7 +533,8 @@ jobs:
             winget install --id BurntSushi.ripgrep.MSVC --wait -e --accept-source-agreements --accept-package-agreements --silent
             $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "Process")
             Write-Host "ok ripgrep installed"
-   
+          }
+
       - name: Show toolchain versions
         shell: bash
         # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
