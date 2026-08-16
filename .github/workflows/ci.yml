@@ -293,22 +293,41 @@ jobs:
         # under 50 lines of PowerShell, which the 5.1 lexer handles
         # reliably. See PR #244 history for the long debug session.
         shell: powershell
-        # Step 1 of 2: install vcpkg itself + MSVC Build Tools, then
-        # source vcvars64.bat and capture its env vars into $env:...
-        # so subsequent steps see MSVC's PATH / INCLUDE / LIB.
+        # Step 1 of 2: install MSVC Build Tools + vcpkg. The MSVC
+        # install is ALWAYS attempted (with `--wait`) because vcpkg's
+        # x64-windows triplet needs cl.exe / link.exe at compile time.
+        # The previous logic only triggered winget install inside the
+        # vcpkg-missing branch — which left a state where vcpkg.exe
+        # existed but MSVC did not, so vcpkg's port compiles silently
+        # failed (CI runs 31897518425, 31899279563). Each sub-step
+        # stays under 50 lines so PowerShell 5.1 parses it cleanly.
         run: |
+          # MSVC Build Tools are checked FIRST, independent of vcpkg.
+          # If vcvars64.bat is missing, winget install with --wait
+          # blocks until the install completes.
+          $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $vsInstaller) {
+            Write-Host "MSVC Build Tools not found, installing..."
+            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Kitware.CMake --wait -e --accept-source-agreements --accept-package-agreements --silent
+          } else {
+            Write-Host ("MSVC Build Tools already at " + $vsInstaller.FullName)
+          }
+
+          # Bootstrap vcpkg from source if the binary isn't present.
           if (Test-Path "C:\vcpkg\vcpkg.exe") {
             Write-Host "vcpkg already installed at C:\vcpkg"
           } else {
-            Write-Host "Installing vcpkg via winget..."
-            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
-            winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements --silent
+            Write-Host "Bootstrapping vcpkg from source..."
             git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           }
 
-          # Find vcvars64.bat (Visual Studio Build Tools 2022 layout).
-          # If not present, fall back to vcpkg's auto-triplet path.
+          # Re-check for vcvars64.bat AFTER winget install.
+          # Source its env vars into $env:... so subsequent steps see
+          # cl.exe + link.exe. Use the Out-File line pattern (single
+          # quoted strings + Out-File, no multi-fragment `+`
+          # concatenation) to dodge the PowerShell 5.1 lexer bug.
           $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           $useMSVC = $false
           if ($vsInstaller) {
