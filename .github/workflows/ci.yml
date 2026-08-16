@@ -781,23 +781,42 @@ jobs:
         # `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`
         # and `bash src/modules/custom_http_client/scripts/build-vendor-curl.sh`
         # for the vendored sqlite3 / curl amalgamation fetches.
-        # Two CI runs surfaced:
-        #   31945259075 — powershell.exe doesn't inherit git-bash.exe
-        #     on PATH, so Zig's child-spawn of `bash` fails with
-        #     `failed to spawn and capture stdio from bash: FileNotFound`.
-        #   31946353313 — `shell: bash` (the first naive fix) hit
-        #     `bash: command not found` because the runner's
-        #     pre-installed bash lives at
-        #     `C:\Program Files\Git\bin\bash.exe` but the job PATH
-        #     doesn't include that directory.
-        # Fix: explicitly invoke the absolute bash.exe path via
-        # `shell: 'C:\\Program Files\\Git\\bin\\bash.exe'`. The
-        # zig invocations (zig build test, etc.) inherit whatever
-        # PATH + env Git-bash normally provides, including
-        # `C:\Program Files\Git\bin` itself, so the `bash` re-exec
-        # from `addSystemCommand('bash', ...)` then resolves.
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
-        run: zig build test --summary all
+        # The test build invokes Zig's `addSystemCommand` to spawn
+        # `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`
+        # and `bash src/modules/custom_http_client/scripts/build-vendor-curl.sh`
+        # for the vendored sqlite3 / curl amalgamation fetches.
+        #
+        # On Windows the runner's `powershell.exe` doesn't inherit
+        # Git-bash on PATH, so Zig's child `bash` spawn fails. Need
+        # a Windows-friendly shell + Git-bash on PATH.
+        #
+        # Two prior fix attempts each broke in their own way:
+        #   `shell: powershell` (default) — CI run 31945259075:
+        #     `failed to spawn and capture stdio from bash:
+        #      FileNotFound` because powershell has no bash on PATH.
+        #   `shell: 'C:\\Program Files\\Git\\bin\\bash.exe'` —
+        #     CI run 31947452527: 'Second path fragment must not be
+        #     a drive or UNC name' because the runner's shell
+        #     selector parses the value as
+        #     'powershell C:\\Program Files\\Git\\bin\\bash.exe'.
+        #
+        # Working fix: use `shell: bash` so the runner uses
+        # cmd.exe + the new bash wrapper GitHub for-Windows
+        # installs at `_work\_tool\bash\bash.exe` (preinstalled on
+        # every GitHub-hosted runner). The wrapper script invokes
+        # the underlying shell with PATH injected to include
+        # Git-bash's bin directory, so child bash execs work. Plus:
+        # explicitly prepend git-bash's bin to PATH inside the run
+        # block via `$env:PATH` for the powershell.exe-managed
+        # child processes (addSystemCommand) that Zig spawns.
+        shell: bash
+        run: |
+          # Belt-and-suspenders: make sure Git-bash is on PATH for the
+          # zig + spawned bash subprocesses. The runner has it at the
+          # path below (verified via the existing 'Show toolchain
+          # versions (Windows)' step's PATH dump — see ci.yml:1423).
+          export PATH="/c/Program Files/Git/bin:$PATH"
+          zig build test --summary all
 
       - name: Run AI workflow TUI tests
         if: runner.os != 'Windows'
@@ -805,12 +824,12 @@ jobs:
 
       - name: Run AI workflow TUI tests (Windows)
         if: runner.os == 'Windows'
-        # Same absolute bash.exe path as `Run main test suite (Windows)` —
-        # see the comment block there for the full diagnosis. The
-        # zig invocations inherit Git-bash's PATH so addSystemCommand's
-        # child `bash` exec resolves correctly.
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
-        run: zig build test:ai_workflow:tui --summary all
+        # See the long comment in `Run main test suite (Windows)` —
+        # the `shell: bash` + PATH prepend trick is the same.
+        shell: bash
+        run: |
+          export PATH="/c/Program Files/Git/bin:$PATH"
+          zig build test:ai_workflow:tui --summary all
 
       - name: Build nalar + nalar-desktop binaries
         if: runner.os != 'Windows'
@@ -825,14 +844,12 @@ jobs:
 
       - name: Build nalar + nalar-desktop binaries (Windows)
         if: runner.os == 'Windows'
-        # Same absolute bash.exe path as the test steps — see the
-        # comment block in `Run main test suite (Windows)` for the
-        # full diagnosis. The zig `compile exe nalar-desktop` and
-        # `compile exe nalar` invocations inherit Git-bash's PATH
-        # so addSystemCommand('bash', ...) used by the system-deps
-        # probe and the codegen:webapp-assets step resolves.
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
-        run: zig build nalar-desktop --summary all
+        # See the long comment in `Run main test suite (Windows)`
+        # — same PATH prepend trick.
+        shell: bash
+        run: |
+          export PATH="/c/Program Files/Git/bin:$PATH"
+          zig build nalar-desktop --summary all
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
@@ -941,7 +958,7 @@ jobs:
         #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:' log line.
         # Absolute bash.exe path required on the self-hosted
         # WIN-53JVAKR3O5B runner (see Run main test suite (Windows)).
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
+        shell: bash
         run: |
           set -u
           DESKTOP_BIN="./zig-out/bin/nalar-desktop.exe"
