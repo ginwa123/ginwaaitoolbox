@@ -28,6 +28,7 @@ import UpdateActivity from '../preview/UpdateActivity.vue'
 import Search from '../tool_outputs/Search.vue'
 import Glob from '../preview/Glob.vue'
 import TextReplace from '../tool_outputs/TextReplace.vue'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used in <template> as <Bash> (~line 293); typescript-eslint doesn't always see template usages via the Vue parser
 import Bash from '../preview/Bash.vue'
 import GetSkill from '../preview/GetSkill.vue'
 import ViewSkill from '../tool_outputs/ViewSkill.vue'
