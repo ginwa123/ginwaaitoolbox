@@ -97,6 +97,86 @@ const KILL_GRACE_PERIOD_NS: u64 = 2 * std.time.ns_per_s;
 // (1.2–1.7) progressively move helpers and the spawn pipeline from
 // bash.zig into this module. The execute_shell body is intentionally
 // a NotImplemented error until Task 1.5 lands the foreground spawn.
+/// Result of the bounded `waitpid` polling helper.
+const WaitResult = struct {
+    /// Outcome category.
+    outcome: enum {
+        /// Process was reaped within the grace period. The `status` field
+        /// contains the raw waitpid status word.
+        reaped,
+        /// The grace period expired before the process became a zombie.
+        /// The kernel could not reap the process — most commonly because
+        /// a descendant is stuck in D state (uninterruptible sleep on
+        /// Linux, e.g. broken NFS, hung FUSE, stuck disk I/O) and SIGKILL
+        /// cannot interrupt it. The parent-side pipe FDs MUST be closed
+        /// manually before returning so the reader threads can exit.
+        grace_period_expired,
+        /// `waitpid` returned ECHILD — no such process. Either the PID
+        /// never existed or was already reaped by a different waiter
+        /// (e.g. SIGCHLD handler). Treat as "successfully reaped".
+        no_child,
+        /// `waitpid` returned an unexpected error. Caller should log and
+        /// proceed as if the grace period expired.
+        unexpected_error,
+    },
+    /// Raw waitpid status word (only valid when `outcome == .reaped`).
+    status: c_int = 0,
+};
+
+/// Poll `waitpid(pid, &status, WNOHANG)` until the process is reaped OR
+/// the grace period expires. Uses raw libc (`waitpid` + `nanosleep`)
+/// instead of the Io runtime to avoid the deadlock that
+/// `std.Io.Threaded.childWait` causes when this function is called from
+/// an `Io.Group` worker context (the workflow task blocks the group).
+///
+/// Does NOT close pipe FDs — the caller is responsible for that AFTER
+/// this function returns, so the reader threads can exit cleanly.
+///
+/// Cross-platform: works on Linux and macOS. Both expose `std.c.W.NOHANG`.
+/// On Windows this path is unreachable because the existing code uses
+/// `std.posix.kill` which doesn't exist on Windows.
+pub fn wait_pid_bounded(io: std.Io, pid: std.posix.pid_t, grace_period_ns: u64) WaitResult {
+    const start_ns: u64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+    const deadline_ns: u64 = start_ns + grace_period_ns;
+    while (true) {
+        var status: c_int = 0;
+        // WNOHANG = 1: don't block; return 0 if not exited yet.
+        const rc = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+        if (rc == pid) {
+            return .{ .outcome = .reaped, .status = status };
+        }
+        if (rc < 0) {
+            const err = std.c.errno(rc);
+            if (err == .CHILD) return .{ .outcome = .no_child, .status = 0 };
+            std.log.warn(
+                "shell.zig: waitpid(pid={d}) returned unexpected errno {t}; abandoning wait",
+                .{ pid, err },
+            );
+            return .{ .outcome = .unexpected_error, .status = 0 };
+        }
+        // rc == 0 → child not yet exited. Check the deadline.
+        const now_ns: u64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+        if (now_ns >= deadline_ns) {
+            return .{ .outcome = .grace_period_expired, .status = 0 };
+        }
+        const ts = NanoSleepTimespec{
+            .sec = 0,
+            .nsec = 10 * std.time.ns_per_ms,
+        };
+        _ = nanosleep(&ts, null);
+    }
+}
+
+/// Convert a raw `waitpid` status word to a Zig `std.process.Child.Term`.
+/// Mirrors `childWaitPosix` in `std/Io/Threaded.zig:15309`.
+pub fn status_to_term(status: c_int) std.process.Child.Term {
+    const u: u32 = @bitCast(@as(u32, @intCast(status)));
+    if (std.c.W.IFEXITED(u)) return .{ .exited = std.c.W.EXITSTATUS(u) };
+    if (std.c.W.IFSIGNALED(u)) return .{ .signal = @enumFromInt(@intFromEnum(std.c.W.TERMSIG(u))) };
+    if (std.c.W.IFSTOPPED(u)) return .{ .stopped = std.c.W.STOPSIG(u) };
+    return .{ .unknown = u };
+}
+
 pub fn execute_shell(
     _allocator: std.mem.Allocator,
     _io: std.Io,
@@ -114,6 +194,8 @@ pub fn execute_shell(
     _ = KILL_GRACE_PERIOD_NS;
     _ = is_forbidden_command;
     _ = encode_command_urls;
+    _ = wait_pid_bounded;
+    _ = status_to_term;
     _ = _allocator;
     _ = _io;
     _ = _argv_prefix;
