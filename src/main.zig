@@ -17,10 +17,7 @@ const state_file = nalarcore.state_file;
 const main_service = nalarcore.main_service;
 
 pub fn main(init: std.process.Init) !void {
-    const gpa_allocator = init.gpa;
-    var arena_allocator = std.heap.ArenaAllocator.init(gpa_allocator);
-    const allocator = arena_allocator.allocator();
-    defer arena_allocator.deinit();
+    const allocator = init.gpa;
     const environment = init.environ_map;
     const io = init.io;
 

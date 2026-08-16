@@ -20,13 +20,6 @@ pub const InsertLLMHistoriesInput = struct {
     event_bus: ?*event_bus_mod.EventBus,
     cwd: []const u8,
     entity: LLMHistory,
-    /// When true, skip the `INSERT INTO llm_history` and
-    /// `UPDATE sessions SET cwd = ?` writes — the SSE branch still
-    /// runs when `is_emit_sse = true` and `event_bus != null`. Used by
-    /// error-path diagnostics (TooManyRetries + unattended-mode
-    /// soft-bail) that should surface in the live chat stream without
-    /// polluting the persistent chat history. Defaults to false so all
-    /// existing call sites stay DB-writing unchanged.
     is_skip_db: bool = false,
 };
 

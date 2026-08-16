@@ -906,7 +906,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, config);
+        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config);
         if (is_do_compaction) {
             logger.infoFmt(
                 "[CHECKPOINT] compaction triggered session_id={s} loop_counter={d} total_tokens={d} prompt_msg_count={d}",

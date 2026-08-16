@@ -94,6 +94,15 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         sqlite_db,
         io,
         logger,
+        // Manual endpoint — pass the singleton's event_bus when one
+        // is reachable; the DB write happens regardless, and `null`
+        // would just skip the SSE fanout to subscribers of this
+        // manual compact action. Production callers inside the HTTP
+        // server always have the singleton initialized (it lives
+        // for the full process lifetime, set in main.zig:124).
+        // Reuse the `di` we already fetched above instead of doing
+        // a second `getSingleton()` round-trip.
+        di.event_bus,
         live_cfg,
     ) catch |err| {
         logger.errFmt("[COMPACTION] manual compaction failed: {s}", .{@errorName(err)});
