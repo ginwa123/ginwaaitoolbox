@@ -501,20 +501,35 @@ jobs:
         #   2. vcpkg integrate install (single command, idempotent)
         #   3. ripgrep via winget (or skip if already on PATH)
         run: |
-          # WebView2 NuGet. nuget.exe ships with Windows 10+ out of
-          # the box. The .h and .dll get extracted into
+          # WebView2 NuGet. The .h and .dll get extracted into
           # `src/apps/desktop_app/platform/windows/` for nalar-desktop
           # to include at build time. The nalar.exe service binary
           # does not need WebView2.
+          #
+          # We download the .nupkg directly from nuget.org and
+          # unzip it. The .nupkg is just a renamed ZIP — no nuget.exe
+          # needed. The runner does NOT ship nuget.exe on PATH
+          # (CI run 31938453096 reproduced "nuget : The term 'nuget'
+          # is not recognized" before this fix).
           $nugetVersion = "1.0.2651.78"
-          $webview2Src = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.web.webview2\$nugetVersion"
+          $webview2Pkg = "microsoft.web.webview2"
+          $webview2Src = Join-Path $env:USERPROFILE ".nuget\packages\$webview2Pkg\$nugetVersion"
           $webview2Dst = "src\apps\desktop_app\platform\windows"
           $webview2Header = Join-Path $webview2Src "build\native\include\WebView2.h"
           if (Test-Path $webview2Header) {
             Write-Host ("WebView2 NuGet " + $nugetVersion + " already cached")
           } else {
             Write-Host ("Fetching WebView2 NuGet " + $nugetVersion + "...")
-            nuget install Microsoft.Web.WebView2 -Version $nugetVersion -OutputDirectory "$env:USERPROFILE\.nuget" -ForceEnglishOutput
+            $nupkgPath = Join-Path $env:TEMP ("microsoft.web.webview2." + $nugetVersion + ".nupkg")
+            $nupkgUrl = ("https://www.nuget.org/api/v2/package/" + $webview2Pkg + "/" + $nugetVersion)
+            Invoke-WebRequest -Uri $nupkgUrl -OutFile $nupkgPath -UseBasicParsing -TimeoutSec 180
+            New-Item -Path $webview2Src -ItemType Directory -Force | Out-Null
+            # Expand-Archive places files at the path root inside the
+            # archive, e.g. build/native/include/WebView2.h lands at
+            # $webview2Src\build\native\include\WebView2.h — same layout
+            # nuget.exe -OutputDirectory would produce.
+            Expand-Archive -Path $nupkgPath -DestinationPath $webview2Src -Force
+            Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
           }
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2Loader.h") (Join-Path $webview2Dst "WebView2Loader.h")
