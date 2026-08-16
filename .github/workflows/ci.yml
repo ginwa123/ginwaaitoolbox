@@ -293,41 +293,33 @@ jobs:
         # under 50 lines of PowerShell, which the 5.1 lexer handles
         # reliably. See PR #244 history for the long debug session.
         shell: powershell
-        # Step 1 of 2: install MSVC Build Tools + vcpkg. The MSVC
-        # install is ALWAYS attempted (with `--wait`) because vcpkg's
-        # x64-windows triplet needs cl.exe / link.exe at compile time.
-        # The previous logic only triggered winget install inside the
-        # vcpkg-missing branch — which left a state where vcpkg.exe
-        # existed but MSVC did not, so vcpkg's port compiles silently
-        # failed (CI runs 31897518425, 31899279563). Each sub-step
-        # stays under 50 lines so PowerShell 5.1 parses it cleanly.
+        # Step 1 of 2: install vcpkg itself + MSVC Build Tools, then
+        # source vcvars64.bat and capture its env vars into $env:...
+        # AND into $GITHUB_ENV, so subsequent STEPS (not just the rest
+        # of this process) see MSVC's PATH / INCLUDE / LIB. Each
+        # `run:` block executes as a brand-new process — Set-Item on
+        # Env: only persists for the remainder of *this* step, it does
+        # not cross the step boundary. Writing to $GITHUB_ENV is what
+        # makes the values visible in "Install vcpkg ports + WebView2 +
+        # ripgrep (Windows)". Without this, that step's
+        # `Get-Command cl` re-detection comes back empty on a fresh
+        # runner and $useMSVC silently ends up false (observed on CI:
+        # "useMSVC: False" followed by every vcpkg port build missing
+        # its headers, e.g. sqlite3.h not found at
+        # C:\vcpkg\installed\x64-windows\include\sqlite3.h).
         run: |
-          # MSVC Build Tools are checked FIRST, independent of vcpkg.
-          # If vcvars64.bat is missing, winget install with --wait
-          # blocks until the install completes.
-          $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $vsInstaller) {
-            Write-Host "MSVC Build Tools not found, installing..."
-            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
-            winget install --id Kitware.CMake --wait -e --accept-source-agreements --accept-package-agreements --silent
-          } else {
-            Write-Host ("MSVC Build Tools already at " + $vsInstaller.FullName)
-          }
-
-          # Bootstrap vcpkg from source if the binary isn't present.
           if (Test-Path "C:\vcpkg\vcpkg.exe") {
             Write-Host "vcpkg already installed at C:\vcpkg"
           } else {
-            Write-Host "Bootstrapping vcpkg from source..."
+            Write-Host "Installing vcpkg via winget..."
+            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements --silent
             git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           }
 
-          # Re-check for vcvars64.bat AFTER winget install.
-          # Source its env vars into $env:... so subsequent steps see
-          # cl.exe + link.exe. Use the Out-File line pattern (single
-          # quoted strings + Out-File, no multi-fragment `+`
-          # concatenation) to dodge the PowerShell 5.1 lexer bug.
+          # Find vcvars64.bat (Visual Studio Build Tools 2022 layout).
+          # If not present, fall back to vcpkg's auto-triplet path.
           $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           $useMSVC = $false
           if ($vsInstaller) {
@@ -351,6 +343,10 @@ jobs:
               if ($line -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=") {
                 $name, $value = $line -split "=", 2
                 Set-Item -Path ("Env:" + $name) -Value $value
+                # Persist across the step boundary. GITHUB_ENV lines are
+                # NAME=value; PATH is long but Add-Content handles it fine
+                # as a single line (no length limit imposed by Actions).
+                Add-Content -Path $env:GITHUB_ENV -Value ($name + "=" + $value)
               }
             }
             Remove-Item $vcvarsBat -Force -ErrorAction SilentlyContinue
@@ -362,6 +358,7 @@ jobs:
           $vcpkgCacheDir = Join-Path $env:USERPROFILE ".cache\vcpkg-binary"
           New-Item -Path $vcpkgCacheDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
+
       - name: Install vcpkg ports + WebView2 + ripgrep (Windows)
         if: runner.os == 'Windows'
         shell: powershell
@@ -372,17 +369,37 @@ jobs:
         # `vcpkg integrate install`, and ensures `rg` is on PATH for
         # the search_test.zig suite. Each step stays under 50 lines
         # so PowerShell 5.1 parses it cleanly.
+                # Step 2 of 2. The previous step wrote PATH/INCLUDE/LIB/etc. to
+        # $GITHUB_ENV, so this step's process starts with MSVC already
+        # on PATH - `Get-Command cl` below should find it directly. The
+        # explicit vcvars64.bat re-source inside each Start-Job block is
+        # kept as a belt-and-suspenders fallback in case a given job's
+        # child process doesn't inherit env the same way.
         run: |
-          # Re-detect useMSVC by checking whether `cl.exe` is on PATH
-          # (vcvars64.bat sourced it on the previous step).
           $useMSVC = [bool](Get-Command cl -ErrorAction SilentlyContinue)
           Write-Host ("useMSVC: " + $useMSVC)
+          if (-not $useMSVC) {
+            Write-Warning "cl.exe not found on PATH - MSVC env did not carry over from the previous step. Falling back to per-job vcvars64.bat sourcing."
+          }
 
           # Install the 4 ports in parallel via Start-Job. Each port
           # fetches source + compiles a small import lib + headers;
           # the bottleneck is MSVC link time (~30-60s each), not
           # network. Start-Job's ScriptBlock is small and parses
           # cleanly in PowerShell 5.1.
+          #
+          # IMPORTANT: `& "C:\vcpkg\vcpkg.exe" install ...` returning a
+          # non-zero exit code does NOT make the PowerShell job
+          # "Failed" - Start-Job jobs only fail on terminating
+          # PowerShell errors, not on external-process exit codes. The
+          # explicit `if ($LASTEXITCODE -ne 0) { throw ... }` below is
+          # what turns a real vcpkg failure into something the
+          # $job.State / $job.ChildJobs[0].Error check downstream can
+          # actually detect. Without this, a broken vcpkg install
+          # silently reports "Completed" (observed on CI: all 4 jobs
+          # completed, useMSVC was False, and only the later
+          # Test-Path verification loop caught that sqlite3.h was
+          # missing).
           $ports = @("curl", "openssl", "libpq", "sqlite3")
           $jobs = @()
           foreach ($port in $ports) {
@@ -392,18 +409,26 @@ jobs:
                 & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
               }
               & "C:\vcpkg\vcpkg.exe" install ($p + ":x64-windows") --recurse
+              if ($LASTEXITCODE -ne 0) {
+                throw ("vcpkg install " + $p + " failed with exit code " + $LASTEXITCODE)
+              }
             }
           }
           Write-Host ("Waiting for " + $jobs.Count + " parallel vcpkg installs...")
           $jobs | ForEach-Object { $_ | Wait-Job | Out-Null }
+          $anyFailed = $false
           foreach ($job in $jobs) {
-            $stateInfo = $job.State
-            if ($stateInfo -ne "Completed") {
-              $output = Receive-Job -Job $job
-              Write-Error ("vcpkg install job failed, state=" + $stateInfo + " output=" + $output)
-              exit 1
+            $hadError = $job.ChildJobs[0].Error.Count -gt 0
+            if ($job.State -ne "Completed" -or $hadError) {
+              $output = Receive-Job -Job $job -ErrorAction SilentlyContinue
+              $errText = ($job.ChildJobs[0].Error | Out-String)
+              Write-Error ("vcpkg install job failed, state=" + $job.State + " error=" + $errText + " output=" + $output)
+              $anyFailed = $true
             }
-            Remove-Job $job
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+          }
+          if ($anyFailed) {
+            exit 1
           }
 
           # Verify each port's install location before the build runs.
@@ -465,8 +490,7 @@ jobs:
             winget install --id BurntSushi.ripgrep.MSVC --wait -e --accept-source-agreements --accept-package-agreements --silent
             $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "Process")
             Write-Host "ok ripgrep installed"
-          }
-
+   
       - name: Show toolchain versions
         shell: bash
         # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
