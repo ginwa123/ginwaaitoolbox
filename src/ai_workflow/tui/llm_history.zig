@@ -136,14 +136,14 @@ pub fn getSessionList(
         \\         (SELECT h2.agent
         \\            FROM llm_history h2
         \\           WHERE h2.session_id = sub.session_id
-        \\           ORDER BY h2.created_at DESC
+        \\           ORDER BY h2.created_at_nano DESC
         \\           LIMIT 1),
         \\         'Agent'
         \\       ) AS agent,
         \\       COALESCE(s.is_auto_retry_until_stop, '0') AS is_auto_retry_until_stop,
         \\       COALESCE(s.last_finish_reason, '') AS last_finish_reason
         \\FROM (
-        \\  SELECT h.session_id, MAX(h.created_at) AS created_at
+        \\  SELECT h.session_id, MAX(h.created_at_nano) AS created_at
         \\    FROM llm_history h
         \\   GROUP BY h.session_id
         \\   ORDER BY created_at DESC
@@ -449,7 +449,7 @@ pub fn getLatestFinishReason(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?[]const u8 {
-    const sql = "SELECT finish_reason FROM llm_history WHERE session_id = ? AND finish_reason IS NOT NULL AND finish_reason != '' ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT finish_reason FROM llm_history WHERE session_id = ? AND finish_reason IS NOT NULL AND finish_reason != '' ORDER BY created_at_nano DESC LIMIT 1";
 
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
@@ -582,18 +582,18 @@ pub fn getSessionMessagesSorted(
             else => false,
         };
         // Use h.created_at (message time) for cursor, not s.created_at (session time)
-        const cursor_cmp = if (is_asc) " AND h.created_at > ?" else " AND h.created_at < ?";
+        const cursor_cmp = if (is_asc) " AND h.created_at_nano > ?" else " AND h.created_at_nano < ?";
 
         const order_part = switch (sort_spec) {
-            .created_at_asc => " ORDER BY h.created_at ASC, h.id ASC",
-            .created_at_desc => " ORDER BY h.created_at DESC, h.id DESC",
-            .id_asc => " ORDER BY h.created_at ASC, h.id ASC",
-            .id_desc => " ORDER BY h.created_at DESC, h.id DESC",
-            .role_asc => " ORDER BY h.role ASC, h.created_at ASC, h.id ASC",
-            .role_desc => " ORDER BY h.role DESC, h.created_at DESC, h.id DESC",
+            .created_at_asc => " ORDER BY h.created_at_nano ASC, h.id ASC",
+            .created_at_desc => " ORDER BY h.created_at_nano DESC, h.id DESC",
+            .id_asc => " ORDER BY h.created_at_nano ASC, h.id ASC",
+            .id_desc => " ORDER BY h.created_at_nano DESC, h.id DESC",
+            .role_asc => " ORDER BY h.role ASC, h.created_at_nano ASC, h.id ASC",
+            .role_desc => " ORDER BY h.role DESC, h.created_at_nano DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
-            \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
+            \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
@@ -612,7 +612,7 @@ pub fn getSessionMessagesSorted(
             .role_desc => " ORDER BY h.role DESC, s.created_at DESC, h.id DESC",
         };
         sql = try std.fmt.allocPrint(allocator,
-            \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at,
+            \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
@@ -1026,7 +1026,7 @@ pub fn createSession(
     try db.exec(allocator, session_sql, &.{ session_id, copy_session_name });
 
     // Insert session into llm_history table
-    const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)";
+    const insert_sql = "INSERT INTO llm_history (id, session_id, model, response_content, role, agent, temperature, created_at_nano, is_input, is_output, tool_name) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)";
 
     const temp_str = try std.fmt.allocPrint(allocator, "{d}", .{temperature});
     defer allocator.free(temp_str);
@@ -1097,8 +1097,8 @@ pub fn saveMessage(
     // so the column matches its documented format.
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-    defer allocator.free(created_at);
+    const created_at_nano = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(created_at_nano);
 
     // Compute `created_iso` (the UTC‑formatted ISO string for the
     // `since`/`until` filter columns) IN APPLICATION CODE rather than
@@ -1145,7 +1145,7 @@ pub fn saveMessage(
         \\    loop_index,
         \\    temperature,
         \\    is_thinking,
-        \\    created_at,
+        \\    created_at_nano,
         \\    created_iso,
         \\    parent_session_id,
         \\    parent_id,
@@ -1231,7 +1231,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -1253,7 +1253,7 @@ pub fn getMessages(
 
     const sql =
         \\SELECT
-        \\    h.id, h.session_id, h.model, h.created_at,
+        \\    h.id, h.session_id, h.model, h.created_at_nano AS created_at,
         \\    h.response_content, h.finish_reason,
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
@@ -1278,7 +1278,7 @@ pub fn getMessages(
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
         \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
-        \\ORDER BY h.created_at ASC
+        \\ORDER BY h.created_at_nano ASC
     ;
 
     var rows = try db.query(allocator, sql, &.{session_id});
@@ -1567,7 +1567,7 @@ pub fn getCompactedMessages(
         \\    COALESCE(h.response_content, ''),
         \\    h.tool_call_id, h.tool_name,
         \\    COALESCE(h.model, ''), COALESCE(h.agent, ''),
-        \\    COALESCE(h.created_at, ''),
+        \\    COALESCE(h.created_at_nano, '') AS created_at,
         \\    COUNT(*) OVER () AS total
         \\FROM llm_history h
         \\WHERE h.session_id = ?
@@ -1625,7 +1625,7 @@ pub fn getCompactedMessages(
         try bind_values.append(allocator, u);
     }
 
-    try sql.print(allocator, " ORDER BY h.created_at {s}", .{@tagName(opts.order)});
+    try sql.print(allocator, " ORDER BY h.created_at_nano {s}", .{@tagName(opts.order)});
 
     // Bind the limit at the end. Format inline since we know it's u32.
     try sql.print(allocator, " LIMIT {d}", .{effective_limit});
@@ -1694,7 +1694,7 @@ pub fn getMessagesByIds(
         \\    COALESCE(h.response_content, ''),
         \\    h.tool_call_id, h.tool_name,
         \\    COALESCE(h.model, ''), COALESCE(h.agent, ''),
-        \\    COALESCE(h.created_at, ''),
+        \\    COALESCE(h.created_at_nano, '') AS created_at,
         \\    COUNT(*) OVER () AS total
         \\FROM llm_history h
         \\WHERE h.id IN (
@@ -1837,7 +1837,7 @@ pub fn searchMessagesFts(
         \\        snippet(messages_fts, 0, '[', ']', '...', 10) AS snippet,
         \\        h.tool_call_id AS tool_call_id,
         \\        h.tool_name AS tool_name,
-        \\        COALESCE(h.created_at, '') AS created_at,
+        \\        COALESCE(h.created_at_nano, '') AS created_at,
         \\        rank AS fts_rank
         \\    FROM messages_fts
         \\    JOIN llm_history h ON h.rowid = messages_fts.rowid
@@ -1937,7 +1937,7 @@ pub fn getLatestMessage(
 ) !?TUIHistory {
     const sql =
         \\SELECT
-        \\    h.id, h.session_id, h.model, h.created_at,
+        \\    h.id, h.session_id, h.model, h.created_at_nano AS created_at,
         \\    h.response_content, h.finish_reason,
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
@@ -1962,7 +1962,7 @@ pub fn getLatestMessage(
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
         \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
-        \\ORDER BY h.created_at DESC
+        \\ORDER BY h.created_at_nano DESC
         \\LIMIT 1
     ;
 
@@ -2032,7 +2032,7 @@ pub fn get_sessions_by_dir(
 ) ![]SessionInfo {
     var results: std.ArrayList(SessionInfo) = .empty;
 
-    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at) as created_at FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE s.cwd = ? GROUP BY h.session_id ORDER BY MAX(h.created_at) DESC LIMIT 10";
+    const sql = "SELECT h.session_id, COALESCE(s.cwd, ''), MAX(h.created_at_nano) AS created_at FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id WHERE s.cwd = ? GROUP BY h.session_id ORDER BY MAX(h.created_at_nano) DESC LIMIT 10";
     var rows = try db.query(allocator, sql, &[_][]const u8{cwd});
     defer rows.deinit();
 
@@ -2493,8 +2493,8 @@ pub fn saveToolResultPlaceholder(
 ) ![]const u8 {
     const id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
     defer allocator.free(id);
-    const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-    defer allocator.free(created_at);
+    const created_at_nano = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+    defer allocator.free(created_at_nano);
     const created_iso = try helpers.currentTimeIsoLocal(allocator, io);
     defer allocator.free(created_iso);
 
@@ -2503,7 +2503,7 @@ pub fn saveToolResultPlaceholder(
         \\    id, session_id, model, response_content, tool_call_id, tool_name,
         \\    role, finish_reason, is_loading, is_feed_to_llm,
         \\    agent, loop_index, temperature, is_thinking,
-        \\    created_at, created_iso, parent_session_id,
+        \\    created_at_nano, created_iso, parent_session_id,
         \\    is_input, is_output, prompt_tokens, completion_tokens, total_tokens
         \\) VALUES (
         \\    ?, ?, ?, '', ?, ?, 'tool', 'tool', 1, 1,
@@ -2523,7 +2523,7 @@ pub fn saveToolResultPlaceholder(
         opts.tool_call_id,
         opts.tool_name,
         loop_index_str,
-        created_at,
+        created_at_nano,
         created_iso,
         opts.parent_session_id,
     };
