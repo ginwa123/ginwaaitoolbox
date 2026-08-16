@@ -59,6 +59,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
             makeElement('e3', 0, 0),
           ],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -103,6 +104,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           design_elements: [
             makeElement('e1', 0, 0),
             makeElement('e2', 0, 0),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           ],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
@@ -140,6 +142,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           item_type: 'design',
           name: 'Item',
           path: '/tmp',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           position: 0,
           design_elements: [],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -172,6 +175,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           workspace_id: 'ws_1',
           item_type: 'design',
           name: 'Item',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           path: '/tmp',
           position: 0,
           design_elements: [makeElement('e_single', 0, 0)],
@@ -186,6 +190,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
       x: 99,
     })
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(isRecentLocalMutation('e_single')).toBe(true)
   })
 })

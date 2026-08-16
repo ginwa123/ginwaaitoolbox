@@ -88,6 +88,7 @@ const ITEM = {
   design_elements: [],
   workspace_id: 'ws_1',
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 function findInDom<T extends Element = Element>(selector: string): T | null {

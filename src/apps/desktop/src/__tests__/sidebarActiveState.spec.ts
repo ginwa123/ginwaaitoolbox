@@ -23,6 +23,7 @@ import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -258,6 +259,7 @@ describe('AppLayout URL-driven chat navigation', () => {
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
       path: '/app',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       fullPath: '/app',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -277,6 +279,7 @@ describe('AppLayout URL-driven chat navigation', () => {
     // page was reloaded with a chat-session URL.
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_url' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       path: '/app',
       fullPath: '/app?view=chat&session=chat_url',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -325,6 +328,7 @@ describe('AppLayout URL-driven chat navigation', () => {
     // (non-reactive) mock return value.
     const routeObj = reactive({
       query: { view: 'workspace' } as Record<string, string>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       path: '/app',
       fullPath: '/app?view=workspace',
     })

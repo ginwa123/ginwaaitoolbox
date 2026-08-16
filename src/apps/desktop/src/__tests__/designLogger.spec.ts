@@ -72,6 +72,7 @@ describe('designLogger', () => {
     expect(ctx.caller).toBe('t.select')
     expect(ctx.reason).toBe('emit:select')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((ctx as any).element.id).toBe('el_1')
   })
 

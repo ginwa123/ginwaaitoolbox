@@ -83,6 +83,7 @@ const TASK_ID = 'task_1'
 
 function makeStubClient(): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -170,13 +171,16 @@ describe('AppLayout — design chat dialog mount', () => {
       path: '/',
       absolute: '/',
       home: '/',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       next_cursor: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       total: 0,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -188,16 +192,20 @@ describe('AppLayout — design chat dialog mount', () => {
   })
 
   // Mock the API calls in init() so they preserve the per-test fixture.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   // Each test calls this AFTER setting store.workspaces = [...] and
   // BEFORE mount, so init() doesn't wipe the fixture.
   function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { workspaces: store.workspaces as any }
     })
     vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ws = store.workspaces.find((w: any) => w.id === wsId)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
     })
@@ -239,6 +247,7 @@ describe('AppLayout — design chat dialog mount', () => {
     return exposed.handleDesignOpenChat({
       pageId,
       pageName,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       workspaceItemTaskId: TASK_ID,
     })
   }
@@ -269,6 +278,7 @@ describe('AppLayout — design chat dialog mount', () => {
     // (a local ref set by handleDesignOpenChat from the
     // workspaceItemTaskId FK), and uses a synthetic Task object
     // for ChatView's API. This test simulates the full bug
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // scenario: design item with NO tasks (production state),
     // user clicks 💬, dialog should appear.
     const store = useWorkspacesStore()
@@ -298,6 +308,7 @@ describe('AppLayout — design chat dialog mount', () => {
   })
 
   it('does NOT render DesignChatDialog when handleDesignOpenChat fires for a non-design item (kanban)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const store = useWorkspacesStore()
     store.workspaces = [
       {
@@ -324,6 +335,7 @@ describe('AppLayout — design chat dialog mount', () => {
     await flushPromises()
     expect(
       document.querySelector('[data-testid="design-chat-dialog"]'),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ).toBeNull()
   })
 
@@ -350,6 +362,7 @@ describe('AppLayout — design chat dialog mount', () => {
     expect(title?.textContent).toContain('Design Chat: Login Page')
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   it('closes the dialog when handleCloseTaskView is invoked via @close emit', async () => {
     // handleDesignOpenChat also calls workspacesStore.setActiveTask,
     // which the dialog's open-state watcher (designChatDialogOpen)

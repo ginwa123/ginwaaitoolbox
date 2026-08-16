@@ -43,6 +43,7 @@ vi.mock('@/components/preview/InlineEditableText.vue', () => ({
 }))
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ITEM: any = {
   id: 'item_1',
   name: 'Kanban',
@@ -77,11 +78,14 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     await flushPromises()
     // The host guards handleCreateTaskSave on `activeCreateColumnId`
     // (set when the user clicks + on a column). Set it directly via
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // the vm so we don't have to drive the @add-task emit path.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper!.vm as any).activeCreateColumnId = 'col_todo'
     return wrapper!
   }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
   it("calls addKanbanTask('create_and_run', ...) with the right payload — no addTask + runAgentOnNewTask dance", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -96,6 +100,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       .spyOn(store, 'addKanbanTask')
       .mockResolvedValue({ task: fakeTask, session: fakeSession })
     const addTaskSpy = vi.spyOn(store, 'addTask')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const runAgentSpy = vi.spyOn(store, 'runAgentOnNewTask')
 
     const view = await mountView()
@@ -137,6 +142,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     // on the kanban view (no chat dialog opens); the agent runs in
     // the background and the user can click the new task card to
     // open the chat view any time they want.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(view.emitted('selectTask')).toBeUndefined()
   })
 
@@ -145,6 +151,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     const fakeTask = { id: 'task_new', name: 'Just title', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'Just title', status: 'send' }
     const store = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
       .mockResolvedValue({ task: fakeTask, session: fakeSession })
@@ -166,6 +173,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       'item_1',
       'create_and_run',
       expect.objectContaining({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         queue_message: 'Just title',
       }),
     )
@@ -174,6 +182,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
   it('forwards unattended toggle value', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
     const addKanbanSpy = vi
@@ -195,9 +204,11 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       'ws_1',
       'item_1',
       'create_and_run',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect.objectContaining({
         isAutoRetryUntilStop: '1',
       }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     )
   })
 
@@ -218,6 +229,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(view.emitted('selectTask')).toBeUndefined()
     // Partial-success: the store action's catch block decides whether
     // to surface a toast. In the new contract the store action's
@@ -225,6 +237,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     // store's notifyError lives in the catch path. The component
     // surfaces its own error via `createError` (the dialog stays
     // open for retry). We don't re-toast here to avoid duplicates.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })
 
   it('still creates the task in plain create mode (existing behavior unchanged)', async () => {
@@ -249,12 +262,14 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
 
     expect(addKanbanSpy).toHaveBeenCalledWith(
       'ws_1',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       'item_1',
       'create',
       expect.objectContaining({
         name: 't',
         description: 'd',
         queue_message: undefined,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       }),
     )
     expect(view.emitted('selectTask')).toBeUndefined()
@@ -273,6 +288,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
       name: 'My task',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       description: 'desc',
       is_auto_retry_until_stop: '0',
       tags: [],
@@ -281,6 +297,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
 
     // The flow: single addKanbanTask call (the new endpoint handles
     // create + run agent server-side in one round-trip).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(store.addKanbanTask).toHaveBeenCalledOnce()
     // But the chat view does NOT open.
     expect(view.emitted('selectTask')).toBeUndefined()

@@ -65,6 +65,7 @@ function makeStore() {
       ],
     },
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ] as any
   return store
 }
@@ -80,6 +81,7 @@ describe('workspacesStore.translateDesignElement', () => {
 
   it('POSTs to /translate with {dx, dy} body', async () => {
     const store = makeStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const apiSpy = vi.spyOn(await import('../api'), 'translateDesignElement')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValueOnce({ updated: [ELEM_BOX_MOVED] } as any)
@@ -90,10 +92,13 @@ describe('workspacesStore.translateDesignElement', () => {
   })
 
   it('mirrors the response into item.design_elements[]', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const store = makeStore()
     vi.spyOn(await import('../api'), 'translateDesignElement')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValueOnce({ updated: [ELEM_BOX_MOVED] } as any)
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
     await store.translateDesignElement('ws_1', 'item_1', 'page_1', 'elem_1', 50, 30)
 
@@ -102,6 +107,8 @@ describe('workspacesStore.translateDesignElement', () => {
     expect(elements[0].x).toBe(150)
     expect(elements[0].y).toBe(130)
   })
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
   it('returns the updated elements array', async () => {
     const store = makeStore()
@@ -141,19 +148,23 @@ describe('workspacesStore.translateDesignElement', () => {
               fill: '', stroke: '', stroke_width: 0,
               corner_radius: 0, rotation: 0,
               opacity: 1.0, text_content: '', text_style: '',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
               image_url: '', file_path: '',
               created_at: '', updated_at: '' },
           ],
         }],
       },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(await import('../api'), 'translateDesignElement')
       .mockResolvedValueOnce({
         updated: [
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           { ...(store.workspaces[0] as any).items[0].design_elements[0], x: 200 },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           { ...(store.workspaces[0] as any).items[0].design_elements[1], x: 210 },
         ],
@@ -171,6 +182,7 @@ describe('workspacesStore.translateDesignElement', () => {
   })
 })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 describe('workspacesStore.resizeDesignElement', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -186,11 +198,14 @@ describe('workspacesStore.resizeDesignElement', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValueOnce(ELEM_BOX_RESIZED as any)
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     await store.resizeDesignElement('ws_1', 'item_1', 'page_1', 'elem_1', {
       x: 50, y: 60, width: 300, height: 400, rotation: 15,
     })
 
     expect(apiSpy).toHaveBeenCalledWith('ws_1', 'item_1', 'page_1', 'elem_1', {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       x: 50, y: 60, width: 300, height: 400, rotation: 15,
     })
   })

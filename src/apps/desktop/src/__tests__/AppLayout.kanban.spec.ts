@@ -47,6 +47,7 @@ import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 // <KanbanView> / <ChatView> placement clean.
 function makeStubClient(initial: SseState = 'open'): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -197,6 +198,7 @@ describe('AppLayout — kanban main-content rendering', () => {
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
       path: '/app',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       fullPath: '/app',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -269,6 +271,7 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     })
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       path: '/app',
       fullPath: '/app',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -318,6 +321,7 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
         workspaceId: WS_ID,
         itemId: `${KANBAN_ID}/chat/${TASK_ID}`,
       } as Record<string, string>,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${KANBAN_ID}/chat/${TASK_ID}`,
     })
@@ -364,6 +368,7 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
         view: 'workspace',
         workspaceId: WS_ID,
         itemId: `${FOLDER_ID}/chat/task_in_folder`,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as Record<string, string>,
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${FOLDER_ID}/chat/task_in_folder`,
@@ -430,6 +435,7 @@ describe('AppLayout — kanban survives route navigation (regression: activeWork
       writable: true,
       configurable: true,
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // Drive AppLayout with a `?view=workspace` URL.
     useRouteMock.mockReturnValue({
       query: { view: 'workspace' } as Record<string, string>,

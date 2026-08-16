@@ -79,7 +79,9 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
           workspace_id: 'ws_1',
           design_elements: [],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -89,6 +91,7 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
     store.setActiveWorkspaceItem('item_1')
     store.setActiveDesignPage('page_1')
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const reorderSpy = vi
       .spyOn(store, 'reorderDesignElements')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -134,14 +137,17 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
           id: 'item_1',
           name: 'Design',
           item_type: 'design',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           path: '/tmp',
           workspace_id: 'ws_1',
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           design_elements: [],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     store.setActiveWorkspaceItem('item_1')
     store.setActiveDesignPage('page_1')
 

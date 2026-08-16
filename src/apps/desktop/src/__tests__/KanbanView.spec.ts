@@ -657,6 +657,7 @@ describe('KanbanView — create-task flow', () => {
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue({ task: fakeTask as any, session: null })
     const moveTaskSpy = vi
       .spyOn(store, 'moveTaskToColumn')
@@ -737,6 +738,7 @@ describe('KanbanView — create-task flow', () => {
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
     const addKanbanSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .spyOn(store, 'addKanbanTask')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue({ task: null, session: null } as any)
@@ -790,6 +792,7 @@ describe('KanbanView — create-task flow', () => {
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
     const fakeTask = { id: 'task_new_tags', name: 'Tagged task', task_type: 'standard' }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -990,6 +993,7 @@ describe('KanbanView — header + Add task button', () => {
     })
     wrapper = mountView(item)
     await flushPromises()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
     const fakeTask = { id: 'task_new_1', name: 'My new task', task_type: 'standard' }

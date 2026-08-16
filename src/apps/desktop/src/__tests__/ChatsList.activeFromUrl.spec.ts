@@ -63,6 +63,7 @@ vi.mock('vue-router', async () => {
 
 function makeStubClient(initial: SseState): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -85,10 +86,13 @@ const baseSession = {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mockGetChatsWith(extraSessions: any[] = []) {
   vi.spyOn(api, 'getChats').mockResolvedValue({
     sessions: [baseSession, ...extraSessions],
     has_more: false,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     next_cursor: null,
     total: 1 + extraSessions.length,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -141,6 +145,7 @@ describe('ChatsList — chat row active state from URL', () => {
 
   it('chat row is active when URL is ?view=chat&session=X (URL-driven)', async () => {
     useRouteMock.mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       query: { view: 'chat', session: 'chat_abc' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_abc',
@@ -158,6 +163,7 @@ describe('ChatsList — chat row active state from URL', () => {
   })
 
   it('chat row is NOT active when URL is ?view=workspace (different section)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue({
       query: { view: 'workspace', itemId: 'item_x' },
       path: '/app',
@@ -173,6 +179,7 @@ describe('ChatsList — chat row active state from URL', () => {
     expect(chatButton!.attributes('style') ?? '').not.toContain('--semantic-active-bg')
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   it('chat row is NOT active when URL is ?view=chat&session=OTHER (different chat)', async () => {
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_other' },
@@ -193,6 +200,7 @@ describe('ChatsList — chat row active state from URL', () => {
     // The fix's invariant: loadChats() derives active from
     // useCurrentMainView() at call time. So calling loadChats()
     // with a different URL between renders should produce a
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // different active state.
     const route = reactive({
       query: {} as Record<string, string>,

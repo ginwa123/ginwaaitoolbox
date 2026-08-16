@@ -280,7 +280,7 @@ interface PendingEmit {
   timer: ReturnType<typeof setTimeout> | null
 }
 
-let pendingByKey: Map<string, PendingEmit> = new Map()
+const pendingByKey: Map<string, PendingEmit> = new Map()
 
 const flushKey = (key: string): void => {
   const p = pendingByKey.get(key)

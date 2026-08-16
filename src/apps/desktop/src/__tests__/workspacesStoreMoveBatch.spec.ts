@@ -165,6 +165,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
 
     // Local cache mirrors the server response.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const elements = (store.workspaces[0] as any).items[0].design_elements
     expect(elements[0].x).toBe(100)
     expect(elements[0].y).toBe(50)
@@ -225,6 +226,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
     const store = makeWorkspacesStore()
 
     // Initial baseline: stub getDesignPage to return the same
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // elements array reference (NOT replaced by fetch).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const baseline = (store.workspaces[0] as any).items[0].design_elements
@@ -269,6 +271,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
     ])
 
     // CRITICAL: the design_elements array must be the SAME reference
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // after the mirror (Vue 3 reactivity depends on per-index writes
     // to the same reactive array).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -309,6 +312,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
         fill: '', stroke: '', stroke_width: 0, corner_radius: 0,
         opacity: 1, text_content: '', text_style: '',
         image_url: '', file_path: '', created_at: '', updated_at: '',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         parent_id: '', z_index: 0, position: 0,
       },
     ]
@@ -336,6 +340,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
 
     await store.moveDesignElementsBatch('ws_1', 'item_1', 'page_1', [
       { element_id: 'g1', dx: 50, dy: 50 },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ])
 
     // EXPECTED: the local mirror preserves `type === 'group'` so the
@@ -359,6 +364,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
         id: 'g1', name: 'G', type: 'group', page_id: 'page_1',
         x: 100, y: 100, width: 200, height: 200, rotation: 0,
         fill: '', stroke: '', stroke_width: 0, corner_radius: 0,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         opacity: 1, text_content: '', text_style: '',
         image_url: '', file_path: '', created_at: '', updated_at: '',
         parent_id: '', z_index: 0, position: 0,
@@ -382,6 +388,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
             created_at: '', updated_at: '',
           },
         ] as never,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       })
 
     await store.moveDesignElementsBatch('ws_1', 'item_1', 'page_1', [

@@ -49,6 +49,7 @@ if (
 // ─── shared SSE stub ──────────────────────────────────────────────────────
 function makeStubClient(initial: SseState): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -70,7 +71,9 @@ function installChatViewMocks() {
     cwd: '/tmp',
     git_worktree_cwd: '',
     max_total_tokens: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,12 +81,15 @@ function installChatViewMocks() {
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
     session_name: '',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     is_git_repo: false,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
@@ -157,6 +163,8 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     vi.restoreAllMocks()
   })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   it('A: clicking the Stop button calls api.stopSession with the un-prefixed session id', async () => {
     installChatViewMocks()
     const stopSpy = vi.spyOn(api, 'stopSession').mockResolvedValue({
@@ -179,6 +187,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     // the prefix in onMounted (`sessionId.value = props.chatId.replace(/^chat-/, '')`,
     // line 2001) so `sessionId.value` is the right thing to pass.
     expect(stopSpy).toHaveBeenCalledWith('session_proc')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })
 
   it('B: rapid double-clicks result in exactly one api.stopSession call (debounce via FileInput isStopping)', async () => {
@@ -207,6 +216,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     // Second click: the button is `:disabled`, so the test-utils
     // click doesn't even reach handleStopClick (the disabled flag
     // suppresses the click event). Still, ensure no extra call.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await btn.trigger('click')
     await flushPromises()
 
@@ -225,6 +235,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
 
     // Simulate the backend cancelling + deleting the worker by
     // dispatching the SSE `worker deleted` event the workflow
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // emits after the loop break. In production this is what
     // App.vue's `handleWorkerEvent` listens for and translates into
     // a removal from `processingState`. We bypass App.vue (it's not
@@ -237,7 +248,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const provides = (wrapper!.vm as any).$.provides as Record<string, unknown>
     const ps = provides['processingState'] as Ref<Record<string, boolean>>
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+     
     delete ps.value['session_proc']
     // Reassign to the same shape to guarantee the ref's value-setter
     // notifies subscribers regardless of how the internal proxy

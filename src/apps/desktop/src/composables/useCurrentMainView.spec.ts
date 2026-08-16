@@ -16,6 +16,7 @@ function mockRoute(query: Record<string, string>) {
   // `reactive` so post-mount mutations trigger the computed.
   const obj = reactive({ query, path: '/app', fullPath: '/app' })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouteMock.mockReturnValue(obj as any)
   return obj
 }

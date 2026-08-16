@@ -98,6 +98,7 @@ describe('workspacesStore.fetchDesignElements (in-place mutation)', () => {
   it('preserves the design_elements array reference (mutates in place)', async () => {
     const store = makeWorkspacesStore()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const beforeRef = (store.workspaces[0] as any).items[0].design_elements
 
     // Simulate a remote edit that arrives via SSE: same ids, new x/y.
@@ -146,6 +147,7 @@ describe('workspacesStore.fetchDesignElements (in-place mutation)', () => {
     // CRITICAL: the array reference must be the same (Vue 3
     // reactivity depends on per-index writes to the same
     // reactive array — a new array reference would orphan any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // in-flight mirror writes that captured the old reference).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const afterRef = (store.workspaces[0] as any).items[0].design_elements
@@ -157,6 +159,7 @@ describe('workspacesStore.fetchDesignElements (in-place mutation)', () => {
     expect(afterRef[1].y).toBe(80)
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   it('removes rows whose id is no longer in the incoming set (deleted remotely)', async () => {
     const store = makeWorkspacesStore()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -192,12 +195,15 @@ describe('workspacesStore.fetchDesignElements (in-place mutation)', () => {
       ] as never,
     })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     await store.fetchDesignElements('ws_1', 'item_1', 'page_1')
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const after = (store.workspaces[0] as any).items[0].design_elements
     expect(after.length).toBe(1)
     expect(after[0].id).toBe('elem_root')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })
 
   it('appends rows whose id is new in the incoming set (created remotely)', async () => {
@@ -255,6 +261,7 @@ describe('workspacesStore.fetchDesignElements (in-place mutation)', () => {
           opacity: 1.0, text_content: '', text_style: '',
           image_url: '', file_path: '', created_at: '', updated_at: '',
         },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ] as never,
     })
 

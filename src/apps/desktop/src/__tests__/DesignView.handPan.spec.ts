@@ -144,7 +144,9 @@ describe('DesignView hand-mode pan', () => {
     // dispatching PointerEvents through the html element).
     let onMove: ((e: PointerEvent) => void) | null = null
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     container.addEventListener = ((type: string, cb: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       if (type === 'pointermove') onMove = cb
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any

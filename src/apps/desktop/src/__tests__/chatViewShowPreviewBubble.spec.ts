@@ -66,6 +66,7 @@ if (
 // Stub SseClient — same as chatViewWorktree.spec.ts:82
 function makeStubClient(initial: SseState): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -107,7 +108,9 @@ function installChatViewMocks() {
     cwd: '/tmp/test-repo',
     git_worktree_cwd: '',
     max_total_tokens: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -115,6 +118,7 @@ function installChatViewMocks() {
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
     session_name: '',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
@@ -123,7 +127,9 @@ function installChatViewMocks() {
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: true,
     branch: 'main',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     has_changes: false,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     is_clean: true,
     current: 'main',
     status: 'clean',

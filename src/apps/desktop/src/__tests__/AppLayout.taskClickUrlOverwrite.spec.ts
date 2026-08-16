@@ -53,6 +53,7 @@ import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState = 'open'): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -104,6 +105,7 @@ const makeFolderItem = (): WorkspaceItem => ({
       description: '',
       task_type: 'standard',
       kanban_column_id: '',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       kanban_position: 0,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
@@ -122,6 +124,7 @@ function mountAppLayout(routeQuery: Record<string, string> = {}) {
   useRouteMock.mockReturnValue({
     query: routeQuery,
     path: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     fullPath:
       '/app' + (Object.keys(routeQuery).length ? `?${new URLSearchParams(routeQuery).toString()}` : ''),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -188,6 +191,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     vi.restoreAllMocks()
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   it('clicking a task under the SAME active folder does not clobber the task URL (regression)', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
@@ -239,6 +243,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     await nextTick()
 
     // The URL sync watcher must NOT have called replace that would
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // clobber the chat suffix. (view=workspace writes are still
     // expected — the watcher's chat-suffix guard ensures itemId
     // stays in the /chat/<taskId> form.)
@@ -252,6 +257,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     expect(replaceCallsWithBareItemId).toHaveLength(0)
 
     wrapper.unmount()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })
 
   it('clicking a task under a DIFFERENT workspace item does not clobber the task URL (regression)', async () => {
@@ -265,6 +271,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     // NOT yet the active item. The user clicks the task under the
     // folder. setActiveTask will set activeWorkspaceItemId from A
     // to B — THIS IS the change that triggers the URL sync
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // watcher.
     const OTHER_ID = 'item_other'
     useRouteMock.mockReturnValue({
@@ -355,6 +362,8 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     await nextTick()
     ws.isNavigatingToTask = false
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     // The URL sync watcher must NOT have clobbered the URL with
     // view=workspace pointing at OTHER_ID (the pre-click active
     // item). That was the bug: the watcher fired before
@@ -364,12 +373,14 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (call: any[]) => call[0]?.query?.view === 'workspace',
     )
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(replaceCallsWithViewWorkspace).toHaveLength(0)
 
     wrapper.unmount()
   })
 
   it('URL sync watcher DOES overwrite when navigation flag is NOT set (regression-guard for the flag-only fix)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -435,6 +446,8 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     await nextTick()
     replaceMock.mockClear()
     pushMock.mockClear()
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
     // The flag is NOT set (we're simulating a buggy caller that
     // forgot to flip it). The watcher SHOULD overwrite the URL —

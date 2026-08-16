@@ -2141,7 +2141,7 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   await nextTick()
   scrollToBottom(true, 'send-message')
 
-  let currentSessionId = sessionId.value
+  const currentSessionId = sessionId.value
 
   let imageUrls: string[] = []
   if (files && files.length > 0) {

@@ -95,12 +95,14 @@ function mountKanbanView(
     path: '/app',
     fullPath: '/app',
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   const item = opts.item ?? makeItem()
   const store = useWorkspacesStore()
   store.workspaces = [
     { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
   ]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const replaceMock = vi.fn()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -325,8 +327,10 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
         itemId: ITEM_ID,
         sorts: 'col_a:name:asc',
       },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       path: '/app',
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
@@ -376,8 +380,10 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
         view: 'workspace',
         workspaceId: WS_ID,
         itemId: ITEM_ID,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         sorts: 'col_a:name:asc,col_b:created_at:desc',
       },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       path: '/app',
       fullPath: '/app',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -430,8 +436,10 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
     useRouteMock.mockReturnValue({
       query: {
         view: 'workspace',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         workspaceId: WS_ID,
         itemId: ITEM_ID,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         sorts: 'col_a:position:asc',
       },
       path: '/app',

@@ -68,6 +68,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
   ],
   ...overrides,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 function installBusForTests() {
@@ -75,6 +76,8 @@ function installBusForTests() {
   installSseBus(createApp({}))
   __setSseBusGlobalClient(makeStubClient() as SseClient)
 }
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(): any {
@@ -93,6 +96,7 @@ function makeStubClient(): any {
 function setRoute(q: Record<string, string>) {
   useRouteMock.mockReturnValue({
     query: q,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     path: '/app',
     fullPath: '/app?' + new URLSearchParams(q).toString(),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -115,6 +119,7 @@ describe('AppLayout — chat suffix round-trip', () => {
     vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
     vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
       path: '/',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       absolute: '/',
       home: '/',
       entries: [],
@@ -140,6 +145,8 @@ describe('AppLayout — chat suffix round-trip', () => {
     expect(parsed.chatTaskId).toBe(taskId)
   })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   it('mounting → setActiveTask → close → URL transitions: bare → /chat/<taskId> → bare', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
@@ -148,6 +155,7 @@ describe('AppLayout — chat suffix round-trip', () => {
 
     // Mount on the bare workspace URL (no chat).
     setRoute({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       view: 'workspace',
       workspaceId: WS_ID,
       itemId: ITEM_ID,
@@ -208,6 +216,7 @@ describe('AppLayout — chat suffix round-trip', () => {
     wrapper.unmount()
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   it('URL sync watcher preserves /chat/<taskId> suffix when setActiveTask fires', async () => {
     // Set-up: mount on bare URL, then push the chat URL, then
     // setActiveTask fires (causes parent-discovery mutation).
@@ -216,6 +225,8 @@ describe('AppLayout — chat suffix round-trip', () => {
     const pushMock = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock, back: vi.fn() } as any)
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
     setRoute({
       view: 'workspace',
@@ -230,6 +241,7 @@ describe('AppLayout — chat suffix round-trip', () => {
       global: {
         mocks: { $router: { replace: vi.fn() } },
         provide: { processingState: ref<Record<string, boolean>>({}) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       },
       attachTo: document.body,
     })

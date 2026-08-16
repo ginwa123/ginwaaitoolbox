@@ -118,15 +118,20 @@ function mountAppLayout(): ReturnType<typeof mount> {
 function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
   vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => ({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     workspaces: store.workspaces as any,
   }))
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ws = store.workspaces.find((w: any) => w.id === wsId)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })
   vi.spyOn(api, 'getTasks').mockImplementation(async (wsId: string, itemId: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ws = store.workspaces.find((w: any) => w.id === wsId)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -165,12 +170,14 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
       has_more: false,
       next_cursor: null,
     }))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
       entries: [],
       path: '/',
       absolute: '/',
       home: '/',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
@@ -193,7 +200,10 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     document
       .querySelectorAll('[data-testid="kanban-chat-dialog-root"]')
       .forEach((el) => el.remove())
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   })
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
   it('preserves ?sorts= when the user opens a kanban task and closes the chat dialog', async () => {
     const store = useWorkspacesStore()
@@ -238,6 +248,9 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     // stale snapshot forward.
     expect(store.savedSortsParam).toBe('')
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     wrapper.unmount()
   })
 

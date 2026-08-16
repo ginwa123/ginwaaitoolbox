@@ -33,6 +33,7 @@ import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -113,6 +114,7 @@ describe('ChatsList worktree badge', () => {
       ],
       has_more: false,
       next_cursor: null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       total: 1,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -150,6 +152,7 @@ describe('ChatsList worktree badge', () => {
         },
       ],
       has_more: false,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       next_cursor: null,
       total: 1,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -179,6 +182,7 @@ describe('ChatsList worktree badge', () => {
           // no git_worktree_cwd key at all
         },
       ],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       has_more: false,
       next_cursor: null,
       total: 1,
@@ -206,6 +210,7 @@ describe('ChatsList worktree badge', () => {
           selected_profile_model: 'gpt-4o',
           git_worktree_cwd: '/worktrees/feature-x',
         },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ],
       has_more: false,
       next_cursor: null,

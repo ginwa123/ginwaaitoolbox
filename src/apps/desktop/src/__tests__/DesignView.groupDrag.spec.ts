@@ -51,7 +51,10 @@ const ITEM = {
   design_elements: [],
   workspace_id: 'ws_1',
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeEl(overrides: Record<string, unknown> = {}): any {
@@ -82,6 +85,8 @@ function makeEl(overrides: Record<string, unknown> = {}): any {
   }
 }
 
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
 describe('DesignView group drag — move-batch (server-side cascade)', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,8 +122,10 @@ describe('DesignView group drag — move-batch (server-side cascade)', () => {
     const wrapper = mount(DesignView, {
       props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     // Simulate a 5-element multi-selection by setting selectedIds on the VM.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).selectedIds = new Set(['el_1', 'el_2', 'el_3', 'el_4', 'el_5'])
@@ -144,8 +151,10 @@ describe('DesignView group drag — move-batch (server-side cascade)', () => {
       makeEl({ id: 'el_1', x: 0, y: 0 }),
       makeEl({ id: 'el_2', x: 50, y: 0 }),
       makeEl({ id: 'el_3', x: 100, y: 0 }),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ]
     const wrapper = mount(DesignView, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
     })
     await flushPromises()
@@ -156,6 +165,7 @@ describe('DesignView group drag — move-batch (server-side cascade)', () => {
     ;(wrapper.vm as any).handleGroupDrag({ dx: 10, dy: 20 })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(moveSpy).toHaveBeenCalledTimes(1)
     expect(geoBatchSpy).not.toHaveBeenCalled()
     expect(singleSpy).not.toHaveBeenCalled()
@@ -176,12 +186,16 @@ describe('DesignView group drag — move-batch (server-side cascade)', () => {
 
   it('groupDrag with a single leaf selection fires moveDesignElementsBatch with one item', async () => {
     const _store = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     _store.setActiveDesignPage('page_1')
     vi.spyOn(_store, 'moveDesignElementsBatch').mockImplementation(moveSpy)
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 
     const elements = [makeEl({ id: 'el_1', x: 0, y: 0 })]
     const wrapper = mount(DesignView, {
       props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     })
     await flushPromises()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -121,10 +121,12 @@ describe('DesignPageRow.vue', () => {
         path: '/app',
         fullPath: '/app?view=workspace&itemId=item_1&pageId=page_active',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
       .mockReturnValueOnce({
         query: { view: 'workspace', itemId: 'item_1', pageId: 'page_other' },
         path: '/app',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         fullPath: '/app?view=workspace&itemId=item_1&pageId=page_other',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)

@@ -438,7 +438,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (!debugOn) return
     const t = now()
     const extra_ = extra ? ' ' + JSON.stringify(extra) : ''
-    // eslint-disable-next-line no-console
+     
     console.log(`[sse-client ${iso()} t=${fmtMs(t)}] ${msg}${extra_}`)
   }
   // Track timing of last received event. Initially null = no event yet.

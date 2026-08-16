@@ -187,6 +187,7 @@ describe('Sidebar — URL-driven single-active contract', () => {
   function seedWorkspaceFixture() {
     const ws = useWorkspacesStore()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [baseWorkspace as any]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.designPagesByItemId = { [DESIGN_ITEM_ID]: baseDesignPages as any }
@@ -207,6 +208,7 @@ describe('Sidebar — URL-driven single-active contract', () => {
       },
       path: '/app',
       fullPath:
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         `/app?view=workspace&workspaceId=${WS_ID}` +
         `&itemId=${DESIGN_ITEM_ID}&pageId=${PAGE_42_ID}`,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -251,6 +253,7 @@ describe('Sidebar — URL-driven single-active contract', () => {
     // (separate from this count). Pre-fix the expanded workspace
     // header would still be active — this asserts it isn't.
     useRouteMock.mockReturnValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       query: { view: 'chat', session: 'session_xyz' },
       path: '/app',
       fullPath: '/app?view=chat&session=session_xyz',

@@ -293,6 +293,7 @@ describe('api.design', () => {
         height: 240,
         fill: '#22c55e',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
 
       const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
