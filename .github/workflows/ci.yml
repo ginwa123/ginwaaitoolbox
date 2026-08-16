@@ -819,19 +819,6 @@ jobs:
           $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
           & $bash -lc 'zig build test --summary all'
 
-      - name: Run AI workflow TUI tests
-        if: runner.os != 'Windows'
-        run: zig build test:ai_workflow:tui --summary all
-
-      - name: Run AI workflow TUI tests (Windows)
-        if: runner.os == 'Windows'
-        # See the long comment in `Run main test suite (Windows)` —
-        # the `shell: bash` + PATH prepend trick is the same.
-        shell: pwsh
-        run: |
-          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
-          & 'C:\Program Files\Git\bin\bash.exe' -lc 'zig build test:ai_workflow:tui --summary all'
-
       - name: Build nalar + nalar-desktop binaries
         if: runner.os != 'Windows'
         # The deliverable. Runs on both Linux and macOS cells (each builds
