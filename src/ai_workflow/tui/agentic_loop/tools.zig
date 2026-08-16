@@ -40,6 +40,7 @@ pub const execSetElementParent = @import("tools_exec_set_element_parent.zig").ex
 pub const execMoveDesignElement = @import("tools_exec_move_design_element.zig").execMoveDesignElement;
 pub const execMoveElementToPage = @import("tools_exec_move_element_to_page.zig").execMoveElementToPage;
 pub const execShowPreview = @import("tools_exec_show_preview.zig").execShowPreview;
+pub const execGenerateImage = @import("tools_exec_generate_image.zig").execGenerateImage;
 pub const execGetDesignContext = @import("tools_exec_get_design_context.zig").execGetDesignContext;
 pub const execPreviewDesignPage = @import("tools_exec_preview_design_page.zig").execPreviewDesignPage;
 pub const execLspDefinition = @import("tools_exec_lsp_definition.zig").execLspDefinition;

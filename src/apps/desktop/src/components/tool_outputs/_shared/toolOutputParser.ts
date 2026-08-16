@@ -547,3 +547,88 @@ export function parseMetadata(content: string): Record<string, string> {
   }
   return result
 }
+
+// ─── generate_image ────────────────────────────────────────────────────────
+//
+// Parses the XML envelope produced by `execute_generate_image` in
+// `src/modules/agent/tools/generate_image.zig`:
+//
+//   <generate_image>
+//     <status>generated</status>
+//     <count>1</count>
+//     <model>dall-e-3</model>
+//     <size>1024x1024</size>
+//     <images>
+//       <image index="0" path="/cwd/.../img_xxx.png" bytes="12345" mime="image/png" />
+//     </images>
+//     <revised_prompt>A vibrant watercolor painting of a hat-wearing cat</revised_prompt>
+//   </generate_image>
+//
+// On error:
+//   <generate_image><error>HTTP 400: ...</error></generate_image>
+//
+// Each `<image ... />` is a self-closing tag with FOUR attributes (in
+// attribute order: `index`, `path`, `bytes`, `mime`). We pull the
+// attributes with a regex because `extractTag` is tag-shape only.
+
+export interface ParsedGenerateImage {
+  status: string | null
+  count: number | null
+  model: string | null
+  size: string | null
+  /** Absolute filesystem path of each saved image (DALL-E / gpt-image-1 save to disk). */
+  images: Array<{ index: number; path: string; bytes: number; mime: string }>
+  /** DALL-E 3 / gpt-image-1 only — null for DALL-E 2 (which doesn't rewrite). */
+  revisedPrompt: string | null
+  /** null on success, populated on <error>...</error>. */
+  error: string | null
+}
+
+export function parseGenerateImage(content: string): ParsedGenerateImage {
+  const error = extractTag(content, 'error')
+  if (error !== null) {
+    return {
+      status: null,
+      count: null,
+      model: null,
+      size: null,
+      images: [],
+      revisedPrompt: null,
+      error,
+    }
+  }
+  const status = extractTag(content, 'status')
+  const countRaw = extractTag(content, 'count')
+  const count = countRaw === null ? null : (Number.isFinite(parseInt(countRaw, 10)) ? parseInt(countRaw, 10) : null)
+  const model = extractTag(content, 'model')
+  const size = extractTag(content, 'size')
+  const revisedPrompt = extractTag(content, 'revised_prompt')
+
+  const images: ParsedGenerateImage['images'] = []
+  // Self-closing `<image index="N" path="..." bytes="N" mime="..." />`
+  // — each attribute is required on the backend. We default missing
+  // values to safe fallbacks so a partial envelope (e.g. bytes omitted)
+  // still renders without throwing.
+  //
+  // The attr body can contain `/` (paths like `/cwd/generated_images/...`),
+  // so the lazy match must allow `/`. `[\s\S]+?` is the right choice —
+  // it matches any character (including newlines, just in case) lazily,
+  // stopping at the first `\s*\/>` (optional whitespace + self-close).
+  const imgRegex = /<image\s+([\s\S]+?)\s*\/?>/g
+  let m
+  while ((m = imgRegex.exec(content)) !== null) {
+    const attrs = m[1] ?? ''
+    const indexRaw = /index="([^"]+)"/.exec(attrs)?.[1] ?? '0'
+    const pathRaw = /path="([^"]+)"/.exec(attrs)?.[1] ?? ''
+    const bytesRaw = /bytes="([^"]+)"/.exec(attrs)?.[1] ?? '0'
+    const mimeRaw = /mime="([^"]+)"/.exec(attrs)?.[1] ?? 'image/png'
+    images.push({
+      index: Number.isFinite(parseInt(indexRaw, 10)) ? parseInt(indexRaw, 10) : 0,
+      path: pathRaw,
+      bytes: Number.isFinite(parseInt(bytesRaw, 10)) ? parseInt(bytesRaw, 10) : 0,
+      mime: mimeRaw,
+    })
+  }
+
+  return { status, count, model, size, images, revisedPrompt, error: null }
+}

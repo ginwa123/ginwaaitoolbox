@@ -519,6 +519,7 @@ pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const nalar_browser = @import("modules/agent/tools/nalar_browser.zig");
+pub const generate_image = @import("modules/agent/tools/generate_image.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");
 pub const semantic_search = @import("modules/agent/tools/semantic_search.zig");

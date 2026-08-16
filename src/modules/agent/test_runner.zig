@@ -61,4 +61,8 @@ test {
     // Write file tool edge cases (sanity + content shape + path shape +
     // ownership + XML serialization + tool schema contract)
     _ = @import("tools/write_file_test.zig");
+
+    // generate_image tool tests (DALL-E 2/3, gpt-image-1 via OpenAI Images API)
+    // Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
+    _ = @import("tools/generate_image_test.zig");
 }

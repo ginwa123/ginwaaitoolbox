@@ -26,6 +26,7 @@ import {
   parseViewSkill,
   parseKanbanList,
   parseKanbanMove,
+  parseGenerateImage,
   parseWriteFile,
 } from '../toolOutputParser'
 
@@ -369,6 +370,73 @@ describe('parseKanbanMove', () => {
     expect(r.success).toBe(true)
     expect(r.fromColumnId).toBe('c1')
     expect(r.toColumnId).toBe('c2')
+  })
+})
+
+describe('parseGenerateImage', () => {
+  it('parses a single-image success envelope', () => {
+    const r = parseGenerateImage(
+      '<generate_image>' +
+        '<status>generated</status>' +
+        '<count>1</count>' +
+        '<model>dall-e-3</model>' +
+        '<size>1024x1024</size>' +
+        '<images>' +
+        '<image index="0" path="/cwd/img_123.png" bytes="12345" mime="image/png" />' +
+        '</images>' +
+        '<revised_prompt>A vibrant watercolor of a cat</revised_prompt>' +
+        '</generate_image>',
+    )
+    expect(r.error).toBeNull()
+    expect(r.status).toBe('generated')
+    expect(r.count).toBe(1)
+    expect(r.model).toBe('dall-e-3')
+    expect(r.size).toBe('1024x1024')
+    expect(r.images).toHaveLength(1)
+    expect(r.images[0]).toMatchObject({
+      index: 0,
+      path: '/cwd/img_123.png',
+      bytes: 12345,
+      mime: 'image/png',
+    })
+    expect(r.revisedPrompt).toBe('A vibrant watercolor of a cat')
+  })
+  it('parses a multi-image (n>1, DALL-E 2) success envelope', () => {
+    const r = parseGenerateImage(
+      '<generate_image>' +
+        '<status>generated</status>' +
+        '<count>2</count>' +
+        '<model>dall-e-2</model>' +
+        '<size>512x512</size>' +
+        '<images>' +
+        '<image index="0" path="/cwd/img_a.png" bytes="100" mime="image/png" />' +
+        '<image index="1" path="/cwd/img_b.png" bytes="200" mime="image/png" />' +
+        '</images>' +
+        '</generate_image>',
+    )
+    expect(r.error).toBeNull()
+    expect(r.count).toBe(2)
+    expect(r.images).toHaveLength(2)
+    expect(r.images[0]?.path).toBe('/cwd/img_a.png')
+    expect(r.images[1]?.path).toBe('/cwd/img_b.png')
+    expect(r.revisedPrompt).toBeNull()
+  })
+  it('returns the error message and null fields on error', () => {
+    const r = parseGenerateImage(
+      '<generate_image><error>HTTP 400: size \'512x512\' is not valid for model \'dall-e-3\'.</error></generate_image>',
+    )
+    expect(r.error).toBe(
+      "HTTP 400: size '512x512' is not valid for model 'dall-e-3'.",
+    )
+    expect(r.status).toBeNull()
+    expect(r.images).toEqual([])
+    expect(r.count).toBeNull()
+  })
+  it('handles empty content gracefully', () => {
+    const r = parseGenerateImage('')
+    expect(r.error).toBeNull()
+    expect(r.status).toBeNull()
+    expect(r.images).toEqual([])
   })
 })
 
