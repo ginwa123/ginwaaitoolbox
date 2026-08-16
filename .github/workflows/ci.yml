@@ -711,6 +711,18 @@ jobs:
           } else {
             Write-Warning "$wv2\WebView2Loader.lib missing"
           }
+          # The GitHub Actions runner's .ps1 trailer is:
+          #   if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) {
+          #     exit $LASTEXITCODE
+          #   }
+          # `& cl` and `& link` earlier in this step ran with no
+          # arguments (we just want the usage banner), so both
+          # commands exit 1. Their $LASTEXITCODE stays sticky at 1
+          # through the rest of the script even though every Test-Path
+          # check below prints `ok`. The trailer then exits 1 and the
+          # build fails.
+          # Reset $LASTEXITCODE before the trailer runs:
+          $global:LASTEXITCODE = 0
 
       # Note: the sqlite3 amalgamation fetch is now handled by
       # build.zig's `vendor_sqlite3_step` (wired into `test_step` and
