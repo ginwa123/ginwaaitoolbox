@@ -3,11 +3,13 @@
 //! `<compaction_context>...</compaction_context>` envelope.
 //!
 //! This file is the consolidation of two former modules:
-//!   - `compaction.zig::buildCompactMessagePrompt` — the pure-data prompt
-//!     builder that walks the conversation history and emits the
-//!     handoff-package text the CompactionAgent receives as its user
-//!     message.
-//!   - `compaction_context.zig` (now deleted) — the DB-backed helpers
+//!   - `compaction.zig::buildCompactMessagePrompt` (originally extracted
+//!     into `compaction.zig` by the 2026-08-06-encapsulate-compaction-prompt
+//!     refactor, then moved here by 2026-08-14-consolidate-compaction-message)
+//!     — the pure-data prompt builder that walks the conversation history
+//!     and emits the handoff-package text the CompactionAgent receives as
+//!     its user message.
+//!   - `compaction_context.zig` (deleted 2026-08-14) — the DB-backed helpers
 //!     that fetch user chat history, read_file paths, recent session
 //!     activity, and loaded session skills, plus the `enrichCompactionXml`
 //!     helper that wraps the bare compactor output in the
@@ -17,9 +19,12 @@
 //! compaction-message payload look like?") and used to share an import
 //! chain in `workflow_commpact_message.zig` (the orchestrator), so
 //! consolidating them keeps the file layout aligned with the call
-//! graph. The LLM-call orchestration (`callCompactAgent`) stays in
-//! `compaction.zig` — that file owns the `agent.Agent` lifecycle and
-//! the streaming response, which are unrelated to message shape.
+//! graph. The LLM-call orchestration (`callCompactAgent` + its
+//! `CallCompactAgentInput`) now lives in `workflow_commpact_message.zig`
+//! alongside `maybeCompactMessagesNew` — that file owns the
+//! `agent.Agent` lifecycle and the streaming response, which are
+//! unrelated to message shape but live with the orchestrator that
+//! wires them.
 //!
 //! Public surface (re-exported by `workflow.zig` and therefore reachable
 //! as `nalarcore.ai_mod.ai_workflow.agentic_loop.<name>`):
