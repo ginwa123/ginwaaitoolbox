@@ -316,11 +316,11 @@ jobs:
           # 31899279563). Use --wait so winget blocks until the install
           # finishes — without it, the .ps1 returned immediately after
           # queueing the download and Step 2 saw no cl.exe.
-          $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          $vsInstaller = Get-ChildItem -Path "C:\\" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $vsInstaller) {
             Write-Host "MSVC Build Tools not found, installing..."
-            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
-            winget install --id Kitware.CMake --wait -e --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Microsoft.VisualStudio.2022.BuildTools --force --wait -e --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Kitware.CMake --force --wait -e --accept-source-agreements --accept-package-agreements --silent
           } else {
             Write-Host ("MSVC Build Tools already at " + $vsInstaller.FullName)
           }
@@ -338,7 +338,7 @@ jobs:
           # next step's process sees MSVC on PATH. Set-Item on Env: only
           # persists for the remainder of THIS process; GITHUB_ENV is
           # what makes the values cross the step boundary.
-          $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          $vsInstaller = Get-ChildItem -Path "C:\\" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           $useMSVC = $false
           if ($vsInstaller) {
             Write-Host ("Setting up MSVC environment via " + $vsInstaller.FullName)
