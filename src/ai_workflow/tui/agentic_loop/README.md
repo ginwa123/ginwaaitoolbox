@@ -93,8 +93,7 @@ If you do create a new `_test.zig`, register it in
 | `sse_send_event_worker.zig` | ✅ 7 (event_type mapping × 4, JSON shape, routing key, heap copy) |
 | `sse_on_event_send_llm_history.zig` | ✅ 6 (event type, JSON fields, content sanitize × 2, null content, central broadcast) |
 | `sse_on_event_send_queue_message.zig` | (placeholder — empty file, no tests needed) |
-| `compaction_context.zig` | ✅ 22 (parseReadFilePath × 4, fetchUserChatHistory × 1, fetchReadFilePaths × 1, fetchRecentActivities × 2, fetchSessionSkills × 3, enrichCompactionXml × 4, recent_activities in enrich × 2, session_skills in enrich × 5 — embed + CDATA, XML escape, ']]>' split, 50-cap, position) |
-| `compaction.zig` | ✅ 8 (`buildCompactMessagePrompt` happy path, first+last excluded, tool_calls formatted, null content skipped, empty middle, newline join, ownership, 2-message) |
+| `workflow_compact_message.zig` | ✅ 30 (`buildCompactMessagePrompt` × 8 — happy path, first+last excluded, tool_calls formatted, null content skipped, empty middle, newline join, ownership, 2-message; `parseReadFilePath` × 4; `fetchUserChatHistory` × 1; `fetchReadFilePaths` × 1; `fetchRecentActivities` × 2; `fetchSessionSkills` × 3; `enrichCompactionXml` × 4; recent_activities in enrich × 2; session_skills in enrich × 5 — embed + CDATA, XML escape, ']]>' split, 50-cap, position) |
 | `test_runner.zig` | (none — just imports the test-bearing files for discovery) |
 
 **Total: 123 inline test "..." blocks + 1 `test_runner.test_0` = 124 tests
