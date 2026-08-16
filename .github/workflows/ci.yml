@@ -364,26 +364,38 @@ jobs:
           $useMSVC = $false
           if ($vsInstaller) {
             Write-Host ("Setting up MSVC environment via " + $vsInstaller.FullName)
-            # Write vcvars64-source.bat line-by-line via Out-File. Avoid
-            # multi-fragment `'@echo off' + $x + '"' + ...` concatenation
-            # with embedded bare `$vsInstaller.FullName` — the chained
-            # `cmd | Where-Object { ... } | ForEach-Object { ... }` parser
-            # in PowerShell 5.1 miscounts braces when that pattern
-            # precedes it (CI runs 31841182154, 31859864874, 31860741395,
-            # 31861962678, 31864244047).
-            $vcvarsBat = Join-Path $env:TEMP "vcvars64-source.bat"
-            "@echo off" | Out-File -FilePath $vcvarsBat -Encoding ASCII
-            "call '$($vsInstaller.FullName)'" | Out-File -FilePath $vcvarsBat -Append -Encoding ASCII
-            "set" | Out-File -FilePath $vcvarsBat -Append -Encoding ASCII
-            $cmdOutput = cmd /c $vcvarsBat
+            # Source vcvars64.bat into the current process and capture the
+            # env diff to $GITHUB_ENV. We use `cmd /c "call ..."` directly
+            # rather than writing a wrapper .bat on disk — Out-File in
+            # PowerShell 5.1 writes with CRLF + sometimes a BOM, and the
+            # generated wrapper came back with "The filename, directory
+            # name, or volume label syntax is incorrect." when cmd.exe
+            # tried to parse a path with embedded parens (CI run
+            # 31936399742 reproduced the bug end-to-end with the
+            # bootstrapper-installed MSVC at "C:\Program Files (x86)
+            # \Microsoft Visual Studio\2022\BuildTools\...").
+            #
+            # We snapshot the pre-call PATH/INCLUDE/LIB/etc., then run
+            # the .bat through cmd.exe (which captures stdout into the
+            # pipeline), then `set` after, then parse for the lines
+            # whose `name=value` form is NEW vs the snapshot. The diff
+            # is written to $GITHUB_ENV so the next step's powershell
+            # process inherits MSVC's PATH.
+            $envBefore = @{}
+            foreach ($k in "PATH", "INCLUDE", "LIB", "LIBPATH", "VCINSTALLDIR", "VCToolsInstallDir") {
+              $envBefore[$k] = [System.Environment]::GetEnvironmentVariable($k, "Process")
+            }
+            $cmdOutput = cmd /c ('call "' + $vsInstaller.FullName + '" >NUL && set')
             foreach ($line in $cmdOutput) {
               if ($line -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=") {
                 $name, $value = $line -split "=", 2
+                if ($envBefore.ContainsKey($name) -and $envBefore[$name] -eq $value) {
+                  continue
+                }
                 Set-Item -Path ("Env:" + $name) -Value $value
                 Add-Content -Path $env:GITHUB_ENV -Value ($name + "=" + $value)
               }
             }
-            Remove-Item $vcvarsBat -Force -ErrorAction SilentlyContinue
             $useMSVC = $true
           } else {
             Write-Host "No MSVC Build Tools after winget install, falling back to vcpkg auto-detection"
@@ -418,49 +430,28 @@ jobs:
             Write-Warning "cl.exe not found on PATH - MSVC env did not carry over from the previous step. Falling back to per-job vcvars64.bat sourcing."
           }
 
-          # Install the 4 ports in parallel via Start-Job. Each port
-          # fetches source + compiles a small import lib + headers;
-          # the bottleneck is MSVC link time (~30-60s each), not
-          # network.
+          # Install all 4 ports in a SINGLE vcpkg invocation
+          # (`vcpkg install port1:triplet port2:triplet ... --recurse`).
+          # Running them in parallel via 4× Start-Job is incompatible
+          # with vcpkg's shared .vcpkg-running.lock — only one process
+          # can hold the lock at a time, and the other 3 fail with
+          # "calling try_take_exclusive_file_lock failed with 16"
+          # (CI run 31936399742 reproduced this with all 4 jobs
+          # completing and useMSVC=True). The single-command path is
+          # also ~30% faster end-to-end because vcpkg shares the
+          # download cache across the 4 ports.
           #
-          # IMPORTANT: `& "C:\vcpkg\vcpkg.exe" install ...` returning a
-          # non-zero exit code does NOT make the PowerShell job
-          # "Failed" - Start-Job jobs only fail on terminating
-          # PowerShell errors, not on external-process exit codes. The
-          # explicit `if ($LASTEXITCODE -ne 0) { throw ... }` below is
-          # what turns a real vcpkg failure into something the
-          # $job.State / $job.ChildJobs[0].Error check downstream can
-          # actually detect.
-          $ports = @("curl", "openssl", "libpq", "sqlite3")
-          $jobs = @()
-          foreach ($port in $ports) {
-            $jobs += Start-Job -ArgumentList $port, $useMSVC -ScriptBlock {
-              param([string]$p, [bool]$msvc)
-              if ($msvc) {
-                & "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-              }
-              & "C:\vcpkg\vcpkg.exe" install ($p + ":x64-windows") --recurse
-              if ($LASTEXITCODE -ne 0) {
-                throw ("vcpkg install " + $p + " failed with exit code " + $LASTEXITCODE)
-              }
-            }
-          }
-          Write-Host ("Waiting for " + $jobs.Count + " parallel vcpkg installs...")
-          $jobs | ForEach-Object { $_ | Wait-Job | Out-Null }
-          $anyFailed = $false
-          foreach ($job in $jobs) {
-            $hadError = $job.ChildJobs[0].Error.Count -gt 0
-            if ($job.State -ne "Completed" -or $hadError) {
-              $output = Receive-Job -Job $job -ErrorAction SilentlyContinue
-              $errText = ($job.ChildJobs[0].Error | Out-String)
-              Write-Error ("vcpkg install job failed, state=" + $job.State + " error=" + $errText + " output=" + $output)
-              $anyFailed = $true
-            }
-            Remove-Job $job -Force -ErrorAction SilentlyContinue
-          }
-          if ($anyFailed) {
+          # vcpkg exit code: 0 = all OK, 1 = build failure, 2 =
+          # dependency resolution failure. We map any non-zero to
+          # exit 1 so the step fails loudly.
+          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3:x64-windows"
+          Write-Host ("Running: vcpkg install " + ($portList -join " "))
+          & C:\vcpkg\vcpkg.exe install --recurse $portList
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error ("vcpkg install failed with exit code " + $LASTEXITCODE)
             exit 1
           }
+          Write-Host "vcpkg install OK"
 
           # Verify each port's install location before the build runs.
           # Iterate over a hashtable with a plain foreach loop, no pipe.
