@@ -34,6 +34,7 @@ import RemoveSkill from '../tool_outputs/RemoveSkill.vue'
 import RemoveFile from '../tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from '../tool_outputs/SpawnSubAgent.vue'
 import NalarBrowser from '../tool_outputs/NalarBrowser.vue'
+import GenerateImage from '../tool_outputs/GenerateImage.vue'
 import SetGitWorktree from '../tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from '../tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from '../tool_outputs/KanbanMove.vue'
@@ -2605,6 +2606,21 @@ const compactSession = async () => {
                             :message-id="msg.id"
                             :parameters="getParametersForMessage(msg)"
                             @open="openPreviewForMessage($event)"
+                          />
+                          <!--
+                            `generate_image` is expandable (not side-panel
+                            based like `show_preview`). The card shows the
+                            prompt + model + size + saved file paths; the
+                            agent's NEXT tool call is `show_preview` with
+                            `path=<image.path>` which actually renders the
+                            image inline. This component is informational
+                            metadata only.
+                          -->
+                          <GenerateImage
+                            v-else-if="msg.tool_name === 'generate_image'"
+                            :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                           />
                           <div v-else class="tool-expandable">
                             <button
