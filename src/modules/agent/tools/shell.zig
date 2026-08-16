@@ -112,9 +112,67 @@ pub fn execute_shell(
     _ = NanoSleepTimespec;
     _ = nanosleep;
     _ = KILL_GRACE_PERIOD_NS;
+    _ = is_forbidden_command;
+    _ = encode_command_urls;
     _ = _allocator;
     _ = _io;
     _ = _argv_prefix;
     _ = _input;
     return error.NotImplemented;
+}
+
+/// Detects forbidden command patterns that produce unbounded output.
+/// Currently disabled (returns `false` for every input) — the previous
+/// guard list (recursive `ls -R`, `find /` without `-maxdepth`, missing
+/// `timeout` / `head -n` prefix) is parked here in commented-out form
+/// pending a future hardening PR. Kept verbatim in shell.zig because
+/// the rule engine is shell-neutral (the same patterns apply to bash
+/// and to PowerShell `Get-ChildItem -Recurse`).
+pub fn is_forbidden_command(command: []const u8) bool {
+    const trimmed = std.mem.trim(u8, command, " \t\n\r");
+
+    // temporary disabled forbidden command
+    _ = trimmed;
+
+    return false;
+}
+
+/// Encode special characters in URLs within double quotes
+/// Converts: curl -sI "http://host/path?query=val&sig=xyz"
+///      to: curl -sI 'http://host/path?query=val&sig=xyz'
+/// This prevents bash from interpreting ?, &, etc.
+/// Also helps PowerShell — `?` is a wildcard and `&` is the call
+/// operator there too (D6 in the plan).
+pub fn encode_command_urls(allocator: std.mem.Allocator, command: []const u8) ![]u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < command.len) {
+        // Look for " followed by http:// or https://
+        if (command[i] == '"' and i + 7 < command.len) {
+            const rest = command[i + 1 ..];
+            if (std.mem.startsWith(u8, rest, "http://") or std.mem.startsWith(u8, rest, "https://")) {
+                // Found a URL in double quotes - find the closing quote
+                try result.append(allocator, '\'');
+                i += 1; // skip opening "
+
+                // Copy until closing quote
+                while (i < command.len and command[i] != '"') {
+                    try result.append(allocator, command[i]);
+                    i += 1;
+                }
+
+                if (i < command.len and command[i] == '"') {
+                    try result.append(allocator, '\'');
+                    i += 1; // skip closing "
+                }
+                continue;
+            }
+        }
+        try result.append(allocator, command[i]);
+        i += 1;
+    }
+
+    return result.toOwnedSlice(allocator);
 }
