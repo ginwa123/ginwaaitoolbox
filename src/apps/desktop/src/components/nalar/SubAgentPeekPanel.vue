@@ -29,6 +29,7 @@ import Search from '../tool_outputs/Search.vue'
 import Glob from '../preview/Glob.vue'
 import TextReplace from '../tool_outputs/TextReplace.vue'
 import Bash from '../preview/Bash.vue'
+import ShellTool from '../preview/ShellTool.vue'
 import GetSkill from '../preview/GetSkill.vue'
 import ViewSkill from '../tool_outputs/ViewSkill.vue'
 import ListSkills from '../tool_outputs/ListSkills.vue'
@@ -290,8 +291,9 @@ watch(
                 :diffview-before="msg.diffview_before"
                 :diffview-after="msg.diffview_after"
               />
-              <Bash
-                v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
+              <ShellTool
+                v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command'"
+                :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : 'bash'"
                 :content="innerToolData(msg) ?? msg.content"
               />
               <GetSkill

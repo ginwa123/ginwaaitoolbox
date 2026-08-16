@@ -468,6 +468,7 @@ pub const prompt = @import("modules/agent/prompts.zig");
 // dependency declared in build.zig (mod.addImport("databases", databases_mod)).
 pub const sqlite = @import("databases").sqlite;
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
+pub const pwsh_tool = @import("modules/agent/tools/pwsh.zig");
 pub const tool_models = @import("modules/agent/tools/schemas.zig");
 pub const lsp_types = @import("modules/agent/tools/lsp_types.zig");
 pub const tools = @import("modules/agent/tools/tools.zig");

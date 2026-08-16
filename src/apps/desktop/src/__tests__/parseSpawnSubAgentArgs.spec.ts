@@ -159,4 +159,36 @@ describe('parseSpawnSubAgentArgs', () => {
     expect(result?.[1]?.inherited_context).toBe('none')
     expect(result?.[2]?.inherited_context).toBeUndefined()
   })
+
+  // 2026-08-14 pwsh-tool: pwsh is a valid tool name in sub_agents.tools.
+  // Locks the public contract — if a future refactor hardcodes valid
+  // tool names this regression test catches the broken pwsh acceptance.
+  it('accepts pwsh as a valid tool name in the sub_agents.tools array', () => {
+    const args = JSON.stringify({
+      sub_agents: [
+        {
+          agent_name: 'winops',
+          instruction: 'manage Windows services',
+          tools: ['pwsh', 'web_search'],
+          timeout_seconds: 600,
+        },
+      ],
+    })
+    const json = JSON.stringify([
+      {
+        id: 'call_xyz',
+        type: 'function',
+        function: { name: 'spawn_sub_agent', arguments: args },
+      },
+    ])
+    const result = parseSpawnSubAgentArgs(json, 'call_xyz')
+    expect(result).toEqual([
+      {
+        agent_name: 'winops',
+        instruction: 'manage Windows services',
+        tools: ['pwsh', 'web_search'],
+        timeout_seconds: 600,
+      },
+    ])
+  })
 })

@@ -1085,6 +1085,7 @@ test "bash_tool: exit code is set even when force-killed" {
 // =========================================================================
 
 const BASH_SOURCE_PATH = "src/modules/agent/tools/bash.zig";
+const SHELL_SOURCE_PATH = "src/modules/agent/tools/shell.zig";
 
 fn readBashSource(allocator: std.mem.Allocator) ![]const u8 {
     const io = std.testing.io;
@@ -1096,18 +1097,41 @@ fn readBashSource(allocator: std.mem.Allocator) ![]const u8 {
     );
 }
 
+fn readShellSource(allocator: std.mem.Allocator) ![]const u8 {
+    const io = std.testing.io;
+    return std.Io.Dir.cwd().readFileAlloc(
+        io,
+        SHELL_SOURCE_PATH,
+        allocator,
+        .limited(1 << 20), // 1 MiB cap — shell.zig is ~50 KB
+    );
+}
+
+/// Concatenates bash + shell source so the static-contract grep-tests
+/// below can keep their original semantic ("does this string appear SOMEWHERE
+/// in the bash-shell surface?") without caring which file the implementation
+/// is in. After the 2026-08-14 pwsh-tool refactor, the spawn pipeline lives
+/// in shell.zig, but bash.zig still owns the tool definition + Windows guard.
+fn readBothSources(allocator: std.mem.Allocator) ![]u8 {
+    const bash_src = try readBashSource(allocator);
+    defer allocator.free(bash_src);
+    const shell_src = try readShellSource(allocator);
+    defer allocator.free(shell_src);
+    return std.mem.concat(allocator, u8, &.{ bash_src, shell_src });
+}
+
 test "bash: uses process-group kill (kill -pgid, not just child.kill)" {
     // Without process-group kill, subshells survive the timeout and
     // keep the pipe FDs open, hanging the reader threads forever.
     // The contract: `std.posix.kill(-child_pgid, .KILL)` must be used.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
+    const source = try readBothSources(testing.allocator);
     defer testing.allocator.free(source);
 
     if (std.mem.indexOf(u8, source, "std.posix.kill(-child_pgid, .KILL)") == null) {
         std.debug.print(
-            "!! bash.zig is missing std.posix.kill(-child_pgid, .KILL) — process-group kill removed !!\n",
+            "!! bash.zig OR shell.zig is missing std.posix.kill(-child_pgid, .KILL) — process-group kill removed !!\n",
             .{},
         );
         return error.ProcessGroupKillMissing;
@@ -1120,35 +1144,57 @@ test "bash: spawns with .pgid = 0 (so kill -pgid reaches all descendants)" {
     // bash itself, not its subshells.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
+    const source = try readBothSources(testing.allocator);
     defer testing.allocator.free(source);
 
     if (std.mem.indexOf(u8, source, ".pgid = 0") == null) {
-        std.debug.print("!! bash.zig is missing .pgid = 0 on spawn !!\n", .{});
+        std.debug.print("!! bash.zig OR shell.zig is missing .pgid = 0 on spawn !!\n", .{});
         return error.PgidZeroMissing;
     }
 }
 
-test "bash: has bounded wait (KILL_GRACE_PERIOD_NS + waitPidBounded)" {
+test "bash: has bounded wait (KILL_GRACE_PERIOD_NS + wait_pid_bounded)" {
     // The bounded-wait helper is the actual fix for D-state hangs. If
     // a refactor reverts to `child.wait(io)`, the test fails. The
     // helper name is part of the contract — don't rename without
     // updating the test.
+    //
+    // After the 2026-08-14 pwsh-tool refactor, both `KILL_GRACE_PERIOD_NS`
+    // and `wait_pid_bounded` live in `shell.zig`. We grep BOTH files so
+    // the contract is locked: if a future refactor moves them OUT of
+    // shell.zig, this test fails.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
-    defer testing.allocator.free(source);
+    const bash_src = try readBashSource(testing.allocator);
+    defer testing.allocator.free(bash_src);
+    const shell_src = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/modules/agent/tools/shell.zig",
+        testing.allocator,
+        std.Io.Limit.unlimited,
+    );
+    defer testing.allocator.free(shell_src);
 
-    if (std.mem.indexOf(u8, source, "KILL_GRACE_PERIOD_NS") == null) {
+    // bash.zig MUST still expose `KILL_GRACE_PERIOD_NS` (alias to shell's
+    // value) so the rest of the function body compiles unchanged.
+    if (std.mem.indexOf(u8, bash_src, "KILL_GRACE_PERIOD_NS") == null) {
         std.debug.print(
-            "!! bash.zig is missing KILL_GRACE_PERIOD_NS constant — bounded-wait fix removed !!\n",
+            "!! bash.zig is missing KILL_GRACE_PERIOD_NS alias — bounded-wait fix regressed !!\n",
             .{},
         );
         return error.KillGracePeriodMissing;
     }
-    if (std.mem.indexOf(u8, source, "fn waitPidBounded") == null) {
+    // shell.zig MUST define `KILL_GRACE_PERIOD_NS` and `wait_pid_bounded`.
+    if (std.mem.indexOf(u8, shell_src, "KILL_GRACE_PERIOD_NS") == null) {
         std.debug.print(
-            "!! bash.zig is missing fn waitPidBounded — bounded-wait helper removed !!\n",
+            "!! shell.zig is missing KILL_GRACE_PERIOD_NS constant — bounded-wait fix removed !!\n",
+            .{},
+        );
+        return error.KillGracePeriodMissing;
+    }
+    if (std.mem.indexOf(u8, shell_src, "fn wait_pid_bounded") == null) {
+        std.debug.print(
+            "!! shell.zig is missing fn wait_pid_bounded — bounded-wait helper removed !!\n",
             .{},
         );
         return error.WaitPidBoundedMissing;
@@ -1161,12 +1207,17 @@ test "bash: uses WNOHANG for the bounded wait (not blocking waitpid)" {
     // source regresses to a blocking call, the D-state hang is back.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
-    defer testing.allocator.free(source);
+    const shell_src = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/modules/agent/tools/shell.zig",
+        testing.allocator,
+        std.Io.Limit.unlimited,
+    );
+    defer testing.allocator.free(shell_src);
 
-    if (std.mem.indexOf(u8, source, "std.c.W.NOHANG") == null) {
+    if (std.mem.indexOf(u8, shell_src, "std.c.W.NOHANG") == null) {
         std.debug.print(
-            "!! bash.zig is missing std.c.W.NOHANG — bounded wait may have regressed to blocking !!\n",
+            "!! shell.zig is missing std.c.W.NOHANG — bounded wait may have regressed to blocking !!\n",
             .{},
         );
         return error.WNoHangMissing;
@@ -1181,7 +1232,7 @@ test "bash: manually closes pipe FDs after grace-period expiry" {
     // hang forever waiting for pipe EOF that never arrives.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
+    const source = try readBothSources(testing.allocator);
     defer testing.allocator.free(source);
 
     // Look for the pattern `child.stdout.?.close(io)` (or `|.close(io)`

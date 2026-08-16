@@ -92,4 +92,34 @@ decides. Same UX model as `<DiffView>`'s split/unified toggle.
   "title": "Landing page preview"
 }
 ```
+
+## `pwsh`
+
+Same wire contract as [`bash`](#bash) — switching between them is a one-token change in the function-call name. The 8 input fields (`command`, `cwd`, `mandatory_timeout`, `max_output`, `stdin_data`, `background`, `max_lines`, `do_encoding`), the 3 required ones (`command`, `cwd`, `mandatory_timeout`), and the 9-tag XML output envelope (`<command>…</command> <stdout>…</stdout> <stderr>…</stderr> <exit_code>…</exit_code> <truncated>…</truncated> <timeout>…</timeout> <stdout_lines>…</stdout_lines> <stderr_lines>…</stderr_lines> <is_self>…</is_self>`) are identical to bash. Only the shell executable differs — `pwsh` runs PowerShell Core 7+ (or `powershell.exe` 5.1 on Windows).
+
+**Use this when:** the user is on a Windows host (or has PowerShell Core installed on Linux/macOS), the requested operation is .NET-specific, the user wrote PowerShell in their prompt, or the target script is in a `.ps1` file.
+
+**Command Rules (PowerShell-idiom):**
+- end with `| Select-Object -First <N>` (alias `Select -First N`) instead of `head -n N`, to bound the BYTE count
+- use `[Console]::OutputEncoding` or `Out-File` if you need UTF-8
+- prefer `Get-ChildItem` (alias `ls`, `dir`) over recursive search
+- prefer `Set-Location` (alias `cd`) over inline path navigation
+- avoid `Get-ChildItem -Recurse` / `Select-String -Recurse` on large directories — bound with `| Select-Object -First <N>`
+- use `rg` or `fd` for cross-shell code search (they're available cross-platform)
+
+**Platform availability:**
+- **Windows**: ships preinstalled as `powershell.exe` (5.1). PowerShell 7+ via `winget install Microsoft.PowerShell`.
+- **macOS**: install with `brew install --cask powershell`.
+- **Linux**: install via the Microsoft repo (`/etc/yum.repos.d/microsoft.repo` + `dnf install powershell`), `snap install powershell --classic`, or the tarball at <https://github.com/PowerShell/PowerShell/releases>.
+
+If `pwsh` is not on `$PATH`, the spawn fails with `FileNotFound` — same shape of error as bash on Windows today. Probe with `which pwsh` (POSIX) or `(Get-Command pwsh -ErrorAction SilentlyContinue)` (PowerShell) before invoking.
+
+**Example usage:**
+
+```json
+{
+  "function": "pwsh",
+  "arguments": "{\n  \"command\":\"Get-ChildItem | Select-Object -First 5\",\"cwd\":\"/tmp\",\"mandatory_timeout\":5\n}"
+}
+```
 ```
