@@ -509,7 +509,18 @@ pub fn main(init: std.process.Init) !void {
 
     try gs.listen(); // blocks until the server is stopped
 
-    // Clean shutdown after listen() returns (after shutdown endpoint is called)
+    // Clean shutdown after listen() returns (after shutdown endpoint is called).
+    //
+    // Order matters: the cronjob manager started in listen() runs a
+    // background thread that ticks every 1s and dereferences context
+    // (the running LlmConfig, the SQLite WAL). The defers at the top of
+    // main() free that context on the way out, so the cronjob thread
+    // MUST be joined BEFORE the defers run — otherwise the thread
+    // outlives the freed memory and segfaults ~10s later (rc=-11).
+    // Before this fix, the binary segfaulted after /test/shutdown
+    // returned 200, leaving the test harness waiting full SIGTERM +
+    // SIGKILL deadlines (10s per test × 64 tests = ~10 min of CI waste).
+    gs.cronjob_manager.stop();
     gs.sse_manager.stop();
 }
 
