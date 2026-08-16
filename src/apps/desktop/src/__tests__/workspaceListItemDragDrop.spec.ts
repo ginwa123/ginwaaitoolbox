@@ -18,7 +18,6 @@ import { mount } from '@vue/test-utils'
 
 import WorkspaceList from '../components/workspace/WorkspaceList.vue'
 import {
-  useWorkspacesStore,
   type Workspace,
   type WorkspaceItem,
 } from '../stores/workspaces'
@@ -109,7 +108,7 @@ describe('WorkspaceList item drag-and-drop', () => {
   }
 
   function makeDragEvent(type: string, dt: ReturnType<typeof makeDragStore>): DragEvent {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const event = new Event(type, { bubbles: true, cancelable: true }) as any
     event.dataTransfer = dt

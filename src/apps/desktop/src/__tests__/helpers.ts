@@ -3,7 +3,6 @@
  * Node built-ins. Tests in this directory import from `./helpers` to avoid
  * duplicating boilerplate across spec files.
  */
-import { vi } from 'vitest'
 
 /**
  * Returns a localStorage stub backed by a Map. jsdom 29 dropped localStorage

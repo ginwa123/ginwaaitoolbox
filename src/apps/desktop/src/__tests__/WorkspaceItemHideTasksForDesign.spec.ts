@@ -26,7 +26,7 @@
  *   4. Design item with NO pages, NO tasks: tasks section absent,
  *      pages section absent (just the row, nothing under it).
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import WorkspaceItem from '../components/workspace/WorkspaceItem.vue'
@@ -123,7 +123,7 @@ function makeFolderItem(overrides: Partial<WorkspaceItemType> = {}): WorkspaceIt
   }
 }
 
-function mountItem(item: WorkspaceItemType, expanded: boolean) {
+function mountItem(item: WorkspaceItemType, _expanded: boolean) {
   return mount(WorkspaceItem, {
     props: {
       item,

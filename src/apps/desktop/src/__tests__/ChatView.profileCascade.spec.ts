@@ -23,7 +23,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { createApp, nextTick, ref, type Ref } from 'vue'
+import { createApp, nextTick, ref } from 'vue'
 import { mount, flushPromises, type VueWrapper, type DOMWrapper } from '@vue/test-utils'
 
 import * as api from '../api'
@@ -50,7 +50,7 @@ if (
 }
 
 function makeStubClient(initial: SseState): SseClient {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -69,9 +69,9 @@ function makeStubClient(initial: SseState): SseClient {
 // Per-test overrides via setup() so each test can change
 // getNalarConfig / getSession responses without re-mounting the global
 // vi.mock() harness.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function installChatViewMocks(opts: {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config?: any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,9 +82,9 @@ function installChatViewMocks(opts: {
     has_more: false,
     next_cursor: null,
     cwd: '/tmp',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     git_worktree_cwd: '',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     max_total_tokens: 0,
     max_capacity_total_tokens: 0,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,7 +95,7 @@ function installChatViewMocks(opts: {
     opts.session ?? {
       session_id: 'placeholder',
       session_name: '',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       selectedProfile: null,
       cwd: '',
       git_worktree_cwd: '',
@@ -138,7 +138,6 @@ async function mountChatViewWithSession(sessionId: string) {
 // ─── shared SseBus wiring (parity with chatViewWorktree.spec.ts) ────────
 let vueApp: ReturnType<typeof createApp> | null = null
 let sseBusGlobalClient: SseClient | null = null
-let sseBusChannels: string[] = []
 
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -146,7 +145,6 @@ beforeEach(() => {
   installSseBus(vueApp)
   sseBusGlobalClient = makeStubClient('open')
   __setSseBusGlobalClient(sseBusGlobalClient)
-  sseBusChannels = []
   // jsdom 29 dropped localStorage from its default globals. Several
   // stores (navigation.ts, designSse.ts, kanbanSse.ts) call
   // localStorage.getItem() on init — without this stub every test

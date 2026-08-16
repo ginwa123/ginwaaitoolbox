@@ -155,7 +155,7 @@ describe('useDesignHistory composable', () => {
     const history = useDesignHistory(pageId)
 
     // Same element snapshot — pre and post are identical.
-    const elem = makeElement({ id: 'elem_noop' })
+    makeElement({ id: 'elem_noop' })
     history.capturePreState(['elem_noop'])
     await history.capturePostState(['elem_noop'])
     expect(store.getStack('page_1').past.length).toBe(0)

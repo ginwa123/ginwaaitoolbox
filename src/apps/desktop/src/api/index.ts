@@ -449,7 +449,7 @@ export async function getWorkspacesItems(
   )
 }
 
-export async function createWorkspace(name: string, icon: string = '📁'): Promise<Workspace> {
+export async function createWorkspace(name: string, _icon: string = '📁'): Promise<Workspace> {
   return await apiFetch<Workspace>('/workspaces', {
     method: 'POST',
     body: { name },
@@ -1350,7 +1350,7 @@ export async function getChats(
       next_cursor: data.next_cursor || null,
       total: data.total || 0,
     }
-  } catch (error) {
+  } catch {
     // Return empty sessions when LLM backend unavailable (apiFetch
     // also fires a toast notification on non-2xx; the empty-array
     // fallback ensures the UI doesn't crash while the user sees
@@ -2665,7 +2665,7 @@ export interface GitChangesResponse {
 export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
     return await apiFetch<GitStatus>(`/git/status?path=${encodeURIComponent(cwd)}`)
-  } catch (error) {
+  } catch {
     // Return non-repo status on error (apiFetch also fires a toast
     // notification on non-2xx; the empty status fallback ensures the
     // UI doesn't crash while the user sees the error).
@@ -2685,7 +2685,7 @@ export async function getGitChanges(cwd: string): Promise<GitChangesResponse> {
     return await apiFetch<GitChangesResponse>(
       `/git/changes?path=${encodeURIComponent(cwd)}`,
     )
-  } catch (error) {
+  } catch {
     // Return non-repo status on error (apiFetch also fires a toast
     // notification on non-2xx; the empty status fallback ensures the
     // UI doesn't crash while the user sees the error).

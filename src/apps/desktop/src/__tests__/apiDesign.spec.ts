@@ -292,7 +292,7 @@ describe('api.design', () => {
         width: 320,
         height: 240,
         fill: '#22c55e',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
 

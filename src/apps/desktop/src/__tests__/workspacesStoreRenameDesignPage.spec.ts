@@ -71,7 +71,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
     ]
     // Set the design pages cache directly (mirrors what fetchDesignPages
     // would have populated).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(ws as any).designPagesByItemId = {
       item_design: [
@@ -107,7 +107,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
 
     await ws.renameDesignPage('ws_1', 'item_design', 'page_1', '  Renamed Page  ')
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // Optimistic: cache reflects the trimmed value.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cached = (ws as any).designPagesByItemId.item_design[0]
@@ -131,7 +131,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
       ws.renameDesignPage('ws_1', 'item_design', 'page_1', 'Renamed Page'),
     ).rejects.toThrow('500 Internal Server Error')
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
     // Rollback: name reverts to the original.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -142,7 +142,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
   it('rejects empty / whitespace-only names (no API call)', async () => {
     const ws = seedStore()
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     await ws.renameDesignPage('ws_1', 'item_design', 'page_1', '   ')
     expect(updateDesignPageMock).not.toHaveBeenCalled()
     // Name unchanged.

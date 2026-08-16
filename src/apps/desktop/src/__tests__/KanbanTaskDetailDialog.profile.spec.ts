@@ -33,7 +33,7 @@ describe('KanbanTaskDetailDialog — profile picker', () => {
       profiles: {
         '900r1bu': { model: 'MiniMax-M3', base_url: 'https://api.minimax.io/v1' },
       },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })

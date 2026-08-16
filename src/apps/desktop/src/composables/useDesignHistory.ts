@@ -28,8 +28,6 @@ import { useDesignHistoryStore, type HistoryEntry } from '../stores/designHistor
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { DesignElement } from '../api'
 
-const CAPACITY = 100
-
 export interface UseDesignHistory {
   canUndo: ComputedRef<boolean>
   canRedo: ComputedRef<boolean>

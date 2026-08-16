@@ -8,9 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 
 import { useDesignHandlers } from '../composables/useDesignHandlers'
-import {
-  reparentDesignElementsBatch as reparentDesignElementsBatchApi,
-} from '../api'
 import { useNotificationStore } from '../stores/notifications'
 
 describe('useDesignHandlers.reparentLayers', () => {

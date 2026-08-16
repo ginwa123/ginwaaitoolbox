@@ -59,11 +59,11 @@ const ITEM = {
   path: '',
   design_elements: [],
   workspace_id: 'ws_1',
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeEl(overrides: Record<string, unknown> = {}): any {
@@ -98,7 +98,7 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -114,7 +114,7 @@ describe('DesignView keyboard shortcuts (Chunk 4)', () => {
       props: { item: { ...ITEM, design_elements: elements }, workspaceId: 'ws_1', itemId: 'item_1' },
     })
     await flushPromises()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     return wrapper
   }
 

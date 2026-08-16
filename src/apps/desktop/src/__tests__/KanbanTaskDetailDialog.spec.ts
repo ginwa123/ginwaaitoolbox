@@ -19,7 +19,6 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
 import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
-import * as api from '@/api'
 import type { Task, KanbanColumn } from '@/stores/workspaces'
 
 const TASK: Task = {

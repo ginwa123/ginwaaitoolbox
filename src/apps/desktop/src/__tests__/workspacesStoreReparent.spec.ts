@@ -8,10 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 
 import { useWorkspacesStore } from '../stores/workspaces'
-import {
-  reparentDesignElementsBatch as reparentDesignElementsBatchApi,
-} from '../api'
-
 describe('workspacesStore.reparentDesignElementsBatch', () => {
   beforeEach(() => {
     setActivePinia(createPinia())

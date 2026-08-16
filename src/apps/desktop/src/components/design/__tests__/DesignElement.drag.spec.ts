@@ -43,7 +43,7 @@ describe('DesignElement drag', () => {
     root.setPointerCapture = () => {}
     root.releasePointerCapture = () => {}
     root.hasPointerCapture = () => true
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(root as any).addEventListener = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,9 +56,9 @@ describe('DesignElement drag', () => {
     // in DesignView.handPan.spec.ts).
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // Move handler was registered on addEventListener('pointermove', ...)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const moveHandler = (root as any).addEventListener.mock.calls.find(
@@ -69,7 +69,7 @@ describe('DesignElement drag', () => {
 
     // Simulate a +50, +30 move.
     moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // Within the throttle window — may or may not have emitted yet.
     // Use the wrapper's emitted() after waiting.
     await new Promise((r) => setTimeout(r, 300))  // wait past the 250 ms trailing-edge debounce (Chunk 3)
@@ -82,14 +82,14 @@ describe('DesignElement drag', () => {
   it('emits a trailing translate on pointerup with the final delta', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const root = wrapper.find('[data-design-element]').element as HTMLElement
     root.setPointerCapture = () => {}
     root.releasePointerCapture = () => {}
     root.hasPointerCapture = () => true
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let moveHandler: any, upHandler: any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,7 +100,7 @@ describe('DesignElement drag', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(root as any).removeEventListener = () => {}
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
     moveHandler(new PointerEvent('pointermove', { clientX: 999, clientY: 999, pointerId: 1 }))
     // Fire pointerup immediately (within throttle window).
@@ -114,13 +114,13 @@ describe('DesignElement drag', () => {
     expect(lastTranslate).toMatchObject({ dx: 899, dy: 899 })
   })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   it('applies 1/zoom to the delta so zoomed canvases stay 1:1 with cursor', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 0.5 },  // 50% zoom
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     })
     const root = wrapper.find('[data-design-element]').element as HTMLElement
     root.setPointerCapture = () => {}
@@ -161,13 +161,13 @@ describe('DesignElement drag', () => {
       props: { element: ELEMENT, selected: true, readonly: true },
     })
     const root = wrapper.find('[data-design-element]').element as HTMLElement
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect(wrapper.emitted('update')).toBeUndefined()
   })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   it('resize handle emits resize patch with sign flip', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
@@ -176,7 +176,7 @@ describe('DesignElement drag', () => {
     const nwEl = nwHandle.element as HTMLElement
     nwEl.setPointerCapture = () => {}
     nwEl.releasePointerCapture = () => {}
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     nwEl.hasPointerCapture = () => true
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let moveHandler: any
@@ -193,12 +193,12 @@ describe('DesignElement drag', () => {
     moveHandler(new PointerEvent('pointermove', { clientX: 70, clientY: 60, pointerId: 1 }))
     await new Promise((r) => setTimeout(r, 300))
     const resizes = wrapper.emitted('resize') ?? []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const lastResize = resizes[resizes.length - 1]?.[0] as any
     expect(lastResize.width).toBe(230)   // 200 + 30
     expect(lastResize.height).toBe(240)  // 200 + 40
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect(lastResize.x).toBe(70)        // 100 - 30
     expect(lastResize.y).toBe(60)        // 100 - 40
   })
@@ -206,7 +206,7 @@ describe('DesignElement drag', () => {
   it('resize clamps width/height to minimum 10px', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     })
     const eHandle = wrapper.find(`[data-testid="design-element-handle-${ELEMENT.id}-e"]`)
     const eEl = eHandle.element as HTMLElement
@@ -262,14 +262,14 @@ describe('DesignElement drag', () => {
     // Pre-fix: 'select' emitted TWICE (handle + wrapper).
     // Post-fix: 'select' emitted ONCE (handle only — wrapper's
     // @pointerdown never fired because the handle called
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // event.stopPropagation()).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const selects = wrapper.emitted('select') ?? []
     expect(selects).toHaveLength(1)
     // Also assert 'dragStart' is emitted once (same duplicate-handler
     // pattern would cause a duplicate dragStart).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const dragStarts = wrapper.emitted('dragStart') ?? []
     expect(dragStarts).toHaveLength(1)
   })
@@ -292,9 +292,9 @@ describe('DesignElement drag', () => {
     ;(root as any).addEventListener = (type: string, cb: any) => {
       if (type === 'pointermove') moveHandler = cb
       if (type === 'pointerup') upHandler = cb
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(root as any).removeEventListener = () => {}
 
@@ -304,9 +304,9 @@ describe('DesignElement drag', () => {
     moveHandler(new PointerEvent('pointermove', { clientX: 120, clientY: 120, pointerId: 1 }))
     moveHandler(new PointerEvent('pointermove', { clientX: 130, clientY: 130, pointerId: 1 }))
     // Snapshot BEFORE pointerup — the trailing emit happens on pointerup.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const emitsBeforeUp = (wrapper.emitted('translate') ?? []).length
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // Throttled: 0 emits (none past the 50ms window). Unthrottled: 3 emits.
     expect(emitsBeforeUp).toBeLessThanOrEqual(1)
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
@@ -402,9 +402,9 @@ describe('DesignElement drag', () => {
   it('each translate emit carries INCREMENTAL dx/dy (sum equals cursor delta, never compounded)', async () => {
     const wrapper = mount(DesignElement, {
       props: { element: ELEMENT, selected: true, zoom: 1.0 },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const root = wrapper.find('[data-design-element]').element as HTMLElement
     root.setPointerCapture = () => {}
     root.releasePointerCapture = () => {}
@@ -415,9 +415,9 @@ describe('DesignElement drag', () => {
     ;(root as any).addEventListener = (type: string, cb: any) => {
       if (type === 'pointermove') moveHandler = cb
       if (type === 'pointerup') upHandler = cb
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(root as any).removeEventListener = () => {}
 
@@ -437,13 +437,13 @@ describe('DesignElement drag', () => {
     // (1) Sum across all emits equals cursor delta — server will
     // apply each emit with `x = x + dx`, so the cumulative effect
     // must equal the cursor movement (not compound to 30·4/2 = 60).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sumDx = translates.reduce((acc, t) => acc + (t[0] as any).dx, 0)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sumDy = translates.reduce((acc, t) => acc + (t[0] as any).dy, 0)
     expect(sumDx).toBe(30)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect(sumDy).toBe(30)
 
     // (2) Each individual emit carries delta ≤ cursor delta. If
@@ -458,17 +458,17 @@ describe('DesignElement drag', () => {
       const dy = (t[0] as any).dy
       expect(Math.abs(dx)).toBeLessThanOrEqual(30)
       expect(Math.abs(dy)).toBeLessThanOrEqual(30)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
     // (3) Specifically — the SUM never reaches the compounded value.
     // A compounded value would be: 10 + 20 + 30 = 60 (NOT 30).
     expect(sumDx).toBeLessThan(60)
   })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   // Chunk 2: group drag. When this element is part of a multi-selection
   // and the user drags the body, the component emits `groupDrag` events
   // (NOT single-element `update` events) so the parent can apply the
@@ -489,14 +489,14 @@ describe('DesignElement drag', () => {
     ;(root as any).removeEventListener = () => {}
 
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // Move +50, +30 within the throttle window → only the trailing
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // pointerup emit will fire, carrying the final delta.
     moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // BUG FIX 2026-08-06: the wire sends INCREMENTAL dx/dy (delta
     // since last emit). For a single pointermove followed by a
     // pointerup with no throttle window crossed, the trailing emit
@@ -512,12 +512,8 @@ describe('DesignElement drag', () => {
     // Trailing emit alone carries the full delta (no throttle fired
     // before pointerup). The first emit's dx/dy is whatever landed
     // before the trailing — depends on the throttle timing.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const last = groupDrags[groupDrags.length - 1]?.[0] as any
-    // The trailing is the delta since last throttle (or 0 if throttle
-    // fired just before pointerup). Either way the SUM equals the
-    // cursor delta. We don't pin last.dx specifically here — see the
-    // throttles-rapid test for that invariant.
+    // We don't pin groupDrags[groupDrags.length - 1][0].dx specifically
+    // here — see the throttles-rapid test for that invariant.
 
     // Critically: this is a GROUP drag, so no `update` should fire.
     // The parent decides where to route the per-element updates.
@@ -540,13 +536,13 @@ describe('DesignElement drag', () => {
       if (type === 'pointermove') moveHandler = cb
       if (type === 'pointerup') upHandler = cb
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(root as any).removeEventListener = () => {}
 
     root.dispatchEvent(new PointerEvent('pointerdown', { button: 0, pointerId: 1, clientX: 100, clientY: 100, bubbles: true }))
     moveHandler(new PointerEvent('pointermove', { clientX: 150, clientY: 130, pointerId: 1 }))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
 
     // Empty selectedIds means no group-drag — the single-element
@@ -591,9 +587,9 @@ describe('DesignElement drag', () => {
     let moveHandler: any, upHandler: any
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(root as any).addEventListener = (type: string, cb: any) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       if (type === 'pointermove') moveHandler = cb
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       if (type === 'pointerup') upHandler = cb
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -607,7 +603,7 @@ describe('DesignElement drag', () => {
     if (moveHandler) {
       moveHandler(new PointerEvent('pointermove', {
         clientX: 150, clientY: 130, pointerId: 1,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       }))
       upHandler(new PointerEvent('pointerup', { pointerId: 1 }))
     }
@@ -630,14 +626,14 @@ describe('DesignElement drag', () => {
 
   it('resize on a child element still emits resize (resize handles unaffected)', async () => {
     const CHILD: DesignElementApi = {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       ...ELEMENT,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       id: 'el_child_resize',
       parent_id: 'el_parent_group',
     }
     const wrapper = mount(DesignElement, {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       props: { element: CHILD, selected: true, zoom: 1.0 },
     })
     const nwHandle = wrapper.find(`[data-testid="design-element-handle-${CHILD.id}-nw"]`)
@@ -651,7 +647,7 @@ describe('DesignElement drag', () => {
     ;(nwEl as any).addEventListener = (type: string, cb: any) => {
       if (type === 'pointermove') moveHandler = cb
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(nwEl as any).removeEventListener = () => {}
 
@@ -672,14 +668,14 @@ describe('DesignElement drag', () => {
   })
 
   it('drag on a top-level element (parent_id === "") still emits translate (regression guard)', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // parent_id is the empty string (the backend's COALESCE form for
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // NULL). This is the boundary case — empty string means top-level.
     const TOP_LEVEL: DesignElementApi = {
       ...ELEMENT,
       id: 'el_top',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       parent_id: '',
     }
     const wrapper = mount(DesignElement, {
@@ -713,15 +709,15 @@ describe('DesignElement drag', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const lastTranslate = translates[translates.length - 1]?.[0] as any
     expect(lastTranslate).toMatchObject({ dx: 50, dy: 30 })
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
   it('drag on a child element with parent_id = null (legacy shape) is treated as top-level', async () => {
     // Legacy elements returned by the API before parent_id was added
     // have `parent_id = null` (or undefined). They should be treated
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // as top-level — drag is allowed.
     const LEGACY: DesignElementApi = {
       ...ELEMENT,

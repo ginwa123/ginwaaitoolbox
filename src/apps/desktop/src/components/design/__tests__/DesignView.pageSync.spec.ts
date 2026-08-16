@@ -35,7 +35,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import DesignView from '../DesignView.vue'
 import { useWorkspacesStore } from '../../../stores/workspaces'
-import type { Workspace, WorkspaceItem } from '../../../stores/workspaces'
+import type { WorkspaceItem } from '../../../stores/workspaces'
 
 const WS_ID = 'ws_test'
 const DESIGN_ID = 'item_design_sync'

@@ -4,7 +4,7 @@
  * `global.fetch`) so we can assert the composable's load / save /
  * reset / dirty behavior in isolation.
  */
-import { nextTick, ref } from 'vue'
+import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api'

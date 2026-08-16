@@ -56,7 +56,7 @@
  * will fail with `expected session cb to fire 1 times, got 0`.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createUnifiedSseConnection } from '../api'
 import * as sseClient from '../helpers/sseClient'
@@ -484,14 +484,11 @@ describe('createUnifiedSseConnection: single-buffer design (regression for Plan 
 describe('createUnifiedSseConnection: bare vs per-session tokens (Chunk 4)', () => {
   const spy = vi.spyOn(sseClient, 'createSseClient')
   let capturedUrl: string | null = null
-  let capturedAdditionalEventTypes: string[] | null = null
 
   beforeEach(() => {
     capturedUrl = null
-    capturedAdditionalEventTypes = null
     spy.mockImplementation(((opts: sseClient.SseClientOptions) => {
       capturedUrl = opts.url
-      capturedAdditionalEventTypes = opts.additionalEventTypes ?? null
       return {
         close: vi.fn(),
         reconnect: vi.fn(),

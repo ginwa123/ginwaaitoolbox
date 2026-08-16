@@ -32,7 +32,7 @@ import {
 } from '../helpers/sseBus'
 import type { SseClient } from '../helpers/sseClient'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(initial: 'connecting'): any {
   return {
@@ -127,12 +127,12 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
 
   it('clicking × on a design page opens the ConfirmDialog (does NOT delete immediately)', async () => {
     const store = useWorkspacesStore()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const deleteSpy = vi.spyOn(store, 'deleteDesignPage').mockResolvedValue(undefined)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     store.workspaces = [{ id: WS_ID, name: 'WS', items: [baseItem] }] as any
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
     const wrapper = mountSidebar()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -151,11 +151,11 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
     wrapper.unmount()
   })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   it('confirming the dialog calls workspacesStore.deleteDesignPage exactly once', async () => {
     const store = useWorkspacesStore()
     const deleteSpy = vi.spyOn(store, 'deleteDesignPage').mockResolvedValue(undefined)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     store.workspaces = [{ id: WS_ID, name: 'WS', items: [baseItem] }] as any
 
@@ -174,11 +174,11 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
     expect(deleteSpy).toHaveBeenCalledTimes(1)
     expect(deleteSpy).toHaveBeenCalledWith(WS_ID, ITEM_ID, PAGE_ID)
     wrapper.unmount()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   })
 
   it('cancelling the dialog does NOT call workspacesStore.deleteDesignPage', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const store = useWorkspacesStore()
     const deleteSpy = vi.spyOn(store, 'deleteDesignPage').mockResolvedValue(undefined)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -196,12 +196,12 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
     cancelBtn!.click()
     await nextTick()
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect(deleteSpy).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
   it('clicking the dialog backdrop does NOT call workspacesStore.deleteDesignPage', async () => {
     const store = useWorkspacesStore()
@@ -228,11 +228,11 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
 
   it('onConfirm error path surfaces the failure via notifyError (no unhandled rejection)', async () => {
     // Regression guard for the only piece of new logic in this diff:
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // the try/catch around `workspacesStore.deleteDesignPage` MUST
     // call `useNotificationStore().notifyError('Failed to delete page', ...)`
     // on rejection so a failed backend DELETE isn't a silent UX failure.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // Without this test, a future refactor could remove the try/catch
     // and the dialog would still appear to work (4 happy-path tests pass).
     const store = useWorkspacesStore()

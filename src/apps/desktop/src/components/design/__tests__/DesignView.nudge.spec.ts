@@ -50,7 +50,7 @@ vi.mock('../../../api', async (importOriginal) => {
 const ITEM = {
   id: 'item_1', name: 'Test', item_type: 'design', path: '', design_elements: [],
   workspace_id: 'ws_1',
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
@@ -59,7 +59,7 @@ const ELEMENT = {
   x: 100, y: 100, width: 200, height: 200,
   rotation: 0, opacity: 1, fill: '#fff', stroke: '', stroke_width: 0,
   corner_radius: 0, text_content: '', text_style: '', image_url: '',
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   z_index: 0, position: 0, file_path: '', created_at: '', updated_at: '',
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
@@ -95,7 +95,7 @@ describe('DesignView keyboard nudge', () => {
       // Arrow right.
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }))
       await flushPromises()
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       // Expect at least one call with x=101.
       const calls = updateDesignElementGeometrySpy.mock.calls
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -122,7 +122,7 @@ describe('DesignView keyboard nudge', () => {
       }))
       await flushPromises()
       updateDesignElementGeometrySpy.mockClear()
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true }))
       await flushPromises()
       const calls = updateDesignElementGeometrySpy.mock.calls

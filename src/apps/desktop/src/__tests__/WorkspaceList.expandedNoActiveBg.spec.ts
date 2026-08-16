@@ -78,7 +78,7 @@ describe('WorkspaceList — expanded workspace has NO active background', () => 
       query: {} as Record<string, string>,
       path: '/app',
       fullPath: '/app',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })

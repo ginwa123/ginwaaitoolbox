@@ -5,7 +5,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import { defineComponent, h, nextTick } from 'vue'
 import SubAgentPeekPanel from '../components/nalar/SubAgentPeekPanel.vue'
 import type { Message } from '../api'
 

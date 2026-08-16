@@ -12,7 +12,7 @@ import { nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import WorkspaceList from '../components/workspace/WorkspaceList.vue'
-import { useWorkspacesStore, type Workspace } from '../stores/workspaces'
+import { type Workspace } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
 function makeWorkspace(id: string, name: string): Workspace {
@@ -66,7 +66,7 @@ describe('WorkspaceList drag-and-drop', () => {
   }
 
   function makeDragEvent(type: string, dt: ReturnType<typeof makeDragStore>): DragEvent {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const event = new Event(type, { bubbles: true, cancelable: true }) as any
     event.dataTransfer = dt

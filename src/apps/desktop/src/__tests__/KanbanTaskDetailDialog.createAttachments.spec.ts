@@ -129,7 +129,7 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
 
     const emitted = w.emitted('create')
     expect(emitted).toBeTruthy()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     expect(payload.name).toBe('Plain task')
@@ -158,7 +158,7 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
     clickInDom('[data-testid="kanban-task-detail-save"]')
 
     const emitted = w.emitted('create')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     expect(emitted).toBeTruthy()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
@@ -192,10 +192,10 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
 
     clickInDom('[data-testid="kanban-task-detail-save"]')
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const emitted = w.emitted('create')
     expect(emitted).toBeTruthy()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     expect(payload.pendingFiles.length).toBe(2)
@@ -219,7 +219,7 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
       makeFile('chart.png'),
     )
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     clickInDom('[data-testid="kanban-task-detail-create-and-run"]')
 
     const emitted = w.emitted('create-and-run')
@@ -247,7 +247,7 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
     })
     await flushPromises()
     // Trigger a save (name unchanged → still dirty via description change).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     setInputValue('[data-testid="kanban-task-detail-description"]', 'Edited text')
     await flushPromises()
     clickInDom('[data-testid="kanban-task-detail-save"]')

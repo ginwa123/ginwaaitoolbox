@@ -187,10 +187,10 @@ describe('useWorkspacesStore — kanban actions', () => {
         item: {
           id: 'kanban_bare',
           // name missing — old backend shape
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         columns: [],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
@@ -730,7 +730,7 @@ describe('useWorkspacesStore — kanban actions', () => {
         .mockResolvedValueOnce({
           id: 'item_1',
           name: 'New Name',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           item_type: 'kanban',
           path: null,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

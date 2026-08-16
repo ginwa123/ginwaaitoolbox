@@ -67,7 +67,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     } as Response)
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function makeElement(id: string, x: number, y: number): any {
     return {
@@ -97,7 +97,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     }
   }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function seedItem(itemId = 'item_1', elems: any[] = [makeElement('el_1', 0, 0)]): void {
@@ -113,7 +113,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
           item_type: 'design',
           name: 'Item',
           path: '/tmp',
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           
           position: 0,
           design_elements: elems,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -132,7 +132,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     await useWorkspacesStore().updateDesignElementGeometry(
       'ws_1', 'item_1', 'p1', 'el_1',
       { x: 250, y: 350 },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     )
 
     const store = useWorkspacesStore()
@@ -148,7 +148,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
 
     mockFetchOnce(200, { ...makeElement('el_1', 100, 100), width: 300, height: 400 })
     await useWorkspacesStore().updateDesignElementGeometry(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       'ws_1', 'item_1', 'p1', 'el_1',
       { width: 300, height: 400 },
     )
@@ -167,7 +167,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     seedItem('item_1', [makeElement('el_1', 100, 100)])
 
     mockFetchOnce(200, { ...makeElement('el_1', 100, 100), rotation: 45 })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     await useWorkspacesStore().updateDesignElementGeometry(
       'ws_1', 'item_1', 'p1', 'el_1',
       { rotation: 45 },
@@ -186,9 +186,9 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
       makeElement('el_3', 200, 200),
     ])
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     mockFetchOnce(200, makeElement('el_2', 999, 999))
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     await useWorkspacesStore().updateDesignElementGeometry(
       'ws_1', 'item_1', 'p1', 'el_2',
       { x: 999, y: 999 },

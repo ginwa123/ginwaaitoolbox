@@ -40,7 +40,7 @@ import { makeLocalStorageStub } from './helpers'
  * the `onConnected → fetchInitialKanban` watcher.
  */
 function makeStubClient(initial: SseState): SseClient {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -59,7 +59,7 @@ function makeStubClient(initial: SseState): SseClient {
   return stub as SseClient
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function emitStubState(c: SseClient, s: SseState): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const listeners = (c as any).__stateListeners as

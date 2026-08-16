@@ -227,7 +227,7 @@ describe('useSubAgentPeek', () => {
       id: 'a1',
       role: 'assistant',
       content: 'before-unmount',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
@@ -242,7 +242,7 @@ describe('useSubAgentPeek', () => {
       session_id: peekSessionId,
       id: 'a2',
       role: 'assistant',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       content: 'after-unmount',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -300,7 +300,7 @@ describe('useSubAgentPeek', () => {
 
     for (const chunk of chunks) {
       __dispatchSseBus('llm', {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+         
         session_id: CHUNK_PEEK_SID,
         ...chunk,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -356,7 +356,7 @@ describe('useSubAgentPeek', () => {
     __dispatchSseBus('llm', {
       session_id: NEW_MSG_PEEK_SID,
       id: 'x1',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       role: 'tool',
       content: 'r',
       tool_call_id: 'call_1',
@@ -393,7 +393,7 @@ describe('useSubAgentPeek', () => {
 
     // Event for SID_A must mutate peekA only.
     __dispatchSseBus('llm', {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       session_id: SID_A,
       id: 'a1',
       role: 'assistant',
@@ -406,7 +406,7 @@ describe('useSubAgentPeek', () => {
     expect(peekB.messages.value.some((m) => m.content === 'for-A')).toBe(false)
 
     // Event for SID_B must mutate peekB only.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     __dispatchSseBus('llm', {
       session_id: SID_B,
       id: 'b1',

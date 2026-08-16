@@ -29,7 +29,6 @@
  * split-move-resize PR).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 
 const {
@@ -156,7 +155,7 @@ describe('useDesignHandlers.resizeElement → store → POST /resize', () => {
     const store = useWorkspacesStore()
     store.activeDesignPageId = 'page_1'
     const spy = vi.spyOn(store, 'resizeDesignElement')
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue({} as any)
 

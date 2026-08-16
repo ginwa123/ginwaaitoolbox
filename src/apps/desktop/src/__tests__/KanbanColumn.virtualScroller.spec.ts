@@ -46,12 +46,6 @@ const makeColumn = (overrides: Partial<KanbanColumnType> = {}): KanbanColumnType
   ...overrides,
 })
 
-const makeTask = (overrides: Partial<Task> = {}): Task => ({
-  id: 'task_1',
-  name: 'Task 1',
-  ...overrides,
-})
-
 const makeTasks = (count: number, columnId = COL_TODO): Task[] =>
   Array.from({ length: count }, (_, i) => ({
     id: `t${i + 1}`,

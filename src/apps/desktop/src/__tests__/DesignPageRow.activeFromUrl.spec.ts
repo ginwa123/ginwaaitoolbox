@@ -56,7 +56,7 @@ describe('DesignPageRow — page row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_design', pageId: 'page_42' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_design&pageId=page_42',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountRow()
@@ -70,7 +70,7 @@ describe('DesignPageRow — page row active state from URL', () => {
     useRouteMock.mockReturnValue({
       query: { view: 'workspace', itemId: 'item_design', pageId: 'page_other' },
       path: '/app',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       fullPath: '/app?view=workspace&itemId=item_design&pageId=page_other',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -84,7 +84,7 @@ describe('DesignPageRow — page row active state from URL', () => {
   it('page row is NOT active when URL is ?view=chat', async () => {
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_xyz' },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       path: '/app',
       fullPath: '/app?view=chat&session=chat_xyz',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -99,7 +99,7 @@ describe('DesignPageRow — page row active state from URL', () => {
   it('page row active state reacts to URL changes mid-mount', async () => {
     const route = reactive({
       query: {} as Record<string, string>,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       path: '/app',
       fullPath: '/app',
     })
