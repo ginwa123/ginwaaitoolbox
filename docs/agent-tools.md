@@ -92,4 +92,110 @@ decides. Same UX model as `<DiffView>`'s split/unified toggle.
   "title": "Landing page preview"
 }
 ```
+
+## `generate_image`
+
+Generate an image from a text prompt using the OpenAI Images API
+(`POST /v1/images/generations` — the canonical DALL-E 2 / DALL-E 3 /
+gpt-image-1 endpoint, per
+<https://developers.openai.com/api/reference/resources/images/methods/generate>).
+
+**Input** (JSON object):
+
+- `prompt` (required, string): A text description of the desired image. Be specific — subject, style, lighting, composition. Max 1000 characters for `dall-e-2`, 4000 for `dall-e-3` / `gpt-image-1`.
+- `model` (optional, string, default `"dall-e-3"`): One of `"dall-e-2"`, `"dall-e-3"`, `"gpt-image-1"`. DALL-E 2 is cheaper and allows `n > 1`; DALL-E 3 has the best quality; gpt-image-1 is the newest model.
+- `n` (optional, integer, default `1`, range `1-10`): Number of images to generate. Note: DALL-E 3 and gpt-image-1 only accept `n=1` (OpenAI returns 400 if violated).
+- `size` (optional, string, default `"1024x1024"`): Output size. Allowed values depend on model:
+  - `dall-e-2`: `"256x256"`, `"512x512"`, `"1024x1024"`
+  - `dall-e-3`: `"1024x1024"`, `"1792x1024"`, `"1024x1792"`
+  - `gpt-image-1`: `"1024x1024"`, `"1536x1024"`, `"1024x1536"`
+
+    The tool validates model+size compatibility locally before calling OpenAI so a known-bad request fails fast (the LLM sees the allowed-size list in the error message).
+- `quality` (optional, string, DALL-E 3 only): `"standard"` (default) or `"hd"` (more detail, ~2× cost). Ignored for `dall-e-2` / `gpt-image-1`.
+- `style` (optional, string, DALL-E 3 only): `"vivid"` (default, hyper-real / dramatic) or `"natural"` (more subdued). Ignored for `dall-e-2` / `gpt-image-1`.
+- `response_format` (optional, string, default `"b64_json"`): `"url"` or `"b64_json"`. We always save to disk regardless of format. The `"b64_json"` default is the only useful choice for saving; `"url"` is only useful if the caller wants the OpenAI URL too (which we don't currently return in the envelope, and which expires after ~60 min anyway).
+- `user` (optional, string): A unique identifier for the end-user. Helps OpenAI detect abuse. Optional.
+
+**Behaviour:**
+
+1. Validates `prompt` is non-empty.
+2. Applies defaults for `model`, `n`, `size`, `response_format`.
+3. Validates `(model, size)` compatibility locally (allowed-set table — fails fast on bad combinations without a round-trip to OpenAI).
+4. Builds the JSON request body (no null fields — OpenAI returns 400 on some nulls in some SDKs).
+5. POSTs `<base_url>/images/generations` with `Authorization: Bearer <api_key>` and the JSON body. Uses the active profile's `api_key` and `base_url` — same auth as chat completion. **No new config needed.**
+6. Parses the response. Surface OpenAI's `error.message` verbatim on 4xx/5xx.
+7. Saves each image (base64-decoded) to `<cwd>/generated_images/img_<unix_ms>_<index>.png`. Creates the directory if missing.
+8. Returns the success envelope with the absolute paths.
+
+**Output to LLM** (XML envelope, success):
+
+```xml
+<generate_image>
+  <status>generated</status>
+  <count>1</count>
+  <model>dall-e-3</model>
+  <size>1024x1024</size>
+  <images>
+    <image index="0" path="/cwd/generated_images/img_1723123456789_0.png" bytes="12345" mime="image/png" />
+  </images>
+  <revised_prompt>A vibrant watercolor painting of a hat-wearing cat</revised_prompt>
+</generate_image>
+```
+
+Notes:
+
+- `<revised_prompt>` is included ONLY when DALL-E 3 / gpt-image-1 returns one (they silently rewrite the prompt for clarity/safety; DALL-E 2 doesn't).
+- `bytes` is the on-disk file size in bytes (read with `std.Io.File.stat` after writing).
+- One `<image>` per file even when `n > 1` (DALL-E 2 can do n=2..10; the others only do n=1).
+
+**Output to LLM** (XML envelope, error):
+
+```xml
+<generate_image><error>HTTP 400: size '512x512' is not valid for model 'dall-e-3'. Allowed sizes: 1024x1024, 1792x1024, 1024x1792.</error></generate_image>
+```
+
+Or:
+
+```xml
+<generate_image><error>HTTP 401: Incorrect API key provided: sk-XXXXX...</error></generate_image>
+```
+
+The error envelope surfaces as `success=false` to the LLM via the standard `wrapToolOutput` envelope.
+
+**Next step for the agent:**
+
+After `generate_image` returns the success envelope, the agent MUST call `show_preview` with `content_type="image"` and `path=<path from the envelope>` to display the image in the side panel. The agent also sees the `<revised_prompt>` and can echo it back to the user (so the user knows what the model actually generated). Example two-call sequence:
+
+```
+→ generate_image({"prompt": "a cute cat wearing a top hat"})
+← <generate_image>...<image index="0" path="/.../img_xxx_0.png" .../>...<revised_prompt>A cute cat wearing a black top hat in watercolor style</revised_prompt></generate_image>
+→ show_preview({"content_type": "image", "path": "/.../img_xxx_0.png", "title": "A cute cat wearing a black top hat in watercolor style"})
+← <show_preview><status>shown</status>...</show_preview>
+```
+
+The image is durable on disk at `<cwd>/generated_images/img_xxx_0.png` — the user can re-view it later via the chat history (which embeds the same `show_preview` envelope, and `PreviewContentRenderer` reads the local file again on reload). The image is also available for use as a kanban task attachment (`create_kanban_task`'s `image_urls` field) or for embedding in a design-mode element (`update_design_element`'s `image_url` field).
+
+**Auth:**
+
+Uses the active profile's `api_key` and `base_url`. For OpenAI's hosted API this is `https://api.openai.com/v1` + your OpenAI API key. Self-hosted DALL-E-compatible endpoints (e.g. a local DALL-E proxy) work the same way — just point `base_url` at the proxy.
+
+**Implementation:**
+
+- Tool impl: `src/modules/agent/tools/generate_image.zig`
+- Tests: `src/modules/agent/tools/generate_image_test.zig` (34 tests: 6 static source-check + 28 behavioural)
+- Exec wrapper: `src/ai_workflow/tui/agentic_loop/tools_exec_generate_image.zig`
+- Wire-up: `src/root.zig`, `src/ai_workflow/tui/mod.zig`, `src/ai_workflow/tui/agentic_loop/tools.zig`, `src/ai_workflow/tui/agentic_loop/tools_equipped.zig`
+- Test runner: `src/modules/agent/test_runner.zig`
+- Plan: `docs/superpowers/plans/2026-08-14-generate-image-tool.md`
+
+**Example usage:**
+
+```json
+{
+  "prompt": "A cute baby sea otter wearing a small knit hat, watercolor style, soft pastel colors, gentle lighting",
+  "model": "dall-e-3",
+  "size": "1024x1024",
+  "quality": "hd",
+  "style": "natural"
+}
 ```
