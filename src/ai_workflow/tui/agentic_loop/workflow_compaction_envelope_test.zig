@@ -102,6 +102,7 @@ test "compactMessageInMemoryNew: envelope contains metadata header" {
         &s.db,
         s.threaded.io(),
         &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);
@@ -144,6 +145,7 @@ test "compactMessageInMemoryNew: message_index lists every dropped message with 
     const new_messages = try workflow.compactMessageInMemoryNew(
         alloc, messages, "summary text", "sess_abc", "gpt-4o", "/tmp",
         &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);
@@ -201,6 +203,7 @@ test "compactMessageInMemoryNew: tool-role index entries include tool_call_id" {
     const new_messages = try workflow.compactMessageInMemoryNew(
         alloc, messages, "summary", "sess_xyz", "gpt-4o", "/tmp",
         &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);
@@ -230,6 +233,7 @@ test "compactMessageInMemoryNew: existing short-circuit (total <= 4) returns mes
     const result = try workflow.compactMessageInMemoryNew(
         alloc, messages, "summary", "sess_1", "gpt-4o", "/tmp",
         &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         // Free each AgentMessage's content then the ArrayList.
@@ -286,6 +290,7 @@ test "buildCompactionEnvelope: all previews are capped at 100 chars regardless o
     const new_messages = try workflow.compactMessageInMemoryNew(
         alloc, messages, "summary", "sess_500", "gpt-4o", "/tmp",
         &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);
@@ -388,6 +393,7 @@ test "buildCompactionEnvelope: content=null yields empty preview (no content_par
     const new_messages = try workflow.compactMessageInMemoryNew(
         alloc, messages, "summary", "sess_vision", "gpt-4o", "/tmp",
         &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);
@@ -475,6 +481,7 @@ test "end-to-end: compacted rows are findable via getCompactedMessages after com
     const new_messages = try workflow.compactMessageInMemoryNew(
         alloc, messages, "summary", session_id, "gpt-4o", "/tmp",
         &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);
