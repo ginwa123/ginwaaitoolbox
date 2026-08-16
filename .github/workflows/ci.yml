@@ -308,51 +308,63 @@ jobs:
         # its headers, e.g. sqlite3.h not found at
         # C:\vcpkg\installed\x64-windows\include\sqlite3.h).
         run: |
+          # MSVC Build Tools are ALWAYS checked first (independent of vcpkg).
+          # Without this, the original flow ran the winget install for MSVC
+          # only inside the vcpkg-missing branch; on a runner with vcpkg
+          # pre-installed but no BuildTools, MSVC was never installed and
+          # vcpkg's port compile silently failed (CI runs 31897518425,
+          # 31899279563). Use --wait so winget blocks until the install
+          # finishes — without it, the .ps1 returned immediately after
+          # queueing the download and Step 2 saw no cl.exe.
+          $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $vsInstaller) {
+            Write-Host "MSVC Build Tools not found, installing..."
+            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
+            winget install --id Kitware.CMake --wait -e --accept-source-agreements --accept-package-agreements --silent
+          } else {
+            Write-Host ("MSVC Build Tools already at " + $vsInstaller.FullName)
+          }
+
           if (Test-Path "C:\vcpkg\vcpkg.exe") {
             Write-Host "vcpkg already installed at C:\vcpkg"
           } else {
-            Write-Host "Installing vcpkg via winget..."
-            winget install --id Microsoft.VisualStudio.2022.BuildTools --wait -e --accept-source-agreements --accept-package-agreements --silent
-            winget install --id Kitware.CMake -e --accept-source-agreements --accept-package-agreements --silent
+            Write-Host "Bootstrapping vcpkg from source..."
             git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           }
 
-          # Find vcvars64.bat (Visual Studio Build Tools 2022 layout).
-          # If not present, fall back to vcpkg's auto-triplet path.
+          # Re-check for vcvars64.bat AFTER any potential winget install.
+          # Source its env vars into $env: AND into $GITHUB_ENV so the
+          # next step's process sees MSVC on PATH. Set-Item on Env: only
+          # persists for the remainder of THIS process; GITHUB_ENV is
+          # what makes the values cross the step boundary.
           $vsInstaller = Get-ChildItem -Path "C:\Program Files (x86)\Microsoft Visual Studio" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           $useMSVC = $false
           if ($vsInstaller) {
             Write-Host ("Setting up MSVC environment via " + $vsInstaller.FullName)
-            # Write vcvars64-source.bat line-by-line via Out-File, not
-            # via 8-fragment `+` string concatenation with embedded bare
-            # `$vsInstaller.FullName` interpolation. The concatenation
-            # form triggered PowerShell 5.1 lexer bugs in the chained
-            # pipe-with-block that followed it (CI run 31860741395:
-            # MissingEndCurlyBrace at .ps1:60/106/107). Out-File on a
-            # single quoted string avoids all of that.
+            # Write vcvars64-source.bat line-by-line via Out-File. Avoid
+            # multi-fragment `'@echo off' + $x + '"' + ...` concatenation
+            # with embedded bare `$vsInstaller.FullName` — the chained
+            # `cmd | Where-Object { ... } | ForEach-Object { ... }` parser
+            # in PowerShell 5.1 miscounts braces when that pattern
+            # precedes it (CI runs 31841182154, 31859864874, 31860741395,
+            # 31861962678, 31864244047).
             $vcvarsBat = Join-Path $env:TEMP "vcvars64-source.bat"
             "@echo off" | Out-File -FilePath $vcvarsBat -Encoding ASCII
             "call '$($vsInstaller.FullName)'" | Out-File -FilePath $vcvarsBat -Append -Encoding ASCII
             "set" | Out-File -FilePath $vcvarsBat -Append -Encoding ASCII
-            # Capture vcvars64.bat output WITHOUT a chained
-            # `cmd | Where-Object { ... } | ForEach-Object { ... }` pipe
-            # expression. Capture into `$cmdOutput` first, then iterate.
             $cmdOutput = cmd /c $vcvarsBat
             foreach ($line in $cmdOutput) {
               if ($line -match "^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir)=") {
                 $name, $value = $line -split "=", 2
                 Set-Item -Path ("Env:" + $name) -Value $value
-                # Persist across the step boundary. GITHUB_ENV lines are
-                # NAME=value; PATH is long but Add-Content handles it fine
-                # as a single line (no length limit imposed by Actions).
                 Add-Content -Path $env:GITHUB_ENV -Value ($name + "=" + $value)
               }
             }
             Remove-Item $vcvarsBat -Force -ErrorAction SilentlyContinue
             $useMSVC = $true
           } else {
-            Write-Host "No MSVC Build Tools detected, falling back to vcpkg auto-detection"
+            Write-Host "No MSVC Build Tools after winget install, falling back to vcpkg auto-detection"
           }
 
           $vcpkgCacheDir = Join-Path $env:USERPROFILE ".cache\vcpkg-binary"
