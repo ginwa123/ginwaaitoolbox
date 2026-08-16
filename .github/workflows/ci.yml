@@ -781,14 +781,22 @@ jobs:
         # `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`
         # and `bash src/modules/custom_http_client/scripts/build-vendor-curl.sh`
         # for the vendored sqlite3 / curl amalgamation fetches.
-        # On Windows the runner's powershell.exe process does NOT
-        # inherit git-bash.exe on PATH (CI run 31945259075 reproduced
-        # `error: failed to spawn and capture stdio from bash:
-        # FileNotFound` against `bash .../fetch-vendor-sqlite3.sh`).
-        # Running the step through `shell: bash` forces the runner to
-        # pre-prepend `C:\Program Files\Git\bin` to PATH, so Zig's
-        # child-spawn of bash resolves correctly.
-        shell: bash
+        # Two CI runs surfaced:
+        #   31945259075 — powershell.exe doesn't inherit git-bash.exe
+        #     on PATH, so Zig's child-spawn of `bash` fails with
+        #     `failed to spawn and capture stdio from bash: FileNotFound`.
+        #   31946353313 — `shell: bash` (the first naive fix) hit
+        #     `bash: command not found` because the runner's
+        #     pre-installed bash lives at
+        #     `C:\Program Files\Git\bin\bash.exe` but the job PATH
+        #     doesn't include that directory.
+        # Fix: explicitly invoke the absolute bash.exe path via
+        # `shell: 'C:\\Program Files\\Git\\bin\\bash.exe'`. The
+        # zig invocations (zig build test, etc.) inherit whatever
+        # PATH + env Git-bash normally provides, including
+        # `C:\Program Files\Git\bin` itself, so the `bash` re-exec
+        # from `addSystemCommand('bash', ...)` then resolves.
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
         run: zig build test --summary all
 
       - name: Run AI workflow TUI tests
@@ -797,11 +805,11 @@ jobs:
 
       - name: Run AI workflow TUI tests (Windows)
         if: runner.os == 'Windows'
-        # Same bash-on-PATH issue as `Run main test suite (Windows)`
-        # — use `shell: bash` so addSystemCommand('bash', ...) can
-        # spawn the helper scripts in the build.zig system-deps
-        # probe.
-        shell: bash
+        # Same absolute bash.exe path as `Run main test suite (Windows)` —
+        # see the comment block there for the full diagnosis. The
+        # zig invocations inherit Git-bash's PATH so addSystemCommand's
+        # child `bash` exec resolves correctly.
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
         run: zig build test:ai_workflow:tui --summary all
 
       - name: Build nalar + nalar-desktop binaries
@@ -817,9 +825,13 @@ jobs:
 
       - name: Build nalar + nalar-desktop binaries (Windows)
         if: runner.os == 'Windows'
-        # Same bash-on-PATH issue as the test steps. Use bash shell so
-        # addSystemCommand('bash', ...) can spawn the helper scripts.
-        shell: bash
+        # Same absolute bash.exe path as the test steps — see the
+        # comment block in `Run main test suite (Windows)` for the
+        # full diagnosis. The zig `compile exe nalar-desktop` and
+        # `compile exe nalar` invocations inherit Git-bash's PATH
+        # so addSystemCommand('bash', ...) used by the system-deps
+        # probe and the codegen:webapp-assets step resolves.
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
         run: zig build nalar-desktop --summary all
 
       - name: Verify desktop + service binaries (Linux)
@@ -927,7 +939,9 @@ jobs:
         # when needed — that's not relevant here. This step is just
         # the binary-smoke-test path:
         #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:' log line.
-        shell: bash
+        # Absolute bash.exe path required on the self-hosted
+        # WIN-53JVAKR3O5B runner (see Run main test suite (Windows)).
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe'
         run: |
           set -u
           DESKTOP_BIN="./zig-out/bin/nalar-desktop.exe"
