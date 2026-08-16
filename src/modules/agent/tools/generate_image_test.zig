@@ -308,7 +308,11 @@ test "parseImageResponse accepts a single-image response with b64_json" {
     ;
     const images = try generate_image.parseImageResponse(alloc, body);
     defer {
-        for (images) |img| alloc.free(img.b64_json.?);
+        for (images) |img| {
+            if (img.b64_json) |b| alloc.free(b);
+            if (img.url) |u| alloc.free(u);
+            if (img.revised_prompt) |r| alloc.free(r);
+        }
         alloc.free(images);
     }
 
@@ -327,7 +331,11 @@ test "parseImageResponse accepts a multi-image response with n=2 (DALL-E 2)" {
     ;
     const images = try generate_image.parseImageResponse(alloc, body);
     defer {
-        for (images) |img| alloc.free(img.b64_json.?);
+        for (images) |img| {
+            if (img.b64_json) |b| alloc.free(b);
+            if (img.url) |u| alloc.free(u);
+            if (img.revised_prompt) |r| alloc.free(r);
+        }
         alloc.free(images);
     }
     try testing.expect(images.len == 2);
@@ -342,7 +350,11 @@ test "parseImageResponse extracts revised_prompt when present" {
     ;
     const images = try generate_image.parseImageResponse(alloc, body);
     defer {
-        for (images) |img| alloc.free(img.b64_json.?);
+        for (images) |img| {
+            if (img.b64_json) |b| alloc.free(b);
+            if (img.url) |u| alloc.free(u);
+            if (img.revised_prompt) |r| alloc.free(r);
+        }
         alloc.free(images);
     }
     try testing.expect(images[0].revised_prompt != null);
@@ -398,7 +410,7 @@ test "saveImageToDisk writes base64 bytes to <cwd>/generated_images/img_<ts>_<id
     const tmp_cwd = "/tmp/nalar-generate-image-save";
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
-    try std.Io.Dir.cwd().makePath(io, tmp_cwd);
+    try std.Io.Dir.cwd().createDirPath(io, tmp_cwd);
 
     // "iVBORw0KGgo=" decodes to 8 bytes (PNG signature prefix + IHDR start).
     // We don't need a valid PNG for the save test — we just verify the
@@ -426,10 +438,11 @@ test "saveImageToDisk creates the generated_images subdirectory if missing" {
     const tmp_cwd = "/tmp/nalar-generate-image-mkdir";
     std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
-    try std.Io.Dir.cwd().makePath(io, tmp_cwd);
+    try std.Io.Dir.cwd().createDirPath(io, tmp_cwd);
 
     // generated_images/ does NOT exist yet — saveImageToDisk must create it.
-    _ = try generate_image.saveImageToDisk(alloc, io, tmp_cwd, "AAAA", 0, "image/png");
+    const path = try generate_image.saveImageToDisk(alloc, io, tmp_cwd, "AAAA", 0, "image/png");
+    defer alloc.free(path);
 
     // Verify the dir now exists by writing a sentinel file inside it
     try std.Io.Dir.cwd().createDirPath(io, "/tmp/nalar-generate-image-mkdir/generated_images");
