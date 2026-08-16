@@ -40,11 +40,11 @@ fn useCase(
     // alias the table (`w`) so the column references stay
     // unambiguous when filters grow (see project memory
     // nalar-sql-alias-tables.md).
-    const base_sql = "SELECT w.id, w.session_id, w.working_directory, w.last_activity, w.last_activity_description, w.created_at FROM worker w";
+    const base_sql = "SELECT w.id, w.session_id, w.working_directory, w.last_activity_nano AS last_activity, w.last_activity_description, w.created_at FROM worker w";
     const query_sql = if (input.session_id_filter != null)
-        try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? ORDER BY w.last_activity DESC", .{base_sql})
+        try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? ORDER BY w.last_activity_nano DESC", .{base_sql})
     else
-        try std.fmt.allocPrint(allocator, "{s} ORDER BY w.last_activity DESC", .{base_sql});
+        try std.fmt.allocPrint(allocator, "{s} ORDER BY w.last_activity_nano DESC", .{base_sql});
 
     const query_params: []const []const u8 = if (input.session_id_filter) |sid|
         &[_][]const u8{sid}

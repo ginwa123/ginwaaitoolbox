@@ -2167,12 +2167,12 @@ pub fn getActiveWorker(
         \\SELECT
         \\    w.session_id,
         \\    COALESCE(w.working_directory, ''),
-        \\    w.last_activity,
+        \\    w.last_activity_nano AS last_activity,
         \\    COALESCE(w.last_activity_description, ''),
         \\    COALESCE(s.git_worktree_cwd, '')
         \\FROM worker w
         \\LEFT JOIN sessions s ON s.id = w.session_id
-        \\ORDER BY w.last_activity DESC
+        \\ORDER BY w.last_activity_nano DESC
     ;
 
     var rows = try db.query(allocator, sql, &.{});
@@ -2207,7 +2207,7 @@ pub fn updateWorkerActivityWithDescription(
     worker_id: []const u8,
     description: []const u8,
 ) !void {
-    const sql = "UPDATE worker SET last_activity = strftime('%s', 'now'), last_activity_description = ? WHERE id = ?";
+    const sql = "UPDATE worker SET last_activity_nano = strftime('%s', 'now'), last_activity_description = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ description, worker_id });
 
     // Emit worker update event
@@ -2355,7 +2355,7 @@ pub fn getWorkerBySessionId(
         \\SELECT
         \\    w.session_id,
         \\    COALESCE(w.working_directory, ''),
-        \\    w.last_activity,
+        \\    w.last_activity_nano AS last_activity,
         \\    COALESCE(w.last_activity_description, ''),
         \\    COALESCE(s.git_worktree_cwd, '')
         \\FROM worker w
@@ -3010,7 +3010,7 @@ pub fn updateTaskLastHumanTouchedAt(
     defer allocator.free(touched_at_str);
 
     const sql =
-        "UPDATE workspace_item_tasks SET last_human_touched_at = ? WHERE id = ?";
+        "UPDATE workspace_item_tasks SET last_human_touched_at_nano = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ touched_at_str, task_id });
 }
 
@@ -3243,7 +3243,7 @@ pub fn saveSkill(
     // Skip if session_id is empty
     if (session_id.len == 0) return;
 
-    const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at) VALUES (?, ?, ?, strftime('%s', 'now'))";
+    const sql = "INSERT OR REPLACE INTO session_skills (session_id, skill_name, content, loaded_at_nano) VALUES (?, ?, ?, strftime('%s', 'now'))";
     try db.exec(allocator, sql, &.{ session_id, skill_name, content });
     logger.debugFmt("Skill '{s}' saved to database for session {s}", .{ skill_name, session_id });
 }
@@ -3268,7 +3268,7 @@ pub fn getSessionSkills(
 ) ![]SkillInfo {
     if (session_id.len == 0) return &.{};
 
-    const sql = "SELECT skill_name, content, loaded_at FROM session_skills WHERE session_id = ?";
+    const sql = "SELECT skill_name, content, loaded_at_nano AS loaded_at FROM session_skills WHERE session_id = ?";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -4642,7 +4642,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at IS NULL OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);

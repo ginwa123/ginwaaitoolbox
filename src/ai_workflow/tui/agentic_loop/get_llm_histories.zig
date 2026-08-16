@@ -29,7 +29,7 @@ pub fn getLLMHistories(
         \\    h.id,
         \\    h.session_id,
         \\    h.model,
-        \\    h.created_at,
+        \\    h.created_at_nano AS created_at,
         \\    h.response_content,
         \\    h.finish_reason,
         \\    COALESCE(h.role, 'assistant'),
@@ -55,7 +55,7 @@ pub fn getLLMHistories(
         \\LEFT JOIN sessions s ON h.session_id = s.id
         \\WHERE h.session_id = ?
         \\AND (h.is_feed_to_llm = 1 OR h.is_feed_to_llm IS NULL)
-        \\ORDER BY h.created_at ASC
+        \\ORDER BY h.created_at_nano ASC
     ;
 
     var rows = try db.query(allocator, sql, &.{session_id});
@@ -161,7 +161,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    id TEXT PRIMARY KEY,
         \\    session_id TEXT,
         \\    model TEXT,
-        \\    created_at TEXT,
+        \\    created_at_nano TEXT,
         \\    response_content TEXT,
         \\    finish_reason TEXT,
         \\    role TEXT,
@@ -202,7 +202,7 @@ fn seedRow(
     session_id: []const u8,
     created_at: []const u8,
 ) !void {
-    try db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, response_content, role, is_feed_to_llm) " ++
+    try db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, response_content, role, is_feed_to_llm) " ++
         "VALUES (?, ?, ?, '', 'assistant', 1)", &.{ id, session_id, created_at });
 }
 
@@ -277,7 +277,7 @@ test "getLLMHistories parses numeric fields (loop_index, tokens, temperature)" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, loop_index, prompt_tokens, completion_tokens, total_tokens, temperature) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, loop_index, prompt_tokens, completion_tokens, total_tokens, temperature) " ++
         "VALUES ('h', 's', '2025-01-01', 7, 100, 50, 150, 0.7)", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -296,7 +296,7 @@ test "getLLMHistories parses bool flags (is_input, is_output, is_thinking)" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_input, is_output, is_thinking) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, is_input, is_output, is_thinking) " ++
         "VALUES ('h', 's', '2025-01-01', 1, 0, 1)", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -313,9 +313,9 @@ test "getLLMHistories filters out rows where is_feed_to_llm = 0" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, is_feed_to_llm) " ++
         "VALUES ('h_yes', 's', '2025-01-01', 1)", &.{});
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, is_feed_to_llm) " ++
         "VALUES ('h_no',  's', '2025-01-02', 0)", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -331,7 +331,7 @@ test "getLLMHistories includes rows where is_feed_to_llm is NULL (treats NULL as
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, is_feed_to_llm) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, is_feed_to_llm) " ++
         "VALUES ('h_null', 's', '2025-01-01', NULL)", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -347,7 +347,7 @@ test "getLLMHistories splits pipe-separated image_url into image_urls array" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, image_url) " ++
         "VALUES ('h', 's', '2025-01-01', 'url1||url2||url3')", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -365,7 +365,7 @@ test "getLLMHistories image_urls is null when image_url column is empty" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, image_url) " ++
         "VALUES ('h', 's', '2025-01-01', '')", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -380,7 +380,7 @@ test "getLLMHistories keeps a single image_url as a one-element array (no leadin
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, image_url) " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, image_url) " ++
         "VALUES ('h', 's', '2025-01-01', 'only-one')", &.{});
 
     const result = try getLLMHistories(*SqliteBackend, .{ .allocator = testing.allocator, .db = &s.db, .session_id = "s" });
@@ -416,7 +416,7 @@ test "getLLMHistories populates nullable fields when DB has content" {
     var s = try setupDb();
     defer s.db.deinit();
     defer s.threaded.deinit();
-    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at, reasoning_content, parent_session_id, " ++
+    try s.db.exec(testing.allocator, "INSERT INTO llm_history (id, session_id, created_at_nano, reasoning_content, parent_session_id, " ++
         "diffview_before, diffview_after, tool_call_id) " ++
         "VALUES ('h', 's', '2025-01-01', 'r', 'p', 'b', 'a', 't')", &.{});
 
