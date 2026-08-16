@@ -506,12 +506,20 @@ jobs:
           # to include at build time. The nalar.exe service binary
           # does not need WebView2.
           #
-          # We download the .nupkg directly from nuget.org and
-          # unzip it. The .nupkg is just a renamed ZIP — no nuget.exe
-          # needed. The runner does NOT ship nuget.exe on PATH
-          # (CI run 31938453096 reproduced "nuget : The term 'nuget'
-          # is not recognized" before this fix).
-          $nugetVersion = "1.0.2651.78"
+          # We download the .nupkg directly from nuget.org's v3
+          # flatcontainer API and unzip it. The .nupkg is just a
+          # renamed ZIP — no nuget.exe needed. The runner does NOT
+          # ship nuget.exe on PATH (CI run 31938453096 reproduced
+          # "nuget : The term 'nuget' is not recognized" before
+          # this fix).
+          #
+          # The flatcontainer URL is lower-case-id only — case
+          # matters (CI run 31940477865 reproduced "BlobNotFound:
+          # The specified blob does not exist" when we used the
+          # mixed-case NuGet display name "Microsoft.Web.WebView2"
+          # against the v2 endpoint). The v3 endpoint is:
+          #   https://api.nuget.org/v3-flatcontainer/<lower-id>/<version>/<lower-id>.<version>.nupkg
+          $nugetVersion = "1.0.2651.64"
           $webview2Pkg = "microsoft.web.webview2"
           $webview2Src = Join-Path $env:USERPROFILE ".nuget\packages\$webview2Pkg\$nugetVersion"
           $webview2Dst = "src\apps\desktop_app\platform\windows"
@@ -520,8 +528,9 @@ jobs:
             Write-Host ("WebView2 NuGet " + $nugetVersion + " already cached")
           } else {
             Write-Host ("Fetching WebView2 NuGet " + $nugetVersion + "...")
-            $nupkgPath = Join-Path $env:TEMP ("microsoft.web.webview2." + $nugetVersion + ".nupkg")
-            $nupkgUrl = ("https://www.nuget.org/api/v2/package/" + $webview2Pkg + "/" + $nugetVersion)
+            $nupkgName = ($webview2Pkg + "." + $nugetVersion + ".nupkg")
+            $nupkgPath = Join-Path $env:TEMP $nupkgName
+            $nupkgUrl = ("https://api.nuget.org/v3-flatcontainer/" + $webview2Pkg + "/" + $nugetVersion + "/" + $nupkgName)
             Invoke-WebRequest -Uri $nupkgUrl -OutFile $nupkgPath -UseBasicParsing -TimeoutSec 180
             New-Item -Path $webview2Src -ItemType Directory -Force | Out-Null
             # Expand-Archive places files at the path root inside the
