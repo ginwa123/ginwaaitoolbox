@@ -383,6 +383,16 @@ fn extForMime(mime: []const u8) []const u8 {
     return "png"; // safe default — PNG decoders exist everywhere
 }
 
+/// Read the file size of a just-written image. Returns 0 on any error
+/// (open failure, stat failure) — the LLM still gets a valid path; the
+/// size is metadata, not part of the tool's correctness contract.
+fn statFileSize(io: std.Io, path: []const u8) u64 {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch return 0;
+    defer std.Io.File.close(file, io);
+    const stat = std.Io.File.stat(file, io) catch return 0;
+    return stat.size;
+}
+
 // ─── XML helpers ─────────────────────────────────────────────────────────
 
 /// Escape XML special characters. Mirrors the helper in
@@ -697,13 +707,9 @@ pub fn execute_generate_image(
         };
 
         // Read back the file size so the LLM sees an honest number
-        // (instead of "0" or the b64 length which differs).
-        const stat_size = blk: {
-            const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch break :blk @as(u64, 0);
-            defer std.Io.File.close(file, io);
-            break :blk std.Io.File.stat(file, io) catch 0;
-        };
-
+        // (instead of "0" or the b64 length which differs). On stat
+        // failure, fall back to 0 — the LLM still gets a valid path.
+        const stat_size: u64 = statFileSize(io, path);
         saved[i] = .{ .path = path, .bytes = stat_size, .mime = "image/png" };
 
         // Capture the last revised_prompt (DALL-E 3 / gpt-image-1 return

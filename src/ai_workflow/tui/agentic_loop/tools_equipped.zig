@@ -46,6 +46,7 @@ const lsp_hover_mod = nalarcore.tools.lsp_hover;
 const set_agent_properties_mod = nalarcore.set_agent_properties;
 const web_search_mod = nalarcore.web_search;
 const nalar_browser_mod = nalarcore.nalar_browser;
+const generate_image_mod = nalarcore.generate_image;
 const update_activity_mod = nalarcore.update_activity;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
@@ -78,6 +79,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         glob_tool_mod.glob_tool,
         search_tool_mod.search_tool,
         nalar_browser_mod.nalar_browser_tool,
+        generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
         show_preview_mod.show_preview_tool,
 
@@ -182,6 +184,13 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 
         // === PREVIEW TOOLS ===
         .{ .name = "show_preview", .exec = tools.execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
+
+        // === IMAGE GENERATION TOOLS ===
+        // generate_image calls OpenAI's /v1/images/generations endpoint
+        // (DALL-E 2/3 + gpt-image-1). Saves the result to disk and returns
+        // a path; the agent calls show_preview next to display it.
+        // Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
+        .{ .name = "generate_image", .exec = tools.execGenerateImage, .tool_def = generate_image_mod.generate_image_tool },
 
         // === LSP TOOLS ===
         .{ .name = "lsp_definition", .exec = tools.execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
