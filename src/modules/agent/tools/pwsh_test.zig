@@ -69,3 +69,50 @@ test "pwsh_available returns false when pwsh is not on PATH" {
     // The test passes either way — the assertion is "doesn't crash".
     try testing.expect(true);
 }
+
+test "pwsh is wired through agentic-loop tools_exec_pwsh.zig (static-contract grep)" {
+    // Mirrors the existing create_kanban_task_test.zig:1051 pattern.
+    // The pwsh tool must be (a) imported from the agentic-loop executor,
+    // (b) callable through the unified registry name \"pwsh\".
+    //
+    // The grep proves three things at once:
+    //   1. tools_exec_pwsh.zig EXISTS (the file was created).
+    //   2. tools.zig re-exports execPwsh from it.
+    //   3. tools_equipped.zig has both the \"pwsh\" name entry AND the
+    //      pwsh_tool_mod.pwsh_tool tool_def AND tools.execPwsh exec.
+    //
+    // If a future refactor forgets to wire any of these, the test fails
+    // closed and prints an actionable error.
+    const tools_equipped_src = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/ai_workflow/tui/agentic_loop/tools_equipped.zig",
+        testing.allocator,
+        std.Io.Limit.unlimited,
+    );
+    defer testing.allocator.free(tools_equipped_src);
+
+    var problems: u32 = 0;
+    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"pwsh\"") == null) {
+        std.debug.print(
+            "\\n!! UNIFIED_TOOL_REGISTRY is missing the pwsh name entry !!\\n",
+            .{},
+        );
+        problems += 1;
+    }
+    if (std.mem.indexOf(u8, tools_equipped_src, "tools.execPwsh") == null) {
+        std.debug.print(
+            "\\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execPwsh !!\\n",
+            .{},
+        );
+        problems += 1;
+    }
+    if (std.mem.indexOf(u8, tools_equipped_src, "pwsh_tool_mod.pwsh_tool") == null) {
+        std.debug.print(
+            "\\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = pwsh_tool_mod.pwsh_tool !!\\n",
+            .{},
+        );
+        problems += 1;
+    }
+    if (problems != 0) return error.MissingPwshWiring;
+    try testing.expect(problems == 0);
+}

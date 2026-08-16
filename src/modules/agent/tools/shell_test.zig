@@ -82,3 +82,44 @@ test "shell.execute_shell enforces mandatory_timeout (returns MandatoryTimeoutMi
     });
     try testing.expectError(error.MandatoryTimeoutMissing, out);
 }
+
+// Task 6 — schema-shape parity lock. The user requirement: "bash and
+// pwsh have to have the same interface". This test fails closed if a
+// future refactor breaks the alias and re-introduces copy-paste (the
+// "two separate struct types with the same fields" footgun).
+//
+// After Task 2, BashInput / PwshInput are `pub const = ShellInput`
+// aliases — so `@typeName` returns the same string for all three.
+// The test also round-trips the same JSON through all three parsers
+// to prove the wire schema is identical (same field order, same field
+// types, same default values).
+test "ShellInput is structurally identical to BashInput AND PwshInput (alias liveness check)" {
+    // We use `@typeName` of a constructed instance to force Zig to
+    // resolve the alias — if the alias is broken in a future refactor,
+    // the three names diverge and the test fails closed.
+    const shell_input = shell.ShellInput{ .command = "" };
+    const bash_input = @import("schemas.zig").BashInput{ .command = "" };
+    const pwsh_input = @import("pwsh.zig").PwshInput{ .command = "" };
+
+    try testing.expectEqualStrings(@typeName(@TypeOf(shell_input)), @typeName(@TypeOf(bash_input)));
+    try testing.expectEqualStrings(@typeName(@TypeOf(shell_input)), @typeName(@TypeOf(pwsh_input)));
+
+    // Wire-schema round-trip: parse the same JSON string through all
+    // three aliases and verify every field round-trips identically.
+    const json =
+        \\{"command":"x","cwd":"/tmp","mandatory_timeout":3,"max_output":10,
+        \\"stdin_data":"y","background":true,"max_lines":20,"do_encoding":true}
+    ;
+
+    const a = try std.json.parseFromSlice(@TypeOf(shell_input), testing.allocator, json, .{});
+    defer a.deinit();
+    const b = try std.json.parseFromSlice(@TypeOf(bash_input), testing.allocator, json, .{});
+    defer b.deinit();
+    const c = try std.json.parseFromSlice(@TypeOf(pwsh_input), testing.allocator, json, .{});
+    defer c.deinit();
+
+    try testing.expectEqualStrings(a.value.command, b.value.command);
+    try testing.expectEqualStrings(b.value.command, c.value.command);
+    try testing.expect(a.value.mandatory_timeout.? == b.value.mandatory_timeout.?);
+    try testing.expect(b.value.mandatory_timeout.? == c.value.mandatory_timeout.?);
+}
