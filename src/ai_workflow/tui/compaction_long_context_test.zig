@@ -85,6 +85,7 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
     const new_messages = try compactMessageInMemoryNew(
         alloc, messages, "GOAL: ship the fix\nNEXT: deploy",
         session_id, "gpt-4o", "/tmp", &s.db, s.threaded.io(), &lg,
+        null, // event_bus — no SSE subscriber in tests
     );
     defer {
         for (new_messages.items) |*m| m.deinit(alloc);

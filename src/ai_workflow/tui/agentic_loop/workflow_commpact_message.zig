@@ -16,6 +16,7 @@ const xml_escape = nalarcore.helpers.xml_escape;
 const saveMessage = @import("../llm_history.zig").saveMessage;
 const llm_history = @import("../llm_history.zig");
 const insertLLMHistory = @import("insert_llm_histories.zig").inserLLMHistories;
+const event_bus_mod = nalarcore.event_bus;
 
 /// Bundle of inputs to `shouldCompactDefault` — the threshold decision that
 /// tests can swap via `CompactDeps.should_compact`. Carries enough context that
@@ -54,6 +55,7 @@ pub const CompactDeps = struct {
         db: *sqlite.SqliteBackend,
         io: std.Io,
         logger: *Logger,
+        event_bus: ?*event_bus_mod.EventBus,
     ) anyerror!std.ArrayList(agent.AgentMessage),
 };
 
@@ -113,6 +115,12 @@ pub fn maybeCompactMessagesNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *Logger,
+    /// Event bus for SSE side-effects (insertLLMHistory's
+    /// `onEventSendLLMHistory` path). Pass `null` when running
+    /// offline (tests, the manual `/session/compact` endpoint
+    /// without an open chat, etc.). The DB write happens
+    /// regardless — `null` only skips the SSE fanout.
+    event_bus: ?*event_bus_mod.EventBus,
     llm_config: *const LlmConfig,
 ) !bool {
     if (!deps.shouldCompact(.{
@@ -218,6 +226,7 @@ pub fn maybeCompactMessagesNew(
         db,
         io,
         logger,
+        event_bus,
     );
     return true;
 }
@@ -238,6 +247,16 @@ pub fn compactMessageInMemoryNew(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *Logger,
+    /// Event bus for the SSE side-effect path inside
+    /// `insertLLMHistory` → `onEventSendLLMHistory`. Pass `null`
+    /// when no live chat is connected (tests, the manual
+    /// `/session/compact` endpoint without an SSE subscriber, etc.) —
+    /// the DB row is written either way; `null` only skips the
+    /// SSE fanout. Production callers should source this from
+    /// their already-in-scope `event_bus` parameter rather than
+    /// `nalarcore.getSingleton()` so the function stays testable
+    /// without the global singleton being initialized.
+    event_bus: ?*event_bus_mod.EventBus,
 ) !std.ArrayList(agent.AgentMessage) {
     const total = messages.items.len;
     if (total <= 4) return messages;
@@ -257,42 +276,34 @@ pub fn compactMessageInMemoryNew(
         logger,
     );
 
-    // Save the compacted summary to the database with is_feed_to_llm = 1
-    try saveMessage(allocator, io, db, .{
-        .session_id = session_id,
-        .model = model,
-        .cwd = cwd,
-        .content = summary_content,
-        .reasoning_content = null,
-        .role = agent.Role.user.to_str(),
-        .finish_reason = "stop",
-        .tool_calls = null,
-        .tool_call_id = null,
-        .tool_name = null,
-        .agent_name = "Agent",
-        .loop_index = 0,
-        .temperature = 0.0,
-        .is_thinking = false,
-        .is_input = true,
-        .is_output = false,
-    });
-
-    const di = try nalarcore.getSingleton();
-    const ev = di.event_bus;
-
-    _ = try insertLLMHistory(.{
+    // `inserLLMHistories` returns a heap-allocated copy of the
+    // generated row id (`allocator.dupe(u8, id)` at the bottom of
+    // that function). The compaction flow doesn't need the id — the
+    // `search_history` tool fetches rows by session_id, not by the
+    // returned string — so capture it and free immediately to avoid
+    // a leak. (Same pattern as other call sites that don't use the
+    // return value: see workflow.zig:185.)
+    const inserted_id = try insertLLMHistory(.{
         .allocator = allocator,
         .io = io,
         .db = db,
         .cwd = cwd,
         .entity = .{
-            .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+            // `insertLLMHistories` generates its own id and
+            // `created_at` internally (timestamp sampling — see
+            // insert_llm_histories.zig:53,55) and IGNORES these
+            // fields on the input entity. Passing placeholder
+            // values here would leak: each `allocPrint` allocates
+            // a fresh buffer that nothing frees. Use the empty
+            // strings the rest of the codebase passes for
+            // caller-don't-care timestamps (e.g. workflow.zig:185).
+            .id = "",
             .session_id = session_id,
             .model = model,
             .response_content = summary_content,
             .reasoning_content = null,
             .role = agent.Role.user.to_str(),
-            .finish_reason = "stop",
+            .finish_reason = agent.FinishReason.null.to_str(),
             .tool_calls_json = "",
             .tool_call_id = null,
             .tool_name = "",
@@ -302,16 +313,17 @@ pub fn compactMessageInMemoryNew(
             .is_thinking = false,
             .is_input = true,
             .is_output = false,
-            .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+            .created_at = "",
             .is_feed_to_llm = true,
             .parent_id = session_id,
             .parent_session_id = session_id,
         },
-        .event_bus = ev,
+        .event_bus = event_bus,
         .is_emit_sse = true,
         .logger = logger,
         .is_skip_db = false,
     });
+    defer allocator.free(inserted_id);
 
     // Update the session's cwd in the sessions table
     const copy_cwd = try allocator.dupe(u8, cwd);
@@ -533,6 +545,11 @@ const MockState = struct {
     last_compacted_xml: []const u8 = "", // alias — points into last_compacted_xml_owned
     last_compact_session_id: []const u8 = "",
     last_compact_model: []const u8 = "",
+    /// Event bus the most-recent `compactMessagesInMemory` call was
+    /// invoked with (production now passes it as a parameter, not
+    /// through the singleton — see the function's `event_bus` doc).
+    /// Tests assert `null` for the offline / no-subscriber path.
+    last_event_bus: ?*event_bus_mod.EventBus = null,
     /// If `compact_returns_null` is true, the mock returns error.Skip to
     /// propagate as a test signal. (Mock returns the messages list unchanged
     /// on success — the test owns them.)
@@ -587,12 +604,16 @@ fn mockCompactMessagesInMemory(
     db: *sqlite.SqliteBackend,
     io: std.Io,
     logger: *Logger,
+    event_bus: ?*event_bus_mod.EventBus,
 ) anyerror!std.ArrayList(agent.AgentMessage) {
     _ = cwd;
     _ = db;
     _ = io;
     _ = logger;
     mock_state.compact_messages_in_memory_calls += 1;
+    // Track the event_bus the caller passed so tests can assert on
+    // null vs non-null wiring without spinning up the full singleton.
+    mock_state.last_event_bus = event_bus;
     // Dup the XML before storing — caller frees the original on return.
     // (See `last_compacted_xml_owned` doc-comment and `releaseLastCompactedXml`.)
     mock_state.last_compacted_xml_owned = try allocator.dupe(u8, compacted_xml);
@@ -678,6 +699,7 @@ test "shouldCompact dep is called with the right context (force, tokens, model)"
         undefined, // db — not reached when shouldCompact=false
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -713,6 +735,7 @@ test "shouldCompact returning false short-circuits — no other deps called" {
         undefined,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -749,6 +772,7 @@ test "shouldCompact returning true routes through callCompactAgent" {
         undefined, // db — not reached when callCompactAgent returns null
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -792,6 +816,7 @@ test "callCompactAgent returning null short-circuits — compact_messages_in_mem
         undefined,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -830,6 +855,7 @@ test "full happy path: all three deps called, returns true" {
         &s.db,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -875,6 +901,7 @@ test "compact_messages_in_memory error propagates to caller" {
         &s.db,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -1020,6 +1047,7 @@ test "happy path embeds user history and read_file paths into the compaction XML
         &s.db,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -1068,6 +1096,7 @@ test "compaction still proceeds when fetchUserChatHistory returns empty (no user
         &s.db,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -1130,6 +1159,7 @@ test "happy path embeds prior session_activity rows in <recent_activities>" {
         &s.db,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
@@ -1199,6 +1229,7 @@ test "omits <recent_activities> when session has no prior activity" {
         &s.db,
         std.testing.io,
         &lg,
+        null, // event_bus — test has no SSE subscriber
         &cfg,
     );
 
