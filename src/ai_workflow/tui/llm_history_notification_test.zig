@@ -22,8 +22,8 @@
 //! The behavioural predicate for `needs_human_review` is:
 //!
 //!     sessions.last_finish_reason == 'stop' AND
-//!     (t.last_human_touched_at IS NULL OR
-//!      t.last_human_touched_at < sessions.updated_at-in-ms)
+//!     (t.last_human_touched_at_nano IS NULL OR
+//!      t.last_human_touched_at_nano < sessions.updated_at-in-ms)
 //!
 //! (SQLite stores `sessions.updated_at` as TEXT in
 //! `'YYYY-MM-DD HH:MM:SS'` format, so we cast `strftime('%s', ...)`
@@ -70,14 +70,14 @@ test "updateTaskLastHumanTouchedAt stamps the unix-ms value on the task" {
     // the realistic caller has run Migration 065 first. We simulate
     // that by ALTER-ing the column in directly.
     try db.exec(alloc,
-        "ALTER TABLE workspace_item_tasks ADD COLUMN last_human_touched_at INTEGER",
+        "ALTER TABLE workspace_item_tasks ADD COLUMN last_human_touched_at_nano INTEGER",
         &.{});
 
     const now_ms: i64 = 1_786_500_000_000;
     try llm_history.updateTaskLastHumanTouchedAt(alloc, &db, "task_1", now_ms);
 
     var q = try db.query(alloc,
-        "SELECT last_human_touched_at FROM workspace_item_tasks WHERE id = 'task_1'",
+        "SELECT last_human_touched_at_nano FROM workspace_item_tasks WHERE id = 'task_1'",
         &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
@@ -98,7 +98,7 @@ test "updateTaskLastHumanTouchedAt overwrites on repeated calls" {
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
         &.{});
     try db.exec(alloc,
-        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, last_human_touched_at INTEGER)",
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, last_human_touched_at_nano INTEGER)",
         &.{});
     try db.exec(alloc,
         "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
@@ -113,7 +113,7 @@ test "updateTaskLastHumanTouchedAt overwrites on repeated calls" {
     try llm_history.updateTaskLastHumanTouchedAt(alloc, &db, "task_1", 500);
 
     var q = try db.query(alloc,
-        "SELECT last_human_touched_at FROM workspace_item_tasks WHERE id = 'task_1'",
+        "SELECT last_human_touched_at_nano FROM workspace_item_tasks WHERE id = 'task_1'",
         &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
@@ -145,7 +145,7 @@ test "needs_human_review predicate returns 1 when finish_reason='stop' AND no hu
         \\  id TEXT PRIMARY KEY,
         \\  name TEXT,
         \\  workspace_item_id TEXT,
-        \\  last_human_touched_at INTEGER
+        \\  last_human_touched_at_nano INTEGER
         \\)
     , &.{});
     // Post-Migration-072: kanban placement lives in the `kanban` join table.
@@ -185,8 +185,8 @@ test "needs_human_review predicate returns 1 when finish_reason='stop' AND no hu
         \\SELECT CASE
         \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
         \\       AND (
-        \\         t.last_human_touched_at IS NULL
-        \\         OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
         \\       )
         \\  THEN 1 ELSE 0 END
         \\FROM workspace_item_tasks t
@@ -214,7 +214,7 @@ test "needs_human_review predicate returns 0 when human touched AFTER the AI fin
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\  id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
-        \\  last_human_touched_at INTEGER
+        \\  last_human_touched_at_nano INTEGER
         \\)
     , &.{});
     try db.exec(alloc,
@@ -243,7 +243,7 @@ test "needs_human_review predicate returns 0 when human touched AFTER the AI fin
     var t_buf: [32]u8 = undefined;
     const t_str = std.fmt.bufPrint(&t_buf, "{d}", .{now_ms}) catch unreachable;
     try db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, last_human_touched_at) " ++
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, last_human_touched_at_nano) " ++
         "VALUES ('task_reviewed', 'T', 'wi_1', ?)",
         &[_][]const u8{t_str});
 
@@ -251,8 +251,8 @@ test "needs_human_review predicate returns 0 when human touched AFTER the AI fin
         \\SELECT CASE
         \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
         \\       AND (
-        \\         t.last_human_touched_at IS NULL
-        \\         OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
         \\       )
         \\  THEN 1 ELSE 0 END
         \\FROM workspace_item_tasks t
@@ -280,7 +280,7 @@ test "needs_human_review predicate returns 0 when finish_reason is 'tool_calls' 
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\  id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
-        \\  last_human_touched_at INTEGER
+        \\  last_human_touched_at_nano INTEGER
         \\)
     , &.{});
     try db.exec(alloc,
@@ -308,8 +308,8 @@ test "needs_human_review predicate returns 0 when finish_reason is 'tool_calls' 
         \\SELECT CASE
         \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
         \\       AND (
-        \\         t.last_human_touched_at IS NULL
-        \\         OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
         \\       )
         \\  THEN 1 ELSE 0 END
         \\FROM workspace_item_tasks t
@@ -339,7 +339,7 @@ test "needs_human_review predicate returns 0 when no sessions row exists for the
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\  id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
-        \\  last_human_touched_at INTEGER
+        \\  last_human_touched_at_nano INTEGER
         \\)
     , &.{});
     try db.exec(alloc,
@@ -356,8 +356,8 @@ test "needs_human_review predicate returns 0 when no sessions row exists for the
         \\SELECT CASE
         \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
         \\       AND (
-        \\         t.last_human_touched_at IS NULL
-        \\         OR t.last_human_touched_at < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
         \\       )
         \\  THEN 1 ELSE 0 END
         \\FROM workspace_item_tasks t

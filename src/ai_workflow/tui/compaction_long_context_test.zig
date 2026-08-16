@@ -55,7 +55,7 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
     // Pre-seed the DB with realistic ids (so the agent can fetch them after compaction).
     for (dropped_ids, dropped_contents, dropped_roles) |id, content, role| {
         const sql =
-            \\INSERT INTO llm_history (id, session_id, model, response_content, role, is_feed_to_llm, created_at, tool_call_id, tool_name)
+            \\INSERT INTO llm_history (id, session_id, model, response_content, role, is_feed_to_llm, created_at_nano, tool_call_id, tool_name)
             \\VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
         ;
         const created_at = "2025-01-01 00:00:00";

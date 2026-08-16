@@ -454,7 +454,7 @@ test "end-to-end: compacted rows are findable via getCompactedMessages after com
         try s.db.exec(alloc,
             \\INSERT INTO llm_history
             \\  (id, session_id, model, response_content, role, is_feed_to_llm,
-            \\   created_at, tool_call_id, tool_name)
+            \\   created_at_nano, tool_call_id, tool_name)
             \\VALUES (?, ?, 'gpt-4o', ?, ?, 1, '2026-01-01 00:00:00', ?, ?)
         , &.{ id, session_id, content, role, tcid, tname });
     }

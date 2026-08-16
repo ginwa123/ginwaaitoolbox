@@ -31,7 +31,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     errdefer db.deinit();
     try db.init(io, ":memory:");
     try db.exec(alloc,
-        \\CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT, working_directory TEXT, last_activity INTEGER)
+        \\CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT, working_directory TEXT, last_activity_nano INTEGER)
     , &.{});
     return .{ .db = db, .threaded = threaded };
 }
@@ -48,7 +48,7 @@ test "isWorkerRunning returns false for a session_id not in the worker table" {
     defer s.db.deinit();
     defer s.threaded.deinit();
     try s.db.exec(testing.allocator,
-        "INSERT INTO worker (id, session_id, working_directory, last_activity) VALUES ('other', 's_other', '/tmp', 0)",
+        "INSERT INTO worker (id, session_id, working_directory, last_activity_nano) VALUES ('other', 's_other', '/tmp', 0)",
         &.{});
     try testing.expect(!isWorkerRunning(testing.allocator, &s.db, "nope"));
 }
@@ -58,7 +58,7 @@ test "isWorkerRunning returns true after the worker row is inserted" {
     defer s.db.deinit();
     defer s.threaded.deinit();
     try s.db.exec(testing.allocator,
-        "INSERT INTO worker (id, session_id, working_directory, last_activity) VALUES ('w1', 's1', '/tmp', 0)",
+        "INSERT INTO worker (id, session_id, working_directory, last_activity_nano) VALUES ('w1', 's1', '/tmp', 0)",
         &.{});
     try testing.expect(isWorkerRunning(testing.allocator, &s.db, "w1"));
 }

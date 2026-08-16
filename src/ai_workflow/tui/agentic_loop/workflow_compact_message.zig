@@ -128,13 +128,13 @@ pub fn fetchUserChatHistory(
 
     var rows = try db.query(
         allocator,
-        "SELECT response_content, created_at " ++
+        "SELECT response_content, created_at_nano AS created_at " ++
             "FROM llm_history " ++
             "WHERE session_id = ? " ++
             "  AND role = 'user' " ++
             "  AND response_content IS NOT NULL " ++
             "  AND response_content != '' " ++
-            "ORDER BY created_at ASC, id ASC",
+            "ORDER BY created_at_nano ASC, id ASC",
         &.{session_id},
     );
     defer rows.deinit();
@@ -171,12 +171,12 @@ pub fn fetchReadFilePaths(
 
     var rows = try db.query(
         allocator,
-        "SELECT response_content, created_at " ++
+        "SELECT response_content, created_at_nano AS created_at " ++
             "FROM llm_history " ++
             "WHERE session_id = ? " ++
             "  AND tool_name = 'read_file' " ++
             "  AND is_output = 1 " ++
-            "ORDER BY created_at ASC, id ASC",
+            "ORDER BY created_at_nano ASC, id ASC",
         &.{session_id},
     );
     defer rows.deinit();
@@ -631,7 +631,7 @@ fn seedRow(
     try db.exec(
         alloc,
         "INSERT INTO llm_history " ++
-            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
+            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at_nano) " ++
             "VALUES (?, ?, 'test-model', ?, ?, ?, ?, ?, 1, ?)",
         &.{ row.id, row.session_id, row.content, row.role, row.tool_name, row.is_input, row.is_output, row.created_at },
     );
@@ -1056,14 +1056,14 @@ fn seedSkill(
         defer alloc.free(ts_str);
         try db.exec(
             alloc,
-            "INSERT INTO session_skills (session_id, skill_name, content, loaded_at) " ++
+            "INSERT INTO session_skills (session_id, skill_name, content, loaded_at_nano) " ++
                 "VALUES (?, ?, ?, ?)",
             &.{ session_id, skill_name, content, ts_str },
         );
     } else {
         try db.exec(
             alloc,
-            "INSERT INTO session_skills (session_id, skill_name, content, loaded_at) " ++
+            "INSERT INTO session_skills (session_id, skill_name, content, loaded_at_nano) " ++
                 "VALUES (?, ?, ?, NULL)",
             &.{ session_id, skill_name, content },
         );

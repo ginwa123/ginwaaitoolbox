@@ -81,7 +81,7 @@ fn setupDb() !struct {
         \\    tool_results_json TEXT,
         \\    finish_reason TEXT,
         \\    usage_json TEXT,
-        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    created_at_nano DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    agent TEXT DEFAULT 'Agent'
         \\)
     , &.{});
@@ -101,7 +101,7 @@ fn setupDb() !struct {
     // the rewritten SQL, not on migration plumbing.
     try db.exec(alloc,
         "CREATE INDEX idx_llm_history_created_session " ++
-            "ON llm_history(created_at DESC, session_id)",
+            "ON llm_history(created_at_nano DESC, session_id)",
         &.{});
 
     return .{ .db = db, .threaded = threaded };
@@ -153,15 +153,15 @@ test "getSessionList inner subquery returns sessions in created_at DESC order" {
     // Three sessions, distinct created_at values. Newest first by
     // insert order means s_jan < s_feb < s_mar.
     try ctx.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, model, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
             "VALUES ('h1', 's_jan', 'm1', '2024-01-01 00:00:00')",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, model, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
             "VALUES ('h2', 's_feb', 'm1', '2024-02-01 00:00:00')",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, model, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
             "VALUES ('h3', 's_mar', 'm1', '2024-03-01 00:00:00')",
         &.{});
 
@@ -172,7 +172,7 @@ test "getSessionList inner subquery returns sessions in created_at DESC order" {
         \\SELECT h.session_id
         \\  FROM llm_history h
         \\ GROUP BY h.session_id
-        \\ ORDER BY MAX(h.created_at) DESC
+        \\ ORDER BY MAX(h.created_at_nano) DESC
         \\ LIMIT 10 OFFSET 0
     ;
 
@@ -198,11 +198,11 @@ test "getSessionList inner subquery respects LIMIT and OFFSET" {
     // Five sessions, distinct created_at values. The full ordering
     // (newest first) is: s5, s4, s3, s2, s1.
     const inserts = [_][]const u8{
-        "INSERT INTO llm_history (id, session_id, model, created_at) VALUES ('h1', 's1', 'm1', '2024-01-01 00:00:00')",
-        "INSERT INTO llm_history (id, session_id, model, created_at) VALUES ('h2', 's2', 'm1', '2024-02-01 00:00:00')",
-        "INSERT INTO llm_history (id, session_id, model, created_at) VALUES ('h3', 's3', 'm1', '2024-03-01 00:00:00')",
-        "INSERT INTO llm_history (id, session_id, model, created_at) VALUES ('h4', 's4', 'm1', '2024-04-01 00:00:00')",
-        "INSERT INTO llm_history (id, session_id, model, created_at) VALUES ('h5', 's5', 'm1', '2024-05-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h1', 's1', 'm1', '2024-01-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h2', 's2', 'm1', '2024-02-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h3', 's3', 'm1', '2024-03-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h4', 's4', 'm1', '2024-04-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h5', 's5', 'm1', '2024-05-01 00:00:00')",
     };
     for (inserts) |sql| {
         try ctx.db.exec(alloc, sql, &.{});
@@ -213,7 +213,7 @@ test "getSessionList inner subquery respects LIMIT and OFFSET" {
         \\SELECT h.session_id
         \\  FROM llm_history h
         \\ GROUP BY h.session_id
-        \\ ORDER BY MAX(h.created_at) DESC
+        \\ ORDER BY MAX(h.created_at_nano) DESC
         \\ LIMIT 2 OFFSET 0
     ;
     const page1 = try runAndCollect(alloc, &ctx.db, inner_sql, &.{}, 2);
@@ -229,7 +229,7 @@ test "getSessionList inner subquery respects LIMIT and OFFSET" {
         \\SELECT h.session_id
         \\  FROM llm_history h
         \\ GROUP BY h.session_id
-        \\ ORDER BY MAX(h.created_at) DESC
+        \\ ORDER BY MAX(h.created_at_nano) DESC
         \\ LIMIT 2 OFFSET 2
     ;
     const page2 = try runAndCollect(alloc, &ctx.db, page2_sql, &.{}, 2);
@@ -272,11 +272,11 @@ test "getSessionList agent field is from the latest message in the session" {
     // defined and version-dependent. This test pins down the new,
     // deterministic behavior.
     try ctx.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, model, agent, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, model, agent, created_at_nano) " ++
             "VALUES ('h_old', 's1', 'm1', 'A', '2024-01-01 00:00:00')",
         &.{});
     try ctx.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, model, agent, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, model, agent, created_at_nano) " ++
             "VALUES ('h_new', 's1', 'm1', 'B', '2024-02-01 00:00:00')",
         &.{});
 
@@ -288,7 +288,7 @@ test "getSessionList agent field is from the latest message in the session" {
         \\  (SELECT h2.agent
         \\     FROM llm_history h2
         \\    WHERE h2.session_id = 's1'
-        \\    ORDER BY h2.created_at DESC
+        \\    ORDER BY h2.created_at_nano DESC
         \\    LIMIT 1),
         \\  'Agent'
         \\) AS agent
@@ -319,7 +319,7 @@ test "getSessionList inner subquery uses idx_llm_history_created_session (EXPLAI
         var buf: [256]u8 = undefined;
         const sql = try std.fmt.bufPrint(
             &buf,
-            "INSERT INTO llm_history (id, session_id, model, created_at) " ++
+            "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
                 "VALUES ('h{d}', 's{d}', 'm1', '2024-01-01 00:00:00')",
             .{ i, i },
         );
@@ -338,10 +338,10 @@ test "getSessionList inner subquery uses idx_llm_history_created_session (EXPLAI
     // changes across SQLite versions).
     var q = try ctx.db.query(alloc,
         \\EXPLAIN QUERY PLAN
-        \\SELECT h.session_id, MAX(h.created_at)
+        \\SELECT h.session_id, MAX(h.created_at_nano)
         \\  FROM llm_history h
         \\ GROUP BY h.session_id
-        \\ ORDER BY MAX(h.created_at) DESC
+        \\ ORDER BY MAX(h.created_at_nano) DESC
         \\ LIMIT 10 OFFSET 0
     , &.{});
     defer q.deinit();

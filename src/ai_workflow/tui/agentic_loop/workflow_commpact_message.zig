@@ -1058,7 +1058,7 @@ fn setupDbForEnrichmentTest() !struct {
             "  is_input INTEGER DEFAULT 0," ++
             "  is_output INTEGER DEFAULT 0," ++
             "  is_feed_to_llm INTEGER DEFAULT 1," ++
-            "  created_at TEXT DEFAULT (datetime('now'))" ++
+            "  created_at_nano TEXT DEFAULT (datetime('now'))" ++
             ")",
         &[_][]const u8{},
     );
@@ -1091,7 +1091,7 @@ fn seedUserForEnrichmentTest(
     try db.exec(
         alloc,
         "INSERT INTO llm_history " ++
-            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
+            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at_nano) " ++
             "VALUES (?, ?, 'test-model', ?, 'user', '', 1, 0, 1, ?)",
         &.{ id, session_id, content, created_at },
     );
@@ -1108,7 +1108,7 @@ fn seedReadFileForEnrichmentTest(
     try db.exec(
         alloc,
         "INSERT INTO llm_history " ++
-            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at) " ++
+            "(id, session_id, model, response_content, role, tool_name, is_input, is_output, is_feed_to_llm, created_at_nano) " ++
             "VALUES (?, ?, 'test-model', ?, 'tool', 'read_file', 0, 1, 1, ?)",
         &.{ id, session_id, content, created_at },
     );

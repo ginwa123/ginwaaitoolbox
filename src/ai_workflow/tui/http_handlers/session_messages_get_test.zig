@@ -64,7 +64,7 @@ fn setupDb() !TestCtx {
         \\    session_id TEXT NOT NULL,
         \\    role TEXT,
         \\    response_content TEXT,
-        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    created_at_nano DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\    is_input INTEGER DEFAULT 0,
         \\    is_output INTEGER DEFAULT 0,
         \\    tool_name TEXT,

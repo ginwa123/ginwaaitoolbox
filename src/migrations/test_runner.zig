@@ -39,5 +39,6 @@ test {
     _ = @import("migration_072_test.zig");  // workspace_item_tasks → kanban table extraction (extract-kanban-columns plan, 2026-08-15)
     _ = @import("migration_073_test.zig");  // session_activity append-only log (new-table-session-activity plan, 2026-08-13)
     _ = @import("migration_074_test.zig");  // llm_history.cache_creation_input_tokens + cache_read_input_tokens (fix-anthropic-total-tokens plan, 2026-08-13)
+    _ = @import("migration_075_test.zig");  // rename 5 timestamp columns to _nano suffix (rename-timestamp-columns-nano-suffix plan, 2026-08-16)
     _ = @import("../ai_workflow/tui/migration_057_test.zig");  // v6 design element properties — kept at old path on this branch
 }

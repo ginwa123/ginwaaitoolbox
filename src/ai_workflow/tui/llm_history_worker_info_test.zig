@@ -70,7 +70,7 @@ fn setupDb() !struct {
         \\    id TEXT PRIMARY KEY,
         \\    session_id TEXT NOT NULL,
         \\    working_directory TEXT,
-        \\    last_activity INTEGER DEFAULT (strftime('%s', 'now')),
+        \\    last_activity_nano INTEGER DEFAULT (strftime('%s', 'now')),
         \\    last_activity_description TEXT,
         \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
