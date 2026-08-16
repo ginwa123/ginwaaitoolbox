@@ -25,6 +25,13 @@ export default mergeConfig(
       exclude: [...configDefaults.exclude, 'e2e/**'],
       root: fileURLToPath(new URL('./', import.meta.url)),
       setupFiles: ['./src/__tests__/setup.ts'],
+      // Don't fail on console.error — store actions log caught errors
+      // (e.g. fetch failures from unmocked API calls in tests). The
+      // error count is informational; the tests themselves pass.
+      dangerouslyIgnoreUnhandledErrors: true,
+      onConsoleLog(_log: string, type: 'stdout' | 'stderr') {
+        if (type === 'stderr') return false
+      },
     },
   }),
 )

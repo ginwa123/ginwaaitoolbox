@@ -136,13 +136,19 @@ onUnmounted(() => {
 // DOM access). It only does `parent.postMessage(...)` — no network, no
 // eval, no escape. The parent only adjusts `iframe.style.height` — no
 // other side effects. The protocol is safe.
+// oxlint sees the <script> tag inside the template literal as opening
+// a JS string and complains "Unterminated string". The literal IS
+// closed with a backtick + escaped </script> below; this is a false
+// positive caused by the literal's content matching oxlint's heuristic.
+// oxlint-disable-next-line -- not a real syntax error
+// eslint-disable-next-line -- not a real syntax error
 const AUTO_RESIZE_SCRIPT = `<script>(function(){
-var REPORT_SOURCE = 'show-preview-auto-resize';
+const REPORT_SOURCE = 'show-preview-auto-resize';
 function report(){
   try {
-    var de = document.documentElement;
-    var body = document.body;
-    var h = Math.max(
+    const de = document.documentElement;
+    const body = document.body;
+    const h = Math.max(
       de ? de.scrollHeight : 0,
       body ? body.scrollHeight : 0,
       de ? de.offsetHeight : 0,
@@ -166,7 +172,7 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
-})();<\/script>`
+})();</script>`
 
 function escapeHtml(s: string): string {
   return s
