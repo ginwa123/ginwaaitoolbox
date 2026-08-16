@@ -649,35 +649,40 @@ jobs:
           }
 
           # Verify the 4 vcpkg port headers exist. We avoid the
-          # `foreach ($k in $table.Keys) { if (Test-Path $table[$k]) ...`
-          # pattern entirely — PowerShell 5.1 on the self-hosted
-          # WIN-53JVAKR3O5B runner miscounts braces when a hashtable
-          # iteration is combined with the chained-if/else chain above
-          # (CI run 31942586818 reproduced "MissingEndCurlyBrace"
-          # at line 25 char 32 inside this exact script). Using four
-          # flat Test-Path / Write-Host statements with explicit
-          # paths keeps each parse unit minimal.
-          $r = "C:\vcpkg\installed\x64-windows"
-          if (Test-Path "$r\include\sqlite3.h") {
-            Write-Host "  ok sqlite3 ($r\include\sqlite3.h)"
+          # `foreach ($k in $table.Keys) { ... }` pattern entirely.
+          # PowerShell 5.1 on the self-hosted WIN-53JVAKR3O5B runner
+          # has a brace-counter desync bug when a foreach-with-table
+          # iteration is combined with chained if/else (runs
+          # 31932470083 + 31942586818 reproduced this). Also: do NOT
+          # interpolate paths directly with `\"$r\\include\\openssl\\ssl.h\"`-style
+          # syntax — the `$r` token followed by `\\include\\` is parsed
+          # as an attempt to invoke a cmdlet named like the rest of
+          # the literal (CI run 31943471907 reproduced "Unexpected
+          # token '\\include\\openssl\\ssl.h' in expression"). The
+          # safe forms: pass Join-Path's output as a -Path argument,
+          # OR use forward slashes in the literal.
+          # `C:/vcpkg/installed/x64-windows/include/...` parses
+          # cleanly on Windows PowerShell 5.1 (NTFS accepts both).
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/sqlite3.h") {
+            Write-Host "  ok sqlite3 (C:/vcpkg/installed/x64-windows/include/sqlite3.h)"
           } else {
             Write-Error "sqlite3 header missing — vcpkg install sqlite3:x64-windows --recurse"
             exit 1
           }
-          if (Test-Path "$r\include\openssl\ssl.h") {
-            Write-Host "  ok openssl ($r\include\openssl\ssl.h)"
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h") {
+            Write-Host "  ok openssl (C:/vcpkg/installed/x64-windows/include/openssl/ssl.h)"
           } else {
             Write-Error "openssl header missing — vcpkg install openssl:x64-windows --recurse"
             exit 1
           }
-          if (Test-Path "$r\include\libpq-fe.h") {
-            Write-Host "  ok libpq ($r\include\libpq-fe.h)"
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/libpq-fe.h") {
+            Write-Host "  ok libpq (C:/vcpkg/installed/x64-windows/include/libpq-fe.h)"
           } else {
             Write-Error "libpq header missing — vcpkg install libpq:x64-windows --recurse"
             exit 1
           }
-          if (Test-Path "$r\include\curl\curl.h") {
-            Write-Host "  ok libcurl ($r\include\curl\curl.h)"
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/curl/curl.h") {
+            Write-Host "  ok libcurl (C:/vcpkg/installed/x64-windows/include/curl/curl.h)"
           } else {
             Write-Error "libcurl header missing — vcpkg install curl:x64-windows --recurse"
             exit 1
