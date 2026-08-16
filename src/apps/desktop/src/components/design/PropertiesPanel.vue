@@ -210,8 +210,6 @@ watch(htmlExpanded, async (expanded) => {
     // run monaco in the main thread (slightly slower autocomplete
     // but no worker setup). For the v1 design use case (single-user,
     // small HTML snippets) this is fine.
-    // @ts-expect-error — monaco-typescript doesn't expose `getLanguages` for
-    // type narrowing here; we just disable workers via the global.
     if (typeof window !== 'undefined') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
       ;(window as any).MonacoEnvironment = {

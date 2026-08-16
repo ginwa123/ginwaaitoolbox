@@ -1117,8 +1117,13 @@ const handleAddPage = async (): Promise<string | undefined> => {
 // button's `:disabled` attribute so the user sees the lock.
 const addPageInFlight = ref<boolean>(false)
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-const _handleSelectPage = (pageId: string): void => {
+// Exposed via `wrapper.vm.handleSelectPage` in DesignView.pageSync.spec.ts.
+// Vue 3's `<script setup>` auto-surfaces top-level bindings but eslint
+// can't see the `vm.X` reflection path, so the rule fires. The two
+// declarations below (`_handleDeletePage`, `_handleElementSelect`) are
+// truly unused so they get the `_` prefix to silence the rule.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const handleSelectPage = (pageId: string): void => {
   // Mirror to the store first so AppLayout's design handlers
   // (handleDesignUpdateElement / handleDesignDeleteElement) always
   // see the latest selection, even if the page-change early-returns

@@ -50,7 +50,6 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used inside a `<script>` tag in a template literal; vue-eslint-parser doesn't see it.
 import { marked } from 'marked'
 
 export interface PreviewArgs {
@@ -77,7 +76,6 @@ const props = withDefaults(
   { variant: 'side' },
 )
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used in the template below; @typescript-eslint doesn't see <template> refs.
 const isInline = computed(() => props.variant === 'inline')
 
 // ─── Iframe ref + auto-resize message handling ──────────────────────
@@ -138,26 +136,19 @@ onUnmounted(() => {
 // DOM access). It only does `parent.postMessage(...)` — no network, no
 // eval, no escape. The parent only adjusts `iframe.style.height` — no
 // other side effects. The protocol is safe.
-// oxlint sees the <script> tag inside the template literal as opening
-// a JS string and complains "Unterminated string". The literal IS
-// closed with a backtick + escaped </script> below; this is a false
-// positive caused by the literal's content matching oxlint's heuristic.
-// oxlint-disable-next-line -- not a real syntax error
-// eslint-disable-next-line -- not a real syntax error
-const AUTO_RESIZE_SCRIPT = `<script lang="ts">(function(){
-const REPORT_SOURCE = 'show-preview-auto-resize';
+const AUTO_RESIZE_SCRIPT = `<script>(function(){
+var REPORT_SOURCE = 'show-preview-auto-resize';
 function report(){
   try {
-    const de = document.documentElement;
-    const body = document.body;
-    const h = Math.max(
+    var de = document.documentElement;
+    var body = document.body;
+    var h = Math.max(
       de ? de.scrollHeight : 0,
       body ? body.scrollHeight : 0,
       de ? de.offsetHeight : 0,
       body ? body.offsetHeight : 0
     );
     parent.postMessage({ source: REPORT_SOURCE, height: h }, '*');
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the <script> string is parsed by the browser, not by ESLint.
   } catch(e) {}
 }
 function init(){
@@ -167,7 +158,6 @@ function init(){
   if (document.body && typeof MutationObserver !== 'undefined') {
     try {
       new MutationObserver(report).observe(document.body, { childList: true, subtree: true });
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the <script> string is parsed by the browser, not by ESLint.
     } catch(e) {}
   }
 }
@@ -176,7 +166,7 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
-})();</script>`
+})();<` + `/script>`
 
 function escapeHtml(s: string): string {
   return s
