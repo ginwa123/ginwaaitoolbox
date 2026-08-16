@@ -533,11 +533,15 @@ jobs:
             $nupkgUrl = ("https://api.nuget.org/v3-flatcontainer/" + $webview2Pkg + "/" + $nugetVersion + "/" + $nupkgName)
             Invoke-WebRequest -Uri $nupkgUrl -OutFile $nupkgPath -UseBasicParsing -TimeoutSec 180
             New-Item -Path $webview2Src -ItemType Directory -Force | Out-Null
-            # Expand-Archive places files at the path root inside the
-            # archive, e.g. build/native/include/WebView2.h lands at
-            # $webview2Src\build\native\include\WebView2.h — same layout
-            # nuget.exe -OutputDirectory would produce.
-            Expand-Archive -Path $nupkgPath -DestinationPath $webview2Src -Force
+            # A .nupkg is just a renamed ZIP, but PowerShell's
+            # Expand-Archive sniffs the .nupkg extension and refuses
+            # to extract it ('.nupkg is not a supported archive file
+            # format'). Use [System.IO.Compression.ZipFile]::Extract
+            # ToDirectory which doesn't care about extensions; the
+            # System.IO.Compression.FileSystem assembly makes the
+            # ZipFile type available in PS 5.1 out of the box.
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $webview2Src)
             Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
           }
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
