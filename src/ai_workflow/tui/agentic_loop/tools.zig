@@ -53,6 +53,7 @@ pub const execNalarBrowser = @import("tools_exec_nalar_browser.zig").execNalarBr
 pub const execGlob = @import("tools_exec_glob.zig").execGlob;
 pub const execSearch = @import("tools_exec_search.zig").execSearch;
 pub const execBash = @import("tools_exec_bash.zig").execBash;
+pub const execPwsh = @import("tools_exec_pwsh.zig").execPwsh;
 pub const execSetAgentProperties = @import("tools_exec_set_agent_properties.zig").execSetAgentProperties;
 pub const execUpdateActivity = @import("tools_exec_update_activity.zig").execUpdateActivity;
 pub const execSpawnSubAgent = @import("tools_exec_spawn_sub_agent.zig").execSpawnSubAgent;

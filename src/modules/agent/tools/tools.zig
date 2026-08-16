@@ -13,6 +13,7 @@ pub const lsp_document_symbol = @import("lsp_document_symbol.zig");
 pub const lsp_hover = @import("lsp_hover.zig");
 pub const web_search = @import("web_search.zig");
 pub const add_skill = @import("add_skill.zig");
+pub const pwsh = @import("pwsh.zig");
 pub const edit_skill = @import("edit_skill.zig");
 pub const view_skill = @import("view_skill.zig");
 pub const semantic_search = @import("semantic_search.zig");

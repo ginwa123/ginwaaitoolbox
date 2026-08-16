@@ -13,6 +13,7 @@ import {
   parseAddSkill,
   parseBash,
   parseEditSkill,
+  parsePwsh,
   parseListSkills,
   parseMetadata,
   parseNalarBrowser,
@@ -450,5 +451,38 @@ describe('parseMetadata', () => {
   })
   it('returns empty object when no metadata block', () => {
     expect(parseMetadata('<other>foo</other>')).toEqual({})
+  })
+})
+
+// 2026-08-14 pwsh-tool: parsePwsh mirrors parseBash (same XML envelope per
+// D2 + D10). Wire-contract parity test.
+describe('parsePwsh', () => {
+  const envelope =
+    '<command>Get-ChildItem</command>' +
+    '<stdout>file1\nfile2</stdout>' +
+    '<stderr></stderr>' +
+    '<exit_code>0</exit_code>' +
+    '<truncated>false</truncated>' +
+    '<timeout>false</timeout>' +
+    '<stdout_lines>2</stdout_lines>' +
+    '<stderr_lines>0</stderr_lines>' +
+    '<is_self>false</is_self>'
+
+  it('parses a PowerShell command result with the same shape as parseBash', () => {
+    const r = parsePwsh(envelope)
+    expect(r.command).toBe('Get-ChildItem')
+    expect(r.stdout).toBe('file1\nfile2')
+    expect(r.exitCode).toBe(0)
+    expect(r.truncated).toBe(false)
+    expect(r.timedOut).toBe(false)
+    expect(r.stdoutLines).toBe(2)
+    expect(r.stderrLines).toBe(0)
+    expect(r.isSelf).toBe(false)
+  })
+
+  it('returns the same ParsedBash shape as parseBash for the same input', () => {
+    // Lock-down test: pwsh + bash share the wire envelope. If a future
+    // refactor diverges them, this assertion fails closed.
+    expect(parsePwsh(envelope)).toEqual(parseBash(envelope))
   })
 })

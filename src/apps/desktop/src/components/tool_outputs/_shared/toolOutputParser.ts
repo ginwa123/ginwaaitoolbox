@@ -315,6 +315,39 @@ export function parseBash(content: string): ParsedBash {
   }
 }
 
+/**
+ * Parse a pwsh (PowerShell Core) tool result. Same wire envelope as bash —
+ * per plan D2 + D10 the JSON schema is structurally identical, only the
+ * `tool_name` field that wraps the envelope differs.
+ *
+ * Functionally a clone of `parseBash` so future divergence (e.g. pwsh adds a
+ * `<version>` tag for the PowerShell version that ran) is a one-line change
+ * here. Tests in `toolOutputParser.spec.ts` assert `parsePwsh(x) === parseBash(x)`
+ * to catch accidental drift.
+ */
+export function parsePwsh(content: string): ParsedBash {
+  return parseBash(content)
+}
+
+/**
+ * Dispatcher: parse a tool result based on the `toolName` it was registered
+ * under. 'bash' / 'pwsh' / 'run_command' (legacy alias) all use the same
+ * envelope. New shells with divergent envelope shapes must add their own
+ * branch here.
+ */
+export function parseShell(toolName: string, content: string): ParsedBash {
+  switch (toolName) {
+    case 'bash':
+      return parseBash(content)
+    case 'pwsh':
+      return parsePwsh(content)
+    case 'run_command':
+      return parseBash(content)
+    default:
+      return parseBash(content)
+  }
+}
+
 export interface FileResult {
   path: string
   total: number
