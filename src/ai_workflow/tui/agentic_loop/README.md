@@ -94,6 +94,8 @@ If you do create a new `_test.zig`, register it in
 | `sse_on_event_send_llm_history.zig` | ✅ 6 (event type, JSON fields, content sanitize × 2, null content, central broadcast) |
 | `sse_on_event_send_queue_message.zig` | (placeholder — empty file, no tests needed) |
 | `workflow_compact_message.zig` | ✅ 30 (`buildCompactMessagePrompt` × 8 — happy path, first+last excluded, tool_calls formatted, null content skipped, empty middle, newline join, ownership, 2-message; `parseReadFilePath` × 4; `fetchUserChatHistory` × 1; `fetchReadFilePaths` × 1; `fetchRecentActivities` × 2; `fetchSessionSkills` × 3; `enrichCompactionXml` × 4; recent_activities in enrich × 2; session_skills in enrich × 5 — embed + CDATA, XML escape, ']]>' split, 50-cap, position) |
+| `workflow_commpact_message.zig` | ✅ 31 (orchestrator + LLM-call: `shouldCompact` thresholds + `mock_state` wiring + `maybeCompactMessagesNew` × 6 — force/skip/threshold branches, url_style propagation, empty messages, short-circuit on null, recent_activities fetch error path, recent_activities embed; `compactMessageInMemoryNew` envelope × 4; session_skills embed × 2; compact_returns_null × 1; mock_state reset × 1; `callCompactAgent` direct call × 1 + url_style plumbing in tests) |
+| `workflow_compact_call_agent_test.zig` | ✅ 4 (`CallCompactAgentInput` field shape × 2 — default + override; `callCompactAgent` direct call with messages.items.len < 2; url_style propagation regression marker × 1) |
 | `test_runner.zig` | (none — just imports the test-bearing files for discovery) |
 
 **Total: 123 inline test "..." blocks + 1 `test_runner.test_0` = 124 tests

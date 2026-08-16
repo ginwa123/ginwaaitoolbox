@@ -641,6 +641,7 @@ Each kanban task card displays a small GitHub-style fork/branch icon + branch na
 | Plan | Block | Open piece |
 |---|---|---|
 | `2026-08-14-consolidate-compaction-message-helpers.md` | Worktree branch | `worktree/compact-message-consolidate` — merges `compaction.zig::buildCompactMessagePrompt` (8 tests) + all of `compaction_context.zig` (22 tests, deleted) into new `workflow_compact_message.zig` (30 tests); `compaction.zig` left with only `callCompactAgent`/`CallCompactAgentInput` |
+| `2026-08-14-migrate-compaction-into-workflow-commpact.md` | Worktree branch | `worktree/migrate-compaction-into-workflow-commpact` — moves remaining `compaction.zig` exports (`CallCompactAgentInput`, `callCompactAgent`, `noopStreamCallbackNew`) into the orchestrator file `workflow_commpact_message.zig` (3 m's); `compaction.zig` deleted. Public API (`workflow.callCompactAgent`, `workflow.CallCompactAgentInput`) unchanged. |
 | `2026-08-06-encapsulate-compaction-prompt.md` | Worktree branch | `worktree/encapsulate-compaction-prompt` — extracts `buildCompactMessagePrompt` from `callCompactAgent` + 8 inline tests + 3 leak fixes |
 | `2026-04-08-multifolder-session-dir.md` | Backend partial | `session_dirs: ?[][]const u8` array — only single `session_dir` filter shipped |
 | `2026-06-20-compaction-output-long-context.md` | Done via different tool | `read_compacted_messages` → `search_history` |

@@ -61,9 +61,9 @@ pub fn makeWorkingDirectoryContext(
 //
 // These tests are INLINE in the impl file (not a separate `*_test.zig`)
 // per the project's prevailing pattern — see `session_skills.zig`,
-// `handle_tool.zig`, `compaction.zig` for prior art. Tests that need
-// complex DB setup or are shared across impl files belong in their
-// own `*_test.zig` (e.g. `retry_delay_ms_race_test.zig`).
+// `handle_tool.zig`, `workflow_commpact_message.zig` for prior art.
+// Tests that need complex DB setup or are shared across impl files
+// belong in their own `*_test.zig` (e.g. `retry_delay_ms_race_test.zig`).
 
 const TestEnv = struct {
     tmp: std.testing.TmpDir,

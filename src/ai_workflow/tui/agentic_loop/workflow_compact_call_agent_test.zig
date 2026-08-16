@@ -2,7 +2,7 @@
 //!
 //! ## Bug
 //!
-//! `callCompactAgent` (compaction.zig) builds an `agent.Agent` to call
+//! `callCompactAgent` (workflow_commpact_message.zig) builds an `agent.Agent` to call
 //! the CompactionAgent LLM, but it never sets `compaction_agent.UrlStyle`.
 //! `Agent.UrlStyle` defaults to `"openai"` (Agent.zig:875). On a profile
 //! that uses `url_style: "anthropic"` (e.g. "900 ribu antropic", whose
@@ -64,8 +64,8 @@ const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 
 const workflow = @import("workflow.zig");
-const CallCompactAgentInput = @import("compaction.zig").CallCompactAgentInput;
-const callCompactAgent = @import("compaction.zig").callCompactAgent;
+const CallCompactAgentInput = @import("workflow_commpact_message.zig").CallCompactAgentInput;
+const callCompactAgent = @import("workflow_commpact_message.zig").callCompactAgent;
 
 // ─── Unit test for the CallCompactAgentInput field round-trip ────────────────
 //
@@ -230,7 +230,7 @@ test "callCompactAgent: returns null + logs when messages.items.len < 2 (early b
     var messages: std.ArrayList(agent_mod.AgentMessage) = .empty;
     defer messages.deinit(alloc);
     // messages.items.len = 0 → triggers the early `Not enough
-    // messages` branch at compaction.zig:34. This branch never
+    // messages` branch at workflow_commpact_message.zig:62. This branch never
     // touches `compaction_agent.UrlStyle`, so it's stable
     // regardless of whether the bug is present.
 
