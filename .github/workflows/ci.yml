@@ -809,14 +809,15 @@ jobs:
         # explicitly prepend git-bash's bin to PATH inside the run
         # block via `$env:PATH` for the powershell.exe-managed
         # child processes (addSystemCommand) that Zig spawns.
-        shell: bash
+        shell: pwsh
         run: |
-          # Belt-and-suspenders: make sure Git-bash is on PATH for the
-          # zig + spawned bash subprocesses. The runner has it at the
-          # path below (verified via the existing 'Show toolchain
-          # versions (Windows)' step's PATH dump — see ci.yml:1423).
-          export PATH="/c/Program Files/Git/bin:$PATH"
-          zig build test --summary all
+          $bash = 'C:\Program Files\Git\bin\bash.exe'
+          if (-not (Test-Path -LiteralPath $bash)) {
+            Write-Error ("Git for Windows not installed at '" + $bash + "'")
+            exit 1
+          }
+          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+          & $bash -lc 'zig build test --summary all'
 
       - name: Run AI workflow TUI tests
         if: runner.os != 'Windows'
@@ -826,10 +827,10 @@ jobs:
         if: runner.os == 'Windows'
         # See the long comment in `Run main test suite (Windows)` —
         # the `shell: bash` + PATH prepend trick is the same.
-        shell: bash
+        shell: pwsh
         run: |
-          export PATH="/c/Program Files/Git/bin:$PATH"
-          zig build test:ai_workflow:tui --summary all
+          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+          & 'C:\Program Files\Git\bin\bash.exe' -lc 'zig build test:ai_workflow:tui --summary all'
 
       - name: Build nalar + nalar-desktop binaries
         if: runner.os != 'Windows'
@@ -846,10 +847,10 @@ jobs:
         if: runner.os == 'Windows'
         # See the long comment in `Run main test suite (Windows)`
         # — same PATH prepend trick.
-        shell: bash
+        shell: pwsh
         run: |
-          export PATH="/c/Program Files/Git/bin:$PATH"
-          zig build nalar-desktop --summary all
+          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+          & 'C:\Program Files\Git\bin\bash.exe' -lc 'zig build nalar-desktop --summary all'
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
