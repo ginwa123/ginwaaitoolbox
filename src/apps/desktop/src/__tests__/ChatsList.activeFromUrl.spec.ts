@@ -62,6 +62,7 @@ vi.mock('vue-router', async () => {
 })
 
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -83,12 +84,14 @@ const baseSession = {
   is_auto_retry_until_stop: '0',
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mockGetChatsWith(extraSessions: any[] = []) {
   vi.spyOn(api, 'getChats').mockResolvedValue({
     sessions: [baseSession, ...extraSessions],
     has_more: false,
     next_cursor: null,
     total: 1 + extraSessions.length,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -141,6 +144,7 @@ describe('ChatsList — chat row active state from URL', () => {
       query: { view: 'chat', session: 'chat_abc' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_abc',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()
@@ -158,6 +162,7 @@ describe('ChatsList — chat row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_x' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_x',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()
@@ -173,6 +178,7 @@ describe('ChatsList — chat row active state from URL', () => {
       query: { view: 'chat', session: 'chat_other' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()
@@ -193,6 +199,7 @@ describe('ChatsList — chat row active state from URL', () => {
       path: '/app',
       fullPath: '/app',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(route as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()

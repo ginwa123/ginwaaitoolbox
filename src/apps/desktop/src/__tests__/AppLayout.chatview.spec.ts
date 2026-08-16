@@ -41,6 +41,7 @@ import {
 import type { SseClient } from '../helpers/sseClient'
 
 function makeStubClient(): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -134,18 +135,21 @@ describe('AppLayout — ?view=chat&session=X renders <ChatView>, not <Chats/> (r
     // ERR_INVALID_URL on every test (no test server) — the error
     // is caught by AppLayout's own try/catch so the test still
     // passes, but it floods the output.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
       next_cursor: null,
       total: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // Default the route mock to the failing URL.
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: SESSION_ID } as Record<string, string>,
       path: '/app',
       fullPath: `/app?view=chat&session=${SESSION_ID}`,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
 

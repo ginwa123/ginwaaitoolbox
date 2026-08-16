@@ -42,6 +42,7 @@ describe('api.createKanbanTask', () => {
       id: 'task_new',
       name: 'Fix bug',
       task_type: 'standard',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     mockFetchOnce(201, { task: fakeTask, session: null })
 
@@ -71,6 +72,7 @@ describe('api.createKanbanTask', () => {
   })
 
   it("includes queue_message in body when mode='create_and_run'", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'Fix bug', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'Fix bug', status: 'send' }
     mockFetchOnce(201, { task: fakeTask, session: fakeSession })

@@ -42,6 +42,7 @@ vi.mock('@/components/preview/InlineEditableText.vue', () => ({
   default: { name: 'InlineEditableText', template: '<div />' },
 }))
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ITEM: any = {
   id: 'item_1',
   name: 'Kanban',
@@ -77,11 +78,13 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     // The host guards handleCreateTaskSave on `activeCreateColumnId`
     // (set when the user clicks + on a column). Set it directly via
     // the vm so we don't have to drive the @add-task emit path.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper!.vm as any).activeCreateColumnId = 'col_todo'
     return wrapper!
   }
 
   it("calls addKanbanTask('create_and_run', ...) with the right payload — no addTask + runAgentOnNewTask dance", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const createKanbanSpy = vi
@@ -96,6 +99,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     const runAgentSpy = vi.spyOn(store, 'runAgentOnNewTask')
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
@@ -137,6 +141,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
   })
 
   it('queue message is just the title when description is empty', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'Just title', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'Just title', status: 'send' }
     const store = useWorkspacesStore()
@@ -145,6 +150,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
@@ -166,6 +172,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
   })
 
   it('forwards unattended toggle value', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
@@ -174,6 +181,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
@@ -195,9 +203,11 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
 
   it('does NOT navigate when addKanbanTask returns { task: null, session: null } (partial success)', async () => {
     const store = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(store, 'addKanbanTask').mockResolvedValue({ task: null, session: null } as any)
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
@@ -218,6 +228,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
   })
 
   it('still creates the task in plain create mode (existing behavior unchanged)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 't', task_type: 'standard' } as any
     const store = useWorkspacesStore()
     const addKanbanSpy = vi
@@ -225,6 +236,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       .mockResolvedValue({ task: fakeTask, session: null })
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create',
@@ -249,12 +261,14 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
   })
 
   it('does NOT emit selectTask on create_and_run success (no chat dialog opens)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
     vi.spyOn(store, 'addKanbanTask').mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',
@@ -273,6 +287,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
   })
 
   it('forwards selectedProfile from dialog emit to addKanbanTask', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
@@ -281,6 +296,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       .mockResolvedValue({ task: fakeTask, session: fakeSession })
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vm: any = view.vm
     await vm.handleCreateTaskSave({
       mode: 'create_and_run',

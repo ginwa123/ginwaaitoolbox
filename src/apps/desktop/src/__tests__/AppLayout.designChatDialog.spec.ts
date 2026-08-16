@@ -82,6 +82,7 @@ const DESIGN_ITEM_ID = 'item_design_1'
 const TASK_ID = 'task_1'
 
 function makeStubClient(): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -170,13 +171,16 @@ describe('AppLayout — design chat dialog mount', () => {
       absolute: '/',
       home: '/',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
       next_cursor: null,
       total: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'listDesignPages').mockResolvedValue({ pages: [] } as any)
     vi.useFakeTimers()
     setActivePinia(createPinia())
@@ -188,16 +192,20 @@ describe('AppLayout — design chat dialog mount', () => {
   // BEFORE mount, so init() doesn't wipe the fixture.
   function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
     vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { workspaces: store.workspaces as any }
     })
     vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ws = store.workspaces.find((w: any) => w.id === wsId)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
     })
     vi.spyOn(api, 'getTasks').mockImplementation(async () => {
       return { tasks: [], has_more: false, next_cursor: null }
     })
     vi.spyOn(api, 'listDesignPages').mockImplementation(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { pages: [] } as any
     })
   }
@@ -239,6 +247,7 @@ describe('AppLayout — design chat dialog mount', () => {
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [makeDesignItem()] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(DESIGN_ITEM_ID)
     rewireApiForFixture(store)
@@ -269,6 +278,7 @@ describe('AppLayout — design chat dialog mount', () => {
         name: 'WS',
         items: [makeKanbanItem(), makeDesignItem()],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(DESIGN_ITEM_ID)
     rewireApiForFixture(store)
@@ -298,6 +308,7 @@ describe('AppLayout — design chat dialog mount', () => {
           makeDesignItem(),
         ],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     // Simulate: active is kanban (the most realistic case — user
     // navigates to kanban, then 💬 button shouldn't render
@@ -324,6 +335,7 @@ describe('AppLayout — design chat dialog mount', () => {
         name: 'WS',
         items: [makeKanbanItem(), makeDesignItem()],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(DESIGN_ITEM_ID)
     rewireApiForFixture(store)
@@ -350,6 +362,7 @@ describe('AppLayout — design chat dialog mount', () => {
         name: 'WS',
         items: [makeKanbanItem(), makeDesignItem()],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(DESIGN_ITEM_ID)
     rewireApiForFixture(store)

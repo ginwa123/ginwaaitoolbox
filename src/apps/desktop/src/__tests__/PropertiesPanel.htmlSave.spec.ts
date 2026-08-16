@@ -75,14 +75,17 @@ describe('PropertiesPanel Monaco Save wire-up (Chunk 1 of undo/redo plan)', () =
           path: '/tmp',
           workspace_id: 'ws_1',
           design_elements: [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     store.setActiveWorkspaceItem('item_1')
     store.setActiveDesignPage('page_1')
 
     const updateHtmlSpy = vi
       .spyOn(store, 'updateDesignElementHtml')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue(makeElement() as any)
 
     const element = makeElement({ id: 'elem_test', text_content: '<old>' })

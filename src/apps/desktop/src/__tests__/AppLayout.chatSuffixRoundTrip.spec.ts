@@ -67,6 +67,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
     },
   ],
   ...overrides,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 function installBusForTests() {
@@ -75,6 +76,7 @@ function installBusForTests() {
   __setSseBusGlobalClient(makeStubClient() as SseClient)
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(): any {
   return {
     state: 'open',
@@ -93,6 +95,7 @@ function setRoute(q: Record<string, string>) {
     query: q,
     path: '/app',
     fullPath: '/app?' + new URLSearchParams(q).toString(),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -115,6 +118,7 @@ describe('AppLayout — chat suffix round-trip', () => {
       absolute: '/',
       home: '/',
       entries: [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     useRouteMock.mockReset()
     useRouterMock.mockReset()
@@ -139,6 +143,7 @@ describe('AppLayout — chat suffix round-trip', () => {
   it('mounting → setActiveTask → close → URL transitions: bare → /chat/<taskId> → bare', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock, back: vi.fn() } as any)
 
     // Mount on the bare workspace URL (no chat).
@@ -148,6 +153,7 @@ describe('AppLayout — chat suffix round-trip', () => {
       itemId: ITEM_ID,
     })
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeItem()] }] as any
 
     const wrapper = mount(AppLayout, {
@@ -208,6 +214,7 @@ describe('AppLayout — chat suffix round-trip', () => {
     // The watcher must NOT clobber the suffix.
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock, back: vi.fn() } as any)
 
     setRoute({
@@ -216,6 +223,7 @@ describe('AppLayout — chat suffix round-trip', () => {
       itemId: `${ITEM_ID}/chat/${TASK_ID}`,
     })
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeItem()] }] as any
 
     const wrapper = mount(AppLayout, {
@@ -230,6 +238,7 @@ describe('AppLayout — chat suffix round-trip', () => {
 
     // Re-set workspaces post-mount (initializeFromSystemFolder clears
     // them via the empty API mock).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeItem()] }] as any
     await nextTick()
     replaceMock.mockClear()

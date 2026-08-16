@@ -31,6 +31,7 @@ import * as api from '../api'
 // The real SseClient type isn't exported from sseBus, so we type the
 // stub as `any` to match the `__setSseBusGlobalClient` signature.
 // Each method returns a no-op so the bus internals stay quiet.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(initial: 'connecting'): any {
   const stub = {
     state: initial,
@@ -171,9 +172,11 @@ describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026
         expanded: true,
         items: [makeFolderItem()],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
 
     await layout.handleSelectItem(WS_ID, FOLDER_ID)
@@ -199,9 +202,11 @@ describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026
         expanded: true,
         items: [makeDesignItem()],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
 
     await layout.handleSelectItem(WS_ID, DESIGN_ID)

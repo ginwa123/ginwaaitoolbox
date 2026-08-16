@@ -56,11 +56,13 @@ const ELEMENT = {
   corner_radius: 0, text_content: '', text_style: '', image_url: '',
   z_index: 0, position: 0, file_path: '', created_at: '', updated_at: '',
   parent_id: '',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 const ITEM = {
   id: 'item_1', name: 'Test', item_type: 'design', path: '',
   workspace_id: 'ws_1',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 describe('DesignView single-element drag → translate emit', () => {
@@ -96,10 +98,12 @@ describe('DesignView single-element drag → translate emit', () => {
       // `startDrag` registers on the element's addEventListener.
       let moveHandler: ((e: PointerEvent) => void) | null = null
       let upHandler: ((e: PointerEvent) => void) | null = null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).addEventListener = (type: string, cb: any) => {
         if (type === 'pointermove') moveHandler = cb
         if (type === 'pointerup') upHandler = cb
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).removeEventListener = () => {}
 
       elementEl.dispatchEvent(new PointerEvent('pointerdown', {
@@ -164,6 +168,7 @@ describe('DesignView single-element drag → translate emit', () => {
 
       // Simulate the bug condition: wipe the local selection so the
       // OLD wire would have bailed with selectedIds.size === 0.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(wrapper.vm as any).selectedIds = new Set<string>()
 
       const elementEl = wrapper.find('[data-design-element]').element as HTMLElement
@@ -173,10 +178,12 @@ describe('DesignView single-element drag → translate emit', () => {
 
       let moveHandler: ((e: PointerEvent) => void) | null = null
       let upHandler: ((e: PointerEvent) => void) | null = null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).addEventListener = (type: string, cb: any) => {
         if (type === 'pointermove') moveHandler = cb
         if (type === 'pointerup') upHandler = cb
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).removeEventListener = () => {}
 
       // pointerdown — fires emit('select', ...) which replaces
@@ -220,6 +227,7 @@ describe('DesignView single-element drag → translate emit', () => {
     _store.setActiveDesignPage('page_1')
 
     // Add a second element so the multi-select is real.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const other: any = {
       ...ELEMENT,
       id: 'el_2',
@@ -242,6 +250,7 @@ describe('DesignView single-element drag → translate emit', () => {
       setDesignLoggerEnabled(true)
 
       // OLD wire would have bailed here (size === 2).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(wrapper.vm as any).selectedIds = new Set<string>(['el_1', 'el_2'])
 
       const elementEl = wrapper.findAll('[data-design-element]')[0]!.element as HTMLElement
@@ -251,10 +260,12 @@ describe('DesignView single-element drag → translate emit', () => {
 
       let moveHandler: ((e: PointerEvent) => void) | null = null
       let upHandler: ((e: PointerEvent) => void) | null = null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).addEventListener = (type: string, cb: any) => {
         if (type === 'pointermove') moveHandler = cb
         if (type === 'pointerup') upHandler = cb
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).removeEventListener = () => {}
 
       elementEl.dispatchEvent(new PointerEvent('pointerdown', {

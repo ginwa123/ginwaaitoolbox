@@ -120,11 +120,13 @@ describe('DesignPageRow.vue', () => {
         query: { view: 'workspace', itemId: 'item_1', pageId: 'page_active' },
         path: '/app',
         fullPath: '/app?view=workspace&itemId=item_1&pageId=page_active',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
       .mockReturnValueOnce({
         query: { view: 'workspace', itemId: 'item_1', pageId: 'page_other' },
         path: '/app',
         fullPath: '/app?view=workspace&itemId=item_1&pageId=page_other',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
     const active = mountRow({ page, isActivePage: true })
     const inactive = mountRow({ page, isActivePage: false })

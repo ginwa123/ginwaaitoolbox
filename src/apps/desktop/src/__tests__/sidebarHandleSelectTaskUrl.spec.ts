@@ -43,6 +43,7 @@ import {
 import type { SseClient, SseState } from '../helpers/sseClient'
 
 // Local SseClient stub. Mirrors sidebarKanbanSortUrl.spec.ts:30-46.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(initial: 'connecting'): any {
   return {
     state: initial,
@@ -131,6 +132,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     // Reset the mock router for each test.
     useRouterMock.mockClear()
     // Reset route query for each test.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(useRouteMock as any).mockImplementation(() => ({
       query: {} as Record<string, string>,
       path: '/app',
@@ -166,6 +168,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     const calls = useRouterMock.mock.results
       .map((r) => r.value)
       // useRouterMock returns the same routerStub each call.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const router = (useRouterMock as any).getMockImplementation()()
     const pushCalls = router.push.mock.calls
     expect(pushCalls.length).toBeGreaterThan(0)
@@ -180,6 +183,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
         name: 'WS',
         items: [baseItem],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(ITEM_ID)
     setRouteQuery({
@@ -190,6 +194,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     expect(typeof sidebar.selectTask).toBe('function')
 
@@ -217,6 +222,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [baseItem] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(ITEM_ID)
     setRouteQuery({
@@ -226,10 +232,12 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const router = (useRouterMock as any).getMockImplementation()()
     expect(router.push).toHaveBeenCalled()
     // Pre-fix this used router.replace, which would clobber the
@@ -250,6 +258,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
           { ...baseItem, id: 'item_design', item_type: 'design', tasks: [{ id: TASK_ID, name: 'T' }] },
         ],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem('item_design')
     setRouteQuery({
@@ -260,6 +269,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()
@@ -278,6 +288,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [baseItem] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     // The URL is a deep link — no workspaceId in route.query. The
     // new URL MUST add workspaceId from the active store state
@@ -294,6 +305,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()
@@ -315,6 +327,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [baseItem] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(ITEM_ID)
     setRouteQuery({
@@ -325,6 +338,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()
@@ -348,6 +362,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [baseItem] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(ITEM_ID)
     // Simulate a URL refresh that landed the user on a task view
@@ -362,6 +377,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()
@@ -381,6 +397,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [baseItem] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(ITEM_ID)
     setRouteQuery({
@@ -391,6 +408,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()
@@ -417,6 +435,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
           { ...baseItem, id: 'item_design', item_type: 'design', tasks: [{ id: TASK_ID, name: 'T' }] },
         ],
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem('item_design')
     // The design-mode URL pattern is ?view=workspace&workspaceId=W&itemId=K&pageId=P
@@ -428,6 +447,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     })
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     sidebar.selectTask(TASK_ID)
     await nextTick()

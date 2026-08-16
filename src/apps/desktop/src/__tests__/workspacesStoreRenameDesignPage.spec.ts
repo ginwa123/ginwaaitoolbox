@@ -71,6 +71,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
     ]
     // Set the design pages cache directly (mirrors what fetchDesignPages
     // would have populated).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(ws as any).designPagesByItemId = {
       item_design: [
         {
@@ -106,6 +107,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
     await ws.renameDesignPage('ws_1', 'item_design', 'page_1', '  Renamed Page  ')
 
     // Optimistic: cache reflects the trimmed value.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cached = (ws as any).designPagesByItemId.item_design[0]
     expect(cached.name).toBe('Renamed Page')
     // API: called once with the workspace/item/page ids + width/height
@@ -128,6 +130,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
     ).rejects.toThrow('500 Internal Server Error')
 
     // Rollback: name reverts to the original.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cached = (ws as any).designPagesByItemId.item_design[0]
     expect(cached.name).toBe('Original Name')
   })
@@ -138,6 +141,7 @@ describe('useWorkspacesStore.renameDesignPage', () => {
     await ws.renameDesignPage('ws_1', 'item_design', 'page_1', '   ')
     expect(updateDesignPageMock).not.toHaveBeenCalled()
     // Name unchanged.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const cached = (ws as any).designPagesByItemId.item_design[0]
     expect(cached.name).toBe('Original Name')
   })

@@ -54,10 +54,14 @@ describe('useKanbanTagSuggestions', () => {
   })
 
   it('loadNextPage() is a no-op while another loadNextPage is in flight (no double-fetch)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let resolveFirst!: (v: any) => void
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let resolveSecond!: (v: any) => void
     vi.spyOn(api, 'getKanbanTagSuggestions')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockReturnValueOnce(new Promise((r) => { resolveFirst = r }) as any)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockReturnValueOnce(new Promise((r) => { resolveSecond = r }) as any)
     const c = useKanbanTagSuggestions('ws_x', 'item_x')
     resolveFirst({
@@ -103,8 +107,10 @@ describe('useKanbanTagSuggestions', () => {
   })
 
   it('loading flag is true while a fetch is in flight', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let resolveFetch!: (v: any) => void
     vi.spyOn(api, 'getKanbanTagSuggestions').mockReturnValueOnce(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       new Promise((r) => { resolveFetch = r }) as any,
     )
     const c = useKanbanTagSuggestions('ws_x', 'item_x')

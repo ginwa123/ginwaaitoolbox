@@ -113,6 +113,7 @@ describe('CreatePrDialog', () => {
         diff_summary: 'old diff',
         draft_title: 'old title',
         draft_body: 'old body',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
       .mockResolvedValueOnce({
         // second call (auto-fill click)
@@ -125,6 +126,7 @@ describe('CreatePrDialog', () => {
         diff_summary: 'new diff',
         draft_title: 'new title',
         draft_body: 'new body',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
 
     wrapper = mount(CreatePrDialog, {

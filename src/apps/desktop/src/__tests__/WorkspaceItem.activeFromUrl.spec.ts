@@ -57,6 +57,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_design' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_design',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountItem()
     await nextTick()
@@ -72,6 +73,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
       query: { view: 'chat', session: 'chat_xyz' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_xyz',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountItem()
     await nextTick()
@@ -86,6 +88,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_other' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountItem()
     await nextTick()
@@ -101,6 +104,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
       path: '/app',
       fullPath: '/app',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(route as any)
     const { wrapper } = mountItem()
     await nextTick()

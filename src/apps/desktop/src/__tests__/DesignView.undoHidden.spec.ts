@@ -92,6 +92,7 @@ const ITEM = {
   path: '',
   design_elements: [],
   workspace_id: 'ws_1',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 describe('DesignView undo/redo feature is hidden (2026-08-06)', () => {

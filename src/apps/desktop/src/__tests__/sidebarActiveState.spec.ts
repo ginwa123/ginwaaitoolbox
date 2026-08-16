@@ -22,6 +22,7 @@ import {
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -258,6 +259,7 @@ describe('AppLayout URL-driven chat navigation', () => {
       query: {} as Record<string, string>,
       path: '/app',
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
 
@@ -277,6 +279,7 @@ describe('AppLayout URL-driven chat navigation', () => {
       query: { view: 'chat', session: 'chat_url' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_url',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mount(AppLayout, {
@@ -325,6 +328,7 @@ describe('AppLayout URL-driven chat navigation', () => {
       path: '/app',
       fullPath: '/app?view=workspace',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(routeObj as any)
 
     const wrapper = mount(AppLayout, {

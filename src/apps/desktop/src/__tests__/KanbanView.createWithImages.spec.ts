@@ -43,6 +43,7 @@ vi.mock('@/components/preview/InlineEditableText.vue', () => ({
   default: { name: 'InlineEditableText', template: '<div />' },
 }))
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ITEM: any = {
   id: 'item_1',
   name: 'Kanban',
@@ -113,6 +114,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
       },
     })
     await flushPromises()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper!.vm as any).activeCreateColumnId = 'col_todo'
     return wrapper!
   }
@@ -123,6 +125,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
       id: 'task_new',
       name: 'Bug screenshot',
       task_type: 'standard',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
@@ -134,6 +137,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
       { file: makeFile('one.png'), previewUrl: 'blob:1' },
       { file: makeFile('two.jpg'), previewUrl: 'blob:2' },
     ]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (view.vm as any).handleCreateTaskSave({
       mode: 'create_and_run',
       name: 'Bug screenshot',
@@ -147,6 +151,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
 
     // 1. addKanbanTask was called with the imageUrls array.
     expect(addKanbanSpy).toHaveBeenCalledTimes(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const callArgs = addKanbanSpy.mock.calls[0] as [string, string, string, any]
     expect(callArgs[2]).toBe('create_and_run')
     const payload = callArgs[3]
@@ -177,6 +182,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
       id: 'task_new',
       name: 'To edit later',
       task_type: 'standard',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
@@ -184,6 +190,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
     const moveSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (view.vm as any).handleCreateTaskSave({
       mode: 'create',
       name: 'To edit later',
@@ -207,6 +214,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
 
   it('create + run with NO pending files: imageUrls defaults to empty array', async () => {
     const store = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'No images', task_type: 'standard' } as any
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
@@ -214,6 +222,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
     vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
 
     const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (view.vm as any).handleCreateTaskSave({
       mode: 'create_and_run',
       name: 'No images',

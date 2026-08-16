@@ -56,8 +56,10 @@ const ITEM = {
   path: '',
   design_elements: [],
   workspace_id: 'ws_1',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeEl(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'el_1',
@@ -93,6 +95,7 @@ describe('DesignView canvas Shift+click multi-select toggle', () => {
   })
 
   // Helper: mount DesignView with 3 elements and let initial load settle.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function mountWith(elements: any[]): Promise<any> {
     const store = useWorkspacesStore()
     store.setActiveDesignPage('page_1')
@@ -107,6 +110,7 @@ describe('DesignView canvas Shift+click multi-select toggle', () => {
   // jsdom 29 makes PointerEvent.button a readonly getter, so we use
   // native dispatchEvent. setPointerCapture stubbed to a noop so the
   // drag handler doesn't blow up in jsdom.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function dispatchSelect(wrapper: any, elementId: string, shiftKey: boolean): void {
     const target = wrapper.find(`[data-testid="design-element-${elementId}"]`)
     if (!target.exists()) throw new Error(`Element ${elementId} not found in canvas`)

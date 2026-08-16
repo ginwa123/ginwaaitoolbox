@@ -117,16 +117,22 @@ function mountAppLayout(): ReturnType<typeof mount> {
 // injected fixture (same approach as AppLayout.kanbanChatDialog.spec.ts).
 function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
   vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => ({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     workspaces: store.workspaces as any,
   }))
   vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ws = store.workspaces.find((w: any) => w.id === wsId)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
   })
   vi.spyOn(api, 'getTasks').mockImplementation(async (wsId: string, itemId: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ws = store.workspaces.find((w: any) => w.id === wsId)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const item = ws?.items?.find((i: any) => i.id === itemId)
     return {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tasks: (item?.tasks ?? []) as any,
       has_more: false,
       next_cursor: null,
@@ -165,12 +171,14 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
       absolute: '/',
       home: '/',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
       next_cursor: null,
       total: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     vi.useFakeTimers()
   })
@@ -193,7 +201,9 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
       { id: WS_ID, name: 'WS', items: [{
         ...baseItem,
         tasks: [{ id: TASK_ID, name: 'Some Task' }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     rewireApiForFixture(store)
     // Pre-populate the snapshot field the way Sidebar.vue does on
@@ -237,7 +247,9 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
       { id: WS_ID, name: 'WS', items: [{
         ...baseItem,
         tasks: [{ id: TASK_ID, name: 'Some Task' }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     rewireApiForFixture(store)
     // No snapshot — user opened the task from a workspace that

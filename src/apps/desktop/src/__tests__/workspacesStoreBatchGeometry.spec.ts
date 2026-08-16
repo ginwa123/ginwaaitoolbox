@@ -58,6 +58,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
             makeElement('e2', 0, 0),
             makeElement('e3', 0, 0),
           ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -103,6 +104,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
             makeElement('e1', 0, 0),
             makeElement('e2', 0, 0),
           ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -140,6 +142,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           path: '/tmp',
           position: 0,
           design_elements: [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -172,6 +175,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           path: '/tmp',
           position: 0,
           design_elements: [makeElement('e_single', 0, 0)],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -186,6 +190,7 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
   })
 })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeElement(id: string, x: number, y: number): any {
   return {
     id,

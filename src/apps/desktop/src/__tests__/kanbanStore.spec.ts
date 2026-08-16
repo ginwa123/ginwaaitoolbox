@@ -187,8 +187,10 @@ describe('useWorkspacesStore — kanban actions', () => {
         item: {
           id: 'kanban_bare',
           // name missing — old backend shape
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
         columns: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
 
       const id = await store.addKanbanItem('ws_1', 'My Sprint', '/abs/project')
@@ -728,6 +730,7 @@ describe('useWorkspacesStore — kanban actions', () => {
           name: 'New Name',
           item_type: 'kanban',
           path: null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
 
       await store.updateKanbanItemName('ws_1', 'item_1', 'New Name')

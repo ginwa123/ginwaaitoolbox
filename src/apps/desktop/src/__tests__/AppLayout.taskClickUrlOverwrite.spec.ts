@@ -52,6 +52,7 @@ import {
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState = 'open'): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -104,6 +105,7 @@ const makeFolderItem = (): WorkspaceItem => ({
       task_type: 'standard',
       kanban_column_id: '',
       kanban_position: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
   ],
 })
@@ -122,6 +124,7 @@ function mountAppLayout(routeQuery: Record<string, string> = {}) {
     path: '/app',
     fullPath:
       '/app' + (Object.keys(routeQuery).length ? `?${new URLSearchParams(routeQuery).toString()}` : ''),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   const ws = useWorkspacesStore()
   ws.workspaces = [makeWorkspace()]
@@ -188,6 +191,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
   it('clicking a task under the SAME active folder does not clobber the task URL (regression)', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock } as any)
 
     // Start on view=workspace showing the folder.
@@ -239,6 +243,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     // expected — the watcher's chat-suffix guard ensures itemId
     // stays in the /chat/<taskId> form.)
     const replaceCallsWithBareItemId = replaceMock.mock.calls.filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (call: any[]) => {
         const q = call[0]?.query as Record<string, string> | undefined
         return q && q.itemId === FOLDER_ID
@@ -252,6 +257,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
   it('clicking a task under a DIFFERENT workspace item does not clobber the task URL (regression)', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock } as any)
 
     // Start on view=workspace showing a DIFFERENT workspace item
@@ -265,6 +271,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
       query: { view: 'workspace', workspaceId: WS_ID, itemId: OTHER_ID },
       path: '/app',
       fullPath: '/app?view=workspace&workspaceId=ws_taskurl&itemId=item_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const ws = useWorkspacesStore()
     ws.workspaces = [
@@ -354,6 +361,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     // router.push applied, read stale URL, called
     // router.replace({ view: 'workspace', itemId: OTHER_ID }).
     const replaceCallsWithViewWorkspace = replaceMock.mock.calls.filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (call: any[]) => call[0]?.query?.view === 'workspace',
     )
     expect(replaceCallsWithViewWorkspace).toHaveLength(0)
@@ -364,12 +372,14 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
   it('URL sync watcher DOES overwrite when navigation flag is NOT set (regression-guard for the flag-only fix)', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock } as any)
 
     useRouteMock.mockReturnValue({
       query: { view: 'workspace', workspaceId: WS_ID, itemId: OTHER_ID },
       path: '/app',
       fullPath: '/app?view=workspace&workspaceId=ws_taskurl&itemId=item_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const ws = useWorkspacesStore()
     ws.workspaces = [
@@ -435,6 +445,7 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     await nextTick()
 
     const replaceCallsWithViewWorkspace = replaceMock.mock.calls.filter(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (call: any[]) => call[0]?.query?.view === 'workspace',
     )
     expect(replaceCallsWithViewWorkspace.length).toBeGreaterThan(0)

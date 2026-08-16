@@ -63,6 +63,7 @@ describe('api.updateDesignElement — reposition field', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       parent_id: 'group_1',
       reposition: 'last_in_parent',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]

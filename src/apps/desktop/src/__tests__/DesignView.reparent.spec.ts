@@ -50,8 +50,10 @@ const ITEM = {
   path: '',
   design_elements: [],
   workspace_id: 'ws_1',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeEl(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'el_1',
@@ -93,6 +95,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     store.setActiveDesignPage('page_1')
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
@@ -106,6 +109,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
 
     // The LayersPanel emits `reparent` with the composable's result
     // shape: { elementIds, newParentId }.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a', 'b'], newParentId: null })
     await flushPromises()
 
@@ -121,6 +125,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     store.setActiveDesignPage('page_1')
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
@@ -132,6 +137,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a'], newParentId: 'group' })
     await flushPromises()
 
@@ -147,6 +153,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     store.setActiveDesignPage('page_1')
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
@@ -154,6 +161,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: [], newParentId: null })
     await flushPromises()
 
@@ -168,6 +176,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     // the composable short-circuits when ANY of the three ids is empty.
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
@@ -179,6 +188,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a'], newParentId: null })
     await flushPromises()
 
@@ -199,6 +209,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
 
     // The handler is async + void — must not propagate to caller.
     expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a'], newParentId: null })
     }).not.toThrow()
   })

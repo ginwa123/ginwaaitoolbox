@@ -67,6 +67,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     } as Response)
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function makeElement(id: string, x: number, y: number): any {
     return {
       id,
@@ -95,6 +96,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function seedItem(itemId = 'item_1', elems: any[] = [makeElement('el_1', 0, 0)]): void {
     const ws = useWorkspacesStore()
     ws.workspaces.push({
@@ -110,6 +112,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
           path: '/tmp',
           position: 0,
           design_elements: elems,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -128,6 +131,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     )
 
     const store = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = store.workspaces[0]!.items as any[]
     const el = items[0].design_elements[0]
     expect(el.x).toBe(250)
@@ -143,6 +147,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
       { width: 300, height: 400 },
     )
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = useWorkspacesStore().workspaces[0]!.items as any[]
     const el = items[0].design_elements[0]
     expect(el.width).toBe(300)
@@ -161,6 +166,7 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
       { rotation: 45 },
     )
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = useWorkspacesStore().workspaces[0]!.items as any[]
     const el = items[0].design_elements[0]
     expect(el.rotation).toBe(45)
@@ -179,7 +185,9 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
       { x: 999, y: 999 },
     )
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const elements = (useWorkspacesStore().workspaces[0]!.items as any[])[0].design_elements as any[]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(elements.map((e: any) => e.id)).toEqual(['el_1', 'el_2', 'el_3'])
     expect(elements[1].x).toBe(999)
     expect(elements[1].y).toBe(999)

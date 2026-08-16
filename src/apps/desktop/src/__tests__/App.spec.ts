@@ -26,6 +26,7 @@ import { makeLocalStorageStub } from './helpers'
  * the listener list in a closure; tests reach it via `as any`.
  */
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -44,6 +45,7 @@ function makeStubClient(initial: SseState): SseClient {
 }
 
 function emitStubState(c: SseClient, s: SseState): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const listeners = (c as any).__stateListeners as
     | Array<(s: SseState, info: SseStateInfo) => void>
     | undefined
@@ -111,6 +113,7 @@ describe('App', () => {
     // used (root mount with no outer app), provides go to the root
     // component instance under `vm.$.provides` (NOT `vm.$.appContext
     // .provides` — that's only for nested-app ancestors).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const provides = (wrapper.vm as any).$.provides as Record<string, unknown>
     const processingState = provides['processingState'] as {
       value: Record<string, boolean>

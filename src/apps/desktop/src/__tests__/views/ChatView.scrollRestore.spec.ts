@@ -103,6 +103,7 @@ Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
 })
 
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -130,6 +131,7 @@ function installApiMocks(): void {
     finish_reason: '',
   }))
   vi.spyOn(api, 'getChatHistory').mockResolvedValue({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     messages: messages as any,
     has_more: false,
     next_cursor: null,
@@ -137,7 +139,9 @@ function installApiMocks(): void {
     git_worktree_cwd: '',
     max_total_tokens: 0,
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
@@ -145,6 +149,7 @@ function installApiMocks(): void {
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: false,
@@ -153,9 +158,11 @@ function installApiMocks(): void {
     is_clean: true,
     current: '',
     status: 'clean',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 

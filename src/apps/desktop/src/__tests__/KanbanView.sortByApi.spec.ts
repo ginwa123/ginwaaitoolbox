@@ -94,6 +94,7 @@ function mountKanbanView(
     query,
     path: '/app',
     fullPath: '/app',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   const item = opts.item ?? makeItem()
   const store = useWorkspacesStore()
@@ -101,6 +102,7 @@ function mountKanbanView(
     { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
   ]
   const replaceMock = vi.fn()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
   const wrapper = mount(KanbanView, {
     props: { item, workspaceId: WS_ID },
@@ -325,8 +327,10 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
       },
       path: '/app',
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
 
     const wrapper = mount(KanbanView, {
@@ -376,8 +380,10 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
       },
       path: '/app',
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
 
     const wrapper = mount(KanbanView, {
@@ -430,8 +436,10 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
       },
       path: '/app',
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
 
     mount(KanbanView, {

@@ -66,6 +66,7 @@ const makeKanbanItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
     },
   ],
   ...overrides,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
@@ -74,6 +75,7 @@ const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
   item_type: 'design',
   tasks: [],
   ...overrides,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 function installBusForTests() {
@@ -82,6 +84,7 @@ function installBusForTests() {
   __setSseBusGlobalClient(makeStubClient() as SseClient)
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(): any {
   return {
     state: 'open',
@@ -100,12 +103,14 @@ function setRoute(q: Record<string, string>) {
     query: q,
     path: '/app',
     fullPath: '/app?' + new URLSearchParams(q).toString(),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
 function mountApp(workspaceItems: WorkspaceItem[], query: Record<string, string>): VueWrapper {
   setRoute(query)
   const ws = useWorkspacesStore()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ws.workspaces = [{ id: WS_ID, name: 'WS', items: workspaceItems }] as any
   return mount(AppLayout, {
     global: {
@@ -135,6 +140,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
       absolute: '/',
       home: '/',
       entries: [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     useRouteMock.mockReset()
     useRouterMock.mockReset()
@@ -156,6 +162,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     // workspaces due to the empty API mock), re-set workspaces so the
     // pending URL restore can find the item.
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeKanbanItem()] }] as any
     await flushPromises()
     expect(ws.activeWorkspaceItemId).toBe(KANBAN_ITEM_ID)
@@ -171,6 +178,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     })
     await flushPromises()
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeKanbanItem()] }] as any
     await flushPromises()
     expect(ws.activeWorkspaceItemId).toBe(KANBAN_ITEM_ID)
@@ -180,6 +188,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
 
   it('legacy ?view=task&task=X URL is silently rewritten to view=workspace&itemId=Y/chat/task_X', async () => {
     const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn(), back: vi.fn() } as any)
     setRoute({
       view: 'task',
@@ -188,6 +197,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
       itemId: KANBAN_ITEM_ID,
     })
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeKanbanItem()] }] as any
     mount(AppLayout, {
       global: {
@@ -211,6 +221,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     // chat suffix; workspaceId stays absent (caller refreshes /
     // re-navigates to discover it).
     const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn(), back: vi.fn() } as any)
     setRoute({
       view: 'task',
@@ -245,6 +256,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     })
     await flushPromises()
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeDesignItem()] }] as any
     await flushPromises()
     // activeTaskId is set even though the design item has empty tasks

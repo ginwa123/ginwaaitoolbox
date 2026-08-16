@@ -227,6 +227,7 @@ describe('useSubAgentPeek', () => {
       id: 'a1',
       role: 'assistant',
       content: 'before-unmount',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     expect(peek.messages.value.some((m) => m.content === 'before-unmount')).toBe(true)
@@ -241,6 +242,7 @@ describe('useSubAgentPeek', () => {
       id: 'a2',
       role: 'assistant',
       content: 'after-unmount',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     expect(peek.messages.value.some((m) => m.content === 'after-unmount')).toBe(false)
@@ -298,6 +300,7 @@ describe('useSubAgentPeek', () => {
       __dispatchSseBus('llm', {
         session_id: CHUNK_PEEK_SID,
         ...chunk,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
       await nextTick()
     }
@@ -353,6 +356,7 @@ describe('useSubAgentPeek', () => {
       role: 'tool',
       content: 'r',
       tool_call_id: 'call_1',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
 
@@ -389,6 +393,7 @@ describe('useSubAgentPeek', () => {
       id: 'a1',
       role: 'assistant',
       content: 'for-A',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
 
@@ -401,6 +406,7 @@ describe('useSubAgentPeek', () => {
       id: 'b1',
       role: 'assistant',
       content: 'for-B',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
 

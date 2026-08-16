@@ -20,6 +20,7 @@ import {
 import type { SseClient } from '../helpers/sseClient'
 
 function makeStubClient(): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),

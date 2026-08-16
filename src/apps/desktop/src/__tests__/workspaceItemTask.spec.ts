@@ -146,6 +146,7 @@ describe('WorkspaceItemTaskRow per-task row', () => {
       },
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=ws_test&itemId=${ITEM_ID}/chat/${baseTask.id}`,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountTask()
     const rowButton = wrapper.find('button.group\\/task')

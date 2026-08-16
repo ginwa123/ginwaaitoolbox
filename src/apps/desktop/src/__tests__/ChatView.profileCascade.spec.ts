@@ -50,6 +50,7 @@ if (
 }
 
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -68,7 +69,9 @@ function makeStubClient(initial: SseState): SseClient {
 // getNalarConfig / getSession responses without re-mounting the global
 // vi.mock() harness.
 function installChatViewMocks(opts: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config?: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   session?: any
 }) {
   vi.spyOn(api, 'getChatHistory').mockResolvedValue({
@@ -79,7 +82,9 @@ function installChatViewMocks(opts: {
     git_worktree_cwd: '',
     max_total_tokens: 0,
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue(
     opts.session ?? {
@@ -90,6 +95,7 @@ function installChatViewMocks(opts: {
       git_worktree_cwd: '',
     },
   )
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({ is_git_repo: false } as any)
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue(
     opts.config ?? { profiles: {} },

@@ -164,6 +164,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
     expect(result.length).toBe(3)
 
     // Local cache mirrors the server response.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const elements = (store.workspaces[0] as any).items[0].design_elements
     expect(elements[0].x).toBe(100)
     expect(elements[0].y).toBe(50)
@@ -225,6 +226,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
 
     // Initial baseline: stub getDesignPage to return the same
     // elements array reference (NOT replaced by fetch).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const baseline = (store.workspaces[0] as any).items[0].design_elements
     expect(baseline.length).toBe(3)
 
@@ -269,6 +271,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
     // CRITICAL: the design_elements array must be the SAME reference
     // after the mirror (Vue 3 reactivity depends on per-index writes
     // to the same reactive array).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const after = (store.workspaces[0] as any).items[0].design_elements
     expect(after).toBe(baseline)
     // All 3 elements were updated in place.
@@ -309,6 +312,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
         parent_id: '', z_index: 0, position: 0,
       },
     ]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(store.workspaces[0] as any).items[0].design_elements = baseline
 
     // Backend response uses `elem_type` (the BUGGY shape) — no `type` field.
@@ -336,6 +340,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
 
     // EXPECTED: the local mirror preserves `type === 'group'` so the
     // next drag still sees `isGroupLike = true` and uses the cascade.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const after = (store.workspaces[0] as any).items[0].design_elements
     expect(after[0].type).toBe('group')
     expect(after[0].x).toBe(150)
@@ -359,6 +364,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
         parent_id: '', z_index: 0, position: 0,
       },
     ]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(store.workspaces[0] as any).items[0].design_elements = baseline
 
     vi.spyOn(await import('../api'), 'moveDesignElementsBatch')
@@ -382,6 +388,7 @@ describe('workspacesStore.moveDesignElementsBatch', () => {
       { element_id: 'g1', dx: 50, dy: 50 },
     ])
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const after = (store.workspaces[0] as any).items[0].design_elements
     expect(after[0].type).toBe('group')
   })

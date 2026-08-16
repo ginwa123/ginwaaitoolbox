@@ -80,6 +80,7 @@ if (
 // isolation — see kanbanSse.spec.ts / workspacesStoreSessionEvents.spec.ts
 // for the event-dispatch pattern using `__dispatchSseBus`.
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -115,7 +116,9 @@ function installChatViewMocks(opts: {
     git_worktree_cwd: opts.gitWorktreeCwd ?? '',
     max_total_tokens: 0,
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   // A `watch(() => sessionId.value, ...)` in ChatView fires
   // `api.getSession(newId)` once onMounted sets the sessionId. The
@@ -127,6 +130,7 @@ function installChatViewMocks(opts: {
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // The status poll checks `is_git_repo` to decide whether to render
   // the status button. We always return a clean repo so the button
@@ -138,11 +142,13 @@ function installChatViewMocks(opts: {
     is_clean: true,
     current: 'main',
     status: 'clean',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // loadProfiles() is called outside onMounted; the response shape
   // matches the real `/api/config/nalar` payload.
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -352,6 +358,7 @@ describe('ChatView worktree status button', () => {
       session_id: 'session_bus_match',
       type: 'chunk',
       content: 'hello from bus',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     await nextTick()
@@ -374,6 +381,7 @@ describe('ChatView worktree status button', () => {
       session_id: 'OTHER_SESSION',
       type: 'chunk',
       content: 'should be dropped',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     await nextTick()
@@ -386,6 +394,7 @@ describe('ChatView worktree status button', () => {
       session_id: 'session_bus_isolation',
       type: 'chunk',
       content: 'matching one passes',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     await nextTick()

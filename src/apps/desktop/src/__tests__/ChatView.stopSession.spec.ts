@@ -48,6 +48,7 @@ if (
 
 // ─── shared SSE stub ──────────────────────────────────────────────────────
 function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -70,7 +71,9 @@ function installChatViewMocks() {
     git_worktree_cwd: '',
     max_total_tokens: 0,
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
@@ -78,12 +81,15 @@ function installChatViewMocks() {
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: false,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -156,6 +162,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     const stopSpy = vi.spyOn(api, 'stopSession').mockResolvedValue({
       success: true,
       session_id: 'session_proc',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     wrapper = await mountChatViewProcessing('session_proc')
@@ -179,6 +186,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     const stopSpy = vi.spyOn(api, 'stopSession').mockResolvedValue({
       success: true,
       session_id: 'session_proc',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     wrapper = await mountChatViewProcessing('session_proc')
@@ -207,6 +215,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
 
   it('C: SSE worker `deleted` event hides the Stop button', async () => {
     installChatViewMocks()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'stopSession').mockResolvedValue({ success: true } as any)
 
     wrapper = await mountChatViewProcessing('session_proc')
@@ -225,6 +234,7 @@ describe('ChatView — Stop button (cancel running agent)', () => {
     // `.value` reassignment triggers Vue's reactivity reliably
     // (delete on the inner object also works with a proxy, but
     // the reassignment is the documented contract for `ref`).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const provides = (wrapper!.vm as any).$.provides as Record<string, unknown>
     const ps = provides['processingState'] as Ref<Record<string, boolean>>
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete

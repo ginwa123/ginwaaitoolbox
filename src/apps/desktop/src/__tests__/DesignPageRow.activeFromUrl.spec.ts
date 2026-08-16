@@ -56,6 +56,7 @@ describe('DesignPageRow — page row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_design', pageId: 'page_42' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_design&pageId=page_42',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountRow()
     await nextTick()
@@ -69,6 +70,7 @@ describe('DesignPageRow — page row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_design', pageId: 'page_other' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_design&pageId=page_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountRow()
     await nextTick()
@@ -82,6 +84,7 @@ describe('DesignPageRow — page row active state from URL', () => {
       query: { view: 'chat', session: 'chat_xyz' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_xyz',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountRow()
     await nextTick()
@@ -96,6 +99,7 @@ describe('DesignPageRow — page row active state from URL', () => {
       path: '/app',
       fullPath: '/app',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(route as any)
     const { wrapper } = mountRow()
     await nextTick()
