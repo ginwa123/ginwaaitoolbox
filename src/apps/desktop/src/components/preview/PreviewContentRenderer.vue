@@ -166,7 +166,7 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
-})();</script>`
+})();<\/script>`
 
 function escapeHtml(s: string): string {
   return s

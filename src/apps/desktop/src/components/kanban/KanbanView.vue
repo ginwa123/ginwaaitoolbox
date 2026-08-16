@@ -603,7 +603,7 @@ const handleOpenCreateDialog = () => {
 // action). It hides once a path is set. The picker reuses the
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
-import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { getSystemFolder, listFolder, updateTaskSimple, type FolderEntry } from '../../api'
 import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
@@ -746,7 +746,7 @@ const handleUpdateCwd = async (payload: { cwd: string }) => {
   const taskId = activeTaskDetailId.value
   if (!taskId) return
   try {
-    await api.updateTaskSimple(taskId, { cwd: payload.cwd })
+    await updateTaskSimple(taskId, { cwd: payload.cwd })
   } catch (err) {
     console.error('Failed to update task cwd:', err)
   }

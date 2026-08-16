@@ -420,7 +420,7 @@ const handleDocumentClickCwd = (event: MouseEvent) => {
     // `data-testid="file-picker-dialog"` testid, so we can match it
     // (and its Teleport-portal descendants) without touching the
     // picker ref.
-    !target?.closest?.('[data-testid="file-picker-dialog"]')
+    !(target as Element | null)?.closest?.('[data-testid="file-picker-dialog"]')
   ) {
     // User intent: clicking outside the picker should NOT close it
     // by accident — the picker has explicit Cancel and Select affordances
