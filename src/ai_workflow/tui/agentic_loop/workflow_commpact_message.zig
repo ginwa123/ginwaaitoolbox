@@ -3,7 +3,7 @@ const nalarcore = @import("nalarcore");
 const CallCompactAgentInput = @import("compaction.zig").CallCompactAgentInput;
 const callCompactAgent = @import("compaction.zig").callCompactAgent;
 const mark_history_not_for_llmrun = @import("markHistoryNotForLLMRun.zig").markHistoryNotForLLMRun;
-const compaction_context = @import("compaction_context.zig");
+const compact_message = @import("workflow_compact_message.zig");
 
 const LlmConfig = nalarcore.config.LlmConfig;
 const agent = nalarcore.agent;
@@ -155,17 +155,17 @@ pub fn maybeCompactMessagesNew(
     // the mark_history_not_for_llmrun step takes them offline. The new
     // INSERT into llm_history (inside compactMessagesInMemory) carries the
     // enriched context forward to the next agent iteration.
-    var user_turns = compaction_context.fetchUserChatHistory(allocator, db, session_id) catch |err| blk: {
+    var user_turns = compact_message.fetchUserChatHistory(allocator, db, session_id) catch |err| blk: {
         logger.warnFmt("[COMPACTION] fetchUserChatHistory failed: {s}", .{@errorName(err)});
-        break :blk std.ArrayList(compaction_context.UserTurn).empty;
+        break :blk std.ArrayList(compact_message.UserTurn).empty;
     };
     defer {
         for (user_turns.items) |t| t.deinit(allocator);
         user_turns.deinit(allocator);
     }
-    var read_files = compaction_context.fetchReadFilePaths(allocator, db, session_id, logger) catch |err| blk: {
+    var read_files = compact_message.fetchReadFilePaths(allocator, db, session_id, logger) catch |err| blk: {
         logger.warnFmt("[COMPACTION] fetchReadFilePaths failed: {s}", .{@errorName(err)});
-        break :blk std.ArrayList(compaction_context.ReadFileTurn).empty;
+        break :blk std.ArrayList(compact_message.ReadFileTurn).empty;
     };
     defer {
         for (read_files.items) |rf| rf.deinit(allocator);
@@ -179,9 +179,9 @@ pub fn maybeCompactMessagesNew(
     // stays bounded on long sessions where the activity log could be
     // thousands of rows — the agent only needs the most recent tail.
     const RECENT_ACTIVITIES_LIMIT: u32 = 20;
-    var recent_activities = compaction_context.fetchRecentActivities(allocator, db, session_id, RECENT_ACTIVITIES_LIMIT) catch |err| blk: {
+    var recent_activities = compact_message.fetchRecentActivities(allocator, db, session_id, RECENT_ACTIVITIES_LIMIT) catch |err| blk: {
         logger.warnFmt("[COMPACTION] fetchRecentActivities failed: {s}", .{@errorName(err)});
-        break :blk std.ArrayList(compaction_context.RecentActivity).empty;
+        break :blk std.ArrayList(compact_message.RecentActivity).empty;
     };
     defer {
         for (recent_activities.items) |a| a.deinit(allocator);
@@ -193,7 +193,7 @@ pub fn maybeCompactMessagesNew(
     // what skills were active before compaction. Fetched before
     // mark_history_not_for_llmrun so the next iteration's enriched
     // INSERT can carry them forward alongside the rest of the context.
-    const session_skills = compaction_context.fetchSessionSkills(allocator, db, session_id) catch |err| blk: {
+    const session_skills = compact_message.fetchSessionSkills(allocator, db, session_id) catch |err| blk: {
         logger.warnFmt("[COMPACTION] fetchSessionSkills failed: {s}", .{@errorName(err)});
         break :blk &.{};
     };
@@ -202,7 +202,7 @@ pub fn maybeCompactMessagesNew(
         allocator.free(session_skills);
     }
 
-    const enriched_xml = compaction_context.enrichCompactionXml(
+    const enriched_xml = compact_message.enrichCompactionXml(
         allocator,
         compacted_xml,
         user_turns.items,
