@@ -49,14 +49,36 @@ test "shell.ShellOutput has all 9 fields the bash XML envelope uses" {
     try testing.expect(@hasField(T, "is_self"));
 }
 
-test "shell.execute_shell skeleton returns error.NotImplemented (placeholder)" {
-    // Task 1.1 — the skeleton is a stub. Subsequent tasks (1.2–1.7) replace
-    // this body with the real spawn pipeline. Until then, every call must
-    // surface error.NotImplemented so the test fails loudly if a future
-    // task forgets to remove the placeholder.
-    const result = shell.execute_shell(testing.allocator, std.testing.io, &.{"bash", "-c"}, .{
+test "shell.execute_shell runs bash happy path" {
+    // After Task 1.5 lands the spawn pipeline, the placeholder is gone.
+    // Sanity-check the wrapper: a trivial `true` should exit 0 with empty
+    // stdout.
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const out = try shell.execute_shell(testing.allocator, std.testing.io, &.{ "bash", "-c" }, .{
         .command = "true",
+        .cwd = "/tmp",
         .mandatory_timeout = 5,
     });
-    try testing.expectError(error.NotImplemented, result);
+    defer {
+        testing.allocator.free(out.command);
+        testing.allocator.free(out.stdout);
+        testing.allocator.free(out.stderr);
+    }
+    try testing.expectEqual(@as(i32, 0), out.exit_code);
+    try testing.expectEqualStrings("true", out.command);
+}
+
+test "shell.execute_shell enforces mandatory_timeout (returns MandatoryTimeoutMissing when null)" {
+    // Smoke check that the precondition guard at the top of
+    // shell.execute_shell is wired up. The plan locks this contract via
+    // bash_test.zig's existing MandatoryTimeoutMissing test (kept unchanged).
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    const out = shell.execute_shell(testing.allocator, std.testing.io, &.{ "bash", "-c" }, .{
+        .command = "sleep 60",
+        .cwd = "/tmp",
+        .mandatory_timeout = null,
+    });
+    try testing.expectError(error.MandatoryTimeoutMissing, out);
 }

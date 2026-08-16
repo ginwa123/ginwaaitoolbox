@@ -1085,6 +1085,7 @@ test "bash_tool: exit code is set even when force-killed" {
 // =========================================================================
 
 const BASH_SOURCE_PATH = "src/modules/agent/tools/bash.zig";
+const SHELL_SOURCE_PATH = "src/modules/agent/tools/shell.zig";
 
 fn readBashSource(allocator: std.mem.Allocator) ![]const u8 {
     const io = std.testing.io;
@@ -1096,18 +1097,41 @@ fn readBashSource(allocator: std.mem.Allocator) ![]const u8 {
     );
 }
 
+fn readShellSource(allocator: std.mem.Allocator) ![]const u8 {
+    const io = std.testing.io;
+    return std.Io.Dir.cwd().readFileAlloc(
+        io,
+        SHELL_SOURCE_PATH,
+        allocator,
+        .limited(1 << 20), // 1 MiB cap — shell.zig is ~50 KB
+    );
+}
+
+/// Concatenates bash + shell source so the static-contract grep-tests
+/// below can keep their original semantic ("does this string appear SOMEWHERE
+/// in the bash-shell surface?") without caring which file the implementation
+/// is in. After the 2026-08-14 pwsh-tool refactor, the spawn pipeline lives
+/// in shell.zig, but bash.zig still owns the tool definition + Windows guard.
+fn readBothSources(allocator: std.mem.Allocator) ![]u8 {
+    const bash_src = try readBashSource(allocator);
+    defer allocator.free(bash_src);
+    const shell_src = try readShellSource(allocator);
+    defer allocator.free(shell_src);
+    return std.mem.concat(allocator, u8, &.{ bash_src, shell_src });
+}
+
 test "bash: uses process-group kill (kill -pgid, not just child.kill)" {
     // Without process-group kill, subshells survive the timeout and
     // keep the pipe FDs open, hanging the reader threads forever.
     // The contract: `std.posix.kill(-child_pgid, .KILL)` must be used.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
+    const source = try readBothSources(testing.allocator);
     defer testing.allocator.free(source);
 
     if (std.mem.indexOf(u8, source, "std.posix.kill(-child_pgid, .KILL)") == null) {
         std.debug.print(
-            "!! bash.zig is missing std.posix.kill(-child_pgid, .KILL) — process-group kill removed !!\n",
+            "!! bash.zig OR shell.zig is missing std.posix.kill(-child_pgid, .KILL) — process-group kill removed !!\n",
             .{},
         );
         return error.ProcessGroupKillMissing;
@@ -1120,11 +1144,11 @@ test "bash: spawns with .pgid = 0 (so kill -pgid reaches all descendants)" {
     // bash itself, not its subshells.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
+    const source = try readBothSources(testing.allocator);
     defer testing.allocator.free(source);
 
     if (std.mem.indexOf(u8, source, ".pgid = 0") == null) {
-        std.debug.print("!! bash.zig is missing .pgid = 0 on spawn !!\n", .{});
+        std.debug.print("!! bash.zig OR shell.zig is missing .pgid = 0 on spawn !!\n", .{});
         return error.PgidZeroMissing;
     }
 }
@@ -1208,7 +1232,7 @@ test "bash: manually closes pipe FDs after grace-period expiry" {
     // hang forever waiting for pipe EOF that never arrives.
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
-    const source = try readBashSource(testing.allocator);
+    const source = try readBothSources(testing.allocator);
     defer testing.allocator.free(source);
 
     // Look for the pattern `child.stdout.?.close(io)` (or `|.close(io)`

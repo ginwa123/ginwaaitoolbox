@@ -178,29 +178,451 @@ pub fn status_to_term(status: c_int) std.process.Child.Term {
 }
 
 pub fn execute_shell(
-    _allocator: std.mem.Allocator,
-    _io: std.Io,
-    _argv_prefix: []const []const u8,
-    _input: ShellInput,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    argv_prefix: []const []const u8,
+    input: ShellInput,
 ) !ShellOutput {
-    // Touch every helper imported so the unused-import lint stays quiet
-    // while we incrementally fill in execute_shell. Each subsequent task
-    // removes the corresponding `_ = …;` line as it consumes the helper.
-    _ = builtin;
-    _ = selfkill;
-    _ = xmlEscape;
-    _ = NanoSleepTimespec;
-    _ = nanosleep;
-    _ = KILL_GRACE_PERIOD_NS;
-    _ = is_forbidden_command;
-    _ = encode_command_urls;
-    _ = wait_pid_bounded;
-    _ = status_to_term;
-    _ = _allocator;
-    _ = _io;
-    _ = _argv_prefix;
-    _ = _input;
-    return error.NotImplemented;
+    return run_shell_command(allocator, io, argv_prefix, input);
+}
+
+/// Run a shell command with the supplied argv-prefix (e.g. `&.{ "bash", "-c" }`
+/// or `&.{ "pwsh", "-NoProfile", "-NonInteractive", "-Command" }`). The user's
+/// `command` string is appended as the last argv element. This is the
+/// SHELL-NEUTRAL spawn pipeline — moved verbatim from bash.zig (Tasks
+/// 1.5–1.7 of the 2026-08-14-pwsh-tool plan). Background mode is split
+/// into a separate `spawn_background` helper for the nohup-vs-Start-Process
+/// divergence (D8 in the plan).
+pub fn run_shell_command(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    argv_prefix: []const []const u8,
+    input: ShellInput,
+) !ShellOutput {
+    // --- URL encoding if requested ---
+    const command = if (input.do_encoding)
+        try encode_command_urls(allocator, input.command)
+    else
+        try allocator.dupe(u8, input.command);
+    defer allocator.free(command);
+
+    // --- Forbidden pattern check ---
+    if (is_forbidden_command(command)) {
+        return error.CommandForbidden;
+    }
+
+    // --- Mandatory-timeout check (foreground only) ---
+    // The background path does not use the timeout (the process detaches
+    // and runs forever), so we skip the check there. But the foreground
+    // path MUST have an explicit deadline — the previous design defaulted
+    // to 30 s which silently masked runaway commands.
+    if (!input.background and input.mandatory_timeout == null) {
+        return error.MandatoryTimeoutMissing;
+    }
+    if (input.mandatory_timeout) |t| {
+        if (t == 0) return error.MandatoryTimeoutMissing;
+    }
+
+    // --- Self-kill protection check ---
+    const self_pid = selfkill.get_self_pid();
+    if (try selfkill.detect_self_kill(allocator, command, self_pid)) |warning| {
+        std.log.warn("Self-kill detected: {s}", .{warning});
+
+        const stderr_msg = try std.fmt.allocPrint(allocator, "\n=== SELF-KILL PROTECTION ===\n" ++
+            "Blocked command that would terminate the current process.\n" ++
+            "Reason: {s}\n" ++
+            "Your PID: {d}\n" ++
+            "===========================\n", .{ warning, self_pid });
+        errdefer allocator.free(stderr_msg);
+
+        const command_copy = try allocator.dupe(u8, command);
+        errdefer allocator.free(command_copy);
+
+        return ShellOutput{
+            .command = command_copy,
+            .stdout = "",
+            .stderr = stderr_msg,
+            .exit_code = 1,
+            .truncated = false,
+            .timeout = false,
+            .stdout_lines = 0,
+            .stderr_lines = 1,
+            .is_self = true,
+        };
+    }
+
+    // --- Background mode ---
+    if (input.background) {
+        return try spawn_background(allocator, io, argv_prefix, command);
+    }
+
+    // --- Foreground mode ---
+    // `input.max_output` defaults to 20 KiB in the schema (see schemas.zig),
+    // so the `orelse` fallback here is a defense-in-depth — it would only
+    // fire if someone constructs ShellInput programmatically without going
+    // through the JSON schema (e.g. tests, internal callers).
+    const max_output = input.max_output orelse 20 * 1024;
+    const max_lines = input.max_lines orelse 1000;
+    const timeout_sec = input.mandatory_timeout.?;
+
+    // Build the full argv: argv_prefix ++ [command]
+    var argv_buf: [16][]const u8 = undefined;
+    if (argv_prefix.len + 1 > argv_buf.len) {
+        return error.TooManyArgvPrefix;
+    }
+    @memcpy(argv_buf[0..argv_prefix.len], argv_prefix);
+    argv_buf[argv_prefix.len] = command;
+    const argv = argv_buf[0 .. argv_prefix.len + 1];
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = if (input.cwd) |cwd| .{ .path = cwd } else .inherit,
+        .stdin = if (input.stdin_data != null) .pipe else .close,
+        .stdout = .pipe,
+        .stderr = .pipe,
+        .pgid = 0,
+    });
+    const child_pgid: std.posix.pid_t = child.id.?;
+    errdefer {
+        _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        _ = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+        if (child.stdin) |stdin_pipe| stdin_pipe.close(io);
+    }
+
+    if (input.stdin_data) |data| {
+        if (child.stdin) |stdin| {
+            var write_buf: [1024]u8 = undefined;
+            var stdin_writer = std.Io.File.writer(stdin, io, &write_buf);
+            try stdin_writer.interface.writeAll(data);
+            stdin.close(io);
+            child.stdin = null;
+        }
+    }
+
+    const timeout_ns = @as(u64, timeout_sec) * std.time.ns_per_s;
+
+    var stdout_data: std.ArrayList(u8) = .empty;
+    var stderr_data: std.ArrayList(u8) = .empty;
+    defer {
+        stdout_data.deinit(allocator);
+        stderr_data.deinit(allocator);
+    }
+
+    var stdout_line_count: usize = 0;
+    var stderr_line_count: usize = 0;
+    var stdout_truncated = false;
+    var stderr_truncated = false;
+    var stdout_eof = std.atomic.Value(bool).init(false);
+    var stderr_eof = std.atomic.Value(bool).init(false);
+    var stdout_mutex: std.atomic.Mutex = .unlocked;
+    var stderr_mutex: std.atomic.Mutex = .unlocked;
+
+    const ReadContext = struct {
+        stream: std.Io.File,
+        io: std.Io,
+        buf: *[4096]u8,
+        data: *std.ArrayList(u8),
+        line_count: *usize,
+        truncated: *bool,
+        max_output: usize,
+        max_lines: usize,
+        eof_flag: *std.atomic.Value(bool),
+        mutex: *std.atomic.Mutex,
+        allocator: std.mem.Allocator,
+    };
+
+    const readLoopFn = struct {
+        fn run(ctx: ReadContext) void {
+            defer ctx.eof_flag.store(true, .release);
+            while (true) {
+                const n = std.Io.File.readStreaming(ctx.stream, ctx.io, &.{ctx.buf}) catch return;
+                if (n == 0) return;
+                for (ctx.buf[0..n]) |byte| {
+                    if (byte == '\n') ctx.line_count.* += 1;
+                }
+                if (!ctx.truncated.*) {
+                    while (!ctx.mutex.tryLock()) {
+                        std.atomic.spinLoopHint();
+                    }
+                    defer ctx.mutex.unlock();
+                    ctx.data.appendSlice(ctx.allocator, ctx.buf[0..n]) catch return;
+                    if (ctx.data.items.len >= ctx.max_output or ctx.line_count.* >= ctx.max_lines) {
+                        ctx.truncated.* = true;
+                        var trim_pos: usize = ctx.data.items.len;
+                        if (ctx.line_count.* >= ctx.max_lines) {
+                            var count: usize = 0;
+                            for (ctx.data.items, 0..) |b, i| {
+                                if (b == '\n') {
+                                    count += 1;
+                                    if (count == ctx.max_lines) {
+                                        trim_pos = i + 1;
+                                        break;
+                                    }
+                                }
+                            }
+                        } else if (ctx.data.items.len > ctx.max_output) {
+                            trim_pos = ctx.max_output;
+                        }
+                        if (ctx.data.items.len > trim_pos) {
+                            ctx.data.shrinkAndFree(ctx.allocator, trim_pos);
+                        }
+                    }
+                }
+            }
+        }
+    }.run;
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+
+    const stdout_ctx = ReadContext{
+        .stream = child.stdout.?,
+        .io = io,
+        .buf = &stdout_buf,
+        .data = &stdout_data,
+        .line_count = &stdout_line_count,
+        .truncated = &stdout_truncated,
+        .max_output = max_output,
+        .max_lines = max_lines,
+        .eof_flag = &stdout_eof,
+        .mutex = &stdout_mutex,
+        .allocator = allocator,
+    };
+    const stderr_ctx = ReadContext{
+        .stream = child.stderr.?,
+        .io = io,
+        .buf = &stderr_buf,
+        .data = &stderr_data,
+        .line_count = &stderr_line_count,
+        .truncated = &stderr_truncated,
+        .max_output = max_output,
+        .max_lines = max_lines,
+        .eof_flag = &stderr_eof,
+        .mutex = &stderr_mutex,
+        .allocator = allocator,
+    };
+
+    const stdout_thread = try std.Thread.spawn(.{}, readLoopFn, .{stdout_ctx});
+    const stderr_thread = try std.Thread.spawn(.{}, readLoopFn, .{stderr_ctx});
+    errdefer {
+        _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        _ = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+        stdout_thread.join();
+        stderr_thread.join();
+    }
+
+    var timeout_hit = false;
+    var child_term: ?std.process.Child.Term = null;
+
+    const deadline_ns = std.Io.Timestamp.now(io, .real).nanoseconds + @as(i64, @intCast(timeout_ns));
+    child_term = blk: {
+        while (true) {
+            if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
+                const wait_result = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+                break :blk switch (wait_result.outcome) {
+                    .reaped => status_to_term(wait_result.status),
+                    .no_child => .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => .{ .signal = .KILL },
+                };
+            }
+            if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
+                timeout_hit = true;
+                _ = std.posix.kill(-child_pgid, .KILL) catch {};
+                const wait_result = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+                break :blk switch (wait_result.outcome) {
+                    .reaped => status_to_term(wait_result.status),
+                    .no_child => .{ .exited = 0 },
+                    .grace_period_expired, .unexpected_error => .{ .signal = .KILL },
+                };
+            }
+            const ts = NanoSleepTimespec{
+                .sec = 0,
+                .nsec = 10 * std.time.ns_per_ms,
+            };
+            _ = nanosleep(&ts, null);
+        }
+    };
+
+    if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+    if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+
+    stdout_thread.join();
+    stderr_thread.join();
+    if (child_term == null) {
+        const wait_result = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        child_term = switch (wait_result.outcome) {
+            .reaped => status_to_term(wait_result.status),
+            .no_child => .{ .exited = 0 },
+            .grace_period_expired, .unexpected_error => .{ .signal = .KILL },
+        };
+    }
+
+    const exit_code: i32 = switch (child_term.?) {
+        .exited => |code| @as(i32, @intCast(code)),
+        .signal => |sig| -@as(i32, @intCast(@intFromEnum(sig))),
+        .stopped => |code| -@as(i32, @intCast(@intFromEnum(code))),
+        .unknown => -1,
+    };
+
+    const stdout_truncation_needed = stdout_data.items.len > max_output;
+    const stderr_truncation_needed = stderr_data.items.len > max_output;
+    const was_truncated = stdout_truncated or stderr_truncated;
+
+    const command_copy = try allocator.dupe(u8, command);
+    errdefer allocator.free(command_copy);
+
+    const stdout_copy = if (stdout_data.items.len == 0)
+        try allocator.dupe(u8, "No output produced.")
+    else if (stdout_truncation_needed)
+        try allocator.dupe(u8, stdout_data.items[0..max_output])
+    else
+        try allocator.dupe(u8, stdout_data.items);
+    errdefer allocator.free(stdout_copy);
+
+    const stderr_copy = if (stderr_data.items.len == 0)
+        try allocator.dupe(u8, "No errors.")
+    else if (stderr_truncation_needed)
+        try allocator.dupe(u8, stderr_data.items[0..max_output])
+    else
+        try allocator.dupe(u8, stderr_data.items);
+    errdefer allocator.free(stderr_copy);
+
+    return ShellOutput{
+        .command = command_copy,
+        .stdout = stdout_copy,
+        .stderr = stderr_copy,
+        .exit_code = exit_code,
+        .truncated = was_truncated,
+        .timeout = timeout_hit,
+        .stdout_lines = stdout_line_count,
+        .stderr_lines = stderr_line_count,
+    };
+}
+
+/// Background-mode spawn (the `nohup` bash idiom). Returns the
+/// structured ShellOutput with `command`, `stdout = "PID: X\nLog: …"`,
+/// `exit_code = 0`. The detached process keeps running; the caller is
+/// responsible for killing it later.
+///
+/// TODO (D8): PowerShell has no `nohup`. The follow-up PR replaces this
+/// with `Start-Process -NoNewWindow -RedirectStandardOutput` for pwsh.
+fn spawn_background(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    argv_prefix: []const []const u8,
+    command: []const u8,
+) !ShellOutput {
+    const ts: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000));
+    const log_path = try std.fmt.allocPrint(
+        allocator,
+        "/tmp/bg_{d}.log",
+        .{ts},
+    );
+    defer allocator.free(log_path);
+
+    const bg_command = try std.fmt.allocPrint(
+        allocator,
+        "nohup {s} > {s} 2>&1 & echo $!",
+        .{ command, log_path },
+    );
+    defer allocator.free(bg_command);
+
+    var argv_buf: [16][]const u8 = undefined;
+    if (argv_prefix.len + 1 > argv_buf.len) return error.TooManyArgvPrefix;
+    @memcpy(argv_buf[0..argv_prefix.len], argv_prefix);
+    argv_buf[argv_prefix.len] = bg_command;
+    const argv = argv_buf[0 .. argv_prefix.len + 1];
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = .inherit,
+        .stdin = .close,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    });
+
+    var pid_buf: [32]u8 = undefined;
+    const pid_len = std.Io.File.readStreaming(child.stdout.?, io, &.{&pid_buf}) catch 0;
+    const pid_str = std.mem.trimEnd(u8, pid_buf[0..pid_len], "\n\r ");
+
+    _ = child.wait(io) catch {};
+
+    const stdout_msg = try std.fmt.allocPrint(
+        allocator,
+        "PID: {s}\nLog: {s}",
+        .{ pid_str, log_path },
+    );
+    errdefer allocator.free(stdout_msg);
+
+    const stderr_msg = try allocator.dupe(u8, "No errors.");
+    errdefer allocator.free(stderr_msg);
+
+    const command_copy = if (command.len > 50) blk: {
+        const cmd = try allocator.alloc(u8, 53);
+        @memcpy(cmd[0..50], command[0..50]);
+        @memcpy(cmd[50..53], "...");
+        break :blk cmd;
+    } else try allocator.dupe(u8, command);
+    errdefer allocator.free(command_copy);
+
+    return ShellOutput{
+        .command = command_copy,
+        .stdout = stdout_msg,
+        .stderr = stderr_msg,
+        .exit_code = 0,
+        .truncated = false,
+        .timeout = false,
+        .stdout_lines = 0,
+        .stderr_lines = 0,
+    };
+}
+
+/// XML serialiser — same 9-tag envelope as `bash_result_to_string`.
+///
+/// Returned to the LLM as the inner content of the standard `<tool>`
+/// envelope (`wrapToolOutput` wraps it with `<data>` / `<error>` /
+/// `<parameters>` on the agentic-loop side).
+pub fn result_to_xml(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
+    return try std.fmt.allocPrint(allocator,
+        \\<command>{s}</command>
+        \\<stdout>{s}</stdout>
+        \\<stderr>{s}</stderr>
+        \\<exit_code>{d}</exit_code>
+        \\<truncated>{}</truncated>
+        \\<timeout>{}</timeout>
+        \\<stdout_lines>{d}</stdout_lines>
+        \\<stderr_lines>{d}</stderr_lines>
+        \\<is_self>{}</is_self>
+    , .{
+        result.command,
+        result.stdout,
+        result.stderr,
+        result.exit_code,
+        result.truncated,
+        result.timeout,
+        result.stdout_lines,
+        result.stderr_lines,
+        result.is_self,
+    });
+}
+
+/// Concatenates `argv_prefix` with `[command]` to form the full spawn
+/// argv. This is a tiny helper kept separate so callers can audit the
+/// prefix without scrolling through the spawn site. Tasks 1.5+ of the
+/// 2026-08-14-pwsh-tool plan.
+pub fn build_argv(
+    allocator: std.mem.Allocator,
+    argv_prefix: []const []const u8,
+    command: []const u8,
+) ![][]const u8 {
+    var list = try allocator.alloc([]const u8, argv_prefix.len + 1);
+    @memcpy(list[0..argv_prefix.len], argv_prefix);
+    list[argv_prefix.len] = command;
+    return list;
 }
 
 /// Detects forbidden command patterns that produce unbounded output.
