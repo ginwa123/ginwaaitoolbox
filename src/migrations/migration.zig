@@ -1715,6 +1715,78 @@ pub fn dropColumnIfExists(
     try db.exec(allocator, ddl, &.{});
 }
 
+/// Rename a column on a table if the old column exists and the new
+/// column does NOT exist. SQLite's `ALTER TABLE … RENAME COLUMN`
+/// requires SQLite >= 3.25; this project ships 3.53.3 so it's always
+/// available.
+///
+/// Probe pattern (same as `addColumnIfMissing` / `dropColumnIfExists`):
+///   1. If the OLD column doesn't exist → no-op (fresh-DB install
+///      that already declares the NEW column name, or a re-run after
+///      the rename succeeded).
+///   2. If the NEW column already exists → no-op (defensive against
+///      a partial-failure recovery scenario where someone manually
+///      renamed the column outside this migration).
+///   3. Otherwise issue the RENAME.
+///
+/// SQLite's RENAME automatically updates:
+///   - All references to the column in views, triggers, and FK
+///     constraints on OTHER tables pointing AT this table (verified
+///     via `pragma_table_info` on the referencing table before/after
+///     the RENAME — see `migration_075_test.zig` Test 4 + Test 9).
+///   - The internal index columns that reference this column. The
+///     index's NAME does NOT auto-update; the caller must handle
+///     index renames separately via `DROP INDEX IF EXISTS old_name;
+///     CREATE INDEX IF NOT EXISTS new_name ON table(new_name);`.
+pub fn renameColumnIfExists(
+    db: *SqliteBackend,
+    allocator: std.mem.Allocator,
+    table: []const u8,
+    old_column: []const u8,
+    new_column: []const u8,
+) !void {
+    // Probe: does the OLD column exist?
+    var old_buf: [256]u8 = undefined;
+    const old_check = std.fmt.bufPrint(
+        &old_buf,
+        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
+        .{ table, old_column },
+    ) catch return error.BufferTooSmall;
+    var q_old = try db.query(allocator, old_check, &.{});
+    defer q_old.deinit();
+    const old_row = (try q_old.next()) orelse {
+        // OLD column doesn't exist — no-op (fresh-DB already has
+        // the new name, or a re-run after the rename succeeded).
+        return;
+    };
+    // OLD column exists — free the row's values before the next probe.
+    old_row.deinit(allocator);
+
+    // Probe: does the NEW column already exist?
+    var new_buf: [256]u8 = undefined;
+    const new_check = std.fmt.bufPrint(
+        &new_buf,
+        "SELECT 1 FROM pragma_table_info('{s}') WHERE name = '{s}'",
+        .{ table, new_column },
+    ) catch return error.BufferTooSmall;
+    var q_new = try db.query(allocator, new_check, &.{});
+    defer q_new.deinit();
+    const new_row = (try q_new.next()) orelse {
+        // NEW column does NOT exist — proceed with the RENAME below.
+        // Fall through.
+        var ddl_buf: [256]u8 = undefined;
+        const ddl = std.fmt.bufPrint(
+            &ddl_buf,
+            "ALTER TABLE {s} RENAME COLUMN {s} TO {s}",
+            .{ table, old_column, new_column },
+        ) catch return error.BufferTooSmall;
+        try db.exec(allocator, ddl, &.{});
+        return;
+    };
+    // NEW column already exists — defensive no-op.
+    new_row.deinit(allocator);
+}
+
 /// All available migrations - add new migrations to this slice
 pub const allMigrations: []const Migration = &.{
     .{ .version = Migration001CreateLLMHistory.version, .name = Migration001CreateLLMHistory.name, .up = Migration001CreateLLMHistory.up },
@@ -1850,6 +1922,11 @@ pub const allMigrations: []const Migration = &.{
     // Task: task_1786629034327 ("new table session_activity").
     .{ .version = Migration073AddSessionActivity.version, .name = Migration073AddSessionActivity.name, .up = Migration073AddSessionActivity.up },
     .{ .version = Migration074AddLlmHistoryCacheTokenColumns.version, .name = Migration074AddLlmHistoryCacheTokenColumns.name, .up = Migration074AddLlmHistoryCacheTokenColumns.up },
+    // Migration 075 — renames 5 timestamp columns to use the `_nano` suffix
+    // (`logs.created_at` → `logs.created_at_nano`, etc.). Wire format preserved.
+    // Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md.
+    // Task: task_1786891244388_1.
+    .{ .version = Migration075RenameTimestampColumnsToNanoSuffix.version, .name = Migration075RenameTimestampColumnsToNanoSuffix.name, .up = Migration075RenameTimestampColumnsToNanoSuffix.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3021,6 +3098,133 @@ pub const Migration074AddLlmHistoryCacheTokenColumns = struct {
 
         // Anthropic cache READ breakdown (billed at ~0.1x input rate, but still tokens the model processed -- folded into `prompt_tokens` + `total_tokens` by Agent.parse_anthropic_stream_chunk). Default 0 for legacy rows + non-Anthropic profiles.
         try addColumnIfMissing(db, allocator, "llm_history", "cache_read_input_tokens", "cache_read_input_tokens INTEGER DEFAULT 0");
+    }
+};
+
+/// Migration 075 — Rename 5 timestamp columns to use the `_nano` suffix,
+/// making the column name self-document the stored unit (integer since
+/// Unix epoch). This is a pure renaming pass — the stored values, column
+/// types, and wire-format JSON field names are ALL preserved. SQLite's
+/// `ALTER TABLE … RENAME COLUMN` (>= 3.25) handles the rename atomically
+/// and auto-updates FK references; the only manual work is renaming the
+/// two indexes whose name explicitly contains the old column name
+/// (`idx_logs_created_at`, `idx_worker_last_activity`).
+///
+/// ## Why this migration exists
+///
+/// Today, the five columns have ambiguous names that don't document
+/// their precision:
+///
+/// | Table | Column | Actual precision |
+/// |---|---|---|
+/// | `logs` | `created_at` | unix **ms** (i64) |
+/// | `llm_history` | `created_at` | unix **ns** as TEXT (19 digits) |
+/// | `session_skills` | `loaded_at` | unix **s** (i64) |
+/// | `worker` | `last_activity` | unix **s** (i64) |
+/// | `workspace_item_tasks` | `last_human_touched_at` | unix **ms** (i64) |
+///
+/// Migration 059 v1 (commit b6177842) used
+/// `datetime(CAST(<microseconds> AS REAL) / 1000000, 'unixepoch', 'localtime')`
+/// to populate `created_iso` from `created_at` — but the column
+/// actually stored **nanoseconds**, so the trigger divided by 1e6
+/// (microseconds→seconds) instead of 1e9 (nanoseconds→seconds). The
+/// 1000× error produced rows that decoded to year 58,507. It took
+/// two migration fixes (Migrations 060 + 061) to repair the damage.
+///
+/// Renaming the columns so each carries the `_nano` suffix makes this
+/// kind of unit confusion impossible to repeat.
+///
+/// ## Naming choice — uniform `_nano` vs. mixed suffixes
+///
+/// The user requested `_nano` uniformly across all 5 columns. The
+/// suffix here means "integer stored since Unix epoch" — a uniform
+/// project convention, not a strict precision assertion. The actual
+/// precision (ms / s / ns) per column is documented in each
+/// column's doc-comment and the corresponding Zig model file
+/// (`models/log.zig`, `models/llm_history.zig`, `models/session_skill.zig`,
+/// `models/worker.zig`, `models/workspace_item_task.zig`).
+///
+/// ## Wire format preservation
+///
+/// The JSON field name on HTTP responses stays exactly the same:
+/// `created_at`, `loaded_at`, `last_activity`, `last_human_touched_at`.
+/// The Zig SELECT statements read from the new SQL column name and
+/// alias it back to the old wire name (e.g.
+/// `SELECT w.last_activity_nano AS last_activity FROM worker w`).
+///
+/// The Zig struct fields also keep the old name (`SessionInfo.created_at`,
+/// `WorkerInfo.last_activity`, `SkillInfo.loaded_at`,
+/// `WorkspaceItemTaskInfo.last_human_touched_at`,
+/// `LogInfo.created_at`) so the JSON serializers / SSE payload structs
+/// don't change.
+///
+/// ## Idempotency
+///
+/// `renameColumnIfExists` probes `pragma_table_info` first — if the
+/// OLD column doesn't exist (fresh-DB install that already declares
+/// the NEW column, or a re-run after the rename succeeded), the
+/// helper returns silently. This matches the Migration 052 + 054
+/// + 072 `dropColumnIfExists` pattern.
+///
+/// ## Index renaming
+///
+/// `idx_logs_created_at` and `idx_worker_last_activity` have the OLD
+/// column name in their index name — rename them via
+/// `DROP INDEX IF EXISTS old; CREATE INDEX IF NOT EXISTS new`. The
+/// other two indexes that reference the renamed columns
+/// (`idx_llm_history_session_created`, `idx_llm_history_created_session`)
+/// use a generic `_created` suffix and are left as-is — SQLite
+/// updates the index's INTERNAL column reference during the RENAME,
+/// but the index's NAME stays unchanged.
+///
+/// Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md
+/// Task: task_1786891244388_1.
+pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
+    pub const version: u32 = 75;
+    pub const name = "rename_timestamp_columns_to_nano_suffix";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Wrap in BEGIN..COMMIT so the 5 renames + 2 index swaps are
+        // atomic. A crash mid-migration would otherwise leave the DB
+        // with some columns renamed and others not, breaking every
+        // SQL site that targets the old names. SQLite auto-commits
+        // each statement otherwise.
+        try db.exec(allocator, "BEGIN", &.{});
+        errdefer {
+            // Best-effort rollback on any error below.
+            db.exec(allocator, "ROLLBACK", &.{}) catch {};
+        }
+
+        // 5 column renames — order doesn't matter logically, but
+        // keep the order alphabetical by table for diff readability.
+        try renameColumnIfExists(db, allocator, "llm_history", "created_at", "created_at_nano");
+        try renameColumnIfExists(db, allocator, "logs", "created_at", "created_at_nano");
+        try renameColumnIfExists(db, allocator, "session_skills", "loaded_at", "loaded_at_nano");
+        try renameColumnIfExists(db, allocator, "worker", "last_activity", "last_activity_nano");
+        try renameColumnIfExists(db, allocator, "workspace_item_tasks", "last_human_touched_at", "last_human_touched_at_nano");
+
+        // 2 index renames — SQLite doesn't have `ALTER INDEX … RENAME
+        // TO …`, and the index's auto-generated name doesn't auto-
+        // update on the column rename. DROP + CREATE under the new
+        // name. The `IF NOT EXISTS` on the CREATE is defensive
+        // (after a re-run, the new index already exists).
+        try db.exec(allocator, "DROP INDEX IF EXISTS idx_logs_created_at", &.{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_logs_created_at_nano ON logs(created_at_nano DESC)",
+            &.{});
+
+        try db.exec(allocator, "DROP INDEX IF EXISTS idx_worker_last_activity", &.{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_worker_last_activity_nano ON worker(last_activity_nano DESC)",
+            &.{});
+
+        // Commit the transaction. After this, Migration 075 is
+        // "done" and the new schema is durable.
+        try db.exec(allocator, "COMMIT", &[_][]const u8{});
+
+        // ANALYZE so the query planner sees the renamed indexes
+        // (mirrors Migration 041/042/043/051 pattern).
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
     }
 };
 
