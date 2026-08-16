@@ -545,9 +545,27 @@ jobs:
             Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
           }
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
-          Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2Loader.h") (Join-Path $webview2Dst "WebView2Loader.h")
-          Copy-Item -Force (Join-Path $webview2Src "runtimes\win-x64\native\WebView2Loader.dll") (Join-Path $webview2Dst "WebView2Loader.dll")
-          if (Test-Path (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib")) {
+          # WebView2Loader.h was renamed/removed in 1.0.2651.64 — the
+          # loader inline is now consolidated inside WebView2.h
+          # itself. The .dll + .lib still exist for runtime + static
+          # link. The destination WebView2Loader.h is preserved as a
+          # thin shim that #includes "WebView2.h" so any consumer
+          # that references it (legacy callers, docs, comment
+          # breadcrumbs in CI scripts) keeps compiling.
+          "#pragma once`r`n#include `"WebView2.h`"" | Out-File -FilePath (Join-Path $webview2Dst "WebView2Loader.h") -Encoding ASCII
+          # 1.0.2651.64 ships WebView2Loader.dll under both
+          # build/native/x64/ AND runtimes/win-x64/native/. They
+          # hash-equal (same upstream payload); pick either.
+          # Use build/native/x64/ as the primary; fall back to
+          # runtimes/ if not present (older .nupkg revs).
+          $wv2DllSource = Join-Path $webview2Src "build\native\x64\WebView2Loader.dll"
+          if (-not (Test-Path $wv2DllSource)) {
+            $wv2DllSource = Join-Path $webview2Src "runtimes\win-x64\native\WebView2Loader.dll"
+          }
+          Copy-Item -Force $wv2DllSource (Join-Path $webview2Dst "WebView2Loader.dll")
+          if (Test-Path (Join-Path $webview2Src "build\native\x64\WebView2Loader.dll.lib")) {
+            Copy-Item -Force (Join-Path $webview2Src "build\native\x64\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
+          } elseif (Test-Path (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib")) {
             Copy-Item -Force (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
           } elseif (Test-Path (Join-Path $webview2Src "build\native\WebView2Loader.dll.lib")) {
             Copy-Item -Force (Join-Path $webview2Src "build\native\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
