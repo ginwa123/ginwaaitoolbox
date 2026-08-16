@@ -772,12 +772,40 @@ jobs:
             v2-zig-${{ runner.os }}-${{ matrix.target.zig }}-
 
       - name: Run main test suite
+        if: runner.os != 'Windows'
+        run: zig build test --summary all
+
+      - name: Run main test suite (Windows)
+        if: runner.os == 'Windows'
+        # The test build invokes Zig's `addSystemCommand` to spawn
+        # `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`
+        # and `bash src/modules/custom_http_client/scripts/build-vendor-curl.sh`
+        # for the vendored sqlite3 / curl amalgamation fetches.
+        # On Windows the runner's powershell.exe process does NOT
+        # inherit git-bash.exe on PATH (CI run 31945259075 reproduced
+        # `error: failed to spawn and capture stdio from bash:
+        # FileNotFound` against `bash .../fetch-vendor-sqlite3.sh`).
+        # Running the step through `shell: bash` forces the runner to
+        # pre-prepend `C:\Program Files\Git\bin` to PATH, so Zig's
+        # child-spawn of bash resolves correctly.
+        shell: bash
         run: zig build test --summary all
 
       - name: Run AI workflow TUI tests
+        if: runner.os != 'Windows'
+        run: zig build test:ai_workflow:tui --summary all
+
+      - name: Run AI workflow TUI tests (Windows)
+        if: runner.os == 'Windows'
+        # Same bash-on-PATH issue as `Run main test suite (Windows)`
+        # — use `shell: bash` so addSystemCommand('bash', ...) can
+        # spawn the helper scripts in the build.zig system-deps
+        # probe.
+        shell: bash
         run: zig build test:ai_workflow:tui --summary all
 
       - name: Build nalar + nalar-desktop binaries
+        if: runner.os != 'Windows'
         # The deliverable. Runs on both Linux and macOS cells (each builds
         # its native platform's ELF/Mach-O via `zig build nalar-desktop`):
         #   install nalar         → zig-out/bin/nalar
@@ -785,6 +813,13 @@ jobs:
         #   install nalar-desktop → zig-out/bin/nalar-desktop
         #     compile exe nalar-desktop → ~34 MB native binary w/ embedded webapp
         # Both are needed by scripts/install-nalar-desktop.sh.
+        run: zig build nalar-desktop --summary all
+
+      - name: Build nalar + nalar-desktop binaries (Windows)
+        if: runner.os == 'Windows'
+        # Same bash-on-PATH issue as the test steps. Use bash shell so
+        # addSystemCommand('bash', ...) can spawn the helper scripts.
+        shell: bash
         run: zig build nalar-desktop --summary all
 
       - name: Verify desktop + service binaries (Linux)
@@ -884,7 +919,35 @@ jobs:
           echo "→ smoke test: using $NALAR_BIN"
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
+      - name: "Smoke test: desktop binary (Windows)"
+        if: runner.os == 'Windows'
+        # On Windows the smoke test still uses bash (the timeout tool
+        # + grep come from git-bash). The actual `nalar-desktop.exe`
+        # binary is invoked via `cmd /c` inside scripts/ci-smoke-test.sh
+        # when needed — that's not relevant here. This step is just
+        # the binary-smoke-test path:
+        #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:' log line.
+        shell: bash
+        run: |
+          set -u
+          DESKTOP_BIN="./zig-out/bin/nalar-desktop.exe"
+          if [[ ! -x "$DESKTOP_BIN" ]]; then
+            echo "✗ smoke test: $DESKTOP_BIN missing" >&2
+            exit 1
+          fi
+          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1
+          rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
+            cat /tmp/desktop-smoke.log
+            exit 1
+          fi
+          grep -q "smoke:" /tmp/desktop-smoke.log \
+            || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
+          echo "✓ nalar-desktop.exe --smoke-test passed"
+
       - name: "Smoke test: desktop binary"
+        if: runner.os != 'Windows'
         # --smoke-test (wired in commit 4644101c) extracts the embedded webapp
         # assets to a temp dir, logs the asset count, and exits 0 — without
         # calling gtk_init() or opening a window. Perfect headless smoke
