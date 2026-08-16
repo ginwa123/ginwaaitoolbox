@@ -430,6 +430,25 @@ jobs:
             Write-Warning "cl.exe not found on PATH - MSVC env did not carry over from the previous step. Falling back to per-job vcvars64.bat sourcing."
           }
 
+          # Pin the host triplet to x64-windows BEFORE the install.
+          # Without this, vcpkg auto-detects `arm64-windows` as the
+          # host on this self-hosted runner (the OS reports ARM64)
+          # and tries to upgrade its own host helpers
+          # (vcpkg-cmake:arm64-windows, vcpkg-cmake-config:arm64-windows,
+          # etc.) which requires an arm64-on-arm64 MSVC toolchain.
+          # The bootstrapper-installed MSVC Build Tools only ship
+          # cross-toolchains (arm64_amd64, arm64_x86) — the
+          # build-the-helpers step needs a NATIVE arm64 toolchain
+          # that we did not install, so vcpkg errors out with
+          # "Unable to find a valid toolchain for requested target
+          # architecture arm64." (CI run 31937480700 reproduced
+          # this end-to-end). Setting VCPKG_DEFAULT_HOST_TRIPLET
+          # to x64-windows sidesteps the host-helper upgrade:
+          # vcpkg uses the existing x64-windows helpers already
+          # cached in C:\vcpkg\installed\.
+          $env:VCPKG_DEFAULT_HOST_TRIPLET = "x64-windows"
+          Write-Host ("vcpkg host triplet pinned to " + $env:VCPKG_DEFAULT_HOST_TRIPLET)
+
           # Install all 4 ports in a SINGLE vcpkg invocation
           # (`vcpkg install port1:triplet port2:triplet ... --recurse`).
           # Running them in parallel via 4× Start-Job is incompatible
