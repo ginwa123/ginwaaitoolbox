@@ -51,6 +51,10 @@ test {
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");
 
+    // Shared shell core + pwsh tool tests (Task 1 + 3 of 2026-08-14-pwsh-tool.md)
+    _ = @import("tools/shell_test.zig");
+    _ = @import("tools/pwsh_test.zig");
+
     // Search tool edge cases (validation + behavioral + static-contract)
     _ = @import("tools/search_test.zig");
 
