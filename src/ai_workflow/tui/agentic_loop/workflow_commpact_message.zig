@@ -272,7 +272,7 @@ pub fn compactMessageInMemoryNew(
             .response_content = summary_content,
             .reasoning_content = null,
             .role = agent.Role.user.to_str(),
-            .finish_reason = "stop",
+            .finish_reason = agent.FinishReason.null.to_str(),
             .tool_calls_json = "",
             .tool_call_id = null,
             .tool_name = "",
