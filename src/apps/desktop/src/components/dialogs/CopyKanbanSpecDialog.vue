@@ -35,7 +35,7 @@
     (Chunk 4, Task 4.1)
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 

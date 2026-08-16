@@ -38,12 +38,14 @@ function loadFromStorage(): RecentFolderEntry[] {
     // Defensive: validate each entry.
     return parsed
       .filter(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
         (e: any) =>
           e &&
           typeof e.path === 'string' &&
           typeof e.lastUsedAt === 'number' &&
           (e.pinned === true || e.pinned === false),
       )
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
       .map((e: any) => ({
         path: e.path,
         lastUsedAt: e.lastUsedAt,

@@ -50,6 +50,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used inside a `<script>` tag in a template literal; vue-eslint-parser doesn't see it.
 import { marked } from 'marked'
 
 export interface PreviewArgs {
@@ -76,6 +77,7 @@ const props = withDefaults(
   { variant: 'side' },
 )
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used in the template below; @typescript-eslint doesn't see <template> refs.
 const isInline = computed(() => props.variant === 'inline')
 
 // ─── Iframe ref + auto-resize message handling ──────────────────────
@@ -142,7 +144,7 @@ onUnmounted(() => {
 // positive caused by the literal's content matching oxlint's heuristic.
 // oxlint-disable-next-line -- not a real syntax error
 // eslint-disable-next-line -- not a real syntax error
-const AUTO_RESIZE_SCRIPT = `<script>(function(){
+const AUTO_RESIZE_SCRIPT = `<script lang="ts">(function(){
 const REPORT_SOURCE = 'show-preview-auto-resize';
 function report(){
   try {
@@ -155,6 +157,7 @@ function report(){
       body ? body.offsetHeight : 0
     );
     parent.postMessage({ source: REPORT_SOURCE, height: h }, '*');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the <script> string is parsed by the browser, not by ESLint.
   } catch(e) {}
 }
 function init(){
@@ -164,6 +167,7 @@ function init(){
   if (document.body && typeof MutationObserver !== 'undefined') {
     try {
       new MutationObserver(report).observe(document.body, { childList: true, subtree: true });
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the <script> string is parsed by the browser, not by ESLint.
     } catch(e) {}
   }
 }

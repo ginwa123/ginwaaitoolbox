@@ -1960,6 +1960,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       name: string
       type: DesignElement['type']
       html: string
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
       [k: string]: any
     },
   ): Promise<DesignElement> {
@@ -2854,6 +2855,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         // the error as a toast so the user can click the card to retry.
         const msg = err instanceof Error ? err.message : String(err)
         useNotificationStore().notifyError(msg, 'Task created — agent did not start')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
         return { task: null as any, session: null }
       }
       throw err

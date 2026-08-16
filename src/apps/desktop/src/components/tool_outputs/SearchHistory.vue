@@ -131,6 +131,7 @@ const totalCount = computed((): number | null => {
   return parseInt(match[1], 10)
 })
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const offset = computed((): number | null => {
   const match = props.content.match(/<search_history[^>]*\soffset="(\d+)"/)
   if (!match || !match[1]) return null

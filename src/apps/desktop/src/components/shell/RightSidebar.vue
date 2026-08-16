@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
 import type { FolderEntry } from '../../api'

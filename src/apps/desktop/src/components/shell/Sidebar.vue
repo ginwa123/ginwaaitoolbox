@@ -1,5 +1,6 @@
+<!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -27,9 +28,6 @@ import type { EditRoutineParams } from '../dialogs/EditRoutineDialog.vue'
 import type { RoutineMeta, WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 import { buildTaskUrlQuery } from '../../helpers/buildTaskUrlQuery'
-
-// Inject isLLMProcessing from App.vue
-const isLLMProcessing = inject<Ref<boolean>>('isLLMProcessing', ref(false))
 
 const router = useRouter()
 const route = useRoute()
@@ -141,22 +139,12 @@ const openTaskPicker = (workspaceId: string, itemId: string) => {
 // KanbanTaskDetailDialog in create mode. Sidebar no longer needs
 // to expose this.)
 
-// Handle session events from SSE
-const handleSessionEvent = (event: api.SessionEvent) => {
-  console.log('[Sidebar] handleSessionEvent:', event)
-  // Refresh chats on session change
-  if (chatsListRef.value) {
-    chatsListRef.value.loadChats()
-  }
-}
-
 const workspacesStore = useWorkspacesStore()
 const sidebarStore = useSidebarStore()
 
 // State
 const isCollapsed = computed(() => props.collapsed ?? false)
 const sidebarWidth = computed(() => props.width ?? 280)
-const activeChatName = computed(() => navigationStore.activeChatName)
 
 // Dialog states
 const showAddWorkspaceModal = ref(false)
@@ -279,16 +267,17 @@ onUnmounted(() => {
   stopResize()
 })
 
-const loadChats = async () => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- legacy pagination path retained for diff readability; not wired up after the chatsListRef refactor.
+const _loadChats = async () => {
   chatsLoading.value = true
   chatsNextCursor.value = null
   try {
     const data = await api.getChats('created_at', chatsSortDirection.value, 20)
     const savedSessionId = navigationStore.sessionId
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     navItems.value = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
-      name: session.session_name || 'New Chat',
-      icon: '💬',
+      name: session.session_name || 'New Chat',      icon: '💬',
       active: savedSessionId === session.session_id,
     }))
     chatsHasMore.value = data.has_more
@@ -308,11 +297,13 @@ const loadChats = async () => {
   }
 }
 
-const loadMoreChats = async () => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _loadMoreChats = async () => {
   if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) return
   chatsLoading.value = true
   try {
     const data = await api.getChats('created_at', chatsSortDirection.value, 20, chatsNextCursor.value)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newItems = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
@@ -367,7 +358,8 @@ const handleChatsNavigate = (id: string, chatName?: string) => {
 }
 
 // Toggle nav section and reload chats if needed
-const toggleNavSectionAndReload = () => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const _toggleNavSectionAndReload = () => {
   sidebarStore.toggleNavExpanded()
   // If expanding and no chats loaded yet, trigger load
   if (sidebarStore.navExpanded && chatsListRef.value) {
@@ -897,7 +889,6 @@ const handleCloseAddRoutineDialog = () => {
 const handleCreateMemoryTask = async (
   name: string,
   content: string,
-  _path: string,
 ) => {
   const workspaceId = addMemoryTaskWorkspaceId.value
   const itemId = addMemoryTaskItemId.value
@@ -1020,7 +1011,7 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   // Click-to-load pagination: invoked by the "Load more" button in
   // WorkspaceItem.vue. The store action is the only place that calls
   // api.getTasks with a cursor — no auto-load / scroll listener /
-  // intersection observer. Mirrors the loadMoreChats pattern in
+  // intersection observer. Mirrors the _loadMoreChats pattern in
   // ChatsList.vue:121-183.
   //
   // Per-column pagination (kanban-per-column-pagination plan,

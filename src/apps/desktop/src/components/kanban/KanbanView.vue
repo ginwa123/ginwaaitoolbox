@@ -61,7 +61,6 @@ import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
-import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
 import { useRoute, useRouter } from 'vue-router'
 import type { PreviewFile } from '../file/FilePreview.vue'
@@ -567,7 +566,8 @@ const handleColumnSortChange = (
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
-const handleAddColumn = () => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleAddColumn = () => {
   emit('addColumn')
 }
 

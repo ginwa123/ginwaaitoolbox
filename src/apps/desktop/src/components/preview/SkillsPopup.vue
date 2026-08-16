@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { SkillInfo } from '../../api'
 
-const props = defineProps<{
+defineProps<{
   show: boolean
   skills: SkillInfo[]
   sessionCwd?: string

@@ -795,10 +795,6 @@ watch(
   },
 )
 
-const handleHtmlChanged = (html: string): void => {
-  emit('htmlChanged', html)
-}
-
 // ─── Delete (Delete/Backspace key on the selected element) ──────────────
 //
 // We don't bind window keydown here (the parent DesignView owns

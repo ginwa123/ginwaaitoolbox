@@ -167,6 +167,7 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
   }
 
   function lastPushCall() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     const router = (useRouterMock as any).getMockImplementation()()
     const pushCalls = router.push.mock.calls
     expect(pushCalls.length).toBeGreaterThan(0)

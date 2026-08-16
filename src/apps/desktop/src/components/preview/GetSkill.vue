@@ -54,14 +54,6 @@ const hasAvailableSkills = computed(() => availableSkills.value.length > 0)
 // Status indicator
 const statusIndicator = computed(() => isLoaded.value ? '✓' : '✗')
 
-// Content preview (first line or truncated)
-const contentPreview = computed(() => {
-  const content = skillContent.value
-  if (!content) return ''
-  const firstLine = content.split('\n')[0] ?? ''
-  return firstLine.length > 80 ? firstLine.slice(0, 80) + '...' : firstLine
-})
-
 const toggle = () => {
   if (!isLoaded.value || errorMessage.value || hasAvailableSkills.value || skillContent.value) {
     isExpanded.value = !isExpanded.value

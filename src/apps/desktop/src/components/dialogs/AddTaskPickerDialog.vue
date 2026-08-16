@@ -8,7 +8,7 @@
 // AddTaskDialog.vue:44-143 so the visual language is consistent
 // with every other dialog in the app.
 
-const props = defineProps<{
+defineProps<{
   show: boolean
   projectName?: string
 }>()

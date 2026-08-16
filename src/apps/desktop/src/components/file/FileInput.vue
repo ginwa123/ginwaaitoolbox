@@ -112,16 +112,6 @@ const isImageFile = (file: File): boolean => {
   return file.type.startsWith('image/')
 }
 
-// Convert File to base64 data URL
-const fileToBase64 = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(reader.result as string)
-    reader.onerror = reject
-    reader.readAsDataURL(file)
-  })
-}
-
 // Send message with files converted to base64
 const sendMessageWithFiles = async () => {
   if (!inputText.value.trim() && previewFiles.value.length === 0) return
@@ -311,7 +301,6 @@ onBeforeUnmount(() => {
 
 const queuedMessagesList = computed(() => props.queuedMessages ?? [])
 const hasQueuedMessages = computed(() => queuedMessagesList.value.length > 0)
-const isReviewMode = computed(() => props.reviewMode ?? false)
 
 // Toggle queue panel
 const showQueuePanel = ref(false)

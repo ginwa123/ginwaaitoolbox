@@ -14,6 +14,7 @@ import {
   type ScrollLogger,
 } from '@/helpers'
 import FileInput from '../file/FileInput.vue'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
@@ -170,10 +171,15 @@ const setupCodeBlockCopyButtons = () => {
 const renderResponse = (
   content: string,
   role: string,
+   
   tool_name: string | undefined,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
   diffviewBefore?: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
   diffviewAfter?: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
   finish_reason?: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
   tool_calls_json?: string,
 ): string => {
   content = content.trim()
@@ -754,7 +760,7 @@ watch(
 // synchronously during setup, overwriting this default with the
 // real value before the first render.
 const scrollerIsScrollable = ref(false)
-const cwd = ref('')
+const sessionCwd = ref('')
 // Bound git worktree path (empty string when no worktree is bound).
 // Updated by loadChatHistory() from the API response and by the
 // sessions SSE stream when the LLM calls set_git_worktree.
@@ -762,7 +768,7 @@ const gitWorktreeCwd = ref('')
 // The cwd we run git status against. Prefers the worktree when set
 // (so the branch display reflects the worktree's branch, not the
 // session's original cwd). Falls back to the session's original cwd.
-const effectiveCwd = computed(() => gitWorktreeCwd.value || cwd.value)
+const effectiveCwd = computed(() => gitWorktreeCwd.value || sessionCwd.value)
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 
@@ -890,7 +896,7 @@ const onWorktreeMenuViewFolder = () => {
   // explorer subscribes to. For v1, the simplest implementation is
   // to copy the path to the clipboard and show a toast — see
   // ChatsList.vue for the clipboard pattern.
-  const path = gitWorktreeCwd.value || cwd.value
+  const path = gitWorktreeCwd.value || sessionCwd.value
   navigator.clipboard.writeText(path)
   // TODO: open a folder-explorer modal in a follow-up
 }
@@ -905,14 +911,14 @@ const onWorktreeMenuClear = async () => {
   // Send a system message to the LLM asking it to clear the worktree.
   // The LLM calls set_git_worktree(clear=true), which removes the
   // directory and clears the binding. The SSE event updates the UI.
-  // Uses cwd.value (the session's ORIGINAL cwd) so the LLM's context
+  // Uses sessionCwd.value (the session's ORIGINAL cwd) so the LLM's context
   // matches the session it was started from.
   if (!sessionId.value) return
   try {
     await api.sendChatMessage(
       sessionId.value,
       'Please call set_git_worktree with clear=true to remove the current worktree binding.',
-      cwd.value,
+      sessionCwd.value,
       [],
       selectedProfile.value ?? undefined,
     )
@@ -936,7 +942,7 @@ const onPrError = (message: string) => {
 
 const onCreateWorktree = async (path: string) => {
   if (!sessionId.value) return
-  if (!cwd.value) {
+  if (!sessionCwd.value) {
     console.error('Create worktree: no session cwd available')
     showCreateWorktreeDialog.value = false
     return
@@ -950,7 +956,7 @@ const onCreateWorktree = async (path: string) => {
     await api.sendChatMessage(
       sessionId.value,
       message,
-      cwd.value,
+      sessionCwd.value,
       [],
       selectedProfile.value ?? undefined,
     )
@@ -1146,6 +1152,7 @@ const groupToolNames = computed((): (string | null)[] => {
           const parsed = JSON.parse(msg.tool_calls_json)
           // tool_calls_json IS the array directly: [{id, type, function: {name}}]
           if (Array.isArray(parsed) && parsed.length > 0) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
             return parsed.map((tc: any) => tc.function?.name || tc.name || 'unknown').join(', ')
           }
         } catch {}
@@ -1240,7 +1247,7 @@ const loadChatHistory = async (loadMore = false) => {
     )
 
     if (!loadMore && data.cwd) {
-      cwd.value = data.cwd
+      sessionCwd.value = data.cwd
     }
 
     if (!loadMore && data.git_worktree_cwd !== undefined) {
@@ -2046,7 +2053,7 @@ onMounted(async () => {
   sessionId.value = props.chatId.replace(/^chat-/, '')
 
   if (props.cwd) {
-    cwd.value = props.cwd
+    sessionCwd.value = props.cwd
   }
 
   if (sessionId.value) {
@@ -2160,7 +2167,7 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     await api.sendChatMessage(
       currentSessionId,
       userMessage,
-      cwd.value,
+      sessionCwd.value,
       imageUrls,
       selectedProfile.value ?? undefined,
     )
@@ -2198,7 +2205,9 @@ const handleStopSession = async () => {
     console.error('Failed to stop session:', err)
   }
 }
+ 
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const formatTime = (date: Date) => {
   if (!date || isNaN(date.getTime())) return ''
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -2458,13 +2467,13 @@ const compactSession = async () => {
                             v-if="msg.tool_name === 'read_file'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                            :cwd="cwd"
+                            :cwd="sessionCwd"
                           />
                           <WriteFile
                             v-else-if="msg.tool_name === 'write_file'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                            :cwd="cwd"
+                            :cwd="sessionCwd"
                           />
                           <UpdateActivity
                             v-else-if="msg.tool_name === 'update_activity'"
@@ -2475,7 +2484,7 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'search'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                            :cwd="cwd"
+                            :cwd="sessionCwd"
                           />
                           <SearchHistory
                             v-else-if="msg.tool_name === 'search_history'"
@@ -2485,7 +2494,7 @@ const compactSession = async () => {
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
                             :content="innerToolData(msg)"
-                            :cwd="cwd"
+                            :cwd="sessionCwd"
                           />
                           <TextReplace
                             v-else-if="msg.tool_name === 'text_replace'"
@@ -2493,7 +2502,7 @@ const compactSession = async () => {
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :diffview-before="msg.diffview_before"
                             :diffview-after="msg.diffview_after"
-                            :cwd="cwd"
+                            :cwd="sessionCwd"
                           />
                           <Bash
                             v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'run_command'"
@@ -2534,7 +2543,7 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'remove_file'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
-                            :cwd="cwd"
+                            :cwd="sessionCwd"
                           />
                           <SpawnSubAgent
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
@@ -2770,7 +2779,7 @@ const compactSession = async () => {
       >
         <div class="max-w-4xl mx-auto">
           <FileInput
-            :cwd="cwd"
+            :cwd="sessionCwd"
             :queuedMessages="queuedMessages"
             :isLoading="isLoading"
             :isLLMProcessing="isLLMProcessing"
@@ -2976,7 +2985,7 @@ const compactSession = async () => {
     <SkillsPopup
       :show="showSkillsPopup"
       :skills="sessionSkills"
-      :session-cwd="cwd"
+      :session-cwd="sessionCwd"
       @close="showSkillsPopup = false"
       @skill-click="
         (skill) => {

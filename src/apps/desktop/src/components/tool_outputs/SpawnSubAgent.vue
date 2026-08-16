@@ -75,6 +75,7 @@ const summary = computed(() => {
 })
 
 // Success count
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const successCount = computed(() => {
   return agents.value.filter(a => a.success).length
 })

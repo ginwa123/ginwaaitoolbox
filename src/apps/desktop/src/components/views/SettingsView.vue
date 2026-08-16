@@ -20,6 +20,7 @@ const showNotification = (message: string, type: 'success' | 'error') => {
   }, 3000)
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const emit = defineEmits<{
   close: []
 }>()

@@ -322,21 +322,6 @@ const addImageFile = async (file: File) => {
   return
 }
 
-const insertMarkdown = (insertText: string) => {
-  if (textareaRef.value) {
-    const pos = textareaRef.value.selectionStart ?? text.value.length
-    text.value = text.value.slice(0, pos) + insertText + text.value.slice(pos)
-    nextTick(() => {
-      if (!textareaRef.value) return
-      const newPos = pos + insertText.length
-      textareaRef.value.setSelectionRange(newPos, newPos)
-      textareaRef.value.focus()
-    })
-  } else {
-    text.value += insertText
-  }
-}
-
 const handlePaste = async (event: ClipboardEvent) => {
   const items = event.clipboardData?.items
   let pastedImageCount = 0
@@ -430,8 +415,6 @@ const handlePreviewUpdate = (newFiles: PreviewFile[]) => {
 }
 
 // ─── Mount: re-hydrate previewFiles from existing modelValue ───────────
-
-const ATTACHMENT_URL_PREFIX = '/api/workspaces/tasks/'
 
 // Decode a `data:<mime>;base64,<payload>` URL into a File. Avoids
 // `fetch(dataUrl)` because jsdom does not implement data: URL fetch.

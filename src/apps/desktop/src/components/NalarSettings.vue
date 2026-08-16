@@ -258,19 +258,6 @@ const subAgentErrors = ref<{ name?: string; model?: string; base_url?: string; a
 const mcpServerErrors = ref<{ name?: string; url?: string }>({})
 
 // ─── Section event handlers ──────────────────────────────────────────────
-function emptyDefaults(): DefaultsConfig {
-  return {
-    api_endpoint: '', api_key: '', model: '', url_style: 'openai',
-    temperature: 0.7, max_tokens: '', system_prompt: '', notify_on_complete: false,
-    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
-    // null = cascade wildcard (fall through to per-profile → built-in).
-    max_capacity_token_model: null,
-    compaction_threshold_percent: null,
-    // Workflow retry delay — plan 2026-07-15-retry-delay.
-    retry_delay_ms: 0,
-  }
-}
-
 function startAddProfile() {
   profileModal.value = {
     mode: 'add',

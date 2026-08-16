@@ -225,8 +225,8 @@ describe('SubAgentPeekPanel', () => {
   })
 
   it('reuses the SpawnSubAgent tool output component recursively for nested spawn_sub_agent calls', async () => {
-    // A sub-agent inside a sub-agent — the same component renders
-    // it (and the user can recursively open another peek panel).
+    // A sub-agent inside a sub-agent: the same component renders
+    // it and the user can recursively open another peek panel.
     const toolEnvelope =
       '<tool><name>spawn_sub_agent</name><parameters>{"sub_agents":[{"name":"deeper"}]}</parameters>' +
       '<success>true</success><data>' +

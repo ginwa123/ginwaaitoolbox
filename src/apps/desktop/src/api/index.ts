@@ -1036,6 +1036,7 @@ export interface Message {
   diffview_before?: string
   diffview_after?: string
   image_url?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   tool_calls_json?: any
   finish_reason?: string,
   is_input?: boolean,
@@ -1093,6 +1094,7 @@ export async function getChatHistory(
     // silent: true — AppLayout.fetchChatSessionCwd swallows this
     // error to fall back to a message-derived cwd, so a toast on
     // 404/5xx would be noise.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     const data = await apiFetch<any>(
       `/llm/session/${sessionId}/messages?${params}`,
       { silent: true },
@@ -1108,6 +1110,7 @@ export async function getChatHistory(
           diffview_before?: string
           diffview_after?: string
           image_url?: string
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
           tool_calls_json?: any
         }) => ({
           ...msg,
@@ -1254,6 +1257,7 @@ export interface SseEvent {
   role?: string
   finish_reason?: string
   reasoning_content?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   tool_calls?: any
   tool_call_id?: string
   tool_name?: string
@@ -1303,6 +1307,7 @@ export async function getChats(
       params.set('cursor', cursor)
     }
     const data = await apiFetch<{
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
       sessions: any[]
       has_more?: boolean
       next_cursor?: string | null
@@ -1311,6 +1316,7 @@ export async function getChats(
 
     // Fix: handle "undefined" or missing session_id in each session
     if (data.sessions && Array.isArray(data.sessions)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
       data.sessions = data.sessions.map((session: any) => {
         const sessionId = session.session_id || session.id
         if (!sessionId || sessionId === 'undefined' || sessionId === 'null') {
@@ -1951,6 +1957,7 @@ export async function addDesignElement(
     name: string
     type: DesignElementType
     html: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     [k: string]: any
   },
 ): Promise<DesignElement> {

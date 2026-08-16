@@ -492,13 +492,6 @@ function scrollHighlightedIntoView() {
   })
 }
 
-function focusFirstInDialog() {
-  const focusable = dialogRef.value?.querySelectorAll<HTMLElement>(
-    'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
-  )
-  if (focusable && focusable.length > 0) focusable[0]?.focus()
-}
-
 function handleKeydown(event: KeyboardEvent) {
   // Focus trap on Tab
   if (event.key === 'Tab') {

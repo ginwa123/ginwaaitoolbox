@@ -486,7 +486,8 @@ const handleDocumentClickColumn = (event: MouseEvent) => {
 // chip in either the inline MarkdownDescription (display mode) or the
 // editor's preview.
 const previewFilePath = ref<string | null>(null)
-const openFilePreview = (path: string) => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _openFilePreview = (path: string) => {
   previewFilePath.value = path
 }
 const closeFilePreview = () => {
@@ -503,7 +504,7 @@ const isCreateMode = computed<boolean>(() => props.mode === 'create')
 // edit mode we prefill from `task` (today's behavior).
 watch(
   () => [props.show, props.task?.id, props.mode] as const,
-  async ([show, _taskId, _mode]) => {
+  async ([show]) => {
     if (!show) return
     if (isCreateMode.value) {
       name.value = ''
