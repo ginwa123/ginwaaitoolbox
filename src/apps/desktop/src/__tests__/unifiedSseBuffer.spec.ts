@@ -56,7 +56,7 @@
  * will fail with `expected session cb to fire 1 times, got 0`.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createUnifiedSseConnection } from '../api'
 import * as sseClient from '../helpers/sseClient'
@@ -639,10 +639,10 @@ describe('createUnifiedSseConnection: pre-registers all granular event names', (
     expect(capturedAdditionalEventTypes).not.toBeNull()
     const registered = new Set(capturedAdditionalEventTypes!)
     for (const name of REQUIRED_EVENT_TYPES) {
-      expect(
+      assert(
         registered.has(name),
         `expected additionalEventTypes to include "${name}" but the list was: [${capturedAdditionalEventTypes!.join(', ')}]`,
-      ).toBe(true)
+      )
     }
   })
 

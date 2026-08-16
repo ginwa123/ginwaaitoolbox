@@ -267,9 +267,8 @@ describe('AppLayout — chat suffix round-trip', () => {
     // /chat/<taskId> suffix.
     for (const call of replaceMock.mock.calls) {
       const q = call[0]?.query as Record<string, string> | undefined
-      if (q) {
-        expect(q.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
-      }
+      if (!q) continue
+      expect(q.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
     }
 
     wrapper.unmount()

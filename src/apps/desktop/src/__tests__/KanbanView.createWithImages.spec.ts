@@ -74,8 +74,7 @@ function installFileReaderStub() {
     public onerror: ((ev: ProgressEvent<FileReader>) => void) | null = null
     public result: string | null = null
     readAsDataURL(blob: Blob) {
-      const mime =
-        (blob as File).type || (blob as Blob).type || 'application/octet-stream'
+      const mime = (blob as File).type || 'application/octet-stream'
       const name = (blob as File).name ?? 'blob'
       this.result = `data:${mime};base64,STUB_FOR_${name}`
       setTimeout(() => {

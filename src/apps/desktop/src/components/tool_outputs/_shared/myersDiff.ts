@@ -101,7 +101,7 @@ export function myersDiff(before: string[], after: string[]): DiffOp[] {
   }
 
   // Build LCS length table. Use `Uint32Array` rows for speed.
-  const dp: Uint32Array[] = new Array(N + 1)
+  const dp: Uint32Array[] = Array.from({ length: N + 1 })
   for (let i = 0; i <= N; i++) dp[i] = new Uint32Array(M + 1)
 
   for (let i = 1; i <= N; i++) {
