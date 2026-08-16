@@ -257,26 +257,6 @@ pub fn compactMessageInMemoryNew(
         logger,
     );
 
-    // Save the compacted summary to the database with is_feed_to_llm = 1
-    try saveMessage(allocator, io, db, .{
-        .session_id = session_id,
-        .model = model,
-        .cwd = cwd,
-        .content = summary_content,
-        .reasoning_content = null,
-        .role = agent.Role.user.to_str(),
-        .finish_reason = "stop",
-        .tool_calls = null,
-        .tool_call_id = null,
-        .tool_name = null,
-        .agent_name = "Agent",
-        .loop_index = 0,
-        .temperature = 0.0,
-        .is_thinking = false,
-        .is_input = true,
-        .is_output = false,
-    });
-
     const di = try nalarcore.getSingleton();
     const ev = di.event_bus;
 
