@@ -15,6 +15,7 @@ const timestampIso = nalarcore.loggermod.timestampIso;
 const xml_escape = nalarcore.helpers.xml_escape;
 const saveMessage = @import("../llm_history.zig").saveMessage;
 const llm_history = @import("../llm_history.zig");
+const insertLLMHistory = @import("insert_llm_histories.zig").inserLLMHistories;
 
 /// Bundle of inputs to `shouldCompactDefault` — the threshold decision that
 /// tests can swap via `CompactDeps.should_compact`. Carries enough context that
@@ -274,6 +275,42 @@ pub fn compactMessageInMemoryNew(
         .is_thinking = false,
         .is_input = true,
         .is_output = false,
+    });
+
+    const di = try nalarcore.getSingleton();
+    const ev = di.event_bus;
+
+    _ = try insertLLMHistory(.{
+        .allocator = allocator,
+        .io = io,
+        .db = db,
+        .cwd = cwd,
+        .entity = .{
+            .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+            .session_id = session_id,
+            .model = model,
+            .response_content = summary_content,
+            .reasoning_content = null,
+            .role = agent.Role.user.to_str(),
+            .finish_reason = "stop",
+            .tool_calls_json = "",
+            .tool_call_id = null,
+            .tool_name = "",
+            .agent = "Agent",
+            .loop_index = 0,
+            .temperature = 0.0,
+            .is_thinking = false,
+            .is_input = true,
+            .is_output = false,
+            .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+            .is_feed_to_llm = true,
+            .parent_id = session_id,
+            .parent_session_id = session_id,
+        },
+        .event_bus = ev,
+        .is_emit_sse = true,
+        .logger = logger,
+        .is_skip_db = false,
     });
 
     // Update the session's cwd in the sessions table
@@ -863,7 +900,8 @@ fn setupDbForEnrichmentTest() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "CREATE TABLE llm_history (" ++
             "  id TEXT PRIMARY KEY," ++
             "  session_id TEXT NOT NULL," ++
@@ -878,7 +916,8 @@ fn setupDbForEnrichmentTest() !struct {
             ")",
         &[_][]const u8{},
     );
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "CREATE TABLE session_activity (" ++
             "  id TEXT PRIMARY KEY," ++
             "  session_id TEXT NOT NULL," ++
@@ -1115,9 +1154,7 @@ test "happy path embeds prior session_activity rows in <recent_activities>" {
         const sid_dup = try alloc.dupe(u8, "sess_recent");
         defer alloc.free(sid_dup);
         const args = [_][]const u8{sid_dup};
-        var q = try s.db.query(alloc,
-            "SELECT COUNT(*) FROM session_activity WHERE session_id = ?",
-            &args);
+        var q = try s.db.query(alloc, "SELECT COUNT(*) FROM session_activity WHERE session_id = ?", &args);
         defer q.deinit();
         const row = (try q.next()) orelse return error.RowMissing;
         defer row.deinit(alloc);
@@ -1500,4 +1537,3 @@ test "shouldCompactDefault: url_style is ignored by the decision (Anthropic conf
     );
     try testing.expect(!shouldCompactDefault(ctx_openai));
 }
-
