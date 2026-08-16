@@ -27,7 +27,7 @@ fn setupDb() !struct {
         \\  tool_name TEXT,
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now')),
+        \\  created_at_nano TEXT DEFAULT (datetime('now')),
         \\  -- Mirrors Migration 059 in production: a regular TEXT column
         \\  -- populated by INSERT/UPDATE triggers. We CAN'T use a STORED
         \\  -- GENERATED ALWAYS AS column here because `datetime(...,
@@ -101,7 +101,7 @@ fn seedMessage(
     const created_iso: []const u8 = created_iso_buf[0..created_iso_len];
 
     const sql =
-        \\INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at, created_iso)
+        \\INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at_nano, created_iso)
         \\VALUES (?, ?, ?, ?, ?, ?, ?)
     ;
     try db.exec(alloc, sql, &.{ id, sess, role, content, feed_str, created_at, created_iso });
@@ -354,7 +354,7 @@ test "saveMessage: writes a correct-year (2026-ish) created_iso from current tim
         \\    loop_index INTEGER,
         \\    temperature REAL,
         \\    is_thinking INTEGER,
-        \\    created_at TEXT,
+        \\    created_at_nano TEXT,
         \\    created_iso TEXT,
         \\    parent_session_id TEXT,
         \\    parent_id TEXT,
@@ -439,7 +439,7 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
         \\    loop_index INTEGER,
         \\    temperature REAL,
         \\    is_thinking INTEGER,
-        \\    created_at TEXT,
+        \\    created_at_nano TEXT,
         \\    created_iso TEXT,
         \\    parent_session_id TEXT,
         \\    parent_id TEXT,
@@ -483,7 +483,7 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
     });
 
     var q = try db.query(alloc,
-        "SELECT created_at FROM llm_history WHERE session_id = 'sess_micros'", &.{});
+        "SELECT created_at_nano FROM llm_history WHERE session_id = 'sess_micros'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);

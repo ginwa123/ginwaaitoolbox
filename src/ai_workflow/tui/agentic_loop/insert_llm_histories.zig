@@ -94,7 +94,7 @@ pub fn inserLLMHistories(
         \\    loop_index,
         \\    temperature,
         \\    is_thinking,
-        \\    created_at,
+        \\    created_at_nano,
         \\    created_iso,
         \\    parent_session_id,
         \\    parent_id,
@@ -236,7 +236,7 @@ fn getSessionSkills(
 ) ![]SkillInfo {
     if (session_id.len == 0) return &.{};
 
-    const sql = "SELECT skill_name, content, loaded_at FROM session_skills WHERE session_id = ?";
+    const sql = "SELECT skill_name, content, loaded_at_nano AS loaded_at FROM session_skills WHERE session_id = ?";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 

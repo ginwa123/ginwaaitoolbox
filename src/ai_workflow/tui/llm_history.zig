@@ -2094,7 +2094,7 @@ pub fn get_current_agent_by_session_id(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !AgentState {
-    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at DESC LIMIT 1";
+    const sql = "SELECT COALESCE(agent, 'Agent'), COALESCE(temperature, 0), COALESCE(is_thinking, 1) FROM llm_history WHERE session_id = ? ORDER BY created_at_nano DESC LIMIT 1";
     var rows = try db.query(allocator, sql, &.{session_id});
     defer rows.deinit();
 
@@ -5176,7 +5176,7 @@ fn setupDb() !TestCtx {
         \\    pinned_position INTEGER DEFAULT 0,
         \\    -- kanban_column_id / kanban_position REMOVED post-Migration-072
         \\    -- (they now live in the `kanban` join table below)
-        \\    last_human_touched_at INTEGER,
+        \\    last_human_touched_at_nano INTEGER,
         \\    tags TEXT NOT NULL DEFAULT '',
         \\    cwd TEXT NOT NULL DEFAULT ''
         \\)

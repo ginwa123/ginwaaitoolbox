@@ -144,7 +144,7 @@ fn fetchUserAssistantMessages(
             sql =
                 \\SELECT role, response_content FROM llm_history
                 \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
-                \\ORDER BY created_at DESC, id DESC
+                \\ORDER BY created_at_nano DESC, id DESC
                 \\LIMIT ?
             ;
             args = &.{ parent_session_id, limit_str };
@@ -153,7 +153,7 @@ fn fetchUserAssistantMessages(
             sql =
                 \\SELECT role, response_content FROM llm_history
                 \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
-                \\ORDER BY created_at ASC
+                \\ORDER BY created_at_nano ASC
             ;
             args = &.{parent_session_id};
         },
@@ -163,12 +163,12 @@ fn fetchUserAssistantMessages(
             sql =
                 \\SELECT role, response_content FROM llm_history
                 \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
-                \\AND created_at >= (
-                \\    SELECT created_at FROM llm_history
+                \\AND created_at_nano >= (
+                \\    SELECT created_at_nano FROM llm_history
                 \\    WHERE session_id = ? AND role = 'user'
-                \\    ORDER BY created_at DESC, id DESC LIMIT 1
+                \\    ORDER BY created_at_nano DESC, id DESC LIMIT 1
                 \\)
-                \\ORDER BY created_at ASC
+                \\ORDER BY created_at_nano ASC
             ;
             args = &.{ parent_session_id, parent_session_id };
         },

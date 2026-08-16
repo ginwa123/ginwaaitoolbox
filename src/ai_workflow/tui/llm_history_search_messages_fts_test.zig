@@ -34,7 +34,7 @@ fn setupDb() !TestCtx {
         \\  tool_name TEXT,
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now')),
+        \\  created_at_nano TEXT DEFAULT (datetime('now')),
         \\  -- Mirrors Migration 059 in production: a regular TEXT column.
         \\  -- No INSERT trigger — production populates it from application
         \\  -- code in `saveMessage`. For test convenience, default to
@@ -303,10 +303,10 @@ test "searchMessagesFts: filters by since using ISO date string (regression for 
     // idempotent backfill. This drops microsecond precision but is
     // fine for `since`/`until` tests at minute granularity.
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
 
     // Compute the ISO date for `new_micros` using the SAME expression the
@@ -343,10 +343,10 @@ test "searchMessagesFts: filters by until using ISO date string (regression for 
     const new_micros: []const u8 = "1785000000000000";
 
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
 
     // Compute the ISO for `old_micros` — `until=old_iso` should keep only h_old.
@@ -382,13 +382,13 @@ test "searchMessagesFts: since AND until together produce a date range (regressi
     const new_micros: []const u8 = "1785000000000000";
 
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_mid','s1','user','mid message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ mid_micros, mid_micros });
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, created_at, created_iso) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
         "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
 
     // Use the same substr(_,1,10) expression as the inserted rows so the

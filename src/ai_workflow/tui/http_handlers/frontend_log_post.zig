@@ -204,7 +204,7 @@ fn useCase(
     // Fresh event — insert a new row.
     const insert_sql =
         \\INSERT INTO logs (
-        \\  id, created_at, level, kind, message,
+        \\  id, created_at_nano, level, kind, message,
         \\  stack, source, line, route_path, session_id, count
         \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
     ;

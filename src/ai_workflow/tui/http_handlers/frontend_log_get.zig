@@ -228,7 +228,7 @@ fn useCase(
     defer sql_buf.deinit(allocator);
     try sql_buf.appendSlice(
         allocator,
-        \\SELECT id, created_at, level, kind, message,
+        \\SELECT id, created_at_nano AS created_at, level, kind, message,
         \\       stack, source, line, route_path, session_id, count
         \\FROM logs
         \\WHERE 1=1
@@ -258,11 +258,11 @@ fn useCase(
         present_session = true;
     }
     if (input.since_us) |_| {
-        try sql_buf.appendSlice(allocator, "\n  AND created_at >= ?");
+        try sql_buf.appendSlice(allocator, "\n  AND created_at_nano >= ?");
         present_since = true;
     }
 
-    try sql_buf.appendSlice(allocator, "\nORDER BY created_at DESC\nLIMIT ?");
+    try sql_buf.appendSlice(allocator, "\nORDER BY created_at_nano DESC\nLIMIT ?");
 
     // Format i64 / u32 values as decimal strings BEFORE binding —
     // `db.exec` / `db.query` only bind TEXT, and SQLite coerces

@@ -126,7 +126,7 @@ fn setupDb() !struct {
         \\CREATE TABLE llm_history (
         \\    id TEXT PRIMARY KEY,
         \\    session_id TEXT NOT NULL,
-        \\    created_at TEXT,
+        \\    created_at_nano TEXT,
         \\    response_content TEXT,
         \\    role TEXT
         \\)
@@ -144,7 +144,7 @@ fn seedMessage(
     content: []const u8,
 ) !void {
     try db.exec(alloc,
-        \\INSERT INTO llm_history (id, session_id, created_at, response_content, role)
+        \\INSERT INTO llm_history (id, session_id, created_at_nano, response_content, role)
         \\VALUES (?, ?, ?, ?, ?)
     , &.{ id, session_id, created_at, content, role });
 }

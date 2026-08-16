@@ -28,7 +28,7 @@ fn setupDb() !TestCtx {
         \\  tool_name TEXT,
         \\  is_feed_to_llm INTEGER DEFAULT 1,
         \\  agent TEXT,
-        \\  created_at TEXT DEFAULT (datetime('now')),
+        \\  created_at_nano TEXT DEFAULT (datetime('now')),
         \\  -- Mirrors Migration 059 in production: a regular TEXT column.
         \\  -- No INSERT trigger — production populates it from application
         \\  -- code in `saveMessage`. Default to `now` localtime so tests that
@@ -288,13 +288,13 @@ test "execute_search_history: mode=session order=desc returns most recent first"
 
     // 3 messages with explicit, increasing created_at to make order deterministic.
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at_nano) " ++
         "VALUES ('first','s_Z','user','first msg',1,'2026-01-01 10:00:00')", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at_nano) " ++
         "VALUES ('middle','s_Z','user','middle msg',1,'2026-01-02 10:00:00')", &.{});
     try s.db.exec(alloc,
-        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at) " ++
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at_nano) " ++
         "VALUES ('last','s_Z','user','last msg',1,'2026-01-03 10:00:00')", &.{});
 
     const xml_asc = try sh.execute_search_history(alloc, s.threaded.io(), &s.db, .{

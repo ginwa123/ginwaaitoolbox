@@ -206,7 +206,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  name TEXT,
         \\  description TEXT NOT NULL DEFAULT '',
         \\  task_type TEXT,
-        \\  last_human_touched_at INTEGER,
+        \\  last_human_touched_at_nano INTEGER,
         \\  -- Migrations 067 / 069 / 071: the agent tool now writes
         \\  -- these columns via the new optional `tags` / `image_urls`
         \\  -- / `cwd` input fields. The schema here mirrors the
@@ -808,7 +808,7 @@ test "executeCreateKanbanTaskToString stamps last_human_touched_at on happy path
 
     const task_id = try extractTaskId(xml);
     const stored = try readColumn(alloc, &s.db,
-        "SELECT COALESCE(last_human_touched_at, '') FROM workspace_item_tasks WHERE id = ?",
+        "SELECT COALESCE(last_human_touched_at_nano, '') FROM workspace_item_tasks WHERE id = ?",
         &.{task_id});
     defer alloc.free(stored);
     // The stamp must be non-empty (a unix-ms integer string). The

@@ -52,7 +52,7 @@ pub fn updateWorker(obj: UpsertWorkerInput) !void {
         \\    id,
         \\    session_id,
         \\    working_directory,
-        \\    last_activity,
+        \\    last_activity_nano,
         \\    last_activity_description
         \\)
         \\VALUES (
@@ -65,7 +65,7 @@ pub fn updateWorker(obj: UpsertWorkerInput) !void {
         \\ON CONFLICT(id) DO UPDATE SET
         \\    session_id = excluded.session_id,
         \\    working_directory = excluded.working_directory,
-        \\    last_activity = excluded.last_activity,
+        \\    last_activity_nano = excluded.last_activity_nano,
         \\    last_activity_description = excluded.last_activity_description;
     ;
 
@@ -154,7 +154,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    id TEXT PRIMARY KEY,
         \\    session_id TEXT,
         \\    working_directory TEXT,
-        \\    last_activity INTEGER,
+        \\    last_activity_nano INTEGER,
         \\    last_activity_description TEXT
         \\)
     , &.{});
