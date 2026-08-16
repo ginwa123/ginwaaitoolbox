@@ -318,9 +318,31 @@ jobs:
           # queueing the download and Step 2 saw no cl.exe.
           $vsInstaller = Get-ChildItem -Path "C:\\" -Filter "vcvars64.bat" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $vsInstaller) {
-            Write-Host "MSVC Build Tools not found, installing..."
-            winget install --id Microsoft.VisualStudio.2022.BuildTools --force --wait -e --accept-source-agreements --accept-package-agreements --silent
-            winget install --id Kitware.CMake --force --wait -e --accept-source-agreements --accept-package-agreements --silent
+            Write-Host "MSVC Build Tools not found, installing via official VS bootstrapper..."
+            # Bypass winget entirely: its DB has a stale BuildTools
+            # 17.14.37 record whose bootstrapper silently exits 1 on
+            # this self-hosted runner (CI run 31932470083 logged
+            # "Installer failed with exit code: 1" right after
+            # "Starting package install..."). The official VS
+            # bootstrapper with --quiet --wait is the same path
+            # microsoft/vs-2022 CI uses and doesn't go through any
+            # package manager cache.
+            $vsUrl = "https://aka.ms/vs/17/release/vs_BuildTools.exe"
+            $vsExe = Join-Path $env:TEMP "vs_BuildTools.exe"
+            Write-Host ("Downloading " + $vsUrl)
+            Invoke-WebRequest -Uri $vsUrl -OutFile $vsExe -UseBasicParsing -TimeoutSec 180
+            Write-Host "Running vs_BuildTools.exe --quiet --wait --add VCTools..."
+            $proc = Start-Process -FilePath $vsExe -ArgumentList @(
+              "--quiet", "--wait", "--norestart", "--nocache",
+              "--add", "Microsoft.VisualStudio.Workload.VCTools",
+              "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+              "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621"
+            ) -Wait -PassThru -NoNewWindow
+            Write-Host ("Bootstrapper exit code: " + $proc.ExitCode)
+            Remove-Item $vsExe -Force -ErrorAction SilentlyContinue
+            # CMake still installable via winget (CMake install
+            # succeeded in run 31932470083 with no UI prompts).
+            winget install --id Kitware.CMake --wait -e --accept-source-agreements --accept-package-agreements --silent
           } else {
             Write-Host ("MSVC Build Tools already at " + $vsInstaller.FullName)
           }
