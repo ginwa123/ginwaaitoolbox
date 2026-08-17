@@ -13,8 +13,8 @@ const SqliteBackend = sqlite.SqliteBackend;
 const Logger = nalarcore.loggermod.Logger;
 const timestampIso = nalarcore.loggermod.timestampIso;
 const xml_escape = nalarcore.helpers.xml_escape;
-const saveMessage = @import("../llm_history.zig").saveMessage;
-const llm_history = @import("../llm_history.zig");
+const saveMessage = @import("llm_history.zig").saveMessage;
+const llm_history = @import("llm_history.zig");
 const insertLLMHistory = @import("insert_llm_histories.zig").inserLLMHistories;
 const event_bus_mod = nalarcore.event_bus;
 

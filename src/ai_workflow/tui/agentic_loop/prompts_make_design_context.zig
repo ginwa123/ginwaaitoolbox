@@ -1,7 +1,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const llm_history = @import("../llm_history.zig");
+const llm_history = @import("llm_history.zig");
 const design_model = @import("../design_model.zig");
 
 

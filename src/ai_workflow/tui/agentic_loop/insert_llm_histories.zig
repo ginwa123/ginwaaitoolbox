@@ -1,6 +1,6 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
-const LLMHistory = @import("llm_history.zig").LLMHistory;
+const LLMHistory = @import("llm_history_row.zig").LLMHistory;
 const SkillInfo = @import("session_skills.zig").SkillInfo;
 const onEventSendLLMHistory = @import("sse_on_event_send_llm_history.zig").onEventSendLLMHistory;
 

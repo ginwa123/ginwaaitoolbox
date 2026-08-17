@@ -28,7 +28,7 @@ const std = @import("std");
 const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("nalarcore").llm_history;
-const migration = @import("../../migrations/migration.zig");
+const migration = @import("../../../migrations/migration.zig");
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,

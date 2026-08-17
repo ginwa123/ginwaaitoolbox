@@ -42,7 +42,7 @@ const logger_mod = nalarcore.loggermod;
 const Logger = logger_mod.Logger;
 const xml_escape = nalarcore.helpers.xml_escape;
 const agent = nalarcore.agent;
-const llm_history = @import("../llm_history.zig");
+const llm_history = @import("llm_history.zig");
 const migration = @import("../../../migrations/migration.zig");
 
 // ─── Compaction-context types ────────────────────────────────────────────────

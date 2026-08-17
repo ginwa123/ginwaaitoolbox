@@ -6,7 +6,7 @@ const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 
 /// XML-escape a string for safe inclusion in tool-result XML output.
-/// Mirrors `src/ai_workflow/tui/llm_history.zig xmlEscape` exactly so the
+/// Mirrors `src/ai_workflow/tui/agentic_loop/llm_history.zig xmlEscape` exactly so the
 /// frontend's `unwrapToolOutput` can safely un-escape (& -> &amp; first
 /// during decoding to avoid double-decoding).
 /// Local definition (rather than importing the canonical one) keeps

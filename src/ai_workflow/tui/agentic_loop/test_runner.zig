@@ -13,6 +13,14 @@ test {
     // ─── Files with inline tests ──────────────────────────────────────────
     _ = @import("sse.zig");
     _ = @import("llm_history.zig");
+    _ = @import("llm_history_is_input_output_test.zig");
+    _ = @import("llm_history_compacted_messages_test.zig");
+    _ = @import("llm_history_search_messages_fts_test.zig");
+    _ = @import("llm_history_search_fts_query_safety_test.zig");
+    _ = @import("llm_history_worker_info_test.zig");
+    _ = @import("llm_history_description_test.zig");
+    _ = @import("llm_history_notification_test.zig");
+    _ = @import("llm_history_tool_call_loading_test.zig");
     _ = @import("session_skills.zig");
     _ = @import("is_session_kanban.zig");
     _ = @import("is_worker_running.zig");

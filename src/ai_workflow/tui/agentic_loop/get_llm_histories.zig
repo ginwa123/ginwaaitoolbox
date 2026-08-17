@@ -1,6 +1,6 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
-const LLMHistory = @import("llm_history.zig").LLMHistory;
+const LLMHistory = @import("llm_history_row.zig").LLMHistory;
 
 const sqlite = nalarcore.sqlite;
 const testing = std.testing;

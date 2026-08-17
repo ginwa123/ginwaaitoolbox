@@ -32,7 +32,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sqlite = @import("nalarcore").sqlite;
 const migration = @import("../../../migrations/migration.zig");
-const llm_history = @import("../llm_history.zig"); // TODO(phase-5): llm_history moves into agentic_loop; flip to bare @import("llm_history.zig")
+const llm_history = @import("llm_history.zig");
 
 /// One row in `agent_memories`. All string fields are allocator-owned and
 /// must be freed by the caller — use `freeMemoryRow` for a single row or

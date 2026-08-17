@@ -25,3 +25,6 @@ pub const agent_memories = @import("agent_memories.zig");
 
 pub const kanban_model = @import("kanban_model.zig");
 pub const design_io = @import("design_io.zig");
+
+pub const llm_history = @import("llm_history.zig");
+pub const llm_history_row = @import("llm_history_row.zig");

@@ -3,7 +3,7 @@ const testing = std.testing;
 
 pub const nalarcore = @import("nalarcore");
 
-const llm_history = @import("../llm_history.zig");
+const llm_history = @import("llm_history.zig");
 const build_msg_prompt = @import("prompts_build_messages_for_agent_prompt.zig");
 const models = @import("models.zig");
 pub const on_event_sent = @import("on_event_sent.zig");
@@ -64,7 +64,7 @@ pub const DeleteWorkerInput = delete_worker_mod.DeleteWorkerInput;
 pub const deleteWorker = delete_worker_mod.deleteWorker;
 pub const GetLLMHistoriesInput = get_llm_histories_mod.GetLLMHistoriesInput;
 pub const getLLMHistories = get_llm_histories_mod.getLLMHistories;
-pub const LLMHistory = @import("llm_history.zig").LLMHistory;
+pub const LLMHistory = @import("llm_history_row.zig").LLMHistory;
 pub const onEventSendLLMHistory = @import("sse_on_event_send_llm_history.zig").onEventSendLLMHistory;
 pub const InsertLLMHistoriesInput = insert_llm_histories_mod.InsertLLMHistoriesInput;
 pub const insertLLMHistories = insert_llm_histories_mod.inserLLMHistories;
@@ -294,7 +294,7 @@ fn re_read_selected_profile_model(
 // In-memory SQLite with the full migration chain applied (so the
 // `sessions` table has the `selected_profile_model` column exactly as
 // production does — see `llm-history-test-use-migrations-module.md`).
-// Mirrors `src/ai_workflow/tui/llm_history_search_fts_query_safety_test.zig::setupDb`.
+// Mirrors `src/ai_workflow/tui/agentic_loop/llm_history_search_fts_query_safety_test.zig::setupDb`.
 const ReReadTestCtx = struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
