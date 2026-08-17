@@ -67,6 +67,8 @@ test {
     _ = @import("workflow_compact_message.zig"); // 2026-08-14-consolidate-compaction-message — buildCompactMessagePrompt (8) + compaction_context helpers (22) = 30 inline tests
     _ = @import("workflow_compact_call_agent_test.zig"); // regression test for url_style propagation to CompactionAgent (fix-compact-url-style plan)
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
-    _ = @import("agent_tools_allowed_test.zig"); // agent-mode — agentToolsAllowed() helper (Task 3 of plan 2026-08-15-agent-mode)
-    _ = @import("prompts_make_agent_knowledge_test.zig"); // agent-mode — makeAgentKnowledge() prompt section (Task 10 of plan 2026-08-15-agent-mode)
+    // impl + tests are in the same .zig file for Agent Mode helpers.
+    // No separate _test.zig imports needed here — the test blocks
+    // inside agent_tools_allowed.zig and prompts_make_agent_knowledge.zig
+    // are discovered automatically by `zig build test`.
 }

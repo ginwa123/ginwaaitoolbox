@@ -566,6 +566,10 @@ pub const migrations_mod = @import("migrations/mod.zig");
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
+    // Agent Mode helpers: impl + tests in one file. Importing these
+    // makes their inline `test` blocks discoverable by `zig build test`.
+    _ = @import("ai_workflow/tui/agentic_loop/agent_tools_allowed.zig");
+    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_knowledge.zig");
     // `databases` package tests run via its own `zig build test`
     // (cd src/modules/databases && zig build test) — see the
     // package's build.zig. The main test step doesn't import them

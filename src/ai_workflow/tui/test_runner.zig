@@ -58,17 +58,14 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/git_pr_create_test.zig");
     _ = @import("http_handlers/git_status_test.zig");
     _ = @import("http_handlers/workspace_items_create_kanban_test.zig");
-    _ = @import("http_handlers/workspace_items_create_agent_test.zig"); // agent-mode — POST /items/agent (Task 4 of plan 2026-08-15-agent-mode)
-    _ = @import("http_handlers/agents_get_test.zig"); // agent-mode — GET /items/:id/agent (Task 5)
-    _ = @import("http_handlers/agents_update_test.zig"); // agent-mode — PATCH /items/:id/agent (Task 5)
-    _ = @import("http_handlers/agent_knowledge_create_test.zig"); // agent-mode — POST /agents/:id/knowledge (Task 6)
-    _ = @import("http_handlers/agent_knowledge_update_test.zig"); // agent-mode — PATCH /agents/:id/knowledge/:id (Task 6)
-    _ = @import("http_handlers/agent_knowledge_delete_test.zig"); // agent-mode — DELETE /agents/:id/knowledge/:id (Task 6)
-    _ = @import("http_handlers/agent_knowledge_reorder_test.zig"); // agent-mode — PATCH /agents/:id/knowledge/reorder (Task 6)
-    _ = @import("http_handlers/agent_tools_registry_test.zig"); // agent-mode — GET /agent-tools/registry (Task 7)
-    _ = @import("http_handlers/agent_tools_list_test.zig"); // agent-mode — GET /agents/:id/tools (Task 7)
-    _ = @import("http_handlers/agent_tools_create_test.zig"); // agent-mode — POST /agents/:id/tools (Task 8)
-    _ = @import("http_handlers/agent_tools_delete_test.zig"); // agent-mode — DELETE /agents/:id/tools/:id (Task 8)
+    // Agent Mode HTTP handlers (Tasks 4-8 of plan 2026-08-15-agent-mode) were
+    // deliberately shipped WITHOUT static regression tests — per user
+    // ("i don't need static regression test, its useless"). The production
+    // .zig files contain the handler logic only; their test_runner imports
+    // were intentionally removed when the standalone _test.zig files
+    // were deleted. Tests cover the helper layer (agent_tools_allowed,
+    // prompts_make_agent_knowledge) and Migration 076 schema, which are
+    // the contracts that actually matter.
     _ = @import("http_handlers/workspace_items_create_empty_name_test.zig");
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
