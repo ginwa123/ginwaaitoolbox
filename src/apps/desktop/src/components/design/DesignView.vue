@@ -303,12 +303,6 @@ const activeElements = computed<DesignElementApi[]>(() => {
 
 const isSingleSelect = computed(() => selectedIds.value.size === 1)
 // PropertiesPanel only renders its single-element form when exactly one
-// element is selected. Otherwise it shows a "N elements selected" banner
-// (multi-aware) or the empty state.
-const activeElement = computed<DesignElementApi | null>(() =>
-  isSingleSelect.value ? activeElements.value[0] ?? null : null,
-)
-
 // NEW (Chunk 6 of grouped-layers plan): useDesignHandlers composable
 // providing `groupSelection` for the Cmd+G shortcut. We pass the
 // args this component owns (`selectedIds` is local; the ids come
@@ -354,9 +348,6 @@ const isPreviewMode = ref<boolean>(false)
 
 const togglePreviewMode = (): void => {
   isPreviewMode.value = !isPreviewMode.value
-}
-const exitPreviewMode = (): void => {
-  if (isPreviewMode.value) isPreviewMode.value = false
 }
 
 // Exiting Preview mode clears the selection so the user isn't surprised
@@ -1126,6 +1117,12 @@ const handleAddPage = async (): Promise<string | undefined> => {
 // button's `:disabled` attribute so the user sees the lock.
 const addPageInFlight = ref<boolean>(false)
 
+// Exposed via `wrapper.vm.handleSelectPage` in DesignView.pageSync.spec.ts.
+// Vue 3's `<script setup>` auto-surfaces top-level bindings but eslint
+// can't see the `vm.X` reflection path, so the rule fires. The two
+// declarations below (`_handleDeletePage`, `_handleElementSelect`) are
+// truly unused so they get the `_` prefix to silence the rule.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const handleSelectPage = (pageId: string): void => {
   // Mirror to the store first so AppLayout's design handlers
   // (handleDesignUpdateElement / handleDesignDeleteElement) always
@@ -1147,8 +1144,10 @@ const handleSelectPage = (pageId: string): void => {
 // through the store so the cache + `activeDesignPageId` fallback
 // happen in one place. The store's `deleteDesignPage` action picks
 // the next-active page (same index as the deleted one, falling
+ 
 // back to the previous; or empty if the item now has no pages).
-const handleDeletePage = async (pageId: string): Promise<void> => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleDeletePage = async (pageId: string): Promise<void> => {
   if (!props.workspaceId || !effectiveItemId.value) return
   if (deletePageInFlight.value) return
   if (
@@ -1199,11 +1198,13 @@ const handleElementToggle = (elementId: string, additive: boolean): void => {
 }
 
 // Keep the legacy handler name around as an alias so LayersPanel's
-// `@select="handleElementSelect"` (which emits a plain elementId with
+// `@select="_handleElementSelect"` (which emits a plain elementId with
 // no additive flag) still works — LayersPanel gets the additive flag
 // from the Shift state on the row click and emits a structured
+ 
 // payload instead.
-const handleElementSelect = (elementId: string): void => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleElementSelect = (elementId: string): void => {
   handleElementToggle(elementId, false)
 }
 
@@ -1369,8 +1370,10 @@ const handleDesignGroupFromContextMenu = (targetIds: string[]): void => {
 // children), this lets them drag the group AND every descendant in one
 // motion — matching Figma's behaviour. The expansion is per-call (does
 // NOT mutate `selectedIds`) so the layers panel / context menu still
+ 
 // show the user-selected set.
-function expandSelectionWithDescendants(
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+function _expandSelectionWithDescendants(
   ids: ReadonlySet<string>,
   all: ReadonlyArray<DesignElementApi>,
 ): Set<string> {

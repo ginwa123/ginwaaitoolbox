@@ -60,9 +60,11 @@ describe('api.updateDesignElement — reposition field', () => {
     await updateDesignElement('ws_1', 'item_1', 'page_1', 'elem_a', {
       // The wire type allows reposition?; we cast via the call site to
       // assert it lands in the body.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       parent_id: 'group_1',
       reposition: 'last_in_parent',
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]

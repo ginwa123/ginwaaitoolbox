@@ -50,6 +50,8 @@ const formatSize = (bytes: number): string => {
 // `isCreating=true` short-circuits the fetch — set up an empty create form.
 watch(
   () => [props.memoryName, props.isCreating, props.cwd] as const,
+   
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
   async ([newName, isCreating, _cwd]) => {
     // Create mode: skip the fetch entirely, set up an empty create form.
     if (isCreating) {

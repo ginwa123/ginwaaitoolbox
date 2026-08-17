@@ -14,7 +14,7 @@ const handleSelectSkill = (skillName: string) => {
   selectedSkillName.value = skillName
 }
 
-const handleSkillDeleted = (_skillName: string) => {
+const handleSkillDeleted = () => {
   selectedSkillName.value = null
   skillListRef.value?.refresh()
   emit('notification', 'Skill deleted successfully', 'success')

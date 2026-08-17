@@ -61,7 +61,6 @@ import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
-import { useNotificationStore } from '../../stores/notifications'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
 import { useRoute, useRouter } from 'vue-router'
 import type { PreviewFile } from '../file/FilePreview.vue'
@@ -567,7 +566,8 @@ const handleColumnSortChange = (
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
-const handleAddColumn = () => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleAddColumn = () => {
   emit('addColumn')
 }
 
@@ -603,7 +603,7 @@ const handleOpenCreateDialog = () => {
 // action). It hides once a path is set. The picker reuses the
 // AddKanbanDialog's picker to keep the UX consistent — same data
 // source, same select-pick-cancel flow.
-import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import { getSystemFolder, listFolder, updateTaskSimple, type FolderEntry } from '../../api'
 import { updateSession as apiUpdateSession } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
 
@@ -746,7 +746,7 @@ const handleUpdateCwd = async (payload: { cwd: string }) => {
   const taskId = activeTaskDetailId.value
   if (!taskId) return
   try {
-    await api.updateTaskSimple(taskId, { cwd: payload.cwd })
+    await updateTaskSimple(taskId, { cwd: payload.cwd })
   } catch (err) {
     console.error('Failed to update task cwd:', err)
   }

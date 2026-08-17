@@ -37,6 +37,8 @@ import type { SessionEvent } from '../api'
  * see sseBus.spec.ts / App.spec.ts for the same helper.
  */
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -109,7 +111,9 @@ describe('useWorkspacesStore session events (via sseBus)', () => {
     return ws
   }
 
+   
   function dispatch(event: SessionEvent) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     __dispatchSseBus('session', event as any)
   }
 

@@ -5,7 +5,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
-import { defineComponent, h, nextTick } from 'vue'
 import SubAgentPeekPanel from '../components/nalar/SubAgentPeekPanel.vue'
 import type { Message } from '../api'
 
@@ -226,8 +225,8 @@ describe('SubAgentPeekPanel', () => {
   })
 
   it('reuses the SpawnSubAgent tool output component recursively for nested spawn_sub_agent calls', async () => {
-    // A sub-agent inside a sub-agent — the same component renders
-    // it (and the user can recursively open another peek panel).
+    // A sub-agent inside a sub-agent: the same component renders
+    // it and the user can recursively open another peek panel.
     const toolEnvelope =
       '<tool><name>spawn_sub_agent</name><parameters>{"sub_agents":[{"name":"deeper"}]}</parameters>' +
       '<success>true</success><data>' +

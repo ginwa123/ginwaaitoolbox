@@ -71,6 +71,8 @@ describe('designLogger', () => {
     // Context object carries the full state snapshot
     expect(ctx.caller).toBe('t.select')
     expect(ctx.reason).toBe('emit:select')
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((ctx as any).element.id).toBe('el_1')
   })
 
@@ -102,23 +104,21 @@ describe('designLogger', () => {
     }
     // The escape hatch is registered at module-load when
     // `import.meta.env.DEV` is true (vitest's default).
-    if (w.__designLogger) {
-      w.__designLogger.on()
-      expect(isDesignLoggerEnabled()).toBe(true)
-      w.__designLogger.off()
-      expect(isDesignLoggerEnabled()).toBe(false)
-    } else {
-      // Production-style build: skip the assertion (the escape hatch
-      // is dev-only by design).
-      expect(true).toBe(true)
-    }
+    // Production-style build: skip the assertion (the escape hatch
+    // is dev-only by design).
+    if (!w.__designLogger) return
+    w.__designLogger.on()
+    expect(isDesignLoggerEnabled()).toBe(true)
+    w.__designLogger.off()
+    expect(isDesignLoggerEnabled()).toBe(false)
   })
 
   it('persists the toggle in localStorage so a reload keeps the setting', () => {
-    if (typeof localStorage === 'undefined') {
-      expect(true).toBe(true)
-      return
-    }
+    // localStorage is jsdom-provided in vitest; the guard below is a
+    // safety net for non-jsdom environments (the original code path
+    // was `expect(true).toBe(true); return` inside the else branch,
+    // which oxlint's no-conditional-expect rejects).
+    if (typeof localStorage === 'undefined') return
     setDesignLoggerEnabled(true)
     try {
       expect(localStorage.getItem('nalar.design-logger.enabled')).toBe('on')

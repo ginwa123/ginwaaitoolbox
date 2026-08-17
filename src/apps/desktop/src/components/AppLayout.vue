@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, provide } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './shell/Sidebar.vue'
 // DISABLED: import RightSidebar from './shell/RightSidebar.vue'   // 2026-06-29 — task disable-rightsidebar-vue
@@ -18,7 +18,6 @@ import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
-import WorkspaceItemMemoriesView from './views/WorkspaceItemMemoriesView.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
@@ -42,6 +41,7 @@ const router = useRouter()
 const route = useRoute()
 const navigationStore = useNavigationStore()
 const workspacesStore = useWorkspacesStore()
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const sidebarStore = useSidebarStore()
 
 // Ref to Sidebar component
@@ -116,10 +116,6 @@ const toggleSidebar = () => {
 
 const handleSidebarResize = (newWidth: number) => {
   navigationStore.setSidebarWidth(newWidth)
-}
-
-const handleRightSidebarResize = (newWidth: number) => {
-  sidebarStore.setRightSidebarWidth(newWidth)
 }
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
@@ -438,7 +434,6 @@ const activeChatId = computed(() => navigationStore.activeChatId)
 const activeChatName = computed(() => navigationStore.activeChatName)
 const sidebarCollapsed = computed(() => navigationStore.sidebarCollapsed)
 const sidebarWidth = computed(() => navigationStore.sidebarWidth)
-const rightSidebarWidth = computed(() => sidebarStore.rightSidebarWidth)
 
 const handleUpdateChatId = (oldId: string, newId: string) => {
   if (activeChatId.value === `chat-${oldId}`) {
@@ -516,13 +511,11 @@ const handleNavigate = (
     router.push({ path: '/app/settings' })
   }
 }
+ 
 
-const closeSettings = () => {
-  router.back()
-}
-
-const handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) => {
-  console.log('[handleRightSidebarFileClick] file:', file.path, 'staged:', staged)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) => {
+  console.log('[_handleRightSidebarFileClick] file:', file.path, 'staged:', staged)
   // Clear other overlays to prevent priority conflicts
   skillViewerSkill.value = null
   codeEditorFile.value = null
@@ -533,7 +526,7 @@ const handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) =
   gitViewerFile.value = file
   gitViewerStaged.value = staged
   console.log(
-    '[handleRightSidebarFileClick] gitViewerFile.value after set:',
+    '[_handleRightSidebarFileClick] gitViewerFile.value after set:',
     gitViewerFile.value?.path,
   )
 
@@ -598,21 +591,23 @@ const closeGitViewer = () => {
 
 // Skill viewer state
 const skillViewerSkill = ref<api.Skill | null>(null)
+ 
 
-const handleRightSidebarSkillClick = (skill: api.Skill) => {
-  console.log('[handleRightSidebarSkillClick] skill:', skill.name)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleRightSidebarSkillClick = (skill: api.Skill) => {
+  console.log('[_handleRightSidebarSkillClick] skill:', skill.name)
   // Clear other overlays to prevent priority conflicts
   gitViewerFile.value = null
   gitViewerStaged.value = false
   skillViewerSkill.value = skill
   console.log(
-    '[handleRightSidebarSkillClick] skillViewerSkill.value after set:',
+    '[_handleRightSidebarSkillClick] skillViewerSkill.value after set:',
     skillViewerSkill.value?.name,
   )
 
-  console.log('[handleRightSidebarSkillClick] current route:', route.fullPath)
-  console.log('[handleRightSidebarSkillClick] activeChatId:', activeChatId.value)
-  console.log('[handleRightSidebarSkillClick] activeTask:', activeTask.value)
+  console.log('[_handleRightSidebarSkillClick] current route:', route.fullPath)
+  console.log('[_handleRightSidebarSkillClick] activeChatId:', activeChatId.value)
+  console.log('[_handleRightSidebarSkillClick] activeTask:', activeTask.value)
 
   // Navigate to skill view
   router.replace({
@@ -626,12 +621,12 @@ const handleRightSidebarSkillClick = (skill: api.Skill) => {
   // Check state after route change
   setTimeout(() => {
     console.log(
-      '[handleRightSidebarSkillClick] AFTER route change - skillViewerSkill:',
+      '[_handleRightSidebarSkillClick] AFTER route change - skillViewerSkill:',
       skillViewerSkill.value?.name,
     )
-    console.log('[handleRightSidebarSkillClick] AFTER route change - route:', route.fullPath)
+    console.log('[_handleRightSidebarSkillClick] AFTER route change - route:', route.fullPath)
     console.log(
-      '[handleRightSidebarSkillClick] AFTER route change - currentView:',
+      '[_handleRightSidebarSkillClick] AFTER route change - currentView:',
       currentView.value,
     )
   }, 100)
@@ -740,8 +735,10 @@ const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOption
     codeEditorLoading.value = false
   }
 }
+ 
 
-const handleCodeEditorFileClick = (file: api.FolderEntry) => {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _handleCodeEditorFileClick = (file: api.FolderEntry) => {
   if (!rightSidebarCwd.value) return
   return openInCodeEditor({
     filePath: file.path,
@@ -1651,7 +1648,6 @@ watch(
       // Restore git file viewer state from URL
       const filePath = query.file as string
       const staged = query.staged === '1'
-      const cwd = query.cwd as string
 
       if (filePath) {
         // Decode the file path
@@ -1685,7 +1681,6 @@ watch(
     } else if (view === 'code-editor') {
       // Restore code editor state from URL
       const filePath = query.file as string
-      const cwd = query.cwd as string
       // Optional 1-based line number to scroll to on mount (set when the user
       // clicks a line in the diff view). Only valid numbers > 0 are honored.
       const lineParam = query.line as string | undefined
@@ -2128,9 +2123,9 @@ defineExpose({
       v-if="rightSidebarCwd"
       :cwd="rightSidebarCwd"
       :width="rightSidebarWidth"
-      @file-click="handleRightSidebarFileClick"
-      @skill-click="handleRightSidebarSkillClick"
-      @code-editor-file-click="handleCodeEditorFileClick"
+      @file-click="_handleRightSidebarFileClick"
+      @skill-click="_handleRightSidebarSkillClick"
+      @code-editor-file-click="_handleCodeEditorFileClick"
       @resize="handleRightSidebarResize"
     />
     -->

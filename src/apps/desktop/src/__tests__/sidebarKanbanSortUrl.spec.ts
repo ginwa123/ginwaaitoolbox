@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref, createApp } from 'vue'
-import { setActivePinia, createPinia, type Pinia } from 'pinia'
+import { setActivePinia, createPinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 
 import Sidebar from '../components/shell/Sidebar.vue'
@@ -31,6 +31,8 @@ import * as api from '../api'
 // The real SseClient type isn't exported from sseBus, so we type the
 // stub as `any` to match the `__setSseBusGlobalClient` signature.
 // Each method returns a no-op so the bus internals stay quiet.
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(initial: 'connecting'): any {
   const stub = {
     state: initial,
@@ -74,23 +76,6 @@ const KANBAN_ID = 'item_kanban_sortby'
 const FOLDER_ID = 'item_folder_sortby'
 const DESIGN_ID = 'item_design_sortby'
 
-function makeKanbanItem(overrides: Record<string, unknown> = {}) {
-  return {
-    id: KANBAN_ID,
-    name: 'Kanban',
-    item_type: 'kanban',
-    path: '/tmp',
-    kanban_columns: [
-      { id: 'col_a', name: 'todo', workspace_item_id: KANBAN_ID, position: 0, created_at: '2026-01-01' },
-      { id: 'col_b', name: 'in_progress', workspace_item_id: KANBAN_ID, position: 1, created_at: '2026-01-01' },
-    ],
-    tasks: [],
-    isLoaded: true,
-    isLoading: false,
-    ...overrides,
-  }
-}
-
 function makeFolderItem(overrides: Record<string, unknown> = {}) {
   return {
     id: FOLDER_ID,
@@ -116,10 +101,8 @@ function makeDesignItem(overrides: Record<string, unknown> = {}) {
 }
 
 describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026-08-06)', () => {
-  let pinia: Pinia
-
   beforeEach(() => {
-    pinia = setActivePinia(createPinia())
+    setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
       value: {
         getItem: vi.fn(() => null),
@@ -170,10 +153,15 @@ describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026
         icon: '📁',
         expanded: true,
         items: [makeFolderItem()],
+       
       },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
 
+ 
+
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
 
     await layout.handleSelectItem(WS_ID, FOLDER_ID)
@@ -196,12 +184,16 @@ describe('Sidebar.handleSelectItem — kanban default-URL emits sortsParam (2026
         id: WS_ID,
         name: 'WS',
         icon: '📁',
+         
         expanded: true,
         items: [makeDesignItem()],
       },
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
 
     const wrapper = mountSidebar()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
 
     await layout.handleSelectItem(WS_ID, DESIGN_ID)

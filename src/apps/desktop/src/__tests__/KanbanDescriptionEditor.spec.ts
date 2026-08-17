@@ -23,8 +23,7 @@
  * Chunk 2 — KanbanDescriptionEditor component.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { mount, flushPromises } from '@vue/test-utils'
 import KanbanDescriptionEditor from '../components/kanban/KanbanDescriptionEditor.vue'
 
 interface FakeResponse extends Partial<Response> {

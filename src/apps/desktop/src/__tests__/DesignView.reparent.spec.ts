@@ -13,7 +13,6 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import DesignView from '../components/design/DesignView.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
-import * as api from '../api'
 
 const { listDesignPagesMock, reparentBatchSpy } = vi.hoisted(() => ({
   listDesignPagesMock: vi.fn().mockResolvedValue({
@@ -50,8 +49,13 @@ const ITEM = {
   path: '',
   design_elements: [],
   workspace_id: 'ws_1',
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
+ 
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeEl(overrides: Record<string, unknown> = {}): any {
   return {
     id: 'el_1',
@@ -91,8 +95,10 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
   it('handleLayerReparent with newParentId=null routes through workspacesStore.reparentDesignElementsBatch with the payload', async () => {
     const store = useWorkspacesStore()
     store.setActiveDesignPage('page_1')
+     
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
@@ -104,8 +110,11 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
     await flushPromises()
 
+ 
+
     // The LayersPanel emits `reparent` with the composable's result
     // shape: { elementIds, newParentId }.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a', 'b'], newParentId: null })
     await flushPromises()
 
@@ -117,21 +126,25 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
   })
 
   it('handleLayerReparent with newParentId=<group-id> passes the group id through as new_parent_id', async () => {
+     
     const store = useWorkspacesStore()
     store.setActiveDesignPage('page_1')
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
       props: {
         item: { ...ITEM, design_elements: [makeEl({ id: 'a' }), makeEl({ id: 'group', type: 'group' })] },
         workspaceId: 'ws_1',
+         
         itemId: 'item_1',
       },
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a'], newParentId: 'group' })
     await flushPromises()
 
@@ -142,11 +155,14 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
   })
 
+ 
+
   it('handleLayerReparent with empty elementIds is a quiet no-op (no store call)', async () => {
     const store = useWorkspacesStore()
     store.setActiveDesignPage('page_1')
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const wrapper = mount(DesignView, {
@@ -154,12 +170,14 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: [], newParentId: null })
     await flushPromises()
 
     expect(storeSpy).not.toHaveBeenCalled()
   })
 
+   
   it('handleLayerReparent is a quiet no-op when activePageId is empty', async () => {
     const store = useWorkspacesStore()
     // Mount with workspaceId='' so useDesignHandlers.reparentLayers
@@ -168,8 +186,10 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     // the composable short-circuits when ANY of the three ids is empty.
     const storeSpy = vi
       .spyOn(store, 'reparentDesignElementsBatch')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
+     
     const wrapper = mount(DesignView, {
       props: {
         item: { ...ITEM, design_elements: [makeEl({ id: 'a' })] },
@@ -179,6 +199,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     })
     await flushPromises()
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a'], newParentId: null })
     await flushPromises()
 
@@ -189,6 +210,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
     const store = useWorkspacesStore()
     store.setActiveDesignPage('page_1')
     vi.spyOn(store, 'reparentDesignElementsBatch').mockRejectedValue(
+       
       new Error('cycle detected'),
     )
 
@@ -199,6 +221,7 @@ describe('DesignView LayersPanel @reparent wire (Chunk 4 Task 4.3)', () => {
 
     // The handler is async + void — must not propagate to caller.
     expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(wrapper.vm as any).handleLayerReparent({ elementIds: ['a'], newParentId: null })
     }).not.toThrow()
   })

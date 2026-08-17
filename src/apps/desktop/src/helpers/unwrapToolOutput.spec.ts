@@ -25,9 +25,9 @@ describe('unwrapToolOutput', () => {
   })
 
   it('throws on malformed envelope', () => {
-    expect(() => unwrapToolOutput('<error>something</error>')).toThrow()
-    expect(() => unwrapToolOutput('not xml at all')).toThrow()
-    expect(() => unwrapToolOutput('<tool><name>foo</name>')).toThrow()
+    expect(() => unwrapToolOutput('<error>something</error>')).toThrow('MalformedToolEnvelope')
+    expect(() => unwrapToolOutput('not xml at all')).toThrow('MalformedToolEnvelope')
+    expect(() => unwrapToolOutput('<tool><name>foo</name>')).toThrow('MalformedToolEnvelope')
   })
 
   it('tryUnwrapToolOutput returns null on malformed input', () => {

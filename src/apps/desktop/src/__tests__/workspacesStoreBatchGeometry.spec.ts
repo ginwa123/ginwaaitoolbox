@@ -6,7 +6,6 @@ import {
   _clearRecentLocalMutationsForTests,
   isRecentLocalMutation,
 } from '../stores/workspaces'
-import * as api from '../api'
 
 describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
   const originalFetch = global.fetch
@@ -58,6 +57,8 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
             makeElement('e2', 0, 0),
             makeElement('e3', 0, 0),
           ],
+         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -102,7 +103,9 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           design_elements: [
             makeElement('e1', 0, 0),
             makeElement('e2', 0, 0),
+           
           ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -138,8 +141,10 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           item_type: 'design',
           name: 'Item',
           path: '/tmp',
+           
           position: 0,
           design_elements: [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -169,9 +174,11 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
           workspace_id: 'ws_1',
           item_type: 'design',
           name: 'Item',
+           
           path: '/tmp',
           position: 0,
           design_elements: [makeElement('e_single', 0, 0)],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -182,10 +189,12 @@ describe('workspacesStore.updateDesignElementsGeometryBatch', () => {
       x: 99,
     })
 
+     
     expect(isRecentLocalMutation('e_single')).toBe(true)
   })
 })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeElement(id: string, x: number, y: number): any {
   return {
     id,

@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 
 /**
  * Persists a vertically-scrolling container's `scrollTop` to
@@ -143,7 +143,7 @@ export function useChatScrollRestore(
   // Reads the raw saved value (no "near bottom" gating here — that's
   // restore()'s job, computed against the CURRENT container geometry
   // which is only known after the VirtualScroller has measured items).
-  let savedScrollTop: number | null = readSaved()
+  const savedScrollTop: number | null = readSaved()
 
   let attachedEl: HTMLElement | null = null
 

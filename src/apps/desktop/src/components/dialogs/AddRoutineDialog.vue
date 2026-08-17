@@ -94,13 +94,11 @@ function validate5FieldCron(expr: string): string | null {
     const f = fields[i]!
     const max = CRON_FIELD_MAX[i]!
     for (const part of f.split(',')) {
-      let step = 1
       let range = part
       const slash = part.indexOf('/')
       if (slash >= 0) {
         const s = Number(part.slice(slash + 1))
         if (!Number.isInteger(s) || s <= 0) return `Bad step in field ${i + 1}: "${part}"`
-        step = s
         range = part.slice(0, slash)
       }
       let lo: number, hi: number

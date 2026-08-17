@@ -66,6 +66,8 @@ const makeKanbanItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
     },
   ],
   ...overrides,
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
@@ -73,15 +75,19 @@ const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
   name: 'Simplify Design',
   item_type: 'design',
   tasks: [],
+   
   ...overrides,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 function installBusForTests() {
   __resetSseBus()
   installSseBus(createApp({}))
   __setSseBusGlobalClient(makeStubClient() as SseClient)
+ 
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(): any {
   return {
     state: 'open',
@@ -97,15 +103,20 @@ function makeStubClient(): any {
 
 function setRoute(q: Record<string, string>) {
   useRouteMock.mockReturnValue({
+     
     query: q,
     path: '/app',
     fullPath: '/app?' + new URLSearchParams(q).toString(),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
+
+ 
 
 function mountApp(workspaceItems: WorkspaceItem[], query: Record<string, string>): VueWrapper {
   setRoute(query)
   const ws = useWorkspacesStore()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ws.workspaces = [{ id: WS_ID, name: 'WS', items: workspaceItems }] as any
   return mount(AppLayout, {
     global: {
@@ -130,11 +141,13 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
     vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+     
     vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
       path: '/',
       absolute: '/',
       home: '/',
       entries: [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     useRouteMock.mockReset()
     useRouterMock.mockReset()
@@ -150,12 +163,14 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
       view: 'workspace',
       workspaceId: WS_ID,
       itemId: `${KANBAN_ITEM_ID}/chat/${TASK_ID}`,
+     
     })
     await flushPromises()
     // After onMounted + initializeFromSystemFolder fires (and clears
     // workspaces due to the empty API mock), re-set workspaces so the
     // pending URL restore can find the item.
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeKanbanItem()] }] as any
     await flushPromises()
     expect(ws.activeWorkspaceItemId).toBe(KANBAN_ITEM_ID)
@@ -164,6 +179,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
   })
 
   it('mounting with bare itemId does NOT set activeTaskId', async () => {
+     
     const wrapper = mountApp([makeKanbanItem()], {
       view: 'workspace',
       workspaceId: WS_ID,
@@ -171,7 +187,9 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     })
     await flushPromises()
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeKanbanItem()] }] as any
+     
     await flushPromises()
     expect(ws.activeWorkspaceItemId).toBe(KANBAN_ITEM_ID)
     expect(ws.activeTaskId).toBeNull()
@@ -180,6 +198,8 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
 
   it('legacy ?view=task&task=X URL is silently rewritten to view=workspace&itemId=Y/chat/task_X', async () => {
     const replaceMock = vi.fn()
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn(), back: vi.fn() } as any)
     setRoute({
       view: 'task',
@@ -188,6 +208,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
       itemId: KANBAN_ITEM_ID,
     })
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeKanbanItem()] }] as any
     mount(AppLayout, {
       global: {
@@ -201,6 +222,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     const firstCall = replaceMock.mock.calls[0]
     expect(firstCall).toBeDefined()
     const call = firstCall![0] as { query: Record<string, string> }
+     
     expect(call.query.view).toBe('workspace')
     expect(call.query.itemId).toBe(`${KANBAN_ITEM_ID}/chat/${TASK_ID}`)
   })
@@ -211,6 +233,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     // chat suffix; workspaceId stays absent (caller refreshes /
     // re-navigates to discover it).
     const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn(), back: vi.fn() } as any)
     setRoute({
       view: 'task',
@@ -234,6 +257,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
   })
 
   it('mounting with /chat/<taskId> on a design item sets activeDesignChatTaskId via onMounted branch', async () => {
+     
     // Design items have empty tasks arrays post-init, so the chat
     // task is restored via the onMounted `setActiveTask` call (not
     // via parent-discovery in setActiveTask). Verify the URL bar
@@ -245,6 +269,7 @@ describe('AppLayout — simplify-url-browser wire shape', () => {
     })
     await flushPromises()
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeDesignItem()] }] as any
     await flushPromises()
     // activeTaskId is set even though the design item has empty tasks

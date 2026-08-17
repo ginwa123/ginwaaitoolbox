@@ -45,6 +45,8 @@ import { makeLocalStorageStub } from './helpers'
  * is shared across all channel subscribers.
  */
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -345,6 +347,9 @@ describe('designSse — local-mutation dedupe', () => {
   })
 })
 
+ 
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeWorkspaceWithItem(workspaceId: string, itemId: string): any {
   return {
     id: workspaceId,

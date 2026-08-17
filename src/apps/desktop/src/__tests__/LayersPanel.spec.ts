@@ -347,7 +347,7 @@ describe('LayersPanel.vue — top-level drop-zone rows (must not look like eleme
     const dropZones = wrapper.findAll('[data-testid="design-layer-drop-zone-top-level"]')
     for (const dz of dropZones) {
       // None of the 7 known type icons should appear inside a drop zone.
-      expect(dz.text()).not.toMatch(/[▭◯T🖼◳◫◇]/)
+      expect(dz.text()).not.toMatch(/[▭◯T\u{1F5BC}◳◫◇]/u)
     }
   })
 

@@ -131,10 +131,8 @@ describe('workspacesStore — kanban task tags passthrough', () => {
     const item = store.workspaces[0]?.items[0]
     const rolledBackTask = item?.tasks?.[0]
     expect(rolledBackTask).toBeDefined()
-    if (rolledBackTask) {
-      // Rollback: tags should be back to ['original'].
-      expect(rolledBackTask.tags).toEqual(['original'])
-    }
+    // Rollback: tags should be back to ['original'].
+    expect(rolledBackTask!.tags).toEqual(['original'])
   })
 
   it('updateTaskDetails skips the API call when no fields are provided', async () => {

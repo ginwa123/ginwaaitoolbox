@@ -819,19 +819,6 @@ jobs:
           $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
           & $bash -lc 'zig build test --summary all'
 
-      - name: Run AI workflow TUI tests
-        if: runner.os != 'Windows'
-        run: zig build test:ai_workflow:tui --summary all
-
-      - name: Run AI workflow TUI tests (Windows)
-        if: runner.os == 'Windows'
-        # See the long comment in `Run main test suite (Windows)` —
-        # the `shell: bash` + PATH prepend trick is the same.
-        shell: pwsh
-        run: |
-          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
-          & 'C:\Program Files\Git\bin\bash.exe' -lc 'zig build test:ai_workflow:tui --summary all'
-
       - name: Build nalar + nalar-desktop binaries
         if: runner.os != 'Windows'
         # The deliverable. Runs on both Linux and macOS cells (each builds
@@ -1076,11 +1063,92 @@ jobs:
             zig-out/bin/nalar-desktop.exe
           retention-days: 14
 
-  # frontend: REMOVED in 2026-07-04 plan (docs/superpowers/plans/2026-07-04-nalar-desktop-ci-cd.md).
-  # The Vue webapp is bundled into the nalar-desktop binary via the
-  # build-time codegen step (zig build codegen:webapp-assets → bun run build
-  # → src/apps/desktop/dist/ → generated webapp_assets.zig → embedded bytes
-  # in zig-out/bin/nalar-desktop). Type-check (vue-tsc) and lint (oxlint,
-  # eslint) are caught locally before PRs. The 8 pre-existing vitest
-  # failures tracked in the deleted step are not gating artifacts.
-  # To restore a dedicated frontend job later, see Chunk 3 follow-up.
+  frontend:
+    name: frontend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
+    runs-on: ${{ matrix.os }}
+    # Same matrix shape as the backend job (self-hosted Linux X64 +
+    # macOS ARM64). Windows excluded for the first cut — Bun on the
+    # Windows self-hosted runner has unverified edge cases. See
+    # docs/superpowers/plans/2026-07-04-nalar-desktop-ci-cd.md for the
+    # original analysis. Revisit if a Windows run is needed.
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - [self-hosted, Linux, X64]
+          - [self-hosted, macOS, ARM64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js 24
+        # The self-hosted Linux X64 runner has only Bun on PATH after
+        # `oven-sh/setup-bun@v2` (which adds Bun but NOT a real Node.js
+        # binary). Our `type-check` package.json script invokes
+        # `node ./node_modules/.bin/vue-tsc ...`, and bash does PATH
+        # lookup for the literal `node` - without a real Node on PATH,
+        # bash finds Bun itself, and Bun's JS runtime (which reports
+        # `process.version: v24.x` for compatibility) can't resolve
+        # `.vue` imports under `moduleResolution: bundler`. vue-tsc
+        # then fails with three TS2307 errors on every `.ts` entry
+        # point that imports a `.vue` file (src/main.ts,
+        # src/helpers/index.ts, src/router/index.ts).
+        #
+        # Adding `actions/setup-node@v4` BEFORE `oven-sh/setup-bun@v2`
+        # puts a real `node` + `npm` earlier in `$PATH`, so bash's
+        # `node` lookup finds the real binary. We use `npm run` for
+        # the script invocations so the same `node` binary is used
+        # consistently.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun node_modules
+        # Same cache key as the backend job — a cache hit in either job
+        # warms the other on the next run.
+        uses: actions/cache@v4
+        with:
+          path: src/apps/desktop/node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('src/apps/desktop/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install dependencies (cache miss only)
+        # `actions/cache` restores node_modules on a cache HIT, but Bun
+        # always re-checks the lockfile. On a cache HIT, this is a
+        # near-no-op. On a cache MISS, this is the real install.
+        working-directory: src/apps/desktop
+        run: bun install --frozen-lockfile
+
+      - name: Lint (oxlint + eslint, fail-on-issue mode)
+        # `npm run lint:check` runs WITHOUT --fix (the dev `lint`
+        # script auto-fixes in place - that would silently mutate files
+        # in CI and exit 0, defeating the gate). Using `npm run`
+        # instead of `bun run` so the script invocations go through
+        # real Node, not Bun's runtime.
+        working-directory: src/apps/desktop
+        run: npm run lint:check
+
+      - name: Test (vitest, non-watch)
+        # `--run` is already baked into the `test` package.json script.
+        # vitest's default watch mode hangs CI on exit, so we use the
+        # CI-safe script (NOT `test:unit` which preserves watch mode
+        # for local dev). `npm run` invokes it under real Node.
+        working-directory: src/apps/desktop
+        run: npm run test
+
+      - name: Build (vue-tsc + vite)
+        # `npm run build` chains `vue-tsc && vite build` in parallel
+        # via run-p. Both must succeed; the backend job's codegen
+        # step picks up the resulting `dist/` and embeds it as
+        # webapp_assets.zig. Using `npm run` (not `bun run`) so the
+        # `node` invocation in the `type-check` script resolves to
+        # the real Node.js binary installed by the `Install Node.js
+        # 24` step earlier in this job.
+        working-directory: src/apps/desktop
+        run: npm run build

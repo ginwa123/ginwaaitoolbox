@@ -39,7 +39,6 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 
 import * as api from '../api'
 import ChatView from '../components/views/ChatView.vue'
-import PreviewSidePanel from '../components/preview/PreviewSidePanel.vue'
 import {
   installSseBus,
   __resetSseBus,
@@ -65,6 +64,8 @@ if (
 
 // Stub SseClient — same as chatViewWorktree.spec.ts:82
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -106,24 +107,34 @@ function installChatViewMocks() {
     cwd: '/tmp/test-repo',
     git_worktree_cwd: '',
     max_total_tokens: 0,
+     
     max_capacity_total_tokens: 0,
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
     session_name: '',
+     
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: true,
     branch: 'main',
+     
     has_changes: false,
+     
     is_clean: true,
     current: 'main',
     status: 'clean',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} } as any)
 }
 

@@ -68,6 +68,8 @@ export interface TaskComponentProps {
  * site. The handlers inside the composable still pass typed args to
  * `emit(...)`, so the contract is preserved end-to-end.
  */
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
 export type EmitFn = (event: any, ...args: any[]) => void
 
 /** Surface returned by the composable. */

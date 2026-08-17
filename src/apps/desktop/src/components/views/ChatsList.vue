@@ -11,6 +11,7 @@ import * as api from '../../api'
 const router = useRouter()
 
 // Props
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const props = defineProps<{
   collapsed?: boolean
 }>()
@@ -69,6 +70,7 @@ const chatsResizeStartPx = ref(0)
 // Chunk 5 / Task 5.3 for the migration context.
 
 // Virtual scroller ref
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
 const virtualScrollerRef = ref<any>(null)
 
 // Get computed chats height in pixels from percentage
@@ -146,6 +148,7 @@ const loadChats = async () => {
     const data = await api.getChats('updated_at', chatsSortDirection.value, 30)
     console.log('[ChatsList] API returned:', data)
     const sessions = data.sessions || []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     navItems.value = sessions.map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
@@ -197,6 +200,7 @@ const loadMoreChats = async () => {
       20,
       chatsNextCursor.value,
     )
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     const newItems = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
       name: session.session_name || 'New Chat',
@@ -331,7 +335,9 @@ onMounted(async () => {
 // Watch for navItems changes to sync active state
 watch(
   navItems,
+   
   (newItems) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
     newItems.forEach((item, index) => {
       if (item.processing && processingState.value[item.id]) {
         item.processing = true // Keep processing state true

@@ -19,7 +19,7 @@
  * Plan: docs/superpowers/plans/2026-08-06-hide-queue-button-processing.md
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import FileInput from '@/components/file/FileInput.vue'
 

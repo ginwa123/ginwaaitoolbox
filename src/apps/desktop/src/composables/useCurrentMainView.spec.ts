@@ -1,5 +1,5 @@
 // src/apps/desktop/src/composables/useCurrentMainView.spec.ts
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { reactive, nextTick } from 'vue'
 import { useCurrentMainView } from './useCurrentMainView'
 
@@ -15,6 +15,8 @@ vi.mock('vue-router', async () => {
 function mockRoute(query: Record<string, string>) {
   // `reactive` so post-mount mutations trigger the computed.
   const obj = reactive({ query, path: '/app', fullPath: '/app' })
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouteMock.mockReturnValue(obj as any)
   return obj
 }

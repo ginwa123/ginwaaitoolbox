@@ -62,6 +62,8 @@ vi.mock('vue-router', async () => {
 })
 
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -83,12 +85,17 @@ const baseSession = {
   is_auto_retry_until_stop: '0',
 }
 
+ 
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function mockGetChatsWith(extraSessions: any[] = []) {
   vi.spyOn(api, 'getChats').mockResolvedValue({
     sessions: [baseSession, ...extraSessions],
     has_more: false,
+     
     next_cursor: null,
     total: 1 + extraSessions.length,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -138,9 +145,11 @@ describe('ChatsList — chat row active state from URL', () => {
 
   it('chat row is active when URL is ?view=chat&session=X (URL-driven)', async () => {
     useRouteMock.mockReturnValue({
+       
       query: { view: 'chat', session: 'chat_abc' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_abc',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()
@@ -154,10 +163,12 @@ describe('ChatsList — chat row active state from URL', () => {
   })
 
   it('chat row is NOT active when URL is ?view=workspace (different section)', async () => {
+     
     useRouteMock.mockReturnValue({
       query: { view: 'workspace', itemId: 'item_x' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_x',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()
@@ -168,11 +179,13 @@ describe('ChatsList — chat row active state from URL', () => {
     expect(chatButton!.attributes('style') ?? '').not.toContain('--semantic-active-bg')
   })
 
+   
   it('chat row is NOT active when URL is ?view=chat&session=OTHER (different chat)', async () => {
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_other' },
       path: '/app',
       fullPath: '/app?view=chat&session=chat_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()
@@ -187,12 +200,14 @@ describe('ChatsList — chat row active state from URL', () => {
     // The fix's invariant: loadChats() derives active from
     // useCurrentMainView() at call time. So calling loadChats()
     // with a different URL between renders should produce a
+     
     // different active state.
     const route = reactive({
       query: {} as Record<string, string>,
       path: '/app',
       fullPath: '/app',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(route as any)
     mockGetChatsWith()
     const wrapper = mountChatsList()

@@ -52,6 +52,8 @@ const ITEM = {
   path: '',
   design_elements: [],
   workspace_id: 'ws_1',
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 /**
@@ -217,7 +219,9 @@ describe('DesignView pinch-to-zoom (Pointer Events)', () => {
       x: 100, y: 100, width: 200, height: 200,
       rotation: 0, opacity: 1, fill: '#fff', stroke: '', stroke_width: 0,
       corner_radius: 0, text_content: '', text_style: '', image_url: '',
+       
       z_index: 0, position: 0, file_path: '', created_at: '', updated_at: '',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     const wrapper = mount(DesignView, {
       props: {

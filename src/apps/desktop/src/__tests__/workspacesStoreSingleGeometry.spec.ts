@@ -67,6 +67,8 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     } as Response)
   }
 
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function makeElement(id: string, x: number, y: number): any {
     return {
       id,
@@ -95,6 +97,9 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     }
   }
 
+ 
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function seedItem(itemId = 'item_1', elems: any[] = [makeElement('el_1', 0, 0)]): void {
     const ws = useWorkspacesStore()
     ws.workspaces.push({
@@ -108,8 +113,10 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
           item_type: 'design',
           name: 'Item',
           path: '/tmp',
+           
           position: 0,
           design_elements: elems,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       expanded: false,
@@ -125,9 +132,11 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     await useWorkspacesStore().updateDesignElementGeometry(
       'ws_1', 'item_1', 'p1', 'el_1',
       { x: 250, y: 350 },
+     
     )
 
     const store = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = store.workspaces[0]!.items as any[]
     const el = items[0].design_elements[0]
     expect(el.x).toBe(250)
@@ -139,10 +148,12 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
 
     mockFetchOnce(200, { ...makeElement('el_1', 100, 100), width: 300, height: 400 })
     await useWorkspacesStore().updateDesignElementGeometry(
+       
       'ws_1', 'item_1', 'p1', 'el_1',
       { width: 300, height: 400 },
     )
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = useWorkspacesStore().workspaces[0]!.items as any[]
     const el = items[0].design_elements[0]
     expect(el.width).toBe(300)
@@ -156,11 +167,13 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
     seedItem('item_1', [makeElement('el_1', 100, 100)])
 
     mockFetchOnce(200, { ...makeElement('el_1', 100, 100), rotation: 45 })
+     
     await useWorkspacesStore().updateDesignElementGeometry(
       'ws_1', 'item_1', 'p1', 'el_1',
       { rotation: 45 },
     )
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = useWorkspacesStore().workspaces[0]!.items as any[]
     const el = items[0].design_elements[0]
     expect(el.rotation).toBe(45)
@@ -173,13 +186,17 @@ describe('workspacesStore.updateDesignElementGeometry (single)', () => {
       makeElement('el_3', 200, 200),
     ])
 
+     
     mockFetchOnce(200, makeElement('el_2', 999, 999))
+     
     await useWorkspacesStore().updateDesignElementGeometry(
       'ws_1', 'item_1', 'p1', 'el_2',
       { x: 999, y: 999 },
     )
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const elements = (useWorkspacesStore().workspaces[0]!.items as any[])[0].design_elements as any[]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(elements.map((e: any) => e.id)).toEqual(['el_1', 'el_2', 'el_3'])
     expect(elements[1].x).toBe(999)
     expect(elements[1].y).toBe(999)

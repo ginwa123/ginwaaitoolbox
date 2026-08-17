@@ -1,3 +1,4 @@
+<!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
 /**
  * Bash.vue — legacy-compat wrapper around the canonical ShellTool renderer.

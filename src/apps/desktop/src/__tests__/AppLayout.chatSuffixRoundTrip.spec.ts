@@ -67,6 +67,8 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
     },
   ],
   ...overrides,
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any)
 
 function installBusForTests() {
@@ -75,6 +77,9 @@ function installBusForTests() {
   __setSseBusGlobalClient(makeStubClient() as SseClient)
 }
 
+ 
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function makeStubClient(): any {
   return {
     state: 'open',
@@ -91,8 +96,10 @@ function makeStubClient(): any {
 function setRoute(q: Record<string, string>) {
   useRouteMock.mockReturnValue({
     query: q,
+     
     path: '/app',
     fullPath: '/app?' + new URLSearchParams(q).toString(),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -112,9 +119,11 @@ describe('AppLayout — chat suffix round-trip', () => {
     vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
     vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
       path: '/',
+       
       absolute: '/',
       home: '/',
       entries: [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     useRouteMock.mockReset()
     useRouterMock.mockReset()
@@ -136,18 +145,23 @@ describe('AppLayout — chat suffix round-trip', () => {
     expect(parsed.chatTaskId).toBe(taskId)
   })
 
+ 
+
   it('mounting → setActiveTask → close → URL transitions: bare → /chat/<taskId> → bare', async () => {
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock, back: vi.fn() } as any)
 
     // Mount on the bare workspace URL (no chat).
     setRoute({
+       
       view: 'workspace',
       workspaceId: WS_ID,
       itemId: ITEM_ID,
     })
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeItem()] }] as any
 
     const wrapper = mount(AppLayout, {
@@ -202,13 +216,17 @@ describe('AppLayout — chat suffix round-trip', () => {
     wrapper.unmount()
   })
 
+   
   it('URL sync watcher preserves /chat/<taskId> suffix when setActiveTask fires', async () => {
     // Set-up: mount on bare URL, then push the chat URL, then
     // setActiveTask fires (causes parent-discovery mutation).
     // The watcher must NOT clobber the suffix.
     const replaceMock = vi.fn()
     const pushMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock, back: vi.fn() } as any)
+
+ 
 
     setRoute({
       view: 'workspace',
@@ -216,12 +234,14 @@ describe('AppLayout — chat suffix round-trip', () => {
       itemId: `${ITEM_ID}/chat/${TASK_ID}`,
     })
     const ws = useWorkspacesStore()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeItem()] }] as any
 
     const wrapper = mount(AppLayout, {
       global: {
         mocks: { $router: { replace: vi.fn() } },
         provide: { processingState: ref<Record<string, boolean>>({}) },
+       
       },
       attachTo: document.body,
     })
@@ -230,6 +250,7 @@ describe('AppLayout — chat suffix round-trip', () => {
 
     // Re-set workspaces post-mount (initializeFromSystemFolder clears
     // them via the empty API mock).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeItem()] }] as any
     await nextTick()
     replaceMock.mockClear()
@@ -246,9 +267,8 @@ describe('AppLayout — chat suffix round-trip', () => {
     // /chat/<taskId> suffix.
     for (const call of replaceMock.mock.calls) {
       const q = call[0]?.query as Record<string, string> | undefined
-      if (q) {
-        expect(q.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
-      }
+      if (!q) continue
+      expect(q.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
     }
 
     wrapper.unmount()

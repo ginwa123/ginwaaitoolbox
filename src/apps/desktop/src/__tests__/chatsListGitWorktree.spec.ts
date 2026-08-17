@@ -32,6 +32,8 @@ import {
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -112,7 +114,9 @@ describe('ChatsList worktree badge', () => {
       ],
       has_more: false,
       next_cursor: null,
+       
       total: 1,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // ChatsList no longer opens a session-events SSE stream of its
     // own — that subscription moved to workspacesStore (Chunk 5).
@@ -148,8 +152,10 @@ describe('ChatsList worktree badge', () => {
         },
       ],
       has_more: false,
+       
       next_cursor: null,
       total: 1,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mountChatsList()
@@ -176,9 +182,11 @@ describe('ChatsList worktree badge', () => {
           // no git_worktree_cwd key at all
         },
       ],
+       
       has_more: false,
       next_cursor: null,
       total: 1,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mountChatsList()
@@ -202,10 +210,12 @@ describe('ChatsList worktree badge', () => {
           selected_profile_model: 'gpt-4o',
           git_worktree_cwd: '/worktrees/feature-x',
         },
+       
       ],
       has_more: false,
       next_cursor: null,
       total: 1,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mountChatsList()

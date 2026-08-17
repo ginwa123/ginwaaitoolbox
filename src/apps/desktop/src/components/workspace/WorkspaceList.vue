@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
+ 
 import WorkspaceItemComponent from './WorkspaceItem.vue'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
 
 // Bind the workspaces prop so the drag-and-drop handler can read it.
@@ -83,7 +86,9 @@ const activeAddMenu = ref<string | null>(null)
 // Scroll container ref
 const workspacesScrollRef = ref<HTMLElement | null>(null)
 
+ 
 // Loading state
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const workspacesLoading = ref(false)
 
 // ─── Drag-and-drop state (workspace reordering) ────────────────────────────

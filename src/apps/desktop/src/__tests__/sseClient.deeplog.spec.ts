@@ -479,11 +479,13 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
       (c) => c.msg === 'close() called' && c.extra?.reason === 'user-clicked-exit-button',
     )
     expect(closeCall).toBeDefined()
+    expect(closeCall!.extra).toBeDefined()
     // `caller` is the stack-trace fragment captured at the call
     // site. Must be a non-empty string so the operator can grep
     // for it.
-    expect(typeof closeCall?.extra?.caller).toBe('string')
-    expect((closeCall?.extra?.caller as string).length).toBeGreaterThan(0)
+    const caller = closeCall!.extra!.caller
+    expect(typeof caller).toBe('string')
+    expect((caller as string).length).toBeGreaterThan(0)
   })
 
   it('close(reason) and reconnect(reason) capture the reason + caller frame', () => {
@@ -502,13 +504,15 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
       (c) => c.msg === 'close() called' && c.extra?.reason === 'component-unmount',
     )
     expect(closeCall).toBeDefined()
+    expect(closeCall!.extra).toBeDefined()
     // The caller field is a stack trace segment — must be a
     // non-empty string. We don't assert the exact frame because
     // vitest's stack format varies by Node version, but the
     // captured stack should at least contain the sseClient module.
-    expect(closeCall?.extra?.caller).toBeDefined()
-    expect(typeof closeCall?.extra?.caller).toBe('string')
-    expect((closeCall?.extra?.caller as string).length).toBeGreaterThan(0)
+    const caller = closeCall!.extra!.caller
+    expect(caller).toBeDefined()
+    expect(typeof caller).toBe('string')
+    expect((caller as string).length).toBeGreaterThan(0)
   })
 
   it('STALL DETECTED log includes suspect + conclusion fields', () => {
@@ -529,12 +533,13 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
     const calls = parseLogCalls()
     const stall = calls.find((c) => c.msg === 'STALL DETECTED')
     expect(stall).toBeDefined()
+    expect(stall!.extra).toBeDefined()
     // Must classify the stall into one of the five buckets.
-    expect(['backend', 'network', 'browser', 'user-code', 'unknown']).toContain(
-      stall?.extra?.suspect,
-    )
-    expect(typeof stall?.extra?.conclusion).toBe('string')
-    expect((stall?.extra?.conclusion as string).length).toBeGreaterThan(0)
+    const suspect = stall!.extra!.suspect
+    expect(['backend', 'network', 'browser', 'user-code', 'unknown']).toContain(suspect)
+    const conclusion = stall!.extra!.conclusion
+    expect(typeof conclusion).toBe('string')
+    expect((conclusion as string).length).toBeGreaterThan(0)
     // navigatorOnline field is new — must be present.
     expect(stall?.extra).toHaveProperty('navigatorOnline')
     // tabHiddenAtMs field is new — must be present.

@@ -11,7 +11,6 @@ const emit = defineEmits<{
 }>()
 
 // State
-const isLoading = ref(false)
 const error = ref<string | null>(null)
 const activeTab = ref<'explorer' | 'git'>('explorer')
 
@@ -226,7 +225,6 @@ const unstageAllFiles = async () => {
 }
 
 // Compute header info
-const headerName = computed(() => props.cwd ? props.cwd.split('/').pop() || props.cwd : null)
 const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
 const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.value.length > 0 || untrackedFiles.value.length > 0)
 </script>

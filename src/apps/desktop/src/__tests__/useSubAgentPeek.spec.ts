@@ -227,6 +227,8 @@ describe('useSubAgentPeek', () => {
       id: 'a1',
       role: 'assistant',
       content: 'before-unmount',
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     expect(peek.messages.value.some((m) => m.content === 'before-unmount')).toBe(true)
@@ -240,7 +242,9 @@ describe('useSubAgentPeek', () => {
       session_id: peekSessionId,
       id: 'a2',
       role: 'assistant',
+       
       content: 'after-unmount',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     expect(peek.messages.value.some((m) => m.content === 'after-unmount')).toBe(false)
@@ -296,8 +300,10 @@ describe('useSubAgentPeek', () => {
 
     for (const chunk of chunks) {
       __dispatchSseBus('llm', {
+         
         session_id: CHUNK_PEEK_SID,
         ...chunk,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any)
       await nextTick()
     }
@@ -350,9 +356,11 @@ describe('useSubAgentPeek', () => {
     __dispatchSseBus('llm', {
       session_id: NEW_MSG_PEEK_SID,
       id: 'x1',
+       
       role: 'tool',
       content: 'r',
       tool_call_id: 'call_1',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
 
@@ -385,10 +393,12 @@ describe('useSubAgentPeek', () => {
 
     // Event for SID_A must mutate peekA only.
     __dispatchSseBus('llm', {
+       
       session_id: SID_A,
       id: 'a1',
       role: 'assistant',
       content: 'for-A',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
 
@@ -396,11 +406,13 @@ describe('useSubAgentPeek', () => {
     expect(peekB.messages.value.some((m) => m.content === 'for-A')).toBe(false)
 
     // Event for SID_B must mutate peekB only.
+     
     __dispatchSseBus('llm', {
       session_id: SID_B,
       id: 'b1',
       role: 'assistant',
       content: 'for-B',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
 

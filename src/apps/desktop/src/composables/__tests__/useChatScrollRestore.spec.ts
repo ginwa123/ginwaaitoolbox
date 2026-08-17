@@ -99,8 +99,8 @@ beforeAll(() => {
  * contract: the parent reads `restore()` AFTER its own
  * `await rAF × 2` so the saved value is computed by then).
  */
-let capturedRestore: { current: (() => number | null) | null } = { current: null }
-let capturedRestorePosition: { current: ((value: number) => void) | null } = {
+const capturedRestore: { current: (() => number | null) | null } = { current: null }
+const capturedRestorePosition: { current: ((value: number) => void) | null } = {
   current: null,
 }
 

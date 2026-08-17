@@ -129,6 +129,8 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
 
     const emitted = w.emitted('create')
     expect(emitted).toBeTruthy()
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     expect(payload.name).toBe('Plain task')
     expect(payload.description).toBe('Text only')
@@ -156,7 +158,9 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
     clickInDom('[data-testid="kanban-task-detail-save"]')
 
     const emitted = w.emitted('create')
+     
     expect(emitted).toBeTruthy()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     // Description still has ONLY the user's text — no `data:image/`
     // payload, no `![name](…)` block (the editor doesn't insert it
@@ -188,10 +192,14 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
 
     clickInDom('[data-testid="kanban-task-detail-save"]')
 
+     
     const emitted = w.emitted('create')
     expect(emitted).toBeTruthy()
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     expect(payload.pendingFiles.length).toBe(2)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(payload.pendingFiles.map((p: any) => p.file.name)).toEqual([
       'one.png',
       'two.png',
@@ -211,10 +219,12 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
       makeFile('chart.png'),
     )
 
+     
     clickInDom('[data-testid="kanban-task-detail-create-and-run"]')
 
     const emitted = w.emitted('create-and-run')
     expect(emitted).toBeTruthy()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     expect(payload.mode).toBe('create_and_run')
     expect(payload.pendingFiles.length).toBe(1)
@@ -237,11 +247,13 @@ describe('KanbanTaskDetailDialog — create mode image attachments', () => {
     })
     await flushPromises()
     // Trigger a save (name unchanged → still dirty via description change).
+     
     setInputValue('[data-testid="kanban-task-detail-description"]', 'Edited text')
     await flushPromises()
     clickInDom('[data-testid="kanban-task-detail-save"]')
     const emitted = wrapper!.emitted('save')
     expect(emitted).toBeTruthy()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const payload = (emitted![0] as any[])[0]
     // Edit-mode save stays free of pendingFiles — host doesn't need
     // to do anything post-upload (the editor already uploaded).

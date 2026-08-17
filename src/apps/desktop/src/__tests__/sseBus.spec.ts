@@ -18,6 +18,8 @@ import * as api from '../api'
  * the listener list in a closure; tests reach it via `as any`).
  */
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -37,7 +39,9 @@ function makeStubClient(initial: SseState): SseClient {
 
 function emitStubState(c: SseClient, s: SseState): void {
   // Walk the internal listener list. The stub stores it as a non-public
+   
   // property — we use `as any` to reach it from the test.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const listeners = (c as any).__stateListeners as
     | Array<(s: SseState, info: SseStateInfo) => void>
     | undefined
@@ -74,8 +78,10 @@ describe('sseBus', () => {
     bus.on('session', cb)
     __dispatchSseBus('session', {
       id: 's_1',
+       
       action: 'updated',
       name: 'Renamed',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     expect(cb).toHaveBeenCalledTimes(1)
     expect(cb).toHaveBeenCalledWith({
@@ -88,28 +94,34 @@ describe('sseBus', () => {
   it('on(type, cb) — multiple subscribers all fire', () => {
     const bus = installSseBus(app)
     const a = vi.fn(),
+       
       b = vi.fn()
     bus.on('worker', a)
     bus.on('worker', b)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     __dispatchSseBus('worker', { id: 'w_1', action: 'created' } as any)
     expect(a).toHaveBeenCalledTimes(1)
     expect(b).toHaveBeenCalledTimes(1)
   })
 
   it('on(type, cb) — unsubscribe stops delivery', () => {
+     
     const bus = installSseBus(app)
     const cb = vi.fn()
     const off = bus.on('session', cb)
     off()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     __dispatchSseBus('session', { id: 's_1', action: 'updated' } as any)
     expect(cb).not.toHaveBeenCalled()
   })
 
+   
   it('off(type, cb) — removes a specific listener', () => {
     const bus = installSseBus(app)
     const cb = vi.fn()
     bus.on('session', cb)
     bus.off('session', cb)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     __dispatchSseBus('session', { id: 's_1', action: 'updated' } as any)
     expect(cb).not.toHaveBeenCalled()
   })
@@ -183,13 +195,17 @@ describe('sseBus', () => {
     expect(spy).toHaveBeenCalledTimes(1)
     const callArg = spy.mock.calls[0]![0]
     // The bus must wire up workers, sessions, kanban, llm, queue.
+     
     expect(callArg.channels.workers).toBeDefined()
+     
     expect(callArg.channels.sessions).toBeDefined()
     expect(callArg.channels.kanban).toBeDefined()
     expect(callArg.channels.llm).toBeDefined()
     expect(callArg.channels.queue).toBeDefined()
     // llm and queue must use bare tokens (no sessionId).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((callArg.channels.llm as any).sessionId).toBeUndefined()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((callArg.channels.queue as any).sessionId).toBeUndefined()
     spy.mockRestore()
   })

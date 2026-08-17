@@ -20,7 +20,7 @@
   Plan: docs/superpowers/plans/2026-07-30-kanban-task-search.md Chunk 5
 -->
 <script setup lang="ts">
-const props = defineProps<{ modelValue: string }>()
+defineProps<{ modelValue: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const onInput = (e: Event) => {

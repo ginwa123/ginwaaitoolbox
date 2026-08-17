@@ -86,7 +86,7 @@ onMounted(async () => {
   } catch {
     // Network/API failure — keep legacy.
   }
-  const merged: NalarConfig = { ...legacy, ...(apiData ?? {}) }
+  const merged: NalarConfig = { ...legacy, ...apiData }
   setConfig(merged)
 })
 
@@ -258,19 +258,6 @@ const subAgentErrors = ref<{ name?: string; model?: string; base_url?: string; a
 const mcpServerErrors = ref<{ name?: string; url?: string }>({})
 
 // ─── Section event handlers ──────────────────────────────────────────────
-function emptyDefaults(): DefaultsConfig {
-  return {
-    api_endpoint: '', api_key: '', model: '', url_style: 'openai',
-    temperature: 0.7, max_tokens: '', system_prompt: '', notify_on_complete: false,
-    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
-    // null = cascade wildcard (fall through to per-profile → built-in).
-    max_capacity_token_model: null,
-    compaction_threshold_percent: null,
-    // Workflow retry delay — plan 2026-07-15-retry-delay.
-    retry_delay_ms: 0,
-  }
-}
-
 function startAddProfile() {
   profileModal.value = {
     mode: 'add',
@@ -451,7 +438,7 @@ async function setActiveProfile(name: string) {
   activeProfile.value = name
   isSettingActive.value = true
   try {
-    await saveNalarConfig({ ...(config.value ?? {}), active_profile: name } as NalarConfig)
+    await saveNalarConfig({ ...config.value, active_profile: name } as NalarConfig)
     emit('notification', `Active profile set to "${name}"`, 'success')
   } catch (err) {
     emit('notification', `Failed to set active: ${err instanceof Error ? err.message : String(err)}`, 'error')
@@ -482,7 +469,7 @@ async function clearActiveProfile() {
   activeProfile.value = null
   isSettingActive.value = true
   try {
-    await saveNalarConfig({ ...(config.value ?? {}), active_profile: '' } as NalarConfig)
+    await saveNalarConfig({ ...config.value, active_profile: '' } as NalarConfig)
     emit('notification', `Active profile cleared — using top-level config`, 'success')
   } catch (err) {
     activeProfile.value = previous // optimistic-rollback on failure

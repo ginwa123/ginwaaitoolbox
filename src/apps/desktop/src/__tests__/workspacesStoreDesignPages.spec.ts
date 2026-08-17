@@ -30,15 +30,6 @@ import { useWorkspacesStore } from '../stores/workspaces'
 const WS_ID = 'ws_1'
 const ITEM_ID = 'item_1'
 
-function mockFetchOnce(status: number, body: unknown): void {
-  fetchMock.mockResolvedValueOnce({
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-  } as Response)
-}
-
 function makePage(id: string, name: string, position: number): Record<string, unknown> {
   return {
     id,

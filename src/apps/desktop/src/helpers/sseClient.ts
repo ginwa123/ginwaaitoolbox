@@ -438,7 +438,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (!debugOn) return
     const t = now()
     const extra_ = extra ? ' ' + JSON.stringify(extra) : ''
-    // eslint-disable-next-line no-console
+     
     console.log(`[sse-client ${iso()} t=${fmtMs(t)}] ${msg}${extra_}`)
   }
   // Track timing of last received event. Initially null = no event yet.
@@ -488,10 +488,10 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // disconnect?" — was it App.vue on unmount? pagehide/beforeunload?
   // Or did nobody ask, and the browser fired onerror by itself?
   let lastCloseReason: string | null = null
-  let lastCloseCaller: string | null = null
+  let _lastCloseCaller: string | null = null
   let lastCloseAtMs: number | null = null
   let lastReconnectReason: string | null = null
-  let lastReconnectCaller: string | null = null
+  let _lastReconnectCaller: string | null = null
   let lastReconnectAtMs: number | null = null
   // Capture the constructor's caller frame so we can answer
   // "who instantiated this SseClient?" — useful when several
@@ -1285,7 +1285,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     // next log line ("state closed {reason: manual}") and any
     // in-flight DISCONNECT DIAGNOSIS log both know who asked.
     lastCloseReason = 'page-unload'
-    lastCloseCaller = 'pagehide|beforeunload'
+    _lastCloseCaller = 'pagehide|beforeunload'
     lastCloseAtMs = now()
     log('close() called', { reason: 'page-unload', caller: 'pagehide|beforeunload' })
     teardown()
@@ -1390,7 +1390,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       // Track so the next STALL DETECTED or DISCONNECT DIAGNOSIS can
       // answer "did user code just close this?".
       lastCloseReason = r
-      lastCloseCaller = caller
+      _lastCloseCaller = caller
       lastCloseAtMs = now()
       log('close() called', { reason: r, caller })
       teardown()
@@ -1413,7 +1413,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       const r = reason ?? 'unspecified'
       const caller = getCallerStack()
       lastReconnectReason = r
-      lastReconnectCaller = caller
+      _lastReconnectCaller = caller
       lastReconnectAtMs = now()
       log('reconnect() called', { reason: r, caller, attempt })
       if (es) {

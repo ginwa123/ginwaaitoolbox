@@ -22,6 +22,8 @@ import {
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -104,7 +106,6 @@ describe('sidebar active-state exclusivity', () => {
     ws.setActiveWorkspaceItem('item_42')
     expect(ws.activeWorkspaceItemId).toBe('item_42')
 
-    const nav = useNavigationStore()
     const wrapper = mountChatsList()
     await nextTick()
     // @ts-expect-error: push fake item into the local navItems ref
@@ -257,7 +258,9 @@ describe('AppLayout URL-driven chat navigation', () => {
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
       path: '/app',
+       
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
 
@@ -275,8 +278,10 @@ describe('AppLayout URL-driven chat navigation', () => {
     // page was reloaded with a chat-session URL.
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_url' },
+       
       path: '/app',
       fullPath: '/app?view=chat&session=chat_url',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mount(AppLayout, {
@@ -322,9 +327,11 @@ describe('AppLayout URL-driven chat navigation', () => {
     // (non-reactive) mock return value.
     const routeObj = reactive({
       query: { view: 'workspace' } as Record<string, string>,
+       
       path: '/app',
       fullPath: '/app?view=workspace',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(routeObj as any)
 
     const wrapper = mount(AppLayout, {

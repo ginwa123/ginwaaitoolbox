@@ -26,7 +26,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { nextTick, ref, type Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import WorkspaceItemTaskRow from '../components/workspace/WorkspaceItemTaskRow.vue'

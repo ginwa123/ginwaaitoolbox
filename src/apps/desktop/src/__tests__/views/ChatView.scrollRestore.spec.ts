@@ -103,6 +103,8 @@ Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
 })
 
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -129,33 +131,45 @@ function installApiMocks(): void {
     image_url: '',
     finish_reason: '',
   }))
+   
   vi.spyOn(api, 'getChatHistory').mockResolvedValue({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     messages: messages as any,
     has_more: false,
     next_cursor: null,
     cwd: '/tmp',
     git_worktree_cwd: '',
+     
     max_total_tokens: 0,
+     
     max_capacity_total_tokens: 0,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
+     
     session_name: '',
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: false,
+     
     branch: '',
     has_changes: false,
     is_clean: true,
+     
     current: '',
     status: 'clean',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -189,22 +203,6 @@ async function mountChatView(chatId: string): Promise<VueWrapper> {
  * `scrollHeight` should be > `clientHeight` for restore() to
  * return a non-null value.
  */
-function setScrollGeometry(
-  container: HTMLElement,
-  { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
-): void {
-  Object.defineProperty(container, 'scrollHeight', {
-    value: scrollHeight,
-    writable: true,
-    configurable: true,
-  })
-  Object.defineProperty(container, 'clientHeight', {
-    value: clientHeight,
-    writable: true,
-    configurable: true,
-  })
-}
-
 function findScrollerContainer(wrapper: VueWrapper): HTMLElement | null {
   // The VirtualScroller renders a `<div class="virtual-scroller">`
   // container. Find it via the wrapper's HTML. If it's missing,

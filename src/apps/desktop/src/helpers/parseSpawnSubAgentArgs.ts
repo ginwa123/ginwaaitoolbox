@@ -40,6 +40,7 @@ export function parseSpawnSubAgentArgs(
   if (!Array.isArray(parsed)) return null
 
   const match = parsed.find(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     (tc: any) => tc && tc.id === toolCallId && tc.function?.name === 'spawn_sub_agent',
   )
   if (!match) return null
@@ -47,6 +48,7 @@ export function parseSpawnSubAgentArgs(
   const rawArgs = match.function?.arguments
   if (rawArgs == null) return null
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   let args: any
   if (typeof rawArgs === 'string') {
     try {
@@ -63,6 +65,7 @@ export function parseSpawnSubAgentArgs(
   if (!args || !Array.isArray(args.sub_agents)) return null
 
   // Defensive copy: only include known fields, don't trust the LLM's shape.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   return args.sub_agents.map((sa: any) => {
     if (
       !sa ||

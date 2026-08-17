@@ -78,8 +78,12 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
           path: '/tmp',
           workspace_id: 'ws_1',
           design_elements: [],
+         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
+       
       ],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // The workspace is derived from the active item — no separate
     // setActiveWorkspace exists in the store. Setting the active
@@ -87,8 +91,10 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
     store.setActiveWorkspaceItem('item_1')
     store.setActiveDesignPage('page_1')
 
+     
     const reorderSpy = vi
       .spyOn(store, 'reorderDesignElements')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     // Render with 3 elements (z_index DESC: top to bottom). The panel
@@ -131,17 +137,23 @@ describe('LayersPanel ▲/▼ wire-up (Chunk 1 of undo/redo plan)', () => {
           id: 'item_1',
           name: 'Design',
           item_type: 'design',
+           
           path: '/tmp',
           workspace_id: 'ws_1',
+           
           design_elements: [],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
+     
     store.setActiveWorkspaceItem('item_1')
     store.setActiveDesignPage('page_1')
 
     const reorderSpy = vi
       .spyOn(store, 'reorderDesignElements')
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue([] as any)
 
     const elements = [

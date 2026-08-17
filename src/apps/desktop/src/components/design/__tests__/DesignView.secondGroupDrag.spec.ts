@@ -57,6 +57,8 @@ const GROUP = {
   rotation: 0, opacity: 1, fill: '#fff', stroke: '', stroke_width: 0,
   corner_radius: 0, text_content: '', text_style: '', image_url: '',
   z_index: 0, position: 0, file_path: '', created_at: '', updated_at: '',
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 const CHILD = {
@@ -68,7 +70,9 @@ const CHILD = {
   x: 110, y: 110, width: 50, height: 50,
   rotation: 0, opacity: 1, fill: '#fff', stroke: '', stroke_width: 0,
   corner_radius: 0, text_content: '', text_style: '', image_url: '',
+   
   z_index: 0, position: 0, file_path: '', created_at: '', updated_at: '',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 describe('DesignView second group drag (regression)', () => {
@@ -87,13 +91,17 @@ describe('DesignView second group drag (regression)', () => {
    * pointermove/pointerup handlers, then fire a complete gesture.
    *
    * The group renders BEFORE its child (because the group has lower
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
    * `position` and the v-for is `for element in elements`).
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function setupGestureOnGroup(wrapper: any) {
     const allEls = wrapper.findAll('[data-design-element]')
+     
     if (allEls.length === 0) throw new Error('no design elements rendered')
     // The group's elementStyle.left/top will reflect x=100, y=100;
     // the child reflects x=110, y=110. Match by inline style.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const groupEl = allEls.find((w: any) => {
       const style = w.attributes('style') || ''
       // group's style contains 'left: 100px' (and child 'left: 110px')
@@ -101,14 +109,18 @@ describe('DesignView second group drag (regression)', () => {
     }) || allEls[0]
     const elementEl = groupEl.element as HTMLElement
     elementEl.setPointerCapture = () => {}
+     
     elementEl.releasePointerCapture = () => {}
     elementEl.hasPointerCapture = (): boolean => true
 
     const handlers: { move?: (e: PointerEvent) => void; up?: (e: PointerEvent) => void } = {}
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(elementEl as any).addEventListener = (type: string, cb: any) => {
       if (type === 'pointermove') handlers.move = cb
       if (type === 'pointerup') handlers.up = cb
     }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(elementEl as any).removeEventListener = () => {}
 
     return { elementEl, handlers }
@@ -176,15 +188,19 @@ describe('DesignView second group drag (regression)', () => {
     const item = {
       id: 'item_1', name: 'item', item_type: 'design', path: '/tmp',
       workspace_id: 'ws_1', position: 0,
+       
       created_at: '', updated_at: '',
       design_pages: [],
       design_elements: [
+         
         { ...GROUP },
         { ...CHILD },
       ],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any
     store.workspaces = [
       { id: 'ws_1', name: 'ws', position: 0, items: [item] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     const wrapper = mount(DesignView, {
       props: {

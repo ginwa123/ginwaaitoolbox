@@ -122,7 +122,7 @@ describe('useProfileDelete', () => {
     mockDeleteProfile.mockRejectedValueOnce(new Error('HTTP 404'))
 
     const { deleteProfile } = useProfileDelete(profiles, active, undefined, onError)
-    await expect(deleteProfile('alpha')).rejects.toThrow()
+    await expect(deleteProfile('alpha')).rejects.toThrow('HTTP 404')
 
     expect(onError.mock.calls[0]![0]).toMatch(/not found/i)
   })

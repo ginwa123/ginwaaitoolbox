@@ -80,6 +80,8 @@ if (
 // isolation — see kanbanSse.spec.ts / workspacesStoreSessionEvents.spec.ts
 // for the event-dispatch pattern using `__dispatchSseBus`.
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -114,8 +116,12 @@ function installChatViewMocks(opts: {
     cwd: opts.cwd ?? '/tmp/main-repo',
     git_worktree_cwd: opts.gitWorktreeCwd ?? '',
     max_total_tokens: 0,
+     
     max_capacity_total_tokens: 0,
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   // A `watch(() => sessionId.value, ...)` in ChatView fires
   // `api.getSession(newId)` once onMounted sets the sessionId. The
@@ -124,9 +130,11 @@ function installChatViewMocks(opts: {
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
     session_name: '',
+     
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // The status poll checks `is_git_repo` to decide whether to render
   // the status button. We always return a clean repo so the button
@@ -134,15 +142,18 @@ function installChatViewMocks(opts: {
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: true,
     branch: 'main',
+     
     has_changes: false,
     is_clean: true,
     current: 'main',
     status: 'clean',
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // loadProfiles() is called outside onMounted; the response shape
   // matches the real `/api/config/nalar` payload.
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
@@ -347,11 +358,14 @@ describe('ChatView worktree status button', () => {
     // in <script setup> are exposed under the proxy's properties.
     const vm = wrapper!.vm as unknown as { streamingContent: string }
 
+ 
+
     // Dispatch a chunk event for the matching session_id.
     __dispatchSseBus('llm', {
       session_id: 'session_bus_match',
       type: 'chunk',
       content: 'hello from bus',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     await nextTick()
@@ -367,6 +381,7 @@ describe('ChatView worktree status button', () => {
 
     // Dispatch a chunk event for the WRONG session_id. The listener
     // filter (`event.session_id !== sid`) must drop this — the bus's
+     
     // single global EventSource delivers ALL sessions' events to the
     // listener; the filter is the layer that scopes them to the
     // active ChatView.
@@ -374,10 +389,12 @@ describe('ChatView worktree status button', () => {
       session_id: 'OTHER_SESSION',
       type: 'chunk',
       content: 'should be dropped',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     await nextTick()
 
+     
     expect(vm.streamingContent).toBe('')
 
     // Now send a matching one — confirms the previous "no update"
@@ -386,6 +403,7 @@ describe('ChatView worktree status button', () => {
       session_id: 'session_bus_isolation',
       type: 'chunk',
       content: 'matching one passes',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await nextTick()
     await nextTick()

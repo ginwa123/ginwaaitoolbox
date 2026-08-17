@@ -34,6 +34,8 @@ describe('workspacesStore.addKanbanTask', () => {
   })
 
   it("mode='create' calls api.createKanbanTask with mode='create' and returns task + null session", async () => {
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'Fix bug', task_type: 'standard' } as any
     const createSpy = vi
       .spyOn(api, 'createKanbanTask')
@@ -47,7 +49,9 @@ describe('workspacesStore.addKanbanTask', () => {
       cwd: '/home/u/proj',
     })
 
+     
     expect(createSpy).toHaveBeenCalledTimes(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [wid, iid, payload] = createSpy.mock.calls[0] as [string, string, any]
     expect(wid).toBe('ws_1')
     expect(iid).toBe('item_1')
@@ -64,7 +68,10 @@ describe('workspacesStore.addKanbanTask', () => {
     expect(result.session).toBeNull()
   })
 
+ 
+
   it("mode='create_and_run' forwards queue_message + selected_profile_model + returns session", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'Fix bug', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'Fix bug', status: 'send' }
     const createSpy = vi
@@ -79,9 +86,11 @@ describe('workspacesStore.addKanbanTask', () => {
       selected_profile_model: 'profile_a',
       isAutoRetryUntilStop: '1',
       cwd: '/home/u/proj',
+     
     })
 
     expect(createSpy).toHaveBeenCalledTimes(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const [, , payload] = createSpy.mock.calls[0] as [string, string, any]
     expect(payload.mode).toBe('create_and_run')
     expect(payload.queue_message).toBe('Fix bug\n\nThe login button is broken')

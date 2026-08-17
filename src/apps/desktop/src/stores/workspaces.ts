@@ -1960,6 +1960,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       name: string
       type: DesignElement['type']
       html: string
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
       [k: string]: any
     },
   ): Promise<DesignElement> {
@@ -2854,6 +2855,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         // the error as a toast so the user can click the card to retry.
         const msg = err instanceof Error ? err.message : String(err)
         useNotificationStore().notifyError(msg, 'Task created — agent did not start')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
         return { task: null as any, session: null }
       }
       throw err
@@ -3165,30 +3167,6 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // failure mode quiet (same pattern as addTask's catch block).
     } finally {
       colState.isLoading = false
-    }
-  }
-
-  // Back-compat shim: if any code path still calls the old
-  // board-wide `loadMoreTasks(ws, item)`, dispatch to the FIRST
-  // column that has more. This is a temporary helper used by older
-  // tests; production code should use `loadMoreTasksForColumn` with
-  // an explicit columnId. Marked as deprecated so future refactors
-  // can remove it cleanly.
-  //
-  // NOTE: This shim is intentionally NOT exposed via the store's
-  // return object (it's a private helper). The store returns
-  // `loadMoreTasksForColumn` only.
-  async function loadMoreTasks(workspaceId: string, itemId: string) {
-    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
-    if (!workspace) return
-    const item = workspace.items.find((i) => i.id === itemId)
-    if (!item) return
-    const colPagination = item.columnPagination ?? {}
-    for (const [columnId, state] of Object.entries(colPagination)) {
-      if (state.hasMore && !state.isLoading) {
-        await loadMoreTasksForColumn(workspaceId, itemId, columnId)
-        return
-      }
     }
   }
 

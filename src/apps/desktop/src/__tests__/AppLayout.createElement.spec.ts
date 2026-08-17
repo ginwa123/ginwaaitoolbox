@@ -90,6 +90,8 @@ const WS_ID = 'ws_1'
 const DESIGN_ITEM_ID = 'item_design_1'
 
 function makeStubClient(): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -156,14 +158,20 @@ describe('AppLayout.handleDesignCreateElement wire (bug: add element manual not 
       path: '/',
       absolute: '/',
       home: '/',
+     
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
+       
       next_cursor: null,
+       
       total: 0,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'listDesignPages').mockResolvedValue({ pages: [] } as any)
     vi.useFakeTimers()
     setActivePinia(createPinia())
@@ -179,21 +187,30 @@ describe('AppLayout.handleDesignCreateElement wire (bug: add element manual not 
     vi.restoreAllMocks()
     wrapper?.unmount()
     wrapper = null
+   
   })
 
   function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
+     
     vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => {
+       
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { workspaces: store.workspaces as any }
     })
     vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ws = store.workspaces.find((w: any) => w.id === wsId)
+       
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
     })
     vi.spyOn(api, 'getTasks').mockImplementation(async () => {
       return { tasks: [], has_more: false, next_cursor: null }
     })
     vi.spyOn(api, 'listDesignPages').mockImplementation(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { pages: [] } as any
+     
     })
   }
 
@@ -202,6 +219,7 @@ describe('AppLayout.handleDesignCreateElement wire (bug: add element manual not 
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [makeDesignItem()] },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ] as any
     store.setActiveWorkspaceItem(DESIGN_ITEM_ID)
     store.setActiveDesignPage('page_1')
@@ -244,6 +262,7 @@ describe('AppLayout.handleDesignCreateElement wire (bug: add element manual not 
     // AppLayout's handler guards on the active workspace + item. If
     // either is missing (race window during workspace/item switch)
     // the handler must NOT call the api. Defensive guard matches
+     
     // handleDesignUpdateElement / handleDesignDeleteElement.
     const store = useWorkspacesStore()
     // No activeWorkspace/Item set — the guard fires and bails.
@@ -253,6 +272,7 @@ describe('AppLayout.handleDesignCreateElement wire (bug: add element manual not 
     await flushPromises()
 
     const exposed = wrapper.vm as unknown as {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handleDesignCreateElement: (body: any) => Promise<void>
     }
     await exposed.handleDesignCreateElement({

@@ -41,6 +41,8 @@ vi.mock('vue-router', async () => {
 })
 
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -93,12 +95,16 @@ describe('ChatsList — chat row active state stays in sync with URL', () => {
         {
           session_id: 'chat_abc',
           session_name: 'My Chat',
+           
           updated_at: '2026-08-06T00:00:00Z',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
       ],
       has_more: false,
+       
       next_cursor: null,
       total: 1,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
   afterEach(() => {
@@ -110,9 +116,11 @@ describe('ChatsList — chat row active state stays in sync with URL', () => {
     // Phase 1: user is on the chat URL → row is highlighted.
     const route = reactive({
       query: { view: 'chat', session: 'chat_abc' } as Record<string, string>,
+       
       path: '/app',
       fullPath: '/app?view=chat&session=chat_abc',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockImplementation(() => route as any)
     const wrapper = mountChatsList()
     await flushLoadChats()

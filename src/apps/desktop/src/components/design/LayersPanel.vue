@@ -243,23 +243,6 @@ function cloneTree(nodes: LayerTreeNode[]): LayerTreeNode[] {
 }
 
 /**
- * Flatten the tree depth-first (parent before its children, then
- * move to the next sibling) into a top-to-bottom id list. This is
- * the wire shape `reorder` emits — the parent re-orders its
- * `elements` array by these ids (or applies z_index deltas, depending
- * on the eventual `PATCH /reorder` endpoint — currently the wire is
- * the same as the pre-Chunk-7 flat wire).
- */
-function flattenTopDown(nodes: LayerTreeNode[]): string[] {
-  const ids: string[] = []
-  for (const n of nodes) {
-    ids.push(n.element.id)
-    if (n.children.length > 0) ids.push(...flattenTopDown(n.children))
-  }
-  return ids
-}
-
-/**
  * Move the element at `elementId` up by one (toward the top of the
  * panel). In a tree, "up" means swapping with the previous SIBLING
  * within the same parent's children array. For top-level elements,
@@ -347,7 +330,7 @@ const handleMoveDown = (elementId: string): void => {
       class="flex-1 overflow-y-auto"
       style="scrollbar-width: thin;"
     >
-      <template v-for="(node, idx) in layerTree" :key="node.element.id">
+      <template v-for="node in layerTree" :key="node.element.id">
         <LayerRow
           :node="node"
           :depth="0"

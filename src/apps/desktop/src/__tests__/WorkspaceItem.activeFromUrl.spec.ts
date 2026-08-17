@@ -57,6 +57,8 @@ describe('WorkspaceItem — item row active state from URL', () => {
       query: { view: 'workspace', itemId: 'item_design' },
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_design',
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountItem()
     await nextTick()
@@ -71,7 +73,9 @@ describe('WorkspaceItem — item row active state from URL', () => {
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_xyz' },
       path: '/app',
+       
       fullPath: '/app?view=chat&session=chat_xyz',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountItem()
     await nextTick()
@@ -84,8 +88,10 @@ describe('WorkspaceItem — item row active state from URL', () => {
   it('item row is NOT active when URL is ?view=workspace&itemId=OTHER', async () => {
     useRouteMock.mockReturnValue({
       query: { view: 'workspace', itemId: 'item_other' },
+       
       path: '/app',
       fullPath: '/app?view=workspace&itemId=item_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountItem()
     await nextTick()
@@ -98,9 +104,11 @@ describe('WorkspaceItem — item row active state from URL', () => {
   it('item row active state reacts to URL changes mid-mount', async () => {
     const route = reactive({
       query: {} as Record<string, string>,
+       
       path: '/app',
       fullPath: '/app',
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(route as any)
     const { wrapper } = mountItem()
     await nextTick()

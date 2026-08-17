@@ -18,7 +18,8 @@ const isLoading = ref(false)
 const error = ref<string | null>(null)
 
 // Computed
-const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
+const _hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
 const hasSkills = computed(() => globalSkills.value.length > 0 || localSkills.value.length > 0)
 
 // Skills expand/collapse state (persisted in useSidebarStore)

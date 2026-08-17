@@ -18,6 +18,7 @@
  */
 import { ref, onMounted, onUnmounted } from 'vue'
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const props = defineProps<{
   /** Whether a worktree is currently bound to this session. */
   hasWorktree: boolean

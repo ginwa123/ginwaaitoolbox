@@ -24,8 +24,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { flushPromises, mount } from '@vue/test-utils'
-import { createApp, nextTick, reactive, ref } from 'vue'
+import { mount } from '@vue/test-utils'
+import { createApp, nextTick, reactive } from 'vue'
 
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
@@ -46,6 +46,8 @@ import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 // render any pill, which keeps the existing assertions about
 // <KanbanView> / <ChatView> placement clean.
 function makeStubClient(initial: SseState = 'open'): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -196,7 +198,9 @@ describe('AppLayout — kanban main-content rendering', () => {
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
       path: '/app',
+       
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // Mock workspace + chat API calls that fire-and-forget on mount.
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
@@ -267,8 +271,10 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     })
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
+       
       path: '/app',
       fullPath: '/app',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
@@ -315,9 +321,11 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
         workspaceId: WS_ID,
         itemId: `${KANBAN_ID}/chat/${TASK_ID}`,
       } as Record<string, string>,
+       
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${KANBAN_ID}/chat/${TASK_ID}`,
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(routeObj as any)
     const wrapper = mountAppLayout([
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
@@ -360,10 +368,12 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
         view: 'workspace',
         workspaceId: WS_ID,
         itemId: `${FOLDER_ID}/chat/task_in_folder`,
+       
       } as Record<string, string>,
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${FOLDER_ID}/chat/task_in_folder`,
     })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouteMock.mockReturnValue(routeObj as any)
     const wrapper = mountAppLayout([
       {
@@ -425,11 +435,13 @@ describe('AppLayout — kanban survives route navigation (regression: activeWork
       writable: true,
       configurable: true,
     })
+     
     // Drive AppLayout with a `?view=workspace` URL.
     useRouteMock.mockReturnValue({
       query: { view: 'workspace' } as Record<string, string>,
       path: '/app',
       fullPath: '/app?view=workspace',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })

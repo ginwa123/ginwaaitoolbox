@@ -56,11 +56,15 @@ const ELEMENT = {
   corner_radius: 0, text_content: '', text_style: '', image_url: '',
   z_index: 0, position: 0, file_path: '', created_at: '', updated_at: '',
   parent_id: '',
+ 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 const ITEM = {
   id: 'item_1', name: 'Test', item_type: 'design', path: '',
+   
   workspace_id: 'ws_1',
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as any
 
 describe('DesignView single-element drag → translate emit', () => {
@@ -94,12 +98,16 @@ describe('DesignView single-element drag → translate emit', () => {
 
       // 2. simulate the pointermove + pointerup that DesignElement's
       // `startDrag` registers on the element's addEventListener.
+       
       let moveHandler: ((e: PointerEvent) => void) | null = null
       let upHandler: ((e: PointerEvent) => void) | null = null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).addEventListener = (type: string, cb: any) => {
+         
         if (type === 'pointermove') moveHandler = cb
         if (type === 'pointerup') upHandler = cb
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).removeEventListener = () => {}
 
       elementEl.dispatchEvent(new PointerEvent('pointerdown', {
@@ -160,23 +168,29 @@ describe('DesignView single-element drag → translate emit', () => {
       // in test output (the spec is most useful when it surfaces
       // those warns in a future regression hunt).
       const { setDesignLoggerEnabled } = await import('../../../helpers/designLogger')
+       
       setDesignLoggerEnabled(true)
 
       // Simulate the bug condition: wipe the local selection so the
       // OLD wire would have bailed with selectedIds.size === 0.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(wrapper.vm as any).selectedIds = new Set<string>()
 
       const elementEl = wrapper.find('[data-design-element]').element as HTMLElement
       elementEl.setPointerCapture = () => {}
+       
       elementEl.releasePointerCapture = () => {}
       elementEl.hasPointerCapture = (): boolean => true
 
       let moveHandler: ((e: PointerEvent) => void) | null = null
+       
       let upHandler: ((e: PointerEvent) => void) | null = null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).addEventListener = (type: string, cb: any) => {
         if (type === 'pointermove') moveHandler = cb
         if (type === 'pointerup') upHandler = cb
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).removeEventListener = () => {}
 
       // pointerdown — fires emit('select', ...) which replaces
@@ -213,6 +227,7 @@ describe('DesignView single-element drag → translate emit', () => {
    * (the old assumption was "single-element drag ⇒ exactly one
    * selected"); the NEW wire still fires because the `translate`
    * event carries the elementId directly. The drag SOURCE is the
+   // eslint-disable-next-line @typescript-eslint/no-explicit-any
    * drag source — not the selection set.
    */
   it('still fires translate when selectedIds has multiple ids (drag source carries elementId)', async () => {
@@ -220,6 +235,7 @@ describe('DesignView single-element drag → translate emit', () => {
     _store.setActiveDesignPage('page_1')
 
     // Add a second element so the multi-select is real.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const other: any = {
       ...ELEMENT,
       id: 'el_2',
@@ -234,6 +250,7 @@ describe('DesignView single-element drag → translate emit', () => {
         workspaceId: 'ws_1',
         itemId: 'item_1',
       },
+     
     })
     try {
       await flushPromises()
@@ -242,19 +259,23 @@ describe('DesignView single-element drag → translate emit', () => {
       setDesignLoggerEnabled(true)
 
       // OLD wire would have bailed here (size === 2).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(wrapper.vm as any).selectedIds = new Set<string>(['el_1', 'el_2'])
 
       const elementEl = wrapper.findAll('[data-design-element]')[0]!.element as HTMLElement
       elementEl.setPointerCapture = () => {}
+       
       elementEl.releasePointerCapture = () => {}
       elementEl.hasPointerCapture = (): boolean => true
 
       let moveHandler: ((e: PointerEvent) => void) | null = null
       let upHandler: ((e: PointerEvent) => void) | null = null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).addEventListener = (type: string, cb: any) => {
         if (type === 'pointermove') moveHandler = cb
         if (type === 'pointerup') upHandler = cb
       }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(elementEl as any).removeEventListener = () => {}
 
       elementEl.dispatchEvent(new PointerEvent('pointerdown', {

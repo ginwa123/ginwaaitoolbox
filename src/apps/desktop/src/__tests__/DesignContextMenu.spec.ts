@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, assert } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
@@ -90,7 +90,7 @@ describe('DesignContextMenu', () => {
     ]
     for (const testid of expected) {
       const el = document.querySelector(`[data-testid="${testid}"]`)
-      expect(el, `expected ${testid} in DOM`).not.toBeNull()
+      assert(el, `expected ${testid} in DOM`)
     }
   })
 

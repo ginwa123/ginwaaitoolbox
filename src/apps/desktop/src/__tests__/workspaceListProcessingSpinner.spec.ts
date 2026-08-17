@@ -53,7 +53,7 @@ function mountWorkspaceList(workspaces: Workspace[]) {
       // indicators (spinner / count badge) and not the items'
       // internal state. The stub still renders so the parent layout
       // (workspaces list → workspaces group → item rows) is exercised.
-      stubs: { WorkspaceItem: true },
+      stubs: { WorkspaceItem: WorkspaceItem },
     },
   })
   // Expand the workspaces section so the inner row is rendered.
@@ -202,7 +202,6 @@ describe('WorkspaceList workspace-row processing spinner', () => {
     const row = buttons.find((b) => b.text().includes('Coding'))!
     const html = row.html()
     const spinnerIdx = html.indexOf('workspace-processing-spinner')
-    const chevronIdx = html.indexOf('rotate(90deg)') // chevron with the expanded style
     // Chevron may not have rotate(90deg) when collapsed — instead
     // look for the literal "▶" character which is the chevron glyph.
     const chevronCharIdx = html.indexOf('▶')

@@ -59,9 +59,6 @@ const fetchInitialWorkers = async () => {
   }
 }
 
-// Check if a session is processing
-const isProcessing = (sessionId: string) => !!processingState.value[sessionId]
-
 let offWorker: (() => void) | null = null
 
 onMounted(() => {

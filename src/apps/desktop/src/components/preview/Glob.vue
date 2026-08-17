@@ -1,3 +1,4 @@
+<!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'

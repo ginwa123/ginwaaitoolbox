@@ -49,6 +49,8 @@ class NoopIntersectionObserver {
 
 describe('KanbanTagsInput — autocomplete dropdown', () => {
   beforeEach(() => {
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(globalThis as any).IntersectionObserver = NoopIntersectionObserver
   })
 
@@ -262,10 +264,17 @@ describe('KanbanTagsInput — autocomplete dropdown', () => {
     // Note: the vitest tsconfig has `"lib": []` (no DOM types),
     // so we use `any` for the captured cb/opts instead of the
     // global IntersectionObserver types (which are undeclared).
+     
     const originalIO = globalThis.IntersectionObserver
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let capturedCb: any = null
+     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let capturedOpts: any = null
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(globalThis as any).IntersectionObserver = class MockIntersectionObserver {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       constructor(cb: any, opts?: any) {
         capturedCb = cb
         capturedOpts = opts ?? null
@@ -291,11 +300,13 @@ describe('KanbanTagsInput — autocomplete dropdown', () => {
       capturedCb?.(
         [{ isIntersecting: true }],
         null,
+       
       )
       expect(onLoadMore).toHaveBeenCalledTimes(1)
       // Verify the rootMargin config (100px preload).
       expect(capturedOpts?.rootMargin).toBe('0px 0px 100px 0px')
     } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ;(globalThis as any).IntersectionObserver = originalIO
     }
   })

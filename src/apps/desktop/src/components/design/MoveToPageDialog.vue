@@ -53,7 +53,6 @@ const otherPages = computed(() => {
   return [...filtered].sort((a, b) => a.position - b.position)
 })
 
-const hasMultiplePages = computed(() => otherPages.value.length > 1)
 </script>
 
 <template>

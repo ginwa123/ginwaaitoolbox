@@ -27,7 +27,7 @@ const handleCreateClick = () => {
   memoryDetailRef.value?.startCreate()
 }
 
-const handleMemoryDeleted = (_name: string) => {
+const handleMemoryDeleted = (): void => {
   selectedMemoryName.value = null
   memoryListRef.value?.refresh()
   emit('notification', 'Memory deleted successfully', 'success')

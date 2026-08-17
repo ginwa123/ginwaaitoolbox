@@ -44,6 +44,8 @@ import {
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
+   
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
     reconnect: vi.fn(),
@@ -157,7 +159,9 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
         id: 'ws_1',
         name: 'ws',
         icon: '📁',
+         
         expanded: false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         items: [baseItem as any],
       },
     ]
@@ -192,8 +196,10 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
       {
         id: 'ws_1',
         name: 'ws',
+         
         icon: '📁',
         expanded: false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         items: [{ ...baseItem, tasks: seedTasks(2, 'a_old', 'col_a') } as any],
       },
     ]
@@ -225,9 +231,11 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
         items: [{
           ...baseItem,
           tasks: [
+             
             ...seedTasks(2, 'a', 'col_a'),
             ...seedTasks(2, 'b', 'col_b'),
           ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any],
       },
     ]
@@ -251,10 +259,12 @@ describe('useWorkspacesStore.loadMoreTasksForColumn() — per-column pagination'
     const store = useWorkspacesStore()
     store.workspaces = [
       {
+         
         id: 'ws_1',
         name: 'ws',
         icon: '📁',
         expanded: false,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         items: [baseItem as any],
       },
     ]
