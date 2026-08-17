@@ -14,6 +14,8 @@ import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
+import AgentView from './views/AgentView.vue'
+import AgentChatDialog from './dialogs/AgentChatDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
@@ -1024,6 +1026,60 @@ watch(
   },
   { immediate: true },
 )
+
+// Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+// agent chat dialog visibility. Driven by `activeTask` — when the
+// user clicks a chat task under an agent, `activeTaskWorkspaceItemId`
+// equals the agent's item id and `activeTaskWorkspaceItem.item_type`
+// is `'agent'`. The AgentChatDialog's v-if gates on this exact case.
+const agentChatDialogOpen = ref(false)
+const agentKnowledge = ref<Array<{ id: string; agent_id: string; file_path: string; label: string; position: number }>>([])
+const agentTools = ref<string[]>([])
+
+watch(
+  () => activeTask.value,
+  async (t) => {
+    agentChatDialogOpen.value = !!t && activeWorkspaceItem.value?.item_type === 'agent'
+    if (t && activeWorkspaceItem.value?.item_type === 'agent') {
+      // Lazy-fetch agent data when a chat opens under an agent.
+      try {
+        const wsId = activeWorkspace?.value?.id
+        if (!wsId) return
+        const data = await import('../../api').then((m) =>
+          m.getAgent(wsId, activeWorkspaceItem.value!.id),
+        )
+        agentKnowledge.value = data.knowledge as any
+        agentTools.value = data.tools
+      } catch (e) {
+        console.error('[AppLayout] failed to load agent:', e)
+      }
+    }
+  },
+  { immediate: true },
+)
+
+// Agent view emit handlers — delegated to workspacesStore / API.
+async function handleAgentAddKnowledge() {
+  // TODO (v1.1): wire to api.addAgentKnowledge via a new dialog
+  // (AgentKnowledgeDialog). For v1, the button is present but the
+  // wiring is gated on the parent component providing the dialog.
+  // The click handler is here so AgentView's emit reaches us.
+  console.warn('[AppLayout] handleAgentAddKnowledge: not yet wired (v1.1)')
+}
+async function handleAgentRemoveKnowledge(knowledgeId: string) {
+  // v1.1 wiring. For now, no-op.
+  void knowledgeId
+}
+async function handleAgentToggleTool(toolName: string, enabled: boolean) {
+  // v1.1 wiring. For now, no-op.
+  void toolName; void enabled
+}
+function handleAgentNewChat() {
+  // TODO (v1.1): open a chat dialog. The current iteration ships
+  // the AgentView + dialog shells; the New Chat button's wired
+  // behaviour is a follow-up commit.
+  console.warn('[AppLayout] handleAgentNewChat: not yet wired (v1.1)')
+}
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -2063,6 +2119,39 @@ defineExpose({
         @resize-element="handleDesignResizeElement"
         @delete-element="handleDesignDeleteElement"
         @open-chat="handleDesignOpenChat"
+      />
+      <!-- Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+           4th workspace-item type. Mounted when item_type='agent'.
+           The view is responsible for fetching its own agent data
+           (knowledge + tools) via /api/workspaces/:wsId/items/:itemId/agent.
+           The chat dialog (below) opens when the user clicks a
+           chat task under this agent. -->
+      <AgentView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        :key="'agent-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :knowledge="agentKnowledge"
+        :tools="agentTools"
+        @add-knowledge="handleAgentAddKnowledge"
+        @remove-knowledge="handleAgentRemoveKnowledge"
+        @toggle-tool="handleAgentToggleTool"
+        @new-chat="handleAgentNewChat"
+      />
+      <AgentChatDialog
+        v-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'agent' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        v-model:show="agentChatDialogOpen"
+        :task="activeTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
