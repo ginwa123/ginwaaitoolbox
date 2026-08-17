@@ -448,7 +448,46 @@ pub fn handle_tool(
         var list_id_that_was_loaded: std.ArrayList([]const u8) = .empty;
 
         for (tc) |tool_call| {
-            if (!isKnownToolOrMCP(tool_call.function.name, config)) continue;
+            if (!isKnownToolOrMCP(tool_call.function.name, config)) {
+                const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+                const id_llm_history = try insertLLMHistories(.{
+                    .allocator = allocator,
+                    .io = io,
+                    .db = db,
+                    .logger = logger,
+                    .is_emit_sse = false,
+                    .event_bus = null,
+                    .cwd = cwd,
+                    .entity = .{
+                        .id = created_at,
+                        .session_id = session_id,
+                        .model = model,
+                        .response_content = "unknown tools",
+                        .reasoning_content = null,
+                        .role = agent.Role.tool.to_str(),
+                        .finish_reason = agent.FinishReason.tool.to_str(),
+                        .tool_calls_json = "",
+                        .tool_call_id = tool_call.id,
+                        .agent = current_agent_state.agent,
+                        .loop_index = loop_counter,
+                        .temperature = agent_temperature.*,
+                        .is_thinking = isThinking.*,
+                        .prompt_tokens = 0,
+                        .completion_tokens = 0,
+                        .total_tokens = 0,
+                        .parent_id = parent_session_id,
+                        .parent_session_id = parent_session_id,
+                        .is_input = false,
+                        .is_output = true,
+                        .image_urls = null,
+                        .created_at = created_at,
+                        .is_feed_to_llm = true,
+                        .tool_name = tool_call.function.name,
+                    },
+                });
+                try list_id_that_was_loaded.append(allocator, id_llm_history);
+                continue;
+            }
 
             const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
             const id_llm_history = try insertLLMHistories(.{
