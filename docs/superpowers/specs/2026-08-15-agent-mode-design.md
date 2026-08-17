@@ -25,9 +25,10 @@ After this feature ships:
 1. A user can click `+ Add Item → Add Agent`, enter a name + folder path, and a new Agent appears in the sidebar tree.
 2. Clicking the Agent opens a new `AgentView` with: a Knowledge panel (list of markdown paths with add/remove/edit), and a list of chat sessions under the Agent (existing `workspace_item_tasks` rows scoped to this Agent's item_id).
 3. Adding a knowledge entry = pick an absolute markdown file path on disk (text input + optional Browse dialog). The label is optional.
-4. Opening/starting a chat under the Agent auto-injects the contents of every knowledge file into the system prompt as `## Agent Knowledge`. The injection is capped at **64 KiB total** to protect the context window; if the cap is exceeded, the section is truncated and a warning is logged.
+4. Opening/starting a chat under the Agent auto-injects the contents of every knowledge file into the system prompt as `## Agent Knowledge`. **No content-size cap** — the full contents of every file are read and injected. The backend re-reads files every session and never caches the file contents.
 5. If a knowledge file path is missing or unreadable at session start, it's logged and skipped — the chat still works with whatever files were readable.
 6. Editing the markdown file on disk (in any external editor) reflects on the next chat start — the backend re-reads files every session, never caches.
+7. **Single engineering-hygiene bound:** each file is read with a `readToEndAlloc`-style upper bound of **100 MiB** purely to prevent the server from OOM-ing on a misconfigured path like `/dev/zero` or a multi-GB binary. This is NOT a content budget — it's a single-file OOM safety. Files larger than 100 MiB are logged + skipped with a clear error message naming the path; they don't break the chat.
 
 ## Why a dedicated `agents` table (and not just columns on `workspace_items`)
 
@@ -141,11 +142,10 @@ A new prompt section file: `src/ai_workflow/tui/agentic_loop/prompts_make_agent_
 3. SELECT all rows from `agent_knowledge WHERE agent_id = ? ORDER BY position DESC`.
 4. For each row:
    - `std.fs.openFile(absolute_path, .{})` — on failure, `std.log.warn` and skip.
-   - Read up to `MAX_FILE_BYTES` (16 KiB per file). Truncate at that point.
+   - Read the file's full contents via `readToEndAlloc(allocator, MAX_FILE_BYTES_OOM_SAFETY)` where `MAX_FILE_BYTES_OOM_SAFETY = 100 * 1024 * 1024` (100 MiB). If `error.StreamTooLong` fires (file > 100 MiB), log + skip — don't break the chat.
    - Wrap in `\n### <label-or-basename>\n<file: absolute_path>\n\n<content>\n`.
 5. Prepend `\n\n## Agent Knowledge\n\n` and the user-facing disclaimer `"The following markdown files are part of this Agent's knowledge. Treat them as authoritative reference for any user question that touches their topics; do not invent details that contradict them."\n\n`.
-6. If accumulated bytes > `MAX_TOTAL_BYTES` (64 KiB), truncate the section and append `"\n\n[truncated — additional knowledge files were not included to stay within context budget]\n"`. Log a warning naming the dropped files.
-7. If `agent_knowledge` is empty, return `""`.
+6. If `agent_knowledge` is empty, return `""`.
 
 Wired into the existing prompt-assembly pipeline alongside `prompts_make_workspace_context.zig`:
 ```zig
@@ -211,7 +211,7 @@ return try std.fmt.allocPrint(alloc, "{s}{s}", .{ workspace_ctx, agent_knowledge
 | Open / start a chat under the Agent | n/a | System prompt gets new `## Agent Knowledge` section with file contents |
 | Edit a knowledge `.md` file externally, start a new chat | n/a | Next chat reflects the new contents (backend re-reads every session) |
 | Knowledge path is missing / unreadable | n/a | Logged + skipped; chat continues with remaining files |
-| Knowledge section > 64 KiB | n/a | Truncated with explicit `[truncated]` marker + dropped-file warning |
+| Knowledge file > 100 MiB | n/a | Logged + skipped with a clear error; chat continues with remaining files |
 | Click remove on a knowledge entry | n/a | Entry deleted from DB + panel re-renders |
 | Drag-reorder entries | n/a | Positions updated via PATCH /reorder |
 
@@ -236,7 +236,7 @@ Before claiming done:
    - `agents_update`: updates description, 404 if item not found, 400 if not an agent.
    - `agent_knowledge_create`: validates absolute path (rejects relative), validates file exists (warning only, doesn't 400), assigns position.
    - `agent_knowledge_update`, `_delete`, `_reorder`: standard CRUD.
-   - `prompts_make_agent_knowledge`: empty for non-agent items; reads 1 file for 1-row agent; truncates at 64 KiB; skips unreadable file with logged warning; respects position DESC ordering.
+   - `prompts_make_agent_knowledge`: empty for non-agent items; reads 1 file for 1-row agent; reads the full contents (no truncation); skips unreadable file with logged warning; skips files > 100 MiB with logged warning; respects position DESC ordering.
 3. New frontend tests cover:
    - `AddAgentDialog.spec.ts`: shows "Add Agent" title, name input is required, folder picker integration.
    - `AgentKnowledgeDialog.spec.ts`: path required + absolute validation, label optional, Browse opens picker.
@@ -254,15 +254,15 @@ Before claiming done:
 - **System-prompt override** (`agents.system_prompt_override TEXT`). User did not request; defer until needed.
 - **Per-chat knowledge override.** A single chat within an Agent can either use ALL knowledge or none; no per-chat subset UI.
 - **In-app markdown editor.** User edits knowledge files in their external editor (VS Code, Obsidian, etc.). The frontend just stores the path.
-- **Embedding / vector search / RAG.** Out of scope — knowledge is read in full every chat. If the 64 KiB cap becomes a bottleneck, that's the next conversation.
+- **Embedding / vector search / RAG.** Out of scope — knowledge is read in full every chat (no content cap, per user choice). If context-window pressure becomes a real problem, RAG is the obvious follow-up, but not now.
 - **Knowledge file watching.** No `inotify` / `fs.watch` — backend re-reads files at session start. Edits to a file mid-chat won't reflect until the next chat.
 - **Per-entry toggle ("include this file?").** All entries are always included. If a future use case wants optional entries, add an `enabled` boolean column to a future migration.
 - **Knowledge search / autocomplete** in the path input. Browse dialog covers most cases; a free-form text input is enough for v1.
 
 ## Risks
 
-- **Path validation is best-effort.** We check `std.fs.path.isAbsolute` and that we can `openFile`. We do NOT check that the file is a markdown file (`.md` extension), the file size, or the file encoding. Mitigation: cap reads at 16 KiB per file + 64 KiB total. If users point at huge or binary files, the cap protects the context window; the agent gets garbage and may ignore it.
-- **System prompt bloat.** Each Agent chat carries up to 64 KiB of knowledge. With OpenAI's GPT-4 (8K-128K context) this is meaningful headroom; with smaller models it can crowd out the actual conversation. Mitigation: explicit cap, future-proofing via the `MAX_TOTAL_BYTES` constant.
+- **Path validation is best-effort.** We check `std.fs.path.isAbsolute` and that we can `openFile`. We do NOT check that the file is a markdown file (`.md` extension), the file encoding, or the file size (beyond the 100 MiB per-file OOM safety). If users point at huge or binary files, the file is read in full and the LLM receives whatever bytes were there. The 100 MiB safety prevents the server from OOM-ing on pathological paths like `/dev/zero`.
+- **System prompt bloat (no cap, by user choice).** Each Agent chat carries the full contents of every knowledge file. With OpenAI's GPT-4 (8K-128K context) this can crowd out the actual conversation when the corpus is large; the user opted out of an automatic cap. If the LLM starts refusing long prompts or losing quality, the follow-up is to add either a per-file cap, a per-agent cap, or a smart truncation strategy. For now, this is the user's explicit call.
 - **Race between file edit and chat start.** If the user edits the file in the 5 ms between the backend reading it and the LLM responding, the response references the old content. Mitigation: not a real-world problem (LLM responses take seconds; user edits take seconds; humans don't notice 5ms windows).
 - **Sidebar dropdown grows from 3 to 4 options.** Still fits, but the visual spacing may need a tweak. Mitigation: keep the dropdown text-only (no icons); if it grows past 6, refactor to a sub-menu.
 - **`agents.id` == `workspace_item_id`** creates a subtle invariant — if the workspace_item row gets its `id` changed (it can't today, but a future migration might), the agent id drifts. Mitigation: enforce FK at the DB level; add an `id` column to `agents` if a future migration needs a separate id space.
