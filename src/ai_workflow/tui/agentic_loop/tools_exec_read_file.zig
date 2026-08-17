@@ -10,6 +10,7 @@ const ReadFileOptions = nalarcore.read_file.ReadFileOptions;
 const readFile = nalarcore.read_file.readFile;
 const toXMLSuccess = nalarcore.read_file.toXMLSuccess;
 const wrapToolOutput = tools.wrapToolOutput;
+const testing = std.testing;
 
 pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     _ = ctx.db;
@@ -37,12 +38,22 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
 
+    // Resolve the relative path against ctx.cwd_override ?? ctx.cwd to
+    // produce the absolute path the underlying readFile needs. The
+    // underlying function uses std.Io.Dir.cwd() (the OS process cwd),
+    // NOT ctx.cwd — so without this resolution the LLM-supplied
+    // relative path would be read from the wrong directory.
+    const resolved_path = try nalarcore.path_security.resolveCwd(
+        ctx.allocator, ctx.cwd, ctx.cwd_override, parsed.value.path
+    );
+    defer ctx.allocator.free(resolved_path);
+
     const read_opts = ReadFileOptions{
         .offset = parsed.value.offset,
         .limit = parsed.value.limit,
     };
 
-    const read_result = readFile(ctx.allocator, ctx.io, parsed.value.path, read_opts) catch |err| {
+    const read_result = readFile(ctx.allocator, ctx.io, resolved_path, read_opts) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_file failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -50,7 +61,57 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer read_result.deinit(ctx.allocator);
 
     // Single allocation: combines path and content into XML result
-    const inner = try toXMLSuccess(ctx.allocator, read_result, parsed.value.path);
+    const inner = try toXMLSuccess(ctx.allocator, read_result, resolved_path);
     const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+// 2026-08-14 — end-to-end proof that RELATIVE paths work on every
+// tool wired with the absolute-path ban (PR #259 follow-up). Uses
+// arena to absorb pre-existing leaks in the underlying readFile
+// function (read_result.content is a heap slice not freed by
+// exec wrapper). The test's job is to prove the validator +
+// resolver are wired, not to catch those leaks.
+test "execReadFile: relative path resolves against ctx.cwd and reads content" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = try a.dupe(u8, path_buf[0..n]);
+
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "hello.txt", .data = "relative-path-proof" });
+
+    var dummy_f32: f32 = 0.0;
+    var dummy_bool: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = a,
+        .io = testing.io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test",
+        .model = "test",
+        .cwd = root_abs,
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &dummy_f32,
+        .is_thinking = &dummy_bool,
+        .environment = null,
+        .active_loops = undefined,
+    };
+    const tc = agent.ToolCall{
+        .id = "call_1",
+        .type = "function",
+        .function = .{ .name = "read_file", .arguments = "{\"path\":\"hello.txt\"}" },
+    };
+
+    const result = try execReadFile(ctx, tc);
+    defer if (result.output_allocated) a.free(result.output);
+
+    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "relative-path-proof") != null);
 }
