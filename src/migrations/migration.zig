@@ -1927,6 +1927,11 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md.
     // Task: task_1786891244388_1.
     .{ .version = Migration075RenameTimestampColumnsToNanoSuffix.version, .name = Migration075RenameTimestampColumnsToNanoSuffix.name, .up = Migration075RenameTimestampColumnsToNanoSuffix.up },
+    // Migration 076 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
+    // (4th workspace-item type, knowledge injection, tool allowlist).
+    // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md.
+    // Task: task_1786962724740_0.
+    .{ .version = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.version, .name = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.name, .up = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3225,6 +3230,152 @@ pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
         // ANALYZE so the query planner sees the renamed indexes
         // (mirrors Migration 041/042/043/051 pattern).
         try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
+// ============================================================================
+// Migration 076 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
+// ============================================================================
+//
+// What this migration creates
+// ────────────────────────────
+// Agent Mode adds a fourth workspace-item type — `agent` — alongside
+// `folder` / `kanban` / `design`. Each Agent is a persistent chatbot
+// configuration with:
+//   - a `path` (cwd for its chat sessions, like Kanban/Design)
+//   - a list of absolute-path markdown knowledge files on disk
+//     (injected into the system prompt as `## Agent Knowledge`)
+//   - a tool allowlist (filtering the LLM's function-call schema)
+//
+// Three new tables back this:
+//
+//   1. `agents` — 1-1 with `workspace_items` (UNIQUE workspace_item_id).
+//      Holds the agent's description (free-form). Empty agents table
+//      means no Agents exist yet on a workspace.
+//
+//   2. `agent_knowledge` — N-1 with `agents`. Each row = a markdown file
+//      path on disk + an optional label + a position for drag-reorder.
+//      The backend re-reads file contents from disk at every chat start
+//      (no content is duplicated into SQLite).
+//
+//   3. `agent_tools` — N-1 with `agents`. Each row = one tool explicitly
+//      allowed for the agent. `tool_name` matches the canonical registry
+//      at `tools_equipped.zig:118`. UNIQUE (agent_id, tool_name) so the
+//      same tool can't be added twice.
+//
+// All 3 tables use `CREATE ... IF NOT EXISTS` — re-running the
+// migration is a no-op. All FKs use `ON DELETE CASCADE` so deleting the
+// parent workspace_item drops the agent + (cascade) its knowledge +
+// tool rows.
+//
+// Why a separate agents table (and not just columns on workspace_items)
+// ─────────────────────────────────────────────────────────────────────
+// The user's spec specifies a 1-1 table. Keeping it separate:
+//   - Future agent-specific columns (system-prompt override, default
+//     model, allowed-tools baseline, embedding-config toggle) become
+//     additive columns on `agents`, NOT on `workspace_items` (which
+//     would affect kanban / design / folder rows too).
+//   - Enforces the 1-1 invariant via `UNIQUE(workspace_item_id)` at the
+//     schema level, not just at the application layer.
+//
+// Why a separate agent_knowledge table
+// ─────────────────────────────────────
+// One Agent has N knowledge files. A TEXT column on `agents` can't
+// model N rows. The backend re-reads file contents from disk every
+// chat (no content duplicated into SQLite). Storage stays small (paths
+// only). A separate table also enables per-entry metadata (label,
+// position, created_at) without future migrations.
+//
+// Why a separate agent_tools table
+// ─────────────────────────────────
+// One Agent has N tools enabled. The runtime filter is a single SQL
+// query. `tool_name` + `enabled` give us per-row toggling for v1 +
+// future per-tool overrides (e.g. per-tool rate limit) without another
+// migration. UNIQUE (agent_id, tool_name) prevents duplicates.
+//
+// Secure-by-default semantics
+// ───────────────────────────
+// An empty `agent_tools` allowlist for an Agent means zero tools —
+// the runtime filter at `workflow.zig:1478` returns no functions for
+// the LLM to call. The user must opt in via the Tools panel. This is
+// intentional and matches the user's framing "we need to limit the
+// tool that's used".
+//
+// Plan: docs/superpowers/plans/2026-08-15-agent-mode.md
+// Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md
+// Task: task_1786962724740_0
+pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = struct {
+    pub const version: u32 = 76;
+    pub const name = "add_agents_and_agent_knowledge_and_agent_tools";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. `agents` — 1-1 with `workspace_items` (UNIQUE workspace_item_id).
+        //    `id` == `workspace_item_id` (per spec D3); both rows share the
+        //    same string id. `description` defaults to '' (canonical "no
+        //    description" sentinel, matching `workspace_item_tasks.description`
+        //    from Migration 062).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agents (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agents_workspace_item_id ON agents(workspace_item_id)",
+            &[_][]const u8{});
+
+        // 2. `agent_knowledge` — N-1 with `agents`. Position-ordered for
+        //    drag-reorder UI. `file_path` is NOT NULL (handlers validate
+        //    it's absolute on insert). `label` defaults to '' (canonical
+        //    "no label" sentinel).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_knowledge (
+            \\    id TEXT PRIMARY KEY,
+            \\    agent_id TEXT NOT NULL,
+            \\    file_path TEXT NOT NULL,
+            \\    label TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent_id ON agent_knowledge(agent_id)",
+            &[_][]const u8{});
+        // Composite index for the position DESC ordering used by the
+        // `agentKnowledgeListHandler` SELECT.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent_id_position ON agent_knowledge(agent_id, position DESC)",
+            &[_][]const u8{});
+
+        // 3. `agent_tools` — N-1 with `agents`. UNIQUE (agent_id,
+        //    tool_name) so the same tool can't be added twice for the
+        //    same agent. `enabled` defaults to 1 (v1 never offers a
+        //    "disabled" toggle, but the column exists so future UX
+        //    doesn't need a migration — per spec D10).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_tools (
+            \\    id TEXT PRIMARY KEY,
+            \\    agent_id TEXT NOT NULL,
+            \\    tool_name TEXT NOT NULL,
+            \\    enabled INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_tools_agent_id ON agent_tools(agent_id)",
+            &[_][]const u8{});
+        // Named UNIQUE index — checked by name in the migration test,
+        // and the handler maps UNIQUE violations to HTTP 409.
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_tools_agent_tool ON agent_tools(agent_id, tool_name)",
+            &[_][]const u8{});
     }
 };
 

@@ -40,6 +40,7 @@ test {
     _ = @import("migration_073_test.zig");  // session_activity append-only log (new-table-session-activity plan, 2026-08-13)
     _ = @import("migration_074_test.zig");  // llm_history.cache_creation_input_tokens + cache_read_input_tokens (fix-anthropic-total-tokens plan, 2026-08-13)
     _ = @import("migration_075_test.zig");  // rename 5 timestamp columns to _nano suffix (rename-timestamp-columns-nano-suffix plan, 2026-08-16)
+    _ = @import("migration_076_test.zig");  // agents + agent_knowledge + agent_tools tables (agent-mode plan, 2026-08-15)
     _ = @import("migration_057_test.zig");  // v6 design element properties — moved into migrations/ in Phase 7
     _ = @import("migration_063_runtime_test.zig");  // sessions.is_auto_retry_until_stop + last_finish_reason (unattended long-running sessions) — moved into migrations/ in Phase 7
 }
