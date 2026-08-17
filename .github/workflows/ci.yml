@@ -1081,6 +1081,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Node.js 24
+        # The self-hosted Linux X64 runner has only Bun on PATH after
+        # `oven-sh/setup-bun@v2` (which adds Bun but NOT a real Node.js
+        # binary). Our `type-check` package.json script invokes
+        # `node ./node_modules/.bin/vue-tsc ...`, and bash does PATH
+        # lookup for the literal `node` - without a real Node on PATH,
+        # bash finds Bun itself, and Bun's JS runtime (which reports
+        # `process.version: v24.x` for compatibility) can't resolve
+        # `.vue` imports under `moduleResolution: bundler`. vue-tsc
+        # then fails with three TS2307 errors on every `.ts` entry
+        # point that imports a `.vue` file (src/main.ts,
+        # src/helpers/index.ts, src/router/index.ts).
+        #
+        # Adding `actions/setup-node@v4` BEFORE `oven-sh/setup-bun@v2`
+        # puts a real `node` + `npm` earlier in `$PATH`, so bash's
+        # `node` lookup finds the real binary. We use `npm run` for
+        # the script invocations so the same `node` binary is used
+        # consistently.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Install Bun ${{ env.BUN_VERSION }}
         uses: oven-sh/setup-bun@v2
         with:
@@ -1104,24 +1126,29 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Lint (oxlint + eslint, fail-on-issue mode)
-        # `bun run lint:check` runs WITHOUT --fix (the dev `lint`
-        # script auto-fixes in place — that would silently mutate files
-        # in CI and exit 0, defeating the gate).
+        # `npm run lint:check` runs WITHOUT --fix (the dev `lint`
+        # script auto-fixes in place - that would silently mutate files
+        # in CI and exit 0, defeating the gate). Using `npm run`
+        # instead of `bun run` so the script invocations go through
+        # real Node, not Bun's runtime.
         working-directory: src/apps/desktop
-        run: bun run lint:check
+        run: npm run lint:check
 
       - name: Test (vitest, non-watch)
         # `--run` is already baked into the `test` package.json script.
         # vitest's default watch mode hangs CI on exit, so we use the
         # CI-safe script (NOT `test:unit` which preserves watch mode
-        # for local dev).
+        # for local dev). `npm run` invokes it under real Node.
         working-directory: src/apps/desktop
-        run: bun run test
+        run: npm run test
 
       - name: Build (vue-tsc + vite)
-        # `bun run build` chains `vue-tsc --build && vite build` in
-        # parallel via run-p. Both must succeed; the backend job's
-        # codegen step picks up the resulting `dist/` and embeds it as
-        # webapp_assets.zig.
+        # `npm run build` chains `vue-tsc && vite build` in parallel
+        # via run-p. Both must succeed; the backend job's codegen
+        # step picks up the resulting `dist/` and embeds it as
+        # webapp_assets.zig. Using `npm run` (not `bun run`) so the
+        # `node` invocation in the `type-check` script resolves to
+        # the real Node.js binary installed by the `Install Node.js
+        # 24` step earlier in this job.
         working-directory: src/apps/desktop
-        run: bun run build
+        run: npm run build
