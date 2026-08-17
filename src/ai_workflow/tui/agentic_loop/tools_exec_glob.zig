@@ -43,6 +43,10 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the base for relative paths in the OUTPUT (so the LLM
+    // sees "src/main.zig" instead of "/home/user/proj/src/main.zig").
+    const base = ctx.cwd_override orelse ctx.cwd;
+
     var input = parsed.value;
     input.path = resolved_path;
     var glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, input) catch |err| {
@@ -68,6 +72,18 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
+
+    // Swap each match's absolute path for the relative form so the
+    // LLM-facing <f>{path}</f> entries show what the LLM expects.
+    for (glob_result.matches.items) |*m| {
+        if (!std.mem.eql(u8, m.path, base)) {
+            const relative = try nalarcore.path_security.relativePath(
+                ctx.allocator, base, m.path
+            );
+            ctx.allocator.free(m.path);
+            m.path = relative;
+        }
+    }
 
     const inner = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result, parsed.value.pattern);
     glob_result.deinit(ctx.allocator);

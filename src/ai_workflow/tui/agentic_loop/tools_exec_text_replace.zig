@@ -40,6 +40,14 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the relative path used in the OUTPUT (so the LLM sees
+    // "src/main.zig" instead of "/home/user/proj/src/main.zig").
+    const base = ctx.cwd_override orelse ctx.cwd;
+    const relative_output_path = try nalarcore.path_security.relativePath(
+        ctx.allocator, base, resolved_path
+    );
+    defer ctx.allocator.free(relative_output_path);
+
     const result = text_replace_mod.executeTextReplace(
         ctx.allocator,
         ctx.io,
@@ -50,15 +58,17 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         const inner = text_replace_mod.toXmlError(
             ctx.allocator,
             err,
-            resolved_path,
+            relative_output_path,
             parsed.value.old_str,
         );
+        defer ctx.allocator.free(inner);
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "text_replace failed: {s}", .{@errorName(err)});
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    const inner = text_replace_mod.toXmlSuccess(ctx.allocator, result, resolved_path);
+    const inner = text_replace_mod.toXmlSuccess(ctx.allocator, result, relative_output_path);
     const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

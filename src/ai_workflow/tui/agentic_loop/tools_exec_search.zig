@@ -44,6 +44,10 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the base for relative paths in the OUTPUT (so the LLM
+    // sees "src/main.zig" instead of "/home/user/proj/src/main.zig").
+    const base = ctx.cwd_override orelse ctx.cwd;
+
     var input = parsed.value;
     input.path = resolved_path;
     var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, input) catch |err| {
@@ -82,6 +86,18 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         // the operator sees "unknown" / "unknown" everywhere — the
         // bug this branch previously masked). See
         // docs/superpowers/plans/2026-08-06-search-better-error.md.
+    }
+
+    // Swap each match's absolute file path for the relative form so
+    // the LLM-facing <f>{file}</f> entries show what the LLM expects.
+    for (search_result.matches.items) |*m| {
+        if (!std.mem.eql(u8, m.file, base)) {
+            const relative = try nalarcore.path_security.relativePath(
+                ctx.allocator, base, m.file
+            );
+            ctx.allocator.free(m.file);
+            m.file = relative;
+        }
     }
 
     // Honor group_by_file flag — was previously dead code (always called

@@ -45,6 +45,14 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the relative path used in the OUTPUT (so the LLM sees
+    // "src" instead of "/home/user/proj/src").
+    const base = ctx.cwd_override orelse ctx.cwd;
+    const relative_output_path = try nalarcore.path_security.relativePath(
+        ctx.allocator, base, resolved_path
+    );
+    defer ctx.allocator.free(relative_output_path);
+
     // 4. Execute the listing.
     const entries = list_directory_mod.execute_list_directory(
         ctx.allocator,
@@ -64,8 +72,21 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer list_directory_mod.freeEntries(ctx.allocator, entries);
 
-    // 5. Serialise to XML and wrap.
-    const inner = try list_directory_mod.toXml(ctx.allocator, entries, resolved_path);
+    // Swap each entry's absolute path for the relative form so the
+    // LLM-facing <file>/<directory path="..."> entries show what
+    // the LLM expects.
+    for (entries) |*e| {
+        if (!std.mem.eql(u8, e.path, base)) {
+            const relative = try nalarcore.path_security.relativePath(
+                ctx.allocator, base, e.path
+            );
+            ctx.allocator.free(e.path);
+            e.path = relative;
+        }
+    }
+
+    // 5. Serialise to XML and wrap (path attribute is the relative form).
+    const inner = try list_directory_mod.toXml(ctx.allocator, entries, relative_output_path);
     const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

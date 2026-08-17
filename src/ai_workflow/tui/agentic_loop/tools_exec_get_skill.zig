@@ -37,6 +37,8 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // from the wrong directory.
     var resolved_path_opt: ?[]u8 = null;
     defer if (resolved_path_opt) |p| ctx.allocator.free(p);
+    var relative_output_path_opt: ?[]u8 = null;
+    defer if (relative_output_path_opt) |p| ctx.allocator.free(p);
     var skill_input = parsed.value;
     if (parsed.value.path) |p| {
         const resolved = try nalarcore.path_security.resolveCwd(
@@ -44,13 +46,40 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         );
         resolved_path_opt = resolved;
         skill_input.path = resolved;
+
+        // Compute the relative path used in error messages (so the
+        // LLM sees "src/main.zig" instead of the absolute path in
+        // <error>Failed to open file "{path}"</error>).
+        const base = ctx.cwd_override orelse ctx.cwd;
+        relative_output_path_opt = try nalarcore.path_security.relativePath(
+            ctx.allocator, base, resolved
+        );
     }
 
-    const inner = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, skill_input, ctx.environment) catch |err| {
+    const raw_inner = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, skill_input, ctx.environment) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "get_skill failed: {s}", .{@errorName(err)});
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
+
+    // The underlying error messages embed the absolute resolved path.
+    // Swap that for the relative form so the LLM doesn't see the
+    // server's filesystem layout. Only applied when the path was
+    // provided (resolved_path_opt != null).
+    const inner = if (resolved_path_opt != null and relative_output_path_opt != null)
+        try std.mem.replaceOwned(
+            u8,
+            ctx.allocator,
+            raw_inner,
+            resolved_path_opt.?,
+            relative_output_path_opt.?,
+        )
+    else
+        raw_inner;
+    defer if (resolved_path_opt != null and relative_output_path_opt != null)
+        ctx.allocator.free(inner);
+
     const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, true, null, inner);
 
     // Check if skill was successfully loaded and extract skill info for auto-save.

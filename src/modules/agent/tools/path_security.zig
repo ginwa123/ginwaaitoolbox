@@ -46,6 +46,58 @@ pub fn rejectAbsolutePath(
     return @as(?[]const u8, msg);
 }
 
+/// Compute an absolute path's relative form against the active cwd.
+/// Used by every tool's exec wrapper to display relative paths in
+/// the LLM-facing output (instead of leaking absolute filesystem
+/// paths). `base` should be `ctx.cwd_override ?? ctx.cwd`.
+pub fn relativePath(
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    abs: []const u8,
+) ![]u8 {
+    // Fast path: abs is a child of base — strip the prefix.
+    if (std.mem.startsWith(u8, abs, base)) {
+        const rest = abs[base.len..];
+        if (rest.len == 0) return allocator.dupe(u8, ".");
+        if (rest[0] == '/') {
+            if (rest.len == 1) return allocator.dupe(u8, ".");
+            return allocator.dupe(u8, rest[1..]);
+        }
+        // abs is a sibling-prefix of base (e.g. base="/a", abs="/abc") —
+        // fall through to the general algorithm.
+    }
+
+    // General algorithm: find common path prefix, count parent dirs
+    // in the remaining base, prepend "../" for each, append the
+    // remaining abs.
+    var common_len: usize = 0;
+    while (common_len < base.len and common_len < abs.len and base[common_len] == abs[common_len]) {
+        common_len += 1;
+    }
+    // Snap common_len back to the previous '/' so we don't split a
+    // segment name.
+    while (common_len > 0 and common_len < base.len and base[common_len] != '/') {
+        common_len -= 1;
+    }
+
+    var up_count: usize = 0;
+    var i: usize = common_len;
+    while (i < base.len) {
+        if (base[i] == '/') up_count += 1;
+        i += 1;
+    }
+    if (common_len < base.len) up_count += 1;
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    var u: usize = 0;
+    while (u < up_count) : (u += 1) {
+        try result.appendSlice(allocator, "../");
+    }
+    try result.appendSlice(allocator, abs[common_len..]);
+    return result.toOwnedSlice(allocator);
+}
+
 /// Resolve a tool-call's cwd parameter against the active session cwd.
 ///
 /// Rules:

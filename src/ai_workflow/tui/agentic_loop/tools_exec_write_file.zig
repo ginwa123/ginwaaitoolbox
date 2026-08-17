@@ -40,15 +40,34 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the relative path used in the OUTPUT (so the LLM sees
+    // "src/main.zig" instead of "/home/user/proj/src/main.zig").
+    const base = ctx.cwd_override orelse ctx.cwd;
+    const relative_output_path = try nalarcore.path_security.relativePath(
+        ctx.allocator, base, resolved_path
+    );
+    defer ctx.allocator.free(relative_output_path);
+
     var input = parsed.value;
     input.path = resolved_path;
     const write_result = write_file_mod.writeFile(ctx.allocator, ctx.io, input) catch |err| {
-        const inner = write_file_mod.toXmlError(ctx.allocator, err, resolved_path);
+        const inner = write_file_mod.toXmlError(ctx.allocator, err, relative_output_path);
+        defer ctx.allocator.free(inner);
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    const inner = write_file_mod.toXmlSuccess(ctx.allocator, write_result);
+    // write_result.path is the absolute path the file was actually
+    // written to. We want the success envelope to show the RELATIVE
+    // path the LLM asked for, so build a synthetic WriteFileResult
+    // with the relative path for the toXmlSuccess call (avoid
+    // mutating write_result.path since it's allocator-owned by
+    // writeFile and that would leak its absolute-path allocation).
+    var display_result = write_result;
+    display_result.path = try ctx.allocator.dupe(u8, relative_output_path);
+    const inner = write_file_mod.toXmlSuccess(ctx.allocator, display_result);
+    display_result.deinit(ctx.allocator);
     write_result.deinit(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };

@@ -48,6 +48,14 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the relative path used in the OUTPUT (so the LLM sees
+    // "src/main.zig" instead of "/home/user/proj/src/main.zig").
+    const base = ctx.cwd_override orelse ctx.cwd;
+    const relative_output_path = try nalarcore.path_security.relativePath(
+        ctx.allocator, base, resolved_path
+    );
+    defer ctx.allocator.free(relative_output_path);
+
     const read_opts = ReadFileOptions{
         .offset = parsed.value.offset,
         .limit = parsed.value.limit,
@@ -55,13 +63,16 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 
     const read_result = readFile(ctx.allocator, ctx.io, resolved_path, read_opts) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "read_file failed: {s}", .{@errorName(err)});
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
     defer read_result.deinit(ctx.allocator);
 
-    // Single allocation: combines path and content into XML result
-    const inner = try toXMLSuccess(ctx.allocator, read_result, resolved_path);
+    // Single allocation: combines path and content into XML result.
+    // Path is the RELATIVE form so the LLM sees the path it sent,
+    // not the resolved absolute filesystem path.
+    const inner = try toXMLSuccess(ctx.allocator, read_result, relative_output_path);
     const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

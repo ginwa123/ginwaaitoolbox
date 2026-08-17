@@ -40,13 +40,39 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     );
     defer ctx.allocator.free(resolved_path);
 
+    // Compute the relative path used in the OUTPUT (so the LLM sees
+    // "src/main.zig" instead of "/home/user/proj/src/main.zig").
+    const base = ctx.cwd_override orelse ctx.cwd;
+    const relative_output_path = try nalarcore.path_security.relativePath(
+        ctx.allocator, base, resolved_path
+    );
+    defer ctx.allocator.free(relative_output_path);
+
     var input = parsed.value;
     input.path = resolved_path;
-    const inner = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, input) catch |err| {
+    const raw_inner = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, input) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_file failed: {s}", .{@errorName(err)});
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
+
+    // The underlying function embeds `input.path` (the absolute
+    // resolved path) in its `<path>...</path>` output tag. Replace
+    // that with the relative form so the LLM doesn't see the
+    // server's filesystem layout.
+    const inner = if (!std.mem.eql(u8, resolved_path, relative_output_path))
+        try std.mem.replaceOwned(
+            u8,
+            ctx.allocator,
+            raw_inner,
+            resolved_path,
+            relative_output_path,
+        )
+    else
+        raw_inner;
+    defer if (!std.mem.eql(u8, resolved_path, relative_output_path))
+        ctx.allocator.free(inner);
 
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
