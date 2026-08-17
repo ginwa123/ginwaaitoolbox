@@ -35,6 +35,8 @@ test {
     _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
     _ = @import("inherited_context.zig"); // Phase 3 — inlined tests from inherited_context_test.zig
     _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
+    _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
+    _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");

@@ -13,7 +13,7 @@ const http_client = nalarcore.http_client;
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");
-const kanban_model = @import("../kanban_model.zig");
+const kanban_model = @import("kanban_model.zig");
 const design_model = @import("../design_model.zig");
 const buildDesignCanvasPrompt = @import("prompts_make_design_context.zig").buildDesignCanvasPrompt;
 

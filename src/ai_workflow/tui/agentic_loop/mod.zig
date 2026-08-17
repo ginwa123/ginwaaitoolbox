@@ -22,3 +22,6 @@ pub const on_event_sent_kanban = @import("on_event_sent_kanban.zig");
 
 pub const inherited_context = @import("inherited_context.zig");
 pub const agent_memories = @import("agent_memories.zig");
+
+pub const kanban_model = @import("kanban_model.zig");
+pub const design_io = @import("design_io.zig");
