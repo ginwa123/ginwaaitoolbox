@@ -71,4 +71,7 @@ test {
     // 2026-08-14 — absolute-path validator wired into bash exec wrapper
     // (Plan: docs/superpowers/plans/2026-08-14-ban-absolute-paths.md, Task 2a).
     _ = @import("tools_exec_bash_test.zig");
+
+    // 2026-08-14 — list_directory exec wrapper (Task 5 of the same plan).
+    _ = @import("tools_exec_list_directory_test.zig");
 }

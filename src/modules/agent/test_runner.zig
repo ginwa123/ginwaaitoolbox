@@ -76,4 +76,7 @@ test {
     // (Plan: docs/superpowers/plans/2026-08-14-ban-absolute-paths.md,
     // Task 1). Used by every tool's exec wrapper.
     _ = @import("tools/path_security_test.zig");
+
+    // 2026-08-14 — list_directory agent tool tests (Task 5 of the same plan).
+    _ = @import("tools/list_directory_test.zig");
 }
