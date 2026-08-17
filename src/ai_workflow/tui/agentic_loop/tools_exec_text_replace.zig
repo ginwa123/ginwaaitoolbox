@@ -21,6 +21,15 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
+    // Security: reject absolute paths.
+    if (try nalarcore.path_security.rejectAbsolutePath(
+        ctx.allocator, "text_replace", "path", parsed.value.path, ctx.cwd
+    )) |err_msg| {
+        defer ctx.allocator.free(err_msg);
+        const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
     const result = text_replace_mod.executeTextReplace(
         ctx.allocator,
         ctx.io,

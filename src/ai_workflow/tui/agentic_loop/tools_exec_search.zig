@@ -24,6 +24,15 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
+    // Security: reject absolute paths.
+    if (try nalarcore.path_security.rejectAbsolutePath(
+        ctx.allocator, "search", "path", parsed.value.path, ctx.cwd
+    )) |err_msg| {
+        defer ctx.allocator.free(err_msg);
+        const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
     var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch |err| {
         // Map the new domain errors to LLM-friendly messages. Each one
         // names the fix the LLM can try (different pattern, narrower

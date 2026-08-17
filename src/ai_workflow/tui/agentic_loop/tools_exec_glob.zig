@@ -24,6 +24,15 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
+    // Security: reject absolute paths.
+    if (try nalarcore.path_security.rejectAbsolutePath(
+        ctx.allocator, "glob", "path", parsed.value.path, ctx.cwd
+    )) |err_msg| {
+        defer ctx.allocator.free(err_msg);
+        const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
     var glob_result = glob_tool_mod.executeGlob(ctx.allocator, ctx.io, parsed.value) catch |err| {
         // Map the new domain errors to LLM-friendly messages. Each one
         // names the fix the LLM can try (different pattern, narrower

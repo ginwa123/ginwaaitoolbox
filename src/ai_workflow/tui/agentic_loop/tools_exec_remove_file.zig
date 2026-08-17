@@ -21,6 +21,15 @@ pub fn execRemoveFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer parsed.deinit();
 
+    // Security: reject absolute paths.
+    if (try nalarcore.path_security.rejectAbsolutePath(
+        ctx.allocator, "remove_file", "path", parsed.value.path, ctx.cwd
+    )) |err_msg| {
+        defer ctx.allocator.free(err_msg);
+        const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
     const inner = remove_file_mod.executeRemoveFileToString(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_file failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "remove_file", tc.function.arguments, false, err_msg, "");

@@ -18,6 +18,17 @@ pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
+    // Security: reject absolute paths.
+    if (parsed.value.path) |path| {
+        if (try nalarcore.path_security.rejectAbsolutePath(
+            ctx.allocator, "get_skill", "path", path, ctx.cwd
+        )) |err_msg| {
+            defer ctx.allocator.free(err_msg);
+            const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, false, err_msg, "");
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
+    }
+
     const inner = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "get_skill failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, false, err_msg, "");

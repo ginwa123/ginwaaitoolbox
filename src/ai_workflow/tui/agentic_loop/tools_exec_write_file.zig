@@ -21,6 +21,15 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
+    // Security: reject absolute paths.
+    if (try nalarcore.path_security.rejectAbsolutePath(
+        ctx.allocator, "write_file", "path", parsed.value.path, ctx.cwd
+    )) |err_msg| {
+        defer ctx.allocator.free(err_msg);
+        const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
     const write_result = write_file_mod.writeFile(ctx.allocator, ctx.io, parsed.value) catch |err| {
         const inner = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
