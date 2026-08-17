@@ -14,25 +14,20 @@ const wrapToolOutput = tools.wrapToolOutput;
 /// Run with database context for background process tracking.
 /// Lives alongside execBash because it's a file-private helper used
 /// only by execBash.
+///
+/// `input` is the already-validated + cwd-resolved BashInput — the
+/// validation happens in `execBash` (which has access to the tool
+/// context for the active cwd), not here.
 pub fn runWithContext(
     allocator: std.mem.Allocator,
     io: std.Io,
-    tool_call: agent.ToolCall,
+    input: tool_models.BashInput,
     db: ?*sqlite.SqliteBackend,
     session_id: ?[]const u8,
 ) ![]const u8 {
-    // Parse arguments JSON to BashInput
-    const parsed = try std.json.parseFromSlice(
-        tool_models.BashInput,
-        allocator,
-        tool_call.function.arguments,
-        .{ .allocate = .alloc_always },
-    );
-    defer parsed.deinit();
+    const is_background = input.background;
 
-    const is_background = parsed.value.background;
-
-    const bash_output = try bash_tool_mod.execute_bash(allocator, io, parsed.value);
+    const bash_output = try bash_tool_mod.execute_bash(allocator, io, input);
 
     // If background mode and DB is available, save the process info
     if (is_background and db != null and session_id != null) {
@@ -67,7 +62,7 @@ pub fn runWithContext(
                         // Save to database
                         const ts = std.Io.Clock.now(.real, io);
                         const started_at: i64 = ts.toSeconds();
-                        background_process.save(db_ptr, allocator, sess_id, pid, parsed.value.command, log_path, started_at) catch {
+                        background_process.save(db_ptr, allocator, sess_id, pid, input.command, log_path, started_at) catch {
                             // Log error but don't fail the tool execution
                         };
                     }
@@ -82,7 +77,42 @@ pub fn runWithContext(
 }
 
 pub fn execBash(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const inner = try runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id);
+    // 1. Parse arguments JSON so we can validate the cwd field.
+    const parsed = std.json.parseFromSlice(
+        tool_models.BashInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "bash failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    // 2. Security: reject absolute cwd paths. Relative paths and
+    // omitted cwd are allowed.
+    if (parsed.value.cwd) |cwd| {
+        if (try nalarcore.path_security.rejectAbsolutePath(
+            ctx.allocator, "bash", "cwd", cwd, ctx.cwd
+        )) |err_msg| {
+            defer ctx.allocator.free(err_msg);
+            const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, false, err_msg, "");
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
+    }
+
+    // 3. Resolve cwd: relative/null/empty → ctx.cwd_override ?? ctx.cwd.
+    // The validator above guarantees `parsed.value.cwd` is not absolute.
+    const resolved_cwd = try nalarcore.path_security.resolveCwd(
+        ctx.allocator, ctx.cwd, ctx.cwd_override, parsed.value.cwd
+    );
+    defer ctx.allocator.free(resolved_cwd);
+
+    var input = parsed.value;
+    input.cwd = resolved_cwd;
+
+    const inner = try runWithContext(ctx.allocator, ctx.io, input, ctx.db, ctx.session_id);
     const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

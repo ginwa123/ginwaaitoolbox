@@ -178,6 +178,12 @@ pub fn loadGlobalKnowledge(
         // `write_file`, `text_replace`, or `remove_file` without
         // reconstructing it from the basename. Mirrors how
         // `appendSkillsListing` emits `s.path` for each skill.
+        //
+        // NOTE: the absolute path here is for human/agent REFERENCE only.
+        // The agent must STRIP the `<active cwd>` prefix before passing
+        // the path to read_file/write_file/text_replace/remove_file/get_skill
+        // — those tools reject absolute paths (security policy, see
+        // docs/superpowers/specs/2026-08-14-ban-absolute-paths-design.md).
         try result.appendSlice(allocator, "`");
         try result.appendSlice(allocator, mem.path);
         try result.appendSlice(allocator, "`\n\n");

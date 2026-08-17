@@ -23,8 +23,8 @@ pub const SearchToolRule =
     \\When you need to find text in the codebase, **always use the `search` tool**. Do NOT use `bash` with `rg`, `grep`, or `find` for code/text search. The `search` tool returns structured XML with file paths and line numbers, auto-respects `.gitignore`, and avoids shell escaping hell for regex/quotes/backticks.
     \\
     \\**Mapped equivalents** (use these instead of `rg`):
-    \\- `rg -n "pattern" file.zig` → `search(pattern="pattern", path="/abs/file.zig")`
-    \\- `rg -n "A|B" src/` → `search(pattern="A|B", path="/abs/src")`
+    \\- `rg -n "pattern" file.zig` → `search(pattern="pattern", path="file.zig")`
+    \\- `rg -n "A|B" src/` → `search(pattern="A|B", path="src")`
     \\- `rg -l "pattern"` → `search(pattern="pattern", group_by_file: false)`
     \\- `rg -nw "word"` → `search(pattern="word", word_boundary: true)`
     \\- `rg -F "literal"` → `search(pattern="literal", literal: true)`
@@ -39,6 +39,8 @@ pub const SearchToolRule =
     \\- Structured JSON output: `rg --json`
     \\
     \\**Self-check:** Before reaching for `bash rg ...`, ask: "Is this a code/text search?" If yes, **use `search`**. Reaching for `bash rg` when `search` would work is muscle memory, not a feature.
+    \\
+    \\**Absolute paths are banned** (security policy — Plan: docs/superpowers/plans/2026-08-14-ban-absolute-paths.md). The `path` parameter must be RELATIVE to the session's cwd (e.g. `"src/main.zig"`, `"."`). When a memory path shown in this prompt is absolute, STRIP the active-cwd prefix before passing it to `search` / `read_file` / `write_file` / `text_replace` / `remove_file` / `get_skill` / `glob` / `list_directory` — all of these reject absolute paths with a clear error.
 ;
 
 pub const SearchHistoryToolRule =

@@ -775,7 +775,13 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "File or directory to search in.",
+                    .description =
+                    \\`path`: file or directory to search in, RELATIVE to
+                    \\the session's cwd only (absolute paths are rejected —
+                    \\security policy). Default: `"."` (the cwd itself).
+                    \\Use a relative path like `"src/main.zig"` (NOT
+                    \\`"/home/you/proj/src/main.zig"`).
+                    ,
                 },
                 .{
                     .name = "max_results",

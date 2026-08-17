@@ -50,6 +50,8 @@ const generate_image_mod = nalarcore.generate_image;
 const update_activity_mod = nalarcore.update_activity;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
+// 2026-08-14 — list_directory tool (Task 5 of ban-absolute-paths plan).
+const list_directory_mod = nalarcore.list_directory;
 const semantic_search_mod = nalarcore.semantic_search;
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 const kanban_create_task_tool = nalarcore.create_kanban_task;
@@ -80,6 +82,8 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         remove_file_mod.remove_file_tool,
         glob_tool_mod.glob_tool,
         search_tool_mod.search_tool,
+        // 2026-08-14 — first-level ls-like tool (Task 5).
+        list_directory_mod.list_directory_tool,
         nalar_browser_mod.nalar_browser_tool,
         generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
@@ -209,6 +213,8 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === FILE SEARCH TOOLS ===
         .{ .name = "glob", .exec = tools.execGlob, .tool_def = glob_tool_mod.glob_tool },
         .{ .name = "search", .exec = tools.execSearch, .tool_def = search_tool_mod.search_tool },
+        // 2026-08-14 — first-level ls-like tool (Task 5 of ban-absolute-paths plan).
+        .{ .name = "list_directory", .exec = tools.execListDirectory, .tool_def = list_directory_mod.list_directory_tool },
         // .{ .name = "semantic_search", .exec = execSemanticSearch, .tool_def = semantic_search_mod.semantic_search_tool },
         // .{ .name = "index_codebase", .exec = execIndexCodebase, .tool_def = semantic_search_mod.index_codebase_tool },
     };
