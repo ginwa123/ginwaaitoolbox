@@ -96,6 +96,7 @@ pub fn execBash(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         if (try nalarcore.path_security.rejectAbsolutePath(
             ctx.allocator, "bash", "cwd", cwd, ctx.cwd
         )) |err_msg| {
+            defer ctx.allocator.free(err_msg);
             const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, false, err_msg, "");
             return ToolExecResult{ .output = output, .output_allocated = true };
         }
