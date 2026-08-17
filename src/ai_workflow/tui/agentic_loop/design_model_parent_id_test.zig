@@ -22,7 +22,7 @@ const design_model = @import("design_model.zig");
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
 
-const DESIGN_MODEL_PATH = "src/ai_workflow/tui/design_model.zig";
+const DESIGN_MODEL_PATH = "src/ai_workflow/tui/agentic_loop/design_model.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

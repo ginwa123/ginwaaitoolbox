@@ -1,5 +1,5 @@
 const std = @import("std");
-const llm_history = @import("../llm_history.zig");
+const llm_history = @import("../agentic_loop/llm_history.zig");
 
 pub const WorkspaceResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null };
 
@@ -805,7 +805,7 @@ pub fn makeTasksReorderPinnedResponse(allocator: std.mem.Allocator, count: usize
 // ─── Design-mode response types ────────────────────────────────────────────
 // Wire shapes for `GET/POST/PUT/PATCH/DELETE /api/.../design/...`.
 // Mirrors the `DesignPage` and `DesignElement` structs in
-// `src/ai_workflow/tui/design_model.zig` field-for-field so a future
+// `src/ai_workflow/tui/agentic_loop/design_model.zig` field-for-field so a future
 // contract change is one struct definition to update.
 //
 // `DesignElementResponse` deliberately omits the `html` body — the

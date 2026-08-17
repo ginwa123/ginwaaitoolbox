@@ -23,7 +23,7 @@ const sqlite = nalarcore.sqlite;
 
 const design_model = @import("design_model.zig");
 
-const DESIGN_MODEL_PATH = "src/ai_workflow/tui/design_model.zig";
+const DESIGN_MODEL_PATH = "src/ai_workflow/tui/agentic_loop/design_model.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(

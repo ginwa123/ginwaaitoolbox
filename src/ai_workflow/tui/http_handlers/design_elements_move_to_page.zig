@@ -31,7 +31,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const gserverz = nalarcore.gserverz;
-const design_model = @import("../design_model.zig");
+const design_model = @import("../agentic_loop/design_model.zig");
 const http_response = @import("http_response.zig");
 
 // =====================================================================

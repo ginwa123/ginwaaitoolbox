@@ -1,7 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
-const design_io = @import("../design_io.zig");
+const design_io = @import("../agentic_loop/design_io.zig");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 

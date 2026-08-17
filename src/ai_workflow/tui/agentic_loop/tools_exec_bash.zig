@@ -8,7 +8,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 const bash_tool_mod = nalarcore.bash_tool;
-const background_process = @import("../background_process.zig");
+const background_process = @import("background_process.zig");
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Run with database context for background process tracking.

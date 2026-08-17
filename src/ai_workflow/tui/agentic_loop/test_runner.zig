@@ -13,6 +13,14 @@ test {
     // ─── Files with inline tests ──────────────────────────────────────────
     _ = @import("sse.zig");
     _ = @import("llm_history.zig");
+    _ = @import("llm_history_is_input_output_test.zig");
+    _ = @import("llm_history_compacted_messages_test.zig");
+    _ = @import("llm_history_search_messages_fts_test.zig");
+    _ = @import("llm_history_search_fts_query_safety_test.zig");
+    _ = @import("llm_history_worker_info_test.zig");
+    _ = @import("llm_history_description_test.zig");
+    _ = @import("llm_history_notification_test.zig");
+    _ = @import("llm_history_tool_call_loading_test.zig");
     _ = @import("session_skills.zig");
     _ = @import("is_session_kanban.zig");
     _ = @import("is_worker_running.zig");
@@ -30,6 +38,29 @@ test {
     _ = @import("sse_on_event_send_session.zig"); // task_1786507100896 — behavioural tests for wire-format event_type_name mapping
     _ = @import("parsing.zig");
     _ = @import("workflow.zig");
+    _ = @import("save_agent.zig"); // Phase 1 — save_agent module imports smoke test (was save_agent_test.zig)
+    _ = @import("on_event_sent.zig"); // Phase 2 — inlined 7 tests from on_event_sent_sanitize_test.zig
+    _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
+    _ = @import("inherited_context.zig"); // Phase 3 — inlined tests from inherited_context_test.zig
+    _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
+    _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
+    _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
+    _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
+    _ = @import("design_model_test.zig");
+    _ = @import("design_model_parent_id_test.zig");
+    _ = @import("design_model_group_test.zig");
+    _ = @import("design_model_delete_parent_test.zig");
+    _ = @import("design_model_delete_page_test.zig");
+    _ = @import("design_model_add_element_parent_test.zig");
+    _ = @import("design_model_set_element_parent_test.zig");
+    _ = @import("session_update_test.zig"); // Phase 7 — kept as separate _test.zig (inlining would push llm_history.zig over the 256KB static-contract test file-size limit)
+    _ = @import("workspace_items_update_name_test.zig"); // Phase 7 — same reason
+    // design_model_reorder_test.zig — NOT registered. Pre-existing
+    // schema/setup issues (5 tests crash with SIGABRT, 2 fail with
+    // assertion errors) — the file was orphaned at tui/ before
+    // this refactor and was never run. Per the refactor's
+    // behaviour-preserving invariant, leave it orphaned. Address
+    // the test failures in a follow-up.
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");

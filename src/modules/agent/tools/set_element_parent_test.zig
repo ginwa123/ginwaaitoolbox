@@ -20,7 +20,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
 const set_element_parent = @import("set_element_parent.zig");
-const design_model = @import("../../../ai_workflow/tui/design_model.zig");
+const design_model = @import("../../../ai_workflow/tui/agentic_loop/design_model.zig");
 
 /// Open a fresh in-memory sqlite DB with the v6 design schema. Same
 /// shape as the other test files (`setupDbAndItem`) — copied locally

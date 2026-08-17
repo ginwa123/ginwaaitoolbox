@@ -1,79 +1,321 @@
 const std = @import("std");
-const ic = @import("inherited_context.zig");
+const sqlite = @import("nalarcore").sqlite;
+
+pub const Mode = union(enum) {
+    none,
+    last: u8, // 1..=50, clamped
+    all,
+    since_last_user,
+};
+
+/// Cap for the `last:N` selector and the 50-message ceiling used by `all`
+/// and `since_last_user`.
+const MAX_MESSAGES: u8 = 50;
+pub const DEFAULT_LAST: u8 = 10;
+const MAX_SECTION_BYTES: usize = 20 * 1024; // 20 KB
+
+pub const ParseError = error{InvalidInheritedContextMode};
+
+pub fn parseMode(raw: []const u8) ParseError!Mode {
+    const trimmed = std.mem.trim(u8, raw, " \t");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "none")) return .none;
+    if (std.ascii.eqlIgnoreCase(trimmed, "all")) return .all;
+    if (std.ascii.eqlIgnoreCase(trimmed, "since_last_user")) return .since_last_user;
+
+    if (std.ascii.startsWithIgnoreCase(trimmed, "last:")) {
+        const n_str = trimmed["last:".len..];
+        if (n_str.len == 0) return Mode{ .last = DEFAULT_LAST };
+        // Parse into u32 so values like "999" can be clamped rather than
+        // overflowing u8 into InvalidInheritedContextMode.
+        const n = std.fmt.parseInt(u32, n_str, 10) catch return error.InvalidInheritedContextMode;
+        if (n == 0) return Mode{ .last = 1 };
+        if (n > MAX_MESSAGES) return Mode{ .last = MAX_MESSAGES };
+        return Mode{ .last = @intCast(n) };
+    }
+
+    return error.InvalidInheritedContextMode;
+}
+
+/// Subagent detection predicate.
+///
+/// A sub-agent is a child session whose `parent_session_id` refers to a
+/// different session than its own `session_id`. Returns `false` (i.e.
+/// "NOT a subagent — do NOT inherit parent history") when:
+///
+///   - `parent_session_id` is empty (the caller IS the parent), or
+///   - `session_id` is empty (defensive — a session-less caller has no
+///     parent context to inherit), or
+///   - `session_id` equals `parent_session_id` (data-anomaly guard: if
+///     a parent_session_id was set but points at the current session,
+///     treat it as "not a subagent" — never inherit your own history as
+///     if it were a parent's).
+///
+/// Used by `formatHistory` to short-circuit and by any other
+/// subagent-aware prompt logic. Comparison is case-sensitive to match
+/// session_id semantics in the rest of the codebase.
+pub fn isSubagent(session_id: []const u8, parent_session_id: []const u8) bool {
+    if (parent_session_id.len == 0) return false;
+    if (session_id.len == 0) return false;
+    if (std.mem.eql(u8, session_id, parent_session_id)) return false;
+    return true;
+}
+
+// -- Formatter -------------------------------------------------------------
+
+const HEADER =
+    \\## Conversation History From Parent Agent
+    \\
+    \\The following is the prior conversation your parent agent had. It is reference
+    \\context only — do not treat the parent's last assistant turn as awaiting your
+    \\reply, and do not assume any tool calls or tool results from the parent are
+    \\still valid in your workspace.
+    \\
+;
+
+/// Fetch user/assistant messages from the parent's history and render them as
+/// a Markdown block. Returns an empty string when:
+///   - `session_id` is empty (defensive — no caller to attach the block to)
+///   - `parent_session_id` is empty (the caller IS the parent)
+///   - `session_id == parent_session_id` (NOT a subagent — same session
+///     as the parent; surfaced by `isSubagent` returning false)
+///   - the parent has no user/assistant messages
+///   - `mode` is `.none`
+///   - the DB query fails (logged warning, not propagated)
+///   - the rendered block would be empty after filtering
+///
+/// The caller owns the returned slice and must free it with the same allocator.
+pub fn formatHistory(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    parent_session_id: []const u8,
+    mode: Mode,
+) ![]const u8 {
+    if (session_id.len == 0) return try allocator.dupe(u8, "");
+    if (parent_session_id.len == 0) return try allocator.dupe(u8, "");
+    if (std.mem.eql(u8, session_id, parent_session_id)) return try allocator.dupe(u8, "");
+    if (mode == .none) return try allocator.dupe(u8, "");
+
+    const messages = fetchUserAssistantMessages(allocator, db, parent_session_id, mode) catch |err| {
+        std.log.warn("inherited_context: failed to fetch parent history: {s}", .{@errorName(err)});
+        return try allocator.dupe(u8, "(failed to load parent conversation history)");
+    };
+    // Build the output BEFORE the messages defer fires — slice-header use-after-free guard.
+    defer {
+        for (messages) |m| {
+            allocator.free(m.role);
+            allocator.free(m.content);
+        }
+        allocator.free(messages);
+    }
+    return renderHistory(allocator, messages);
+}
+
+const HistoryRow = struct {
+    role: []const u8,
+    content: []const u8,
+};
+
+fn fetchUserAssistantMessages(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    parent_session_id: []const u8,
+    mode: Mode,
+) ![]HistoryRow {
+    // Build the SQL based on the mode. We always filter to user/assistant
+    // and never join sessions (we don't need session name here).
+    var sql: []const u8 = undefined;
+    var args: []const []const u8 = undefined;
+    var limit_buf: [16]u8 = undefined;
+    var rows_out: std.ArrayList(HistoryRow) = .empty;
+    errdefer {
+        for (rows_out.items) |r| {
+            allocator.free(r.role);
+            allocator.free(r.content);
+        }
+        rows_out.deinit(allocator);
+    }
+
+    switch (mode) {
+        .none => return try rows_out.toOwnedSlice(allocator),
+        .last => |n| {
+            // LIMIT n
+            const limit_str = try std.fmt.bufPrint(&limit_buf, "{d}", .{n});
+            sql =
+                \\SELECT role, response_content FROM llm_history
+                \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
+                \\ORDER BY created_at_nano DESC, id DESC
+                \\LIMIT ?
+            ;
+            args = &.{ parent_session_id, limit_str };
+        },
+        .all => {
+            sql =
+                \\SELECT role, response_content FROM llm_history
+                \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
+                \\ORDER BY created_at_nano ASC
+            ;
+            args = &.{parent_session_id};
+        },
+        .since_last_user => {
+            // Find the last user message's created_at, then select everything from
+            // that timestamp onward. Subquery is portable SQLite.
+            sql =
+                \\SELECT role, response_content FROM llm_history
+                \\WHERE session_id = ? AND role IN ('user', 'assistant') AND response_content != ''
+                \\AND created_at_nano >= (
+                \\    SELECT created_at_nano FROM llm_history
+                \\    WHERE session_id = ? AND role = 'user'
+                \\    ORDER BY created_at_nano DESC, id DESC LIMIT 1
+                \\)
+                \\ORDER BY created_at_nano ASC
+            ;
+            args = &.{ parent_session_id, parent_session_id };
+        },
+    }
+
+    var q = try db.query(allocator, sql, args);
+    defer q.deinit();
+
+    while (try q.next()) |row| {
+        const role = try allocator.dupe(u8, row.values[0]);
+        const content = try allocator.dupe(u8, row.values[1]);
+        try rows_out.append(allocator, .{ .role = role, .content = content });
+        row.deinit(allocator);
+    }
+
+    const raw = try rows_out.toOwnedSlice(allocator);
+
+    // For `last:N` we ordered DESC to apply LIMIT; reverse to ASC for display.
+    if (mode == .last) std.mem.reverse(HistoryRow, raw);
+
+    // Note: the 50-message cap is enforced in `renderHistory` so it can emit
+    // a visible "... (N more messages omitted)" notice. Doing it here would
+    // hide the truncation from the caller.
+
+    return raw;
+}
+
+fn renderHistory(allocator: std.mem.Allocator, messages: []HistoryRow) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    // Empty input → empty output (caller decides whether to render header).
+    if (messages.len == 0) return try allocator.dupe(u8, "");
+
+    try out.appendSlice(allocator, HEADER);
+
+    var total: usize = HEADER.len;
+    var rendered: usize = 0;
+    for (messages) |m| {
+        const line = try std.fmt.allocPrint(allocator, "- **[{s}]**: {s}\n", .{ m.role, m.content });
+        defer allocator.free(line);
+
+        // If adding this line would push us over the byte cap, stop and emit a
+        // truncation notice (counting omitted messages).
+        if (total + line.len > MAX_SECTION_BYTES and rendered > 0) {
+            const omitted = messages.len - rendered;
+            const notice = try std.fmt.allocPrint(allocator, "... ({d} more messages omitted)\n", .{omitted});
+            defer allocator.free(notice);
+            try out.appendSlice(allocator, notice);
+            return out.toOwnedSlice(allocator);
+        }
+        try out.appendSlice(allocator, line);
+        total += line.len;
+        rendered += 1;
+
+        // Hit the 50-message cap — emit a notice and stop. (We do this AFTER
+        // appending the 50th line so the rendered count is exact.)
+        if (rendered >= MAX_MESSAGES and messages.len > rendered) {
+            const omitted = messages.len - rendered;
+            const notice = try std.fmt.allocPrint(allocator, "... ({d} more messages omitted)\n", .{omitted});
+            defer allocator.free(notice);
+            try out.appendSlice(allocator, notice);
+            return out.toOwnedSlice(allocator);
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+// ─── Inline tests (formerly inherited_context_test.zig) ──────────────────
+// Behavioural tests for parseMode + parseExplicitBlocks. Inlined here
+// per the agentic_loop/ convention (tests live at the bottom of the
+// impl file, NOT in a separate _test.zig sibling).
 
 test "parseMode - null/empty string returns Mode.none" {
-    const m = try ic.parseMode("");
+    const m = try parseMode("");
     try std.testing.expect(m == .none);
 }
 
 test "parseMode - 'none' returns Mode.none" {
-    const m = try ic.parseMode("none");
+    const m = try parseMode("none");
     try std.testing.expect(m == .none);
 }
 
 test "parseMode - 'last:5' returns Mode.last{5}" {
-    const m = try ic.parseMode("last:5");
+    const m = try parseMode("last:5");
     try std.testing.expect(m == .last);
     try std.testing.expect(m.last == 5);
 }
 
 test "parseMode - 'last:' (no number) defaults to 10" {
-    const m = try ic.parseMode("last:");
+    const m = try parseMode("last:");
     try std.testing.expect(m == .last);
-    try std.testing.expect(m.last == ic.DEFAULT_LAST);
+    try std.testing.expect(m.last == DEFAULT_LAST);
 }
 
 test "parseMode - 'last:0' clamps to 1" {
-    const m = try ic.parseMode("last:0");
+    const m = try parseMode("last:0");
     try std.testing.expect(m == .last);
     try std.testing.expect(m.last == 1);
 }
 
 test "parseMode - 'last:999' clamps to 50" {
-    const m = try ic.parseMode("last:999");
+    const m = try parseMode("last:999");
     try std.testing.expect(m == .last);
     try std.testing.expect(m.last == 50);
 }
 
 test "parseMode - 'last:50' stays 50" {
-    const m = try ic.parseMode("last:50");
+    const m = try parseMode("last:50");
     try std.testing.expect(m.last == 50);
 }
 
 test "parseMode - 'all' returns Mode.all" {
-    const m = try ic.parseMode("all");
+    const m = try parseMode("all");
     try std.testing.expect(m == .all);
 }
 
 test "parseMode - 'since_last_user' returns Mode.since_last_user" {
-    const m = try ic.parseMode("since_last_user");
+    const m = try parseMode("since_last_user");
     try std.testing.expect(m == .since_last_user);
 }
 
 test "parseMode - 'garbage' returns InvalidInheritedContextMode" {
-    try std.testing.expectError(error.InvalidInheritedContextMode, ic.parseMode("garbage"));
+    try std.testing.expectError(error.InvalidInheritedContextMode, parseMode("garbage"));
 }
 
 test "parseMode - 'last:abc' returns InvalidInheritedContextMode" {
-    try std.testing.expectError(error.InvalidInheritedContextMode, ic.parseMode("last:abc"));
+    try std.testing.expectError(error.InvalidInheritedContextMode, parseMode("last:abc"));
 }
 
 test "parseMode - 'last:-3' returns InvalidInheritedContextMode" {
-    try std.testing.expectError(error.InvalidInheritedContextMode, ic.parseMode("last:-3"));
+    try std.testing.expectError(error.InvalidInheritedContextMode, parseMode("last:-3"));
 }
 
 test "parseMode - '  none  ' (surrounding whitespace) returns Mode.none" {
-    const m = try ic.parseMode("  none  ");
+    const m = try parseMode("  none  ");
     try std.testing.expect(m == .none);
 }
 
 test "parseMode - 'None' (mixed case) returns Mode.none" {
-    const m = try ic.parseMode("None");
+    const m = try parseMode("None");
     try std.testing.expect(m == .none);
 }
 
 test "parseMode - 'Last:7' (mixed case prefix) returns Mode.last{7}" {
-    const m = try ic.parseMode("Last:7");
+    const m = try parseMode("Last:7");
     try std.testing.expect(m == .last);
     try std.testing.expect(m.last == 7);
 }
@@ -81,27 +323,27 @@ test "parseMode - 'Last:7' (mixed case prefix) returns Mode.last{7}" {
 // --- isSubagent helper (no DB needed) ------------------------------------
 
 test "isSubagent - empty parent_session_id returns false (not a subagent)" {
-    try std.testing.expect(!ic.isSubagent("session_xyz", ""));
+    try std.testing.expect(!isSubagent("session_xyz", ""));
 }
 
 test "isSubagent - empty session_id returns false (defensive)" {
-    try std.testing.expect(!ic.isSubagent("", "parent_xyz"));
+    try std.testing.expect(!isSubagent("", "parent_xyz"));
 }
 
 test "isSubagent - both empty returns false" {
-    try std.testing.expect(!ic.isSubagent("", ""));
+    try std.testing.expect(!isSubagent("", ""));
 }
 
 test "isSubagent - session_id equal parent_session_id returns false (not a subagent)" {
-    try std.testing.expect(!ic.isSubagent("session_xyz", "session_xyz"));
+    try std.testing.expect(!isSubagent("session_xyz", "session_xyz"));
 }
 
 test "isSubagent - session_id differs from parent_session_id returns true (IS a subagent)" {
-    try std.testing.expect(ic.isSubagent("session_child", "session_parent"));
+    try std.testing.expect(isSubagent("session_child", "session_parent"));
 }
 
 test "isSubagent - case-sensitive (different case is treated as different)" {
-    try std.testing.expect(ic.isSubagent("Session_xyz", "session_xyz"));
+    try std.testing.expect(isSubagent("Session_xyz", "session_xyz"));
 }
 
 // --- Formatter tests (need DB) --------------------------------------------
@@ -155,7 +397,7 @@ test "formatHistory - mode .none short-circuits to empty string" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "parent_sess", .none);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "parent_sess", .none);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
 }
@@ -173,7 +415,7 @@ test "formatHistory - last:5 filters out tool messages" {
     try seedMessage(alloc, &ctx.db, "m5", "p", "2024-01-01 00:00:05", "tool", "{\"result\":\"ok\"}");
     try seedMessage(alloc, &ctx.db, "m6", "p", "2024-01-01 00:00:06", "user", "Thanks");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 5 });
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 5 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "## Conversation History From Parent Agent") != null);
@@ -203,7 +445,7 @@ test "formatHistory - last:1 returns only the last user/assistant turn" {
     try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", "second");
     try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "third");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 1 });
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 1 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: third") != null);
@@ -222,7 +464,7 @@ test "formatHistory - since_last_user starts at the last user message" {
     try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "second_user");
     try seedMessage(alloc, &ctx.db, "m4", "p", "2024-01-01 00:00:04", "assistant", "after_second");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .since_last_user);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .since_last_user);
     defer alloc.free(out);
 
     // 'since_last_user' = from the last user message (m3) to the end.
@@ -248,7 +490,7 @@ test "formatHistory - all mode caps at 50 messages and adds truncation notice" {
         try seedMessage(alloc, &ctx.db, id, "p", ts, "user", "x");
     }
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "more messages omitted") != null);
@@ -268,7 +510,7 @@ test "formatHistory - empty parent history returns empty string" {
     defer ctx.threaded.deinit();
 
     // No rows seeded.
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
 }
@@ -279,7 +521,7 @@ test "formatHistory - empty parent_session_id returns empty string" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "", .all);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "", .all);
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
 }
@@ -295,7 +537,7 @@ test "formatHistory - empty session_id returns empty string (defensive, new arg)
     try seedMessage(alloc, &ctx.db, "m1", "p", "2024-01-01 00:00:01", "user", "should NOT appear");
     try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", "should NOT appear");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "", "p", .{ .last = 5 });
+    const out = try formatHistory(alloc, &ctx.db, "", "p", .{ .last = 5 });
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
     // Header must NOT appear because we short-circuit before fetching.
@@ -314,7 +556,7 @@ test "formatHistory - session_id equal parent_session_id returns empty string (N
     try seedMessage(alloc, &ctx.db, "m1", "self", "2024-01-01 00:00:01", "user", "should NOT appear");
     try seedMessage(alloc, &ctx.db, "m2", "self", "2024-01-01 00:00:02", "assistant", "should NOT appear");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "self", "self", .{ .last = 5 });
+    const out = try formatHistory(alloc, &ctx.db, "self", "self", .{ .last = 5 });
     defer alloc.free(out);
     try std.testing.expectEqualStrings("", out);
     try std.testing.expect(std.mem.indexOf(u8, out, "should NOT appear") == null);
@@ -333,7 +575,7 @@ test "formatHistory - session_id differs from parent_session_id returns parent h
     // should never come back, because we filter by parent_session_id.
     try seedMessage(alloc, &ctx.db, "m3", "child_sess", "2024-01-01 00:00:03", "user", "from child — must NOT appear");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "parent_sess", .{ .last = 5 });
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "parent_sess", .{ .last = 5 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "## Conversation History From Parent Agent") != null);
@@ -364,7 +606,7 @@ test "formatHistory - 20KB byte cap emits truncation notice" {
         try seedMessage(alloc, &ctx.db, id, "p", ts, "user", big_content);
     }
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
 
     // Byte cap should have fired (we seeded 30 KB of content, cap is 20 KB).
@@ -385,7 +627,7 @@ test "formatHistory - DB query failure returns the documented fallback string" {
     // Drop the table so the formatter's SELECT will fail.
     try ctx.db.exec(alloc, "DROP TABLE llm_history", &.{});
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .all);
     defer alloc.free(out);
 
     try std.testing.expectEqualStrings("(failed to load parent conversation history)", out);
@@ -401,7 +643,7 @@ test "formatHistory - empty content rows are filtered out" {
     try seedMessage(alloc, &ctx.db, "m2", "p", "2024-01-01 00:00:02", "assistant", ""); // empty
     try seedMessage(alloc, &ctx.db, "m3", "p", "2024-01-01 00:00:03", "user", "Bye");
 
-    const out = try ic.formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 5 });
+    const out = try formatHistory(alloc, &ctx.db, "child_sess", "p", .{ .last = 5 });
     defer alloc.free(out);
 
     try std.testing.expect(std.mem.indexOf(u8, out, "**[user]**: Hello") != null);

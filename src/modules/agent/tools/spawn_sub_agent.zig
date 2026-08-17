@@ -4,7 +4,7 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
-const inherited_context_helper = @import("../../../ai_workflow/tui/inherited_context.zig");
+const inherited_context_helper = @import("../../../ai_workflow/tui/agentic_loop/inherited_context.zig");
 
 pub const SubAgentInput = struct {
     instruction: []const u8,

@@ -17,7 +17,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const get_design_context = @import("get_design_context.zig");
 const text_normalize = nalarcore.helpers.text_normalize;
-const design_model = @import("../../../ai_workflow/tui/design_model.zig");
+const design_model = @import("../../../ai_workflow/tui/agentic_loop/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/get_design_context.zig";
 const ROOT_PATH = "src/root.zig";

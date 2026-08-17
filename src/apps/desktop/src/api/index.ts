@@ -172,7 +172,7 @@ export interface DesignPage {
 
 /**
  * Element types emitted by the backend's `ElementType` enum
- * (src/ai_workflow/tui/design_model.zig). Wire form is the lowercase
+ * (src/ai_workflow/tui/agentic_loop/design_model.zig). Wire form is the lowercase
  * `tagName` string; the backend maps it back to the enum at the
  * handler boundary.
  */
@@ -1840,7 +1840,7 @@ export async function getKanbanTagSuggestions(
 //
 // 9 endpoints for the new design-mode surface, replacing the v5
 // panzoom-canvas API. The backend (src/ai_workflow/tui/http_handlers/
-// design_*.zig + src/ai_workflow/tui/design_model.zig) is fully
+// design_*.zig + src/ai_workflow/tui/agentic_loop/design_model.zig) is fully
 // implemented and tested; this section is the thin TypeScript wrapper.
 //
 // Every endpoint routes through the per-request arena on the backend,
