@@ -477,6 +477,9 @@ pub const change_agent = @import("modules/agent/tools/change_agent.zig");
 pub const get_skill_tool = @import("modules/agent/tools/get_skill.zig");
 pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
 pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
+// 2026-08-14 — shared absolute-path validator + cwd resolver
+// (Plan: docs/superpowers/plans/2026-08-14-ban-absolute-paths.md, Task 1).
+pub const path_security = @import("modules/agent/tools/path_security.zig");
 pub const memories = @import("modules/agent/tools/memories.zig");
 pub const list_memory_tool = @import("modules/agent/tools/list_memory.zig");
 pub const save_memory = @import("modules/agent/tools/save_memory.zig");

@@ -71,4 +71,9 @@ test {
     // docs/superpowers/plans/2026-08-14-flatten-tui-into-agentic-loop.md.
     // Migration 073 — session_activity wiring + recordSessionActivity.
     _ = @import("tools/update_activity_test.zig");
+
+    // 2026-08-14 — shared absolute-path validator + cwd resolver
+    // (Plan: docs/superpowers/plans/2026-08-14-ban-absolute-paths.md,
+    // Task 1). Used by every tool's exec wrapper.
+    _ = @import("tools/path_security_test.zig");
 }
