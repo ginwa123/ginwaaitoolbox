@@ -73,34 +73,73 @@ If you do create a new `_test.zig`, register it in
 
 ## Files
 
-| File | Inline tests |
-|---|---|
-| `mod.zig` | (none — pure re-exports) |
-| `sse.zig` | ✅ 3 (`SseEvent` defaults, field round-trip) |
-| `llm_history.zig` | ✅ 4 (defaults, full-field deinit, nullable-skip, empty `image_urls`) |
-| `session_skills.zig` | ✅ 4 (`SkillInfo` defaults, deinit, loaded_at safety) |
-| `is_session_kanban.zig` | ✅ 6 (kanban, non-kanban, unknown, empty, no-task, mixed) |
-| `is_worker_running.zig` | ✅ 4 (empty, missing id, fresh insert, empty session_id) |
-| `is_worker_cancelled.zig` | ✅ 4 (empty, fresh worker, flipped flag, defensive parse) |
-| `has_queue_messagge.zig` | ✅ 5 (empty, single, different session, image_url, LIMIT 1) |
-| `get_queue_message.zig` | ✅ 7 (empty, no-match, single, multi, heap-survival, empty image, session filter) |
-| `update_worker.zig` | ✅ 7 (insert, ON CONFLICT overwrite, session updated_at, task updated_at, SSE skip) |
-| `delete_worker.zig` | ✅ 5 (remove, no-op, partial, SSE skip) |
-| `insert_queue_message.zig` | ✅ 5 (insert, empty image, multi-row order, session filter, SSE skip) |
-| `delete_queue_worker.zig` | ✅ 4 (remove, no-op, both-filter, SSE skip) |
-| `insert_llm_histories.zig` | ✅ 13 (insert × 3, fields × 5, nullable columns × 2, image_url × 2, SSE skip × 2) |
-| `get_llm_histories.zig` | ✅ 12 (empty, ordering, LEFT JOIN × 2, numeric parse, bool parse, feed filter, NULL feed, image split × 3, nullable fields × 2) |
-| `sse_send_event_worker.zig` | ✅ 7 (event_type mapping × 4, JSON shape, routing key, heap copy) |
-| `sse_on_event_send_llm_history.zig` | ✅ 6 (event type, JSON fields, content sanitize × 2, null content, central broadcast) |
-| `sse_on_event_send_queue_message.zig` | (placeholder — empty file, no tests needed) |
-| `workflow_compact_message.zig` | ✅ 30 (`buildCompactMessagePrompt` × 8 — happy path, first+last excluded, tool_calls formatted, null content skipped, empty middle, newline join, ownership, 2-message; `parseReadFilePath` × 4; `fetchUserChatHistory` × 1; `fetchReadFilePaths` × 1; `fetchRecentActivities` × 2; `fetchSessionSkills` × 3; `enrichCompactionXml` × 4; recent_activities in enrich × 2; session_skills in enrich × 5 — embed + CDATA, XML escape, ']]>' split, 50-cap, position) |
-| `workflow_commpact_message.zig` | ✅ 31 (orchestrator + LLM-call: `shouldCompact` thresholds + `mock_state` wiring + `maybeCompactMessagesNew` × 6 — force/skip/threshold branches, url_style propagation, empty messages, short-circuit on null, recent_activities fetch error path, recent_activities embed; `compactMessageInMemoryNew` envelope × 4; session_skills embed × 2; compact_returns_null × 1; mock_state reset × 1; `callCompactAgent` direct call × 1 + url_style plumbing in tests) |
-| `workflow_compact_call_agent_test.zig` | ✅ 4 (`CallCompactAgentInput` field shape × 2 — default + override; `callCompactAgent` direct call with messages.items.len < 2; url_style propagation regression marker × 1) |
-| `test_runner.zig` | (none — just imports the test-bearing files for discovery) |
+As of 2026-08-14 (the [flatten-tui-into-agentic-loop](
+../../../../docs/superpowers/plans/2026-08-14-flatten-tui-into-agentic-loop.md)
+refactor), every `.zig` file that used to live at `src/ai_workflow/tui/`
+top-level now lives here. The 3 exceptions are the entry-point files
+that stay at `tui/` for backwards compat:
+- `mod.zig` — re-exports the public API surface (`nalarcore.ai_mod.*`).
+- `test_runner.zig` — top-level test discovery for tests that live at
+  `tui/` (currently only `compaction_*_test.zig` was here pre-refactor
+  but was deleted in Phase 7).
+- `agentic_loop/test_runner.zig` — discovery for all `agentic_loop/` tests.
 
-**Total: 123 inline test "..." blocks + 1 `test_runner.test_0` = 124 tests
-discovered in this directory.** Run
-`zig build test --summary all` from the project root to execute them.
+| File | Type | Notes |
+|---|---|---|
+| `mod.zig` | re-exports | Surfaces `nalarcore.ai_mod.*` for backwards compat. |
+| `ActiveLoops.zig` | impl | Per-session agentic-loop registry. |
+| `agent_memories.zig` | impl + inline tests | saveMemory / loadMemoriesByFts / getMemoryById. |
+| `agentic_loop.zig` | — | (placeholder) |
+| `background_process.zig` | impl | Background process tracking. |
+| `compaction_*_test.zig` | tests | Inlined into `workflow.zig` + `workflow_compact_message.zig` (Phase 7). |
+| `delete_queue_worker.zig` | impl + inline tests | DB queue cleanup. |
+| `delete_worker.zig` | impl + inline tests | |
+| `design_io.zig` | impl + inline tests | sanitizeFilename + atomicWriteFile. |
+| `design_model.zig` | impl + inline tests | ~6k lines, design canvas DB layer. |
+| `design_model_*_test.zig` (×7) | tests | Inlined as separate `_test.zig` files (Phase 6 deviation: design_model.zig is too large to inline). |
+| `design_model_reorder_test.zig` | orphaned | Pre-existing schema/setup bugs (5 SIGABRT + 2 assertion failures). NOT registered in `test_runner.zig` — fix separately. |
+| `extract_base64_image_urls_test.zig` | — | DELETED (was already disabled in test_runner.zig). |
+| `get_queue_message.zig` | impl + inline tests | |
+| `get_session_list_test.zig` | tests | Inlined as separate _test.zig (was at `tui/get_session_list_test.zig`). |
+| `has_queue_messagge.zig` | impl + inline tests | |
+| `inherited_context.zig` | impl + inline tests | |
+| `insert_llm_histories.zig` | impl + inline tests | |
+| `insert_queue_message.zig` | impl + inline tests | |
+| `is_session_kanban.zig` | impl + inline tests | |
+| `is_worker_cancelled.zig` | impl + inline tests | |
+| `is_worker_running.zig` | impl + inline tests | |
+| `llm_history.zig` | impl + inline tests | Big file (~6k lines). The "row" struct is in `llm_history_row.zig` (small, separate file to avoid name collision with this big file). |
+| `llm_history_row.zig` | impl + inline tests | `LLMHistory` struct (used by 4 sibling files). Renamed from `llm_history.zig` in Phase 5 so the BIG file could land at `llm_history.zig` after the small one moved out. |
+| `llm_history_*_test.zig` (×10) | tests | Kept as separate `_test.zig` files in Phase 5 (same reason as design_model — impl file is too large). |
+| `markHistoryNotForLLMRun.zig` | impl | (placeholder) |
+| `models.zig` | impl + inline tests | Shared type definitions (`TUIHistory`). |
+| `on_event_design.zig` | impl + inline tests | |
+| `on_event_sent.zig` | impl + inline tests | |
+| `on_event_sent_design.zig` | impl + inline tests | |
+| `on_event_sent_kanban.zig` | impl + inline tests | |
+| `parsing.zig` | impl + inline tests | |
+| `prompts_*.zig` (×6) | impl + inline tests | |
+| `retry_delay_ms.zig` | impl + inline tests | |
+| `save_agent.zig` | impl + inline tests | |
+| `save_skill.zig` | — | Impl never landed (Phase 1 deleted the orphaned test file too). |
+| `session_skills.zig` | impl + inline tests | |
+| `session_update_test.zig` | tests | Kept as separate `_test.zig` (Phase 7 — inlining pushed llm_history.zig over 256KB static-contract test limit). |
+| `sse_on_event_send_session.zig` | impl + inline tests | |
+| `sse.zig` | impl + inline tests | |
+| `test_runner.zig` | re-exports | Registers every test-bearing file for `zig build test` discovery. |
+| `tools.zig` | impl + inline tests | Tool registry. |
+| `tools_equipped.zig` | impl + inline tests | Tool default-state. |
+| `tools_exec_*.zig` (×40+) | impl + inline tests | Per-tool exec logic. |
+| `tools_wrap_output.zig` | impl + inline tests | |
+| `update_session_name.zig` | impl + inline tests | |
+| `update_task_name.zig` | — | (placeholder) |
+| `update_worker.zig` | impl + inline tests | |
+| `workflow.zig` | impl + inline tests | The agentic loop orchestrator. ~1.8k lines. |
+| `workflow_commpact_message.zig` | impl + inline tests | ~1.7k lines. |
+| `workflow_compact_message.zig` | impl + inline tests | ~1.5k lines. |
+| `workflow_compact_call_agent_test.zig` | tests | |
+| `workflow_compaction_envelope_test.zig` | tests | |
+| `workspace_items_update_name_test.zig` | tests | Kept as separate `_test.zig` (Phase 7 — same 256KB reason). |
 
 ## Running the tests
 
@@ -180,3 +219,36 @@ Tests that only want the DB-write behavior can pass `event_bus = null` +
 `onEventSendLLMHistory` also dereferences `logger.?` (line 89 of
 `sse_on_event_send_llm_history.zig`), so the test must construct a real
 `Logger` via `Logger.init(alloc, io, .{})` rather than passing `null`.
+
+## Refactor history
+
+**2026-08-14** — [Flattened from `src/ai_workflow/tui/`](
+../../../../docs/superpowers/plans/2026-08-14-flatten-tui-into-agentic-loop.md).
+All 40+ impl files that previously sat at `tui/` top-level (next to the
+two entry-point files `mod.zig` + `test_runner.zig`) now live here. The
+`mod.zig` + `test_runner.zig` at `tui/` are kept as thin re-export /
+test-discovery surfaces so the public `nalarcore.ai_mod.*` API surface
+stays stable.
+
+Phases 1-8 in the plan:
+- **Phase 1**: 5 leaf files (`ActiveLoops`, `models`, `background_process`,
+  `save_agent`, `startup`) + deleted `save_skill_test.zig` (orphaned).
+- **Phase 2**: 4 event handlers (`on_event_sent`, `on_event_design`,
+  `on_event_sent_design`, `on_event_sent_kanban`) + inlined 12 tests
+  from `on_event_sent_sanitize_test.zig` + `on_event_sent_design_test.zig`.
+- **Phase 3**: `inherited_context` + `agent_memories` + inlined ~40 tests.
+- **Phase 4**: `kanban_model` + `design_io` + inlined 34 tests.
+- **Phase 5**: `llm_history` + 8 `_test.zig` files — **deviation**:
+  kept the 50 tests as separate `_test.zig` files (inlining would have
+  blown llm_history.zig past the 256KB `.limited()` cap that the
+  http_handlers static-contract tests use).
+- **Phase 6**: `design_model` + 8 `_test.zig` files — **deviation**:
+  same reason as Phase 5. Plus `design_model_reorder_test.zig` is
+  intentionally NOT registered (pre-existing schema/setup bugs).
+- **Phase 7**: Moved 3 orphan tests to their natural homes
+  (`migrations/`, `modules/agent/tools/`), inlined 2 compaction
+  tests into `workflow*.zig`, kept 2 session_update/workspace_items
+  tests separate (256KB reason), deleted 2 disabled/orphaned files
+  (`extract_base64_image_urls_test.zig`, `gitignore_vendor_sqlite3_test.zig`).
+- **Phase 8** (this commit): Final cleanup of `tui/mod.zig` and this
+  README.
