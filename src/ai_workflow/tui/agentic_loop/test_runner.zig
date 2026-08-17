@@ -53,6 +53,8 @@ test {
     _ = @import("design_model_delete_page_test.zig");
     _ = @import("design_model_add_element_parent_test.zig");
     _ = @import("design_model_set_element_parent_test.zig");
+    _ = @import("session_update_test.zig"); // Phase 7 — kept as separate _test.zig (inlining would push llm_history.zig over the 256KB static-contract test file-size limit)
+    _ = @import("workspace_items_update_name_test.zig"); // Phase 7 — same reason
     // design_model_reorder_test.zig — NOT registered. Pre-existing
     // schema/setup issues (5 tests crash with SIGABRT, 2 fail with
     // assertion errors) — the file was orphaned at tui/ before

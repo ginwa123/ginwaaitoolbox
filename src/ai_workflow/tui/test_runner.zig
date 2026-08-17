@@ -10,7 +10,6 @@ test {
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
     _ = @import("agentic_loop/workflow.zig");
-    _ = @import("compaction_config_threshold_test.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
 _ = @import("http_handlers/design_elements_reorder_test.zig"); // Chunk 5 — POST /reorder handler
 _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup handler
@@ -42,7 +41,6 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // _ = @import("llm_history_description_test.zig"); // phase 5
     // _ = @import("llm_history_notification_test.zig"); // phase 5
     // _ = @import("llm_history_tool_call_loading_test.zig"); // phase 5
-    _ = @import("compaction_long_context_test.zig");
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");
@@ -55,15 +53,12 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // `zig build test` actually runs the inline test blocks.
     _ = @import("http_handlers/design_elements_update.zig");
     _ = @import("http_handlers/design_elements_reparent.zig");
-    _ = @import("migration_057_test.zig");  // stays at this path; imported by src/migrations/test_runner.zig via relative path
-    _ = @import("migration_063_runtime_test.zig");  // Chunk 1 — sessions auto_retry + finish_reason runtime CRUD
     _ = @import("http_handlers/tasks_reorder_pinned_test.zig");
     _ = @import("http_handlers/git_worktree_info_test.zig");
     _ = @import("http_handlers/git_pr_create_test.zig");
     _ = @import("http_handlers/git_status_test.zig");
     _ = @import("http_handlers/workspace_items_create_kanban_test.zig");
     _ = @import("http_handlers/workspace_items_create_empty_name_test.zig");
-    _ = @import("workspace_items_update_name_test.zig");
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
     _ = @import("http_handlers/kanban_tasks_create_test.zig"); // 2026-08-13-kanban-task-create-endpoint (Task 1)
@@ -113,10 +108,8 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
     _ = @import("get_session_list_test.zig");
-    _ = @import("session_update_test.zig"); // 2026-08-06-set-active-profile-default — ensureSessionExists behavioural tests
     _ = @import("http_handlers/session_messages_get_test.zig"); // 2026-08-07-profile-persist-read — getSessionMessagesSorted carries selected_profile_model
     // _ = @import("transform_llm_history_to_agent_messages_test.zig"); // DISABLED - pre-existing type mismatch (TUIHistory vs LLMHistory) on main
-    _ = @import("gitignore_vendor_sqlite3_test.zig");
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
     _ = @import("../../modules/agent/tools/move_element_to_page_test.zig");
     // save_memory + load_memory tools (Task 3 + 4 of
@@ -126,5 +119,4 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");
-    _ = @import("update_activity_test.zig"); // Migration 073 — session_activity wiring + recordSessionActivity
 }

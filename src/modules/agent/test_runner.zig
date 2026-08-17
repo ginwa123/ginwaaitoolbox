@@ -65,4 +65,10 @@ test {
     // generate_image tool tests (DALL-E 2/3, gpt-image-1 via OpenAI Images API)
     // Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
     _ = @import("tools/generate_image_test.zig");
+
+    // update_activity helper tests — moved from tui/update_activity_test.zig
+    // to modules/agent/tools/update_activity_test.zig in Phase 7 of
+    // docs/superpowers/plans/2026-08-14-flatten-tui-into-agentic-loop.md.
+    // Migration 073 — session_activity wiring + recordSessionActivity.
+    _ = @import("tools/update_activity_test.zig");
 }

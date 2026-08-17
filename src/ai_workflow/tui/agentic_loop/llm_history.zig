@@ -6028,3 +6028,4 @@ test "listWorkspaceItemTasksWithCursor column_id includes NULL-column legacy tas
     }
     try testing.expect(!found_task_b);
 }
+
