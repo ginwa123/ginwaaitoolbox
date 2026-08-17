@@ -51,6 +51,8 @@ pub const workspaceItemsCreateDesignHandler = @import("design_items_create.zig")
 // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0) — 4th
 // workspace-item type. See workspace_items_create_agent.zig.
 pub const workspaceItemsCreateAgentHandler = @import("workspace_items_create_agent.zig").workspaceItemsCreateAgentHandler;
+pub const agentsGetHandler = @import("agents_get.zig").agentsGetHandler;
+pub const agentsUpdateHandler = @import("agents_update.zig").agentsUpdateHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
