@@ -58,6 +58,11 @@ pub const agentKnowledgeCreateHandler = @import("agent_knowledge_create.zig").ag
 pub const agentKnowledgeUpdateHandler = @import("agent_knowledge_update.zig").agentKnowledgeUpdateHandler;
 pub const agentKnowledgeDeleteHandler = @import("agent_knowledge_delete.zig").agentKnowledgeDeleteHandler;
 pub const agentKnowledgeReorderHandler = @import("agent_knowledge_reorder.zig").agentKnowledgeReorderHandler;
+// Agent Mode tools CRUD (Tasks 7-8)
+pub const agentToolsRegistryHandler = @import("agent_tools_registry.zig").agentToolsRegistryHandler;
+pub const agentToolsListHandler = @import("agent_tools_list.zig").agentToolsListHandler;
+pub const agentToolsCreateHandler = @import("agent_tools_create.zig").agentToolsCreateHandler;
+pub const agentToolsDeleteHandler = @import("agent_tools_delete.zig").agentToolsDeleteHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
