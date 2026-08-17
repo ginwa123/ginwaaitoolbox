@@ -392,6 +392,20 @@ pub fn main(init: std.process.Init) !void {
     // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md
     //   Chunk 8 (AppLayout + Sidebar Wiring).
     try gs.router.post("/api/workspaces/:workspace_id/items/design", ai_mod.http_handlers.workspaceItemsCreateDesignHandler);
+    // Agent Mode workspace-item endpoint (item_type='agent') + sub-resources.
+    // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md
+    // Task: task_1786962724740_0
+    try gs.router.post("/api/workspaces/:workspace_id/items/agent", ai_mod.http_handlers.workspaceItemsCreateAgentHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsGetHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsUpdateHandler);
+    try gs.router.post("/api/agents/:agent_id/knowledge", ai_mod.http_handlers.agentKnowledgeCreateHandler);
+    try gs.router.patch("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeUpdateHandler);
+    try gs.router.delete("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeDeleteHandler);
+    try gs.router.patch("/api/agents/:agent_id/knowledge/reorder", ai_mod.http_handlers.agentKnowledgeReorderHandler);
+    try gs.router.get("/api/agent-tools/registry", ai_mod.http_handlers.agentToolsRegistryHandler);
+    try gs.router.get("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsListHandler);
+    try gs.router.post("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsCreateHandler);
+    try gs.router.delete("/api/agents/:agent_id/tools/:tool_id", ai_mod.http_handlers.agentToolsDeleteHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
