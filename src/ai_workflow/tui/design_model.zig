@@ -33,7 +33,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const helpers = nalarcore.helpers;
 const design_io = @import("design_io.zig");
-const on_event_sent_design = @import("on_event_sent_design.zig");
+const on_event_sent_design = @import("agentic_loop/on_event_sent_design.zig"); // TODO(phase-6): design_model moves into agentic_loop; flip to bare @import("on_event_sent_design.zig")
 
 /// Generate a unique page id of the form `page_<unix_nanoseconds>`.
 /// Same approach as `kanban_model.generateColumnId` (a process-global

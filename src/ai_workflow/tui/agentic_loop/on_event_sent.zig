@@ -3,7 +3,7 @@ const tree1_mod = @import("nalarcore");
 const agent = tree1_mod.agent;
 const sqlite = tree1_mod.sqlite;
 const loggermod = @import("nalarcore").loggermod;
-const models = @import("agentic_loop/models.zig"); // TODO(phase-2): on_event_sent moves into agentic_loop; flip to bare @import("models.zig")
+const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
 const helpers = tree1_mod.helpers;
@@ -681,4 +681,154 @@ pub fn sendStreamToolCallDelta(
     // EventSource pattern (the frontend listener filters by
     // session_id on the JS side).
     event_bus.emit(SseEvent, "llm", event);
+}
+
+// ─── Inline tests (formerly on_event_sent_sanitize_test.zig) ──────────────
+// Regression test for the "bash tool returns corrupt value" bug where
+// tool result content containing invalid UTF-8 bytes (e.g. \x89, \x93 from
+// a test binary that prints raw bytes) was serialized as an ARRAY of bytes
+// instead of a JSON string. Zig 0.16's std.json.fmt emits invalid-UTF-8
+// strings as arrays. The fix is in onEventSendLLMHistory which calls
+// helpers.sanitize.sanitizeUtf8 on both input.content and
+// input.reasoning_content before passing them to the payload struct.
+
+const testing_oes = std.testing;
+const nalarcore_oes = tree1_mod;
+const text_normalize = nalarcore_oes.helpers.text_normalize;
+const ON_EVENT_SENT_PATH = "src/ai_workflow/tui/agentic_loop/on_event_sent.zig";
+
+fn readSourceOES(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(testing_oes.io, path, allocator, .unlimited);
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+test "on_event_sent.zig imports helpers" {
+    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
+    defer testing_oes.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "const helpers = tree1_mod.helpers;") == null) {
+        std.debug.print("!! on_event_sent.zig missing `const helpers = tree1_mod.helpers;` !!\n", .{});
+        return error.HelpersImportMissing;
+    }
+}
+
+test "on_event_sent.zig calls sanitizeUtf8 on content" {
+    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
+    defer testing_oes.allocator.free(source);
+
+    const direct = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, input.content)") != null;
+    const via_const = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, c)") != null and
+        std.mem.indexOf(u8, source, "input.content") != null;
+    if (!direct and !via_const) {
+        std.debug.print("!! on_event_sent.zig does not sanitize input.content before JSON serialization !!\n", .{});
+        return error.ContentSanitizationMissing;
+    }
+}
+
+test "on_event_sent.zig calls sanitizeUtf8 on reasoning_content" {
+    const source = try readSourceOES(testing_oes.allocator, ON_EVENT_SENT_PATH);
+    defer testing_oes.allocator.free(source);
+
+    const direct = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, input.reasoning_content)") != null;
+    const via_const = std.mem.indexOf(u8, source, "sanitizeUtf8(allocator, r)") != null and
+        std.mem.indexOf(u8, source, "input.reasoning_content") != null;
+    if (!direct and !via_const) {
+        std.debug.print("!! on_event_sent.zig does not sanitize input.reasoning_content !!\n", .{});
+        return error.ReasoningSanitizationMissing;
+    }
+}
+
+test "sanitizeUtf8 fixes the exact bytes from the bug" {
+    const corrupt_bytes = [_]u8{
+        0x33, 0x0a, 0x5e, 0x57, 0x5e, 0x43, 0x5e, 0x43, 0x5e, 0x44,
+        0x79, 0x7c, 0x3b,
+        0x89, // INVALID UTF-8 (continuation byte without start)
+        0x2b,
+        0x93, // INVALID UTF-8 (continuation byte without start)
+        0x5e, 0x59, 0x49, 0x22, 0x73, 0x0a,
+    };
+
+    try testing_oes.expect(!std.unicode.utf8ValidateSlice(&corrupt_bytes));
+
+    const sanitize = nalarcore_oes.helpers.sanitize;
+    const sanitized = try sanitize.sanitizeUtf8(testing_oes.allocator, &corrupt_bytes);
+    defer testing_oes.allocator.free(sanitized);
+
+    try testing_oes.expect(std.unicode.utf8ValidateSlice(sanitized));
+    try testing_oes.expect(std.mem.indexOf(u8, sanitized, &[_]u8{ 0xEF, 0xBF, 0xBD }) != null);
+}
+
+test "SseEventLLMHistory with sanitized UTF-8 emits content as JSON string" {
+    const payload = SseEventLLMHistory{
+        .content = "<total>3</total><stdout>hello</stdout>",
+        .session_id = "s1",
+        .model = "m1",
+        .cwd = "/cwd",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = false,
+        .is_output = true,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing_oes.allocator);
+    try buf.print(testing_oes.allocator, "{f}", .{std.json.fmt(payload, .{ .whitespace = .minified })});
+
+    const json = buf.items;
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"content\":\"<total>3</total><stdout>hello</stdout>\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"content\":[") == null);
+}
+
+test "SseEventLLMHistory with INVALID UTF-8 emits content as byte ARRAY (demonstrates the bug)" {
+    const invalid_content = [_]u8{ '<', 't', 'a', 'g', '>', 0x89, '<', '/', 't', 'a', 'g', '>' };
+    const payload = SseEventLLMHistory{
+        .content = &invalid_content,
+        .session_id = "s1",
+        .model = "m1",
+        .cwd = "/cwd",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = false,
+        .is_output = true,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing_oes.allocator);
+    try buf.print(testing_oes.allocator, "{f}", .{std.json.fmt(payload, .{ .whitespace = .minified })});
+
+    const json = buf.items;
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"content\":[") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"content\":\"<tag>") == null);
+}
+
+test "SseEventLLMHistory emits is_input/is_output as JSON booleans" {
+    const payload = SseEventLLMHistory{
+        .content = "hi",
+        .session_id = "s1",
+        .model = "m1",
+        .cwd = "/cwd",
+        .loop_index = 0,
+        .temperature = 0.2,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing_oes.allocator);
+    try buf.print(testing_oes.allocator, "{f}", .{std.json.fmt(payload, .{ .whitespace = .minified })});
+
+    const json = buf.items;
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_input\":true") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_output\":false") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_input\":\"1\"") == null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_output\":\"0\"") == null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_input\":\"true\"") == null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_output\":\"false\"") == null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_input\": 1") == null);
+    try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_output\": 0") == null);
 }

@@ -18,7 +18,7 @@ const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 const agentic_loop_mod = @import("workflow.zig");
 const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = nalar.helpers.xmlUnescape;
-const on_event_sent = @import("../on_event_sent.zig");
+const on_event_sent = @import("on_event_sent.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
 

@@ -14,3 +14,8 @@ pub const save_agent = @import("save_agent.zig");
 // the Phase 1 commit). Once the impl lands, expose it here.
 // pub const save_skill = @import("save_skill.zig");
 pub const startup = @import("startup.zig");
+
+pub const on_event_sent = @import("on_event_sent.zig");
+pub const on_event_design = @import("on_event_design.zig");
+pub const on_event_sent_design = @import("on_event_sent_design.zig");
+pub const on_event_sent_kanban = @import("on_event_sent_kanban.zig");

@@ -198,3 +198,86 @@ pub fn onEventSendDesignPageDeleted(
     const di = nalarcore.getSingleton() catch return;
     di.event_bus.emit(SseEvent, "design_page", event);
 }
+
+// ─── Inline tests (formerly on_event_sent_design_test.zig) ───────────────
+// Static-contract regression tests for the design-mode SSE event
+// emitter file. See the original test file's header for the spec rationale.
+
+const testing_oesd = std.testing;
+const text_normalize_oesd = nalarcore.helpers.text_normalize;
+const ON_EVENT_SENT_DESIGN_PATH = "src/ai_workflow/tui/agentic_loop/on_event_sent_design.zig";
+
+fn readSourceOESD(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(testing_oesd.io, path, allocator, .unlimited);
+    const normalized = try text_normalize_oesd.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+test "on_event_sent_design.zig emits via event_bus.emit" {
+    const source = try readSourceOESD(testing_oesd.allocator, ON_EVENT_SENT_DESIGN_PATH);
+    defer testing_oesd.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "event_bus.emit") == null) {
+        std.debug.print("!! on_event_sent_design.zig does not call event_bus.emit !!\n", .{});
+        return error.EventBusEmitMissing;
+    }
+}
+
+test "on_event_sent_design.zig routes on the design_element key" {
+    const source = try readSourceOESD(testing_oesd.allocator, ON_EVENT_SENT_DESIGN_PATH);
+    defer testing_oesd.allocator.free(source);
+
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, source, idx, "\"design_element\"")) |pos| {
+        count += 1;
+        idx = pos + "\"design_element\"".len;
+    }
+    if (count < 3) {
+        std.debug.print("!! on_event_sent_design.zig uses \"design_element\" routing key only {d} times (expected >= 3) !!\n", .{count});
+        return error.DesignElementKeyMissing;
+    }
+}
+
+test "on_event_sent_design.zig sets granular event_type names" {
+    const source = try readSourceOESD(testing_oesd.allocator, ON_EVENT_SENT_DESIGN_PATH);
+    defer testing_oesd.allocator.free(source);
+
+    const has_created = std.mem.indexOf(u8, source, "\"design_element_created\"") != null;
+    const has_updated = std.mem.indexOf(u8, source, "\"design_element_updated\"") != null;
+    const has_deleted = std.mem.indexOf(u8, source, "\"design_element_deleted\"") != null;
+    if (!has_created or !has_updated or !has_deleted) {
+        std.debug.print(
+            "!! on_event_sent_design.zig missing granular event_type: created={}, updated={}, deleted={} !!\n",
+            .{ has_created, has_updated, has_deleted },
+        );
+        return error.GranularEventTypeMissing;
+    }
+}
+
+test "on_event_sent_design.zig exposes 3 pub emitter functions" {
+    const source = try readSourceOESD(testing_oesd.allocator, ON_EVENT_SENT_DESIGN_PATH);
+    defer testing_oesd.allocator.free(source);
+
+    const has_created_fn = std.mem.indexOf(u8, source, "pub fn onEventSendDesignElementCreated") != null;
+    const has_updated_fn = std.mem.indexOf(u8, source, "pub fn onEventSendDesignElementUpdated") != null;
+    const has_deleted_fn = std.mem.indexOf(u8, source, "pub fn onEventSendDesignElementDeleted") != null;
+    if (!has_created_fn or !has_updated_fn or !has_deleted_fn) {
+        std.debug.print(
+            "!! on_event_sent_design.zig missing emitter function: created={}, updated={}, deleted={} !!\n",
+            .{ has_created_fn, has_updated_fn, has_deleted_fn },
+        );
+        return error.EmitterFunctionMissing;
+    }
+}
+
+test "on_event_sent_design.zig uses the nalarcore singleton" {
+    const source = try readSourceOESD(testing_oesd.allocator, ON_EVENT_SENT_DESIGN_PATH);
+    defer testing_oesd.allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "nalarcore.getSingleton()") == null) {
+        std.debug.print("!! on_event_sent_design.zig does not call nalarcore.getSingleton() !!\n", .{});
+        return error.GetSingletonMissing;
+    }
+}
