@@ -38,7 +38,13 @@ pub const get_skill_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Load skill from file path. Relative to the session's cwd only (absolute paths are rejected — security policy). Use a relative path.",
+                    .description =
+                    \\`path`: file path of the skill's `.md` file, RELATIVE
+                    \\to the session's cwd only (absolute paths are
+                    \\rejected — security policy). Use a relative path like
+                    \\`".nalar/skills/my-skill/SKILL.MD"` (NOT
+                    \\`"/home/you/proj/.nalar/skills/my-skill/SKILL.MD"`).
+                    ,
                 },
                 .{
                     .name = "is_global",
