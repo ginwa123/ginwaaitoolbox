@@ -33,6 +33,8 @@ test {
     _ = @import("save_agent.zig"); // Phase 1 — save_agent module imports smoke test (was save_agent_test.zig)
     _ = @import("on_event_sent.zig"); // Phase 2 — inlined 7 tests from on_event_sent_sanitize_test.zig
     _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
+    _ = @import("inherited_context.zig"); // Phase 3 — inlined tests from inherited_context_test.zig
+    _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");

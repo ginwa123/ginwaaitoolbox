@@ -19,3 +19,6 @@ pub const on_event_sent = @import("on_event_sent.zig");
 pub const on_event_design = @import("on_event_design.zig");
 pub const on_event_sent_design = @import("on_event_sent_design.zig");
 pub const on_event_sent_kanban = @import("on_event_sent_kanban.zig");
+
+pub const inherited_context = @import("inherited_context.zig");
+pub const agent_memories = @import("agent_memories.zig");
