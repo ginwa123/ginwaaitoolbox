@@ -16,7 +16,7 @@ pub const routines = @import("routines/mod.zig");
 pub const startup = @import("agentic_loop/startup.zig");
 pub const kanban_model = @import("agentic_loop/kanban_model.zig");
 pub const design_io = @import("agentic_loop/design_io.zig");
-pub const design_model = @import("design_model.zig"); // phase 6
+pub const design_model = @import("agentic_loop/design_model.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;

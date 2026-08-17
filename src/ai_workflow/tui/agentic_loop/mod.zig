@@ -28,3 +28,5 @@ pub const design_io = @import("design_io.zig");
 
 pub const llm_history = @import("llm_history.zig");
 pub const llm_history_row = @import("llm_history_row.zig");
+
+pub const design_model = @import("design_model.zig");

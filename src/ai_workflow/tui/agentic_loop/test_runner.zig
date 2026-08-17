@@ -45,6 +45,20 @@ test {
     _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
+    _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
+    _ = @import("design_model_test.zig");
+    _ = @import("design_model_parent_id_test.zig");
+    _ = @import("design_model_group_test.zig");
+    _ = @import("design_model_delete_parent_test.zig");
+    _ = @import("design_model_delete_page_test.zig");
+    _ = @import("design_model_add_element_parent_test.zig");
+    _ = @import("design_model_set_element_parent_test.zig");
+    // design_model_reorder_test.zig — NOT registered. Pre-existing
+    // schema/setup issues (5 tests crash with SIGABRT, 2 fail with
+    // assertion errors) — the file was orphaned at tui/ before
+    // this refactor and was never run. Per the refactor's
+    // behaviour-preserving invariant, leave it orphaned. Address
+    // the test failures in a follow-up.
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");

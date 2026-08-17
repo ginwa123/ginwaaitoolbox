@@ -19,7 +19,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const group_elements = @import("group_design_elements.zig");
 const text_normalize = nalarcore.helpers.text_normalize;
-const design_model = @import("../../../ai_workflow/tui/design_model.zig");
+const design_model = @import("../../../ai_workflow/tui/agentic_loop/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/group_design_elements.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan

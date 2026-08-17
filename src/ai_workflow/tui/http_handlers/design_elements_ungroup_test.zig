@@ -7,7 +7,7 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const design_model = @import("../design_model.zig");
+const design_model = @import("../agentic_loop/design_model.zig");
 
 fn setupDb() !struct {
     db: sqlite.SqliteBackend,

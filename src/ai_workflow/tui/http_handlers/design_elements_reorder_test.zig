@@ -9,7 +9,7 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
-const design_model = @import("../design_model.zig");
+const design_model = @import("../agentic_loop/design_model.zig");
 const design_elements_reorder = @import("design_elements_reorder.zig");
 
 fn setupDb() !struct {

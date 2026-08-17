@@ -46,17 +46,9 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/workspaces_reorder_test.zig");
     _ = @import("http_handlers/workspace_items_reorder_test.zig");
     _ = @import("http_handlers/task_pin_test.zig");
-    _ = @import("design_model_test.zig");
-    _ = @import("design_model_parent_id_test.zig"); // 2026-07-28-grouped-layers (Chunk 1) — parent_id round-trip
-    _ = @import("design_model_group_test.zig"); // 2026-07-28-grouped-layers (Chunk 2) — groupElements + updateElement parent_id
-    _ = @import("design_model_delete_parent_test.zig"); // 2026-07-28-grouped-layers (Chunk 4) — deleteElement NULLs children
-    _ = @import("design_model_delete_page_test.zig"); // 2026-08-06 — deletePage derives page dir from design_page_elements.file_path (no JOIN to workspace_items)
-    _ = @import("design_model_add_element_parent_test.zig"); // 2026-07-29 — addElement accepts parent_id (Task 1)
-    _ = @import("design_model_set_element_parent_test.zig"); // 2026-07-29 — setElementParent re-parents with cycle detection (Task 2)
-    
-    // Inline tests for `updateElementsBatch` live at the bottom of design_model.zig
-    // — registered here so zig build test actually runs them.
-    _ = @import("design_model.zig");
+    // design_model.zig + design_model_*_test.zig files were moved into
+    // agentic_loop/ in Phase 6. Registered in agentic_loop/test_runner.zig.
+    // Inline tests for `updateElementsBatch` live at the bottom of design_model.zig.
 
     // Inline tests for `design_elements_update` and `design_elements_reparent`
     // live at the bottom of their impl files. Register them here so

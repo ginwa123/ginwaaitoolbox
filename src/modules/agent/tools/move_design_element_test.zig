@@ -19,7 +19,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
 const move_design_element = @import("move_design_element.zig");
-const design_model = @import("../../../ai_workflow/tui/design_model.zig");
+const design_model = @import("../../../ai_workflow/tui/agentic_loop/design_model.zig");
 
 fn setupDbAndItem() !struct {
     db: sqlite.SqliteBackend,
