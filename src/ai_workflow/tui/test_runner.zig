@@ -5,8 +5,6 @@ test {
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
     _ = @import("routines/scheduler_test.zig");
-    _ = @import("save_agent_test.zig");
-    _ = @import("save_skill_test.zig");
     _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
     _ = @import("agentic_loop/retry_delay_ms_race_test.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free

@@ -8,7 +8,7 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 const pwsh_tool_mod = nalarcore.pwsh_tool;
-const background_process = @import("../background_process.zig");
+const background_process = @import("background_process.zig");
 const wrapToolOutput = tools.wrapToolOutput;
 
 /// Mirror of `tools_exec_bash.runWithContext`. The XML envelope is the

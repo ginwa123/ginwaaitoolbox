@@ -25,7 +25,7 @@
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
-const Scheduler = @import("routines/Scheduler.zig");
+const Scheduler = @import("../routines/Scheduler.zig");
 
 /// Submit the routine scheduler as a concurrent task on the Io
 /// runtime. The task runs forever; on the same Io group as

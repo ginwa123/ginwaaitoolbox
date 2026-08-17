@@ -4,7 +4,7 @@ const nalarcore = @import("nalarcore");
 const logger_mod = nalarcore.loggermod;
 const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
-const ActiveLoops = @import("../ActiveLoops.zig").ActiveLoops;
+const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 
 pub const all_agent_tools = @import("tools_equipped.zig").equips;
 pub const wrapToolOutput = @import("tools_wrap_output.zig").wrapToolOutput;

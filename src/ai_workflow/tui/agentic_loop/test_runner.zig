@@ -30,6 +30,7 @@ test {
     _ = @import("sse_on_event_send_session.zig"); // task_1786507100896 — behavioural tests for wire-format event_type_name mapping
     _ = @import("parsing.zig");
     _ = @import("workflow.zig");
+    _ = @import("save_agent.zig"); // Phase 1 — save_agent module imports smoke test (was save_agent_test.zig)
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");
