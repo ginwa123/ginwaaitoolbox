@@ -38,7 +38,7 @@ pub const get_skill_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Load skill from file path. Accepts both absolute paths (e.g. /home/user/skill.md) and relative paths (resolved against the session's current working directory).",
+                    .description = "Load skill from file path. Relative to the session's cwd only (absolute paths are rejected — security policy). Use a relative path.",
                 },
                 .{
                     .name = "is_global",

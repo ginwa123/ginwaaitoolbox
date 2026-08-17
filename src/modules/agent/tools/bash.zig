@@ -144,7 +144,12 @@ pub const bash_tool = AgentTool{
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Absolute working directory. Always set explicitly.",
+                    .description =
+                    \\Working directory. Relative paths only (absolute paths
+                    \\are rejected — security policy). Resolved against the
+                    \\session's cwd (or the active git-worktree binding if
+                    \\set). Omit to default to the session's cwd.
+                    ,
                 },
                 .{
                     .name = "mandatory_timeout",
@@ -205,7 +210,7 @@ pub const bash_tool = AgentTool{
                     ,
                 },
             },
-            .required = &.{ "command", "cwd", "mandatory_timeout" },
+            .required = &.{ "command", "mandatory_timeout" },
         },
     },
 };
