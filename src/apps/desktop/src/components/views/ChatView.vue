@@ -42,6 +42,7 @@ import SetGitWorktree from '../tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from '../tool_outputs/ReadCompactedMessages.vue'
 import KanbanMove from '../tool_outputs/KanbanMove.vue'
 import KanbanList from '../tool_outputs/KanbanList.vue'
+import ListDirectory from '../tool_outputs/ListDirectory.vue'
 import SaveMemory from '../tool_outputs/SaveMemory.vue'
 import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
@@ -235,6 +236,25 @@ const renderResponse = (
         const returned = returnedMatch ? returnedMatch[1] : total
         const resultsText = total !== '0' ? ` (${returned} files)` : ''
         return `<span class="tool-inline">glob → "${pattern}"${resultsText}</span>`
+      }
+
+      // Collapsed-bubble summary for the inline tool pill in ChatView.
+      // Mirrors the structured ListDirectory.vue card so users see the
+      // same info (path + entry count) whether they look at the
+      // collapsed bubble or the expanded body. The wire shape is
+      // `<directory_listing path="..." count="N">...</directory_listing>`
+      // (see src/modules/agent/tools/list_directory.zig).
+      if (tool_name === 'list_directory') {
+        const errorMatch = content.match(/<error>([\s\S]*?)<\/error>/)
+        if (errorMatch) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(errorMatch[1]?.trim() || 'error')}</span>`
+        }
+        const pathMatch = content.match(/<directory_listing\s[^>]*\bpath="([^"]+)"/)
+        const countMatch = content.match(/<directory_listing\s[^>]*\bcount="(\d+)"/)
+        const dirPath = pathMatch?.[1] ?? 'unknown'
+        const dirCount = countMatch?.[1] ?? '0'
+        const plural = dirCount === '1' ? 'entry' : 'entries'
+        return `<span class="tool-inline">${tool_name} → ${escapeHtml(dirPath)} (${dirCount} ${plural})</span>`
       }
 
       if (tool_name === 'web_search') {
@@ -2581,6 +2601,12 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'kanban_list'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <ListDirectory
+                            v-else-if="msg.tool_name === 'list_directory'"
+                            :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :cwd="sessionCwd"
                           />
                           <SaveMemory
                             v-else-if="msg.tool_name === 'save_memory'"
