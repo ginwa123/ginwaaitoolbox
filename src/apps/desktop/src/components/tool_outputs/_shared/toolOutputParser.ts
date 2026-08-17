@@ -632,3 +632,105 @@ export function parseGenerateImage(content: string): ParsedGenerateImage {
 
   return { status, count, model, size, images, revisedPrompt, error: null }
 }
+
+// ─── list_directory ─────────────────────────────────────────────────────────
+//
+// Parses the XML envelope produced by `execute_list_directory` +
+// `toXml` in `src/modules/agent/tools/list_directory.zig`:
+//
+//   <directory_listing path="/proj" count="3">
+//     <directory name="src"   path="/proj/src"      is_symlink="false"/>
+//     <file     name="main"   path="/proj/main.zig" is_symlink="false"/>
+//   </directory_listing>
+//
+// The `<directory_listing>` opening tag carries `path="..."` and
+// `count="N"` as attributes. Each child is a self-closing
+// `<directory .../>` or `<file .../>` tag with three attributes:
+// `name`, `path`, `is_symlink`. The sort order is whatever the
+// backend produced (directories first, then files, alphabetical) —
+// the frontend does NOT re-sort.
+//
+// On error, the backend wraps with `wrapToolOutput(... success=false, error_msg, "")`,
+// leaving the inner `<data>` empty. `ChatView.innerToolData` then
+// falls back to the full `<tool>...</tool>` envelope (which still
+// carries `<success>false</success><error>...</error>`). The parser
+// tolerates both shapes — see the `success=false` branch below.
+//
+// Note: we use `match(/...<directory_listing.../)` to pick up the
+// opening tag's attributes (path + count) and `matchAll(/<(directory|file)
+// ...\/>/g)` to pull each child. The attribute body can contain `/`
+// (paths like `/proj/src`), so the lazy match must allow `/`.
+
+export interface ParsedListDirectoryEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+  isSymlink: boolean
+}
+
+export interface ParsedListDirectory {
+  /** Absolute path that was listed (from `path="..."` on the wrapper). */
+  path: string
+  /** Total entry count (from `count="..."` on the wrapper). */
+  count: number
+  /** Parsed entries in backend sort order (dirs first, then files). */
+  entries: ParsedListDirectoryEntry[]
+  /** false when the parser finds an `<error>` tag (success path) or wrapper `<success>false</success>`. */
+  success: boolean
+  /** Error message on failure; null on success. */
+  error: string | null
+}
+
+export function parseListDirectory(content: string): ParsedListDirectory {
+  // Error path: outer <tool> envelope carries <success>false</success>
+  // and <error>...</error>. innerToolData falls back to the full envelope
+  // when there's no inner <data> (the empty-data error case).
+  const errorTag = extractTag(content, 'error')
+  if (errorTag !== null) {
+    const successFlag = extractBool(content, 'success', true)
+    if (!successFlag) {
+      return { path: '', count: 0, entries: [], success: false, error: errorTag }
+    }
+  }
+
+  // Pull `path` and `count` off the <directory_listing ...> opening tag.
+  // Note: `<directory_listing` MUST be followed by a space (or `>`) so we
+  // don't match `<directory_listing>` (which has no attributes) or
+  // future sibling tags that start with the same prefix.
+  const pathMatch = /<directory_listing\s[^>]*\bpath="([^"]+)"/.exec(content)
+  const dirPath = pathMatch?.[1] ?? ''
+  const countMatch = /<directory_listing\s[^>]*\bcount="(\d+)"/.exec(content)
+  const count = countMatch?.[1] ? parseInt(countMatch[1], 10) || 0 : 0
+
+  // Pull each <directory .../> and <file .../> child.
+  const entries: ParsedListDirectoryEntry[] = []
+  // Self-closing tags only — the backend's `toXml` emits `<directory
+  // name="..." path="..." is_symlink="..."/>` and never any inner body.
+  // The lazy match must allow `/` (paths) inside attributes, so we use
+  // `[\s\S]+?` for the attribute body.
+  const entryRegex = /<(directory|file)\s+([\s\S]+?)\s*\/?>/g
+  let m
+  while ((m = entryRegex.exec(content)) !== null) {
+    const kind = m[1] ?? ''
+    const attrs = m[2] ?? ''
+    const nameMatch = /\bname="([^"]+)"/.exec(attrs)
+    const fullPathMatch = /\bpath="([^"]+)"/.exec(attrs)
+    const symlinkMatch = /\bis_symlink="([^"]+)"/.exec(attrs)
+    const name = nameMatch?.[1] ?? ''
+    if (!name) continue // skip malformed rows
+    entries.push({
+      name,
+      path: fullPathMatch?.[1] ?? '',
+      isDirectory: kind === 'directory',
+      isSymlink: symlinkMatch?.[1] === 'true',
+    })
+  }
+
+  return {
+    path: dirPath,
+    count,
+    entries,
+    success: true,
+    error: null,
+  }
+}
