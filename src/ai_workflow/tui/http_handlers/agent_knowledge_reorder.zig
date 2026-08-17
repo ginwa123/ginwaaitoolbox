@@ -63,9 +63,11 @@ pub fn agentKnowledgeReorderHandler(
     // (which would put the row at the bottom).
     for (parsed.ordered_ids, 0..) |id, i| {
         const position: i64 = @intCast(parsed.ordered_ids.len - 1 - @as(usize, @intCast(i)));
+        var pos_buf: [32]u8 = undefined;
+        const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
         sqlite_db.exec(allocator,
             "UPDATE agent_knowledge SET position = ?, updated_at = datetime('now') WHERE id = ? AND agent_id = ?",
-            &[_][]const u8{ &std.mem.toString(allocator, default_buf, "{d}", .{position}) catch "0", id, agent_id },
+            &[_][]const u8{ pos_str, id, agent_id },
         ) catch {
             return res.jsonResponse(.{
                 .status_code = 500,

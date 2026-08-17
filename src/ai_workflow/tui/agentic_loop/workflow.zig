@@ -1896,8 +1896,7 @@ fn maybeOverrideAllowedToolsForAgent(
         &[_][]const u8{session_id},
     ) catch return false;
     defer q1.deinit();
-    const row1 = q1.next() catch null;
-    if (row1 == null) return false;
+    const row1 = (q1.next() catch null) orelse return false;
     defer row1.deinit(allocator);
     const workspace_item_id = row1.values[0];
 
@@ -1907,8 +1906,7 @@ fn maybeOverrideAllowedToolsForAgent(
         &[_][]const u8{workspace_item_id},
     ) catch return false;
     defer q2.deinit();
-    const row2 = q2.next() catch null;
-    if (row2 == null) return false;
+    const row2 = (q2.next() catch null) orelse return false;
     defer row2.deinit(allocator);
 
     // Fetch the enabled tool_names.

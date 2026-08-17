@@ -58,14 +58,15 @@ pub fn agentKnowledgeUpdateHandler(
         }
     }
 
-    // Build dynamic UPDATE SQL.
-    var sql_buf: [512]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&sql_buf);
-    const w = stream.writer();
-    try w.writeAll("UPDATE agent_knowledge SET updated_at = datetime('now')");
-    if (parsed.file_path != null) try w.writeAll(", file_path = ?");
-    if (parsed.label != null) try w.writeAll(", label = ?");
-    try w.writeAll(" WHERE id = ? AND agent_id = ?");
+    // Build dynamic UPDATE SQL into an owned ArrayList. Zig 0.16 dropped
+    // std.io.fixedBufferStream, so we use appendSlice for the static
+    // SQL fragments and std.fmt for the position-number interpolation.
+    var sql_list: std.ArrayList(u8) = .empty;
+    defer sql_list.deinit(allocator);
+    try sql_list.appendSlice(allocator, "UPDATE agent_knowledge SET updated_at = datetime('now')");
+    if (parsed.file_path != null) try sql_list.appendSlice(allocator, ", file_path = ?");
+    if (parsed.label != null) try sql_list.appendSlice(allocator, ", label = ?");
+    try sql_list.appendSlice(allocator, " WHERE id = ? AND agent_id = ?");
 
     // Bind args.
     var args_buf: [3][]const u8 = undefined;
@@ -83,7 +84,7 @@ pub fn agentKnowledgeUpdateHandler(
     args_buf[arg_idx] = agent_id;
     arg_idx += 1;
 
-    const sql = stream.getWritten();
+    const sql = sql_list.items;
 
     // Build argv slice for db.exec — pass an owned slice.
     var argv_list: std.ArrayList([]const u8) = .empty;
