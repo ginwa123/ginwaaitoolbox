@@ -7,9 +7,8 @@ import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import AgentView from '../components/views/AgentView.vue'
 import * as api from '../api'
-import { useAgentToolsStore } from '../stores/agentTools'
 
-const baseItem = { id: 'item_1', name: 'My Agent', path: '/tmp' }
+const baseItem = { id: 'item_1', name: 'My Agent', path: '/tmp', item_type: 'agent' }
 const baseProps = () => ({
   item: baseItem,
   workspaceId: 'ws_1',

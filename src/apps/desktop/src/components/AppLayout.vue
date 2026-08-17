@@ -1033,7 +1033,7 @@ watch(
 // equals the agent's item id and `activeTaskWorkspaceItem.item_type`
 // is `'agent'`. The AgentChatDialog's v-if gates on this exact case.
 const agentChatDialogOpen = ref(false)
-const agentKnowledge = ref<Array<{ id: string; agent_id: string; file_path: string; label: string; position: number }>>([])
+const agentKnowledge = ref<api.AgentKnowledgeRow[]>([])
 const agentTools = ref<string[]>([])
 
 watch(
@@ -1045,10 +1045,8 @@ watch(
       try {
         const wsId = activeWorkspace?.value?.id
         if (!wsId) return
-        const data = await import('../../api').then((m) =>
-          m.getAgent(wsId, activeWorkspaceItem.value!.id),
-        )
-        agentKnowledge.value = data.knowledge as any
+        const data = await api.getAgent(wsId, activeWorkspaceItem.value!.id)
+        agentKnowledge.value = data.knowledge
         agentTools.value = data.tools
       } catch (e) {
         console.error('[AppLayout] failed to load agent:', e)

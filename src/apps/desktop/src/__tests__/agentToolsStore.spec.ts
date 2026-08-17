@@ -24,7 +24,7 @@ describe('agentToolsStore', () => {
 
     expect(spy).toHaveBeenCalledTimes(1)
     expect(store.registry).toHaveLength(1)
-    expect(store.registry[0].name).toBe('bash')
+    expect(store.registry[0]!.name).toBe('bash')
     expect(store.error).toBeNull()
   })
 

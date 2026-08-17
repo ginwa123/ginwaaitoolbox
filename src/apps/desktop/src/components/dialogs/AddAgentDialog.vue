@@ -162,7 +162,7 @@ onBeforeUnmount(() => {
   </Teleport>
 
   <FilePickerDialog
-    v-model:show="showPicker"
+    v-model="showPicker"
     mode="folder"
     :load-items="loadItemsForPicker"
     :key-for="(e: any) => e.path as string"

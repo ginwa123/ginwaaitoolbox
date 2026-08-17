@@ -9,12 +9,13 @@
   Plan: 2026-08-15-agent-mode (Task 17)
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import * as api from '../../api'
 import { useAgentToolsStore } from '../../stores/agentTools'
+import type { WorkspaceItem } from '../../stores/workspaces'
 
 interface Props {
-  item: { id: string; name?: string; path?: string }
+  item: WorkspaceItem
   workspaceId: string
   itemId: string
   knowledge: api.AgentKnowledgeRow[]
@@ -33,7 +34,6 @@ const emit = defineEmits<{
 
 const agentToolsStore = useAgentToolsStore()
 const loading = ref(true)
-const error = ref<string | null>(null)
 
 onMounted(async () => {
   loading.value = true

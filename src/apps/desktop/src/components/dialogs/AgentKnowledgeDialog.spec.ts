@@ -1,42 +1,65 @@
 // Behavioural tests for AgentKnowledgeDialog.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import AgentKnowledgeDialog from './AgentKnowledgeDialog.vue'
 
+function mountDialog() {
+  // The dialog uses <Teleport to="body">, so we attach to document.body
+  // and search via document.querySelector. Same pattern as
+  // AddAgentDialog.spec.ts.
+  document.body.innerHTML = ''
+  return mount(AgentKnowledgeDialog, {
+    attachTo: document.body,
+    props: { show: true },
+  })
+}
+
 describe('AgentKnowledgeDialog', () => {
+  beforeEach(() => vi.restoreAllMocks())
+
   it('shows the "Add Knowledge" title when show=true', async () => {
-    const wrapper = mount(AgentKnowledgeDialog, { props: { show: true } })
+    mountDialog()
     await nextTick()
-    const dialog = wrapper.find('[data-testid="agent-knowledge-dialog"]').element as HTMLElement | null
+    const dialog = document.querySelector('[data-testid="agent-knowledge-dialog"]') as HTMLElement | null
     expect(dialog?.textContent).toContain('Add Knowledge')
   })
 
   it('disables submit when path is empty', async () => {
-    const wrapper = mount(AgentKnowledgeDialog, { props: { show: true } })
+    mountDialog()
     await nextTick()
-    const submit = wrapper.find('[data-testid="agent-knowledge-submit"]')
-    expect(submit.attributes('disabled')).toBeDefined()
+    const submit = document.querySelector('[data-testid="agent-knowledge-submit"]') as HTMLButtonElement
+    expect(submit.hasAttribute('disabled')).toBe(true)
   })
 
   it('shows an error for non-absolute paths after interaction', async () => {
-    const wrapper = mount(AgentKnowledgeDialog, { props: { show: true } })
+    mountDialog()
     await nextTick()
-    const pathInput = wrapper.find('[data-testid="agent-knowledge-path"]')
-    await pathInput.setValue('relative/path.md')
-    await pathInput.trigger('blur')
-    const error = wrapper.find('[data-testid="agent-knowledge-path-error"]')
-    expect(error.exists()).toBe(true)
-    expect(error.text()).toContain('absolute')
+    const pathInput = document.querySelector('[data-testid="agent-knowledge-path"]') as HTMLInputElement
+    pathInput.value = 'relative/path.md'
+    pathInput.dispatchEvent(new Event('input'))
+    pathInput.dispatchEvent(new Event('blur'))
+    await nextTick()
+    const error = document.querySelector('[data-testid="agent-knowledge-path-error"]') as HTMLElement
+    expect(error).toBeTruthy()
+    expect(error.textContent).toContain('absolute')
   })
 
   it('emits create with (file_path, label) when submit clicked with valid input', async () => {
-    const wrapper = mount(AgentKnowledgeDialog, { props: { show: true } })
+    const wrapper = mountDialog()
     await nextTick()
-    await wrapper.find('[data-testid="agent-knowledge-path"]').setValue('/home/me/docs/spec.md')
-    await wrapper.find('[data-testid="agent-knowledge-label"]').setValue('Project spec')
-    await wrapper.find('[data-testid="agent-knowledge-submit"]').trigger('click')
+    const pathInput = document.querySelector('[data-testid="agent-knowledge-path"]') as HTMLInputElement
+    pathInput.value = '/home/me/docs/spec.md'
+    pathInput.dispatchEvent(new Event('input'))
+    await nextTick()
+    const labelInput = document.querySelector('[data-testid="agent-knowledge-label"]') as HTMLInputElement
+    labelInput.value = 'Project spec'
+    labelInput.dispatchEvent(new Event('input'))
+    await nextTick()
+    const submit = document.querySelector('[data-testid="agent-knowledge-submit"]') as HTMLButtonElement
+    submit.click()
+    await nextTick()
     const events = wrapper.emitted('create')
     expect(events).toBeTruthy()
     expect(events![0]).toEqual(['/home/me/docs/spec.md', 'Project spec'])
