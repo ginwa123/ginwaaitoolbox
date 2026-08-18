@@ -233,10 +233,12 @@ test "cleanupStaleWorkers clears ActiveLoops for a session whose worker is stale
     const io = ctx.threaded.io();
     const now: i64 = 1_000_000;
 
-    // Pre-populate ActiveLoops for a session whose worker row is
-    // stale — the helper should still remove it (idempotent; no
-    // crash if the worker is gone).
-    try testing.expect(ctx.active_loops.tryInsert(io, "ghost_session"));
+    // Pre-populate ActiveLoops with an entry whose worker row is
+    // ALREADY stale. After cleanup, the entry should be gone (the
+    // helper iterates stale workers from the SQL and removes their
+    // matching active_loops entries).
+    try seedWorker(&ctx.db, a, "w_stale", "s_stale", "100");
+    try testing.expect(ctx.active_loops.tryInsert(io, "s_stale"));
 
     _ = try cleanup.cleanupStaleWorkers(.{
         .allocator = a,
@@ -248,7 +250,7 @@ test "cleanupStaleWorkers clears ActiveLoops for a session whose worker is stale
         .now_unix = now,
     });
 
-    try testing.expect(!ctx.active_loops.contains(io, "ghost_session"));
+    try testing.expect(!ctx.active_loops.contains(io, "s_stale"));
 }
 
 test "cleanupStaleWorkers processes multiple stale workers in one call" {
@@ -365,7 +367,8 @@ test "cleanupStaleWorkers returns the DB error when the worker table itself is m
     });
 
     // We don't pin the specific SqliteBackend Error variant here —
-    // any error is acceptable for "the worker table is missing".
-    // The cron wrapper (handle) is responsible for catching + logging.
-    try testing.expectError(error.QueryFailed, result);
+    // the SqliteBackend maps missing-table to PrepareFailed
+    // (Sqlite.zig:568) which the helper propagates verbatim. The
+    // cron wrapper (handle) is responsible for catching + logging.
+    try testing.expectError(error.PrepareFailed, result);
 }
