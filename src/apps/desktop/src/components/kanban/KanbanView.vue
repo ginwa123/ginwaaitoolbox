@@ -874,7 +874,7 @@ const handleViewCreateTask = (columnId: string) => {
 //   + 2026-08-06-no-need-go-chatview (do NOT navigate to chatview on
 //     success path — keep the user on the kanban)
 const handleCreateTaskSave = async (payload: {
-  mode: 'create' | 'create_and_run'
+  mode: 'create' | 'create_session' | 'create_and_run'
   name: string
   description: string
   is_auto_retry_until_stop?: '0' | '1'
@@ -1247,7 +1247,7 @@ const handleCreateTaskSave = async (payload: {
     :cwd="item.path || ''"
     :workspace-id="workspaceId"
     :error-message="createError"
-    @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create' })"
+    @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
     @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
     @column-change="(columnId) => activeCreateColumnId = columnId"
   />

@@ -524,16 +524,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
     defer active_loops.remove(io, copy_session_id);
 
-    try updateWorker(UpdateWorkerInput{
-        .allocator = parent_allocator,
-        .db = db,
-        .logger = logger,
-        .worker_id = copy_session_id,
-        .session_id = copy_session_id,
-        .working_directory = copy_cwd,
-        .event_bus = event_bus,
-        .is_emit_sse = true,
-    });
+    // updateWorker is now called INSIDE the while loop body (see
+    // below) — the original insertion here (PR #269) was redundant
+    // with the per-iteration update. Removing it also fixes the
+    // trade-off documented in
+    // docs/superpowers/plans/2026-08-19-cleanup-stale-worker-cron.md §2.6
+    // (long-running workflows would have stale last_activity_nano if
+    // updateWorker only ran once at entry).
+    //
+    // Plan: docs/superpowers/reviews/2026-08-18-pr-269-update-worker-in-loop.md
 
     // Queue the initial message — unless the caller asked us to skip
     // it (the start_agent endpoint triggers a worker on an existing
@@ -587,6 +586,31 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         var arenaAllocatorWhileLoop = std.heap.ArenaAllocator.init(parent_allocator);
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
+
+        // Bump worker.last_activity_nano to "now" on every iteration
+        // so the cleanup_stale_worker cron (which deletes rows where
+        // last_activity_nano < now - 600s) doesn't wipe long-running
+        // workflows. The `ON CONFLICT(id) DO UPDATE` clause in
+        // updateWorker.zig handles both the first iteration (INSERT)
+        // and subsequent iterations (UPDATE) seamlessly.
+        //
+        // SSE event emitted by updateWorker also keeps the frontend's
+        // worker row visually alive; side effect of `is_emit_sse=true`.
+        updateWorker(UpdateWorkerInput{
+            .allocator = allocator,
+            .db = db,
+            .logger = logger,
+            .worker_id = copy_session_id,
+            .session_id = copy_session_id,
+            .working_directory = copy_cwd,
+            .event_bus = event_bus,
+            .is_emit_sse = true,
+        }) catch |err| {
+            logger.errFmt(
+                "[CHECKPOINT] worker update failed session_id={s}: {s}\n",
+                .{ copy_session_id, @errorName(err) },
+            );
+        };
 
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;

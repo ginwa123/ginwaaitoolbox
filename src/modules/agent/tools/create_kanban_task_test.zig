@@ -78,16 +78,18 @@ test "create_kanban_task description mentions kanban + task/card" {
     }
 }
 
-test "create_kanban_task required fields are workspace_id + item_id + name" {
+test "create_kanban_task required fields are workspace_id + item_id + name + description + cwd" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
-    // The .required field MUST contain all three. Order matters
+    // The .required field MUST contain all five. Order matters
     // only for the LLM's UX hint — we match the substring regardless.
-    if (!contains(source, ".required = &.{ \"workspace_id\", \"item_id\", \"name\" }")) {
+    // (description + cwd became mandatory on 2026-08-18 so the agent
+    // always has enough context to actually work the task.)
+    if (!contains(source, ".required = &.{ \"workspace_id\", \"item_id\", \"name\", \"description\", \"cwd\" }")) {
         std.debug.print(
-            "\n!! create_kanban_task .required field is missing one of workspace_id / item_id / name !!\n" ++
-                "   The tool must require all three; missing any one returns an undefined slice.\n", .{},
+            "\n!! create_kanban_task .required field is missing one of workspace_id / item_id / name / description / cwd !!\n" ++
+                "   The tool must require all five; missing any one returns an undefined slice.\n", .{},
         );
         return error.RequiredFieldsMissing;
     }
@@ -312,6 +314,8 @@ test "executeCreateKanbanTaskToString returns success XML on happy path" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "new task",
+        .description = "happy path task",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -333,6 +337,8 @@ test "executeCreateKanbanTaskToString inserts a row into workspace_item_tasks" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "insert me",
+        .description = "insert me desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -372,6 +378,8 @@ test "executeCreateKanbanTaskToString appends at MAX(kanban_position)+1 when col
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "third",
+        .description = "third desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -390,6 +398,8 @@ test "executeCreateKanbanTaskToString returns error when workspace_id is empty" 
         .workspace_id = "",
         .item_id = "item_k1",
         .name = "x",
+        .description = "test desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -408,6 +418,8 @@ test "executeCreateKanbanTaskToString returns error when item_id is empty" {
         .workspace_id = "ws_1",
         .item_id = "",
         .name = "x",
+        .description = "test desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -426,6 +438,8 @@ test "executeCreateKanbanTaskToString returns error when name is empty" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "",
+        .description = "test desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -444,12 +458,85 @@ test "executeCreateKanbanTaskToString returns error when name is whitespace-only
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "   \t\n  ",
+        .description = "test desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
     try testing.expect(contains(xml, "<success>false</success>"));
     try testing.expect(contains(xml, "<error>"));
     try testing.expect(contains(xml, "name"));
+}
+
+// ─── description + cwd became required on 2026-08-18 ──────────────────
+//
+// description: must be non-empty after trim of leading/trailing whitespace.
+// cwd: must be non-empty (and an absolute path — see the "rejects relative
+//      cwd" test below for the format check).
+//
+// We add these validation tests right after the matching "name" tests so
+// the three required-text-field tests live together. The order matters for
+// the test runner's narrative — name first because it has been required
+// longest, then description + cwd because they were promoted together.
+
+test "executeCreateKanbanTaskToString returns error when description is empty" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "no desc",
+        .description = "",
+        .cwd = "/test",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(contains(xml, "<success>false</success>"));
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "description"));
+}
+
+test "executeCreateKanbanTaskToString returns error when description is whitespace-only" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "whitespace desc",
+        .description = "   \t\n  ",
+        .cwd = "/test",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(contains(xml, "<success>false</success>"));
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "description"));
+}
+
+test "executeCreateKanbanTaskToString returns error when cwd is empty" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "no cwd",
+        .description = "test desc",
+        .cwd = "",
+    });
+    defer alloc.free(xml);
+
+    try testing.expect(contains(xml, "<success>false</success>"));
+    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(xml, "cwd"));
 }
 
 test "executeCreateKanbanTaskToString returns error when parent item_type is not kanban" {
@@ -468,6 +555,8 @@ test "executeCreateKanbanTaskToString returns error when parent item_type is not
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "x",
+        .description = "test desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -490,6 +579,8 @@ test "executeCreateKanbanTaskToString returns error when kanban has zero columns
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "x",
+        .description = "test desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -508,6 +599,8 @@ test "executeCreateKanbanTaskToString honors explicit column_id" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "explicit placement",
+        .description = "explicit placement desc",
+        .cwd = "/test",
         .column_id = "col_ip",
     });
     defer alloc.free(xml);
@@ -542,6 +635,8 @@ test "executeCreateKanbanTaskToString rejects column_id that does not belong to 
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "x",
+        .description = "test desc",
+        .cwd = "/test",
         .column_id = "col_other",
     });
     defer alloc.free(xml);
@@ -654,13 +749,13 @@ test "create_kanban_task input struct has image_urls field" {
     }
 }
 
-test "create_kanban_task input struct has cwd field" {
+test "create_kanban_task input struct has cwd field as required non-optional string" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
-    if (!contains(source, "cwd: ?[]const u8 = null,")) {
+    if (!contains(source, "cwd: []const u8 = \"\",")) {
         std.debug.print(
-            "\n!! CreateKanbanTaskInput is missing the 'cwd' field !!\n",
+            "\n!! CreateKanbanTaskInput.cwd is not a required (non-optional) string !!\n",
             .{},
         );
         return error.CwdFieldMissing;
@@ -737,6 +832,8 @@ test "executeCreateKanbanTaskToString persists tags when supplied" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "tagged",
+        .description = "tagged desc",
+        .cwd = "/test",
         .tags = "[\"bug\",\"urgent\"]",
     });
     defer alloc.free(xml);
@@ -759,6 +856,8 @@ test "executeCreateKanbanTaskToString persists image_urls when supplied" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "with images",
+        .description = "with images desc",
+        .cwd = "/test",
         .image_urls = "data:image/png;base64,abc||data:image/jpeg;base64,def",
     });
     defer alloc.free(xml);
@@ -781,6 +880,7 @@ test "executeCreateKanbanTaskToString persists cwd when supplied" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "with cwd",
+        .description = "with cwd desc",
         .cwd = "/home/me/proj",
     });
     defer alloc.free(xml);
@@ -803,6 +903,8 @@ test "executeCreateKanbanTaskToString stamps last_human_touched_at on happy path
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "stamped",
+        .description = "stamped desc",
+        .cwd = "/test",
     });
     defer alloc.free(xml);
 
@@ -828,6 +930,8 @@ test "executeCreateKanbanTaskToString creates sessions row when is_auto_retry_un
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "unattended",
+        .description = "unattended desc",
+        .cwd = "/test",
         .is_auto_retry_until_stop = "1",
     });
     defer alloc.free(xml);
@@ -850,6 +954,8 @@ test "executeCreateKanbanTaskToString persists selected_profile_model when suppl
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "with profile",
+        .description = "with profile desc",
+        .cwd = "/test",
         .selected_profile_model = "fast-model",
     });
     defer alloc.free(xml);
@@ -872,6 +978,8 @@ test "executeCreateKanbanTaskToString writes both unattended and profile in sing
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "combined",
+        .description = "combined desc",
+        .cwd = "/test",
         .is_auto_retry_until_stop = "1",
         .selected_profile_model = "my-profile",
     });
@@ -915,6 +1023,8 @@ test "executeCreateKanbanTaskToString persists sessions.name == trimmed task nam
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "workspace item task nama and session name",
+        .description = "sessions.name == trimmed desc",
+        .cwd = "/test",
         .is_auto_retry_until_stop = "1",
     });
     defer alloc.free(xml);
@@ -942,6 +1052,8 @@ test "executeCreateKanbanTaskToString persists sessions.name == trimmed task nam
         // (see executeCreateKanbanTaskToString line 463-466), so the
         // sessions.name must be the trimmed value.
         .name = "   my chatty task   ",
+        .description = "sessions.name == trimmed profile desc",
+        .cwd = "/test",
         .selected_profile_model = "fast-model",
     });
     defer alloc.free(xml);
@@ -964,6 +1076,8 @@ test "executeCreateKanbanTaskToString rejects malformed tags" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "bad tags",
+        .description = "bad tags desc",
+        .cwd = "/test",
         .tags = "not-a-json-array",
     });
     defer alloc.free(xml);
@@ -983,6 +1097,8 @@ test "executeCreateKanbanTaskToString rejects invalid image_urls" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "bad images",
+        .description = "bad images desc",
+        .cwd = "/test",
         .image_urls = "not-a-data-url",
     });
     defer alloc.free(xml);
@@ -1002,6 +1118,7 @@ test "executeCreateKanbanTaskToString rejects relative cwd" {
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "relative",
+        .description = "relative path desc",
         .cwd = "relative/path",
     });
     defer alloc.free(xml);

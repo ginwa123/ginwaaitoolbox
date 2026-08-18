@@ -125,4 +125,59 @@ describe('workspacesStore.addKanbanTask', () => {
       store.addKanbanTask('ws_1', 'item_1', 'create', { name: 't' }),
     ).rejects.toThrow('boom')
   })
+
+  // =====================================================================
+  // mode='create_session' (plan: 2026-08-19-kanban-create-task-inits-session)
+  // =====================================================================
+
+  it("mode='create_session' calls api.createKanbanTask with mode='create_session' + selected_profile_model + returns session", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fakeTask = { id: 'task_new', name: 'Fix bug', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'Fix bug', status: 'idle' }
+    const createSpy = vi
+      .spyOn(api, 'createKanbanTask')
+      .mockResolvedValue({ task: fakeTask, session: fakeSession })
+
+    const store = useWorkspacesStore()
+    const result = await store.addKanbanTask('ws_1', 'item_1', 'create_session', {
+      name: 'Fix bug',
+      description: 'The login button is broken',
+      tags: ['bug'],
+      cwd: '/home/u/proj',
+      isAutoRetryUntilStop: '1',
+      selected_profile_model: 'fast',
+    })
+
+    expect(createSpy).toHaveBeenCalledTimes(1)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const [wid, iid, payload] = createSpy.mock.calls[0] as [string, string, any]
+    expect(wid).toBe('ws_1')
+    expect(iid).toBe('item_1')
+    expect(payload.mode).toBe('create_session')
+    expect(payload.name).toBe('Fix bug')
+    expect(payload.description).toBe('The login button is broken')
+    expect(payload.tags).toEqual(['bug'])
+    expect(payload.cwd).toBe('/home/u/proj')
+    expect(payload.isAutoRetryUntilStop).toBe('1')
+    expect(payload.selected_profile_model).toBe('fast')
+    // create_session must NOT include queue_message — no agent run
+    expect(payload.queue_message).toBeUndefined()
+
+    expect(result.task).toEqual(fakeTask)
+    expect(result.session).toEqual(fakeSession)
+  })
+
+  it("mode='create_session' failure surfaces a toast and returns { task: null, session: null } (no throw)", async () => {
+    vi.spyOn(api, 'createKanbanTask').mockRejectedValue(new Error('session insert failed'))
+    const notifySpy = vi.spyOn(useNotificationStore(), 'notifyError')
+
+    const store = useWorkspacesStore()
+    const result = await store.addKanbanTask('ws_1', 'item_1', 'create_session', {
+      name: 'Fix bug',
+    })
+
+    expect(notifySpy).toHaveBeenCalled()
+    expect(result.task).toBeNull()
+    expect(result.session).toBeNull()
+  })
 })

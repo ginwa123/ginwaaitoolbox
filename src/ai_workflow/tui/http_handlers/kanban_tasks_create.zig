@@ -6,11 +6,20 @@
 //!                                 kanban's first column, emit
 //!                                 `kanban_task` SSE (action='assigned').
 //!                                 Returns `{ task, session: null }`.
+//!                                 Does NOT insert a sessions row (legacy).
 //!
-//!   - `mode='create_and_run'`   — same as above PLUS insert the
+//!   - `mode='create_session'`   — same as `create` PLUS insert the
 //!                                 `sessions` row keyed by `task.id`,
-//!                                 emit `session_created` SSE. Returns
-//!                                 `{ task, session: { id, name, status: 'send' } }`.
+//!                                 persist `selected_profile_model` +
+//!                                 `is_auto_retry_until_stop`, emit
+//!                                 `session_created` SSE. Does NOT
+//!                                 call `emit_run_agent`. Returns
+//!                                 `{ task, session: { id, name, status: 'idle' } }`.
+//!
+//!   - `mode='create_and_run'`   — same as `create_session` PLUS call
+//!                                 `emit_run_agent` to queue the first
+//!                                 user message + start the agent.
+//!                                 Returns `{ task, session: { id, name, status: 'send' } }`.
 //!
 //! Body: `{ mode, name, description?, queue_message? (create_and_run only),
 //!         tags?, image_urls?, cwd?, is_auto_retry_until_stop?,
@@ -24,11 +33,11 @@
 //!
 //! Layered as a thin orchestrator over `task_create.zig::useCase`
 //! (which handles the standard-task INSERT + kanban auto-assign +
-//! kanban_task SSE) plus the create_and_run side-effects (sessions
-//! INSERT + session_created SSE).
+//! kanban_task SSE) plus the create_session / create_and_run
+//! side-effects (sessions INSERT + session_created SSE; create_and_run
+//! additionally calls emit_run_agent).
 //!
-//! Plan: docs/superpowers/plans/2026-08-13-kanban-task-create-endpoint.md
-//!   (Task 1)
+//! Plan: docs/superpowers/plans/2026-08-19-kanban-create-task-inits-session.md
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -41,7 +50,7 @@ const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 /// independently (e.g. adding the `mode` discriminator + `queue_message`
 /// fields) without touching the shared task-create use-case.
 pub const KanbanTaskCreateBody = struct {
-    /// "create" | "create_and_run"
+    /// "create" | "create_session" | "create_and_run"
     mode: []const u8 = "",
     name: []const u8 = "",
     description: ?[]const u8 = null,
@@ -107,10 +116,11 @@ pub fn kanbanTasksCreateHandler(
 
     const is_create_only = std.mem.eql(u8, parsed.mode, "create");
     const is_create_and_run = std.mem.eql(u8, parsed.mode, "create_and_run");
-    if (!is_create_only and !is_create_and_run) {
+    const is_create_session = std.mem.eql(u8, parsed.mode, "create_session");
+    if (!is_create_only and !is_create_and_run and !is_create_session) {
         return res.jsonResponse(.{
             .status_code = 400,
-            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "mode must be 'create' or 'create_and_run'" }),
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "mode must be 'create', 'create_session', or 'create_and_run'" }),
         });
     }
 
@@ -199,18 +209,19 @@ pub fn kanbanTasksCreateHandler(
         },
     };
 
-    // 5. If mode='create_and_run', insert the sessions row keyed by
-    // task.id, call `di.emit_run_agent(...)` to queue the agent turn,
-    // then emit the session_created SSE event. Mirrors
-    // session_create.zig's path verbatim. The `emit_run_agent` call
-    // is what actually starts the agent: it heap-dupes each string
-    // into `di.allocator` (synchronously) and enqueues a RunParamsNew
-    // event on the `ai_worker_flow` channel; CallbackAiWorkerFlow in
-    // main.zig picks it up and runs runAgenticMultiStepnew. Without
-    // this call, the row exists but the worker pool never picks it
-    // up — the user-visible symptom is exactly what the user
-    // reported: task gets created, agent never starts.
-    if (is_create_and_run) {
+    // 5. If mode='create_session' OR mode='create_and_run', insert the
+    // sessions row keyed by task.id and emit the session_created SSE.
+    // Only mode='create_and_run' additionally calls `di.emit_run_agent(...)`
+    // to queue the agent turn. Mirrors session_create.zig's path
+    // verbatim. The `emit_run_agent` call is what actually starts the
+    // agent: it heap-dupes each string into `di.allocator`
+    // (synchronously) and enqueues a RunParamsNew event on the
+    // `ai_worker_flow` channel; CallbackAiWorkerFlow in main.zig picks
+    // it up and runs runAgenticMultiStepnew. Without this call, the
+    // row exists but the worker pool never picks it up — the
+    // user-visible symptom is exactly what the user reported: task
+    // gets created, agent never starts.
+    if (is_create_and_run or is_create_session) {
         const normalized: []const u8 = blk: {
             if (parsed.is_auto_retry_until_stop) |f| {
                 if (std.mem.eql(u8, f, "1")) break :blk "1";
@@ -241,22 +252,27 @@ pub fn kanbanTasksCreateHandler(
             });
         };
 
-        // Queue the agent turn. Borrowed slices here are safe
-        // because emit_run_agent heap-dupes them before the
-        // concurrent worker task reads them.
-        di.emit_run_agent(.{
-            .session_id = standard_result.task_id,
-            .session_name = standard_result.name,
-            .queue_message = queue_message,
-            .cwd = standard_result.cwd,
-            .body_message = "",
-            .allowed_tools = "all",
-            .image_urls = image_urls_wire,
-            .selected_profile_model = profile,
-            .is_auto_retry_until_stop = normalized,
-        }) catch |err| {
-            std.log.warn("kanban_tasks_create: emit_run_agent failed (non-fatal): {s}", .{@errorName(err)});
-        };
+        // Queue the agent turn. Only fire for create_and_run —
+        // create_session wants the row inserted but no worker started
+        // (the user clicks the card to open the chat themselves).
+        // Borrowed slices here are safe because emit_run_agent
+        // heap-dupes them before the concurrent worker task reads
+        // them.
+        if (is_create_and_run) {
+            di.emit_run_agent(.{
+                .session_id = standard_result.task_id,
+                .session_name = standard_result.name,
+                .queue_message = queue_message,
+                .cwd = standard_result.cwd,
+                .body_message = "",
+                .allowed_tools = "all",
+                .image_urls = image_urls_wire,
+                .selected_profile_model = profile,
+                .is_auto_retry_until_stop = normalized,
+            }) catch |err| {
+                std.log.warn("kanban_tasks_create: emit_run_agent failed (non-fatal): {s}", .{@errorName(err)});
+            };
+        }
 
         // Emit the session_created SSE so the sidebar's ChatsList
         // gets the new session without a manual refetch. Mirrors
@@ -308,6 +324,12 @@ pub fn kanbanTasksCreateHandler(
             .id = standard_result.task_id,
             .name = standard_result.name,
             .status = "send",
+        };
+    } else if (is_create_session) {
+        response_body.session = .{
+            .id = standard_result.task_id,
+            .name = standard_result.name,
+            .status = "idle",
         };
     }
 

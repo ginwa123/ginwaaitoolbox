@@ -34,20 +34,25 @@ const image_urls_validation = @import("../../../ai_workflow/tui/http_handlers/im
 
 /// Input structure for `create_kanban_task` tool.
 ///
-/// The agent should pass `workspace_id` and `item_id` from the active
-/// chat context (see the "## Workspace Context" section of the system
-/// prompt). `name` is the card title. `description` is optional (the
-/// task's tooltip text in the kanban UI). `column_id` is optional —
-/// when omitted, the task is auto-assigned to the first column at
-/// `MAX(kanban_position) + 1` (append-to-bottom semantics matching
-/// the HTTP handler).
+/// Required fields: `workspace_id`, `item_id`, `name`, `description`,
+/// `cwd`. The agent must pass `workspace_id` and `item_id` from the
+/// active chat context (see the "## Workspace Context" section of
+/// the system prompt). `name` is the card title. `description` is
+/// the card tooltip text (promoted from optional to required on
+/// 2026-08-18 so every card has enough context for human triage).
+/// `cwd` is the absolute path to the project's working directory
+/// (also promoted to required on 2026-08-18 — a cwd-less LLM session
+/// is useless because the agent has nothing to `bash` into).
 ///
-/// The five trailing optional fields mirror the user-facing
+/// `column_id` is optional — when omitted, the task is auto-assigned
+/// to the first column at `MAX(kanban_position) + 1` (append-to-bottom
+/// semantics matching the HTTP handler).
+///
+/// The four remaining trailing optional fields mirror the user-facing
 /// `KanbanTaskDetailDialog` form so the agent can set everything the
 /// human user can set when adding a card from the UI:
 ///   - `tags` (JSON-encoded array string like `"[\"bug\",\"urgent\"]"`)
 ///   - `image_urls` (`||`-delimited `data:image/...;base64,...` URLs)
-///   - `cwd` (absolute path for the per-task project root)
 ///   - `is_auto_retry_until_stop` (`"1"` to enable unattended mode)
 ///   - `selected_profile_model` (name of the profile to bind on the
 ///      created sessions row — see Path A in the
@@ -61,8 +66,13 @@ pub const CreateKanbanTaskInput = struct {
     /// Card title shown on the kanban board. Required, must be
     /// non-empty after trim of leading/trailing whitespace.
     name: []const u8 = "",
-    /// Optional card description (tooltip text in the kanban UI).
-    description: ?[]const u8 = null,
+    /// Required card description (tooltip text in the kanban UI).
+    /// Must be non-empty after trim of leading/trailing whitespace —
+    /// same rule as `name`. Promoted from optional to required on
+    /// 2026-08-18 so the agent always records what the task is about
+    /// when it creates a card (was previously allowed empty, which
+    /// made the kanban card list unhelpful for human triage).
+    description: []const u8 = "",
     /// Optional target column id. When omitted, the task is
     /// auto-assigned to the first column by `position ASC` at
     /// `MAX(kanban_position) + 1`. When supplied, the tool verifies
@@ -79,11 +89,16 @@ pub const CreateKanbanTaskInput = struct {
     /// by `image_urls_validation.validateImageUrls`). Null/empty =
     /// no images. Matches the wire shape `TaskCreateRequest.image_urls`.
     image_urls: ?[]const u8 = null,
-    /// Optional per-task project root — absolute path. Must start
-    /// with `/`, ≤4 KiB, no control chars. Empty/null = cwd-less
-    /// task (defaults to the kanban's path at session-create time).
+    /// Required per-task project root — absolute path. Must start
+    /// with `/`, ≤4 KiB, no control chars. Promoted from optional
+    /// to required on 2026-08-18 so the agent always has a concrete
+    /// working directory to launch into (was previously allowed
+    /// empty = cwd-less task; that case is still supported by the
+    /// UI form `KanbanTaskDetailDialog` but the LLM tool now
+    /// requires it because a cwd-less LLM session is not useful —
+    /// the agent would have nothing to `bash` into).
     /// Matches the wire shape `TaskCreateRequest.cwd`.
-    cwd: ?[]const u8 = null,
+    cwd: []const u8 = "",
     /// Optional unattended-mode flag. `"1"` enables the agent to
     /// retry past the 10-error TooManyRetries bail (overnight runs);
     /// any other value normalizes to `"0"`. When set, an INSERT OR
@@ -122,12 +137,11 @@ pub const create_kanban_task_tool = AgentTool{
             \\
             \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "sprint 1"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item is the one with `item_type='kanban'` marked with `*(this task)*` in the Workspace Context.
             \\
-            \\name is required (card title shown on the board). description is optional (tooltip text). column_id is optional — when omitted, the task is auto-assigned to the first kanban column at MAX(kanban_position)+1; when supplied, the column must belong to the same kanban item. To set a specific position, call kanban_move_task after this tool returns.
+            \\REQUIRED fields (must be non-empty): name (card title shown on the board), description (card tooltip text — promoted to required on 2026-08-18 so the kanban view always has enough context for human triage), and cwd (absolute path to the task's project root — also promoted to required on 2026-08-18; a cwd-less LLM session is useless because the agent has nothing to `bash` into). column_id is OPTIONAL — when omitted, the task is auto-assigned to the first kanban column at MAX(kanban_position)+1; when supplied, the column must belong to the same kanban item. To set a specific position, call kanban_move_task after this tool returns.
             \\
-            \\Optional fields (mirror the user-facing KanbanTaskDetailDialog form, Migration 062 / 067 / 069 / 070/071 — all five are persisted on create, not just on chat-spawn):
+            \\Optional fields (mirror the user-facing KanbanTaskDetailDialog form, Migration 062 / 067 / 069 / 071 — all four are persisted on create, not just on chat-spawn):
             \\  - tags: JSON-encoded array string like "[\"bug\",\"urgent\"]". Letters/digits/`_`/`-` only, ≤50 chars per tag, case-insensitive dedupe. Null/empty = no tags.
             \\  - image_urls: `||`-delimited `data:image/<mime>;base64,<payload>` URLs. Null/empty = no images. 10 MB cap.
-            \\  - cwd: absolute path for the per-task project root (must start with `/`, ≤4 KiB, no control chars). Null/empty = cwd-less (inherits the kanban's path at session-create time).
             \\  - is_auto_retry_until_stop: "1" enables unattended mode (agent keeps retrying past the 10-error TooManyRetries bail). Anything else normalizes to "0". When set, an INSERT OR IGNORE INTO sessions row is created keyed by the new task's id.
             \\  - selected_profile_model: name of the profile in `LlmConfig.profiles` to bind on the new sessions row (Path A — persisted on the chat session, not on the task). Null/empty = backend default.
             \\
@@ -154,7 +168,7 @@ pub const create_kanban_task_tool = AgentTool{
                 .{
                     .name = "description",
                     .type = "string",
-                    .description = "Optional card description (tooltip text in the kanban UI). Omit when no description is needed.",
+                    .description = "Card description / tooltip text shown in the kanban UI. REQUIRED (non-empty after trim — same rule as `name`). Promoted to required on 2026-08-18; pass a one-to-three-sentence summary of what the task is about.",
                 },
                 .{
                     .name = "column_id",
@@ -174,7 +188,7 @@ pub const create_kanban_task_tool = AgentTool{
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description = "Optional per-task project root as an absolute path (must start with `/`, ≤4 KiB, no control chars). Null or empty = cwd-less (inherits the kanban's path at session-create time).",
+                    .description = "REQUIRED per-task project root as an absolute path (must start with `/`, ≤4 KiB, no control chars). Promoted to required on 2026-08-18 — the UI form (`KanbanTaskDetailDialog`) still supports cwd-less tasks, but the LLM tool now requires it because a cwd-less LLM session has no working directory for `bash`.",
                 },
                 .{
                     .name = "is_auto_retry_until_stop",
@@ -187,7 +201,11 @@ pub const create_kanban_task_tool = AgentTool{
                     .description = "Optional profile name from `LlmConfig.profiles` to bind on the new sessions row. Null or empty = backend default (top-level config).",
                 },
             },
-            .required = &.{ "workspace_id", "item_id", "name" },
+            // Five required fields (description + cwd promoted from
+            // optional on 2026-08-18). column_id, tags, image_urls,
+            // is_auto_retry_until_stop, selected_profile_model remain
+            // optional.
+            .required = &.{ "workspace_id", "item_id", "name", "description", "cwd" },
         },
     },
 };
@@ -464,6 +482,17 @@ pub fn executeCreateKanbanTaskToString(
     if (trimmed_name.len == 0) {
         return errorXml(allocator, "name is required and must be non-empty after trim");
     }
+    // description + cwd were promoted from optional to required on
+    // 2026-08-18. Both are validated here (right after `name`) so the
+    // LLM sees a structured `<error>` mentioning the missing field
+    // before any DB work happens. description follows the same
+    // "non-empty after trim" rule as name; cwd is checked below in
+    // the existing absolute-path block (the empty-string short-
+    // circuit there was removed in the same change).
+    const trimmed_description = std.mem.trim(u8, input.description, " \t\n\r");
+    if (trimmed_description.len == 0) {
+        return errorXml(allocator, "description is required and must be non-empty after trim (one-to-three sentences about what this task is about)");
+    }
 
     // 2. Validate parent item_type='kanban'.
     if (try validateItemTypeIsKanban(allocator, db, input.item_id)) |err_xml| {
@@ -511,13 +540,18 @@ pub fn executeCreateKanbanTaskToString(
         },
     };
 
-    // 6. Validate cwd (Migration 070) — absolute path string,
-    //    ≤4 KiB, no control chars. Matches the HTTP handler's
-    //    inline block at `task_create.zig:421-435`. Empty/null
-    //    means cwd-less (DEFAULT '' applies).
+    // 6. Validate cwd (Migration 070, promoted to required on
+    //    2026-08-18) — absolute path string, ≤4 KiB, no control
+    //    chars. Matches the HTTP handler's inline block at
+    //    `task_create.zig:421-435`. Pre-2026-08-18, empty/null
+    //    meant cwd-less (DEFAULT '' applies) — that escape hatch
+    //    was removed because a cwd-less LLM session has no
+    //    working directory to launch into. The UI form
+    //    (`KanbanTaskDetailDialog`) still supports cwd-less tasks;
+    //    only the LLM tool requires it.
     const validated_cwd = blk: {
-        const raw = input.cwd orelse "";
-        if (raw.len == 0) break :blk raw;
+        const raw = input.cwd;
+        if (raw.len == 0) return errorXml(allocator, "cwd is required (pass the absolute path to this task's project root — the UI form supports cwd-less tasks, but the LLM tool requires it because a cwd-less session has nothing to bash into)");
         if (raw.len > 4096) return errorXml(allocator, "cwd path too long (max 4 KiB)");
         if (raw[0] != '/') return errorXml(allocator, "cwd must be an absolute path (start with `/`)");
         for (raw) |c| {
@@ -541,7 +575,10 @@ pub fn executeCreateKanbanTaskToString(
         trimmed_name,
         input.item_id,
         "standard",
-        input.description,
+        // Pass `trimmed_description` (validated non-empty above) so
+        // any leading/trailing whitespace the LLM accidentally added
+        // doesn't leak into the stored tooltip text.
+        trimmed_description,
         // Migration 067 — tags. Pass `""` (not null) when no tags
         // so the SQL `''` literal is bound (the dynamic-SQL builder
         // at `llm_history.zig:4047-4056` maps null → omitted

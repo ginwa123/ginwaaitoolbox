@@ -20,3 +20,15 @@
 **Spec:** docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent-design.md
 **Branch:** worktree/kanban-task-detail-start-agent
 **Task:** task_1787036138314_0
+
+### 2026-08-19: Kanban "Create task" now inits session, no agent run
+
+**What landed.** The plain `Create task` button in the kanban New Task dialog now also inserts a `sessions` row + emits the `session_created` SSE (new mode `'create_session'` on the existing `POST /api/workspaces/:wid/items/:iid/kanban/tasks` endpoint) but does NOT call `emit_run_agent`. The user can click the card to open the chatview on a pre-existing empty session with no lazy-creation race when they type their first message. The chatview's profile picker + unattended toggle now reflect the dialog's choice immediately (selected_profile_model is persisted on the new sessions row). Two-button story: `Create task` = prep everything, you open the chat yourself; `Create task & run agent` = prep everything + kick off the agent with the title + description as the first message. Backward compat: legacy `mode='create'` on the API surface keeps the old behaviour (no session insert) for any external consumer.
+
+**Wire (backend).** New mode value `'create_session'` on the existing `POST /api/workspaces/:wid/items/:iid/kanban/tasks` endpoint. Shares the sessions-INSERT + session_created-SSE plumbing with `create_and_run`, but the `emit_run_agent` call is narrowed behind a fresh `if (is_create_and_run)` guard so the worker never fires for the new mode. Response wire: `status: 'idle'` (vs `'send'` for create_and_run) so the frontend can distinguish at a glance. 5 new static-contract tests in `kanban_tasks_create_test.zig` lock in the wire contract.
+
+**Files.** 8 (2 NEW, 6 EDIT). Backend + frontend, no migration, no schema change.
+
+**Plan:** docs/superpowers/plans/2026-08-19-kanban-create-task-inits-session.md
+**Branch:** worktree/kanban-create-task-inits-session
+**Task:** task_1787066122956_5

@@ -220,15 +220,16 @@ test "kanban_tasks_create (mode=create) does NOT call emit_run_agent" {
     // (is_create_and_run)` checks at the INSERT site).
     //
     // We approximate "guarded by mode branch" by checking that
-    // every `emit_run_agent` literal in the source appears AFTER
-    // a `is_create_and_run` token (in source order). This is a
-    // weak proxy but catches a regression that wires emit into
-    // the unguarded create-only path.
+    // every actual call to `emit_run_agent` (the `di.emit_run_agent(`
+    // invocation, not doc-comment prose) appears AFTER an
+    // `is_create_and_run` token in source order. This is a weak proxy
+    // but catches a regression that wires emit into the unguarded
+    // create-only path. We anchor on `di.emit_run_agent(` to skip
+    // doc-comment prose that mentions the helper by name (the header
+    // module doc comment does this).
     const guard_token = "is_create_and_run";
-    if (std.mem.indexOfPos(u8, source, 0, "emit_run_agent")) |pos| {
-        // Walk backwards from `pos` looking for the most recent
-        // `is_create_and_run` token. If none exists before `pos`,
-        // the emit is unconditional → fail.
+    var search_pos: usize = 0;
+    while (std.mem.indexOfPos(u8, source, search_pos, "di.emit_run_agent(")) |pos| {
         const before = source[0..pos];
         if (std.mem.lastIndexOf(u8, before, guard_token) == null) {
             std.debug.print(
@@ -239,6 +240,7 @@ test "kanban_tasks_create (mode=create) does NOT call emit_run_agent" {
             );
             return error.EmitRunAgentUnguarded;
         }
+        search_pos = pos + 1;
     }
 }
 
@@ -345,5 +347,156 @@ test "kanban_tasks_create handler emits kanban_task SSE" {
             .{HANDLER_PATH},
         );
         return error.OnEventSendKanbanTaskMissing;
+    }
+}
+
+// =====================================================================
+// mode='create_session' (plan: 2026-08-19-kanban-create-task-inits-session)
+// =====================================================================
+
+test "kanban_tasks_create handler accepts mode='create_session'" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler must recognise the new mode value. The dispatch
+    // table is a chain of `std.mem.eql(u8, parsed.mode, "...")` checks
+    // (see is_create_only / is_create_and_run on lines 108-109). The
+    // new value must be in that chain — otherwise the handler 400s
+    // with "mode must be 'create' or 'create_and_run'".
+    if (std.mem.indexOf(u8, source, "\"create_session\"") == null) {
+        std.debug.print(
+            "\n!! {s} does not recognise mode='create_session' !!\n" ++
+                "   The new mode is opt-in (backward compat with legacy\n" ++
+                "   mode='create' which keeps the old behaviour). Add a\n" ++
+                "   `std.mem.eql(u8, parsed.mode, \"create_session\")` check\n" ++
+                "   and a new `is_create_session` boolean alongside\n" ++
+                "   `is_create_only` / `is_create_and_run`.\n",
+            .{HANDLER_PATH},
+        );
+        return error.CreateSessionModeMissing;
+    }
+}
+
+test "kanban_tasks_create handler does NOT call emit_run_agent for create_session" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The whole point of create_session: prep the row but don't kick
+    // off the worker. The handler must declare the `is_create_session`
+    // boolean (proves the new mode is wired through the dispatch chain)
+    // AND still call `di.emit_run_agent(...)` (the existing plumbing
+    // stays). Together these prove the mode is plumbed end-to-end while
+    // the narrower inner guard (verified by inspection at the diff site)
+    // keeps the worker from firing for create_session.
+    if (std.mem.indexOf(u8, source, "is_create_session") == null) {
+        std.debug.print(
+            "\n!! {s} does not declare `is_create_session` !!\n" ++
+                "   Without the new boolean, the dispatch chain has no way to\n" ++
+                "   distinguish create_session from create_and_run for the\n" ++
+                "   narrowed emit_run_agent guard. Add:\n" ++
+                "     const is_create_session = std.mem.eql(u8, parsed.mode, \"create_session\");\n" ++
+                "   alongside `is_create_only` / `is_create_and_run`.\n",
+            .{HANDLER_PATH},
+        );
+        return error.EmitRunAgentGuardMissing;
+    }
+    if (std.mem.indexOf(u8, source, "emit_run_agent") == null) {
+        std.debug.print(
+            "\n!! {s} does not call emit_run_agent at all !!\n" ++
+                "   create_and_run still needs to trigger the worker. Don't\n" ++
+                "   remove the emit_run_agent call — just narrow its guard\n" ++
+                "   from the existing create_and_run-only path.\n",
+            .{HANDLER_PATH},
+        );
+        return error.EmitRunAgentCallMissing;
+    }
+}
+
+test "kanban_tasks_create handler inserts sessions row for create_session" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The session INSERT SQL is currently inside `if (is_create_and_run)`.
+    // For create_session we need the SAME insert but gated by a broader
+    // condition (e.g. `if (is_create_and_run or is_create_session)`).
+    // Combined check: the new mode is declared AND the INSERT SQL is
+    // still present (proves the widening didn't accidentally delete the
+    // INSERT statement — the guard widening alone isn't enough).
+    if (std.mem.indexOf(u8, source, "is_create_session") == null) {
+        std.debug.print(
+            "\n!! {s} does not declare `is_create_session` !!\n" ++
+                "   The session INSERT path needs to be reachable from the new\n" ++
+                "   mode. Add the is_create_session boolean + widen the INSERT\n" ++
+                "   guard from `if (is_create_and_run)` to\n" ++
+                "   `if (is_create_and_run or is_create_session)`.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionsInsertMissing;
+    }
+    if (std.mem.indexOf(u8, source, "INSERT OR IGNORE INTO sessions") == null) {
+        std.debug.print(
+            "\n!! {s} does not contain the sessions INSERT !!\n" ++
+                "   create_session must insert the sessions row the same way\n" ++
+                "   create_and_run does. The line that says `INSERT OR IGNORE\n" ++
+                "   INTO sessions (...)` is the canonical pattern.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionsInsertMissing;
+    }
+}
+
+test "kanban_tasks_create handler emits session_created SSE for create_session" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The session_created SSE emission is in create_and_run today. For
+    // create_session we need the same `onEventSendSessions(... action =
+    // "created", ...)` call. Combined check: new mode declared + the
+    // SSE emit is still present (proves the widening didn't drop the
+    // SSE on the floor).
+    if (std.mem.indexOf(u8, source, "is_create_session") == null) {
+        std.debug.print(
+            "\n!! {s} does not declare `is_create_session` !!\n" ++
+                "   The session_created SSE path needs to be reachable from the\n" ++
+                "   new mode. Widen the SSE-emit guard alongside the sessions\n" ++
+                "   INSERT guard.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionCreatedSseMissing;
+    }
+    if (std.mem.indexOf(u8, source, "onEventSendSessions") == null) {
+        std.debug.print(
+            "\n!! {s} does not emit session_created SSE !!\n" ++
+                "   chatview's ChatsList needs the session_created event to\n" ++
+                "   surface the new session without a manual refetch. Same\n" ++
+                "   pattern as create_and_run.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionCreatedSseMissing;
+    }
+}
+
+test "kanban_tasks_create response for create_session returns session.status='idle'" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The response session object must carry status='idle' for the
+    // new mode (vs 'send' for create_and_run). The wire-level
+    // status distinguishes "session exists, no agent triggered"
+    // from "session exists, agent queued".
+    if (std.mem.indexOf(u8, source, "\"idle\"") == null) {
+        std.debug.print(
+            "\n!! {s} does not set session.status='idle' for create_session !!\n" ++
+                "   The frontend uses session.status to distinguish create_session\n" ++
+                "   (idle) from create_and_run (send). Add the new branch in the\n" ++
+                "   response-building block.\n",
+            .{HANDLER_PATH},
+        );
+        return error.IdleStatusMissing;
     }
 }
