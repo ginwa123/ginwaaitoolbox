@@ -1015,7 +1015,18 @@ jobs:
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
       - name: "Smoke test: desktop binary (Windows)"
-        if: runner.os == 'Windows'
+        # Same matrix gate as Run main test suite (Windows) /
+        # Build nalar binaries (Windows): the Windows matrix cell
+        # is `__SKIP__` because the upstream vendor-{sqlite3,curl}
+        # Configure needs Perl modules git-bash doesn't ship.
+        # Without a Windows binary built by the (skipped) build step
+        # above, this smoke test would always fail with `binary
+        # missing`. The pwsh rewrite itself works — verified on the
+        # build that succeeds when nalar-desktop.exe exists; just
+        # keep this skip consistent with its upstream step.
+        if: |
+          runner.os == 'Windows' &&
+          matrix.target.step != '__SKIP__'
         # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
         # windows). This step is the desktop-binary smoke-test path:
         #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:'
