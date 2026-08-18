@@ -6,6 +6,7 @@ import Sidebar from './shell/Sidebar.vue'
 import GitFileViewer from './git/GitFileViewer.vue'
 import SkillDetail from './shell/SkillDetail.vue'
 import ChatView from './views/ChatView.vue'
+import StandardTaskChatView from './views/StandardTaskChatView.vue'
 import Chats from './views/Chats.vue'
 import SettingsView from './views/SettingsView.vue'
 import CodeEditor from './views/CodeEditor.vue'
@@ -2112,27 +2113,29 @@ defineExpose({
         of the v-else-if branches above matched — right pane was
         blank.
 
-        Render <ChatView> directly with the task id as the chat
-        session id (migration 052 invariant: task.id == session.id).
-        We pass props explicitly rather than going through
-        navigationStore so this branch doesn't fight the
-        activeTask state the kanban + design branches depend on.
+        Render <StandardTaskChatView> with the active task —
+        encapsulates the chat-id / chat-name / :key wiring (see
+        StandardTaskChatView.vue). The wrapper passes the task id
+        as the chat session id (migration 052 invariant: task.id
+        == session.id) and forwards :cwd so sendChatMessage writes
+        the right cwd_session. We pass props explicitly rather
+        than going through navigationStore so this branch doesn't
+        fight the activeTask state the kanban + design branches
+        depend on.
 
         Mount order matters: this v-else-if precedes the standalone
         `<ChatView v-else-if="activeChatId.startsWith('chat-')">`
         branch below, so a folder task lands here even when
         activeChatId is empty (cleared by setActiveTask).
       -->
-      <ChatView
+      <StandardTaskChatView
         v-else-if="
           activeWorkspaceItem &&
           activeWorkspaceItem.item_type !== 'kanban' &&
           activeWorkspaceItem.item_type !== 'design' &&
           activeTask
         "
-        :key="`chat-${activeTask.id}`"
-        :chat-id="`chat-${activeTask.id}`"
-        :chat-name="activeTask.name ?? ''"
+        :task="activeTask"
         :cwd="effectiveChatCwd"
         @update-chat-id="handleUpdateChatId"
       />
