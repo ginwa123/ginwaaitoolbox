@@ -682,7 +682,11 @@ describe('KanbanView — create-task flow', () => {
     expect(addKanbanSpy).toHaveBeenCalledWith(
       WS_ID,
       ITEM_ID,
-      'create',
+      // CHANGED (2026-08-19): plain Create task now uses
+      // mode='create_session' (inserts the sessions row but no agent
+      // run). Legacy mode='create' on the wire stays unchanged for
+      // any external consumer.
+      'create_session',
       expect.objectContaining({ name: 'My new task' }),
     )
     expect(moveTaskSpy).toHaveBeenCalledWith(
@@ -826,7 +830,9 @@ describe('KanbanView — create-task flow', () => {
     expect(addKanbanSpy).toHaveBeenCalledWith(
       WS_ID,
       ITEM_ID,
-      'create',
+      // CHANGED (2026-08-19): plain Create task now uses
+      // mode='create_session'.
+      'create_session',
       expect.objectContaining({
         name: 'Tagged task',
         tags: ['sadsad'],
