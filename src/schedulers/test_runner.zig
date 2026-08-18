@@ -5,10 +5,10 @@
 //! file via `src/root.zig`).
 //!
 //! Follows the same convention as `src/migrations/test_runner.zig`:
-//! every `_test.zig` sibling that exercises a real contract must be
-//! imported here, otherwise its tests are silently compiled out and
-//! the count stays at the pre-import baseline.
+//! every file with inline tests must be imported here, otherwise its
+//! tests are silently compiled out and the count stays at the
+//! pre-import baseline.
 
 test {
-    _ = @import("cleanup_stale_worker_test.zig"); // cronjob: delete stale worker rows + clear matching ActiveLoops (plan: docs/superpowers/plans/2026-08-19-cleanup-stale-worker-cron.md)
+    _ = @import("cleanup_stale_worker.zig"); // cronjob: delete stale worker rows + clear matching ActiveLoops (plan: docs/superpowers/plans/2026-08-19-cleanup-stale-worker-cron.md)
 }
