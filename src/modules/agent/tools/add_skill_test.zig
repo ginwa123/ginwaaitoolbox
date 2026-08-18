@@ -142,6 +142,83 @@ test "add_skill - buildSkillContent escapes special characters" {
     try std.testing.expect(std.mem.indexOf(u8, content, "\\\\") != null);
 }
 
+// ---------------------------------------------------------------------------
+// Overwrite-contract regression tests (added 2026-08-15)
+//
+// add_skill writes the skill file via `std.Io.Dir.createFileAbsolute(io,
+// skill_file, .{})` (add_skill.zig:121) — that call relies on the default
+// `truncate: bool = true` to OVERWRITE (not fail-with-FileAlreadyExists,
+// not append-to) an existing skill with the same name. These tests pin
+// that contract end-to-end: re-running add_skill with the same `name`
+// must produce the new skill content, with no leftover bytes from the
+// first call.
+//
+// Why this matters: when the LLM refines a skill (e.g. updates its
+// description based on user feedback), it re-runs add_skill with the
+// same name — a regression that left the old bytes appended would
+// silently corrupt the skill file.
+// ---------------------------------------------------------------------------
+
+test "add_skill - re-running with same name OVERWRITES (truncates, no append)" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    const skill_name = "test-overwrite-skill";
+    const tmp_path = "/tmp/nalar-add-skill-overwrite-test";
+
+    // Clean up any leftover from previous failed runs
+    std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+    defer std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+
+    try std.Io.Dir.cwd().createDirPath(io, tmp_path);
+
+    const skill_file_path = try std.fs.path.join(alloc, &[_][]const u8{
+        tmp_path, ".nalar", "skills", skill_name, "SKILL.MD",
+    });
+    defer alloc.free(skill_file_path);
+
+    // First add_skill: write a long skill body
+    const first_input = add_skill_mod.AddSkillInput{
+        .name = skill_name,
+        .description = "First version description",
+        .content = "# First version\n\nThis is the original long body that should be completely replaced on overwrite.",
+        .create_with_dir = true,
+        .is_global = false,
+    };
+    const first_output = add_skill_mod.executeAddSkillToString(alloc, io, tmp_path, null, first_input);
+    defer alloc.free(first_output);
+    try std.testing.expect(std.mem.indexOf(u8, first_output, "<created>true</created>") != null);
+
+    // Sanity-check the first version landed on disk
+    const first_read = try std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(first_read);
+    try std.testing.expect(std.mem.indexOf(u8, first_read, "First version description") != null);
+
+    // Second add_skill: write a SHORTER skill body with the SAME name.
+    // If the createFile call is buggy and appends, the file would
+    // contain BOTH versions concatenated.
+    const second_input = add_skill_mod.AddSkillInput{
+        .name = skill_name,
+        .description = "Second desc",
+        .content = "v2",
+        .create_with_dir = true,
+        .is_global = false,
+    };
+    const second_output = add_skill_mod.executeAddSkillToString(alloc, io, tmp_path, null, second_input);
+    defer alloc.free(second_output);
+    try std.testing.expect(std.mem.indexOf(u8, second_output, "<created>true</created>") != null);
+
+    // Read back — must contain ONLY second-version markers, NO first-version
+    const second_read = try std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, alloc, std.Io.Limit.limited(64 * 1024));
+    defer alloc.free(second_read);
+    try std.testing.expect(std.mem.indexOf(u8, second_read, "Second desc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, second_read, "v2") != null);
+    // CRITICAL: no leftover from first call — would prove append-mode corruption
+    try std.testing.expect(std.mem.indexOf(u8, second_read, "First version description") == null);
+    try std.testing.expect(std.mem.indexOf(u8, second_read, "First version\n") == null);
+    try std.testing.expect(std.mem.indexOf(u8, second_read, "should be completely replaced") == null);
+}
+
 test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name>/SKILL.MD" {
     // Regression test for use-after-free bug: when is_global=false, skills_dir
     // was being freed too early (defer was scoped to the else block), causing
