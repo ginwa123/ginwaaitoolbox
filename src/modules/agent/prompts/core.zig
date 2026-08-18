@@ -59,7 +59,7 @@ pub const SearchHistoryToolRule =
     \\
     \\**Time bounds.** Use absolute `since`/`until` (YYYY-MM-DD HH:MM:SS) for precise ranges. Use `since_relative` / `until_relative` (`"1h"`, `"30m"`, `"2d"`, `"1w"`) or `relative_window="1h"` for natural-language ranges.
     \\
-    \\**FTS query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool wraps your input in FTS5 phrase syntax so `handle_tool.zig` tokenizes the same way the indexer did. Don't pre-escape; just write the natural query.
+    \\**FTS query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool strips FTS5 operators and joins multi-word queries with `OR` so `handle_tool.zig` and `login bug` tokenize the same way the indexer did. Don't pre-escape; just write the natural query.
     \\
     \\**Self-check:** Before asking the user to repeat themselves or re-running a tool just to see "what happened", check if `search_history` can fetch the answer in one round-trip.
 ;
@@ -82,7 +82,7 @@ pub const MemoryToolRule =
     \\- `id` format is `mem_<16-hex>` (auto-generated) OR a caller-provided slug for UPSERT. Treat the format as opaque — never parse it.
     \\- Storage is **permanent** — there is no `delete_memory` tool by design. To "forget" something, `save_memory` a new entry that supersedes it.
     \\
-    \\**FTS5 query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool wraps your input in FTS5 phrase syntax so `handle_tool.zig` tokenizes the same way the indexer did. Don't pre-escape; just write the natural query.
+    \\**FTS5 query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool strips FTS5 operators and joins multi-word queries with `OR` so `handle_tool.zig` and `preferred model` tokenize the same way the indexer did. Don't pre-escape; just write the natural query.
     \\
     \\**REQUIRED — call `load_memory` in these situations, no exceptions:**
     \\- **First user message of any session.** Before doing anything else, run `load_memory(query="<inferred topic>", with_content=true)`. Skipping this step is not allowed.

@@ -2778,6 +2778,30 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Kanban "Start agent" flow (plan:
+  // docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md).
+  // Wraps api.startAgentOnTask (POST /api/.../tasks/:task_id/start_agent)
+  // so KanbanView doesn't import the wire shape directly. Returns the
+  // backend response so the host can decide whether to close the dialog.
+  //
+  // Distinct from runAgentOnNewTask (create-time, sends a queue_message)
+  // and runRoutine (routine-only, 404 for non-routine tasks). This
+  // action works for ANY task type on an existing session — the agent
+  // runs on whatever chat history is already in the session without
+  // queueing a new user message.
+  async function startAgentOnTask(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+  ): Promise<{ success: boolean; session_id?: string; status?: string } | undefined> {
+    try {
+      return await api.startAgentOnTask(workspaceId, itemId, taskId)
+    } catch (err) {
+      console.error('Failed to start agent on task:', err)
+      return undefined
+    }
+  }
+
   // Kanban "create task & run agent" flow (plan:
   // docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md).
   // Wraps api.sendChatMessage so KanbanView doesn't import the wire
@@ -3968,6 +3992,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     refreshTask,
     runRoutine,
     runAgentOnNewTask,
+    // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Triggers
+    // a worker on an existing task's session without queueing a new
+    // user message. Sibling of runAgentOnNewTask (create-time) and
+    // runRoutine (routine-only).
+    startAgentOnTask,
     addKanbanTask,
     updateRoutine,
     pinTask,

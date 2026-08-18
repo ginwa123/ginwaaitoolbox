@@ -652,6 +652,17 @@ const handleProjectRootSelected = async (path: string) => {
 //   - `showTaskDetail` — drives the dialog's open/closed state.
 const activeTaskDetailId = ref<string | null>(null)
 const showTaskDetail = ref(false)
+// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Error
+// banner state for the edit-mode Start agent flow. Bound to the
+// dialog's errorMessage prop; cleared at the start of each click.
+// On success the dialog closes; on failure the dialog stays open
+// and the banner surfaces the backend status / network error.
+const startAgentError = ref<string | null>(null)
+// 1-shot re-entrancy guard for the Start agent click. Independent
+// of the dialog's `:disabled="isWorkerRunning"` (which only catches
+// the cross-session SSE race) — protects against double-clicks
+// during the in-flight POST.
+const startAgentBusy = ref(false)
 
 const activeTaskDetail = computed<Task | null>(() => {
   if (!activeTaskDetailId.value) return null
@@ -705,6 +716,50 @@ const handleTaskDetailSave = async (payload: {
   } catch (err) {
     console.error('Failed to save task details:', err)
     // Keep the dialog open so the user can retry / fix
+  }
+}
+
+// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Edit-mode
+// Start agent click handler. Wired to the dialog's @start-agent
+// emit. Calls workspacesStore.startAgentOnTask (which POSTs to the
+// new /api/.../tasks/:task_id/start_agent endpoint). Closes the
+// dialog and stays on the kanban on success; keeps the dialog open
+// with the errorMessage banner on failure.
+//
+// Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
+const handleStartAgent = async (payload: { taskId: string }) => {
+  // Defensive: ignore if the dialog is already closed or the click
+  // somehow fires for a different task than the one we have open.
+  if (!activeTaskDetailId.value || activeTaskDetailId.value !== payload.taskId) return
+  if (startAgentBusy.value) return
+  startAgentBusy.value = true
+  startAgentError.value = null
+  try {
+    const result = await workspacesStore.startAgentOnTask(
+      props.workspaceId,
+      props.itemId || props.item.id,
+      payload.taskId,
+    )
+    if (result && result.success && result.status === 'triggered') {
+      // Background worker started successfully. Close the dialog
+      // and stay on the kanban — the user can click the task card
+      // to open the chat view if they want to watch the agent work.
+      showTaskDetail.value = false
+      activeTaskDetailId.value = null
+    } else if (result && result.success === false) {
+      startAgentError.value = 'Agent didn\'t start — server reported failure.'
+    } else if (result === undefined) {
+      startAgentError.value = 'Agent didn\'t start — network error.'
+    } else {
+      // Defensive: response present but without the expected
+      // success/status fields. Map to a generic error.
+      startAgentError.value = `Agent didn't start — unexpected response.`
+    }
+  } catch (err) {
+    console.error('Failed to start agent:', err)
+    startAgentError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    startAgentBusy.value = false
   }
 }
 
@@ -1169,9 +1224,11 @@ const handleCreateTaskSave = async (payload: {
     :column="activeTaskDetailColumn"
     :cwd="item.path || ''"
     :workspace-id="workspaceId"
+    :error-message="startAgentError"
     @save="handleTaskDetailSave"
     @update-unattended="handleUnattendedToggle"
     @update-cwd="handleUpdateCwd"
+    @start-agent="handleStartAgent"
   />
   <!--
     Second KanbanTaskDetailDialog mount for the "+ Add" → create flow.

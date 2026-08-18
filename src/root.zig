@@ -64,6 +64,12 @@ pub const EmitRunAgentInput = struct {
     image_urls: []const u8,
     selected_profile_model: []const u8,
     is_auto_retry_until_stop: []const u8,
+    // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). When
+    // true, the worker skips the initial insertQueueMessage call —
+    // used by the start_agent endpoint to trigger a worker on an
+    // existing session without queueing a new user message. Default
+    // `false` preserves the existing create-session behaviour.
+    skip_initial_queue_message: bool = false,
 };
 
 pub const ContextIPCTui = struct {
@@ -126,6 +132,9 @@ pub const ContextIPCTui = struct {
         errdefer self.allocator.free(owned_selected_profile_model);
         const owned_is_auto_retry_until_stop = try self.allocator.dupe(u8, obj.is_auto_retry_until_stop);
         errdefer self.allocator.free(owned_is_auto_retry_until_stop);
+        // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). The
+        // flag is a `bool` (no string dupe needed) — pass through the
+        // Io group directly.
 
         try self.group_emit_session_create.concurrent(
             self.io,
@@ -141,6 +150,7 @@ pub const ContextIPCTui = struct {
                     iurls: []const u8,
                     spm: []const u8,
                     iaur: []const u8,
+                    siqm: bool,
                 ) void {
                     // These slices are owned by the Io task lifetime —
                     // they were duped synchronously by `emit_run_agent`
@@ -181,10 +191,12 @@ pub const ContextIPCTui = struct {
                         .image_urls = iurls,
                         .selected_profile_model = spm,
                         .is_auto_retry_until_stop = iaur,
+                        // NEW (plan: 2026-08-18-kanban-task-detail-start-agent)
+                        .skip_initial_queue_message = siqm,
                     });
                 }
             }.run,
-            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop },
+            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message },
         );
     }
 

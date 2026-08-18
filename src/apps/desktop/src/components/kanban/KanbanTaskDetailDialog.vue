@@ -28,6 +28,16 @@
     previous value (passed back via `update-unattended-error`) and
     shows a short-lived errorMessage.
 
+  ▶ Start agent button (edit mode only, in the actions row):
+    Outlined secondary button between Cancel and Save. Mirrors the
+    create-mode ▶ Create task & run agent button. Clicking triggers
+    the LLM worker on the existing session via the new
+    POST /api/.../tasks/:task_id/start_agent endpoint — no
+    queue_message is sent. Disabled when a worker is already
+    running for this task's session (the frontend's best-effort
+    check; the backend's atomic DB lookup is the source of truth).
+    Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
+
   Public API:
     props:
       show          boolean
@@ -70,7 +80,7 @@
   for theme compatibility.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
@@ -244,6 +254,14 @@ const emit = defineEmits<{
   // `create` / `create-and-run` emit's `cwdSession` field instead, so
   // this emit is only meaningful in edit mode.
   'update-cwd': [payload: { cwd: string }]
+  // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Edit
+  // mode only. Fires when the user clicks the ▶ Start agent
+  // button. The host calls `workspacesStore.startAgentOnTask(...)`
+  // which POSTs to the new backend endpoint; the agent runs on the
+  // existing chat history without queueing a new user message.
+  // The button is `:disabled` while `processingState[task.id]`
+  // is true, so this emit only fires when no worker is in flight.
+  'start-agent': [payload: { taskId: string }]
 }>()
 
 // ─── Form state ──────────────────────────────────────────────────────────
@@ -653,7 +671,38 @@ const canSave = computed<boolean>(() => isDirty.value && isValid.value)
 // just the title). The unattended toggle flows through separately.
 const canRunAgent = computed<boolean>(() => isValid.value)
 
+// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Inject the
+// processingState map (provided by App.vue; populated via SSE worker
+// events). The Start agent button is `:disabled` when a worker is
+// already running for this task's session. Edit-mode only — create
+// mode has its own ▶ Create task & run agent button.
+//
+// Defensive: `inject()` may return `undefined` if the provider is
+// missing (e.g. tests that mount the dialog in isolation). The
+// computed below treats that as "no worker running" (button enabled).
+//
+// Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
+const processingState = inject<Record<string, boolean> | undefined>(
+  'processingState',
+  undefined,
+)
+const isWorkerRunning = computed<boolean>(() => {
+  if (!props.task?.id) return false
+  return processingState?.[props.task.id] === true
+})
+
 // ─── Handlers ───────────────────────────────────────────────────────────
+
+// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Edit-mode
+// handler for the ▶ Start agent button. Emits `start-agent` with the
+// task id; KanbanView's handler calls workspacesStore.startAgentOnTask,
+// which POSTs to the new backend endpoint. The dialog stays open on
+// failure (host sets errorMessage); closes on success.
+const handleStartAgent = () => {
+  if (isWorkerRunning.value) return
+  if (!props.task?.id) return
+  emit('start-agent', { taskId: props.task.id })
+}
 
 const handleSave = () => {
   if (!canSave.value) return
@@ -1500,6 +1549,42 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
             >
               <span aria-hidden="true">▶</span>
               <span class="ml-1">Create task &amp; run agent</span>
+            </button>
+            <!-- NEW (plan: 2026-08-18-kanban-task-detail-start-agent).
+                 Outlined secondary button only in edit mode. Sibling
+                 to the primary "Save" button — visually subordinate
+                 so the safe default stays discoverable. The ▶ play-
+                 icon prefix matches the create-mode ▶ Create task &
+                 run agent button (and the routine Run now card) for
+                 muscle memory. Edit mode's counterpart to the create-
+                 mode "Create task & run agent" — kicks off the agent
+                 on an existing task's session WITHOUT queueing a new
+                 user message. The agent runs on whatever chat history
+                 is already in the session. Disabled when a worker is
+                 already running for this task's session (the
+                 frontend's best-effort check; the backend's atomic
+                 DB lookup is the source of truth and returns 409 on
+                 race). -->
+            <button
+              v-if="!isCreateMode"
+              type="button"
+              @click="handleStartAgent"
+              :disabled="isWorkerRunning"
+              :title="
+                isWorkerRunning
+                  ? 'A worker is already running on this task — wait for it to finish before starting a new agent.'
+                  : 'Trigger the agent on the existing chat context. No new message is queued — the agent resumes whatever context is already in the session.'
+              "
+              data-testid="kanban-task-detail-start-agent"
+              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              style="
+                background-color: transparent;
+                border: 1px solid var(--color-border);
+                color: var(--semantic-text);
+              "
+            >
+              <span aria-hidden="true">▶</span>
+              <span class="ml-1">Start agent</span>
             </button>
           </div>
         </div>

@@ -89,24 +89,26 @@ pub const load_memory_tool = AgentTool{
     .function = .{
         .name = "load_memory",
         .description =
-            \\Search your saved notes (from `save_memory`) using SQLite FTS5 phrase search. Returns ranked hits with a short `<snippet>` (10-token window with `[match]` markers) per row.
+            \\Search your saved notes (from `save_memory`) using SQLite FTS5 search. Returns ranked hits with a short `<snippet>` (10-token window with `[match]` markers) per row.
             \\
             \\Context anti-bloat: by default, only `<snippet>` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content.
             \\
-            \\FTS5 QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized and wrapped in FTS5 phrase syntax — you can write "handle_tool.zig" or "AGENTS.md" without escaping. The query matches against both the content AND the tags column.
+            \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
+            \\
+            \\FTS5 QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — so you can write "handle_tool.zig" or "2026-08-06" without crashes. FTS5's default tokenizer splits on those characters like the indexer did.
             \\
             \\Tags filter: AND semantics. Every tag in the `tags` array must be present in the row's tags (substring match). Empty `tags` = no filter.
             \\
             \\Pagination: use `offset` to walk through more results. The `<total_count>` field tells you how many total matches exist.
             \\
-            \\Example: {"query": "preferred model", "tags": ["user"]}
+            \\Example: {"query": "preferred model", "tags": "user"} — finds memories about either preference OR model.
             \\Example: {"query": "AGENTS.md", "limit": 3}
             \\Example: {"query": "dark mode", "with_content": true}
         ,
         .parameters = .{
             .type = "object",
             .properties = &.{
-                .{ .name = "query", .type = "string", .description = "FTS5 phrase search. Required, non-empty. Auto-sanitized." },
+                .{ .name = "query", .type = "string", .description = "FTS5 search keywords. Required, non-empty. Auto-sanitized (FTS5 operators stripped); multi-word queries are joined with OR for natural recall." },
                 .{ .name = "tags", .type = "string", .description = "Optional AND filter as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators. Empty string = no filter." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 10, hard cap 50." },
                 .{ .name = "offset", .type = "number", .description = "Skip the first N results. Default 0. Use <total_count> to know when to stop." },

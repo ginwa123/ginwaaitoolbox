@@ -1014,6 +1014,38 @@ export async function runRoutine(
   )
 }
 
+/**
+ * Trigger an LLM worker on an existing task's session WITHOUT queueing
+ * a new user message. For tasks with chat history, the agent resumes
+ * the conversation. For tasks with no chat history, the agent responds
+ * based on its system prompt alone (typically a clarification message).
+ *
+ *   200: `{ success: true, session_id, status: 'triggered' }`
+ *   404: task does not exist (or doesn't belong to this workspace/item)
+ *   409: a worker is already running for this session
+ *   500: server error
+ *
+ * The response shape is the raw JSON body — the caller checks
+ * `success` to determine whether to close the dialog. The status code
+ * is in the `Response` object (use `fetch` directly for status-aware
+ * dispatch; this helper returns the parsed body).
+ *
+ * Distinct from `runRoutine` (routine-only, 404 for non-routines) and
+ * `sendChatMessage` (POST /api/llm/session, which always queues a new
+ * user message). Plan: docs/superpowers/specs/
+ * 2026-08-18-kanban-task-detail-start-agent.md
+ */
+export async function startAgentOnTask(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+): Promise<{ success: boolean; session_id?: string; status?: string }> {
+  return await apiFetch<{ success: boolean; session_id?: string; status?: string }>(
+    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/start_agent`,
+    { method: 'POST' },
+  )
+}
+
 // Chat API - Zig Backend Integration (Zig backend calls LLM backend internally)
 export interface Chat {
   session_id: string

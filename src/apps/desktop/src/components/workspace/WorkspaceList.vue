@@ -100,6 +100,12 @@ const workspacesLoading = ref(false)
 // docs/plans/2026-06-12-workspace-drag-and-drop.md.
 const draggingId = ref<string | null>(null)
 const dragOverId = ref<string | null>(null)
+// When the cursor is hovering over `dragOverId`, this boolean
+// records whether the cursor is in the BOTTOM half of that row
+// (true → insert AFTER, draw a bottom-line indicator) or the TOP
+// half (false → insert BEFORE, draw a top-line indicator).
+// Mirrors dragOverItemInsertAfter for the item-level reorder.
+const dragOverInsertAfter = ref(false)
 
 // ─── Drag-and-drop state (item reordering) ────────────────────────────────
 // Mirrors the workspace-level state, scoped to a single workspace's
@@ -113,6 +119,16 @@ const dragOverId = ref<string | null>(null)
 const draggingItemId = ref<string | null>(null)
 const draggingItemWorkspaceId = ref<string | null>(null)
 const dragOverItemId = ref<string | null>(null)
+// When the cursor is hovering over `dragOverItemId`, this boolean
+// records whether the cursor is in the BOTTOM half of that row
+// (true) or the TOP half (false). The drop handler uses this to
+// decide "insert after the target" vs "insert before the target"
+// — see handleItemDrop for the index math. The template also
+// reads this to draw a top-line vs bottom-line drop indicator so
+// the user can see WHERE the drop will land. Without this, a
+// top-to-bottom drop would land one slot too far down (the
+// pre-fix bug) AND the user wouldn't be able to see why.
+const dragOverItemInsertAfter = ref(false)
 
 // Close dropdown when clicking outside
 const handleClickOutside = (event: MouseEvent) => {
@@ -272,6 +288,14 @@ const handleDragOver = (workspaceId: string, event: DragEvent) => {
   if (dragOverId.value !== workspaceId) {
     dragOverId.value = workspaceId
   }
+  // Update the "insert before / after" flag on EVERY dragover so
+  // the indicator follows the cursor as it crosses the row's
+  // midpoint. Same logic as handleItemDragOver.
+  const target = event.currentTarget as HTMLElement | null
+  if (target) {
+    const rect = target.getBoundingClientRect()
+    dragOverInsertAfter.value = event.clientY > rect.top + rect.height / 2
+  }
 }
 
 const handleDragLeave = (workspaceId: string, event: DragEvent) => {
@@ -284,6 +308,7 @@ const handleDragLeave = (workspaceId: string, event: DragEvent) => {
   if (target && related && target.contains(related)) return
   if (dragOverId.value === workspaceId) {
     dragOverId.value = null
+    dragOverInsertAfter.value = false
   }
 }
 
@@ -295,12 +320,30 @@ const handleDrop = (workspaceId: string, event: DragEvent) => {
     return
   }
   // Compute the new order: take all workspaces in current order,
-  // splice `sourceId` out, insert it at the position of
-  // `workspaceId` (the drop target).
+  // splice `sourceId` out, then insert at a position computed
+  // from the cursor's Y offset within the target row. Top half =
+  // insert BEFORE the target, bottom half = insert AFTER the
+  // target (Trello/Jira UX). The previous "always insert at the
+  // target's original index" algorithm produced an off-by-one
+  // result when the source was at a lower index than the target
+  // (top-to-bottom drops landed one slot too far down) and when
+  // the source was at a higher index and the user dropped in the
+  // bottom half (bottom-to-top drops landed one slot too high).
+  // See handleItemDrop for the full worked-example trace.
   const current = props.workspaces.slice()
   const fromIdx = current.findIndex((w) => w.id === sourceId)
   const toIdx = current.findIndex((w) => w.id === workspaceId)
   if (fromIdx === -1 || toIdx === -1) return
+  const targetRow = event.currentTarget as HTMLElement | null
+  const rect = targetRow?.getBoundingClientRect()
+  // When the cursor's clientY isn't usable (e.g. some DnD shims
+  // don't propagate it), default to "insert before" — matches
+  // the pre-fix behavior for bottom-to-top drops and avoids the
+  // off-by-one for top-to-bottom drops, which is the more common
+  // UX confusion.
+  const insertAfter = rect
+    ? event.clientY > rect.top + rect.height / 2
+    : false
   // Splice returns T[] — destructure the single removed element.
   // `moved` is `Workspace | undefined` (TS noUncheckedIndexedAccess);
   // we already verified the index is in bounds above, so the bang
@@ -308,7 +351,11 @@ const handleDrop = (workspaceId: string, event: DragEvent) => {
   const removed = current.splice(fromIdx, 1)
   const moved = removed[0]
   if (!moved) return
-  current.splice(toIdx, 0, moved)
+  // Same index math as handleItemDrop — see the comment block
+  // there for the worked examples.
+  const targetIdxInModified = toIdx > fromIdx ? toIdx - 1 : toIdx
+  const insertAt = targetIdxInModified + (insertAfter ? 1 : 0)
+  current.splice(insertAt, 0, moved)
   emit('reorderWorkspaces', current.map((w) => w.id))
 }
 
@@ -318,6 +365,7 @@ const handleDragEnd = () => {
   // this, the source row stays dimmed forever.
   draggingId.value = null
   dragOverId.value = null
+  dragOverInsertAfter.value = false
 }
 
 // ─── Drag-and-drop handlers (item reordering) ──────────────────────────────
@@ -368,6 +416,13 @@ const handleItemDragOver = (event: DragEvent) => {
     if (dragOverItemId.value !== itemId) {
       dragOverItemId.value = itemId
     }
+    // Update the "insert before / after" flag on EVERY dragover
+    // (not just when the target row changes) — the cursor can
+    // move from the top to the bottom of the same row without
+    // `dragOverItemId` updating, and the drop indicator should
+    // follow the cursor.
+    const rect = li.getBoundingClientRect()
+    dragOverItemInsertAfter.value = event.clientY > rect.top + rect.height / 2
   }
 }
 
@@ -383,6 +438,7 @@ const handleItemDragLeave = (event: DragEvent) => {
   if (related && li.contains(related)) return
   if (dragOverItemId.value === li.dataset.itemId) {
     dragOverItemId.value = null
+    dragOverItemInsertAfter.value = false
   }
 }
 
@@ -404,18 +460,42 @@ const handleItemDrop = (event: DragEvent) => {
   // Drop on self: no-op.
   if (targetItemId === draggingItemId.value) return
   // Find the workspace and compute the new order: take the
-  // current items, splice the source out, insert at the target
-  // position.
+  // current items, splice the source out, then insert at a
+  // position computed from the cursor's Y offset within the
+  // target row. Top half = insert BEFORE the target, bottom
+  // half = insert AFTER the target (Trello/Jira UX). This gives
+  // users precise control regardless of drag direction and fixes
+  // the off-by-one bug in the previous "always insert at the
+  // target's original index" algorithm.
   const workspace = props.workspaces.find((w) => w.id === targetWorkspaceId)
   if (!workspace) return
   const items = workspace.items.slice()
   const fromIdx = items.findIndex((i) => i.id === draggingItemId.value)
   const toIdx = items.findIndex((i) => i.id === targetItemId)
   if (fromIdx === -1 || toIdx === -1) return
+  const rect = li.getBoundingClientRect()
+  // Rect.top + rect.height / 2 is the row's vertical midpoint.
+  // clientY > midpoint → cursor in bottom half → insert after.
+  // clientY <= midpoint → cursor in top half → insert before.
+  const insertAfter = event.clientY > rect.top + rect.height / 2
   const removed = items.splice(fromIdx, 1)
   const moved = removed[0]
   if (!moved) return
-  items.splice(toIdx, 0, moved)
+  // After `splice(fromIdx, 1)`, items with index >= fromIdx have
+  // shifted left by 1 in the modified array. The target row sits
+  // at `toIdx - 1` (if toIdx > fromIdx) or `toIdx` (if toIdx <
+  // fromIdx). The desired insertion point in the modified array
+  // is therefore the target's current index, optionally +1 for
+  // "insert after".
+  //
+  // Examples with [A, B, C, D, E]:
+  //   A on D top half    → toIdx=3>fromIdx=0 → ins at 2 → [B,C,A,D,E]
+  //   A on D bottom half → toIdx=3>fromIdx=0 → ins at 3 → [B,C,D,A,E]
+  //   E on B top half    → toIdx=1<fromIdx=4 → ins at 1 → [A,E,B,C,D]
+  //   E on B bottom half → toIdx=1<fromIdx=4 → ins at 2 → [A,B,E,C,D]
+  const targetIdxInModified = toIdx > fromIdx ? toIdx - 1 : toIdx
+  const insertAt = targetIdxInModified + (insertAfter ? 1 : 0)
+  items.splice(insertAt, 0, moved)
   emit('reorderWorkspaceItems', targetWorkspaceId, items.map((i) => i.id))
 }
 
@@ -425,6 +505,7 @@ const handleItemDragEnd = () => {
   draggingItemId.value = null
   draggingItemWorkspaceId.value = null
   dragOverItemId.value = null
+  dragOverItemInsertAfter.value = false
 }
 </script>
 
@@ -477,9 +558,16 @@ const handleItemDragEnd = () => {
               'opacity-50': draggingId === workspace.id,
             }"
             :style="{
-              boxShadow: dragOverId === workspace.id && draggingId !== workspace.id
-                ? '0 -2px 0 0 var(--color-violet)'
-                : 'none',
+              // Drop indicator: top-line if cursor is in the TOP
+              // half of the row (drop will land BEFORE), bottom-
+              // line if in the BOTTOM half (drop will land AFTER).
+              // Mirrors the item-level indicator below.
+              boxShadow:
+                dragOverId === workspace.id && draggingId !== workspace.id
+                  ? dragOverInsertAfter
+                    ? '0 2px 0 0 var(--color-violet)'
+                    : '0 -2px 0 0 var(--color-violet)'
+                  : 'none',
             }"
             data-workspace-menu
             draggable="true"
@@ -585,6 +673,7 @@ const handleItemDragEnd = () => {
             :workspace-id="workspace.id"
             :is-item-dragging="draggingItemId === item.id"
             :is-item-drag-over="dragOverItemId === item.id && draggingItemId !== item.id"
+            :is-item-drag-over-insert-after="dragOverItemInsertAfter"
             class="first:mt-1.5"
             @click="handleItemClick(workspace.id, $event.id)"
             @delete="handleDeleteItem(workspace.id, $event.id)"
