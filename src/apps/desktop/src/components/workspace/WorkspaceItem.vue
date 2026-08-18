@@ -29,6 +29,15 @@ const props = defineProps<{
   // docs/plans/2026-06-16-workspace-item-position-reorder.md.
   isItemDragging?: boolean
   isItemDragOver?: boolean
+  // When `isItemDragOver` is true, this flag tells the row whether
+  // the cursor is in the BOTTOM half (true → drop will land AFTER
+  // this row, draw a bottom-line indicator) or the TOP half
+  // (false → drop will land BEFORE this row, draw a top-line
+  // indicator). Lets the user see WHERE the drop will land so
+  // they can fine-tune before releasing the mouse. See
+  // WorkspaceList.handleItemDrop for the index math that
+  // accompanies this visual.
+  isItemDragOverInsertAfter?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -497,9 +506,12 @@ const handlePinnedDrop = (event: DragEvent) => {
   <li
     :class="{ 'opacity-50': isItemDragging }"
     :style="{
-      boxShadow: isItemDragOver && !isItemDragging
-        ? '0 -2px 0 0 var(--color-violet)'
-        : 'none',
+      boxShadow:
+        isItemDragOver && !isItemDragging
+          ? isItemDragOverInsertAfter
+            ? '0 2px 0 0 var(--color-violet)'
+            : '0 -2px 0 0 var(--color-violet)'
+          : 'none',
     }"
     draggable="true"
     :data-item-id="item.id"
