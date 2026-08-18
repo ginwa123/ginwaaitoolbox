@@ -41,14 +41,11 @@ test "pwsh_tool schema: tool name is 'pwsh'" {
     try testing.expectEqualStrings("pwsh", pwsh.pwsh_tool.function.name);
 }
 
-test "pwsh_tool schema: required fields are command + mandatory_timeout (cwd is optional, security)" {
-    // The wire contract mirrors bash: command + mandatory_timeout required;
-    // cwd is OPTIONAL (was required pre-2026-08-14, removed when the absolute-
-    // path ban landed — cwd now resolves against ctx.cwd_override ?? ctx.cwd
-    // when omitted).
+test "pwsh_tool schema: required fields match bash (command, cwd, mandatory_timeout)" {
+    // The wire contract mirrors bash: same three required fields.
     const params = pwsh.pwsh_tool.function.parameters;
     try testing.expectEqualStrings("object", params.type);
-    try testing.expectEqual(@as(usize, 2), params.required.len);
+    try testing.expectEqual(@as(usize, 3), params.required.len);
 
     var found_command = false;
     var found_cwd = false;
@@ -59,13 +56,8 @@ test "pwsh_tool schema: required fields are command + mandatory_timeout (cwd is 
         if (std.mem.eql(u8, prop.name, "mandatory_timeout")) found_mt = true;
     }
     try testing.expect(found_command);
-    try testing.expect(found_cwd); // cwd is still a property, just not required
+    try testing.expect(found_cwd);
     try testing.expect(found_mt);
-
-    // cwd is NOT in the required list.
-    for (params.required) |req| {
-        try testing.expect(!std.mem.eql(u8, req, "cwd"));
-    }
 }
 
 test "pwsh_available returns false when pwsh is not on PATH" {

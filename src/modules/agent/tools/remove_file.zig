@@ -25,13 +25,7 @@ pub const remove_file_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description =
-                    \\`path`: file or directory path, RELATIVE to the
-                    \\session's cwd only (absolute paths are rejected —
-                    \\security policy). Use a relative path like
-                    \\`\"src/old_module.zig\"` (NOT
-                    \\`\"/home/you/proj/src/old_module.zig\"`).
-                    ,
+                    .description = "Absolute path to the file or directory to delete.",
                 },
                 .{
                     .name = "recursive",

@@ -562,12 +562,7 @@ pub const text_replace_tool: AgentTool = .{
         .parameters = .{
             .type = "object",
             .properties = &.{
-                .{ .name = "path", .type = "string", .description =
-                    \\`path`: file path, RELATIVE to the session's cwd only
-                    \\(absolute paths are rejected — security policy). Use a
-                    \\relative path like `\"src/main.zig\"` (NOT
-                    \\`\"/home/you/proj/src/main.zig\"`).
-                    , },
+                .{ .name = "path", .type = "string", .description = "Absolute path to the file." },
                 .{ .name = "old_str", .type = "string", .description = "Exact text to replace (must appear exactly once)." },
                 .{ .name = "new_str", .type = "string", .description = "Replacement text, or empty string to delete." },
             },
