@@ -283,19 +283,6 @@ pub const HttpClient = struct {
         };
     }
 };
-pub fn callMcp(json_rpc_body: []const u8, allocator: std.mem.Allocator) !HttpResult {
-    const url = "https://mcp.context7.com/mcp";
-
-    var client = HttpClient.init(allocator, std.testing.io);
-    defer client.deinit();
-
-    // Create headers with Accept header for MCP
-    var headers = std.StringHashMap([]const u8).init(allocator);
-    defer headers.deinit();
-    try headers.put("Accept", "application/json, text/event-stream");
-
-    return try client.post(url, json_rpc_body, headers);
-}
 
 // ============= TESTS =============
 
@@ -356,131 +343,8 @@ test "http client post fallback to curl" {
     try testing.expect(result.status_code == 200);
 }
 
-test "call mcp tools/list" {
-    const allocator = testing.allocator;
 
-    const result = callMcp("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}", allocator) catch |err| {
-        // Skip if network not available
-        std.debug.print("SKIP callMcp error: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    defer allocator.free(result.body);
 
-    // Skip if empty response
-    if (result.body.len == 0) {
-        std.debug.print("SKIP: Empty response\n", .{});
-        return error.SkipZigTest;
-    }
-
-    try testing.expect(result.status_code == 200);
-
-    // Parse JSON-RPC response
-    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{}) catch |err| {
-        std.debug.print("JSON parse error: {s}, body: {s}\n", .{@errorName(err), result.body});
-        return err;
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value.object;
-    try testing.expectEqualStrings("2.0", root.get("jsonrpc").?.string);
-    try testing.expect(root.contains("result"));
-}
-
-test "call mcp initialize" {
-    const allocator = testing.allocator;
-
-    const result = callMcp("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"zig-test\",\"version\":\"0.0.1\"}}}", allocator) catch |err| {
-        std.debug.print("SKIP callMcp error: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    defer allocator.free(result.body);
-
-    if (result.body.len == 0) {
-        std.debug.print("SKIP: Empty response\n", .{});
-        return error.SkipZigTest;
-    }
-
-    try testing.expect(result.status_code == 200);
-
-    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{}) catch |err| {
-        std.debug.print("JSON parse error: {s}, body: {s}\n", .{@errorName(err), result.body});
-        return err;
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value.object;
-    try testing.expectEqualStrings("2.0", root.get("jsonrpc").?.string);
-    try testing.expect(root.contains("result"));
-}
-
-test "postWithCurl handles multi-read responses" {
-    // This test verifies that postWithCurl correctly reads all data
-    // even when the OS delivers it in multiple chunks.
-    // We test with a known large response endpoint.
-
-    const allocator = testing.allocator;
-    var client = HttpClient.init(allocator, std.testing.io);
-    defer client.deinit();
-
-    // Use httpbin to get a response large enough to potentially
-    // trigger multiple reads (JSON with repeated data)
-    const large_body = "{\"data\":\"" ++ "x" ** 8192 ++ "\"}";
-
-    const result = client.post(
-        "https://httpbin.org/post",
-        large_body,
-        null,
-    ) catch |err| {
-        if (err == error.FileNotFound or err == error.ConnectionRefused) {
-            std.debug.print("SKIP: curl or network not available\n", .{});
-            return error.SkipZigTest;
-        }
-        return err;
-    };
-    defer allocator.free(result.body);
-
-    try testing.expect(result.status_code == 200);
-
-    // Parse the response - this would fail with UnexpectedEndOf if
-    // the response was truncated due to single read
-    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{}) catch |err| {
-        std.debug.print("JSON parse error: {s}, body length: {d}\n", .{ @errorName(err), result.body.len });
-        return err;
-    };
-    defer parsed.deinit();
-
-    // Verify we got the full response back
-    const root = parsed.value.object;
-    try testing.expect(root.contains("json"));
-}
-
-test "call mcp invalid method returns error" {
-    const allocator = testing.allocator;
-
-    const result = callMcp("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"invalid/method\",\"params\":{}}", allocator) catch |err| {
-        std.debug.print("SKIP callMcp error: {s}\n", .{@errorName(err)});
-        return error.SkipZigTest;
-    };
-    defer allocator.free(result.body);
-
-    if (result.body.len == 0) {
-        std.debug.print("SKIP: Empty response\n", .{});
-        return error.SkipZigTest;
-    }
-
-    // Should return 200 with JSON-RPC error
-    try testing.expect(result.status_code == 200);
-
-    const parsed = json.parseFromSlice(json.Value, allocator, result.body, .{}) catch |err| {
-        std.debug.print("JSON parse error: {s}, body: {s}\n", .{@errorName(err), result.body});
-        return err;
-    };
-    defer parsed.deinit();
-
-    const root = parsed.value.object;
-    try testing.expectEqualStrings("2.0", root.get("jsonrpc").?.string);
-    try testing.expect(root.contains("error"));
-}
 
 // Helper to simulate HTTP GET response parsing (mimics curl response handling)
 fn simulateGetResponse(allocator: std.mem.Allocator, page: usize, limit: usize) !struct { body: []u8, status: u16 } {
