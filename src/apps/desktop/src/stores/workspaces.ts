@@ -2831,10 +2831,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   //                              there's nothing to fall back to).
   //
   // Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
+  //   (extended by docs/superpowers/plans/2026-08-19-kanban-create-task-inits-session.md
+  //   to accept mode='create_session' which inserts the sessions row
+  //   without calling emit_run_agent).
   async function addKanbanTask(
     workspaceId: string,
     itemId: string,
-    mode: 'create' | 'create_and_run',
+    mode: 'create' | 'create_session' | 'create_and_run',
     params: {
       name: string
       description?: string
@@ -2846,7 +2849,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       selected_profile_model?: string
     },
   ): Promise<api.KanbanCreateResponse> {
-    const wirePayload: api.KanbanCreateTaskPayload | api.KanbanCreateAndRunPayload =
+    const wirePayload:
+      | api.KanbanCreateTaskPayload
+      | api.KanbanCreateSessionOnlyPayload
+      | api.KanbanCreateAndRunPayload =
       mode === 'create_and_run'
         ? {
             mode: 'create_and_run',
@@ -2859,15 +2865,28 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             isAutoRetryUntilStop: params.isAutoRetryUntilStop,
             selected_profile_model: params.selected_profile_model,
           }
-        : {
-            mode: 'create',
-            name: params.name,
-            description: params.description,
-            tags: params.tags,
-            imageUrls: params.imageUrls,
-            cwd: params.cwd,
-            isAutoRetryUntilStop: params.isAutoRetryUntilStop,
-          }
+        : mode === 'create_session'
+          ? {
+              mode: 'create_session',
+              name: params.name,
+              description: params.description,
+              tags: params.tags,
+              imageUrls: params.imageUrls,
+              cwd: params.cwd,
+              isAutoRetryUntilStop: params.isAutoRetryUntilStop,
+              // Persists on the new sessions row (see Task 2's
+              // KanbanCreateSessionOnlyPayload comment in api/index.ts).
+              selected_profile_model: params.selected_profile_model,
+            }
+          : {
+              mode: 'create',
+              name: params.name,
+              description: params.description,
+              tags: params.tags,
+              imageUrls: params.imageUrls,
+              cwd: params.cwd,
+              isAutoRetryUntilStop: params.isAutoRetryUntilStop,
+            }
 
     try {
       return await api.createKanbanTask(workspaceId, itemId, wirePayload)
@@ -2879,6 +2898,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         // the error as a toast so the user can click the card to retry.
         const msg = err instanceof Error ? err.message : String(err)
         useNotificationStore().notifyError(msg, 'Task created — agent did not start')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+        return { task: null as any, session: null }
+      }
+      if (mode === 'create_session') {
+        // Partial-success path: create_session can fail AFTER the task
+        // INSERT succeeded (rare — the sessions INSERT or session_created
+        // SSE emit failed). Surface the error as a toast so the user can
+        // click the card to retry (the chatview will lazy-create the
+        // session on first message).
+        const msg = err instanceof Error ? err.message : String(err)
+        useNotificationStore().notifyError(msg, 'Task created — session init failed')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
         return { task: null as any, session: null }
       }

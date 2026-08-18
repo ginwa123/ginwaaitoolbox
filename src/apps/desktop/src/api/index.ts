@@ -781,7 +781,7 @@ export async function createTask(
  *
  * Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
  */
-export type KanbanCreateMode = 'create' | 'create_and_run'
+export type KanbanCreateMode = 'create' | 'create_session' | 'create_and_run'
 
 export interface KanbanCreateTaskPayload {
   mode: 'create'
@@ -810,6 +810,29 @@ export interface KanbanCreateAndRunPayload {
   selected_profile_model?: string
 }
 
+/**
+ * New mode (`create_session`) — inserts the sessions row keyed by
+ * task.id + persists selected_profile_model + emits session_created
+ * SSE, but does NOT call emit_run_agent. Returns
+ * `session: { id, name, status: 'idle' }`. No `queue_message` field
+ * (the agent never starts on this path).
+ *
+ * Plan: docs/superpowers/plans/2026-08-19-kanban-create-task-inits-session.md
+ */
+export interface KanbanCreateSessionOnlyPayload {
+  mode: 'create_session'
+  name: string
+  description?: string
+  tags?: string[]
+  imageUrls?: string[]
+  /** Migration 070 — per-task cwd override. */
+  cwd?: string
+  /** Migration 063 — persists on the sessions row. */
+  isAutoRetryUntilStop?: string
+  /** Persists on the sessions row. Empty/undefined = backend default. */
+  selected_profile_model?: string
+}
+
 export interface KanbanSessionInfo {
   id: string
   name: string
@@ -824,7 +847,10 @@ export interface KanbanCreateResponse {
 export async function createKanbanTask(
   workspaceId: string,
   itemId: string,
-  payload: KanbanCreateTaskPayload | KanbanCreateAndRunPayload,
+  payload:
+    | KanbanCreateTaskPayload
+    | KanbanCreateSessionOnlyPayload
+    | KanbanCreateAndRunPayload,
 ): Promise<KanbanCreateResponse> {
   const body: Record<string, unknown> = {
     mode: payload.mode,
@@ -845,6 +871,15 @@ export async function createKanbanTask(
   }
   if (payload.mode === 'create_and_run') {
     body.queue_message = payload.queue_message
+    if (payload.selected_profile_model !== undefined) {
+      body.selected_profile_model = payload.selected_profile_model
+    }
+  } else if (payload.mode === 'create_session') {
+    // Persists on the new sessions row. Path A (from the 2026-08-06
+    // kanban-task-profile-selector plan) used to skip this for plain
+    // create; with the new mode inserting the session row, persisting
+    // the profile is now free and the chatview reflects the choice
+    // immediately when the user clicks the card.
     if (payload.selected_profile_model !== undefined) {
       body.selected_profile_model = payload.selected_profile_model
     }
