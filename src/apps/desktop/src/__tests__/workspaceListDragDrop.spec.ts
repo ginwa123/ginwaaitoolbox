@@ -65,11 +65,22 @@ describe('WorkspaceList drag-and-drop', () => {
     }
   }
 
-  function makeDragEvent(type: string, dt: ReturnType<typeof makeDragStore>): DragEvent {
+  function makeDragEvent(
+    type: string,
+    dt: ReturnType<typeof makeDragStore>,
+    clientY: number = 0,
+  ): DragEvent {
      
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const event = new Event(type, { bubbles: true, cancelable: true }) as any
     event.dataTransfer = dt
+    // JSDOM's `getBoundingClientRect()` returns a zeroed DOMRect, so
+    // the midpoint of any element is (0 + 0/2) = 0. That makes the
+    // cursor-Y half-test collapse to "clientY > 0 = bottom half,
+    // clientY <= 0 = top half" — which lets us drive the behavior
+    // from tests without mocking layout. The same convention is
+    // used in workspaceListItemDragDrop.spec.ts.
+    event.clientY = clientY
     return event as DragEvent
   }
 
@@ -134,6 +145,96 @@ describe('WorkspaceList drag-and-drop', () => {
     rows[0]!.element.dispatchEvent(dropEvent)
 
     expect(wrapper.emitted('reorderWorkspaces')).toBeUndefined()
+  })
+
+  it('inserts the source BEFORE the target when dropped in the TOP half of the target row (top-to-bottom)', async () => {
+    // Regression test for the same off-by-one bug that hit
+    // workspace ITEMS (workspaceListItemDragDrop.spec.ts). The
+    // workspace-level `handleDrop` shares the same buggy splice
+    // pattern — fix #1 patched the item-level handler, this
+    // patches the workspace-level handler so a future refactor
+    // can't quietly re-introduce the asymmetry.
+    //
+    // Example: [ws_a, ws_b, ws_c, ws_d, ws_e], drag ws_a onto ws_d.
+    //   Buggy:  splice(0, 1) + splice(3, 0, ws_a) → [ws_b, ws_c, ws_d, ws_a, ws_e]
+    //   Fixed:  splice(0, 1) + splice(2, 0, ws_a) → [ws_b, ws_c, ws_a, ws_d, ws_e]
+    const workspaces = [
+      makeWorkspace('ws_a', 'A'),
+      makeWorkspace('ws_b', 'B'),
+      makeWorkspace('ws_c', 'C'),
+      makeWorkspace('ws_d', 'D'),
+      makeWorkspace('ws_e', 'E'),
+    ]
+    const wrapper = mount(WorkspaceList, {
+      props: { workspaces, activeWorkspaceItemId: null },
+      global: { stubs: { WorkspaceItem: true } },
+    })
+    await wrapper.find('button').trigger('click')
+    await nextTick()
+
+    const rows = findDraggableRows(wrapper)
+    expect(rows.length).toBe(5)
+
+    // Drag ws_a (first row) onto ws_d (4th row), drop in top half
+    // (clientY=0). Expected: ws_a ends up BEFORE ws_d.
+    const sourceRow = rows[0]!
+    const targetRow = rows[3]!
+
+    const dt = makeDragStore()
+    sourceRow.element.dispatchEvent(makeDragEvent('dragstart', dt, 0))
+    targetRow.element.dispatchEvent(makeDragEvent('dragover', dt, 0))
+    targetRow.element.dispatchEvent(makeDragEvent('drop', dt, 0))
+
+    const emitted = wrapper.emitted('reorderWorkspaces')
+    expect(emitted).toBeDefined()
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toEqual(['ws_b', 'ws_c', 'ws_a', 'ws_d', 'ws_e'])
+
+    wrapper.unmount()
+  })
+
+  it('inserts the source AFTER the target when dropped in the BOTTOM half of the target row (bottom-to-top)', async () => {
+    // Counterpart test for the bottom-to-top bottom-half case.
+    // The old buggy algorithm happened to produce the right
+    // result for bottom-to-top top-half (see the first test in
+    // this file), but it produced the WRONG result for
+    // bottom-to-top bottom-half — exactly mirrored from the
+    // items-level bug.
+    //
+    // Example: [ws_a, ws_b, ws_c, ws_d, ws_e], drag ws_e onto ws_b.
+    //   Buggy:  splice(4, 1) + splice(1, 0, ws_e) → [ws_a, ws_e, ws_b, ws_c, ws_d]
+    //   Fixed:  splice(4, 1) + splice(2, 0, ws_e) → [ws_a, ws_b, ws_e, ws_c, ws_d]
+    const workspaces = [
+      makeWorkspace('ws_a', 'A'),
+      makeWorkspace('ws_b', 'B'),
+      makeWorkspace('ws_c', 'C'),
+      makeWorkspace('ws_d', 'D'),
+      makeWorkspace('ws_e', 'E'),
+    ]
+    const wrapper = mount(WorkspaceList, {
+      props: { workspaces, activeWorkspaceItemId: null },
+      global: { stubs: { WorkspaceItem: true } },
+    })
+    await wrapper.find('button').trigger('click')
+    await nextTick()
+
+    const rows = findDraggableRows(wrapper)
+
+    // Drag ws_e (last row) onto ws_b (2nd row), drop in bottom half
+    // (clientY=1). Expected: ws_e ends up AFTER ws_b.
+    const sourceRow = rows[4]!
+    const targetRow = rows[1]!
+
+    const dt = makeDragStore()
+    sourceRow.element.dispatchEvent(makeDragEvent('dragstart', dt, 1))
+    targetRow.element.dispatchEvent(makeDragEvent('dragover', dt, 1))
+    targetRow.element.dispatchEvent(makeDragEvent('drop', dt, 1))
+
+    const emitted = wrapper.emitted('reorderWorkspaces')
+    expect(emitted).toBeDefined()
+    expect(emitted![0]![0]).toEqual(['ws_a', 'ws_b', 'ws_e', 'ws_c', 'ws_d'])
+
+    wrapper.unmount()
   })
 
   it('clears the dragging state on dragend (no opacity-50 after dragend)', async () => {
