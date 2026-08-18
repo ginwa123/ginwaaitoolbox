@@ -1,6 +1,12 @@
 # Fix CI Windows — install PowerShell Core (pwsh), drop the powershell.exe + bash mix
 
 **Date:** 2026-08-20
+**Status:** PR #271 — bash→pwsh part shipped. The vendored-curl-on-Windows
+follow-up (`is_safe_tmp`/Perl/`Locale::Maketext::Simple`) is a separate
+problem that's currently gated on `__SKIP__` until either (a) the
+openssl Configure Perl gets `Locale::Maketext::Simple` provided, or
+(b) `build.zig` skips the vendor steps when the cell already has
+vcpkg-installed sqlite3/curl/openssl (the simpler fix).
 **Author:** ginwa123 (LLM agent)
 **Branch:** worktree/fix-ci-windows-pwsh
 **Worktree:** `.worktrees/fix-ci-windows-pwsh`
