@@ -121,12 +121,7 @@ pub const read_file_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description =
-                    \\`path`: file path, RELATIVE to the session's cwd only
-                    \\(absolute paths are rejected — security policy). Use a
-                    \\relative path like `\"src/main.zig\"` (NOT
-                    \\`\"/home/you/proj/src/main.zig\"`).
-                    ,
+                    .description = "Absolute path to the file.",
                 },
                 .{
                     .name = "offset",

@@ -22,35 +22,17 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    // Security: reject absolute paths.
-    if (try nalarcore.path_security.rejectAbsolutePath(
-        ctx.allocator, "text_replace", "path", parsed.value.path, ctx.cwd
-    )) |err_msg| {
-        defer ctx.allocator.free(err_msg);
-        const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    // Resolve the relative path against ctx.cwd_override ?? ctx.cwd.
-    // The underlying executeTextReplace uses std.Io.Dir.cwd() (the OS
-    // process cwd), NOT ctx.cwd — so without this resolution the
-    // LLM-supplied relative path would patch the wrong file.
-    const resolved_path = try nalarcore.path_security.resolveCwd(
-        ctx.allocator, ctx.cwd, ctx.cwd_override, parsed.value.path
-    );
-    defer ctx.allocator.free(resolved_path);
-
     const result = text_replace_mod.executeTextReplace(
         ctx.allocator,
         ctx.io,
-        resolved_path,
+        parsed.value.path,
         parsed.value.old_str,
         parsed.value.new_str,
     ) catch |err| {
         const inner = text_replace_mod.toXmlError(
             ctx.allocator,
             err,
-            resolved_path,
+            parsed.value.path,
             parsed.value.old_str,
         );
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "text_replace failed: {s}", .{@errorName(err)});
@@ -58,14 +40,58 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    const inner = text_replace_mod.toXmlSuccess(ctx.allocator, result, resolved_path);
+    const inner = text_replace_mod.toXmlSuccess(ctx.allocator, result, parsed.value.path);
     const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-// 2026-08-14 — end-to-end proof that RELATIVE paths work on every
-// tool wired with the absolute-path ban (PR #259 follow-up).
-test "execTextReplace: relative path resolves and patches file" {
+// ---------------------------------------------------------------------------
+// Overwrite-contract regression tests (added 2026-08-15)
+//
+// text_replace internally writes the modified content back to disk via
+// `std.Io.Dir.cwd().createFile(io, path, .{})` (text_replace.zig:468) —
+// that call relies on the default `truncate: bool = true` to overwrite
+// (not append-to) the existing file. These tests pin that contract
+// end-to-end through the exec wrapper — the path the agentic loop
+// actually invokes when the LLM calls text_replace.
+//
+// Like the execWriteFile tests (sister file), these close the gap left
+// by PR #261's revert which removed the inline tests from the exec
+// wrappers entirely.
+// ---------------------------------------------------------------------------
+
+fn minimalCtxTr(allocator: std.mem.Allocator) ToolExecContext {
+    var dummy_f32: f32 = 0.0;
+    var dummy_bool: bool = false;
+    return .{
+        .allocator = allocator,
+        .io = testing.io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test_session",
+        .model = "test_model",
+        .cwd = "/tmp",
+        .api_key = "test_key",
+        .base_url = "test_base",
+        .config = undefined,
+        .agent_temperature = &dummy_f32,
+        .is_thinking = &dummy_bool,
+        .environment = null,
+        .active_loops = undefined,
+    };
+}
+
+fn readAllTr(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(4 << 20));
+}
+
+// CONTRACT: execTextReplace must overwrite the target file (truncate +
+// write new content), not append. The simplest way to detect append-mode
+// is: pre-seed with a long string containing a marker, replace the
+// marker with a SHORTER replacement, then verify the file's bytes after
+// the new content match what was originally after the marker — if it
+// appended, the trailing content would be doubled.
+test "execTextReplace: writes back the full modified file (truncates + overwrites, no append)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -74,34 +100,86 @@ test "execTextReplace: relative path resolves and patches file" {
     defer tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(testing.io, &path_buf);
-    const root_abs = try a.dupe(u8, path_buf[0..n]);
+    const root_abs = path_buf[0..n];
 
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "patch.txt", .data = "old text here" });
+    const target_name = "tr_overwrite.txt";
+    const target_path = try std.fs.path.join(a, &.{ root_abs, target_name });
 
-    var dummy_f32: f32 = 0.0;
-    var dummy_bool: bool = false;
-    const ctx = ToolExecContext{
-        .allocator = a, .io = testing.io, .db = undefined,
-        .logger = undefined, .session_id = "test", .model = "test",
-        .cwd = root_abs, .api_key = "test", .base_url = "test",
-        .config = undefined, .agent_temperature = &dummy_f32,
-        .is_thinking = &dummy_bool, .environment = null,
-        .active_loops = undefined,
-    };
+    // Pre-seed with a long string containing the marker we'll replace
+    const original = "<<<REPLACE_ME>>> then keep this trailing junk after the marker to detect any append-mode corruption";
+    {
+        const f = try tmp.dir.createFile(testing.io, target_name, .{});
+        defer f.close(testing.io);
+        try std.Io.File.writeStreamingAll(f, testing.io, original);
+    }
+
+    // Build args: replace the marker with a SHORTER string. If createFile
+    // appended instead of truncating, the trailing junk would still be
+    // visible AFTER the new short content.
+    const args = try std.fmt.allocPrint(
+        a,
+        "{{\"path\":\"{s}\",\"old_str\":\"<<<REPLACE_ME>>>\",\"new_str\":\"[OK]\"}}",
+        .{target_path},
+    );
     const tc = agent.ToolCall{
-        .id = "call_1", .type = "function",
-        .function = .{
-            .name = "text_replace",
-            .arguments = "{\"path\":\"patch.txt\",\"old_str\":\"old text\",\"new_str\":\"NEW text\"}",
-        },
+        .id = "call_tr_ow1",
+        .type = "function",
+        .function = .{ .name = "text_replace", .arguments = args },
     };
 
-    const result = try execTextReplace(ctx, tc);
+    const result = try execTextReplace(minimalCtxTr(a), tc);
     defer if (result.output_allocated) a.free(result.output);
 
-    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
 
-    const abs_path = try std.fs.path.join(a, &.{ root_abs, "patch.txt" });
-    const content = try std.Io.Dir.cwd().readFileAlloc(testing.io, abs_path, a, std.Io.Limit.limited(1024));
-    try testing.expectEqualStrings("NEW text here", content);
+    // Read back — file must be EXACTLY "[OK] then keep this trailing junk
+    // after the marker to detect any append-mode corruption"
+    const expected = "[OK] then keep this trailing junk after the marker to detect any append-mode corruption";
+    const read = try readAllTr(a, target_path);
+    try testing.expectEqualStrings(expected, read);
+    // File size must match the new length (not original.len) — proves
+    // truncation happened, not append.
+    try testing.expectEqual(@as(usize, expected.len), read.len);
+    try testing.expect(read.len != original.len); // sanity: the two really differ
+}
+
+// CONTRACT: execTextReplace must OVERWRITE, not fail or skip, when called
+// on an existing file with content that exactly matches old_str.
+test "execTextReplace: existing file with matching content is modified in place" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = path_buf[0..n];
+
+    const target_name = "tr_match.txt";
+    const target_path = try std.fs.path.join(a, &.{ root_abs, target_name });
+
+    {
+        const f = try tmp.dir.createFile(testing.io, target_name, .{});
+        defer f.close(testing.io);
+        try std.Io.File.writeStreamingAll(f, testing.io, "Hello World\n");
+    }
+
+    const args = try std.fmt.allocPrint(
+        a,
+        "{{\"path\":\"{s}\",\"old_str\":\"Hello\",\"new_str\":\"Goodbye\"}}",
+        .{target_path},
+    );
+    const tc = agent.ToolCall{
+        .id = "call_tr_match",
+        .type = "function",
+        .function = .{ .name = "text_replace", .arguments = args },
+    };
+
+    const result = try execTextReplace(minimalCtxTr(a), tc);
+    defer if (result.output_allocated) a.free(result.output);
+
+    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+    const read = try readAllTr(a, target_path);
+    try testing.expectEqualStrings("Goodbye World\n", read);
 }

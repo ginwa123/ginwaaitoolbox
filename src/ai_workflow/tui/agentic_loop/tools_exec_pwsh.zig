@@ -17,19 +17,25 @@ const wrapToolOutput = tools.wrapToolOutput;
 /// background mode also emits "PID: <n>\nLog: <path>" (D8 in the plan:
 /// this is bash's nohup idiom; pwsh's `Start-Process` follow-up will
 /// change it).
-///
-/// `input` is the already-validated + cwd-resolved BashInput (the wire
-/// schema is identical for bash + pwsh). Validation happens in
-/// `execPwsh` (which has the tool context for the active cwd).
 pub fn runWithContext(
     allocator: std.mem.Allocator,
     io: std.Io,
-    input: tool_models.BashInput,
+    tool_call: agent.ToolCall,
     db: ?*sqlite.SqliteBackend,
     session_id: ?[]const u8,
 ) ![]const u8 {
-    const is_background = input.background;
-    const pwsh_output = try pwsh_tool_mod.execute_pwsh(allocator, io, input);
+    // Parse arguments JSON to ShellInput (alias for BashInput per Task 2 —
+    // the wire schema is identical, only the tool name differs).
+    const parsed = try std.json.parseFromSlice(
+        tool_models.BashInput,
+        allocator,
+        tool_call.function.arguments,
+        .{ .allocate = .alloc_always },
+    );
+    defer parsed.deinit();
+
+    const is_background = parsed.value.background;
+    const pwsh_output = try pwsh_tool_mod.execute_pwsh(allocator, io, parsed.value);
 
     if (is_background and db != null and session_id != null) {
         const db_ptr = db.?;
@@ -52,7 +58,7 @@ pub fn runWithContext(
                         const log_path = stdout[log_path_start..];
                         const ts = std.Io.Clock.now(.real, io);
                         const started_at: i64 = ts.toSeconds();
-                        background_process.save(db_ptr, allocator, sess_id, pid, input.command, log_path, started_at) catch {};
+                        background_process.save(db_ptr, allocator, sess_id, pid, parsed.value.command, log_path, started_at) catch {};
                     }
                 }
             }
@@ -64,40 +70,7 @@ pub fn runWithContext(
 }
 
 pub fn execPwsh(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    // 1. Parse arguments JSON so we can validate the cwd field.
-    const parsed = std.json.parseFromSlice(
-        tool_models.BashInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "pwsh failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "pwsh", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    // 2. Security: reject absolute cwd paths.
-    if (parsed.value.cwd) |cwd| {
-        if (try nalarcore.path_security.rejectAbsolutePath(
-            ctx.allocator, "pwsh", "cwd", cwd, ctx.cwd
-        )) |err_msg| {
-            defer ctx.allocator.free(err_msg);
-            const output = try wrapToolOutput(ctx.allocator, "pwsh", tc.function.arguments, false, err_msg, "");
-            return ToolExecResult{ .output = output, .output_allocated = true };
-        }
-    }
-
-    // 3. Resolve cwd: relative/null/empty → ctx.cwd_override ?? ctx.cwd.
-    const resolved_cwd = try nalarcore.path_security.resolveCwd(
-        ctx.allocator, ctx.cwd, ctx.cwd_override, parsed.value.cwd
-    );
-    defer ctx.allocator.free(resolved_cwd);
-
-    var input = parsed.value;
-    input.cwd = resolved_cwd;
-
-    const inner = try runWithContext(ctx.allocator, ctx.io, input, ctx.db, ctx.session_id);
+    const inner = try runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id);
     // wrapToolOutput tool_name arg is "pwsh" — this is what the
     // frontend's <ToolCard tool-name="…"> reads to pick a render path.
     // Distinct from the bash tool_name = "bash" used by execBash.

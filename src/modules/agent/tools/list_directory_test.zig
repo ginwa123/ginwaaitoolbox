@@ -236,15 +236,15 @@ test "list_directory_tool schema: name is list_directory, parameters object with
     try testing.expectEqual(@as(usize, 0), params.required.len);
 }
 
-test "list_directory_tool description mentions absolute-paths-rejected policy" {
+test "list_directory_tool description mentions absolute paths policy" {
     const desc = list_directory.list_directory_tool.function.description;
     // Static-contract grep — guards against accidental removal of
-    // the security note when the description is edited. The
-    // description wraps "absolute paths are rejected — security
-    // policy" across multiple lines, so we look for the substring
-    // "rejected" which only appears in that phrase.
-    if (std.mem.indexOf(u8, desc, "rejected") == null) {
-        std.debug.print("!! list_directory description does not mention 'rejected' (security policy) !!\n", .{});
+    // the path-handling note when the description is edited. The
+    // description wraps "Absolute paths are accepted" across one or
+    // more lines, so we look for the substring "accepted" which
+    // appears only in that policy phrase.
+    if (std.mem.indexOf(u8, desc, "accepted") == null) {
+        std.debug.print("!! list_directory description does not mention 'accepted' (path policy) !!\n", .{});
         try testing.expect(false);
     }
 }

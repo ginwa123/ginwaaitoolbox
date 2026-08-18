@@ -30,26 +30,11 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit();
 
-    // 2. Security: reject absolute paths.
-    if (try nalarcore.path_security.rejectAbsolutePath(
-        ctx.allocator, "list_directory", "path", parsed.value.path, ctx.cwd
-    )) |err_msg| {
-        defer ctx.allocator.free(err_msg);
-        const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    // 3. Resolve path: relative/null/empty → ctx.cwd_override ?? ctx.cwd.
-    const resolved_path = try nalarcore.path_security.resolveCwd(
-        ctx.allocator, ctx.cwd, ctx.cwd_override, parsed.value.path
-    );
-    defer ctx.allocator.free(resolved_path);
-
-    // 4. Execute the listing.
+    // 2. Execute the listing.
     const entries = list_directory_mod.execute_list_directory(
         ctx.allocator,
         ctx.io,
-        resolved_path,
+        parsed.value.path,
         parsed.value.hidden,
         parsed.value.respect_ignore_files,
     ) catch |err| {
@@ -64,15 +49,18 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer list_directory_mod.freeEntries(ctx.allocator, entries);
 
-    // 5. Serialise to XML and wrap.
-    const inner = try list_directory_mod.toXml(ctx.allocator, entries, resolved_path);
+    // 3. Serialise to XML and wrap.
+    const inner = try list_directory_mod.toXml(ctx.allocator, entries, parsed.value.path);
     const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-// 2026-08-14 — end-to-end proof that RELATIVE paths work on every
-// tool wired with the absolute-path ban (PR #259 follow-up).
-test "execListDirectory: relative path '.' resolves and lists entries" {
+// 2026-08-15 — end-to-end proof that the list_directory exec wrapper
+// passes the LLM-supplied path through unchanged after the
+// ban-absolute-paths revert. We pass the absolute path of a tmp dir
+// directly to execListDirectory and verify both entries show up in
+// the output AND the path appears as-is (no relative-path transform).
+test "execListDirectory: absolute path passes through and lists entries" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -99,15 +87,23 @@ test "execListDirectory: relative path '.' resolves and lists entries" {
         .is_thinking = &dummy_bool, .environment = null,
         .active_loops = undefined,
     };
+    // Build JSON with the absolute path embedded. std.fmt escapes
+    // any embedded quotes/backslashes for us (none expected for
+    // /tmp/... paths, but defensive).
+    const args_json = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"respect_ignore_files\":false}}", .{root_abs});
     const tc = agent.ToolCall{
         .id = "call_1", .type = "function",
-        .function = .{ .name = "list_directory", .arguments = "{\"path\":\".\",\"respect_ignore_files\":false}" },
+        .function = .{ .name = "list_directory", .arguments = args_json },
     };
 
     const result = try execListDirectory(ctx, tc);
     defer if (result.output_allocated) a.free(result.output);
 
-    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
+    // Success envelope + both entries visible.
     try testing.expect(std.mem.indexOf(u8, result.output, "alpha.txt") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "beta") != null);
+    // Path is passed through unchanged (no relative-path transform).
+    try testing.expect(std.mem.indexOf(u8, result.output, root_abs) != null);
+    // No validator error envelope (the validator was removed by the revert).
+    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
 }

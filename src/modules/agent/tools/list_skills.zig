@@ -25,12 +25,8 @@ pub const list_skills_tool = AgentTool{
                 .{
                     .name = "cwd",
                     .type = "string",
-                    .description =
-                    \\Working directory. Relative paths only (absolute paths
-                    \\are rejected — security policy). Resolved against the
-                    \\session's cwd (or the active git-worktree binding if
-                    \\set). Omit to default to the session's cwd.
-                    ,
+                    .description = "Absolute working directory for the command. REQUIRED — always set explicitly. " ++
+                        "Never assume the current directory. All relative paths in the command resolve from here.",
                 },
             },
             .required = &.{},
