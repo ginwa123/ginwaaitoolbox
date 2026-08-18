@@ -9,6 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { ref } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 
 import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
@@ -55,7 +56,15 @@ describe('KanbanTaskDetailDialog — Start agent', () => {
         // the dialog's `inject('processingState', undefined)` falls
         // back to undefined when absent, so the "no provider"
         // branch is also exercised by omitting this key.
-        provide: processingState !== undefined ? { processingState } : {},
+        //
+        // Wrap the provided Record in `ref(...)` to mirror App.vue's
+        // real provide shape (`provide('processingState',
+        // ref<Record<string, boolean>>({}))`). Without the ref wrapper
+        // the dialog's inject would receive a plain Record and the
+        // `processingState.value[task.id]` read would silently bypass
+        // the test — masking the production bug where the Start agent
+        // button was never disabled.
+        provide: processingState !== undefined ? { processingState: ref(processingState) } : {},
       },
     })
     return wrapper
@@ -163,5 +172,48 @@ describe('KanbanTaskDetailDialog — Start agent', () => {
     btn?.click()
     await flushPromises()
     expect(wrapper!.emitted('start-agent')).toBeUndefined()
+  })
+
+  it('reacts to reactive updates of the provided processingState ref (worker finishes mid-dialog)', async () => {
+    // Regression for the bug where KanbanTaskDetailDialog injected
+    // `processingState` as a plain Record instead of a Ref, so
+    // `processingState[task.id]` silently read `undefined` and the
+    // Start agent button was never disabled even when a worker was
+    // actually running. The fix wraps the inject as
+    // `Ref<Record<string, boolean>>` and reads `.value[task.id]`.
+    //
+    // This test mirrors production exactly: provide a Ref, then
+    // mutate its `.value` to flip the worker-running flag. Vue
+    // reactivity should re-render the button's disabled state
+    // without us having to remount the dialog.
+    document.body.innerHTML = ''
+    const processingStateRef = ref<Record<string, boolean>>({})
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: {
+        show: true,
+        task: { id: 'task_reactive', name: 'Reactive', task_type: 'standard' } as Task,
+        mode: 'edit',
+      },
+      global: {
+        provide: { processingState: processingStateRef },
+      },
+    })
+    await flushPromises()
+    const btn = findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-start-agent"]',
+    )
+    expect(btn?.disabled).toBe(false)
+
+    // Worker starts — the SSE bus in App.vue would push an event that
+    // mutates `processingState.value[taskId] = true`. Mirror that here.
+    processingStateRef.value = { ...processingStateRef.value, task_reactive: true }
+    await flushPromises()
+    expect(btn?.disabled).toBe(true)
+
+    // Worker finishes — same path, value set back to absent/false.
+    processingStateRef.value = { ...processingStateRef.value, task_reactive: false }
+    await flushPromises()
+    expect(btn?.disabled).toBe(false)
   })
 })

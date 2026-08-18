@@ -80,7 +80,7 @@
   for theme compatibility.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
@@ -682,13 +682,21 @@ const canRunAgent = computed<boolean>(() => isValid.value)
 // computed below treats that as "no worker running" (button enabled).
 //
 // Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
-const processingState = inject<Record<string, boolean> | undefined>(
+// App.vue provides a `Ref<Record<string, boolean>>` (built via
+// `ref<Record<string, boolean>>({})`), so the inject below must match
+// that exact shape — otherwise `processingState[task.id]` would read
+// the Ref object's own enumerable keys (none) and silently always be
+// `undefined`, leaving the Start agent button enabled even when a
+// worker is running. Every other consumer in the codebase (ChatsList,
+// ChatView, WorkspaceItem*, WorkspaceList) injects as
+// `Ref<Record<string, boolean>>` and reads `.value[id]` — mirror that.
+const processingState = inject<Ref<Record<string, boolean>> | undefined>(
   'processingState',
   undefined,
 )
 const isWorkerRunning = computed<boolean>(() => {
   if (!props.task?.id) return false
-  return processingState?.[props.task.id] === true
+  return processingState?.value?.[props.task.id] === true
 })
 
 // ─── Handlers ───────────────────────────────────────────────────────────
