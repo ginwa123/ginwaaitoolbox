@@ -1,8 +1,16 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const delete_worker_mod = @import("../ai_workflow/tui/agentic_loop/delete_worker.zig");
-const ActiveLoops = @import("../ai_workflow/tui/agentic_loop/ActiveLoops.zig").ActiveLoops;
+// Route `delete_worker` and `ActiveLoops` through `nalarcore` (the
+// `root` module) instead of @import'ing them directly. The exe
+// module compiles `main.zig` which imports `cleanup_stale_worker.zig`;
+// if we reach into `src/ai_workflow/tui/agentic_loop/` directly, those
+// files end up in TWO modules (root via root.zig → mod.zig AND main
+// via cleanup_stale_worker.zig) and Zig's "file exists in two modules"
+// error fires. The exe module already has `nalarcore` as an import
+// (per build.zig), so route through it.
+const delete_worker_mod = nalarcore.ai_mod.delete_worker;
+const ActiveLoops = nalarcore.ai_mod.active_loops;
 const event_bus_mod = nalarcore.event_bus;
 const logger_mod = nalarcore.loggermod;
 const testing = std.testing;

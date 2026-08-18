@@ -8,7 +8,11 @@ const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 const static_files = nalarcore.static_files;
 const migration = nalarcore.migrations_mod.migration;
-const cleanup_stale_worker = @import("schedulers/cleanup_stale_worker.zig");
+// cleanup_stale_worker is re-exported via nalarcore (root.zig) so the
+// exe module doesn't directly @import the file — that would put it
+// in both modules and trigger Zig's "file exists in two modules"
+// error. See root.zig's `pub const cleanup_stale_worker = ...`.
+const cleanup_stale_worker = nalarcore.cleanup_stale_worker;
 
 // state_file and main_service are re-exported from nalarcore (see src/root.zig).
 // Access them via nalarcore.* to avoid duplicating the module symbol

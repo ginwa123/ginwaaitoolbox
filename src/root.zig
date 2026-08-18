@@ -561,6 +561,11 @@ pub const session_helpers = @import("ai_workflow/tui/agentic_loop/llm_history.zi
 pub const session_db = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const llm_history = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const agent_memories = @import("ai_workflow/tui/agentic_loop/agent_memories.zig");
+// Re-export so the exe module (main.zig) can access
+// cleanup_stale_worker.handle for the cron registration WITHOUT
+// directly @import'ing the file (which would put it in two modules
+// and trigger Zig's "file exists in two modules" error).
+pub const cleanup_stale_worker = @import("schedulers/cleanup_stale_worker.zig");
 pub const workspace_items = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const workspace_item_tasks = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.zig");
@@ -609,6 +614,11 @@ test {
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");
-    _ = @import("schedulers/test_runner.zig");
+    // schedulers/cleanup_stale_worker.zig has inline tests. The
+    // `pub const cleanup_stale_worker = @import(...)` above already
+    // pulls the file into the lib module's tree; we re-import here
+    // inside the test block so `zig build test` discovers the inline
+    // tests (the `pub const` alone doesn't trigger discovery).
+    _ = @import("schedulers/cleanup_stale_worker.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }
