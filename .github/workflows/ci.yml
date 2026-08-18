@@ -161,11 +161,16 @@ jobs:
             Write-Host ("ok pwsh installed at " + $pwshExe)
           }
           # Make pwsh visible to every subsequent step. Set-Item on
-          # Env: only persists within THIS step's process; writing to
-          # $GITHUB_ENV is what crosses step boundaries (each step is
-          # a fresh powershell.exe / pwsh.exe process).
+          # Env: only persists within THIS step's process; $GITHUB_PATH
+          # is the documented way to APPEND a directory to PATH across
+          # step boundaries (each step is a fresh powershell.exe /
+          # pwsh.exe process). Setting PATH= via $GITHUB_ENV is
+          # unreliable on some runner configurations — observed on
+          # CI run 32170132785 where the next step got
+          # `pwsh: command not found` even though $GITHUB_ENV was
+          # written. $GITHUB_PATH is the canonically-correct fix.
           $env:PATH = $pwshRoot + ';' + $env:PATH
-          Add-Content -Path $env:GITHUB_ENV -Value ('PATH=' + $env:PATH)
+          Add-Content -Path $env:GITHUB_PATH -Value $pwshRoot
           # Smoke-test the install — $? propagates.
           & $pwshExe -NoProfile -Command ('$PSVersionTable.PSVersion.ToString()') | Write-Host
           $global:LASTEXITCODE = 0
