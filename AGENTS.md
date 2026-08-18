@@ -3,6 +3,56 @@
 DONT KILL THE PORT 8081 SERVER,
 for testing use another port like 8080
 
+## Per-Request Arena Cleanup — Don't `defer free` in handlers
+
+The HTTP server (`src/modules/custom_http_server/src/http_server.zig:349-362`) allocates a fresh `std.heap.ArenaAllocator` for every request and `deinit()`s it when the request scope ends:
+
+```zig
+const arena = self.allocator.create(std.heap.ArenaAllocator) catch {...};
+arena.* = std.heap.ArenaAllocator.init(self.allocator);
+group.concurrent(self.io, struct {
+    fn handle(server: *GinwaServer, arena_allocator: *std.heap.ArenaAllocator, fd: SocketFd) void {
+        defer {
+            arena_allocator.deinit();  // ← frees every arena-backed allocation
+            server.allocator.destroy(arena_allocator);
+        }
+        const allocator = arena_allocator.allocator();
+        ...
+    }
+}.handle, ...);
+```
+
+**The `allocator` passed to every handler (`ctx.allocator`) IS this arena.** When the request scope exits, the arena wipes every byte allocated through it in one shot — there's no per-allocation free needed.
+
+### What this means in practice
+
+Inside a handler, **do NOT write**:
+
+```zig
+// ❌ WRONG — pointless churn; arena will free the bytes anyway
+const body = try allocator.dupe(u8, "...");
+defer allocator.free(body);
+return res.jsonResponse(.{ .data = body, ... });
+```
+
+The `defer allocator.free(body)` is harmless but dead code — the arena deinit will release it. Worse, it can hide ownership: a future refactor that swaps `allocator` for a non-arena allocator will silently double-free.
+
+### What's still required
+
+`defer` is still needed for **non-memory resources** (the arena can't free these — they're not heap bytes):
+
+- **SQLite statement handles** — `rows.deinit()` calls `sqlite3_finalize(stmt)`. KEEP this defer; the arena won't finalize the stmt.
+- **File handles / sockets** — close them explicitly.
+- **Anything NOT allocated via `ctx.allocator`** — `server.allocator`, `di.db`, mutex-protected globals, etc. Those outlive the request and need their own cleanup.
+
+### Quick test: should I `defer free` here?
+
+Ask "is this slice/struct memory allocated through `ctx.allocator`?" If yes, **no** — the arena handles it. If no, you probably need a free.
+
+### Concrete example (workspace_get.zig, 2026-08-18)
+
+Initial implementation `defer allocator.free(data.id); ... free(data.name); ...` for the four duped `[]const u8` strings in the response. All four were arena-allocated (via `allocator.dupe(u8, row.values[N])`). Removed the defers; the test suite (78/78 functional + 2391/2397 Zig tests) still passes.
+
 ## SSE Wire-Format Contract — Always Add Event Names in Pairs
 
 The browser's `EventSource` drops named events whose listener isn't pre-registered. There is **no error, no warning** — the event just vanishes at the wire. User-visible symptom: "feature X never updates live, only after I refresh the page".
