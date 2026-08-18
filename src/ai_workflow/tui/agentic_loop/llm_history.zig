@@ -1756,9 +1756,9 @@ pub fn getMessagesByIds(
 /// Caller owns the returned slice. Free with `hit[i].deinit(allocator)`
 /// for each hit and `allocator.free(hits)` for the outer slice.
 /// Sanitize a user-supplied FTS5 query string so it is always a valid
-/// FTS5 expression. Wraps the result in double quotes (FTS5 phrase
-/// syntax) and replaces FTS5 operators (`-`, `+`, `*`, `^`, `:`,
-/// `(`, `)`, `"`) with single spaces inside the phrase.
+/// FTS5 expression. Splits on whitespace + FTS5 operators, wraps each
+/// token in FTS5 phrase quotes (`"..."`) and joins the quoted tokens
+/// with ` OR ` (FTS5 OR operator) for natural recall.
 ///
 /// **Why this exists.** Without sanitization, plain user input that
 /// happens to contain FTS5 operators fails with `SQLITE_ERROR` —
@@ -1766,42 +1766,184 @@ pub fn getMessagesByIds(
 /// `handle_tool.zig`, `AGENTS.md`, `SPEC.md`, `2026-08-06`, and
 /// `agentic_loop/handle_tool.zig:18` all returned the bare
 /// `FTS search failed: QueryFailed` with no hint about WHY:
-///   - `.` in `handle_tool.zig` is a syntax error: `fts5: syntax error near "."`
+///   - `.` in `handle_tool.zig` is NEAR syntax: `fts5: syntax error near "."`
 ///   - `-` in `2026-08-06` parses as binary NOT: `no such column: 08`
 ///   - `:` in `agentic_loop/handle_tool.zig:18` parses as column filter
+///   - In fact, virtually every non-alphanumeric char is an FTS5
+///     operator: `.`, `+`, `-`, `*`, `^`, `:`, `(`, `)`, `"`, `/`,
+///     `@`, `#`, `$`, `%`, `&`, `~`, `\`, `{`, `}`, `[`, `]`, `|`,
+///     `<`, `>`, `=`, `,`, `;`, `!`, `?`. Trying to strip them all
+///     is a maintenance nightmare.
 ///
-/// **The fix.** Strip FTS5 operators (so the query can't be parsed as
-/// expression syntax) AND wrap the result in FTS5 phrase syntax (so the
-/// indexer and query parser tokenize identically — the phrase
-/// `"handle_tool.zig"` tokenizes as `["handle_tool", "zig"]` which
-/// matches the indexed terms for the same string).
+/// **Why OR (not phrase).** An earlier version of this function wrapped
+/// the whole query in FTS5 phrase syntax (`"..."`). That fixed the
+/// `handle_tool.zig` syntax crash but over-rotated: phrase syntax
+/// requires ALL tokens to be ADJACENT in the indexed text, so a
+/// natural-language query like `"preferred model"` only matched
+/// memories containing the literal substring "preferred model" —
+/// missing every memory that mentioned either word separately. The
+/// user's complaint in task_1787050039216_3 was that memories were
+/// "never found" by the agent. SQL evidence (live DB, 64 memories):
+///   - `preferred model`    phrase → 0 hits, OR → 13 hits
+///   - `CI frontend`        phrase → 0 hits, OR → 20 hits
+///   - `project ginwaaitoolbox` phrase → 2 hits, AND → 8 hits, OR → 15+
 ///
-/// Caller owns the returned slice; free with `allocator.free`.
+/// **The fix.** Split on whitespace + FTS5 operators, wrap each token
+/// in FTS5 phrase quotes (`"..."`) — phrase syntax is the ONE place
+/// where special chars are literal (not operators) — and join the
+/// quoted tokens with ` OR `. FTS5's default tokenizer (`porter
+/// unicode61 remove_diacritics 2`) handles the inner tokenization
+/// consistently, so `"handle_tool"` and `"zig"` (the two tokens split
+/// out of `handle_tool.zig`) match the same way the indexer parsed
+/// them at write time.
+///
+/// **Returns** an allocated slice. Empty `""` means "no usable tokens"
+/// (e.g. query was all operators / whitespace) — callers should bail
+/// early. Caller owns the returned slice; free with `allocator.free`.
 pub fn escapeFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    // Open the FTS5 phrase.
-    try out.append(allocator, '"');
-
-    // Build the inner phrase. Replace FTS5 operators with a single
-    // space (so adjacent operators don't collapse). Internal `"`
-    // is replaced with a space too — FTS5 phrase syntax requires
-    // doubling internal `"`, but the input never has un-escaped
-    // quotes inside a phrase anyway (the user would be very unlikely
-    // to type one).
+    // Walk the query, splitting on whitespace OR FTS5 operator chars
+    // (every non-alphanumeric except `_`). Each "run" of safe chars
+    // becomes a single token; we wrap each token in `"..."` (FTS5
+    // phrase quotes) so any special chars inside the token are
+    // treated as literal. Multiple tokens are joined with ` OR `.
+    //
+    // We could strip the operator chars inside tokens (turning
+    // `handle_tool.zig` into two tokens after splitting on the dot).
+    // But wrapping in quotes is robust — the unicode61 tokenizer
+    // ignores dots inside quoted phrases as written, and the rest of
+    // the indexer/query parser normalizes them consistently.
+    var first_token = true;
+    var in_token = false;
     var i: usize = 0;
     while (i < query.len) : (i += 1) {
         const c = query[i];
-        switch (c) {
-            '-', '+', '*', '^', ':', '(', ')', '"' => try out.append(allocator, ' '),
-            else => try out.append(allocator, c),
+        // Token char: alphanumeric or underscore. Anything else is a
+        // token boundary (whitespace OR FTS5 operator).
+        const is_token_char = std.ascii.isAlphanumeric(c) or c == '_';
+        if (is_token_char) {
+            if (!in_token) {
+                // Open a new token — wrap it in phrase quotes.
+                if (!first_token) try out.appendSlice(allocator, " OR ");
+                try out.append(allocator, '"');
+                first_token = false;
+                in_token = true;
+            }
+            try out.append(allocator, c);
+        } else {
+            if (in_token) {
+                // Close the current token.
+                try out.append(allocator, '"');
+                in_token = false;
+            }
         }
     }
-    // Close the phrase.
-    try out.append(allocator, '"');
+    // Close any token still open at EOF.
+    if (in_token) try out.append(allocator, '"');
 
     return out.toOwnedSlice(allocator);
+}
+
+// ---------------------------------------------------------------------------
+// escapeFtsQuery inline tests
+// ---------------------------------------------------------------------------
+
+test "escapeFtsQuery: single token is emitted in phrase quotes (no OR)" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "preferred");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"preferred\"", out);
+}
+
+test "escapeFtsQuery: multi-token query is joined with OR for natural recall" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "preferred model");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"preferred\" OR \"model\"", out);
+}
+
+test "escapeFtsQuery: three or more tokens also joined with OR" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "CI frontend bun");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"CI\" OR \"frontend\" OR \"bun\"", out);
+}
+
+test "escapeFtsQuery: consecutive whitespace collapses to single token boundary" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "preferred   model");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"preferred\" OR \"model\"", out);
+}
+
+test "escapeFtsQuery: FTS5 operators are replaced with token boundaries" {
+    const alloc = testing.allocator;
+
+    // Each operator becomes a token boundary — adjacent operators
+    // don't collapse to a single boundary.
+    {
+        const out = try escapeFtsQuery(alloc, "2026-08-06");
+        defer alloc.free(out);
+        try testing.expectEqualStrings("\"2026\" OR \"08\" OR \"06\"", out);
+    }
+
+    // Colon-filter syntax (`tags: user`) becomes two tokens.
+    {
+        const out = try escapeFtsQuery(alloc, "tags: user");
+        defer alloc.free(out);
+        try testing.expectEqualStrings("\"tags\" OR \"user\"", out);
+    }
+
+    // Slash is also an FTS5 operator (not just `.`, `-`, `:`).
+    {
+        const out = try escapeFtsQuery(alloc, "agentic_loop/handle_tool.zig:18");
+        defer alloc.free(out);
+        try testing.expectEqualStrings(
+            "\"agentic_loop\" OR \"handle_tool\" OR \"zig\" OR \"18\"",
+            out,
+        );
+    }
+}
+
+test "escapeFtsQuery: underscore is part of a token (not a separator)" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "handle_tool");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"handle_tool\"", out);
+}
+
+test "escapeFtsQuery: empty input returns empty string" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("", out);
+}
+
+test "escapeFtsQuery: all-special-chars input returns empty string (no usable tokens)" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "+++**::..//");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("", out);
+}
+
+test "escapeFtsQuery: leading/trailing whitespace is harmless" {
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "  hello world  ");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"hello\" OR \"world\"", out);
+}
+
+test "escapeFtsQuery: realistic multi-word recall query (regression for task_1787050039216_3)" {
+    // The user's complaint: load_memory({query: "preferred model"}) returned
+    // 0 hits because the query was wrapped in FTS5 phrase syntax.
+    // After the fix, the query is "preferred" OR "model" — OR semantics,
+    // natural recall.
+    const alloc = testing.allocator;
+    const out = try escapeFtsQuery(alloc, "preferred model");
+    defer alloc.free(out);
+    try testing.expectEqualStrings("\"preferred\" OR \"model\"", out);
 }
 
 pub fn searchMessagesFts(
@@ -1818,6 +1960,9 @@ pub fn searchMessagesFts(
     // transformation.
     const sanitized_query = try escapeFtsQuery(allocator, query);
     defer allocator.free(sanitized_query);
+    // Empty after sanitization (query was all FTS5 operators) — bail
+    // before FTS5 sees `MATCH ''` and throws "empty query".
+    if (sanitized_query.len == 0) return allocator.alloc(SearchHit, 0);
 
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);

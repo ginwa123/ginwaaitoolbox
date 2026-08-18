@@ -234,6 +234,9 @@ pub fn loadMemoriesByFts(
     // Sanitize the FTS5 query — same helper `search_history` uses.
     const sanitized_query = try llm_history.escapeFtsQuery(allocator, opts.query);
     defer allocator.free(sanitized_query);
+    // Empty after sanitization (query was all FTS5 operators) — bail
+    // before FTS5 sees `MATCH ''` and throws "empty query".
+    if (sanitized_query.len == 0) return allocator.alloc(MemoryHit, 0);
 
     // Build the SQL.
     //

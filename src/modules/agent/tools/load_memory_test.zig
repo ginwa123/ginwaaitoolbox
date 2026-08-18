@@ -297,7 +297,9 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     });
     defer alloc.free(_out);
 
-    // Queries with FTS5-special chars must NOT crash (escapeFtsQuery wraps them).
+    // Queries with FTS5-special chars must NOT crash (escapeFtsQuery
+    // strips the operators and joins tokens with OR, so the FTS5 query
+    // parser doesn't see `.`, `:`, `-`, etc.).
     const input = load_memory_mod.LoadMemoryInput{
         .query = "handle_tool.zig",
         .tags = "",
@@ -308,8 +310,152 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // Either found the row (FTS5 matched despite sanitization) or returned 0 hits
-    // (phrase didn't match). Either way, no <error> — the query didn't crash.
+    // No <error> — the query didn't crash. The row should be found
+    // because FTS5's tokenizer splits `handle_tool.zig` (in the
+    // indexed content) on the dot, and the OR-joined query asks for
+    // either `handle_tool` OR `zig` — both present in the row.
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
     try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-special-chars</id>") != null);
+}
+
+// --- Regression tests for the strict-search bug (task_1787050039216_3) ---
+//
+// Symptom: load_memory({query: "preferred model"}) returned 0 hits because
+// the query was wrapped in FTS5 phrase syntax, requiring "preferred" to be
+// ADJACENT to "model" in the indexed text. After the fix, multi-word queries
+// are joined with OR — natural recall semantics.
+
+test "load_memory_tool: multi-token query joins with OR (regression for strict-search bug)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Seed 3 memories that mention "preferred" or "model" separately,
+    // but NOT the literal substring "preferred model" as adjacent text.
+    const _o1 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "the user's preferred model is claude-sonnet",
+        .tags = "",
+        .id = "mem-coding-pref",
+    });
+    defer alloc.free(_o1);
+    const _o2 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "user prefers claude-sonnet for writing tasks",
+        .tags = "",
+        .id = "mem-writing-pref",
+    });
+    defer alloc.free(_o2);
+    const _o3 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "the project's database model is documented in spec",
+        .tags = "",
+        .id = "mem-db-model",
+    });
+    defer alloc.free(_o3);
+
+    // With the old phrase-wrap behavior, this query would return 0 hits
+    // because no memory contains the literal substring "preferred model".
+    // With the new OR-join behavior, this query should find all 3.
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "preferred model",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    // No error, no crash.
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+
+    // All 3 memories should be found (each contains at least one of the
+    // two tokens).
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-coding-pref</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-writing-pref</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-db-model</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<count>3</count>") != null);
+}
+
+test "load_memory_tool: single-token query still works (regression guard)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const _o1 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "the user prefers dark mode for the editor",
+        .tags = "",
+        .id = "mem-dark-mode",
+    });
+    defer alloc.free(_o1);
+
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "dark",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-dark-mode</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
+}
+
+test "load_memory_tool: hyphenated date query returns sanitized recall (no crash)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Memory contains a date that the user might search for verbatim.
+    const _o1 = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "log entry on 2026-08-06 says the build is green",
+        .tags = "",
+        .id = "mem-date-row",
+    });
+    defer alloc.free(_o1);
+
+    // The old phrase-wrap behavior turned this into "2026 08 06" (phrase).
+    // The new OR-join behavior turns it into "2026 OR 08 OR 06". Both
+    // find the row — but we just want to verify no crash and at least
+    // 1 hit.
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "2026-08-06",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-date-row</id>") != null);
+}
+
+test "load_memory_tool: empty-after-sanitize query returns empty results (no crash)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // A query of only FTS5 operators sanitizes to empty string. The
+    // load_memories helper now guards against FTS5's "empty query"
+    // error and returns 0 hits instead of crashing.
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "+++--",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "<count>0</count>") != null);
 }
