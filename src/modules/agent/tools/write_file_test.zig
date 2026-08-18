@@ -431,6 +431,320 @@ test "writeFile - large content (1 MiB) written completely" {
 }
 
 // ===========================================================================
+// Section 5b: Large content — overwrite semantics + edge cases (added 2026-08-15)
+//
+// These tests pin the write_file contract on LARGE payloads (multi-MiB,
+// multi-byte UTF-8, binary with NULs, overwriting existing files of
+// different sizes). The base `writeFile` function uses
+// `writeStreamingAll`, which is allowed to chunk internally — these
+// tests verify the byte stream is preserved end-to-end regardless of
+// chunk boundaries, and that overwrite-mode (truncate) is honoured even
+// when the file size delta is huge.
+// ===========================================================================
+
+/// Fill a buffer with a deterministic repeating pattern (NOT a single
+/// byte). Lets tests detect "buffer got the wrong prefix / wrong
+/// suffix" errors that a uniform-fill test would miss.
+fn fillPattern(buf: []u8, seed: u8) void {
+    var s: u32 = seed;
+    for (buf) |*b| {
+        s = s *% 1103515245 +% 12345; // LCG, matches glibc rand()
+        b.* = @truncate(s & 0xFF);
+    }
+}
+
+test "writeFile - large content (10 MiB) with random pattern preserved byte-for-byte" {
+    const path = "test_wf_large_10mb.bin";
+    defer deleteFile(path);
+
+    // 10 MiB = 10x the previous 1 MiB test, exercises multiple
+    // writeStreamingAll chunk boundaries on most std.Io implementations.
+    const size: usize = 10 * (1 << 20);
+    const content = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(content);
+    fillPattern(content, 42);
+
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = content,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, size), fileSize(path));
+
+    const read = try readFileContentsLarge(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqual(@as(usize, size), read.len);
+    // Byte-exact equality across the full 10 MiB — most thorough check.
+    try testing.expectEqualSlices(u8, content, read);
+    // Spot-check a few indices known to be at chunk boundaries on
+    // typical 4 KiB page-sized writes (0, 4K, 8K, 1M, 5M, 9.9M).
+    const spot_indices = [_]usize{ 0, 4096, 8192, (1 << 20), 5 * (1 << 20), 9_900_000 };
+    for (spot_indices) |i| {
+        try testing.expectEqual(content[i], read[i]);
+    }
+}
+
+/// Read the test file at any size up to a generous ceiling (16 MiB).
+/// The base `readFileContents` is capped at 4 MiB, which is too small
+/// for the 10 MiB test above.
+fn readFileContentsLarge(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(16 << 20));
+}
+
+test "writeFile - large content OVERWRITES smaller existing file (truncate)" {
+    // Pre-seed with 1 MiB of a unique 8-byte sentinel pattern (the
+    // "dead beef cafe babe f0 0d fa ce" magic), then overwrite with 5 MiB
+    // of LCG pattern data. The 8-byte sentinel is astronomically
+    // unlikely to appear in random LCG output (~2^-64 chance per
+    // 8-byte window), so detecting it in the final file proves
+    // append-mode corruption.
+    const path = "test_wf_large_overwrite.bin";
+    defer deleteFile(path);
+
+    const sentinel = "\xDE\xAD\xBE\xEF\xCA\xFE\xBA\xBE\xF0\x0D\xFA\xCE\x12\x34\x56\x78";
+    {
+        const seed_size: usize = 1 << 20;
+        const seed = try testing.allocator.alloc(u8, seed_size);
+        defer testing.allocator.free(seed);
+        var p: usize = 0;
+        while (p + sentinel.len <= seed_size) : (p += sentinel.len) {
+            @memcpy(seed[p..][0..sentinel.len], sentinel);
+        }
+        while (p < seed_size) : (p += 1) {
+            seed[p] = sentinel[p % sentinel.len];
+        }
+        const seed_r = try write_file.writeFile(testing.allocator, testing.io, .{
+            .path = path,
+            .content = seed,
+        });
+        defer seed_r.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u64, 1 << 20), fileSize(path));
+
+    const new_size: usize = 5 * (1 << 20);
+    const content = try testing.allocator.alloc(u8, new_size);
+    defer testing.allocator.free(content);
+    fillPattern(content, 7);
+
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = content,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, new_size), fileSize(path));
+    const read = try readFileContentsLarge(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqualSlices(u8, content, read);
+    // CRITICAL: no sentinel pattern anywhere — would prove append-mode
+    try testing.expect(std.mem.indexOf(u8, read, sentinel) == null);
+}
+
+test "writeFile - large content overwritten by much SMALLER content (truncate)" {
+    // Pre-seed with 8 MiB of pattern data, then overwrite with just 1 KiB.
+    // Verifies the file shrinks to EXACTLY 1 KiB, not "8 MiB minus 1 KiB".
+    const path = "test_wf_large_truncate.bin";
+    defer deleteFile(path);
+
+    const big_size: usize = 8 * (1 << 20);
+    {
+        const big = try testing.allocator.alloc(u8, big_size);
+        defer testing.allocator.free(big);
+        fillPattern(big, 99);
+        const r = try write_file.writeFile(testing.allocator, testing.io, .{
+            .path = path,
+            .content = big,
+        });
+        defer r.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u64, big_size), fileSize(path));
+
+    const small_payload = "small replacement after a large file";
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = small_payload,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, small_payload.len), fileSize(path));
+    const read = try readFileContents(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqualStrings(small_payload, read);
+    try testing.expectEqual(@as(usize, small_payload.len), read.len);
+}
+
+test "writeFile - large content with multi-byte UTF-8 (byte count preserved)" {
+    // 1 MiB of 4-byte UTF-8 emojis (🚀 = F0 9F 9A 80). Each "char" is 4
+    // bytes, so 1 MiB = 262_144 emojis. This stresses the
+    // writeStreamingAll path on byte-aligned UTF-8 boundaries.
+    const path = "test_wf_large_utf8.bin";
+    defer deleteFile(path);
+
+    const size: usize = 1 << 20;
+    const content = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(content);
+    const emoji = "🚀"; // 4 bytes
+    var i: usize = 0;
+    while (i + emoji.len <= size) : (i += emoji.len) {
+        @memcpy(content[i..][0..emoji.len], emoji);
+    }
+    // Any leftover bytes (<4) — fill with 'U' as a sentinel.
+    while (i < size) : (i += 1) {
+        content[i] = 'U';
+    }
+
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = content,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, size), fileSize(path));
+    const read = try readFileContents(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqualSlices(u8, content, read);
+    // Validate UTF-8 boundary integrity — no malformed sequences.
+    // Walk through and assert every 4 bytes match the emoji pattern
+    // (except the final <4-byte tail of 'U's).
+    const full_emoji_bytes = (size / 4) * 4;
+    var j: usize = 0;
+    while (j < full_emoji_bytes) : (j += 4) {
+        try testing.expectEqual(@as(u8, 0xF0), read[j]); // 🚀 byte 0
+        try testing.expectEqual(@as(u8, 0x9F), read[j + 1]); // 🚀 byte 1
+        try testing.expectEqual(@as(u8, 0x9A), read[j + 2]); // � byte 2
+        try testing.expectEqual(@as(u8, 0x80), read[j + 3]); // 🚀 byte 3
+    }
+    // Tail (the 'U' sentinels)
+    while (j < size) : (j += 1) {
+        try testing.expectEqual(@as(u8, 'U'), read[j]);
+    }
+}
+
+test "writeFile - large content with embedded NUL bytes (binary stream preserved)" {
+    // 2 MiB of every 5th byte being NUL. The writeFile path must NOT
+    // treat content as a C string — `writeStreamingAll` takes a slice
+    // with explicit length, so this should "just work", but pinning
+    // the contract catches a future refactor that switches to
+    // null-terminated string APIs (writeC, file.write(... \0), etc.).
+    const path = "test_wf_large_nul.bin";
+    defer deleteFile(path);
+
+    const size: usize = 2 * (1 << 20);
+    const content = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(content);
+    for (content, 0..) |*b, idx| {
+        b.* = if (idx % 5 == 0) 0 else @as(u8, @truncate(idx & 0xFF));
+    }
+
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = content,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, size), fileSize(path));
+    const read = try readFileContentsLarge(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqualSlices(u8, content, read);
+    // Spot-check NUL positions (every 5th byte from 0 — choose indices
+    // that are multiples of 5 so we know they're NUL by construction).
+    try testing.expectEqual(@as(u8, 0), read[0]);
+    try testing.expectEqual(@as(u8, 0), read[5]);
+    try testing.expectEqual(@as(u8, 0), read[(1 << 20) - 1]); // 1048575 = 5 * 209715
+    try testing.expectEqual(@as(u8, 0), read[size - 1 - ((size - 1) % 5)]); // last multiple of 5 in [0, size)
+    // And spot-check a NON-NUL position (idx % 5 == 1) to prove the
+    // pattern is preserved (not all bytes set to NUL).
+    try testing.expectEqual(@as(u8, 1), read[1]); // idx 1 → (idx & 0xFF) == 1
+}
+
+test "writeFile - large content with mixed line endings (\\n + \\r\\n + \\r)" {
+    // 256 KiB cycling through \n, \r\n, \r — verifies the write path
+    // doesn't rewrite line endings (would silently break Windows files
+    // written from a Unix agent).
+    const path = "test_wf_large_line_endings.bin";
+    defer deleteFile(path);
+
+    const size: usize = 256 * 1024;
+    const content = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(content);
+    const endings = [_][]const u8{ "\n", "\r\n", "\r" };
+    var pos: usize = 0;
+    var e: usize = 0;
+    while (pos < size) {
+        const end = endings[e % endings.len];
+        e += 1;
+        if (pos + end.len > size) {
+            content[pos] = 'X'; // tail fill sentinel
+            pos += 1;
+            continue;
+        }
+        @memcpy(content[pos..][0..end.len], end);
+        pos += end.len;
+    }
+
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = content,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, size), fileSize(path));
+    const read = try readFileContents(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqualSlices(u8, content, read);
+    // Spot-check exact line-ending sequences at known offsets
+    try testing.expectEqual(@as(u8, '\n'), read[0]);
+    try testing.expectEqual(@as(u8, '\r'), read[1]);
+    try testing.expectEqual(@as(u8, '\n'), read[2]);
+    try testing.expectEqual(@as(u8, '\r'), read[3]);
+}
+
+test "writeFile - large content overwrite preserves file size exactly (no padding)" {
+    // Pre-seed with 2 MiB of 'A', overwrite with 2 MiB of 'B'. The file
+    // MUST stay at exactly 2 MiB — neither shrunk nor grew. Catches a
+    // hypothetical regression where the truncate happens but then the
+    // write extends past the original size due to an off-by-one in the
+    // truncate+write path.
+    const path = "test_wf_large_same_size.bin";
+    defer deleteFile(path);
+
+    const size: usize = 2 * (1 << 20);
+    const a_buf = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(a_buf);
+    @memset(a_buf, 'A');
+
+    const b_buf = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(b_buf);
+    @memset(b_buf, 'B');
+
+    // First write: 2 MiB of 'A'
+    {
+        const r = try write_file.writeFile(testing.allocator, testing.io, .{
+            .path = path,
+            .content = a_buf,
+        });
+        defer r.deinit(testing.allocator);
+    }
+    try testing.expectEqual(@as(u64, size), fileSize(path));
+
+    // Second write: same size, different byte ('B')
+    var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
+        .path = path,
+        .content = b_buf,
+    });
+    defer _wf_r.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u64, size), fileSize(path));
+    const read = try readFileContentsLarge(testing.allocator, path);
+    defer testing.allocator.free(read);
+    try testing.expectEqual(@as(usize, size), read.len);
+    try testing.expectEqualSlices(u8, b_buf, read);
+    // CRITICAL: no 'A' bytes — would prove the old content survived
+    try testing.expect(std.mem.indexOfScalar(u8, read, 'A') == null);
+}
+
+// ===========================================================================
 // Section 6: Path shape edge cases
 // ===========================================================================
 
