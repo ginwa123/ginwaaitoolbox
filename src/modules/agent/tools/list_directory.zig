@@ -170,8 +170,8 @@ pub const list_directory_tool = AgentTool{
         \\Each entry is wrapped as `<directory name=... path=.../>` or
         \\`<file name=... path=.../>` inside a single `<directory_listing>`.
         \\
-        \\Path is RELATIVE to the session's cwd (absolute paths are
-        \\rejected — security policy).
+        \\Path is RELATIVE to the session's cwd by default. Absolute
+        \\paths are accepted (passed through to openDirAbsolute).
         ,
         .parameters = .{
             .type = "object",
@@ -179,7 +179,7 @@ pub const list_directory_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Directory to list (relative to session's cwd). Default: \".\" (the cwd itself). Absolute paths are rejected.",
+                    .description = "Directory to list. Absolute paths are accepted. Default: \".\" (the cwd itself).",
                 },
                 .{
                     .name = "hidden",

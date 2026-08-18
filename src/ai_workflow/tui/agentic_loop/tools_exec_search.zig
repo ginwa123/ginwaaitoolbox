@@ -7,7 +7,6 @@ const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
 const search_tool_mod = nalarcore.search_tool;
 const wrapToolOutput = tools.wrapToolOutput;
-const testing = std.testing;
 
 pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const args = tc.function.arguments;
@@ -25,28 +24,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    // Security: reject absolute paths.
-    if (try nalarcore.path_security.rejectAbsolutePath(
-        ctx.allocator, "search", "path", parsed.value.path, ctx.cwd
-    )) |err_msg| {
-        defer ctx.allocator.free(err_msg);
-        const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    // Resolve the relative path against ctx.cwd_override ?? ctx.cwd.
-    // The underlying executeSearch uses ctx.cwd as the base for
-    // relative paths in its PathError mapping — so without this
-    // resolution the LLM-supplied relative path would be looked up
-    // in the wrong directory.
-    const resolved_path = try nalarcore.path_security.resolveCwd(
-        ctx.allocator, ctx.cwd, ctx.cwd_override, parsed.value.path
-    );
-    defer ctx.allocator.free(resolved_path);
-
-    var input = parsed.value;
-    input.path = resolved_path;
-    var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, input) catch |err| {
+    var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch |err| {
         // Map the new domain errors to LLM-friendly messages. Each one
         // names the fix the LLM can try (different pattern, narrower
         // path, smaller max_output, etc).
@@ -106,47 +84,4 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     search_result.deinit(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
-}
-// 2026-08-14 — end-to-end proof that RELATIVE paths work on every
-// tool wired with the absolute-path ban (PR #259 follow-up).
-test "execSearch: relative path '.' resolves and matches content" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const n = try tmp.dir.realPath(testing.io, &path_buf);
-    const root_abs = try a.dupe(u8, path_buf[0..n]);
-
-    try tmp.dir.writeFile(testing.io, .{
-        .sub_path = "haystack.txt",
-        .data = "first line\nthe needle is here\nlast line",
-    });
-
-    var dummy_f32: f32 = 0.0;
-    var dummy_bool: bool = false;
-    const ctx = ToolExecContext{
-        .allocator = a, .io = testing.io, .db = undefined,
-        .logger = undefined, .session_id = "test", .model = "test",
-        .cwd = root_abs, .api_key = "test", .base_url = "test",
-        .config = undefined, .agent_temperature = &dummy_f32,
-        .is_thinking = &dummy_bool, .environment = null,
-        .active_loops = undefined,
-    };
-    const tc = agent.ToolCall{
-        .id = "call_1", .type = "function",
-        .function = .{
-            .name = "search",
-            .arguments = "{\"path\":\".\",\"pattern\":\"needle\"}",
-        },
-    };
-
-    const result = try execSearch(ctx, tc);
-    defer if (result.output_allocated) a.free(result.output);
-
-    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "haystack.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "needle") != null);
 }

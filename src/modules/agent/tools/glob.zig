@@ -1205,12 +1205,7 @@ pub const glob_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description =
-                    \\`path`: directory to search, RELATIVE to the session's
-                    \\cwd only (absolute paths are rejected — security
-                    \\policy). Default: `"."` (the cwd itself). Use a
-                    \\relative path like `"src"` (NOT `"/home/you/proj/src"`).
-                    ,
+                    .description = "Directory to search. Default: \".\"",
                 },
                 .{
                     .name = "max_results",

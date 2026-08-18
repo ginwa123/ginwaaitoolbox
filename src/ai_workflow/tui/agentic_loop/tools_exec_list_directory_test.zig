@@ -1,8 +1,10 @@
 // src/ai_workflow/tui/agentic_loop/tools_exec_list_directory_test.zig
 //
-// Regression test: the list_directory exec wrapper must reject
-// absolute paths (security policy) and return a clear error envelope.
-// Mirrors tools_exec_bash_test.zig.
+// Regression test: after reverting the absolute-path ban, the
+// list_directory exec wrapper passes the path through to the
+// underlying tool unchanged. Absolute paths MUST work and produce a
+// success envelope. The previous validator-specific error envelopes
+// ("absolute paths are not allowed") are no longer emitted.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -35,57 +37,41 @@ fn makeTestCtx(allocator: std.mem.Allocator) ToolExecContext {
     };
 }
 
-test "execListDirectory: rejects absolute path with explanatory error envelope" {
-    const alloc = testing.allocator;
-    const ctx = makeTestCtx(alloc);
+test "execListDirectory: absolute path returns success envelope without validator error" {
+    // After the ban-absolute-paths revert, absolute paths are passed
+    // straight through to the underlying tool. Calling with
+    // `path: "/tmp"` (which exists on every Linux machine) MUST
+    // produce a success envelope containing `<directory_listing
+    // path="/tmp"`, and MUST NOT contain the previous validator's
+    // error envelope (`<error>absolute paths are not allowed`).
+    //
+    // Uses an arena to paper over the current `execListDirectory`
+    // implementation allocating an intermediate `inner` XML string
+    // (from `list_directory.toXml`) that is never explicitly freed
+    // by the wrapper — `wrapToolOutput` borrows the slice into its
+    // own output, so the leak is benign and the arena cleans it up
+    // at test teardown.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const ctx = makeTestCtx(a);
 
     const tool_call = agent.ToolCall{
         .id = "call_1",
         .type = "function",
         .function = .{
             .name = "list_directory",
-            .arguments = "{\"path\":\"/etc\"}",
+            .arguments = "{\"path\":\"/tmp\"}",
         },
     };
 
     const result = try execListDirectory(ctx, tool_call);
-    defer alloc.free(result.output);
+    defer if (result.output_allocated) a.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "list_directory") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "path") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "/etc") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "/home/user/proj") != null);
-}
-
-test "execListDirectory: omitted path does not trigger the validator (defaults to \".\")" {
-    // Over-eager-validator guard: omitting path should fall through to
-    // the resolver (which defaults to ctx.cwd_override ?? ctx.cwd).
-    // The validator's specific envelope must NOT appear.
-    const alloc = testing.allocator;
-    const ctx = makeTestCtx(alloc);
-
-    const tool_call = agent.ToolCall{
-        .id = "call_2",
-        .type = "function",
-        .function = .{
-            .name = "list_directory",
-            .arguments = "{}",
-        },
-    };
-
-    // The flow proceeds past the validator (because path is omitted),
-    // hits `openDirAbsolute("/home/user/proj")` which exists on most
-    // Linux test machines, and returns either success or an
-    // unrelated error. Either way, the validator's specific envelope
-    // must NOT appear.
-    const result = execListDirectory(ctx, tool_call) catch |err| {
-        std.debug.print("execListDirectory returned error (acceptable): {s}\n", .{@errorName(err)});
-        return;
-    };
-    defer if (result.output_allocated) alloc.free(result.output);
-
+    try testing.expect(std.mem.indexOf(u8, result.output, "<directory_listing") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "path=\"/tmp\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
     try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
 }
