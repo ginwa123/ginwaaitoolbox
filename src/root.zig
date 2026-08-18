@@ -609,5 +609,6 @@ test {
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");
+    _ = @import("schedulers/test_runner.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }
