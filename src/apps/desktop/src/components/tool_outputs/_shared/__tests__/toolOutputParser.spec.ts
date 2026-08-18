@@ -27,6 +27,7 @@ import {
   parseKanbanList,
   parseKanbanMove,
   parseGenerateImage,
+  parseListDirectory,
   parseWriteFile,
 } from '../toolOutputParser'
 
@@ -451,6 +452,104 @@ describe('parseMetadata', () => {
   })
   it('returns empty object when no metadata block', () => {
     expect(parseMetadata('<other>foo</other>')).toEqual({})
+  })
+})
+
+// 2026-08-14 — list_directory tool output (companion to ReadFile/Search/Glob).
+// Wire shape (from src/modules/agent/tools/list_directory.zig):
+//
+//   <directory_listing path="/foo/bar" count="3">
+//     <directory name="src" path="/foo/bar/src" is_symlink="false"/>
+//     <file name="main.zig" path="/foo/bar/main.zig" is_symlink="false"/>
+//   </directory_listing>
+//
+// On error (innerToolData falls back to the full <tool> envelope, so the
+// parser must tolerate the outer wrapper too):
+//
+//   <tool><name>list_directory</name><parameters>...</parameters>
+//   <success>false</success><error>list_directory failed: PathNotFound</error>
+//   </tool>
+describe('parseListDirectory', () => {
+  it('parses a success envelope with directories + files', () => {
+    const r = parseListDirectory(
+      '<directory_listing path="/proj" count="3">' +
+        '<directory name="src" path="/proj/src" is_symlink="false"/>' +
+        '<file name="README.md" path="/proj/README.md" is_symlink="false"/>' +
+        '<file name="main.zig" path="/proj/main.zig" is_symlink="false"/>' +
+        '</directory_listing>',
+    )
+    expect(r.path).toBe('/proj')
+    expect(r.count).toBe(3)
+    expect(r.entries).toHaveLength(3)
+    expect(r.entries[0]).toMatchObject({
+      name: 'src',
+      path: '/proj/src',
+      isDirectory: true,
+      isSymlink: false,
+    })
+    expect(r.entries[1]).toMatchObject({
+      name: 'README.md',
+      path: '/proj/README.md',
+      isDirectory: false,
+      isSymlink: false,
+    })
+    expect(r.entries[2]?.name).toBe('main.zig')
+    expect(r.success).toBe(true)
+    expect(r.error).toBeNull()
+  })
+
+  it('parses an empty directory listing (count=0)', () => {
+    const r = parseListDirectory('<directory_listing path="/empty" count="0"></directory_listing>')
+    expect(r.path).toBe('/empty')
+    expect(r.count).toBe(0)
+    expect(r.entries).toEqual([])
+    expect(r.success).toBe(true)
+    expect(r.error).toBeNull()
+  })
+
+  it('parses a directory-only listing', () => {
+    const r = parseListDirectory(
+      '<directory_listing path="/only-dirs" count="2">' +
+        '<directory name="a" path="/only-dirs/a" is_symlink="false"/>' +
+        '<directory name="b" path="/only-dirs/b" is_symlink="false"/>' +
+        '</directory_listing>',
+    )
+    expect(r.count).toBe(2)
+    expect(r.entries.every((e) => e.isDirectory)).toBe(true)
+  })
+
+  it('flags symlinks via is_symlink="true"', () => {
+    const r = parseListDirectory(
+      '<directory_listing path="/proj" count="1">' +
+        '<file name="link.txt" path="/proj/link.txt" is_symlink="true"/>' +
+        '</directory_listing>',
+    )
+    expect(r.entries[0]?.isSymlink).toBe(true)
+    expect(r.entries[0]?.isDirectory).toBe(false)
+  })
+
+  it('returns success=false + error message on error envelope', () => {
+    // innerToolData falls back to m.content (the full <tool> envelope)
+    // when the backend errored out. The parser must still find the
+    // <error> tag in the outer envelope.
+    const r = parseListDirectory(
+      '<tool><name>list_directory</name><parameters>{"path":"/missing"}</parameters>' +
+        '<success>false</success>' +
+        '<error>list_directory failed: PathNotFound</error>' +
+        '</tool>',
+    )
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('list_directory failed: PathNotFound')
+    expect(r.entries).toEqual([])
+  })
+
+  it('handles empty content gracefully (no envelope at all)', () => {
+    const r = parseListDirectory('')
+    expect(r.path).toBe('')
+    expect(r.count).toBe(0)
+    expect(r.entries).toEqual([])
+    expect(r.success).toBe(true)
+    expect(r.error).toBeNull()
   })
 })
 

@@ -39,6 +39,10 @@ pub const set_git_worktree_tool = AgentTool{
         .name = "set_git_worktree",
         .description =
             \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. The worktree can be in any folder (e.g. '/home/me/project/.worktrees/auth-fix', '/tmp/experiments/x', or anywhere else). While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
+        \\
+        \\NOTE: this is the ONLY tool that accepts absolute paths (admin-tier
+        \\escape hatch for navigating outside the session's cwd). All other
+        \\tool inputs require relative paths.
             \\
             \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
         ,

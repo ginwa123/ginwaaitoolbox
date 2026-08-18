@@ -42,7 +42,7 @@ describe('AddAgentDialog', () => {
   beforeEach(() => vi.restoreAllMocks())
 
   it('shows the "Add Agent" title and a name input when show=true', async () => {
-    const wrapper = mountDialog()
+    mountDialog()
     await nextTick()
     const dialog = document.querySelector('[data-testid="add-agent-dialog"]') as HTMLElement | null
     expect(dialog?.textContent).toContain('Add Agent')
@@ -50,7 +50,7 @@ describe('AddAgentDialog', () => {
   })
 
   it('disables the Add button when name or path is empty', async () => {
-    const wrapper = mountDialog()
+    mountDialog()
     await nextTick()
     const submit = document.querySelector('[data-testid="add-agent-submit"]') as HTMLButtonElement
     expect(submit.hasAttribute('disabled')).toBe(true)
