@@ -1636,6 +1636,45 @@ const rightSidebarCwd = computed(() => {
   return ''
 })
 
+// Effective cwd for the <ChatView> mount. The ChatView child seeds
+// its `sessionCwd` ref from this prop in onMounted (`if (props.cwd)
+// sessionCwd.value = props.cwd`), then sends it as `cwd_session` on
+// every api.sendChatMessage call. Without this prop, ChatView falls
+// back to `loadChatHistory`'s `data.cwd`, which is empty for any
+// session whose `sessions.cwd` column is NULL — and `sessions.cwd`
+// is only set on the FIRST saveMessage call, so a freshly-created
+// session that the user opens and types into IMMEDIATELY sends
+// `cwd_session: ""` to the backend.
+//
+// Sources (priority order, mirrors rightSidebarCwd above):
+//   1. chatSessionCwd — populated by AppLayout.onMounted →
+//      fetchChatSessionCwd for the `?view=chat&session=X` URL
+//      path. Reads the session's persisted cwd from the DB.
+//   2. activeWorkspaceItem.path — used for the workspace-item +
+//      chat-task paths (KanbanChatDialog, DesignChatDialog, and
+//      the new standard-task-chat branch added for task
+//      task_1787027750097). The chat runs in the workspace item's
+//      directory.
+//   3. '' — empty fallback. Should not happen in practice because
+//      either source above should be populated.
+//
+// FIX (task_1787027750097): previously the standalone ChatView
+// branch (line 2099+) did NOT pass `:cwd` and ChatView relied
+// entirely on loadChatHistory's data.cwd — which is empty when
+// `sessions.cwd` is NULL (freshly-created sessions, or sessions
+// created via non-Vue callers that bypass the cwd fallback chain).
+// The user's bug report showed the network panel with
+// `cwd_session: ""` because their session was opened from a
+// `?view=workspace&itemId=X` URL where activeChatId was restored
+// from localStorage; AppLayout's fetchChatSessionCwd was never
+// called for that path (the route watcher at line 1720-1737 only
+// fires for `view=chat&session=X`), so chatSessionCwd stayed
+// empty and ChatView's loadChatHistory was the only source —
+// which returned empty too. Adding this prop closes the gap.
+const effectiveChatCwd = computed(() => {
+  return chatSessionCwd.value || activeWorkspaceItem.value?.path || ''
+})
+
 // Watch route query changes to sync with app state
 watch(
   () => route.query,
@@ -2002,17 +2041,14 @@ defineExpose({
         `<ChatView v-else-if="currentView === 'task' && activeTask">`
         branch has been removed. Under the new URL scheme the URL
         never says `view=task` — the chat dialog is always a
-        sub-state of the workspace view (gated by
-        `activeTaskWorkspaceItemId === activeWorkspaceItem.id` for
-        kanban, or `activeDesignChatTaskId` for design). The chat
-        rendering for non-kanban / non-design parents was the only
-        reachable path through that branch, and now goes through
-        the same dialog mechanism — the KanbanChatDialog mount
-        (above) is guarded by `item_type === 'kanban'`. Folder
-        tasks (whose parent is a folder, not a kanban / design)
-        are an explicit out-of-scope edge case; until a folder-task
-        UI is added, this branch is dead code per the
-        simplify-url-browser spec.
+        sub-state of the workspace view. Kanban tasks open via
+        KanbanChatDialog (gated on
+        `activeTaskWorkspaceItemId === activeWorkspaceItem.id`),
+        design tasks via DesignChatDialog (gated on
+        `activeDesignChatTaskId`), and standard task chats
+        (folder / memory / chat items) via the inline <ChatView>
+        branch below. The pre-fix "out-of-scope" gap for non-
+        kanban / non-design items is closed by that branch.
       -->
       <!--
         STALE MOUNT removed (kanban-chat-as-dialog plan, 2026-08-06).
@@ -2064,11 +2100,48 @@ defineExpose({
         @delete-element="handleDesignDeleteElement"
         @open-chat="handleDesignOpenChat"
       />
+      <!--
+        Standard task chat (folder / memory / chat items — anything
+        that isn't a kanban or design). FIX for blank chatview
+        (task_1787027750097, 2026-08-14): the simplify-url-browser
+        plan (#246) wired kanban (KanbanChatDialog) and design
+        (DesignChatDialog) chat-open paths but listed "folder
+        tasks … out-of-scope edge case". A user with a chat task
+        on a folder / memory / chat workspace item hit a dead
+        zone: setActiveTask fires, clears activeChatId, and NONE
+        of the v-else-if branches above matched — right pane was
+        blank.
+
+        Render <ChatView> directly with the task id as the chat
+        session id (migration 052 invariant: task.id == session.id).
+        We pass props explicitly rather than going through
+        navigationStore so this branch doesn't fight the
+        activeTask state the kanban + design branches depend on.
+
+        Mount order matters: this v-else-if precedes the standalone
+        `<ChatView v-else-if="activeChatId.startsWith('chat-')">`
+        branch below, so a folder task lands here even when
+        activeChatId is empty (cleared by setActiveTask).
+      -->
+      <ChatView
+        v-else-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type !== 'kanban' &&
+          activeWorkspaceItem.item_type !== 'design' &&
+          activeTask
+        "
+        :key="`chat-${activeTask.id}`"
+        :chat-id="`chat-${activeTask.id}`"
+        :chat-name="activeTask.name ?? ''"
+        :cwd="effectiveChatCwd"
+        @update-chat-id="handleUpdateChatId"
+      />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"
         :key="activeChatId"
         :chat-id="activeChatId"
         :chat-name="activeChatName"
+        :cwd="effectiveChatCwd"
         @update-chat-id="handleUpdateChatId"
       />
       <Chats v-else-if="currentView === 'chat'" />
