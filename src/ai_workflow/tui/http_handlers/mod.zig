@@ -101,6 +101,11 @@ pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;
 // `sessionCreateHandler` (POST /api/llm/session) which always
 // inserts a queue message.
 pub const startAgentHandler = @import("start_agent.zig").startAgentHandler;
+// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). The split
+// use-case, re-exported so callers + tests can reach it as
+// `nalarcore.http_handlers.startAgentUseCase` (matches the
+// `task_delete.zig::deleteTaskUseCase` re-export convention).
+pub const startAgentUseCase = @import("start_agent.zig").startAgentUseCase;
 pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
 
 // Worker API handlers
