@@ -51,13 +51,11 @@ describe('KanbanTaskDetailDialog — Start agent', () => {
       attachTo: document.body,
       props: { show: true, task: null, mode: 'edit', ...propsOverride },
       global: {
-        provide: {
-          // Only provide processingState when the test passes one —
-          // the dialog's `inject('processingState', undefined)` falls
-          // back to undefined when absent, so the "no provider"
-          // branch is also exercised by omitting this key.
-          ...(processingState !== undefined ? { processingState } : {}),
-        },
+        // Only include processingState when the test passes one —
+        // the dialog's `inject('processingState', undefined)` falls
+        // back to undefined when absent, so the "no provider"
+        // branch is also exercised by omitting this key.
+        provide: processingState !== undefined ? { processingState } : {},
       },
     })
     return wrapper
