@@ -501,14 +501,18 @@ fn simulateGetResponse(allocator: std.mem.Allocator, page: usize, limit: usize) 
     try json_body.appendSlice(allocator, "{\"messages\":[");
     for (0..messages_count) |i| {
         if (i > 0) try json_body.append(allocator, ',');
-        try std.fmt.format(json_body.writer(allocator), "{{\"id\":\"msg_{d}_{d}\",\"content\":\"test\"}}", .{ page, i });
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "{{\"id\":\"msg_{d}_{d}\",\"content\":\"test\"}}", .{ page, i }) catch continue;
+        try json_body.appendSlice(allocator, msg);
     }
     try json_body.append(allocator, ']');
     try json_body.appendSlice(allocator, ",\"has_more\":");
     try json_body.appendSlice(allocator, if (has_more) "true" else "false");
     try json_body.appendSlice(allocator, ",\"next_cursor\":");
     if (has_more) {
-        try std.fmt.format(json_body.writer(allocator), "\"cursor_page_{d}\"", .{page + 1});
+        var cur_buf: [32]u8 = undefined;
+        const cur = std.fmt.bufPrint(&cur_buf, "\"cursor_page_{d}\"", .{page + 1}) catch "\"\"";
+        try json_body.appendSlice(allocator, cur);
     } else {
         try json_body.appendSlice(allocator, "null");
     }
