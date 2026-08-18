@@ -95,6 +95,12 @@ pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksR
 // wildcard route. The handler files task_attachment_post.zig and
 // task_attachment_get.zig have been deleted.
 pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;
+// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Dedicated
+// endpoint for triggering an LLM worker on an existing task's
+// session WITHOUT queueing a new user message. Distinct from
+// `sessionCreateHandler` (POST /api/llm/session) which always
+// inserts a queue message.
+pub const startAgentHandler = @import("start_agent.zig").startAgentHandler;
 pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
 
 // Worker API handlers

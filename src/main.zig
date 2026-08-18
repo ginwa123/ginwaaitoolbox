@@ -424,6 +424,12 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run", ai_mod.http_handlers.routinesRunHandler);
+    // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Trigger
+    // an LLM worker on an existing task's session WITHOUT queueing a
+    // new user message. Distinct from /run (routines only) and
+    // POST /api/llm/session (always queues a message). See
+    // http_handlers/start_agent.zig for the full contract.
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/start_agent", ai_mod.http_handlers.startAgentHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/pin", ai_mod.http_handlers.taskPinHandler);
     // Chunk 3 of kanban-task-notification-icon: stamp the
     // `last_human_touched_at` column so the kanban card UI flips the

@@ -507,22 +507,34 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .is_emit_sse = true,
     });
 
-    // Queue the initial message
-    try insertQueueMessage(InsertQueueMessageInput{
-        .allocator = parent_allocator,
-        .db = db,
-        .logger = logger,
-        .session_id = copy_session_id,
-        .message = copy_message,
-        .image_url = copy_image_urls,
-        .event_bus = event_bus,
-        .is_emit_sse = true,
-    });
+    // Queue the initial message — unless the caller asked us to skip
+    // it (the start_agent endpoint triggers a worker on an existing
+    // session without queueing a new user message; the agent then runs
+    // against the existing chat history alone).
+    //
+    // Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
+    if (!params.skip_initial_queue_message) {
+        try insertQueueMessage(InsertQueueMessageInput{
+            .allocator = parent_allocator,
+            .db = db,
+            .logger = logger,
+            .session_id = copy_session_id,
+            .message = copy_message,
+            .image_url = copy_image_urls,
+            .event_bus = event_bus,
+            .is_emit_sse = true,
+        });
 
-    logger.infoFmt(
-        "[CHECKPOINT] initial message queued session_id={s} retry_budget=10",
-        .{copy_session_id},
-    );
+        logger.infoFmt(
+            "[CHECKPOINT] initial message queued session_id={s} retry_budget=10",
+            .{copy_session_id},
+        );
+    } else {
+        logger.infoFmt(
+            "[CHECKPOINT] trigger mode — skipping initial queue_message session_id={s}",
+            .{copy_session_id},
+        );
+    }
 
     var retry_count: u32 = 0;
     var last_retry_error: anyerror = error.Unknown;
@@ -1566,6 +1578,13 @@ pub const RunParamsNew = struct {
     inherited_context: []const u8 = "",
     sub_agent_overrides: ?SubAgentOverrides = null,
     is_auto_retry_until_stop: []const u8 = "",
+    // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). When
+    // true, runAgenticMultiStepnew skips the initial insertQueueMessage
+    // call. Used by the start_agent endpoint to trigger a worker on
+    // an existing session without queueing a new user message. The
+    // default `false` preserves the existing create-session path
+    // behaviour (always queue the initial message).
+    skip_initial_queue_message: bool = false,
 };
 
 // ─── Inline tests for `resolveProfileField` ──────────────────────────────────

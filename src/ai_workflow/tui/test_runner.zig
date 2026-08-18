@@ -28,6 +28,9 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/tags_validation.zig");                  // Migration 067 tags validation helper (Task 7) — inline tests in the source file
     _ = @import("http_handlers/task_update_routines_test.zig");
     _ = @import("http_handlers/routines_run_test.zig");
+    // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Static-
+    // contract tests for the start_agent handler.
+    _ = @import("http_handlers/start_agent_test.zig");
     _ = @import("http_handlers/routines_list_test.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");
