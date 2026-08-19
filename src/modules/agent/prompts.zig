@@ -112,6 +112,20 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
 
     // === Response formatting (last — applies to everything above) ===
     .{ .name = "response_formatting", .content = ResponseFormatting },
+    .{
+        .name = "task_planning",
+        .content =
+            \\## Task Planning
+            \\
+            \\For multi-step work, lay out a structured plan early with the `update_plan` tool, then
+            \\keep it in sync by calling `update_plan` after completing each checklist item (flip
+            \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your system prompt on
+            \\every iteration, so you always see the current state. Use `get_plan` to verify the
+            \\current state explicitly.
+            \\
+        ,
+        .requires_tool = "update_plan",
+    },
     .{ .name = "update_activity", .content = UpdateActivityRule },
 };
 
