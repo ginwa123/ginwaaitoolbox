@@ -1,15 +1,24 @@
-# Task ledger: Self-contained `databases` Zig package + platform-aware `zig build`
+# Plan execution ledger — agent-plan-tool
 
-| # | Step | Status |
-|---|---|---|
-| 1 | Move existing database code into `src/modules/databases/src/` (git mv) | ✅ in progress |
-| 2 | Replace placeholder `src/root.zig` with public API | ✅ in progress |
-| 3 | Rewrite `src/modules/databases/build.zig` (boilerplate → package) | ⏳ |
-| 4 | (No-op) `build.zig.zon::paths` already correct | ⏳ |
-| 5 | Update root `build.zig.zon` to add `databases` dependency | ⏳ |
-| 6 | Update root `build.zig` to consume package via `b.dependency()` | ⏳ |
-| 7 | Strip redundant sqlite3 wiring from `linkPlatformDeps` (Linux block becomes thin) | ⏳ |
-| 8 | Make `build_all_step` host-aware (`builtin.host.result.os.tag` switch) | ⏳ |
-| 9 | Update `build_banner` to show host-specific binary name | ⏳ |
-| 10 | Update `src/root.zig` + `src/modules/cronjob/Cronjob.zig` imports | ⏳ |
-| 11 | Verify: `zig build test`, `zig build`, cross-compile smoke | ⏳ |
+**Plan:** `docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md`
+**Branch:** `worktree/agent-plan-tool`
+**Worktree:** `/home/ginwa/ginwaaitoolbox/.worktrees/agent-plan-tool`
+
+## Tasks
+
+- [ ] Task 1 — Storage layer + Migration076
+- [ ] Task 2 — `update_plan` tool module (pure-fn layer)
+- [ ] Task 3 — `get_plan` tool module (pure-fn layer)
+- [x] Task 4 — Exec adapters + tool registry wiring
+- [ ] Task 5 — System prompt injection (`prompts_make_plan_context.zig` + buildMessages hook)
+- [ ] Task 6 — Compaction enrichment (`<plan>` section in enrichCompactionXml)
+- [ ] Task 7 — Tool description enhancement + system prompt hint
+- [ ] Task 8 — Optional Vue UI (UpdatePlan.vue + GetPlan.vue)
+- [ ] Task 9 — Docs (SPEC.md + NALAR.md)
+
+## Completion log
+
+Task 1 done at 2026-08-19T01:58:37Z — commit db1424b4 — all 6 tests pass
+Task 2 done at 2026-08-19T02:13:18Z — commit 4eb439cc — all 4 tests pass
+Task 3 done at 2026-08-19T02:26:41Z — commit dedff25e — all 5 tests pass
+Task 4 done at 2026-08-19T02:42:00Z — commit 81aa3f3f — all 5 tests pass
