@@ -48,7 +48,10 @@ fn hasVariable(nodes: []const Template.Node, name: []const u8) bool {
             if (std.mem.eql(u8, node.variable, name)) return true;
         } else if (node == .if_block) {
             const blk = node.if_block;
-            if (hasVariable(blk.then_branch, name)) return true;
+            // Walk every branch's body + the else body.
+            for (blk.branches) |br| {
+                if (hasVariable(br.body, name)) return true;
+            }
             if (hasVariable(blk.else_branch, name)) return true;
         } else if (node == .for_loop) {
             const loop = node.for_loop;

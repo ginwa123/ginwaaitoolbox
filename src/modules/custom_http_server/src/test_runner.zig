@@ -59,4 +59,10 @@ test {
     _ = @import("cron_expression_test.zig");
     // Cronjob manager — registry + thread start/stop tests
     _ = @import("cronjob_manager_test.zig");
+    // Group + middleware worked example — registers a sample API on a
+    // Router (groups, nested groups, two middlewares) and runs a
+    // series of tests that exercise prefix joining, middleware chain
+    // ordering, header augmentation, and short-circuiting. Doubles
+    // as living documentation for the Router.group / Group.use API.
+    _ = @import("example_group.zig");
 }

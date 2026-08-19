@@ -658,19 +658,197 @@ pub fn run(init: std.process.Init) !void {
     std.debug.print("Or:   curl http://127.0.0.1:29590/health\n", .{});
     std.debug.print("Press Ctrl+C to stop\n\n", .{});
 
-    try gs.router.get("/hello", helloHandler);
-    try gs.router.get("/health", healthHandler);
-    try gs.router.get("/hello/:name", helloNameHandler);
-    try gs.router.post("/users", createUserHandler);
-    // Static HTML page — served by landingPageHandler. See LANDING_PAGE_HTML above.
-    try gs.router.get("/", landingPageHandler);
-    // Jinja-style template demo — extends base.jinja, demonstrates
-    // {{ var }}, {% if %}, {% for %}, {% raw %}. See templateHandler
-    // and templates/example.jinja.
-    try gs.router.get("/example", templateHandler);
-    try gs.router.sse("/stream", sseStreamHandler);
-    // WebSocket endpoint — echo + broadcast demo. See wsEchoHandler above.
-    try gs.router.ws("/ws", wsEchoHandler);
+    // -------------------------------------------------------------------
+    // Group + Middleware wiring — applies cross-cutting concerns to a
+    // realistic mix of routes.
+    //
+    //   * `router.group(prefix)` — sub-router. Routes registered via
+    //     a group have the prefix prepended; nested groups concatenate
+    //     prefixes (no double slashes) and inherit the parent's
+    //     middleware list.
+    //   * `group.use(middleware)` — runs BEFORE every route added to
+    //     the group (and any nested group), in registration order.
+    //     A middleware either returns its own response (short-circuit)
+    //     or calls `chain.next(...)` to continue.
+    //
+    // Layout:
+    //
+    //   root group "" (no prefix)
+    //   ├── requestIdMiddleware        — every response gets X-Request-Id
+    //   │
+    //   ├── /hello, /health, /hello/:name, /, /example, /users  (public demos)
+    //   │
+    //   ├── /realtime group
+    //   │   ├── connectionIdMiddleware — SSE/WS gets X-Connection-Id
+    //   │   ├── /stream (SSE)
+    //   │   └── /ws (WebSocket)
+    //   │
+    //   └── /api group
+    //       ├── /v1 group
+    //       │   ├── /ping, /info, /echo  (requestId only — inherited)
+    //       │   └── /admin group
+    //       │       ├── authGuardMiddleware — admin needs bearer token
+    //       │       └── /secret
+    // -------------------------------------------------------------------
+
+    const auth_header_value = "Bearer secret-token-please-change";
+
+    // ─── Middlewares ────────────────────────────────────────────────────
+
+    // Request-Id: stamps every response with a correlation header.
+    // Attached to the root group so EVERY route (demo, API, admin)
+    // gets it. Real apps would use std.crypto.random to generate a
+    // per-request UUID; we hard-code a value for determinism.
+    const requestIdMiddleware = struct {
+        fn h(
+            ctx: gserverz.HttpContext,
+            req: gserverz.HttpRequest,
+            res: gserverz.HttpResponse,
+            chain: *gserverz.MiddlewareChain,
+        ) anyerror!gserverz.HttpResponse {
+            const stamped = res.withHeader("X-Request-Id", "example-trace-1");
+            return chain.next(ctx, req, stamped);
+        }
+    }.h;
+
+    // No-cache: dev-mode helper that prevents intermediate caches
+    // from caching demo responses. Useful for `/`, `/example` etc.
+    // during local development so reloads reflect the latest source.
+    const noCacheMiddleware = struct {
+        fn h(
+            ctx: gserverz.HttpContext,
+            req: gserverz.HttpRequest,
+            res: gserverz.HttpResponse,
+            chain: *gserverz.MiddlewareChain,
+        ) anyerror!gserverz.HttpResponse {
+            const stamped = res.withHeader("Cache-Control", "no-store");
+            return chain.next(ctx, req, stamped);
+        }
+    }.h;
+
+    // Connection-Id: stamps SSE/WS responses with a per-connection
+    // correlation header. Real apps would use a unique id per
+    // connection (e.g. random 16-byte hex); we hard-code for the
+    // demo. Lives on the `/realtime` group so SSE and WebSocket
+    // routes get it but no other route does.
+    const connectionIdMiddleware = struct {
+        fn h(
+            ctx: gserverz.HttpContext,
+            req: gserverz.HttpRequest,
+            res: gserverz.HttpResponse,
+            chain: *gserverz.MiddlewareChain,
+        ) anyerror!gserverz.HttpResponse {
+            const stamped = res.withHeader("X-Connection-Id", "conn-stub-1");
+            return chain.next(ctx, req, stamped);
+        }
+    }.h;
+
+    // Auth-guard: returns 401 when Authorization header is missing
+    // or doesn't match. Sets status_code via a copy (HttpResponse is
+    // a value type, no `withStatus(...)` builder). Used by the
+    // /api/v1/admin group so non-admin /api/v1 routes stay public.
+    const authGuardMiddleware = struct {
+        fn h(
+            ctx: gserverz.HttpContext,
+            req: gserverz.HttpRequest,
+            res: gserverz.HttpResponse,
+            chain: *gserverz.MiddlewareChain,
+        ) anyerror!gserverz.HttpResponse {
+            const provided = req.headers.get("Authorization");
+            if (provided == null) {
+                var copy = res.withHeader("WWW-Authenticate", "Bearer");
+                copy.status_code = 401;
+                copy.body = "missing authorization";
+                return copy;
+            }
+            if (!std.mem.eql(u8, provided.?, auth_header_value)) {
+                var copy = res;
+                copy.status_code = 401;
+                copy.body = "invalid authorization";
+                return copy;
+            }
+            return chain.next(ctx, req, res);
+        }
+    }.h;
+
+    // ─── Handlers for the API endpoints ────────────────────────────────
+
+    const PingHandler = struct {
+        fn h(_: gserverz.HttpContext, _: gserverz.HttpRequest, res: gserverz.HttpResponse) anyerror!gserverz.HttpResponse {
+            return res.withBody("pong");
+        }
+    }.h;
+    const EchoHandler = struct {
+        fn h(_: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) anyerror!gserverz.HttpResponse {
+            return res.withBody(req.body);
+        }
+    }.h;
+    const SecretHandler = struct {
+        fn h(_: gserverz.HttpContext, _: gserverz.HttpRequest, res: gserverz.HttpResponse) anyerror!gserverz.HttpResponse {
+            return res.withBody("top-secret");
+        }
+    }.h;
+    const PublicInfoHandler = struct {
+        fn h(_: gserverz.HttpContext, _: gserverz.HttpRequest, res: gserverz.HttpResponse) anyerror!gserverz.HttpResponse {
+            return res.withBody("info accessible to anyone with the request id");
+        }
+    }.h;
+
+    // ─── Root group: every response gets X-Request-Id ──────────────────
+    // Empty prefix means "no URL transformation" — routes registered
+    // through `root` use exactly the path passed in.
+    var root = gs.router.group("");
+    try root.use(requestIdMiddleware);
+
+    // ─── Public demo routes ────────────────────────────────────────────
+    // These share no extra middleware beyond requestId (from `root`).
+    try root.get("/", landingPageHandler);
+    try root.get("/hello", helloHandler);
+    try root.get("/hello/:name", helloNameHandler);
+    try root.get("/health", healthHandler);
+    try root.get("/example", templateHandler);
+    try root.post("/users", createUserHandler);
+
+    // ─── /realtime group: SSE + WS with connection-tracking ───────────
+    // Nested under root so requestId applies too. Adds connectionId
+    // for SSE/WS so the client can correlate events to a connection.
+    var realtime = try root.group("/realtime");
+    try realtime.use(connectionIdMiddleware);
+    try realtime.sse("/stream", sseStreamHandler);
+    try realtime.ws("/ws", wsEchoHandler);
+
+    // ─── /api group: versioned API ─────────────────────────────────────
+    // Nested under root → inherits requestId. The /api/v1 sub-group
+    // doesn't add any v1-specific middleware; this is a placeholder
+    // where a real app might add version-deprecation headers, etc.
+    var api = try root.group("/api");
+    var api_v1 = try api.group("/v1");
+    try api_v1.get("/ping", PingHandler);
+    try api_v1.get("/info", PublicInfoHandler);
+    try api_v1.post("/echo", EchoHandler);
+
+    // /admin is a deeply-nested group under /api/v1 — gets
+    // requestId (from root) AND authGuard (just here). Demonstrates
+    // that nested groups inherit AND add to the middleware chain.
+    var admin = try api_v1.group("/admin");
+    try admin.use(authGuardMiddleware);
+    try admin.get("/secret", SecretHandler);
+
+    // ─── Diagnostics printout ──────────────────────────────────────────
+    std.debug.print("\n[demo] Group + middleware endpoints:\n", .{});
+    std.debug.print("   root group '' + requestId:\n", .{});
+    std.debug.print("     GET /              GET /hello        GET /hello/:name\n", .{});
+    std.debug.print("     GET /health       GET /example      POST /users\n", .{});
+    std.debug.print("   /realtime (root + requestId + connectionId):\n", .{});
+    std.debug.print("     GET /realtime/stream (SSE)    GET /realtime/ws (WS)\n", .{});
+    std.debug.print("   /api/v1 (root + requestId):\n", .{});
+    std.debug.print("     GET /api/v1/ping   GET /api/v1/info  POST /api/v1/echo\n", .{});
+    std.debug.print("   /api/v1/admin (root + requestId + authGuard):\n", .{});
+    std.debug.print("     GET /api/v1/admin/secret\n", .{});
+    std.debug.print("   curl -i http://127.0.0.1:29590/health              # requestId only\n", .{});
+    std.debug.print("   curl -i http://127.0.0.1:29590/api/v1/ping      # requestId only\n", .{});
+    std.debug.print("   curl -i http://127.0.0.1:29590/realtime/stream  # requestId + connectionId (SSE handshake)\n", .{});
+    std.debug.print("   curl -i -H 'Authorization: Bearer {s}' http://127.0.0.1:29590/api/v1/admin/secret\n\n", .{auth_header_value});
 
     // ---------------------------------------------------------------------
     // Cronjob demo — register a "every minute" job BEFORE listen() so the

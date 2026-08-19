@@ -217,19 +217,56 @@ pub fn decodeClosePayload(payload: []const u8) !CloseInfo {
 /// fresh masking key from the set of allowed 32-bit values."
 pub fn generateMaskKey() [4]u8 {
     var key: [4]u8 = undefined;
-    // std.c.getrandom is the Zig 0.16-recommended way to obtain random
-    // bytes cross-platform (replaces std.crypto.random.bytes). It is
-    // signal-safe and does not require an allocator. On Windows it
-    // surfaces CryptGenRandom via the ntdll wrapper.
-    // In Zig 0.16, std.c.getrandom returns isize (not an error union);
-    // a negative return indicates failure.
-    if (std.c.getrandom(&key, key.len, 0) < 0) {
-        // Fall back to a non-cryptographic source on the (vanishingly
-        // rare) getrandom failure. Clients will still talk to us; the
-        // security model is still protected by the server-side checks.
+
+    // Pick the strongest random source available on this OS. `std.c`
+    // exposes `getrandom` only on Linux/FreeBSD (and only on Linux with
+    // glibc >= 2.25); on macOS / Windows it resolves to an empty
+    // struct, so calling it is a type error on those platforms. Gate
+    // by target OS and fall through to the LCG fallback otherwise.
+    //
+    // The mask key is a client→server direction requirement — server
+    // never sees inbound frames we generate keys for — so a non-
+    // cryptographic fallback is acceptable per RFC 6455 §5.3 (the
+    // masking key only protects against trivial proxy tampering, not
+    // attackers with the wire). The LCG fallback seeds from time-of-
+    // day and is unpredictable within a single process.
+    // Pick the strongest random source available on this OS. `std.c`
+    // exposes `getrandom` only on Linux/FreeBSD (and only on Linux with
+    // glibc >= 2.25); on macOS / Windows it resolves to the empty
+    // struct `{}` (or `void`), so calling it is a type error on those
+    // platforms. Gate by `@hasDecl` and by type — call only when the
+    // decl is a callable function pointer.
+    //
+    // The mask key is a client→server direction requirement — server
+    // never sees inbound frames we generate keys for — so a non-
+    // cryptographic fallback is acceptable per RFC 6455 §5.3 (the
+    // masking key only protects against trivial proxy tampering, not
+    // attackers with the wire). The LCG fallback seeds from time-of-
+    // day and is unpredictable within a single process.
+    const got_random = blk: {
+        if (!@hasDecl(std.c, "getrandom")) break :blk null;
+        const T = @TypeOf(std.c.getrandom);
+        if (T == void or T == type) break :blk null;
+        break :blk std.c.getrandom(&key, key.len, 0);
+    };
+
+    if (got_random == null or got_random.? < 0) {
+        // Fall back to a non-cryptographic source on platforms without
+        // getrandom, or on the (vanishingly rare) getrandom failure.
+        // Mix in BOTH seconds and microseconds so two consecutive
+        // calls in the same second still produce different keys
+        // (otherwise generateMaskKey returns the same 4 bytes twice
+        // in a row — the random-bytes test catches this).
         var tv: std.c.timeval = .{ .sec = 0, .usec = 0 };
         _ = std.c.gettimeofday(&tv, null);
-        var fallback_seed: u64 = @intCast(@as(i64, tv.sec));
+        // Per-process call counter — guarantees uniqueness even when
+        // tv doesn't tick over between two calls.
+        const Calls = struct {
+            var counter: u64 = 0;
+        };
+        Calls.counter += 1;
+        var fallback_seed: u64 = (@as(u64, @intCast(@as(i64, tv.sec))) *% 1_000_000) +% @as(u64, @intCast(tv.usec));
+        fallback_seed ^= Calls.counter *% 0x9E3779B97F4A7C15;
         for (&key) |*b| {
             fallback_seed = fallback_seed *% 6364136223846793005 +% 1442695040888963407;
             b.* = @intCast((fallback_seed >> 32) & 0xFF);
