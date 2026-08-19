@@ -62,7 +62,17 @@ pub const NalarConfigJsonForDelete = struct {
     api_key: []const u8 = "",
     model: []const u8 = "",
     base_url: []const u8 = "",
-    url_style: []const u8 = "openai",
+    // Empty default — matches the parallel `ConfigJson` in
+    // `nalar_config_get.zig`/`nalar_config_put.zig` and the
+    // `LlmConfigJson` convention. The previous default `"openai"`
+    // was a `.rodata` string literal; when the parsed config file did
+    // not contain this field (the common case for harness-installed
+    // stub configs), `deinit()` would call `Allocator.free` on the
+    // literal pointer and crash with SIGBUS (the debug allocator
+    // poison-writes the slice via `@memset(bytes, undefined)` before
+    // the free). Empty literal has length 0 → `Allocator.free`
+    // short-circuits, no write, no crash.
+    url_style: []const u8 = "",
     max_tokens: ?usize = null,
     system_prompt: []const u8 = "",
     profiles_models: ?json.Value = null,

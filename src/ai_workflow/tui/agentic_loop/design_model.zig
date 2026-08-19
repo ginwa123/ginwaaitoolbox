@@ -1438,13 +1438,24 @@ pub fn moveElementsWithDescendantsBatch(
     // with overlapping subtrees would compound the delta — the
     // caller should avoid this (the frontend sends one item per
     // selected root, no overlap in normal usage).
+    //
+    // `affected_ids` accumulates the **owned** (dup'd) subtree element
+    // ids across all iterations. Owns its strings via `allocator.dupe`
+    // at append time so the buffers survive across the `for (input.items)`
+    // iterations (whose `subtree_ids` buffers are freed at the end of
+    // each iteration body). Earlier versions of this code used a
+    // `std.StringHashMap(void)` for the dedup and stored the
+    // `subtree_ids[i]` slice headers directly — that broke with N>=8
+    // because the second iteration's `subtree_ids.deinit(allocator)`
+    // freed the FIRST iteration's id buffers, leaving the hashmap's
+    // slice headers pointing into freed memory. The next put would
+    // then `eql`-compare the new key against the freed bytes and
+    // crash. Owned-keys below sidestep the issue.
     var affected_ids: std.ArrayList([]u8) = .empty;
     defer {
         for (affected_ids.items) |id| allocator.free(id);
         affected_ids.deinit(allocator);
     }
-    var seen: std.StringHashMap(void) = .init(allocator);
-    defer seen.deinit();
 
     for (input.items) |it| {
         // 4a. Recursive CTE — collect the subtree ids (root + every
@@ -1563,10 +1574,25 @@ pub fn moveElementsWithDescendantsBatch(
         }
 
         // 4d. Track every affected id (deduped) for the re-SELECT +
-        //     SSE event below.
+        //     SSE event below. Linear O(n²) scan over
+        //     `affected_ids.items` to skip ids we've already seen —
+        //     the input batch is bounded by the SELECTED element count
+        //     in the UI (small, ≤ a few dozen typical) so the n²
+        //     constant beats maintaining a separate dedup hashmap.
+        //     Each new id is duped into `affected_ids` so the buffers
+        //     outlive this iteration's `subtree_ids.deinit(allocator)`
+        //     (see the `affected_ids` declaration above for the
+        //     rationale — the dangling-pointer / use-after-free the
+        //     prior `std.StringHashMap(void)` triggered).
         for (subtree_ids.items) |id| {
-            const gop = seen.getOrPut(id) catch return error.DbError;
-            if (!gop.found_existing) {
+            var already_seen = false;
+            for (affected_ids.items) |existing| {
+                if (std.mem.eql(u8, existing, id)) {
+                    already_seen = true;
+                    break;
+                }
+            }
+            if (!already_seen) {
                 try affected_ids.append(allocator, try allocator.dupe(u8, id));
             }
         }

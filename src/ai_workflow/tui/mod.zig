@@ -19,6 +19,7 @@ pub const generate_image = @import("../../modules/agent/tools/generate_image.zig
 pub const get_design_context = @import("../../modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("../../modules/agent/tools/preview_design_page.zig");
 pub const active_loops = @import("agentic_loop/ActiveLoops.zig").ActiveLoops;
+pub const delete_worker = @import("agentic_loop/delete_worker.zig");
 pub const routines = @import("routines/mod.zig");
 pub const startup = @import("agentic_loop/startup.zig");
 pub const kanban_model = @import("agentic_loop/kanban_model.zig");

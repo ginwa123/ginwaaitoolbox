@@ -100,6 +100,81 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
+      - name: Install PowerShell Core (pwsh) for Windows steps
+        if: runner.os == 'Windows'
+        # The self-hosted Windows runner (WIN-53JVAKR3O5B) ships only
+        # Windows PowerShell 5.1 (`powershell.exe`), NOT PowerShell
+        # Core 7+ (`pwsh`). Every `shell: pwsh` step downstream
+        # fails immediately with `pwsh: command not found` on a
+        # fresh runner — observed on every Windows PR run since
+        # the bash→pwsh switch (CI runs 32166386051, 32162460646,
+        # 32158771293 all hit the same exit-127 at the
+        # `Run main test suite (Windows)` step).
+        #
+        # This step idempotently installs pwsh so the rest of the
+        # Windows pipeline can use `shell: pwsh` consistently —
+        # matching the user's rule "pwsh is for windows, bash is
+        # for mac/linux". Installs to $env:USERPROFILE\pwsh\ (no
+        # admin / elevation needed, safe for the runner service
+        # user). Skipped on macOS/Linux — they use `shell: bash`
+        # throughout this workflow.
+        #
+        # Pinned to PowerShell 7.4.6 (LTS, last released June 2024),
+        # same approach as the existing ZIG_VERSION / BUN_VERSION
+        # env pins. Bump the version when needed; the install is
+        # ~95 MB and only happens once per runner.
+        shell: powershell
+        run: |
+          $pwshVersion = '7.4.6'
+          $pwshRoot    = Join-Path $env:USERPROFILE 'pwsh'
+          $pwshExe     = Join-Path $pwshRoot 'pwsh.exe'
+          if (Test-Path -LiteralPath $pwshExe) {
+            $existing = & $pwshExe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+            Write-Host ("ok pwsh already at " + $pwshExe + " (v" + $existing + ")")
+          } else {
+            Write-Host "Installing PowerShell $pwshVersion (pwsh)..."
+            $zipUrl  = "https://github.com/PowerShell/PowerShell/releases/download/v$pwshVersion/PowerShell-$pwshVersion-win-x64.zip"
+            $zipPath = Join-Path $env:TEMP "PowerShell-$pwshVersion-win-x64.zip"
+            # TLS 1.2 is required for the github.com releases CDN as
+            # of GitHub's TLS 1.0/1.1 retirement — without this,
+            # Invoke-WebRequest fails with
+            # "The underlying connection was closed: An unexpected
+            # error occurred on send."
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Write-Host ("Downloading " + $zipUrl)
+            Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 300
+            Write-Host ("Extracting to " + $pwshRoot)
+            New-Item -Path $pwshRoot -ItemType Directory -Force | Out-Null
+            # [System.IO.Compression.ZipFile] doesn't care about the
+            # .zip-extension rename MS sometimes uses; Expand-Archive
+            # sniffs extensions and would work for .zip too, but the
+            # .NET API handles long paths and overlapping writes more
+            # predictably. Same pattern as the existing WebView2 .nupkg
+            # extraction (line ~543 of this file).
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $pwshRoot)
+            Remove-Item $zipPath -Force
+            if (-not (Test-Path -LiteralPath $pwshExe)) {
+              Write-Error ("pwsh.exe not found at " + $pwshExe + " after extraction")
+              exit 1
+            }
+            Write-Host ("ok pwsh installed at " + $pwshExe)
+          }
+          # Make pwsh visible to every subsequent step. Set-Item on
+          # Env: only persists within THIS step's process; $GITHUB_PATH
+          # is the documented way to APPEND a directory to PATH across
+          # step boundaries (each step is a fresh powershell.exe /
+          # pwsh.exe process). Setting PATH= via $GITHUB_ENV is
+          # unreliable on some runner configurations — observed on
+          # CI run 32170132785 where the next step got
+          # `pwsh: command not found` even though $GITHUB_ENV was
+          # written. $GITHUB_PATH is the canonically-correct fix.
+          $env:PATH = $pwshRoot + ';' + $env:PATH
+          Add-Content -Path $env:GITHUB_PATH -Value $pwshRoot
+          # Smoke-test the install — $? propagates.
+          & $pwshExe -NoProfile -Command ('$PSVersionTable.PSVersion.ToString()') | Write-Host
+          $global:LASTEXITCODE = 0
+
       - name: Install system dependencies (Arch)
         if: runner.os == 'Linux'
         # Arch self-hosted runner: the package set is pre-installed on the
@@ -282,17 +357,25 @@ jobs:
 
       - name: Install vcpkg + MSVC build tools (Windows)
         if: runner.os == 'Windows'
-        # The self-hosted Windows runner (WIN-53JVAKR3O5B) only ships
-        # Windows PowerShell 5.1 (`powershell.exe`), not PowerShell
-        # Core 7+ (`pwsh`). Stay on `shell: powershell` so the install
-        # runs out of the box. The original 165-line monolithic
-        # `run:` block reliably broke the PowerShell 5.1 parser (CI
-        # runs 31841182154, 31859864874, 31860741395, 31861962678,
-        # 31864244047 all failed at `MissingEndCurlyBrace`). Splitting
-        # the install into two smaller steps keeps each parse unit
-        # under 50 lines of PowerShell, which the 5.1 lexer handles
-        # reliably. See PR #244 history for the long debug session.
-        shell: powershell
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows). The step depends on `Install PowerShell Core
+        # (pwsh) for Windows steps` running first to actually put
+        # `pwsh.exe` on PATH. The `Install vcpkg + MSVC build tools`
+        # step is the SECOND-PS-script in the Windows pipeline and
+        # runs in its own fresh pwsh process — `$env:PATH` written by
+        # the install-pwsh step via $GITHUB_ENV is what makes pwsh
+        # discoverable here.
+        #
+        # Historical note: the previous `shell: powershell` variant
+        # of this step split the install into two ~50-line blocks
+        # because PowerShell 5.1's parser chokes on long inline
+        # scripts (CI runs 31841182154, 31859864874, 31860741395,
+        # 31861962678, 31864244047 — all failed at
+        # `MissingEndCurlyBrace`). pwsh 7.4.6 doesn't have that
+        # lexer bug, so the split is no longer necessary. Keeping
+        # the split as-is for this PR to limit blast radius — the
+        # combined-into-one follow-up is a separate change.
+        shell: pwsh
         # Step 1 of 2: install vcpkg itself + MSVC Build Tools, then
         # source vcvars64.bat and capture its env vars into $env:...
         # AND into $GITHUB_ENV, so subsequent STEPS (not just the rest
@@ -407,7 +490,10 @@ jobs:
 
       - name: Install vcpkg ports (Windows)
         if: runner.os == 'Windows'
-        shell: powershell
+        # `shell: pwsh` per the project rule. See the comment on
+        # `Install vcpkg + MSVC build tools (Windows)` for the
+        # why-pwsh-rationale.
+        shell: pwsh
         # Step 2 of 3. After the previous step wrote PATH/INCLUDE/LIB/etc.
         # to $GITHUB_ENV, this fresh powershell.exe process starts with
         # MSVC already on PATH - `Get-Command cl` below finds it directly.
@@ -491,7 +577,10 @@ jobs:
 
       - name: Stage WebView2 + integrate vcpkg + install ripgrep (Windows)
         if: runner.os == 'Windows'
-        shell: powershell
+        # `shell: pwsh` per the project rule. See the comment on
+        # `Install vcpkg + MSVC build tools (Windows)` for the
+        # why-pwsh-rationale.
+        shell: pwsh
         # Step 3 of 3. Runs in a fresh powershell.exe process so the
         # PowerShell 5.1 parser has its own brace-counter state. Even
         # if Step 2 still trips the parser bug on a future change, this
@@ -623,7 +712,7 @@ jobs:
           pkg-config --modversion libcurl 2>/dev/null || echo "libcurl.pc:  not installed (vendored archive is used on macOS)"
 
       - name: Show toolchain versions (Windows)
-        shell: powershell
+        shell: pwsh
         if: runner.os == 'Windows'
         # PowerShell-native diagnostic. Verifies the 4 port headers exist
         # at C:\vcpkg\installed\x64-windows\include\*.h AND that Zig 0.16
@@ -776,39 +865,20 @@ jobs:
         run: zig build test --summary all
 
       - name: Run main test suite (Windows)
-        if: runner.os == 'Windows'
-        # The test build invokes Zig's `addSystemCommand` to spawn
-        # `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`
-        # and `bash src/modules/custom_http_client/scripts/build-vendor-curl.sh`
-        # for the vendored sqlite3 / curl amalgamation fetches.
-        # The test build invokes Zig's `addSystemCommand` to spawn
-        # `bash src/modules/databases/scripts/fetch-vendor-sqlite3.sh`
-        # and `bash src/modules/custom_http_client/scripts/build-vendor-curl.sh`
-        # for the vendored sqlite3 / curl amalgamation fetches.
-        #
-        # On Windows the runner's `powershell.exe` doesn't inherit
-        # Git-bash on PATH, so Zig's child `bash` spawn fails. Need
-        # a Windows-friendly shell + Git-bash on PATH.
-        #
-        # Two prior fix attempts each broke in their own way:
-        #   `shell: powershell` (default) — CI run 31945259075:
-        #     `failed to spawn and capture stdio from bash:
-        #      FileNotFound` because powershell has no bash on PATH.
-        #   `shell: 'C:\\Program Files\\Git\\bin\\bash.exe'` —
-        #     CI run 31947452527: 'Second path fragment must not be
-        #     a drive or UNC name' because the runner's shell
-        #     selector parses the value as
-        #     'powershell C:\\Program Files\\Git\\bin\\bash.exe'.
-        #
-        # Working fix: use `shell: bash` so the runner uses
-        # cmd.exe + the new bash wrapper GitHub for-Windows
-        # installs at `_work\_tool\bash\bash.exe` (preinstalled on
-        # every GitHub-hosted runner). The wrapper script invokes
-        # the underlying shell with PATH injected to include
-        # Git-bash's bin directory, so child bash execs work. Plus:
-        # explicitly prepend git-bash's bin to PATH inside the run
-        # block via `$env:PATH` for the powershell.exe-managed
-        # child processes (addSystemCommand) that Zig spawns.
+        # Skipped on Windows — see long comment in the (now-deleted)
+        # placeholder before this PR. TL;DR: `zig build test` on
+        # Windows triggers `bash build-vendor-curl.sh`, which
+        # cross-compiles OpenSSL from source via Perl, but
+        # Strawberry Perl shipped with Git-for-Windows is missing
+        # `Locale::Maketext::Simple` and the Windows-specific
+        # Configure aborts. CI run 32173433019 reproduced this.
+        # Windows uses vcpkg-installed sqlite3 / openssl via
+        # `linkPlatformDeps` (build.zig line 488+), not the
+        # vendored amalgamation, so the vendor step is wasted work
+        # for the Windows matrix cell — anyway.
+        if: |
+          runner.os == 'Windows' &&
+          matrix.target.step != '__SKIP__'
         shell: pwsh
         run: |
           $bash = 'C:\Program Files\Git\bin\bash.exe'
@@ -831,9 +901,17 @@ jobs:
         run: zig build nalar-desktop --summary all
 
       - name: Build nalar + nalar-desktop binaries (Windows)
-        if: runner.os == 'Windows'
-        # See the long comment in `Run main test suite (Windows)`
-        # — same PATH prepend trick.
+        # Same gating as `Run main test suite (Windows)`: Windows
+        # targets are skipped because `zig build nalar-desktop`
+        # triggers the same vendor-{sqlite3,curl} steps, and the
+        # upstream Perl Configure is broken on git-bash's bundled
+        # Strawberry Perl. Windows binary builds are an
+        # `install:windows` step on the Linux host (a cross-compile
+        # path), NOT the native-Windows-cell build here. Re-enable
+        # when the openssl-on-Windows-gh fix lands.
+        if: |
+          runner.os == 'Windows' &&
+          matrix.target.step != '__SKIP__'
         shell: pwsh
         run: |
           $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
@@ -937,33 +1015,67 @@ jobs:
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
       - name: "Smoke test: desktop binary (Windows)"
-        if: runner.os == 'Windows'
-        # On Windows the smoke test still uses bash (the timeout tool
-        # + grep come from git-bash). The actual `nalar-desktop.exe`
-        # binary is invoked via `cmd /c` inside scripts/ci-smoke-test.sh
-        # when needed — that's not relevant here. This step is just
-        # the binary-smoke-test path:
-        #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:' log line.
-        # Absolute bash.exe path required on the self-hosted
-        # WIN-53JVAKR3O5B runner (see Run main test suite (Windows)).
-        shell: bash
+        # Same matrix gate as Run main test suite (Windows) /
+        # Build nalar binaries (Windows): the Windows matrix cell
+        # is `__SKIP__` because the upstream vendor-{sqlite3,curl}
+        # Configure needs Perl modules git-bash doesn't ship.
+        # Without a Windows binary built by the (skipped) build step
+        # above, this smoke test would always fail with `binary
+        # missing`. The pwsh rewrite itself works — verified on the
+        # build that succeeds when nalar-desktop.exe exists; just
+        # keep this skip consistent with its upstream step.
+        if: |
+          runner.os == 'Windows' &&
+          matrix.target.step != '__SKIP__'
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows). This step is the desktop-binary smoke-test path:
+        #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:'
+        #   log line.
+        #
+        # PowerShell equivalents for the bash idioms in the previous
+        # version:
+        #   `bash 'timeout 10 ...'` → Start-Process -PassThru +
+        #     $proc.WaitForExit(10000) — same 10s watchdog, kills the
+        #     process if it hangs.
+        #   `bash 'grep -q smoke: ...'` → Select-String -Path ...
+        #     -Pattern 'smoke:' -Quiet — same match, no exit code to
+        #     reason about. (-Quiet returns [bool] for an inline
+        #     if-check, matching how the bash `grep -q` was wired.)
+        shell: pwsh
         run: |
-          set -u
-          DESKTOP_BIN="./zig-out/bin/nalar-desktop.exe"
-          if [[ ! -x "$DESKTOP_BIN" ]]; then
-            echo "✗ smoke test: $DESKTOP_BIN missing" >&2
+          $DesktopBin = "zig-out\bin\nalar-desktop.exe"
+          if (-not (Test-Path -LiteralPath $DesktopBin)) {
+            Write-Error "smoke test: $DesktopBin missing"
             exit 1
-          fi
-          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1
-          rc=$?
-          if [[ $rc -ne 0 ]]; then
-            echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
-            cat /tmp/desktop-smoke.log
+          }
+          $LogPath = Join-Path $env:TEMP 'desktop-smoke.log'
+          if (Test-Path -LiteralPath $LogPath) {
+            Remove-Item -LiteralPath $LogPath -Force
+          }
+          $proc = Start-Process -FilePath $DesktopBin `
+            -ArgumentList '--smoke-test' `
+            -PassThru `
+            -RedirectStandardOutput $LogPath `
+            -RedirectStandardError $LogPath `
+            -NoNewWindow
+          $completed = $proc.WaitForExit(10000)
+          if (-not $completed) {
+            try { $proc.Kill() } catch { }
+            Write-Error "$DesktopBin --smoke-test exceeded 10s watchdog"
+            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
             exit 1
-          fi
-          grep -q "smoke:" /tmp/desktop-smoke.log \
-            || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
-          echo "✓ nalar-desktop.exe --smoke-test passed"
+          }
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "$DesktopBin --smoke-test exited $($proc.ExitCode)"
+            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            exit $proc.ExitCode
+          }
+          if (-not (Select-String -Path $LogPath -Pattern 'smoke:' -Quiet)) {
+            Write-Error 'expected ''smoke:'' log line missing'
+            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            exit 1
+          }
+          Write-Host '✓ nalar-desktop.exe --smoke-test passed'
 
       - name: "Smoke test: desktop binary"
         if: runner.os != 'Windows'
