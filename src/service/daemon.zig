@@ -361,7 +361,7 @@ fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     // 2. Parent path: re-exec ourselves with the sentinel env var set,
     //    and DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP flags so the
     //    spawned child has no console and no parent terminal.
-    const app_path_w = getModuleFileNameW_alloc() catch return error.SpawnFailed;
+    const app_path_w = getModuleFileNameW_alloc(allocator) catch return error.SpawnFailed;
     defer allocator.free(app_path_w);
 
     // Build a command line: "<exe>" "<sentinel>=1". Quote minimal — the
