@@ -68,6 +68,7 @@ test {
     _ = @import("workflow_compact_message.zig"); // 2026-08-14-consolidate-compaction-message — buildCompactMessagePrompt (8) + compaction_context helpers (22) = 30 inline tests
     _ = @import("workflow_compact_call_agent_test.zig"); // regression test for url_style propagation to CompactionAgent (fix-compact-url-style plan)
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
+    _ = @import("prompts_make_plan_context_test.zig"); // 2026-08-19-session-plan-agent-tool — Task 5 (system prompt injection) — 3 live-DB tests
 
 
     // 2026-08-14 — list_directory exec wrapper (Task 5 of the same plan).
