@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
 const isWorkerCancelled = @import("is_worker_cancelled.zig").isWorkerCancelled;
 
@@ -17,11 +18,45 @@ const IsWorkerCancelledInput = @import("is_worker_cancelled.zig").IsWorkerCancel
 // std.c.timespec is the upstream-broken type — the struct literal
 // `.{ .sec = X, .nsec = Y }` won't compile on Windows. Defining a
 // custom extern struct here keeps the test portable.
+//
+// Windows branch: `nanosleep` doesn't exist in msvcrt / ucrt either.
+// The Win32 equivalent is `Sleep` (kernel32.dll) which takes
+// milliseconds. We comptime-branch so the `extern "c" nanosleep`
+// decl is never referenced on Windows (the linker would otherwise
+// fail to resolve it as undefined).
 const WorkflowNanoSleepTimespec = extern struct {
     sec: c_long,
     nsec: c_long,
 };
 extern "c" fn nanosleep(req: *const WorkflowNanoSleepTimespec, rem: ?*WorkflowNanoSleepTimespec) c_int;
+
+fn sleepChunk(chunk_ms: u32) void {
+    if (comptime builtin.os.tag == .windows) {
+        // Win32 Sleep takes a DWORD (u32) of milliseconds. Saturate
+        // at u32 max so a huge chunk_ms doesn't wrap to 0.
+        const ms_dword: u32 = std.math.cast(u32, chunk_ms) orelse std.math.maxInt(u32);
+        // The decl is nested inside a struct so the `extern "kernel32"`
+        // linker string is only parsed on Windows. Putting it at module
+        // scope would fail to compile on POSIX (kernel32.dll doesn't
+        // exist — Zig refuses to recognise the linker string).
+        const Win32 = struct {
+            extern "kernel32" fn Sleep(dw_milliseconds: u32) callconv(.winapi) void;
+        };
+        Win32.Sleep(ms_dword);
+    } else {
+        const ts = WorkflowNanoSleepTimespec{
+            .sec = 0,
+            // Explicit c_long cast — `chunk_ms * std.time.ns_per_ms`
+            // produces a `u32` (chunk_ms's type) which the linker
+            // can't coerce to c_long on Windows (where c_long=i32).
+            // Cast through c_long so the struct literal type-checks
+            // on every POSIX. Runtime values: 50ms * 1M ns/ms = 50M ns
+            // — fits i32 comfortably.
+            .nsec = @as(c_long, @intCast(chunk_ms * std.time.ns_per_ms)),
+        };
+        _ = nanosleep(&ts, null);
+    }
+}
 
 pub const RetryDelayMsInput = struct {
     allocator: std.mem.Allocator,
@@ -74,16 +109,6 @@ pub fn retryDelayMs(
         ));
         const chunk_ms: u32 = if (remaining_ms > 50) 50 else remaining_ms;
 
-        const ts = WorkflowNanoSleepTimespec{
-            .sec = 0,
-            // Explicit c_long cast — `chunk_ms * std.time.ns_per_ms`
-            // produces a `u32` (chunk_ms's type) which the linker
-            // can't coerce to c_long on Windows (where c_long=i32).
-            // Cast through c_long so the struct literal type-checks
-            // on every POSIX. Runtime values: 50ms * 1M ns/ms = 50M ns
-            // — fits i32 comfortably.
-            .nsec = @as(c_long, @intCast(chunk_ms * std.time.ns_per_ms)),
-        };
-        _ = nanosleep(&ts, null);
+        sleepChunk(chunk_ms);
     }
 }

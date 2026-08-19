@@ -41,11 +41,21 @@ fn sleepWindows(sec: u32, nsec: u32) void {
     // `sec` doesn't wrap to 0.
     const ms_dword: u32 = if (ms == 0) 0 else std.math.cast(u32, ms) orelse std.math.maxInt(u32);
     // Win32 signature: void WINAPI Sleep(DWORD dwMilliseconds);
-    // (DWORD == u32)
+    // (DWORD == u32). Use `callconv(.winapi)` + uppercase `Sleep` to
+    // match the project's existing kernel32 bindings pattern (see
+    // src/helpers/mod.zig:86) — Zig's symbol name is case-sensitive at
+    // the ABI level even though the COFF linker itself is case-
+    // insensitive, so matching the conventional casing avoids a
+    // spurious symbol-not-found on some linkers.
+    //
+    // The decl is nested inside a struct so the `extern "kernel32"`
+    // linker string is only parsed on Windows. Putting it at module
+    // scope would fail to compile on POSIX (kernel32.dll doesn't
+    // exist — Zig refuses to recognise the linker string).
     const Sleep = struct {
-        extern "kernel32" fn sleep(dw_milliseconds: u32) void;
-    }.sleep;
-    Sleep(ms_dword);
+        extern "kernel32" fn Sleep(dw_milliseconds: u32) callconv(.winapi) void;
+    };
+    Sleep.Sleep(ms_dword);
 }
 
 fn sleepPosix(sec: u32, nsec: u32) void {
