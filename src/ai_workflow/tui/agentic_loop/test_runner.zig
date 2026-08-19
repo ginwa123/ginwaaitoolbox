@@ -43,6 +43,7 @@ test {
     _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
     _ = @import("inherited_context.zig"); // Phase 3 — inlined tests from inherited_context_test.zig
     _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
+    _ = @import("session_plan_test.zig"); // 2026-08-19-session-plan-agent-tool — Task 1 (storage layer + Migration 076)
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests

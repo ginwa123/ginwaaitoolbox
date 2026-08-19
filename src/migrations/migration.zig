@@ -1927,6 +1927,11 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md.
     // Task: task_1786891244388_1.
     .{ .version = Migration075RenameTimestampColumnsToNanoSuffix.version, .name = Migration075RenameTimestampColumnsToNanoSuffix.name, .up = Migration075RenameTimestampColumnsToNanoSuffix.up },
+    // Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
+    // persistent task plan (markdown + checklist). Plan:
+    // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md. Task:
+    // task_1787073929852_8.
+    .{ .version = Migration076CreateSessionPlan.version, .name = Migration076CreateSessionPlan.name, .up = Migration076CreateSessionPlan.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3351,5 +3356,45 @@ pub const Migration070AddAgentMemories = struct {
             \\INSERT INTO agent_memories_fts(rowid, content, tags)
             \\SELECT rowid, content, tags FROM agent_memories
         , &[_][]const u8{});
+    }
+};
+
+// ============================================================================
+// Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
+// persistent task plan (markdown + checklist).
+// ============================================================================
+//
+// Schema:
+//   - session_id TEXT PRIMARY KEY  (logical 1:1 with sessions.id; no FK
+//                                   because sessions may be hard-deleted
+//                                   while keeping their plan — matches
+//                                   llm_history.session_id, worker.session_id,
+//                                   session_queue_messages.session_id,
+//                                   session_activity.session_id precedent;
+//                                   see Migration 073's docstring.)
+//   - plan_md TEXT NOT NULL DEFAULT ''  (the markdown body)
+//   - updated_at DATETIME DEFAULT CURRENT_TIMESTAMP  (auto-bumped on every UPSERT)
+//
+// Why a dedicated table (not columns on `sessions`)
+// - Single Responsibility: `sessions` is chat metadata; plan_md is plan content.
+// - Backward compat: future schema changes to plan only touch this table.
+// - PK on session_id enforces 1:1 without an extra UNIQUE index.
+//
+// Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
+// Task: task_1787073929852_8
+pub const Migration076CreateSessionPlan = struct {
+    pub const version: u32 = 76;
+    pub const name = "create_session_plan";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_plan (
+            \\    session_id TEXT PRIMARY KEY,
+            \\    plan_md TEXT NOT NULL DEFAULT '',
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+        // No FK on session_id (matches session_activity Migration 073 precedent).
+        // No index — session_id IS the PK, lookups are O(log n) by definition.
     }
 };
