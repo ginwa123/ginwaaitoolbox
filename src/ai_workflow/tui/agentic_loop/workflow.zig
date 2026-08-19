@@ -1885,3 +1885,103 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
         }
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from workspace_items_update_name_test.zig
+//
+// Static regression checks for the `name` branch of the
+// `PUT /workspaces/:wsId/items/:itemId` handler
+// (`workspace_items_update.zig`). Tests check for substring patterns in the
+// http_handlers/workspace_items_update.zig source file — they live in
+// agentic_loop because the rename request flows through the session
+// orchestration, but the actual contracts being verified belong to the
+// http_handlers layer.
+// ════════════════════════════════════════════════════════════════════════════
+
+const text_normalize = nalarcore.helpers.text_normalize;
+
+const workspaceItemsUpdateHandlerPath =
+    "src/ai_workflow/tui/http_handlers/workspace_items_update.zig";
+
+fn workspaceItemsUpdateReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+test "workspace_items_update handler reads name from body via root.get(\"name\")" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "root.get(\"name\")") == null) {
+        std.debug.print(
+            "\n!! {s} does not read `name` from the request body !!\n" ++
+                "   The rename branch requires `root.get(\"name\")` to be\n" ++
+                "   referenced (so the rename request reaches the `name_valid`\n" ++
+                "   gate). Mirror the existing `root.get(\"path\")` extraction.\n",
+            .{workspaceItemsUpdateHandlerPath},
+        );
+        return error.NameExtractionMissing;
+    }
+}
+
+test "workspace_items_update handler calls updateWorkspaceItemName" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "updateWorkspaceItemName") == null) {
+        std.debug.print(
+            "\n!! {s} does not call updateWorkspaceItemName !!\n" ++
+                "   The rename branch must call `updateWorkspaceItemName` so\n" ++
+                "   the SQL UPDATE writes the new name.\n",
+            .{workspaceItemsUpdateHandlerPath},
+        );
+        return error.UpdateNameCallMissing;
+    }
+}
+
+test "workspace_items_update handler returns 400 for empty name" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "name must be a non-empty string when present") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 400 for empty name !!\n" ++
+                "   The rename branch must reject `{{name: \"\"}}` or `{{name: null}}`\n" ++
+                "   with HTTP 400 BEFORE the DB round-trip.\n",
+            .{workspaceItemsUpdateHandlerPath},
+        );
+        return error.EmptyNameNotRejected;
+    }
+}
+
+test "workspace_items_update handler makes item_type optional (falls back to existing row)" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "effective_item_type") == null) {
+        std.debug.print("\n!! " ++ workspaceItemsUpdateHandlerPath ++ " does not compute effective_item_type !!\n", .{});
+        return error.ItemTypeFallbackMissing;
+    }
+}
+
+test "workspace_items_update handler rejects empty body with 400" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "At least one of item_type, name, or path is required") == null) {
+        std.debug.print("\n!! " ++ workspaceItemsUpdateHandlerPath ++ " does not return 400 for empty body !!\n", .{});
+        return error.EmptyBodyNotRejected;
+    }
+}

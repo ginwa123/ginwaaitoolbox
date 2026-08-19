@@ -7,8 +7,7 @@ const logger_mod = nalarcore.loggermod;
 const helpers = nalarcore.helpers;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
-const ai_mod = @import("mod.zig");
-const on_event_sent = ai_mod.on_event_sent;
+const on_event_sent = @import("on_event_sent.zig");
 const routines_model = @import("../routines/model.zig");
 
 /// Session info for list view
@@ -2862,7 +2861,7 @@ pub fn create_session(
 
     // Broadcast session created event — carry the new columns in the
     // SSE payload so ChatsList updates live without a refetch.
-    ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+    on_event_sent.onEventSendSessions(allocator, .{
         .action = "created",
         .id = id,
         .name = name,
@@ -2983,7 +2982,7 @@ pub fn update_session_status(
     const session = getSession(allocator, db, id) catch null;
     if (session) |s| {
         defer s.deinit(allocator);
-        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        on_event_sent.onEventSendSessions(allocator, .{
             .action = "updated",
             .id = s.id,
             .name = s.name,
@@ -3011,7 +3010,7 @@ pub fn updateSessionName(
     const session = getSession(allocator, db, id) catch null;
     if (session) |s| {
         defer s.deinit(allocator);
-        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        on_event_sent.onEventSendSessions(allocator, .{
             .action = "updated",
             .id = s.id,
             .name = s.name,
@@ -3084,7 +3083,7 @@ pub fn updateSessionAutoRetryUntilStop(
     const session = getSession(allocator, db, id) catch null;
     if (session) |s| {
         defer s.deinit(allocator);
-        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        on_event_sent.onEventSendSessions(allocator, .{
             .action = "updated",
             .id = s.id,
             .name = s.name,
@@ -3255,7 +3254,7 @@ pub fn updateSessionSelectedProfileModel(
     const session = getSession(allocator, db, id) catch null;
     if (session) |s| {
         defer s.deinit(allocator);
-        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        on_event_sent.onEventSendSessions(allocator, .{
             .action = "updated",
             .id = s.id,
             .name = s.name,
@@ -3285,7 +3284,7 @@ pub fn updateSessionGitWorktreeCwd(
     const session = getSession(allocator, db, id) catch null;
     if (session) |s| {
         defer s.deinit(allocator);
-        ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+        on_event_sent.onEventSendSessions(allocator, .{
             .action = "updated",
             .id = s.id,
             .name = s.name,
@@ -3309,7 +3308,7 @@ pub fn delete_session(
     try db.exec(allocator, sql, &.{id});
 
     // Broadcast session deleted event
-    ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+    on_event_sent.onEventSendSessions(allocator, .{
         .action = "deleted",
         .id = id,
         .name = "",
@@ -5292,6 +5291,10 @@ test "listKanbanDistinctTags skips rows with malformed tags JSON (defensive)" {
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
+    /// Allocator (the testing.allocator) — needed by the tool-call-loading
+    /// test that has to allocate row data via `createSession` and
+    /// `saveToolResultPlaceholder`. Other tests don't use this field.
+    alloc: std.mem.Allocator,
 };
 
 /// Set up an in-memory SQLite DB with the minimum schema needed for
@@ -5354,7 +5357,7 @@ fn setupDb() !TestCtx {
         \\    git_worktree_cwd TEXT
         \\)
     , &.{});
-    return .{ .db = db, .threaded = threaded };
+    return .{ .db = db, .threaded = threaded, .alloc = alloc };
 }
 
 fn insertTask(
@@ -6174,3 +6177,2575 @@ test "listWorkspaceItemTasksWithCursor column_id includes NULL-column legacy tas
     try testing.expect(!found_task_b);
 }
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from session_update_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+fn sessionUpdateSetupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Canonical post-Migration-063 schema (matches
+    // migration_063_runtime_test.zig).
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    selected_profile_model TEXT,
+        \\    git_worktree_cwd TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded, .alloc = alloc };
+}
+
+/// Read a single TEXT column from `sessions` by id. Returns null when
+/// the row is missing. Used to assert the post-fix state.
+fn sessionUpdateReadColumn(
+    ctx: *TestCtx,
+    allocator: std.mem.Allocator,
+    column: []const u8,
+    row_id: []const u8,
+) !?[]u8 {
+    const sql = try std.fmt.allocPrint(allocator, "SELECT {s} FROM sessions WHERE id = ?", .{column});
+    defer allocator.free(sql);
+    var q = try ctx.db.query(allocator, sql, &.{row_id});
+    defer q.deinit();
+    const row_opt = try q.next();
+    if (row_opt) |row| {
+        defer row.deinit(allocator);
+        return try allocator.dupe(u8, row.values[0]);
+    }
+    return null;
+}
+
+test "ensureSessionExists: returns false when row already exists" {
+    const alloc = testing.allocator;
+    var ctx = try sessionUpdateSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Pre-create a session row.
+    {
+        const session = try create_session(alloc, &ctx.db, "s_existing", "Existing", "0");
+        session.deinit(alloc);
+    }
+
+    const created = try ensureSessionExists(alloc, &ctx.db, "s_existing");
+    try testing.expectEqual(false, created);
+
+    // Name was NOT overwritten by the default.
+    const name = (try sessionUpdateReadColumn(&ctx, alloc, "name", "s_existing")) orelse
+        return error.NoRow;
+    defer alloc.free(name);
+    try testing.expectEqualStrings("Existing", name);
+}
+
+test "ensureSessionExists: creates a row when missing, returns true" {
+    const alloc = testing.allocator;
+    var ctx = try sessionUpdateSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: no row exists yet.
+    const before = (try sessionUpdateReadColumn(&ctx, alloc, "name", "s_brand_new")) orelse
+        @as(?[]u8, null);
+    if (before) |b| {
+        defer alloc.free(b);
+        return error.ExpectedNoRow;
+    }
+
+    const created = try ensureSessionExists(alloc, &ctx.db, "s_brand_new");
+    try testing.expectEqual(true, created);
+
+    // Row is now present with the default name.
+    const name = (try sessionUpdateReadColumn(&ctx, alloc, "name", "s_brand_new")) orelse
+        return error.NoRow;
+    defer alloc.free(name);
+    try testing.expectEqualStrings("New Session", name);
+
+    // is_auto_retry_until_stop defaults to '0' (matches
+    // create_session's coercion).
+    const flag = (try sessionUpdateReadColumn(&ctx, alloc, "is_auto_retry_until_stop", "s_brand_new")) orelse
+        return error.NoRow;
+    defer alloc.free(flag);
+    try testing.expectEqualStrings("0", flag);
+}
+
+test "ensureSessionExists: idempoent — calling twice on a missing row creates exactly once" {
+    const alloc = testing.allocator;
+    var ctx = try sessionUpdateSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    _ = try ensureSessionExists(alloc, &ctx.db, "s_idemp");
+    const second = try ensureSessionExists(alloc, &ctx.db, "s_idemp");
+    try testing.expectEqual(false, second);
+
+    // There is exactly one row.
+    var q = try ctx.db.query(alloc, "SELECT id FROM sessions WHERE id = ?", &.{"s_idemp"});
+    defer q.deinit();
+    var row_count: usize = 0;
+    while (try q.next()) |row| {
+        row.deinit(alloc);
+        row_count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), row_count);
+}
+
+test "ensureSessionExists + updateSessionSelectedProfileModel: preserves the profile when session is created on the fly" {
+    // This is the exact bug: PUT /api/session/:id 404'd when the
+    // user picked a profile on a brand-new chat. With
+    // ensureSessionExists called before the UPDATE, the helper
+    // auto-creates the row, then updateSessionSelectedProfileModel
+    // writes the profile. The next read sees the profile — the
+    // user's choice is preserved for the first real LLM call.
+    const alloc = testing.allocator;
+    var ctx = try sessionUpdateSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Brand-new session that doesn't exist yet.
+    _ = try ensureSessionExists(alloc, &ctx.db, "s_fresh");
+    try updateSessionSelectedProfileModel(alloc, &ctx.db, "s_fresh", "900ribu");
+
+    const profile = (try sessionUpdateReadColumn(&ctx, alloc, "selected_profile_model", "s_fresh")) orelse
+        return error.NoRow;
+    defer alloc.free(profile);
+    try testing.expectEqualStrings("900ribu", profile);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from get_session_list_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with `llm_history` and `sessions`
+/// tables present (matching the production schema columns that
+/// `getSessionList` reads), plus the `idx_llm_history_created_session`
+/// index from Migration 048. This is the minimal state the rewritten
+/// query expects.
+fn getSessionListSetupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // llm_history — only the columns the rewritten query reads.
+    // (session_id, created_at, agent are referenced; model is NOT NULL
+    //  per Migration 001 so we keep it for insert-time parity; the
+    //  `agent` column was added by Migration 006.)
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    response_content TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_results_json TEXT,
+        \\    finish_reason TEXT,
+        \\    usage_json TEXT,
+        \\    created_at_nano DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    agent TEXT DEFAULT 'Agent'
+        \\)
+    , &.{});
+
+    // sessions — only the columns the rewritten query reads (id, cwd,
+    // name). SELECT coalesces NULLs to '' so empty strings are fine.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT,
+        \\    name TEXT
+        \\)
+    , &.{});
+
+    // The covering index added in Migration 048. We create it inline
+    // (rather than running the migration) to keep this test focused on
+    // the rewritten SQL, not on migration plumbing.
+    try db.exec(alloc,
+        "CREATE INDEX idx_llm_history_created_session " ++
+            "ON llm_history(created_at_nano DESC, session_id)",
+        &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Run a query and assert it returns exactly `expected_len` rows.
+/// Returns the rows' `values` slices so the caller can assert on
+/// individual columns.
+fn runAndCollect(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    sql: []const u8,
+    args: []const []const u8,
+    expected_len: usize,
+) ![][]const u8 {
+    var q = try db.query(alloc, sql, args);
+    defer q.deinit();
+
+    var collected = std.ArrayList([]const u8).empty;
+    defer collected.deinit(alloc);
+
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        // For these tests each row is a single column (session_id or
+        // agent). Take a stable copy so the slice survives past
+        // row.deinit (per memory rule: row.values[i] is freed by
+        // row.deinit, so we dupe at append time).
+        try collected.append(alloc, try alloc.dupe(u8, row.values[0]));
+    }
+
+    if (collected.items.len != expected_len) {
+        std.debug.print(
+            "!! expected {d} rows, got {d}\n",
+            .{ expected_len, collected.items.len },
+        );
+        return error.RowCountMismatch;
+    }
+    return collected.toOwnedSlice(alloc);
+}
+
+// ─── Test 1: inner subquery order is created_at DESC ─────────────────────
+
+test "getSessionList inner subquery returns sessions in created_at DESC order" {
+    const alloc = testing.allocator;
+    var ctx = try getSessionListSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Three sessions, distinct created_at values. Newest first by
+    // insert order means s_jan < s_feb < s_mar.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
+            "VALUES ('h1', 's_jan', 'm1', '2024-01-01 00:00:00')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
+            "VALUES ('h2', 's_feb', 'm1', '2024-02-01 00:00:00')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
+            "VALUES ('h3', 's_mar', 'm1', '2024-03-01 00:00:00')",
+        &.{});
+
+    // Exact inner subquery the production rewrite uses (see
+    // zig getSessionList). Asserts the order is the
+    // contract the outer query depends on.
+    const inner_sql =
+        \\SELECT h.session_id
+        \\  FROM llm_history h
+        \\ GROUP BY h.session_id
+        \\ ORDER BY MAX(h.created_at_nano) DESC
+        \\ LIMIT 10 OFFSET 0
+    ;
+
+    const rows = try runAndCollect(alloc, &ctx.db, inner_sql, &.{}, 3);
+    defer {
+        for (rows) |r| alloc.free(r);
+        alloc.free(rows);
+    }
+
+    try testing.expectEqualStrings("s_mar", rows[0]);
+    try testing.expectEqualStrings("s_feb", rows[1]);
+    try testing.expectEqualStrings("s_jan", rows[2]);
+}
+
+// ─── Test 2: inner subquery LIMIT and OFFSET are respected ───────────────
+
+test "getSessionList inner subquery respects LIMIT and OFFSET" {
+    const alloc = testing.allocator;
+    var ctx = try getSessionListSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Five sessions, distinct created_at values. The full ordering
+    // (newest first) is: s5, s4, s3, s2, s1.
+    const inserts = [_][]const u8{
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h1', 's1', 'm1', '2024-01-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h2', 's2', 'm1', '2024-02-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h3', 's3', 'm1', '2024-03-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h4', 's4', 'm1', '2024-04-01 00:00:00')",
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) VALUES ('h5', 's5', 'm1', '2024-05-01 00:00:00')",
+    };
+    for (inserts) |sql| {
+        try ctx.db.exec(alloc, sql, &.{});
+    }
+
+    // Page 1: limit=2, offset=0 → s5, s4
+    const inner_sql =
+        \\SELECT h.session_id
+        \\  FROM llm_history h
+        \\ GROUP BY h.session_id
+        \\ ORDER BY MAX(h.created_at_nano) DESC
+        \\ LIMIT 2 OFFSET 0
+    ;
+    const page1 = try runAndCollect(alloc, &ctx.db, inner_sql, &.{}, 2);
+    defer {
+        for (page1) |r| alloc.free(r);
+        alloc.free(page1);
+    }
+    try testing.expectEqualStrings("s5", page1[0]);
+    try testing.expectEqualStrings("s4", page1[1]);
+
+    // Page 2: limit=2, offset=2 → s3, s2 (no overlap with page 1)
+    const page2_sql =
+        \\SELECT h.session_id
+        \\  FROM llm_history h
+        \\ GROUP BY h.session_id
+        \\ ORDER BY MAX(h.created_at_nano) DESC
+        \\ LIMIT 2 OFFSET 2
+    ;
+    const page2 = try runAndCollect(alloc, &ctx.db, page2_sql, &.{}, 2);
+    defer {
+        for (page2) |r| alloc.free(r);
+        alloc.free(page2);
+    }
+    try testing.expectEqualStrings("s3", page2[0]);
+    try testing.expectEqualStrings("s2", page2[1]);
+
+    // Page 1 and Page 2 must not overlap (regression guard: if the
+    // OFFSET clause were dropped, page 2 would be s4, s3).
+    for (page1) |p1| {
+        for (page2) |p2| {
+            if (std.mem.eql(u8, p1, p2)) {
+                std.debug.print(
+                    "!! LIMIT/OFFSET overlap: page1 row '{s}' == page2 row '{s}'\n",
+                    .{ p1, p2 },
+                );
+                return error.OffsetOverlap;
+            }
+        }
+    }
+}
+
+// ─── Test 3: agent is the latest message's agent (bug-fix regression) ───
+
+test "getSessionList agent field is from the latest message in the session" {
+    const alloc = testing.allocator;
+    var ctx = try getSessionListSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Two messages for the same session. The OLDER one is agent='A',
+    // the NEWER one is agent='B'. The rewritten query's correlated
+    // subquery picks the LATEST, so the returned agent must be 'B'.
+    //
+    // The original query relied on SQLite's loose GROUP BY, which
+    // picked an arbitrary h.agent for each session_id — implementation-
+    // defined and version-dependent. This test pins down the new,
+    // deterministic behavior.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, agent, created_at_nano) " ++
+            "VALUES ('h_old', 's1', 'm1', 'A', '2024-01-01 00:00:00')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, agent, created_at_nano) " ++
+            "VALUES ('h_new', 's1', 'm1', 'B', '2024-02-01 00:00:00')",
+        &.{});
+
+    // Exact correlated subquery the production rewrite uses (see
+    // zig getSessionList). Asserts the new "agent of the
+    // LATEST message" semantics.
+    const agent_sql =
+        \\SELECT COALESCE(
+        \\  (SELECT h2.agent
+        \\     FROM llm_history h2
+        \\    WHERE h2.session_id = 's1'
+        \\    ORDER BY h2.created_at_nano DESC
+        \\    LIMIT 1),
+        \\  'Agent'
+        \\) AS agent
+    ;
+
+    const rows = try runAndCollect(alloc, &ctx.db, agent_sql, &.{}, 1);
+    defer {
+        for (rows) |r| alloc.free(r);
+        alloc.free(rows);
+    }
+
+    try testing.expectEqualStrings("B", rows[0]);
+}
+
+// ─── Test 4: planner uses idx_llm_history_created_session (EXPLAIN) ──────
+
+test "getSessionList inner subquery uses idx_llm_history_created_session (EXPLAIN QUERY PLAN)" {
+    const alloc = testing.allocator;
+    var ctx = try getSessionListSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed enough rows that the planner has a reason to use the index
+    // (small tables often hit a SCAN regardless because the cost
+    // estimate favors it). 100 rows is plenty.
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        var buf: [256]u8 = undefined;
+        const sql = try std.fmt.bufPrint(
+            &buf,
+            "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
+                "VALUES ('h{d}', 's{d}', 'm1', '2024-01-01 00:00:00')",
+            .{ i, i },
+        );
+        try ctx.db.exec(alloc, sql, &.{});
+    }
+
+    // EXPLAIN QUERY PLAN returns one row per plan node. We ask the
+    // planner to plan the SAME inner subquery that getSessionList now
+    // uses; if a future SQLite version picks a different plan (e.g.
+    // falls back to a SCAN of llm_history), this assertion fails.
+    //
+    // Pattern: run the EXPLAIN, walk the rows, join row.values with
+    // ' ' (the column order is `id, parent, notused, detail`; the
+    // human-readable plan text is in `detail`, but joining all
+    // columns makes the assertion robust to plan-text formatting
+    // changes across SQLite versions).
+    var q = try ctx.db.query(alloc,
+        \\EXPLAIN QUERY PLAN
+        \\SELECT h.session_id, MAX(h.created_at_nano)
+        \\  FROM llm_history h
+        \\ GROUP BY h.session_id
+        \\ ORDER BY MAX(h.created_at_nano) DESC
+        \\ LIMIT 10 OFFSET 0
+    , &.{});
+    defer q.deinit();
+
+    // Accumulate all plan rows into a single string so the
+    // assertion can scan for the index name regardless of how
+    // SQLite splits the plan across rows.
+    var plan_text = std.ArrayList(u8).empty;
+    defer plan_text.deinit(alloc);
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        for (row.values, 0..) |col, j| {
+            if (j > 0) try plan_text.append(alloc, ' ');
+            try plan_text.appendSlice(alloc, col);
+        }
+        try plan_text.append(alloc, '\n');
+    }
+
+    const plan_str = plan_text.items;
+    if (std.mem.indexOf(u8, plan_str, "idx_llm_history_created_session") == null) {
+        std.debug.print(
+            "!! getSessionList planner did NOT use idx_llm_history_created_session !!\n" ++
+                "   EXPLAIN output:\n{s}\n",
+            .{plan_str},
+        );
+        return error.ChatListIndexNotUsed;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_is_input_output_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+fn llmHistoryIsInputOutputMakeResponse(messages: []SessionMessage) SessionMessageResponse {
+    return .{
+        .messages = messages,
+        .has_more = false,
+        .next_cursor = null,
+        .max_total_tokens = 0,
+        .max_capacity_total_tokens = 0,
+    };
+}
+
+test "buildSessionMessagesJson emits is_input/is_output as JSON booleans" {
+    const allocator = testing.allocator;
+
+    // Build a minimal SessionMessageResponse with known bool values:
+    // is_input: true, is_output: false.
+    const messages = [_]SessionMessage{
+        .{
+            .id = "m1",
+            .session_id = "s1",
+            .role = "user",
+            .content = "hi",
+            .timestamp = "1700000000",
+            .is_input = true,
+            .is_output = false,
+            .tool_name = "",
+            .finish_reason = "",
+            .reasoning_content = "",
+        },
+    };
+    const response = llmHistoryIsInputOutputMakeResponse(@constCast(&messages));
+
+    const json = try buildSessionMessagesJson(allocator, &response);
+    defer allocator.free(json);
+
+    // Must contain boolean form (no quotes around true/false):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":false") != null);
+    // Must NOT contain string form (the old wrong format):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":\"1\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":\"0\"") == null);
+    // Must NOT contain string form with bare 'true'/'false' wrapped in quotes:
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":\"true\"") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":\"false\"") == null);
+    // Must NOT contain number form (the alternative refactor that was rejected):
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\": 1") == null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\": 0") == null);
+}
+
+test "buildSessionMessagesXml emits is_input/is_output as text 'true'/'false'" {
+    const allocator = testing.allocator;
+
+    const messages = [_]SessionMessage{
+        .{
+            .id = "m1",
+            .session_id = "s1",
+            .role = "user",
+            .content = "hi",
+            .timestamp = "1700000000",
+            .is_input = true,
+            .is_output = false,
+            .tool_name = "",
+            .finish_reason = "",
+            .reasoning_content = "",
+        },
+    };
+    const response = llmHistoryIsInputOutputMakeResponse(@constCast(&messages));
+
+    const xml = try buildSessionMessagesXml(allocator, &response);
+    defer allocator.free(xml);
+
+    // XML text content: <is_input>true</is_input> (bool rendered as text).
+    try testing.expect(std.mem.indexOf(u8, xml, "<is_input>true</is_input>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<is_output>false</is_output>") != null);
+    // Must NOT contain the old "1"/"0" text form:
+    try testing.expect(std.mem.indexOf(u8, xml, "<is_input>1</is_input>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<is_output>0</is_output>") == null);
+}
+
+test "buildSessionMessagesJson emits true/false values in both directions" {
+    // Defense-in-depth: confirm that BOTH true AND false round-trip through
+    // the bool wire format. The single-message test above only exercises
+    // (is_input=true, is_output=false); this one flips them.
+    const allocator = testing.allocator;
+
+    const messages = [_]SessionMessage{
+        .{
+            .id = "m2",
+            .session_id = "s1",
+            .role = "assistant",
+            .content = "ok",
+            .timestamp = "1700000001",
+            .is_input = false,
+            .is_output = true,
+            .tool_name = "",
+            .finish_reason = "stop",
+            .reasoning_content = "",
+        },
+    };
+    const response = llmHistoryIsInputOutputMakeResponse(@constCast(&messages));
+
+    const json = try buildSessionMessagesJson(allocator, &response);
+    defer allocator.free(json);
+
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_input\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"is_output\":true") != null);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_description_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+const text_normalize = nalarcore.helpers.text_normalize;
+
+const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
+
+fn llmHistoryDescriptionReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+// ─── Contract 1: WorkspaceItemTaskInfo has a description field ────────────
+
+test "WorkspaceItemTaskInfo struct has description field (Migration 062)" {
+    const allocator = testing.allocator;
+    const source = try llmHistoryDescriptionReadSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // The struct body (between the signature and the first `};`) must
+    // contain `description:` to confirm Migration 062 added the field.
+    const struct_sig = "pub const WorkspaceItemTaskInfo = struct";
+    const sig_idx = std.mem.indexOf(u8, source, struct_sig) orelse {
+        std.debug.print("\n!! Could not find WorkspaceItemTaskInfo in {s} !!\n", .{LLM_HISTORY_PATH});
+        return error.WorkspaceItemTaskInfoMissing;
+    };
+    const after_sig = sig_idx + struct_sig.len;
+    // Find the matching `};` — the struct body's closing brace.
+    // We use the FIRST `};` after the signature (Zig struct bodies
+    // close at the FIRST `};` they encounter, so this is correct for
+    // top-level struct declarations).
+    const end_marker = std.mem.indexOfPos(u8, source, after_sig, "};") orelse source.len;
+    const body = source[after_sig..end_marker];
+
+    if (std.mem.indexOf(u8, body, "description:") == null) {
+        std.debug.print(
+            "\n!! WorkspaceItemTaskInfo has no `description` field !!\n" ++
+                "   Migration 062 requires the lister to populate description from\n" ++
+                "   the new column. Add `description: []u8 = &.{{}}` to the struct.\n",
+            .{},
+        );
+        return error.DescriptionFieldMissing;
+    }
+}
+
+// ─── Contract 2: getWorkspaceItemTask SELECT includes description ─────────
+
+test "getWorkspaceItemTask SELECT lists the description column" {
+    const allocator = testing.allocator;
+    const source = try llmHistoryDescriptionReadSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // Find the function body and verify the SELECT lists `description`
+    // in its column list (between workspace_item_id and created_at).
+    const fn_sig = "pub fn getWorkspaceItemTask(";
+    const sig_idx = std.mem.indexOf(u8, source, fn_sig) orelse {
+        std.debug.print("\n!! getWorkspaceItemTask signature not found !!\n", .{});
+        return error.GetTaskFnMissing;
+    };
+    const after_sig = sig_idx + fn_sig.len;
+    const next_pub_fn = std.mem.indexOfPos(u8, source, after_sig, "pub fn ") orelse source.len;
+    const body = source[after_sig..next_pub_fn];
+
+    // Accept either `description, created_at` (the exact expected
+    // column order) OR `t.description, t.created_at` (the aliased
+    // form some queries use).
+    const has_description_col = std.mem.indexOf(u8, body, "description, created_at") != null or
+        std.mem.indexOf(u8, body, "t.description, t.created_at") != null;
+
+    if (!has_description_col) {
+        std.debug.print(
+            "\n!! getWorkspaceItemTask SELECT does not list description !!\n" ++
+                "   The single-task SELECT must include `description` (Migration 062).\n" ++
+                "   Expected column order: id, name, workspace_item_id, description, ...\n" ++
+                "   A missing column here means the row parser will read created_at\n" ++
+                "   from row.values[3] (the wrong slot) and silently corrupt the\n" ++
+                "   response.\n",
+            .{},
+        );
+        return error.DescriptionColumnMissing;
+    }
+}
+
+// ─── Contract 3: listWorkspaceItemTasks SELECT includes description ──────
+
+test "listWorkspaceItemTasks SELECT lists t.description column" {
+    const allocator = testing.allocator;
+    const source = try llmHistoryDescriptionReadSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // Find the legacy lister (no cursor) and assert it includes
+    // `t.description` in its SELECT column list.
+    const fn_sig = "pub fn listWorkspaceItemTasks(";
+    const sig_idx = std.mem.indexOf(u8, source, fn_sig) orelse return error.ListFnMissing;
+    const after_sig = sig_idx + fn_sig.len;
+    const next_pub_fn = std.mem.indexOfPos(u8, source, after_sig, "pub fn ") orelse source.len;
+    const body = source[after_sig..next_pub_fn];
+
+    if (std.mem.indexOf(u8, body, "t.description, t.created_at") == null) {
+        std.debug.print(
+            "\n!! listWorkspaceItemTasks SELECT does not list t.description !!\n" ++
+                "   The non-cursor lister must include `t.description` (Migration 062).\n",
+            .{},
+        );
+        return error.ListDescriptionMissing;
+    }
+}
+
+// ─── Contract 4: listWorkspaceItemTasksWithCursor SELECT includes description
+
+test "listWorkspaceItemTasksWithCursor SELECT lists t.description column" {
+    const allocator = testing.allocator;
+    const source = try llmHistoryDescriptionReadSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // Find the cursor lister and assert it includes `t.description`.
+    const fn_sig = "pub fn listWorkspaceItemTasksWithCursor(";
+    const sig_idx = std.mem.indexOf(u8, source, fn_sig) orelse return error.CursorListFnMissing;
+    const after_sig = sig_idx + fn_sig.len;
+    const next_pub_fn = std.mem.indexOfPos(u8, source, after_sig, "pub fn ") orelse source.len;
+    const body = source[after_sig..next_pub_fn];
+
+    if (std.mem.indexOf(u8, body, "t.description, t.created_at") == null) {
+        std.debug.print(
+            "\n!! listWorkspaceItemTasksWithCursor SELECT does not list t.description !!\n" ++
+                "   The cursor lister must include `t.description` (Migration 062).\n" ++
+                "   This is the primary read path for the frontend's tasks-list\n" ++
+                "   endpoint; without description in the SELECT the response will\n" ++
+                "   silently shift created_at into the description slot.\n",
+            .{},
+        );
+        return error.CursorListDescriptionMissing;
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_notification_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+// ───────────────────────────────────────────────────────────────────────
+// 1. updateTaskLastHumanTouchedAt is callable + persists the value
+// ───────────────────────────────────────────────────────────────────────
+
+test "updateTaskLastHumanTouchedAt stamps the unix-ms value on the task" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal tables Migration 065 needs (parent + task).
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_1', 'T1', 'wi_1')",
+        &.{});
+
+    // Before stamp — column doesn't exist yet (Migration 065 not run).
+    // We don't strictly need the column to exist for the writer to
+    // succeed at the SQL layer (sqlite would store into nothing), but
+    // the realistic caller has run Migration 065 first. We simulate
+    // that by ALTER-ing the column in directly.
+    try db.exec(alloc,
+        "ALTER TABLE workspace_item_tasks ADD COLUMN last_human_touched_at_nano INTEGER",
+        &.{});
+
+    const now_ms: i64 = 1_786_500_000_000;
+    try updateTaskLastHumanTouchedAt(alloc, &db, "task_1", now_ms);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM workspace_item_tasks WHERE id = 'task_1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1786500000000", row.values[0]);
+}
+
+test "updateTaskLastHumanTouchedAt overwrites on repeated calls" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, last_human_touched_at_nano INTEGER)",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_1', 'T1', 'wi_1')",
+        &.{});
+
+    try updateTaskLastHumanTouchedAt(alloc, &db, "task_1", 100);
+    try updateTaskLastHumanTouchedAt(alloc, &db, "task_1", 500);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM workspace_item_tasks WHERE id = 'task_1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("500", row.values[0]);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Behavioural — the SQL predicate for needs_human_review works
+// end-to-end on a real in-memory DB.
+// ───────────────────────────────────────────────────────────────────────
+
+test "needs_human_review predicate returns 1 when finish_reason='stop' AND no human touch" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Parent table + task table with the Migration 065 column +
+    // sessions table to JOIN against.
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT,
+        \\  workspace_item_id TEXT,
+        \\  last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Post-Migration-072: kanban placement lives in the `kanban` join table.
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\  task_id TEXT PRIMARY KEY,
+        \\  kanban_column_id TEXT NOT NULL,
+        \\  kanban_position INTEGER NOT NULL DEFAULT 0
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT,
+        \\  status TEXT,
+        \\  last_finish_reason TEXT,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  git_worktree_cwd TEXT
+        \\)
+    , &.{});
+
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_1','ws_1','kanban')",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_awaiting', 'T1', 'wi_1')",
+        &.{});
+    // AI finished on this task 1 hour ago.
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name, status, last_finish_reason, updated_at) " ++
+        "VALUES ('task_awaiting', 'T1', 'idle', 'stop', datetime('now', '-1 hour'))",
+        &.{});
+
+    // Replicate the production SQL CASE.
+    var q = try db.query(alloc,
+        \\SELECT CASE
+        \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
+        \\       AND (
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\       )
+        \\  THEN 1 ELSE 0 END
+        \\FROM workspace_item_tasks t
+        \\LEFT JOIN sessions s ON s.id = t.id
+        \\WHERE t.id = 'task_awaiting'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "needs_human_review predicate returns 0 when human touched AFTER the AI finished" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\  id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
+        \\  last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\  id TEXT PRIMARY KEY, name TEXT, status TEXT,
+        \\  last_finish_reason TEXT,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  git_worktree_cwd TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_1','ws_1','kanban')",
+        &.{});
+
+    // AI finished 1 hour ago.
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name, status, last_finish_reason, updated_at) " ++
+        "VALUES ('task_reviewed', 'T', 'idle', 'stop', datetime('now', '-1 hour'))",
+        &.{});
+    // Human touched 10 seconds ago (clearly after the AI's finish).
+    // Fixed future timestamp — Zig 0.16 removed `std.time.timestamp()`
+    // per project memory; rather than reach for libc we use a known
+    // large unix-ms that's guaranteed-after the AI's "1 hour ago"
+    // timestamp above.
+    const now_ms: i64 = 2_000_000_000_000; // year 2033 in unix-ms
+    var t_buf: [32]u8 = undefined;
+    const t_str = std.fmt.bufPrint(&t_buf, "{d}", .{now_ms}) catch unreachable;
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, last_human_touched_at_nano) " ++
+        "VALUES ('task_reviewed', 'T', 'wi_1', ?)",
+        &[_][]const u8{t_str});
+
+    var q = try db.query(alloc,
+        \\SELECT CASE
+        \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
+        \\       AND (
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\       )
+        \\  THEN 1 ELSE 0 END
+        \\FROM workspace_item_tasks t
+        \\LEFT JOIN sessions s ON s.id = t.id
+        \\WHERE t.id = 'task_reviewed'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "needs_human_review predicate returns 0 when finish_reason is 'tool_calls' (mid-tool, not yet stop)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\  id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
+        \\  last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\  id TEXT PRIMARY KEY, name TEXT, status TEXT,
+        \\  last_finish_reason TEXT,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  git_worktree_cwd TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_1','ws_1','kanban')",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_tools', 'T', 'wi_1')",
+        &.{});
+    // Agent is mid-tool-call, not finished yet.
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name, status, last_finish_reason, updated_at) " ++
+        "VALUES ('task_tools', 'T', 'active', 'tool_calls', datetime('now'))",
+        &.{});
+
+    var q = try db.query(alloc,
+        \\SELECT CASE
+        \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
+        \\       AND (
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\       )
+        \\  THEN 1 ELSE 0 END
+        \\FROM workspace_item_tasks t
+        \\LEFT JOIN sessions s ON s.id = t.id
+        \\WHERE t.id = 'task_tools'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "needs_human_review predicate returns 0 when no sessions row exists for the task" {
+    // Tasks that never had any AI work (e.g. user created a card and
+    // hasn't sent a chat message yet) should not show the dot.
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\  id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT,
+        \\  last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT, status TEXT, last_finish_reason TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, git_worktree_cwd TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_1','ws_1','kanban')",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('task_empty','T','wi_1')",
+        &.{});
+
+    var q = try db.query(alloc,
+        \\SELECT CASE
+        \\  WHEN COALESCE(s.last_finish_reason, '') = 'stop'
+        \\       AND (
+        \\         t.last_human_touched_at_nano IS NULL
+        \\         OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000
+        \\       )
+        \\  THEN 1 ELSE 0 END
+        \\FROM workspace_item_tasks t
+        \\LEFT JOIN sessions s ON s.id = t.id
+        \\WHERE t.id = 'task_empty'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_search_fts_query_safety_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+const migration = @import("../../../migrations/migration.zig");
+
+
+fn llmHistorySearchFtsQuerySafetySetupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Walk every production migration so the schema (including
+    // `messages_fts` + its triggers) matches what production runs.
+    // Manual table/trigger setup drifts the moment a new FTS column
+    // or trigger lands in production and silently tests an outdated
+    // schema (reviewer note on PR #172: "when setup db, use from
+    // migrationsss module, migrations module will load all table").
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    return .{ .db = db, .threaded = threaded, .alloc = alloc };
+}
+
+fn teardown(ctx: *TestCtx) void {
+    ctx.db.deinit();
+    ctx.threaded.deinit();
+}
+
+/// Insert a row whose `response_content` contains all of the "needle"
+/// words in `needles` so we can prove the FTS5 query finds it.
+///
+/// Note: `model` is required because the production schema (after all
+/// 67 migrations) declares it NOT NULL. The value is irrelevant to the
+/// FTS5 query — only `response_content` is indexed.
+fn insertRow(ctx: *TestCtx, id: []const u8, content: []const u8) !void {
+    const alloc = testing.allocator;
+    var sql_buf: [512]u8 = undefined;
+    const stmt = try std.fmt.bufPrint(sql_buf[0..],
+        "INSERT INTO llm_history (id, session_id, model, role, response_content) " ++
+        "VALUES ('{s}','s_1','test-model','user','{s}')", .{ id, content });
+    try ctx.db.exec(alloc, stmt, &.{});
+}
+
+fn freeHits(alloc: std.mem.Allocator, hits: []SearchHit) void {
+    for (hits) |h| {
+        var copy = h;
+        copy.deinit(alloc);
+    }
+    alloc.free(hits);
+}
+
+// ─── Tests that prove the failing-queries bug ──────────────────────────
+//
+// Each test below reproduces a specific query the user ran that
+// returned "FTS search failed: QueryFailed". They are written against
+// the FIXED behavior — i.e. they expect searchMessagesFts to succeed
+// and return the matching row. They will FAIL on the unfixed code
+// because the queries either:
+//   1. trigger an FTS5 syntax error (returned as `QueryFailed`), or
+//   2. return 0 hits because the FTS5 query string is parsed as a
+//      single term that doesn't exist in the index.
+// The fix sanitizes the query so each piece becomes its own term.
+
+test "searchMessagesFts: dotted identifier handle_tool.zig returns the inserted row" {
+    var ctx = try llmHistorySearchFtsQuerySafetySetupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try insertRow(&ctx, "h1",
+        "the agentic_loop/handle_tool.zig has broken imports that we need to fix");
+
+    const hits = try searchMessagesFts(alloc, &ctx.db,
+        "handle_tool.zig", .{});
+    defer freeHits(alloc, hits);
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h1", hits[0].id);
+}
+
+test "searchMessagesFts: hyphenated date 2026-08-06 returns the inserted row" {
+    var ctx = try llmHistorySearchFtsQuerySafetySetupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    // Use a date-format string the user might search for verbatim
+    try insertRow(&ctx, "h_date",
+        "log entry on 2026-08-06 says the build is green");
+
+    const hits = try searchMessagesFts(alloc, &ctx.db,
+        "2026-08-06", .{});
+    defer freeHits(alloc, hits);
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_date", hits[0].id);
+}
+
+test "searchMessagesFts: column-syntax colon agentic_loop/handle_tool.zig:18 returns the inserted row" {
+    var ctx = try llmHistorySearchFtsQuerySafetySetupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try insertRow(&ctx, "h_col",
+        "the bug at agentic_loop/handle_tool.zig:18 references the broken import");
+
+    // This is the exact query the user tried. Without the fix, FTS5
+    // sees the trailing `:18` as a column-name filter on a column that
+    // does not exist and returns SQLITE_ERROR.
+    const hits = try searchMessagesFts(alloc, &ctx.db,
+        "agentic_loop/handle_tool.zig:18", .{});
+    defer freeHits(alloc, hits);
+
+    try testing.expect(hits.len >= 1);
+    try testing.expectEqualStrings("h_col", hits[0].id);
+}
+
+test "searchMessagesFts: dotted short word SPEC.md returns the inserted row" {
+    var ctx = try llmHistorySearchFtsQuerySafetySetupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try insertRow(&ctx, "h_spec", "see SPEC.md for the full design");
+
+    const hits = try searchMessagesFts(alloc, &ctx.db,
+        "SPEC.md", .{});
+    defer freeHits(alloc, hits);
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_spec", hits[0].id);
+}
+
+// ─── Tests that already-passing queries still pass (regression guard) ──
+
+test "searchMessagesFts: plain words still match (regression guard)" {
+    var ctx = try llmHistorySearchFtsQuerySafetySetupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    try insertRow(&ctx, "h_plain", "the login bug needs fixing urgently");
+
+    const hits = try searchMessagesFts(alloc, &ctx.db,
+        "login bug", .{});
+    defer freeHits(alloc, hits);
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_plain", hits[0].id);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_search_messages_fts_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+fn llmHistorySearchMessagesFtsSetupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\  id TEXT PRIMARY KEY,
+        \\  session_id TEXT NOT NULL,
+        \\  model TEXT,
+        \\  response_content TEXT,
+        \\  role TEXT,
+        \\  tool_call_id TEXT,
+        \\  tool_name TEXT,
+        \\  is_feed_to_llm INTEGER DEFAULT 1,
+        \\  agent TEXT,
+        \\  created_at_nano TEXT DEFAULT (datetime('now')),
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column.
+        \\  -- No INSERT trigger — production populates it from application
+        \\  -- code in `saveMessage`. For test convenience, default to
+        \\  -- 'now localtime' (matching `created_at`'s default of 'now').
+        \\  -- Tests that need specific timestamps pass `created_at` AND
+        \\  -- `created_iso` explicitly via a sub-SELECT that mirrors the
+        \\  -- production conversion.
+        \\  created_iso TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now'))
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE VIRTUAL TABLE messages_fts USING fts5(
+        \\    content
+        \\)
+    , &.{});
+
+    // Sync triggers — same shape as Migration 058 in production (now
+    // non-external-content so snippet() can read from messages_fts).
+    try db.exec(alloc,
+        \\CREATE TRIGGER llm_history_ai AFTER INSERT ON llm_history BEGIN
+        \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
+        \\END
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TRIGGER llm_history_ad AFTER DELETE ON llm_history BEGIN
+        \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
+        \\END
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TRIGGER llm_history_au AFTER UPDATE ON llm_history BEGIN
+        \\  DELETE FROM messages_fts WHERE rowid = old.rowid;
+        \\  INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, COALESCE(new.response_content, ''));
+        \\END
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded, .alloc = alloc };
+}
+
+test "searchMessagesFts: returns hits ranked by relevance" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h1','s_1','user','the login bug needs fixing urgently')",
+        &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h2','s_1','user','all tests pass')",
+        &.{});
+
+    const hits = try searchMessagesFts(alloc, &s.db, "login bug", .{});
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h1", hits[0].id);
+    // Snippet should contain [markers] around the matched tokens
+    try testing.expect(std.mem.indexOf(u8, hits[0].snippet, "[") != null);
+    try testing.expect(std.mem.indexOf(u8, hits[0].snippet, "login") != null);
+}
+
+test "searchMessagesFts: filters by session_id" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h1','s_a','user','the bug is fixed')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h2','s_b','user','a different bug exists')", &.{});
+
+    const hits = try searchMessagesFts(alloc, &s.db, "bug", .{
+        .session_id = "s_a",
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h1", hits[0].id);
+}
+
+test "searchMessagesFts: filters by role" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h1','s_1','user','user asked about password reset')", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h2','s_1','assistant','the password reset feature')", &.{});
+
+    const hits = try searchMessagesFts(alloc, &s.db, "password", .{
+        .role = "user",
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h1", hits[0].id);
+}
+
+test "searchMessagesFts: respects limit" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        const id_buf = try std.fmt.allocPrint(alloc, "h_{d}", .{i});
+        defer alloc.free(id_buf);
+        try s.db.exec(alloc,
+            "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+            "VALUES (?, 's_1', 'user', 'common keyword here')",
+            &.{id_buf});
+    }
+
+    const hits = try searchMessagesFts(alloc, &s.db, "common", .{
+        .limit = 3,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+
+    try testing.expectEqual(@as(usize, 3), hits.len);
+}
+
+test "searchMessagesFts: returns empty array when no matches" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content) " ++
+        "VALUES ('h1','s_1','user','nothing relevant here')", &.{});
+
+    const hits = try searchMessagesFts(alloc, &s.db, "monkeywrench", .{});
+    defer alloc.free(hits);
+
+    try testing.expectEqual(@as(usize, 0), hits.len);
+}
+
+test "searchMessagesFts: tool_call_id and tool_name surfaced for tool-role hits" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, " ++
+        "tool_call_id, tool_name) " ++
+        "VALUES ('h1','s_1','tool','exit code 42','tc_1','bash')",
+        &.{});
+
+    const hits = try searchMessagesFts(alloc, &s.db, "exit code", .{});
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("tool", hits[0].role);
+    try testing.expectEqualStrings("tc_1", hits[0].tool_call_id.?);
+    try testing.expectEqualStrings("bash", hits[0].tool_name.?);
+}
+
+test "getCompactedMessages: include_all=true returns live AND compacted rows" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // Seed: 1 live (is_feed_to_llm=1) + 1 compacted (is_feed_to_llm=0)
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('live_1','s_full','user','live message',1)", &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm) " ++
+        "VALUES ('compact_1','s_full','assistant','compacted message',0)", &.{});
+
+    // Default behavior (include_all=false): only compacted.
+    const compact_only = try getCompactedMessages(alloc, &s.db, "s_full", .{});
+    defer {
+        for (compact_only) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(compact_only);
+    }
+    try testing.expectEqual(@as(usize, 1), compact_only.len);
+    try testing.expectEqualStrings("compact_1", compact_only[0].id);
+
+    // include_all=true: both rows.
+    const all_rows = try getCompactedMessages(alloc, &s.db, "s_full", .{
+        .include_all = true,
+    });
+    defer {
+        for (all_rows) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(all_rows);
+    }
+    try testing.expectEqual(@as(usize, 2), all_rows.len);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Regression tests for the since/until bug
+// (docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md).
+//
+// These exercise the filter on `created_iso` (the STORED generated column
+// added by Migration 059) instead of `created_at` (which stores Unix
+// microseconds — lex-comparing that against a date string silently
+// returns 0 rows because '1' < '2' in ASCII order).
+//
+// We seed with two known microsecond timestamps and compute the
+// expected `created_iso` via the SAME SQLite expression the migration
+// uses (`datetime(N / 1000000, 'unixepoch')`). This keeps
+// the test timezone-agnostic: both the seed and the filter go through
+// the same localtime conversion, so they agree regardless of TZ.
+// ────────────────────────────────────────────────────────────────────────
+
+test "searchMessagesFts: filters by since using ISO date string (regression for since/until bug)" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // Seed: two messages at known microsecond timestamps.
+    // Pick values that are unambiguously different from each other and
+    // survive any timezone (we never assert the literal ISO string —
+    // only that the filter on it works).
+    const old_micros: []const u8 = "1780000000000000"; // ~2026-05-29 17:33 UTC
+    const new_micros: []const u8 = "1785000000000000"; // ~2026-06-23 12:40 UTC
+
+    // Production code in `saveMessage` computes `created_iso` from
+    // `created_at` via libc `localtime_r` + `strftime`. The exact
+    // SQLite expression that matches that conversion is
+    // `datetime(<micros>/1000000, 'unixepoch')` — but
+    // our test schema uses `substr(micros, 1, 10)` (the migration's
+    // backfill expression) for consistency with the migration's
+    // idempotent backfill. This drops microsecond precision but is
+    // fine for `since`/`until` tests at minute granularity.
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
+
+    // Compute the ISO date for `new_micros` using the SAME expression the
+    // migration uses — that's what `created_iso` will contain.
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch')",
+        &.{new_micros});
+    defer iso_q.deinit(alloc);
+    const new_iso = iso_q.values[0];
+
+    // FTS match for "message" — both rows match. Filter on since=new_iso
+    // should return only `h_new`.
+    const hits = try searchMessagesFts(alloc, &s.db, "message", .{
+        .since = new_iso,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_new", hits[0].id);
+    try testing.expectEqual(@as(u32, 1), hits[0].total_count); // only 1 row after filter
+}
+
+test "searchMessagesFts: filters by until using ISO date string (regression for since/until bug)" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
+
+    // Compute the ISO for `old_micros` — `until=old_iso` should keep only h_old.
+    // Use the same `substr(_,1,10)` expression as the inserted rows so
+    // the lex comparison matches exactly.
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(substr(? ,1, 10), 'unixepoch')",
+        &.{old_micros});
+    defer iso_q.deinit(alloc);
+    const old_iso = iso_q.values[0];
+
+    const hits = try searchMessagesFts(alloc, &s.db, "message", .{
+        .until = old_iso,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+    try testing.expectEqual(@as(usize, 1), hits.len);
+    try testing.expectEqualStrings("h_old", hits[0].id);
+}
+
+test "searchMessagesFts: since AND until together produce a date range (regression)" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const mid_micros: []const u8 = "1783000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_old','s1','user','old message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ old_micros, old_micros });
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_mid','s1','user','mid message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ mid_micros, mid_micros });
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_new','s1','user','new message',?,datetime(substr(?,1,10),'unixepoch'))", &.{ new_micros, new_micros });
+
+    // Use the same substr(_,1,10) expression as the inserted rows so the
+    // lex comparison matches exactly.
+    var iso_q = try s.db.queryRow(alloc,
+        \\SELECT datetime(substr(? ,1,10), 'unixepoch') AS since_iso,
+        \\       datetime(substr(? ,1,10), 'unixepoch') AS until_iso
+    , &.{ mid_micros, new_micros });
+    defer iso_q.deinit(alloc);
+    const since_iso = iso_q.values[0];
+    const until_iso = iso_q.values[1];
+
+    const hits = try searchMessagesFts(alloc, &s.db, "message", .{
+        .since = since_iso,
+        .until = until_iso,
+    });
+    defer {
+        for (hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(hits);
+    }
+    try testing.expectEqual(@as(usize, 2), hits.len);
+    // Expectation: h_mid and h_new (the "since..until" inclusive window)
+    // — but order is by rank, which is the same as no ORDER BY since
+    // the MATCH score ties. Check that both are present.
+    var ids: [2][]const u8 = undefined;
+    for (hits, 0..) |h, i| ids[i] = h.id;
+    // Both h_mid and h_new should be present (h_old should not).
+    try testing.expect(std.mem.indexOf(u8, ids[0], "h_old") == null or
+        std.mem.indexOf(u8, ids[1], "h_old") == null);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_compacted_messages_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+fn llmHistoryCompactedMessagesSetupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\  id TEXT PRIMARY KEY,
+        \\  session_id TEXT NOT NULL,
+        \\  model TEXT,
+        \\  response_content TEXT,
+        \\  role TEXT,
+        \\  tool_call_id TEXT,
+        \\  tool_name TEXT,
+        \\  is_feed_to_llm INTEGER DEFAULT 1,
+        \\  agent TEXT,
+        \\  created_at_nano TEXT DEFAULT (datetime('now')),
+        \\  -- Mirrors Migration 059 in production: a regular TEXT column
+        \\  -- populated by INSERT/UPDATE triggers. We CAN'T use a STORED
+        \\  -- GENERATED ALWAYS AS column here because `datetime(...,
+        \\  -- 'localtime')` is non-deterministic (depends on the system
+        \\  -- timezone) — SQLite silently DROPS such columns from CREATE
+        \\  -- TABLE / ALTER TABLE ADD COLUMN. Production uses triggers for
+        \\  -- the same reason. The since/until filters on
+        \\  -- getCompactedMessages bind to this column, so the test
+        \\  -- schema must include it. The llmHistoryCompactedMessagesSeedMessage helper below
+        \\  -- explicitly populates `created_iso` (mirrors the
+        \\  -- application code in `saveMessage`).
+        \\  created_iso TEXT,
+        \\  -- Anthropic cache breakdown columns (Migration 074). The
+        \\  -- saveMessage INSERT must reference both columns, so the
+        \\  -- test fixture mirrors the production schema even when the
+        \\  -- test doesn't read them.
+        \\  cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\  cache_read_input_tokens INTEGER DEFAULT 0
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn llmHistoryCompactedMessagesTeardownDb(s: *@TypeOf(llmHistoryCompactedMessagesSetupDb() catch unreachable)) void {
+    s.db.deinit();
+    s.threaded.deinit();
+}
+
+fn llmHistoryCompactedMessagesSeedMessage(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    sess: []const u8,
+    role: []const u8,
+    content: []const u8,
+    is_feed: u8,
+    created_at: []const u8,
+) !void {
+    const feed_str = if (is_feed == 1) "1" else "0";
+
+    // `created_at` is either:
+    //   - A microsecond timestamp string (e.g. "1785000000000000"), OR
+    //   - A pre-formatted ISO localtime string (e.g. "2025-01-01 00:01:00").
+    //
+    // For the microsecond case we compute the ISO via SQLite's
+    // `datetime(? / 1000000, 'unixepoch')` — the same expression
+    // Migration 059 used before moving the conversion to app code,
+    // and the same expression used by the since/until filter queries
+    // in this file (so the row's `created_iso` matches what the filter
+    // would generate from the same `created_at`). For the ISO case we
+    // reuse the string as-is.
+    var created_iso_buf: [20]u8 = undefined;
+    const created_iso_len: usize = blk: {
+        if (created_at.len >= 10 and std.mem.indexOfScalar(u8, created_at, '-') == null) {
+            // Looks like a microsecond integer — convert via SQLite.
+            var q = try db.queryRow(alloc,
+                "SELECT datetime(? / 1000000, 'unixepoch')",
+                &.{created_at});
+            defer q.deinit(alloc);
+            const iso = q.values[0];
+            const len = iso.len;
+            if (len > created_iso_buf.len) return error.TimestampTooLong;
+            @memcpy(created_iso_buf[0..len], iso);
+            break :blk len;
+        }
+        // Already ISO-formatted (e.g. tests using literal "YYYY-MM-DD HH:MM:SS").
+        if (created_at.len > created_iso_buf.len) return error.TimestampTooLong;
+        @memcpy(created_iso_buf[0..created_at.len], created_at);
+        break :blk created_at.len;
+    };
+    const created_iso: []const u8 = created_iso_buf[0..created_iso_len];
+
+    const sql =
+        \\INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm, created_at_nano, created_iso)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?)
+    ;
+    try db.exec(alloc, sql, &.{ id, sess, role, content, feed_str, created_at, created_iso });
+}
+
+test "getCompactedMessages: returns only is_feed_to_llm=0 messages for session" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h1", "sess_1", "user", "Fix bug", 1, "2025-01-01 00:00:00");
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h2", "sess_1", "assistant", "OK", 1, "2025-01-01 00:01:00");
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h3", "sess_1", "user", "More", 0, "2025-01-01 00:02:00");
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h4", "sess_1", "assistant", "Done", 0, "2025-01-01 00:03:00");
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h5", "sess_2", "user", "other session", 0, "2025-01-01 00:04:00");
+
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{});
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("h3", results[0].id);
+    try testing.expectEqualStrings("h4", results[1].id);
+}
+
+test "getCompactedMessages: respects limit" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        var buf: [16]u8 = undefined;
+        const id = try std.fmt.bufPrint(&buf, "h{d}", .{i});
+        try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, id, "sess_1", "user", "msg", 0, "2025-01-01 00:00:00");
+    }
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{ .limit = 5 });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 5), results.len);
+}
+
+test "getCompactedMessages: filters by message_ids when provided" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h1", "sess_1", "user", "A", 0, "2025-01-01 00:00:00");
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h2", "sess_1", "user", "B", 0, "2025-01-01 00:01:00");
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h3", "sess_1", "user", "C", 0, "2025-01-01 00:02:00");
+
+    const ids = [_][]const u8{ "h1", "h3" };
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{ .message_ids = &ids });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("h1", results[0].id);
+    try testing.expectEqualStrings("h3", results[1].id);
+}
+
+test "getCompactedMessages: returns empty slice when session has no compacted messages" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h1", "sess_1", "user", "active", 1, "2025-01-01 00:00:00");
+
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{});
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 0), results.len);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Regression tests for the since/until bug
+// (docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md).
+//
+// The bug: `created_at` stores Unix microseconds as TEXT (e.g.
+// `"1784119389936251112"`). The previous SQL did a lex comparison on
+// this column against user input like `"2026-07-15 00:00:00"`, which
+// silently returned 0 rows because `'1' < '2'` (so `'1784…' < '2026-…'`
+// always evaluated true, excluding every row).
+//
+// The fix: filter on `created_iso`, a STORED generated column produced
+// by `datetime(created_at / 1000000, 'unixepoch')` at
+// write time. These tests verify both halves of the fix:
+//   1. ISO date strings actually filter rows (no longer silently 0).
+//   2. Lex-correct ordering of the generated column preserves
+//      chronological filter semantics.
+// ────────────────────────────────────────────────────────────────────────
+
+test "getCompactedMessages: filters by since using ISO date string (regression)" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+
+    // Two compacted messages at known microsecond timestamps. They
+    // compare against `is_feed_to_llm=0` so they pass the default filter.
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_old", "sess_1", "user", "old", 0, old_micros);
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_new", "sess_1", "user", "new", 0, new_micros);
+
+    // Compute the ISO for `new_micros` using the SAME expression the
+    // migration uses — that's what `created_iso` will contain.
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch')",
+        &.{new_micros});
+    defer iso_q.deinit(alloc);
+    const new_iso = iso_q.values[0];
+
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{
+        .since = new_iso,
+    });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("h_new", results[0].id);
+    try testing.expectEqual(@as(u32, 1), results[0].total_count);
+}
+
+test "getCompactedMessages: filters by until using ISO date string (regression)" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_old", "sess_1", "user", "old", 0, old_micros);
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_new", "sess_1", "user", "new", 0, new_micros);
+
+    var iso_q = try s.db.queryRow(alloc,
+        "SELECT datetime(? / 1000000, 'unixepoch')",
+        &.{old_micros});
+    defer iso_q.deinit(alloc);
+    const old_iso = iso_q.values[0];
+
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{
+        .until = old_iso,
+    });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("h_old", results[0].id);
+}
+
+test "getCompactedMessages: since AND until together produce a date range (regression)" {
+    var s = try llmHistoryCompactedMessagesSetupDb();
+    defer llmHistoryCompactedMessagesTeardownDb(&s);
+    const alloc = testing.allocator;
+
+    const old_micros: []const u8 = "1780000000000000";
+    const mid_micros: []const u8 = "1783000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_old", "sess_1", "user", "old", 0, old_micros);
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_mid", "sess_1", "user", "mid", 0, mid_micros);
+    try llmHistoryCompactedMessagesSeedMessage(alloc, &s.db, "h_new", "sess_1", "user", "new", 0, new_micros);
+
+    var iso_q = try s.db.queryRow(alloc,
+        \\SELECT datetime(? / 1000000, 'unixepoch') AS since_iso,
+        \\       datetime(? / 1000000, 'unixepoch') AS until_iso
+    , &.{ mid_micros, new_micros });
+    defer iso_q.deinit(alloc);
+    const since_iso = iso_q.values[0];
+    const until_iso = iso_q.values[1];
+
+    const results = try getCompactedMessages(alloc, &s.db, "sess_1", .{
+        .since = since_iso,
+        .until = until_iso,
+    });
+    defer {
+        for (results) |m| {
+            var copy = m;
+            copy.deinit(alloc);
+        }
+        alloc.free(results);
+    }
+    // Expect 2: h_mid + h_new (inclusive window). h_old should be excluded.
+    try testing.expectEqual(@as(usize, 2), results.len);
+    var found_old = false;
+    for (results) |m| {
+        if (std.mem.eql(u8, m.id, "h_old")) found_old = true;
+    }
+    try testing.expect(!found_old);
+}
+
+test "saveMessage: writes a correct-year (2026-ish) created_iso from current time" {
+    // Regression check for the year-58,507 bug. Pre-fix `saveMessage`
+    // passed raw nanoseconds to the ISO conversion helper, producing
+    // year 58,507. Post-fix, saveMessage divides by `ns_per_us` (1000)
+    // before calling `currentTimeIsoLocal`, so the year is in the 2020s.
+    //
+    // We use the live `std.Io.Timestamp.now(...)` clock (same as
+    // saveMessage) and verify the resulting `created_iso` starts with
+    // "20" (year 2000-2099), NOT with "58".
+    //
+    // Uses a dedicated schema because the shared `llmHistoryCompactedMessagesSetupDb()` in this
+    // file only creates the columns needed by `getCompactedMessages`,
+    // not the full set required by `saveMessage`. We also need a
+    // `sessions` table because saveMessage runs `UPDATE sessions
+    // SET cwd = ?` at the end.
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT,
+        \\    response_content TEXT,
+        \\    finish_reason TEXT,
+        \\    role TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    reasoning_content TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1,
+        \\    agent TEXT,
+        \\    loop_index INTEGER,
+        \\    temperature REAL,
+        \\    is_thinking INTEGER,
+        \\    created_at_nano TEXT,
+        \\    created_iso TEXT,
+        \\    parent_session_id TEXT,
+        \\    parent_id TEXT,
+        \\    prompt_tokens INTEGER,
+        \\    completion_tokens INTEGER,
+        \\    total_tokens INTEGER,
+        \\    cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\    cache_read_input_tokens INTEGER DEFAULT 0,
+        \\    is_input INTEGER,
+        \\    is_output INTEGER,
+        \\    tool_name TEXT,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    image_url TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+
+    try saveMessage(alloc, io, &db, .{
+        .session_id = "sess_regression",
+        .model = "test",
+        .cwd = "/tmp",
+        .content = "hello",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "test",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+
+    var q = try db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE session_id = 'sess_regression'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    // Year must be in the 2020s, not 58507.
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "20") != null);
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "58507") == null);
+}
+
+test "saveMessage: created_at column is stored as Unix microseconds (length <= 17)" {
+    // Regression check: saveMessage must store `created_at` as
+    // microseconds (16 digits for year 2026). Pre-fix code stored
+    // raw nanoseconds (19 digits), which doesn't match the
+    // documented `created_at DATETIME/TEXT` contract.
+    //
+    // Uses the same dedicated schema as the test above.
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT,
+        \\    response_content TEXT,
+        \\    finish_reason TEXT,
+        \\    role TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    reasoning_content TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1,
+        \\    agent TEXT,
+        \\    loop_index INTEGER,
+        \\    temperature REAL,
+        \\    is_thinking INTEGER,
+        \\    created_at_nano TEXT,
+        \\    created_iso TEXT,
+        \\    parent_session_id TEXT,
+        \\    parent_id TEXT,
+        \\    prompt_tokens INTEGER,
+        \\    completion_tokens INTEGER,
+        \\    total_tokens INTEGER,
+        \\    cache_creation_input_tokens INTEGER DEFAULT 0,
+        \\    cache_read_input_tokens INTEGER DEFAULT 0,
+        \\    is_input INTEGER,
+        \\    is_output INTEGER,
+        \\    tool_name TEXT,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    image_url TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    cwd TEXT,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+
+    try saveMessage(alloc, io, &db, .{
+        .session_id = "sess_micros",
+        .model = "test",
+        .cwd = "/tmp",
+        .content = "hello",
+        .reasoning_content = null,
+        .role = "user",
+        .finish_reason = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .agent_name = "test",
+        .loop_index = 0,
+        .temperature = 0.0,
+        .is_thinking = false,
+        .is_input = true,
+        .is_output = false,
+    });
+
+    var q = try db.query(alloc,
+        "SELECT created_at_nano FROM llm_history WHERE session_id = 'sess_micros'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    // Microsecond format is at most 17 digits for any plausible
+    // timestamp (year ~9999). 19 digits = nanoseconds, which is the
+    // bug we're guarding against.
+    try testing.expect(row.values[0].len <= 19);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_tool_call_loading_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+fn llmHistoryToolCallLoadingSetupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Walk every production migration (001 → 068) so the schema
+    // matches production. Manual schema setup drifts the moment a
+    // migration lands; see project memory
+    // `llm-history-test-use-migrations-module.md`.
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    return .{ .db = db, .threaded = threaded, .alloc = alloc };
+}
+
+fn llmHistoryToolCallLoadingTeardown(ctx: *TestCtx) void {
+    ctx.db.deinit();
+    ctx.threaded.deinit();
+}
+
+/// Insert a session row so we can FK-reference it in tests below.
+/// The production schema (after all migrations) requires a
+/// `sessions` row before llm_history rows reference its id.
+fn llmHistoryToolCallLoadingCreateSession(ctx: *TestCtx, session_id: []const u8) !void {
+    var buf: [256]u8 = undefined;
+    const stmt = try std.fmt.bufPrint(buf[0..],
+        "INSERT INTO sessions (id, name) VALUES ('{s}', 'test-session')", .{session_id});
+    try ctx.db.exec(ctx.alloc, stmt, &.{});
+}
+
+test "saveToolResultPlaceholder inserts row with is_loading=1 and empty content" {
+    var ctx = try llmHistoryToolCallLoadingSetupDb();
+    defer llmHistoryToolCallLoadingTeardown(&ctx);
+    try llmHistoryToolCallLoadingCreateSession(&ctx, "sess_1");
+
+    const opts = SaveToolResultPlaceholderOptions{
+        .session_id = "sess_1",
+        .model = "test-model",
+        .tool_call_id = "tcA",
+        .tool_name = "bash",
+        .loop_index = 0,
+    };
+    const new_id = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
+    defer ctx.alloc.free(new_id);
+
+    var q = try ctx.db.query(ctx.alloc,
+        "SELECT response_content, is_loading, is_feed_to_llm " ++
+            "FROM llm_history WHERE tool_call_id = ?",
+        &.{"tcA"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(ctx.alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+    try testing.expectEqualStrings("1", row.values[1]);
+    try testing.expectEqualStrings("1", row.values[2]);
+}
+
+test "saveToolResultPlaceholder enforces the UNIQUE INDEX on tool_call_id" {
+    var ctx = try llmHistoryToolCallLoadingSetupDb();
+    defer llmHistoryToolCallLoadingTeardown(&ctx);
+    try llmHistoryToolCallLoadingCreateSession(&ctx, "sess_1");
+
+    const opts = SaveToolResultPlaceholderOptions{
+        .session_id = "sess_1",
+        .model = "test-model",
+        .tool_call_id = "tcA",
+        .tool_name = "bash",
+        .loop_index = 0,
+    };
+    const id1 = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
+    defer ctx.alloc.free(id1);
+
+    // Second placeholder with the SAME tool_call_id — must fail.
+    const id2 = saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
+    try testing.expectError(error.ExecuteFailed, id2);
+}
+
+test "saveToolResultPlaceholder allows multiple empty tool_call_id rows (assistant message shape)" {
+    // The partial UNIQUE INDEX excludes empty-string tool_call_ids
+    // (`WHERE tool_call_id IS NOT NULL AND tool_call_id != ''`). So
+    // an unlimited number of rows with `tool_call_id = ''` (the
+    // assistant message shape) can coexist without conflict.
+    var ctx = try llmHistoryToolCallLoadingSetupDb();
+    defer llmHistoryToolCallLoadingTeardown(&ctx);
+    try llmHistoryToolCallLoadingCreateSession(&ctx, "sess_1");
+
+    const opts = SaveToolResultPlaceholderOptions{
+        .session_id = "sess_1",
+        .model = "test-model",
+        .tool_call_id = "",
+        .tool_name = "bash",
+        .loop_index = 0,
+    };
+    const id1 = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
+    defer ctx.alloc.free(id1);
+    const id2 = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
+    defer ctx.alloc.free(id2);
+}
+
+test "updateToolResultById on a non-existent tool_call_id is a no-op (no error)" {
+    var ctx = try llmHistoryToolCallLoadingSetupDb();
+    defer llmHistoryToolCallLoadingTeardown(&ctx);
+
+    // No pre-existing placeholder — the UPDATE must be a no-op,
+    // returning Ok(()) with 0 rows affected.
+    try updateToolResultById(ctx.alloc, ctx.threaded.io(), &ctx.db, "tc_ghost", .{
+        .content = "should be discarded",
+        .diffview_before = null,
+        .diffview_after = null,
+    });
+
+    var q = try ctx.db.query(ctx.alloc,
+        "SELECT 1 FROM llm_history WHERE tool_call_id = ?",
+        &.{"tc_ghost"});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+test "resolveStaleLoadingToolResults replaces all stranded placeholders with interrupted" {
+    var ctx = try llmHistoryToolCallLoadingSetupDb();
+    defer llmHistoryToolCallLoadingTeardown(&ctx);
+    try llmHistoryToolCallLoadingCreateSession(&ctx, "sess_1");
+
+    // Insert 3 stranded placeholders.
+    for ([_][]const u8{ "tcA", "tcB", "tcC" }) |tc| {
+        const opts = SaveToolResultPlaceholderOptions{
+            .session_id = "sess_1",
+            .model = "test-model",
+            .tool_call_id = tc,
+            .tool_name = "bash",
+            .loop_index = 0,
+        };
+        const id = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts);
+        defer ctx.alloc.free(id);
+    }
+
+    // Resolve them.
+    try resolveStaleLoadingToolResults(ctx.alloc, &ctx.db, "sess_1");
+
+    // All 3 should now have is_loading=0 and an interrupted-style content.
+    for ([_][]const u8{ "tcA", "tcB", "tcC" }) |tc| {
+        var q = try ctx.db.query(ctx.alloc,
+            "SELECT response_content, is_loading FROM llm_history WHERE tool_call_id = ?",
+            &.{tc});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(ctx.alloc);
+        try testing.expectEqualStrings("0", row.values[1]);
+        try testing.expect(std.mem.indexOf(u8, row.values[0], "interrupted") != null);
+        try testing.expect(std.mem.indexOf(u8, row.values[0], "retry") != null);
+    }
+}
+
+test "resolveStaleLoadingToolResults only touches the target session" {
+    var ctx = try llmHistoryToolCallLoadingSetupDb();
+    defer llmHistoryToolCallLoadingTeardown(&ctx);
+    try llmHistoryToolCallLoadingCreateSession(&ctx, "sess_1");
+    try llmHistoryToolCallLoadingCreateSession(&ctx, "sess_2");
+
+    // Insert a stranded placeholder in each session. Different
+    // tool_call_ids because the partial UNIQUE INDEX is global
+    // (not session-scoped) — two rows with the same tool_call_id
+    // across different sessions would still collide.
+    const opts1 = SaveToolResultPlaceholderOptions{
+        .session_id = "sess_1",
+        .model = "test-model",
+        .tool_call_id = "tc_sess_1_x",
+        .tool_name = "bash",
+        .loop_index = 0,
+    };
+    const id1 = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts1);
+    defer ctx.alloc.free(id1);
+
+    const opts2 = SaveToolResultPlaceholderOptions{
+        .session_id = "sess_2",
+        .model = "test-model",
+        .tool_call_id = "tc_sess_2_y",
+        .tool_name = "bash",
+        .loop_index = 0,
+    };
+    const id2 = try saveToolResultPlaceholder(ctx.alloc, ctx.threaded.io(), &ctx.db, opts2);
+    defer ctx.alloc.free(id2);
+
+    // Resolve only sess_1.
+    try resolveStaleLoadingToolResults(ctx.alloc, &ctx.db, "sess_1");
+
+    // sess_1:tc_sess_1_x is interrupted.
+    var q1 = try ctx.db.query(ctx.alloc,
+        "SELECT response_content, is_loading FROM llm_history " ++
+            "WHERE session_id = ? AND tool_call_id = ?",
+        &.{ "sess_1", "tc_sess_1_x" });
+    defer q1.deinit();
+    const row1 = (try q1.next()) orelse return error.RowMissing;
+    defer row1.deinit(ctx.alloc);
+    try testing.expectEqualStrings("0", row1.values[1]);
+    try testing.expect(std.mem.indexOf(u8, row1.values[0], "interrupted") != null);
+
+    // sess_2:tc_sess_2_y is still is_loading=1 with empty content.
+    var q2 = try ctx.db.query(ctx.alloc,
+        "SELECT is_loading, response_content FROM llm_history " ++
+            "WHERE session_id = ? AND tool_call_id = ?",
+        &.{ "sess_2", "tc_sess_2_y" });
+    defer q2.deinit();
+    const row2 = (try q2.next()) orelse return error.RowMissing;
+    defer row2.deinit(ctx.alloc);
+    try testing.expectEqualStrings("1", row2.values[0]);
+    try testing.expectEqualStrings("", row2.values[1]);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from llm_history_worker_info_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+/// Open a fresh in-memory sqlite DB with the minimum schema needed
+/// for `getActiveWorker` + `getWorkerBySessionId` (the `worker` +
+/// `sessions` tables, the latter with `git_worktree_cwd` from
+/// Migration 046).
+fn llmHistoryWorkerInfoSetupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal `sessions` schema (matches the columns touched by
+    // `getActiveWorker`'s JOIN). `git_worktree_cwd` (Migration 046)
+    // is the column we're exercising — it is TEXT, NULLable.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT,
+        \\    git_worktree_cwd TEXT,
+        \\    selected_profile_model TEXT
+        \\)
+    , &.{});
+
+    // Worker table — the full canonical schema. We only read from
+    // these columns, but the schema matters because the production
+    // SQL references `working_directory`, `last_activity`, and
+    // `last_activity_description` directly (not via COALESCE on a
+    // potentially-NULL field).
+    try db.exec(alloc,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER DEFAULT (strftime('%s', 'now')),
+        \\    last_activity_description TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: getActiveWorker pulls git_worktree_cwd from joined session ─
+
+test "getActiveWorker returns git_worktree_cwd from joined sessions row" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert a session that has a bound worktree (Migration 046 semantics).
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name, git_worktree_cwd) VALUES ('s1', 'test', '/home/me/.worktrees/feature-x')",
+        &.{});
+    // Insert a worker row pointing at that session.
+    try ctx.db.exec(alloc,
+        "INSERT INTO worker (id, session_id, working_directory, last_activity_description) " ++
+        "VALUES ('w1', 's1', '/home/me', 'working on the feature')",
+        &.{});
+
+    const workers = try getActiveWorker(alloc, &ctx.db);
+    defer {
+        for (workers) |*w| w.deinit(alloc);
+        alloc.free(workers);
+    }
+
+    try testing.expectEqual(@as(usize, 1), workers.len);
+    try testing.expectEqualStrings("s1", workers[0].session_id);
+    try testing.expectEqualStrings("/home/me", workers[0].working_directory);
+    try testing.expectEqualStrings("working on the feature", workers[0].last_activity_description);
+    try testing.expectEqualStrings("/home/me/.worktrees/feature-x", workers[0].git_worktree_cwd);
+}
+
+// ─── Test 2: LEFT JOIN returns empty string when session has no worktree ─
+
+test "getActiveWorker returns empty string when session row has NULL git_worktree_cwd" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Session exists but has no git_worktree_cwd (NULL).
+    try ctx.db.exec(alloc, "INSERT INTO sessions (id, name) VALUES ('s1', 'test')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id) VALUES ('w1', 's1')", &.{});
+
+    const workers = try getActiveWorker(alloc, &ctx.db);
+    defer {
+        for (workers) |*w| w.deinit(alloc);
+        alloc.free(workers);
+    }
+
+    try testing.expectEqual(@as(usize, 1), workers.len);
+    // COALESCE(s.git_worktree_cwd, '') maps NULL → empty string so
+    // the prompt builder's `if (worker.git_worktree_cwd.len > 0)`
+    // guard works as designed (skips the "(git worktree: ...)"
+    // suffix when no worktree is bound).
+    try testing.expectEqualStrings("", workers[0].git_worktree_cwd);
+}
+
+// ─── Test 3: LEFT JOIN preserves orphan workers (no matching session) ───
+
+test "getActiveWorker returns worker with empty git_worktree_cwd when session row missing" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Worker exists; no corresponding session row (deleted orphan — should
+    // not happen in normal flow, but the LEFT JOIN must not filter it out).
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id) VALUES ('w1', 'orphan_sid')", &.{});
+
+    const workers = try getActiveWorker(alloc, &ctx.db);
+    defer {
+        for (workers) |*w| w.deinit(alloc);
+        alloc.free(workers);
+    }
+
+    try testing.expectEqual(@as(usize, 1), workers.len);
+    try testing.expectEqualStrings("orphan_sid", workers[0].session_id);
+    try testing.expectEqualStrings("", workers[0].git_worktree_cwd);
+}
+
+// ─── Test 4: deinit frees git_worktree_cwd (memory leak regression) ─────
+
+test "WorkerInfo.deinit frees git_worktree_cwd without leaking" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Populated git_worktree_cwd — the case that would leak if deinit forgot
+    // the field. The `testing.allocator` will flag any leaked allocation.
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name, git_worktree_cwd) VALUES ('s1', 't', '/some/abs/path')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id) VALUES ('w1', 's1')", &.{});
+
+    const workers = try getActiveWorker(alloc, &ctx.db);
+    defer {
+        for (workers) |*w| w.deinit(alloc);
+        alloc.free(workers);
+    }
+
+    try testing.expectEqual(@as(usize, 1), workers.len);
+    try testing.expect(workers[0].git_worktree_cwd.len > 0);
+}
+
+// ─── Test 5: getWorkerBySessionId returns git_worktree_cwd ──────────────
+
+test "getWorkerBySessionId returns git_worktree_cwd from joined session" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name, git_worktree_cwd) VALUES ('s1', 't', '/worktree/path')", &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO worker (id, session_id, last_activity_description) VALUES ('w1', 's1', 'hello')", &.{});
+
+    const opt = try getWorkerBySessionId(alloc, &ctx.db, "s1");
+    var worker = (opt orelse return error.ExpectedWorker);
+    defer worker.deinit(alloc);
+
+    try testing.expectEqualStrings("s1", worker.session_id);
+    try testing.expectEqualStrings("hello", worker.last_activity_description);
+    try testing.expectEqualStrings("/worktree/path", worker.git_worktree_cwd);
+}
+
+// ─── Test 6: getWorkerBySessionId returns null when worker row absent ───
+
+test "getWorkerBySessionId returns null when no worker row matches" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    const opt = try getWorkerBySessionId(alloc, &ctx.db, "no_such_sid");
+    try testing.expect(opt == null);
+}
+
+// ─── Test 7: getWorkerBySessionId returns empty for orphan worker ────────
+
+test "getWorkerBySessionId returns worker with empty git_worktree_cwd for orphan row" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Worker exists, session row missing.
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id) VALUES ('w1', 'orphan')", &.{});
+
+    const opt = try getWorkerBySessionId(alloc, &ctx.db, "orphan");
+    var worker = (opt orelse return error.ExpectedWorker);
+    defer worker.deinit(alloc);
+
+    try testing.expectEqualStrings("orphan", worker.session_id);
+    try testing.expectEqualStrings("", worker.git_worktree_cwd);
+}

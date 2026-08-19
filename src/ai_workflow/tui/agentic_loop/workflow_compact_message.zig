@@ -663,6 +663,11 @@ fn setupDb() !struct {
     return .{ .db = db, .threaded = threaded };
 }
 
+fn teardownDb(s: *@TypeOf(setupDb() catch unreachable)) void {
+    s.db.deinit();
+    s.threaded.deinit();
+}
+
 fn seedRow(
     alloc: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1363,6 +1368,7 @@ fn countSubstring(hay: []const u8, needle: []const u8) usize {
 
 const AgentMessage = agent.AgentMessage;
 const ToolCall = agent.ToolCall;
+const session_plan = @import("session_plan.zig");
 
 /// Build a 5-message list mimicking the production workflow shape:
 ///   [0] system prompt, [1] user, [2] assistant, [3] user, [4] assistant (current/pending).
@@ -1779,4 +1785,120 @@ test "compactionThresholdPercent: top-level defaults (cfg) cascade before built-
     defer freeProfile(allocator, profile);
     try testing.expectEqual(@as(u8, 50), cfg.compactionThresholdPercent(profile, null, cfg));
     try testing.expectEqual(@as(u32, 600_000), cfg.maxCapacityForModel(profile, null, cfg, "MiniMax-M2.7"));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from workflow_compaction_envelope_test.zig (Migration 076 tests)
+// ════════════════════════════════════════════════════════════════════════════
+// ─── Migration 076 — session_plan <plan> section in compaction envelope ──────
+//
+// When compaction fires, the current session_plan row is fetched BEFORE
+// mark_history_not_for_llmrun and embedded as a `<plan><content>` CDATA
+// section in the `<compaction_context>` envelope.
+
+test "enrichCompactionXml embeds <plan> when session_plan has a plan" {
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const session_id = "sess_plan_present";
+    {
+        const ts = try session_plan.savePlan(alloc, &s.db, .{
+            .session_id = session_id,
+            .content = "# My Plan\n\n- [ ] step 1\n- [x] step 2 done\n",
+        });
+        defer alloc.free(ts);
+    }
+
+    const plan_row = (try session_plan.getPlanOpt(alloc, &s.db, session_id)).?;
+    defer plan_row.deinit(alloc);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary text",
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        plan_row,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // The <plan> section header + close tag are both present.
+    try testing.expect(std.mem.indexOf(u8, result, "<plan ") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</plan>") != null);
+    // updated_at attribute is embedded (the row we just inserted has one).
+    try testing.expect(std.mem.indexOf(u8, result, "updated_at=\"") != null);
+    // The plan content is wrapped in CDATA so raw `<`, `>`, `&` inside
+    // the plan markdown never breaks the envelope.
+    try testing.expect(std.mem.indexOf(u8, result, "<content><![CDATA[") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "]]></content>") != null);
+    // The actual plan body is preserved verbatim.
+    try testing.expect(std.mem.indexOf(u8, result, "# My Plan") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- [ ] step 1") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- [x] step 2 done") != null);
+}
+
+test "enrichCompactionXml omits <plan> when session_plan is absent" {
+    // No row inserted for this session_id — getPlanOpt would return null.
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary text",
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        null, // no plan row at all
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // No <plan> section is emitted when plan is null — mirrors the
+    // "omit when empty" convention used for <recent_activities>.
+    try testing.expect(std.mem.indexOf(u8, result, "<plan") == null);
+}
+
+test "enrichCompactionXml CDATA-splits plan content containing literal ]]>" {
+    // Regression: XML CDATA sections cannot contain the literal sequence
+    // `]]>`. The plan body must be split into adjacent CDATA sections
+    // (close current with `]]>`, re-open with `<![CDATA[`, emit literal
+    // `>` as content of the new section) — same pattern session_skills
+    // uses for skill content.
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const session_id = "sess_plan_cdata";
+    {
+        const ts = try session_plan.savePlan(alloc, &s.db, .{
+            .session_id = session_id,
+            .content = "before ]]> middle ]]> after",
+        });
+        defer alloc.free(ts);
+    }
+
+    const plan_row = (try session_plan.getPlanOpt(alloc, &s.db, session_id)).?;
+    defer plan_row.deinit(alloc);
+
+    const result = try enrichCompactionXml(
+        alloc,
+        "summary text",
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        plan_row,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // The two ]]> sequences must be split into adjacent CDATA sections
+    // so the envelope is still well-formed XML, with the literal '>'
+    // reappearing between them.
+    try testing.expect(std.mem.indexOf(u8, result, "before ]]><![CDATA[> middle ]]><![CDATA[> after") != null);
 }

@@ -4,8 +4,6 @@ test {
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
     _ = @import("routines/scheduler_test.zig");
-    _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
-    _ = @import("agentic_loop/retry_delay_ms_race_test.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
@@ -113,7 +111,6 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/unified_events_sse_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
-    _ = @import("agentic_loop/get_session_list_test.zig");
     _ = @import("http_handlers/session_messages_get_test.zig"); // 2026-08-07-profile-persist-read — getSessionMessagesSorted carries selected_profile_model
     // _ = @import("transform_llm_history_to_agent_messages_test.zig"); // DISABLED - pre-existing type mismatch (TUIHistory vs LLMHistory) on main
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
