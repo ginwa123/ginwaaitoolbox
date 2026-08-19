@@ -1012,29 +1012,45 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
             </button>
           </div>
 
-          <!-- Body (scrollable) -->
-          <div class="flex-1 overflow-y-auto min-h-0 px-5 py-4">
-            <!-- Error banner. Sits at the top of the body so the
-                 user sees it immediately. Hidden when errorMessage is
-                 null/empty. The host sets errorMessage on a save/
-                 create handler failure so the user can retry without
-                 losing their typed content (the form is NOT reset on
-                 error — only on a successful submit, via watch's
-                 `show` change). -->
+          <!-- NEW (plan: 2026-08-19-kanban-error-banner-on-front).
+               Error banner. Lifted OUT of the scrollable body so it
+               stays permanently visible — even when the user scrolls
+               down through the form fields (which used to push the
+               banner off-screen, making it look like it was 'in the
+               back of the dialog'). It is now a sibling of header /
+               body / actions inside the dialog card, with shrink-0 so
+               the flex column doesn't collapse it, and explicit
+               `position: relative; z-index: 10` so it always renders
+               above any descendant stacking context inside the body
+               (e.g. the dropdowns in KanbanTagsInput which have
+               z-50 on their dropdowns). The host sets errorMessage
+               on a save/create/start-agent handler failure so the
+               user can retry without losing their typed content
+               (the form is NOT reset on error — only on a successful
+               submit, via the broader watch's `show` change). -->
+          <div
+            v-if="errorMessage"
+            class="shrink-0 px-5 py-3 text-sm"
+            style="
+              background-color: rgba(239, 68, 68, 0.12);
+              border-bottom: 1px solid var(--color-border);
+              color: rgb(220, 38, 38);
+              position: relative;
+              z-index: 10;
+            "
+            role="alert"
+            data-testid="kanban-task-detail-error"
+          >
             <div
-              v-if="errorMessage"
-              class="mb-4 px-3 py-2 rounded-lg text-sm"
-              style="
-                background-color: rgba(239, 68, 68, 0.12);
-                border: 1px solid rgba(239, 68, 68, 0.4);
-                color: rgb(220, 38, 38);
-              "
-              role="alert"
-              data-testid="kanban-task-detail-error"
+              class="px-3 py-2 rounded-lg"
+              style="border: 1px solid rgba(239, 68, 68, 0.4);"
             >
               {{ errorMessage }}
             </div>
+          </div>
 
+          <!-- Body (scrollable) -->
+          <div class="flex-1 overflow-y-auto min-h-0 px-5 py-4">
             <!-- Task name input — big, prominent, full-width -->
             <div class="mb-4">
               <label
