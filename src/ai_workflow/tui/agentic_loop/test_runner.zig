@@ -73,6 +73,14 @@ test {
     // 2026-08-14 — list_directory exec wrapper (Task 5 of the same plan).
     _ = @import("tools_exec_list_directory_test.zig");
 
+    // 2026-08-19 — session_plan agent tools (Task 4 of
+    // 2026-08-19-session-plan-agent-tool). Exec wrappers for the
+    // update_plan + get_plan tools. Pure-fn layer lives in
+    // src/modules/agent/tools/update_plan.zig + get_plan.zig and is
+    // tested there.
+    _ = @import("tools_exec_update_plan_test.zig");
+    _ = @import("tools_exec_get_plan_test.zig");
+
     // 2026-08-14 — inline `test "...relative path..."` blocks at the
     // bottom of every tool's exec wrapper (follow-up commit proving
     // the validator + resolver wiring end-to-end).

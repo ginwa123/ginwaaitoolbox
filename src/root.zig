@@ -530,6 +530,10 @@ pub const remove_file = @import("modules/agent/tools/remove_file.zig");
 pub const system_folder = @import("modules/system_folder/system_folder.zig");
 
 pub const update_activity = @import("modules/agent/tools/update_activity.zig");
+// 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
+// update_plan (UPSERT) + get_plan (fetch) — the agent's persistent markdown task plan.
+pub const update_plan = @import("modules/agent/tools/update_plan.zig");
+pub const get_plan = @import("modules/agent/tools/get_plan.zig");
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const nalar_browser = @import("modules/agent/tools/nalar_browser.zig");
@@ -561,6 +565,9 @@ pub const session_helpers = @import("ai_workflow/tui/agentic_loop/llm_history.zi
 pub const session_db = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const llm_history = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const agent_memories = @import("ai_workflow/tui/agentic_loop/agent_memories.zig");
+// 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
+// Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).
+pub const session_plan = @import("ai_workflow/tui/agentic_loop/session_plan.zig");
 pub const workspace_items = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const workspace_item_tasks = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.zig");
