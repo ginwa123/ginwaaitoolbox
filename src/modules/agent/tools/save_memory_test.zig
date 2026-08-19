@@ -138,8 +138,10 @@ test "save_memory_tool: UPSERTs on second call with same id (updated_at bumps)" 
     try testing.expect(first_updated_at.len > 0);
 
     // Sleep 1 second so the UPDATE bumps the timestamp (DATETIME resolution).
-    var ts = std.c.timespec{ .sec = 1, .nsec = 0 };
-    _ = std.c.nanosleep(&ts, null);
+    // Use a portable helper because std.c.timespec is broken on Windows
+    // (Zig 0.16 — see ../../ai_workflow/tui/agentic_loop/test_sleep.zig).
+    const test_sleep = @import("../../../ai_workflow/tui/agentic_loop/test_sleep.zig");
+    test_sleep.sleep(1, 0);
 
     const input2 = save_memory_mod.SaveMemoryInput{
         .content = "updated content",

@@ -348,7 +348,7 @@ const NALAR_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral
 fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     // 1. If NALAR_DAEMON_CHILD is set, we ARE the spawned daemon. Just
     //    return; the caller is the daemon process.
-    const sentinel = getEnvVarW(NALAR_DAEMON_CHILD) catch null;
+    const sentinel = getEnvVarW(allocator, NALAR_DAEMON_CHILD) catch null;
     if (sentinel) |val| {
         defer allocator.free(val);
         if (val.len > 0) {

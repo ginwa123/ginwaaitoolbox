@@ -560,8 +560,10 @@ test "saveMemory: UPSERTs when caller passes an existing id" {
 
     // Tiny sleep so the UPDATE bumps `updated_at` (DATETIME resolution is 1s).
     // std.c.nanosleep — std.Thread.sleep doesn't exist in Zig 0.16.
-    var ts = std.c.timespec{ .sec = 1, .nsec = 0 };
-    _ = std.c.nanosleep(&ts, null);
+    // Use a portable helper because std.c.timespec is broken on Windows
+    // (Zig 0.16 — see test_sleep.zig for details).
+    const test_sleep = @import("test_sleep.zig");
+    test_sleep.sleep(1, 0);
 
     // UPSERT with the same id.
     const second = try saveMemory(alloc, &ctx.db, .{

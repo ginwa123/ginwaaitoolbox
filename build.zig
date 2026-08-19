@@ -284,8 +284,28 @@ pub fn build(b: *std.Build) void {
             \\}
             ,
             else =>
-            // Windows + any other host: fall back to vendored amalgamation.
-            \\{ echo "use_system=000"; \\}
+            // Windows: probe vcpkg-installed headers at the canonical
+            // `C:/vcpkg/installed/x64-windows/include/` path. The CI
+            // installs sqlite3, openssl, libpq, curl via
+            // `vcpkg install --recurse <port>:x64-windows` — the
+            // package-level probes verify each header separately,
+            // this top-level probe just decides whether to skip the
+            // `fetch-vendor-{sqlite3,curl}` build steps. Probe runs
+            // under `sh -c` (git-bash on the self-hosted Windows runner)
+            // and forward-slash paths work natively there.
+            //
+            // Header-only probe (3 bits, no separate lib check): the
+            // package-level probes also check only headers, so they
+            // stay consistent with this top-level one. Lib presence
+            // is verified at link time by the linker (a missing .lib
+            // gives `file not found`, which is a clear diagnostic).
+            \\{ \
+            \\  VCPKG=/c/vcpkg/installed/x64-windows/include; \
+            \\  s=$(test -f "$VCPKG/sqlite3.h" && echo 1 || echo 0); \
+            \\  q=$(test -f "$VCPKG/libpq-fe.h" && echo 1 || echo 0); \
+            \\  h=$(test -f "$VCPKG/openssl/ssl.h" && echo 1 || echo 0); \
+            \\  echo "use_system=$s$q$h"; \
+            \\}
             ,
         };
         const result = std.process.run(
@@ -299,8 +319,9 @@ pub fn build(b: *std.Build) void {
         ) catch break :blk false;
         defer b.allocator.free(result.stdout);
         defer b.allocator.free(result.stderr);
-        // All three: sqlite3 header (curl.h on macos), libpq header (any layout),
-        // openssl header. Library side is verified by the package's own probe.
+        // All three: sqlite3 + libpq + openssl headers. Library files
+        // (.lib) are resolved at link time against the vcpkg sysroot
+        // added by the package-level build.zig's `.windows =>` arm.
         break :blk std.mem.indexOf(u8, result.stdout, "use_system=111") != null;
     };
 
@@ -339,7 +360,17 @@ pub fn build(b: *std.Build) void {
             \\}
             ,
             else =>
-            \\{ echo "use_system=000"; \\}
+            // Windows: vcpkg at `C:/vcpkg/installed/x64-windows/include/`.
+            // Both curl.h + openssl/ssl.h must be present. Library
+            // files (.lib) are resolved at link time against the vcpkg
+            // sysroot added by custom_http_client/build.zig's
+            // `.windows =>` arm.
+            \\{ \
+            \\  VCPKG=/c/vcpkg/installed/x64-windows/include; \
+            \\  c=$(test -f "$VCPKG/curl/curl.h" && echo 1 || echo 0); \
+            \\  h=$(test -f "$VCPKG/openssl/ssl.h" && echo 1 || echo 0); \
+            \\  echo "use_system=$c$h"; \
+            \\}
             ,
         };
         const result = std.process.run(

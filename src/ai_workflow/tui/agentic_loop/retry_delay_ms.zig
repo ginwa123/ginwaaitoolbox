@@ -6,6 +6,17 @@ const logger_mod = nalarcore.loggermod;
 const sqlite = nalarcore.sqlite;
 const IsWorkerCancelledInput = @import("is_worker_cancelled.zig").IsWorkerCancelledInput;
 
+// Portable sleep helper. We can't use std.c.timespec directly because
+// it's broken on Windows in Zig 0.16 (see test_sleep.zig for the
+// upstream analysis). We define our own nanosleep-equivalent here
+// using `c_long` (Linux/macOS c_long = i64, Windows c_long = i32 —
+// both fit `chunk_ms * std.time.ns_per_ms` for any sane chunk_ms
+// value, since chunk_ms is bounded at 50 in the call below).
+//
+// Why c_long and not std.c.timespec.sec/nsec directly? Because
+// std.c.timespec is the upstream-broken type — the struct literal
+// `.{ .sec = X, .nsec = Y }` won't compile on Windows. Defining a
+// custom extern struct here keeps the test portable.
 const WorkflowNanoSleepTimespec = extern struct {
     sec: c_long,
     nsec: c_long,
@@ -65,7 +76,13 @@ pub fn retryDelayMs(
 
         const ts = WorkflowNanoSleepTimespec{
             .sec = 0,
-            .nsec = chunk_ms * std.time.ns_per_ms,
+            // Explicit c_long cast — `chunk_ms * std.time.ns_per_ms`
+            // produces a `u32` (chunk_ms's type) which the linker
+            // can't coerce to c_long on Windows (where c_long=i32).
+            // Cast through c_long so the struct literal type-checks
+            // on every POSIX. Runtime values: 50ms * 1M ns/ms = 50M ns
+            // — fits i32 comfortably.
+            .nsec = @as(c_long, @intCast(chunk_ms * std.time.ns_per_ms)),
         };
         _ = nanosleep(&ts, null);
     }

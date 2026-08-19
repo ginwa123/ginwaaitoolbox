@@ -109,15 +109,23 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         \\}
         ,
         else =>
-        // Windows + any other host: skip the probe (assume all 0).
+        // Windows: probe vcpkg-installed headers at the canonical
+        // `C:/vcpkg/installed/x64-windows/` path. The CI installs
+        // sqlite3, openssl, libpq via `vcpkg install --recurse
+        // <port>:x64-windows`. Probe runs under `sh -c` (git-bash on
+        // the self-hosted Windows runner); forward-slash paths work.
+        //
+        // Header-only probe: vcpkg's lib/ filenames differ between
+        // MSVC (`sqlite3.lib`) and MinGW (`libsqlite3.lib`) toolchains,
+        // and the lib files may also be `*.dll.lib` etc. Rather than
+        // enumerate every naming variant, just check headers —
+        // `linkSystemLibrary` will fail loudly with `file not found`
+        // if the lib is actually missing.
         \\{ \
-        \\  echo "sqlite_hdr=0"; \
-        \\  echo "sqlite_lib=0"; \
-        \\  echo "pq_hdr=0"; \
-        \\  echo "pq_lib=0"; \
-        \\  echo "ssl_hdr=0"; \
-        \\  echo "ssl_lib=0"; \
-        \\  echo "crypto_lib=0"; \
+        \\  VCPKG=/c/vcpkg/installed/x64-windows; \
+        \\  echo "sqlite_hdr=$([ -f $VCPKG/include/sqlite3.h ] && echo 1 || echo 0)"; \
+        \\  echo "pq_hdr=$([ -f $VCPKG/include/libpq-fe.h ] && echo 1 || echo 0)"; \
+        \\  echo "ssl_hdr=$([ -f $VCPKG/include/openssl/ssl.h ] && echo 1 || echo 0)"; \
         \\}
         ,
     };
@@ -143,36 +151,30 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     defer b.allocator.free(result.stderr);
 
     var sqlite_hdr: bool = false;
-    var sqlite_lib: bool = false;
     var pq_hdr: bool = false;
-    var pq_lib: bool = false;
     var ssl_hdr: bool = false;
-    var ssl_lib: bool = false;
-    var crypto_lib: bool = false;
 
     var lines = std.mem.splitSequence(u8, result.stdout, "\n");
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "sqlite_hdr=")) {
             sqlite_hdr = std.mem.eql(u8, line["sqlite_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "sqlite_lib=")) {
-            sqlite_lib = std.mem.eql(u8, line["sqlite_lib=".len..], "1");
         } else if (std.mem.startsWith(u8, line, "pq_hdr=")) {
             pq_hdr = std.mem.eql(u8, line["pq_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "pq_lib=")) {
-            pq_lib = std.mem.eql(u8, line["pq_lib=".len..], "1");
         } else if (std.mem.startsWith(u8, line, "ssl_hdr=")) {
             ssl_hdr = std.mem.eql(u8, line["ssl_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "ssl_lib=")) {
-            ssl_lib = std.mem.eql(u8, line["ssl_lib=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "crypto_lib=")) {
-            crypto_lib = std.mem.eql(u8, line["crypto_lib=".len..], "1");
         }
     }
 
-    const use_system_sqlite3 = sqlite_hdr and sqlite_lib;
-    const use_system_pq = pq_hdr and pq_lib;
-    const use_system_ssl = ssl_hdr and ssl_lib;
-    const use_system_crypto = ssl_hdr and crypto_lib;
+    // Header-only probe (see probe_script above): on vcpkg-equipped
+    // hosts the package links against the vcpkg sysroot and relies
+    // on the linker's search path to find the .lib files. If the lib
+    // is missing the linker reports `file not found` with a clear
+    // diagnostic. This avoids the per-toolchain lib-name enum (MSVC
+    // `sqlite3.lib` vs MinGW `libsqlite3.lib` vs `sqlite3.dll.lib`).
+    const use_system_sqlite3 = sqlite_hdr;
+    const use_system_pq = pq_hdr;
+    const use_system_ssl = ssl_hdr;
+    const use_system_crypto = ssl_hdr; // crypto's header is in openssl/ssl.h — same as ssl
 
     std.debug.print(
         "[databases] probe: sqlite3={} libpq={} ssl={} crypto={}\n",
@@ -312,7 +314,40 @@ pub fn build(b: *std.Build) void {
             }
         },
         .windows => {
-            mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
+            // Use vcpkg-installed sqlite3 (and libpq/openssl) when the
+            // probe finds them. The CI installs them via
+            // `vcpkg install --recurse <port>:x64-windows` at
+            // `C:/vcpkg/installed/x64-windows/`. This skips the
+            // vendored-amalgamation path entirely — the build no
+            // longer needs to fetch / compile sqlite3.c (saves ~30s on
+            // fresh checkouts). Falls back to vendored on hosts that
+            // don't have vcpkg installed (a developer building on
+            // Windows without vcpkg still gets a working build).
+            //
+            // Use addObjectFile (not linkSystemLibrary) to bypass
+            // the GNU-vs-MSVC lib-name convention mismatch: the
+            // build target is `x86_64-windows-gnu` (GNU toolchain
+            // conventions — `libfoo.a`), but vcpkg ships
+            // `libfoo.lib` / `sqlite3.lib` (MSVC-style extension
+            // with GNU-style name). Explicit object-file links work
+            // with either naming — the linker doesn't try to
+            // translate `-lfoo` → `libfoo.{a,lib}` it just adds
+            // the file the build.zig hands it.
+            if (sys.use_system_sqlite3) {
+                mod.addIncludePath(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/include" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/sqlite3.lib" });
+                if (sys.use_system_pq) {
+                    mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libpq.lib" });
+                }
+                if (sys.use_system_ssl) {
+                    mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libssl.lib" });
+                }
+                if (sys.use_system_crypto) {
+                    mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcrypto.lib" });
+                }
+            } else {
+                mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
+            }
             // bcrypt.dll is needed by src/modules/custom_http_server/src/security.zig
             // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
             mod.linkSystemLibrary("bcrypt", .{});

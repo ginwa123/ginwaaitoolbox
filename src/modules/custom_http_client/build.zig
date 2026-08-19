@@ -150,13 +150,23 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         \\}
         ,
         else =>
-        // Windows + any other host: skip the probe (assume all 0).
+        // Windows: probe vcpkg-installed curl + openssl at the canonical
+        // `C:/vcpkg/installed/x64-windows/` path. The CI installs curl
+        // + openssl via `vcpkg install --recurse <port>:x64-windows`.
+        // Probe runs under `sh -c` (git-bash on the self-hosted
+        // Windows runner); forward-slash paths work.
+        //
+        // Header-only probe: vcpkg's lib/ filenames differ between
+        // MSVC (`curl.lib`) and MinGW (`libcurl.lib`) toolchains, and
+        // the lib files may also be hidden behind `.dll.lib` or other
+        // vendor-specific names. Rather than enumerate every naming
+        // variant, just check headers — `linkSystemLibrary` will
+        // fail loudly with "file not found" if the lib is actually
+        // missing. Headers are stable across toolchain variants.
         \\{ \
-        \\  echo "curl_hdr=0"; \
-        \\  echo "curl_lib=0"; \
-        \\  echo "ssl_hdr=0"; \
-        \\  echo "ssl_lib=0"; \
-        \\  echo "crypto_lib=0"; \
+        \\  VCPKG=/c/vcpkg/installed/x64-windows; \
+        \\  echo "curl_hdr=$([ -f $VCPKG/include/curl/curl.h ] && echo 1 || echo 0)"; \
+        \\  echo "ssl_hdr=$([ -f $VCPKG/include/openssl/ssl.h ] && echo 1 || echo 0)"; \
         \\}
         ,
     };
@@ -182,29 +192,28 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     defer b.allocator.free(result.stderr);
 
     var curl_hdr: bool = false;
-    var curl_lib: bool = false;
     var ssl_hdr: bool = false;
-    var ssl_lib: bool = false;
-    var crypto_lib: bool = false;
 
     var lines = std.mem.splitSequence(u8, result.stdout, "\n");
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, "curl_hdr=")) {
             curl_hdr = std.mem.eql(u8, line["curl_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "curl_lib=")) {
-            curl_lib = std.mem.eql(u8, line["curl_lib=".len..], "1");
         } else if (std.mem.startsWith(u8, line, "ssl_hdr=")) {
             ssl_hdr = std.mem.eql(u8, line["ssl_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "ssl_lib=")) {
-            ssl_lib = std.mem.eql(u8, line["ssl_lib=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "crypto_lib=")) {
-            crypto_lib = std.mem.eql(u8, line["crypto_lib=".len..], "1");
         }
     }
 
-    const found_curl = curl_hdr and curl_lib;
-    const found_ssl = ssl_hdr and ssl_lib;
-    const found_crypto = ssl_hdr and crypto_lib; // ssl_hdr shared — crypto's header is also in openssl/ssl.h
+    // Header-only probe (see probe_script above): on vcpkg-equipped
+    // hosts, the package links against the vcpkg sysroot and relies
+    // on the linker's search path + the explicit `addLibraryPath`
+    // call to find the .lib files. We assume "headers present → libs
+    // will be too" — if not, the linker reports `file not found` and
+    // the user sees a clear diagnostic. This avoids the brittle
+    // per-toolchain lib-name enumeration (MSVC `curl.lib` vs MinGW
+    // `libcurl.lib` vs `curl.dll.lib`).
+    const found_curl = curl_hdr;
+    const found_ssl = ssl_hdr;
+    const found_crypto = ssl_hdr; // crypto lives under openssl/ssl.h — same header
     const use_system = found_curl and found_ssl and found_crypto;
 
     // Log the probe result so the operator sees which path was taken.
@@ -212,13 +221,13 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     // stderr — easy to spot in build output.
     if (use_system) {
         std.debug.print(
-            "[custom_http_client] using system libcurl + ssl + crypto (host has all 3 libs + headers)\n",
+            "[custom_http_client] using system libcurl + ssl + crypto (host has all 3 headers)\n",
             .{},
         );
     } else {
         std.debug.print(
-            "[custom_http_client] using vendored libcurl fat archive (host probe: curl_hdr={} curl_lib={} ssl_hdr={} ssl_lib={} crypto_lib={})\n",
-            .{ curl_hdr, curl_lib, ssl_hdr, ssl_lib, crypto_lib },
+            "[custom_http_client] using vendored libcurl fat archive (host probe: curl_hdr={} ssl_hdr={})\n",
+            .{ curl_hdr, ssl_hdr },
         );
     }
 
@@ -312,13 +321,46 @@ pub fn build(b: *std.Build) void {
                 mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
                 mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             },
+            .windows => {
+                // vcpkg at `C:/vcpkg/installed/x64-windows/`. Both the
+                // include and lib subdirs are added explicitly because
+                // the cimport in src/curl.zig resolves <curl/curl.h>
+                // and the linker needs to find the .lib files at link
+                // time. The `\` → `/` translation is fine on Windows
+                // since the NTFS layer accepts both separators — Zig's
+                // path-handler routes them through the same kernel
+                // APIs.
+                //
+                // Use addObjectFile (not linkSystemLibrary) to bypass
+                // the GNU-vs-MSVC lib-name convention mismatch: the
+                // build target is `x86_64-windows-gnu` (GNU toolchain
+                // conventions — `libcurl.a`), but vcpkg ships
+                // `libcurl.lib` (MSVC-style extension, GCC-style name).
+                // Explicit object-file links work with either naming
+                // — the linker doesn't try to translate `-lcurl` →
+                // `libcurl.{a,lib}` it just adds the file the build.zig
+                // hands it.
+                mod.addIncludePath(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/include" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcurl.lib" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libssl.lib" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcrypto.lib" });
+            },
             else => {
                 mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
             },
         }
-        mod.linkSystemLibrary("curl", .{});
-        mod.linkSystemLibrary("ssl", .{});
-        mod.linkSystemLibrary("crypto", .{});
+        // addObjectFile above replaces these linkSystemLibrary calls
+        // on Windows (where the vcpkg lib-file naming doesn't match
+        // the GNU `libfoo.a` convention). On Linux + macOS the
+        // linkSystemLibrary calls below work because the system libs
+        // are at `/usr/lib/libfoo.so.<n>` / `/opt/homebrew/opt/...`/
+        // `libfoo.dylib`, which IS the convention `linkSystemLibrary`
+        // looks for on those platforms.
+        if (target.result.os.tag != .windows) {
+            mod.linkSystemLibrary("curl", .{});
+            mod.linkSystemLibrary("ssl", .{});
+            mod.linkSystemLibrary("crypto", .{});
+        }
     } else {
         // Vendored path. Add the per-target include path + embed the
         // prebuilt archive as an object file.
