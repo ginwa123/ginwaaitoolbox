@@ -23,39 +23,27 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Win32 kernel32 `Sleep` — declared at module scope to match the
+// project's existing pattern (src/helpers/mod.zig:86). The decl is
+// a no-op at link time on POSIX — kernel32.dll only exists on Windows
+// — and the call site is guarded by `builtin.os.tag` so the linker
+// never sees an unresolved Sleep symbol on POSIX.
+extern "kernel32" fn Sleep(dw_milliseconds: u32) callconv(.winapi) void;
+
 /// Sleep for at least `sec` seconds + `nsec` nanoseconds. Cross-platform.
 pub fn sleep(sec: u32, nsec: u32) void {
     if (comptime builtin.os.tag == .windows) {
-        sleepWindows(sec, nsec);
+        // Win32 Sleep takes a DWORD (u32) of milliseconds. Round UP —
+        // we want at LEAST the requested duration, not less.
+        const ms: u64 = @as(u64, sec) * 1_000 + @as(u64, nsec) / 1_000_000;
+        // Sleep(0) yields the rest of the current time slice — close
+        // enough to a "yield" semantics. Saturate at u32 max so a huge
+        // `sec` doesn't wrap to 0.
+        const ms_dword: u32 = if (ms == 0) 0 else std.math.cast(u32, ms) orelse std.math.maxInt(u32);
+        Sleep(ms_dword);
     } else {
         sleepPosix(sec, nsec);
     }
-}
-
-fn sleepWindows(sec: u32, nsec: u32) void {
-    // Win32 Sleep takes a DWORD (u32) of milliseconds. Round UP — we
-    // want at LEAST the requested duration, not less.
-    const ms: u64 = @as(u64, sec) * 1_000 + @as(u64, nsec) / 1_000_000;
-    // Sleep(0) yields the rest of the current time slice — close
-    // enough to a "yield" semantics. Saturate at u32 max so a huge
-    // `sec` doesn't wrap to 0.
-    const ms_dword: u32 = if (ms == 0) 0 else std.math.cast(u32, ms) orelse std.math.maxInt(u32);
-    // Win32 signature: void WINAPI Sleep(DWORD dwMilliseconds);
-    // (DWORD == u32). Use `callconv(.winapi)` + uppercase `Sleep` to
-    // match the project's existing kernel32 bindings pattern (see
-    // src/helpers/mod.zig:86) — Zig's symbol name is case-sensitive at
-    // the ABI level even though the COFF linker itself is case-
-    // insensitive, so matching the conventional casing avoids a
-    // spurious symbol-not-found on some linkers.
-    //
-    // The decl is nested inside a struct so the `extern "kernel32"`
-    // linker string is only parsed on Windows. Putting it at module
-    // scope would fail to compile on POSIX (kernel32.dll doesn't
-    // exist — Zig refuses to recognise the linker string).
-    const Sleep = struct {
-        extern "kernel32" fn Sleep(dw_milliseconds: u32) callconv(.winapi) void;
-    };
-    Sleep.Sleep(ms_dword);
 }
 
 fn sleepPosix(sec: u32, nsec: u32) void {
