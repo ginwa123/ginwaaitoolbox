@@ -148,7 +148,7 @@ function installChatViewMocks(opts: { messages: Message[] }) {
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} })
 }
 
-async function mountChatViewWithMessages(messages: Message[]) {
+async function mountChatViewWithMessages() {
   const processingState = ref<Record<string, boolean>>({})
 
   // Use a per-test container so multiple mounts don't bleed DOM
@@ -242,7 +242,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
       ],
     })
 
-    await mountChatViewWithMessages([])
+    await mountChatViewWithMessages()
 
     const stub = document.querySelector('.update-plan-stub')
     expect(stub).not.toBeNull()
@@ -286,7 +286,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
       ],
     })
 
-    await mountChatViewWithMessages([])
+    await mountChatViewWithMessages()
 
     const stub = document.querySelector('.get-plan-stub')
     expect(stub).not.toBeNull()
@@ -323,7 +323,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
       ],
     })
 
-    await mountChatViewWithMessages([])
+    await mountChatViewWithMessages()
 
     const stub = document.querySelector('.get-plan-stub')
     expect(stub).not.toBeNull()
@@ -361,7 +361,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
       ],
     })
 
-    await mountChatViewWithMessages([])
+    await mountChatViewWithMessages()
 
     const updateStub = document.querySelector('.update-plan-stub')
     const getStub = document.querySelector('.get-plan-stub')
@@ -393,7 +393,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
       ],
     })
 
-    await mountChatViewWithMessages([])
+    await mountChatViewWithMessages()
 
     expect(document.querySelector('.update-plan-stub')).toBeNull()
     expect(document.querySelector('.get-plan-stub')).toBeNull()
