@@ -48,6 +48,10 @@ const web_search_mod = nalarcore.web_search;
 const nalar_browser_mod = nalarcore.nalar_browser;
 const generate_image_mod = nalarcore.generate_image;
 const update_activity_mod = nalarcore.update_activity;
+// 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
+// Markdown task plan with - [ ] / - [x] checklist, persisted across iterations.
+const update_plan_mod = nalarcore.update_plan;
+const get_plan_mod = nalarcore.get_plan;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
 // 2026-08-14 — list_directory tool (Task 5 of ban-absolute-paths plan).
@@ -64,6 +68,13 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
     const tools_list = comptime &[_]AgentTool{
         spawn_sub_agent_tool.spawn_sub_agent_tool,
         update_activity_mod.update_activity_tool,
+        // 2026-08-19 — session_plan tools (Task 4). The plan is
+        // automatically re-injected into the system prompt on every
+        // iteration, so the LLM sees the current checklist even
+        // without calling get_plan. update_plan is the write-side,
+        // get_plan is the read-side.
+        update_plan_mod.update_plan_tool,
+        get_plan_mod.get_plan_tool,
         list_skills_mod.list_skills_tool,
         // list_memory_mod.list_memory_tool,
         save_memory_mod.save_memory_tool,
@@ -125,6 +136,16 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "set_agent_properties", .exec = tools.execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool },
         .{ .name = "spawn_sub_agent", .exec = tools.execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool },
         .{ .name = "update_activity", .exec = tools.execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
+
+        // === PLAN TOOLS ===
+        // 2026-08-19 — session_plan agent tools (Task 4 of
+        // 2026-08-19-session-plan-agent-tool.md). The plan is a
+        // markdown body with a `- [ ]` / `- [x]` checklist, UPSERTed
+        // by update_plan and read by get_plan. Auto-injected into
+        // the system prompt on every iteration (Task 5), so calling
+        // get_plan is mostly for explicit verification.
+        .{ .name = "update_plan", .exec = tools.execUpdatePlan, .tool_def = update_plan_mod.update_plan_tool },
+        .{ .name = "get_plan", .exec = tools.execGetPlan, .tool_def = get_plan_mod.get_plan_tool },
 
         // === AGENT MANAGEMENT (auto-save) ===
 

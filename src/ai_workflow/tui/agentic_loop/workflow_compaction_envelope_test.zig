@@ -6,6 +6,7 @@ const sqlite = @import("nalarcore").sqlite;
 const llm_history = @import("llm_history.zig");
 const logger_mod = @import("nalarcore").loggermod;
 const migration = @import("../../../migrations/migration.zig");
+const session_plan = @import("session_plan.zig");
 
 /// Build a fresh in-memory DB by walking ALL migrations from 001 →
 /// latest, so the schema under test is GUARANTEED to match production
@@ -552,3 +553,124 @@ test "end-to-end: compacted rows are findable via getCompactedMessages after com
 // infrastructure for the full function).
 // buildCompactionEnvelope itself no longer emits <recent_activities>
 // — it just wraps whatever XML the caller hands it.
+
+// ============================================================================
+// ============================================================================
+// Migration 076 — session_plan <plan> section in compaction envelope
+// ============================================================================
+//
+// Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
+// Task 6 of 9
+//
+// When compaction fires, the current session_plan row is fetched BEFORE
+// mark_history_not_for_llmrun and embedded as a `<plan><content>` CDATA
+// section in the `<compaction_context>` envelope. The post-compaction
+// agent sees the structured plan alongside user_history, read_files,
+// recent_activities, and session_skills.
+
+test "enrichCompactionXml embeds <plan> when session_plan has a plan" {
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const session_id = "sess_plan_present";
+    {
+        const ts = try session_plan.savePlan(alloc, &s.db, .{
+            .session_id = session_id,
+            .content = "# My Plan\n\n- [ ] step 1\n- [x] step 2 done\n",
+        });
+        defer alloc.free(ts);
+    }
+
+    const plan_row = (try session_plan.getPlanOpt(alloc, &s.db, session_id)).?;
+    defer plan_row.deinit(alloc);
+
+    const result = try workflow.enrichCompactionXml(
+        alloc,
+        "summary text",
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        plan_row,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // The <plan> section header + close tag are both present.
+    try testing.expect(std.mem.indexOf(u8, result, "<plan ") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</plan>") != null);
+    // updated_at attribute is embedded (the row we just inserted has one).
+    try testing.expect(std.mem.indexOf(u8, result, "updated_at=\"") != null);
+    // The plan content is wrapped in CDATA so raw `<`, `>`, `&` inside
+    // the plan markdown never breaks the envelope.
+    try testing.expect(std.mem.indexOf(u8, result, "<content><![CDATA[") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "]]></content>") != null);
+    // The actual plan body is preserved verbatim.
+    try testing.expect(std.mem.indexOf(u8, result, "# My Plan") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- [ ] step 1") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "- [x] step 2 done") != null);
+}
+
+test "enrichCompactionXml omits <plan> when session_plan is absent" {
+    // No row inserted for this session_id — getPlanOpt would return null.
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const result = try workflow.enrichCompactionXml(
+        alloc,
+        "summary text",
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        null, // no plan row at all
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // No <plan> section is emitted when plan is null — mirrors the
+    // "omit when empty" convention used for <recent_activities>.
+    try testing.expect(std.mem.indexOf(u8, result, "<plan") == null);
+}
+
+test "enrichCompactionXml CDATA-splits plan content containing literal ]]>" {
+    // Regression: XML CDATA sections cannot contain the literal sequence
+    // `]]>`. The plan body must be split into adjacent CDATA sections
+    // (close current with `]]>`, re-open with `<![CDATA[`, emit literal
+    // `>` as content of the new section) — same pattern session_skills
+    // uses for skill content.
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    const session_id = "sess_plan_cdata";
+    {
+        const ts = try session_plan.savePlan(alloc, &s.db, .{
+            .session_id = session_id,
+            .content = "before ]]> middle ]]> after",
+        });
+        defer alloc.free(ts);
+    }
+
+    const plan_row = (try session_plan.getPlanOpt(alloc, &s.db, session_id)).?;
+    defer plan_row.deinit(alloc);
+
+    const result = try workflow.enrichCompactionXml(
+        alloc,
+        "summary text",
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        plan_row,
+        "/tmp",
+    );
+    defer alloc.free(result);
+
+    // The two ]]> sequences must be split into adjacent CDATA sections
+    // so the envelope is still well-formed XML, with the literal '>'
+    // reappearing between them.
+    try testing.expect(std.mem.indexOf(u8, result, "before ]]><![CDATA[> middle ]]><![CDATA[> after") != null);
+}

@@ -320,6 +320,14 @@ pub fn maybeCompactMessagesNew(
         for (session_skills) |s| s.deinit(allocator);
         allocator.free(session_skills);
     }
+    // Current task plan — fetched BEFORE mark_history_not_for_llmrun so
+    // the next iteration's enriched INSERT carries the plan forward.
+    // `null` when no plan exists (silently omitted from the envelope).
+    const session_plan_row = compact_message.fetchSessionPlan(allocator, db, session_id) catch |err| blk: {
+        logger.warnFmt("[COMPACTION] fetchSessionPlan failed: {s}", .{@errorName(err)});
+        break :blk null;
+    };
+    defer if (session_plan_row) |*p| p.deinit(allocator);
 
     const enriched_xml = compact_message.enrichCompactionXml(
         allocator,
@@ -328,6 +336,7 @@ pub fn maybeCompactMessagesNew(
         read_files.items,
         recent_activities.items,
         session_skills,
+        session_plan_row,
         cwd,
     ) catch |err| {
         logger.warnFmt("[COMPACTION] enrichCompactionXml failed: {s}", .{@errorName(err)});
