@@ -1927,7 +1927,12 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md.
     // Task: task_1786891244388_1.
     .{ .version = Migration075RenameTimestampColumnsToNanoSuffix.version, .name = Migration075RenameTimestampColumnsToNanoSuffix.name, .up = Migration075RenameTimestampColumnsToNanoSuffix.up },
-    // Migration 076 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
+    // Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
+    // persistent task plan (markdown + checklist). Plan:
+    // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md. Task:
+    // task_1787073929852_8.
+    .{ .version = Migration076CreateSessionPlan.version, .name = Migration076CreateSessionPlan.name, .up = Migration076CreateSessionPlan.up },
+    // Migration 077 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
     // (4th workspace-item type, knowledge injection, tool allowlist).
     // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md.
     // Task: task_1786962724740_0.
@@ -3305,7 +3310,7 @@ pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
 // Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md
 // Task: task_1786962724740_0
 pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = struct {
-    pub const version: u32 = 76;
+    pub const version: u32 = 77;
     pub const name = "add_agents_and_agent_knowledge_and_agent_tools";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
@@ -3505,12 +3510,12 @@ pub const Migration070AddAgentMemories = struct {
     }
 };
 
-// ─── Tests for Migration 076 (Agent Mode) ──────────────────────────────
+// ─── Tests for Migration 077 (Agent Mode) ──────────────────────────────
 // impl + tests in one file (project convention).
 // `std` is already in scope from line 1; only the local aliases need adding.
 const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
-const Migration076 = Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+const Migration077 = Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 
 
 /// Top-level named struct (NOT inline anonymous) per project memory
@@ -3569,7 +3574,7 @@ fn expectColumnsEqual(list: []const []const u8, comptime expected: anytype) !voi
     }
 }
 
-test "Migration076 creates agents table with correct columns" {
+test "Migration077 creates agents table with correct columns" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -3588,7 +3593,7 @@ test "Migration076 creates agents table with correct columns" {
         }
     }
 
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     // Post-migration: table exists in sqlite_master.
     {
@@ -3611,13 +3616,13 @@ test "Migration076 creates agents table with correct columns" {
     try expectColumnsEqual(cols, &expected);
 }
 
-test "Migration076 creates agent_knowledge table with correct columns" {
+test "Migration077 creates agent_knowledge table with correct columns" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     const cols = try columnsOf(&ctx, "agent_knowledge");
     defer {
@@ -3631,13 +3636,13 @@ test "Migration076 creates agent_knowledge table with correct columns" {
     try expectColumnsEqual(cols, &expected);
 }
 
-test "Migration076 creates agent_tools table with correct columns" {
+test "Migration077 creates agent_tools table with correct columns" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     const cols = try columnsOf(&ctx, "agent_tools");
     defer {
@@ -3651,13 +3656,13 @@ test "Migration076 creates agent_tools table with correct columns" {
     try expectColumnsEqual(cols, &expected);
 }
 
-test "Migration076 agents.workspace_item_id is UNIQUE" {
+test "Migration077 agents.workspace_item_id is UNIQUE" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     // Probe sqlite_master for a UNIQUE index on the agents.workspace_item_id column.
     // The standard SQLite convention is that UNIQUE constraints create
@@ -3697,13 +3702,13 @@ test "Migration076 agents.workspace_item_id is UNIQUE" {
     try testing.expectError(error.ExecuteFailed, result);
 }
 
-test "Migration076 agent_tools(agent_id, tool_name) is UNIQUE" {
+test "Migration077 agent_tools(agent_id, tool_name) is UNIQUE" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     // Verify the named UNIQUE index exists.
     var q = try ctx.db.query(alloc,
@@ -3734,7 +3739,7 @@ test "Migration076 agent_tools(agent_id, tool_name) is UNIQUE" {
     try testing.expectError(error.ExecuteFailed, result);
 }
 
-test "Migration076 ON DELETE CASCADE: agents dropped when workspace_items row deleted" {
+test "Migration077 ON DELETE CASCADE: agents dropped when workspace_items row deleted" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -3742,7 +3747,7 @@ test "Migration076 ON DELETE CASCADE: agents dropped when workspace_items row de
 
     // Enable FK enforcement (off by default in SQLite, on for this test).
     try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     // Create the parent workspace_items row + agent + 1 knowledge + 1 tool.
     try ctx.db.exec(alloc,
@@ -3783,14 +3788,14 @@ test "Migration076 ON DELETE CASCADE: agents dropped when workspace_items row de
     }
 }
 
-test "Migration076 ON DELETE CASCADE: knowledge + tools dropped when agent row deleted" {
+test "Migration077 ON DELETE CASCADE: knowledge + tools dropped when agent row deleted" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
     try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     try ctx.db.exec(alloc,
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
@@ -3831,13 +3836,13 @@ test "Migration076 ON DELETE CASCADE: knowledge + tools dropped when agent row d
     }
 }
 
-test "Migration076 creates agent_knowledge.position + agent_id composite index" {
+test "Migration077 creates agent_knowledge.position + agent_id composite index" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration076.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc);
 
     // The named index from the spec: idx_agent_knowledge_agent_id_position.
     var q = try ctx.db.query(alloc,
@@ -3849,14 +3854,14 @@ test "Migration076 creates agent_knowledge.position + agent_id composite index" 
     try testing.expectEqualStrings("idx_agent_knowledge_agent_id_position", row.values[0]);
 }
 
-test "Migration076 is idempotent on a re-run" {
+test "Migration077 is idempotent on a re-run" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration076.up(&ctx.db, alloc);
-    try Migration076.up(&ctx.db, alloc); // second run must not crash
+    try Migration077.up(&ctx.db, alloc);
+    try Migration077.up(&ctx.db, alloc); // second run must not crash
 
     // Each of the 3 tables should still exist exactly once.
     for ([_][]const u8{ "agents", "agent_knowledge", "agent_tools" }) |table| {
@@ -3871,13 +3876,53 @@ test "Migration076 is idempotent on a re-run" {
     }
 }
 
-test "Migration076 is registered in allMigrations" {
+test "Migration077 is registered in allMigrations" {
     // Catches the silent-skip regression where the struct is defined but
     // the registration tuple is missing (per project memory
     // `migration-registration-trap`).
     const all = @import("migration.zig").allMigrations;
     for (all) |m| {
-        if (m.version == Migration076.version) return;
+        if (m.version == Migration077.version) return;
     }
-    return error.Migration076NotRegistered;
+    return error.Migration077NotRegistered;
 }
+
+// ============================================================================
+// Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
+// persistent task plan (markdown + checklist).
+// ============================================================================
+//
+// Schema:
+//   - session_id TEXT PRIMARY KEY  (logical 1:1 with sessions.id; no FK
+//                                   because sessions may be hard-deleted
+//                                   while keeping their plan — matches
+//                                   llm_history.session_id, worker.session_id,
+//                                   session_queue_messages.session_id,
+//                                   session_activity.session_id precedent;
+//                                   see Migration 073's docstring.)
+//   - plan_md TEXT NOT NULL DEFAULT ''  (the markdown body)
+//   - updated_at DATETIME DEFAULT CURRENT_TIMESTAMP  (auto-bumped on every UPSERT)
+//
+// Why a dedicated table (not columns on `sessions`)
+// - Single Responsibility: `sessions` is chat metadata; plan_md is plan content.
+// - Backward compat: future schema changes to plan only touch this table.
+// - PK on session_id enforces 1:1 without an extra UNIQUE index.
+//
+// Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
+// Task: task_1787073929852_8
+pub const Migration076CreateSessionPlan = struct {
+    pub const version: u32 = 76;
+    pub const name = "create_session_plan";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_plan (
+            \\    session_id TEXT PRIMARY KEY,
+            \\    plan_md TEXT NOT NULL DEFAULT '',
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+        // No FK on session_id (matches session_activity Migration 073 precedent).
+        // No index — session_id IS the PK, lookups are O(log n) by definition.
+    }
+};

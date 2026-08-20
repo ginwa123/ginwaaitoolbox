@@ -1,0 +1,218 @@
+//! Render the "## Current Plan" markdown block for the LLM's system
+//! prompt. Reads the session's `session_plan` row (Migration 076) and
+//! emits a fenced markdown block plus the timestamp footer. Returns
+//! `""` (a 0-byte heap-owned slice) when no plan exists for the
+//! session, so the caller can omit the section silently — matching
+//! `makeKanbanContext`'s empty-case behaviour.
+//!
+//! Block shape (omitted when no row exists, when `session_id` is
+//! empty, or when the DB lookup fails):
+//!
+//! ```markdown
+//! ## Current Plan
+//!
+//! This session has an active task plan. **You MUST keep it in sync**
+//! by calling the `update_plan` tool after completing each checklist
+//! item (flip `- [ ]` → `- [x]`). The plan is automatically re-injected
+//! into your system prompt on every iteration, so you always see the
+//! current state.
+//!
+//! ```markdown
+//! <full plan body, raw>
+//! ```
+//!
+//! _Last updated: <iso timestamp>_
+//! ```
+//!
+//! Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
+//! Task 5 of 9
+
+const std = @import("std");
+const testing = std.testing;
+const nalarcore = @import("nalarcore");
+const sqlite = nalarcore.sqlite;
+const session_plan = nalarcore.session_plan;
+const migration = @import("../../../migrations/migration.zig");
+const update_plan_mod = @import("../../../modules/agent/tools/update_plan.zig");
+
+/// Build a "## Current Plan" section for the system prompt. Reads
+/// `session_plan` for the current `session_id` and renders the
+/// markdown inside a labelled block, with explicit instructions for
+/// the agent to call `update_plan` after every checklist item.
+///
+/// Returns `""` (a 0-byte heap-owned slice) when:
+///   - `session_id.len == 0`
+///   - no row exists in `session_plan` for this session
+///   - the DB lookup fails (logged via `std.log.warn`)
+/// so the caller can omit the section silently — matches the
+/// `makeKanbanContext` / `makeDesignContext` pattern.
+pub fn makePlanContext(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
+
+    // 1. Read the plan row (graceful-skip on DB error so the system
+    //    prompt never breaks because of a plan lookup failure —
+    //    mirrors `makeKanbanContext`'s pattern).
+    const row = session_plan.getPlanOpt(allocator, db, session_id) catch |err| {
+        std.log.warn("BuildPlanContext: getPlanOpt failed: {}", .{err});
+        return allocator.dupe(u8, "");
+    };
+    defer if (row) |r| r.deinit(allocator);
+
+    const plan_row = row orelse return allocator.dupe(u8, "");
+
+    // 2. Render the markdown block.
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "\n\n## Current Plan\n\n");
+    try out.appendSlice(allocator,
+        \\This session has an active task plan. **You MUST keep it in sync** by
+        \\calling the `update_plan` tool after every checklist item (flip
+        \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your
+        \\system prompt on every iteration, so you always see the current state.
+        \\
+    );
+
+    // Wrap the raw plan body in a markdown fence so the agent's parser
+    // treats it as a code block rather than as top-level instructions.
+    // The plan content may contain backticks / bold / headings — the
+    // fence prevents any plan content from hijacking the outer
+    // prompt's structure.
+    try out.appendSlice(allocator, "```markdown\n");
+    try out.appendSlice(allocator, plan_row.plan_md);
+    // Ensure the plan body ends with a newline so the closing fence
+    // can never fuse with the trailing lines of the plan body.
+    if (plan_row.plan_md.len == 0 or plan_row.plan_md[plan_row.plan_md.len - 1] != '\n') {
+        try out.appendSlice(allocator, "\n");
+    }
+    try out.appendSlice(allocator, "```\n");
+
+    if (plan_row.updated_at.len > 0) {
+        try out.appendSlice(allocator, "\n_Last updated: ");
+        try out.appendSlice(allocator, plan_row.updated_at);
+        try out.appendSlice(allocator, "_\n");
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: empty plan returns "" (silently omitted from system prompt) ──
+
+test "makePlanContext: empty plan returns empty string (silently omitted)" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // No plan row exists for "no_plan_session" — the helper must
+    // gracefully return a 0-byte slice so the caller omits the
+    // section from the final system prompt.
+    const got = try makePlanContext(allocator, &ctx.db, "no_plan_session");
+    defer allocator.free(got);
+    try testing.expectEqualStrings("", got);
+}
+
+// ─── Test 2: present plan renders a ## Current Plan markdown block ─────────
+
+test "makePlanContext: present plan renders ## Current Plan markdown block" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Seed a plan via the same fn the LLM tool calls. We discard
+    // the returned XML envelope — we just need the row to exist.
+    {
+        const xml = try update_plan_mod.executeUpdatePlan(allocator, &ctx.db, "s_present", .{
+            .content = "# Goal\n\n- [x] first done\n- [ ] second pending\n- [ ] third pending\n",
+        });
+        defer allocator.free(xml);
+    }
+
+    const got = try makePlanContext(allocator, &ctx.db, "s_present");
+    defer allocator.free(got);
+
+    // Block header
+    try testing.expect(std.mem.indexOf(u8, got, "## Current Plan") != null);
+
+    // The LLM-facing hint that names the tool (`update_plan`) and the
+    // "every checklist item" call-to-action.
+    try testing.expect(std.mem.indexOf(u8, got, "update_plan") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "checklist item") != null);
+
+    // The plan content is wrapped in a ```markdown fence so the
+    // agent's parser sees it as code, not as instructions
+    try testing.expect(std.mem.indexOf(u8, got, "```markdown\n# Goal") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "- [x] first done") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "- [ ] second pending") != null);
+
+    // Timestamp footer line (Migration 076 populates CURRENT_TIMESTAMP
+    // on every UPSERT).
+    try testing.expect(std.mem.indexOf(u8, got, "Last updated:") != null);
+}
+
+// ─── Test 3: UPSERT consistency — every read sees the latest version ──────
+
+test "makePlanContext: plan survives DB read across calls (UPSERT consistency)" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Write v1, read
+    {
+        const xml1 = try update_plan_mod.executeUpdatePlan(allocator, &ctx.db, "s_upsert", .{
+            .content = "v1 content",
+        });
+        defer allocator.free(xml1);
+    }
+    const got1 = try makePlanContext(allocator, &ctx.db, "s_upsert");
+    defer allocator.free(got1);
+    try testing.expect(std.mem.indexOf(u8, got1, "v1 content") != null);
+    try testing.expect(std.mem.indexOf(u8, got1, "v2 content") == null);
+
+    // Overwrite with v2 (UPSERT — must NOT leave v1 + v2 lying around).
+    // Pin a later `updated_at` so the timestamp differs from v1
+    // (SQLite CURRENT_TIMESTAMP has 1-sec resolution; sleep one
+    // second so the floor advances).
+    // std.c.nanosleep — std.Thread.sleep doesn't exist in Zig 0.16.
+    var ts = std.c.timespec{ .sec = 1, .nsec = 0 };
+    _ = std.c.nanosleep(&ts, null);
+    {
+        const xml2 = try update_plan_mod.executeUpdatePlan(allocator, &ctx.db, "s_upsert", .{
+            .content = "v2 content longer and distinct",
+        });
+        defer allocator.free(xml2);
+    }
+
+    // Read again — must see v2, NOT v1.
+    const got2 = try makePlanContext(allocator, &ctx.db, "s_upsert");
+    defer allocator.free(got2);
+    try testing.expect(std.mem.indexOf(u8, got2, "v2 content longer") != null);
+    try testing.expect(std.mem.indexOf(u8, got2, "v1 content") == null);
+}

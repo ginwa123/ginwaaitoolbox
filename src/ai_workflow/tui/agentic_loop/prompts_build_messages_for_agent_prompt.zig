@@ -174,6 +174,13 @@ pub fn buildMessages(
     };
     defer allocator.free(inherited_md);
 
+    // Build the "## Current Plan" section. Reads session_plan for the
+    // current session_id. Returns "" when no plan exists (silently omitted).
+    // Mirrors the kanban/design pattern (graceful-skip on empty, render
+    // between context sections and the inherited context block).
+    const planContent = try agentic_loop.prompts_mod.makePlanContext(allocator, db, session_id);
+    defer allocator.free(planContent);
+
     var final_system: std.ArrayList(u8) = .empty;
     defer final_system.deinit(allocator);
     try final_system.appendSlice(allocator, systemContent);
@@ -186,6 +193,10 @@ pub fn buildMessages(
     if (inherited_md.len > 0) {
         try final_system.appendSlice(allocator, "\n\n");
         try final_system.appendSlice(allocator, inherited_md);
+    }
+    if (planContent.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n");
+        try final_system.appendSlice(allocator, planContent);
     }
     const final_system_content = try final_system.toOwnedSlice(allocator);
 

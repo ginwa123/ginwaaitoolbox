@@ -6,3 +6,4 @@ pub const makeSkillsEquippedContext = @import("prompts_make_skills_equiped_conte
 pub const makeKanbanContext = @import("prompts_make_kanban_context.zig").makeKanbanContext;
 pub const makeActivityInfo = @import("prompts_make_activity_info_context.zig").makeActivityInfo;
 pub const makeAgentKnowledge = @import("prompts_make_agent_knowledge.zig").makeAgentKnowledge;
+pub const makePlanContext = @import("prompts_make_plan_context.zig").makePlanContext;

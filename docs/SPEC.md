@@ -264,6 +264,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-08-14-folder-picker-recent-history.md` | ✅ | `FilePickerDialog` (used by every "pick a folder" modal: Add Project / Kanban / Memory / Design, Per-Task cwd, Create Worktree parent dir, "Set project root" banner) opens on a new **Recent** tab showing the user's previously picked folders, with a **Browse** tab one click away for the existing tree UX. Recent rows show folder icon, basename, full path, and a relative-time chip (reuses `formatRelativeTime`: `now` / `2h` / `1d` / `3d` / `1w` / `6mo` / `2y`). A star button on each row toggles pin — pinned items sort to the top and are exempt from the 12-entry auto-eviction cap. New `useRecentFoldersStore` Pinia store at `src/apps/desktop/src/stores/recentFolders.ts` with localStorage persistence (`nalar-folder-picker-recent:v1`, 200 ms debounced writes, defensive corruption handling, quota-error swallow). Default-on; opt-out via `enableRecentHistory: false` (no caller needs this today). Toolbar (search + hidden + refresh) is hidden under Recent — it only applies to Browse. Dialog `max-height` bumped from `80vh` to `min(80vh, 720px)` so the new tabstrip + Recent list fits on a 720p display without inner-scroll. 12 store tests + 10 dialog tests in `FilePickerDialog.spec.ts`. Branch: `worktree/folder-picker-recent-history`. |
 | `2026-08-18-kanban-task-detail-start-agent.md` | ✅ | New `▶ Start agent` button in the kanban task-detail dialog (edit mode only) — sibling of the create-mode `▶ Create task & run agent` button. Kicks off an LLM worker on the task's existing session WITHOUT queueing a new user message; the agent runs on the chat history already in the session. Disabled while `processingState[task.id]` is true (the App.vue map updated by the SSE `worker` channel + initial `GET /api/workers` re-sync). New dedicated backend endpoint `POST /api/workspaces/:ws/items/:i/tasks/:task_id/start_agent` (404 if task missing, 409 if worker running, 200 `{ success, session_id, status: 'triggered' }` on success) — NOT a wrapper around `/api/llm/session` (which always queues a message). Backend threads a new `skip_initial_queue_message: bool = false` flag through `EmitRunAgentInput` → `emit_run_agent.concurrent` task → `RunParamsNew` → `runAgenticMultiStepnew`; the workflow's initial `insertQueueMessage` call is wrapped in `if (!params.skip_initial_queue_message)`. Frontend: `api.startAgentOnTask` helper + `workspacesStore.startAgentOnTask` action + dialog `inject('processingState')` + `isWorkerRunning` computed + outlined `▶ Start agent` button between Cancel and Save + `start-agent` emit + KanbanView handler with `startAgentError` ref + `startAgentBusy` 1-shot guard. For tasks with no chat history, the LLM responds based on its system prompt alone (typically a clarification). Branch: `worktree/kanban-task-detail-start-agent`. |
 | `2026-08-19-kanban-create-task-inits-session.md` | ✅ | Plain **Create task** button in the kanban New Task dialog now also inserts a `sessions` row + `session_created` SSE (new mode `'create_session'` on the existing `POST /api/workspaces/:wid/items/:iid/kanban/tasks` endpoint) but does NOT call `emit_run_agent`. Clicking the card lands on an existing empty session; the chatview's profile picker reflects the dialog's choice immediately (selected_profile_model is now persisted on the sessions row). Two-button story: **Create task** = prep everything, you open the chat yourself; **Create task & run agent** = prep everything + start the agent. Backward compat: legacy `mode='create'` on the API surface keeps the OLD behaviour (no session insert) for any external consumer. New `KanbanCreateSessionOnlyPayload` interface + `KanbanCreateMode` union widened to `'create' \| 'create_session' \| 'create_and_run'`. `workspacesStore.addKanbanTask` dispatches the new mode. 5 new static-contract tests in `kanban_tasks_create_test.zig` lock in the wire contract. Branch: `worktree/kanban-create-task-inits-session`. See §3.7.5.1 below. |
+| `2026-08-19-session-plan-agent-tool.md` | ✅ | `update_plan` + `get_plan` agent tools + `session_plan` table (1:1 with sessions). Plan re-injected on every iteration + survives compaction. See §3.7.5.2 below. |
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
@@ -396,6 +397,28 @@ Two-button story:
 - **Create task & run agent** — create the task + insert the session + queue `title + '\n\n' + description` as the first user message + kick off the agent immediately.
 
 **Plan:** `docs/superpowers/plans/2026-08-19-kanban-create-task-inits-session.md`
+
+#### 3.7.5.2 Session-scoped plan tools: `update_plan` + `get_plan` (2026-08-19)
+
+Two new agent-callable tools persist a per-session structured task plan (markdown with a `- [ ]` / `- [x]` checklist) in the new `session_plan` table. One row per `sessions.id`; `update_plan` overwrites the row on every call (UPSERT), `get_plan` fetches it.
+
+Wire shape:
+- `update_plan(content)` → `<update_plan><session_id>...</session_id><updated_at>...</updated_at></update_plan>`
+- `get_plan()` → `<get_plan><plan><![CDATA[...markdown...]]></plan></get_plan>` or `<get_plan><empty/></get_plan>`
+
+**Plan:** `docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md`
+
+Design decisions (full list in plan §Design Decisions):
+- D1: dedicated `session_plan` table (1:1 with `sessions`, session_id TEXT PK)
+- D2: no FK constraint to `sessions.id` (matches `session_activity` / `llm_history` precedent)
+- D3: `session_id` is implicit from `ToolExecContext.session_id` (LLM never passes it)
+- D4: UPSERT overwrite (no history table in v1)
+- D7: 256 KiB content cap (smaller than `agent_memories`'s 1 MiB because plan is injected into system prompt)
+- D8: injection in TWO places — (a) system prompt via `prompts_make_plan_context.zig`, (b) compaction envelope via new `<plan>` section
+
+User-visible behaviour: when an agent runs on a kanban task that requires multi-step work, it calls `update_plan` with a markdown checklist at the start, then re-calls after every step. The plan is visible to the human via the chat bubble's tool chip; the agent itself always sees it in the system prompt; the post-compaction agent always sees it in the compact_messages envelope.
+
+Backward compat: zero — new table, new tools, new optional UI. No existing call sites change behaviour.
 
 #### 3.7.6 New Task dialog — profile-model picker (2026-08-06)
 

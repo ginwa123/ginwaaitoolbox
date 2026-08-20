@@ -4,8 +4,6 @@ test {
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
     _ = @import("routines/scheduler_test.zig");
-    _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
-    _ = @import("agentic_loop/retry_delay_ms_race_test.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
@@ -138,7 +136,6 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/unified_events_sse_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
-    _ = @import("agentic_loop/get_session_list_test.zig");
     _ = @import("http_handlers/session_messages_get_test.zig"); // 2026-08-07-profile-persist-read — getSessionMessagesSorted carries selected_profile_model
     // _ = @import("transform_llm_history_to_agent_messages_test.zig"); // DISABLED - pre-existing type mismatch (TUIHistory vs LLMHistory) on main
     _ = @import("../../modules/agent/tools/show_preview_test.zig");
@@ -147,6 +144,12 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md).
     _ = @import("../../modules/agent/tools/save_memory_test.zig");
     _ = @import("../../modules/agent/tools/load_memory_test.zig");
+    // update_plan agent tool (Task 2 of
+    // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md).
+    _ = @import("../../modules/agent/tools/update_plan_test.zig");
+    // get_plan agent tool (Task 3 of
+    // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md).
+    _ = @import("../../modules/agent/tools/get_plan_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");
