@@ -875,14 +875,12 @@ jobs:
         # at the `Install vcpkg ports (Windows)` step), so the build
         # probes always find them.
         #
-        # DEBUG: Recent CI runs (32263126953, 32260844318, 32257736567)
-        # showed the test process crashing with exit code 53 after
-        # ~20 minutes. The default `zig build test` invocation uses
-        # `--listen=-` IPC mode to talk to the build runner, which
-        # swallows test output. To find WHICH test is crashing, run
-        # the test binary directly (no --listen) so test output goes
-        # to stdout + the log. The test binary location is
-        # `.zig-cache/o/<hash>/test.exe` — glob for it.
+        # DEBUG: Recent CI runs (32263126953, 32260844318, 32257736567,
+        # 32318048142, 32320468254) showed the test process crashing
+        # with exit code 53 after running successfully. To find which
+        # test is crashing, the test binary is invoked DIRECTLY (no
+        # --listen) after the build, redirecting stdout to a file
+        # we can dump to the log on failure.
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -892,13 +890,11 @@ jobs:
             exit 1
           }
           $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
-          # Build the test binary (compile-only, no run) so we can
-          # invoke it directly with stdout-based reporting.
+          # Build the test binary (compile + run via --listen=-).
           & $bash -lc 'zig build test --summary all'
-          # Find and run the test binary directly. With NO --listen
-          # flag, the test binary runs all tests serially and prints
-          # each test's result to stdout — that's what we need to
-          # see which test is exiting with code 53.
+          # Find the test binary and run it directly (without --listen)
+          # so the test results are visible in the log. Capture both
+          # stdout + stderr to a file we can dump on failure.
           $testExe = Get-ChildItem -Recurse -Path .zig-cache -Filter test.exe `
             | Where-Object { $_.FullName -like '*\o\*' } `
             | Select-Object -First 1
@@ -906,8 +902,17 @@ jobs:
             Write-Error "test.exe not found in .zig-cache"
             exit 1
           }
-          Write-Host "Running test binary directly: $($testExe.FullName)"
-          & $testExe.FullName --cache-dir=.zig-cache
+          Write-Host "=== Running test binary directly: $($testExe.FullName) ==="
+          $logPath = Join-Path $env:TEMP "win-test-output.log"
+          & $testExe.FullName --cache-dir=.zig-cache 2>&1 | Tee-Object -FilePath $logPath
+          $exitCode = $LASTEXITCODE
+          Write-Host "=== Test binary exit code: $exitCode ==="
+          # If failed, dump the captured log to the CI log
+          if ($exitCode -ne 0) {
+            Write-Host "=== Captured test output (last 200 lines) ==="
+            Get-Content $logPath -Tail 200
+          }
+          exit $exitCode
 
       - name: Build nalar + nalar-desktop binaries
         if: runner.os != 'Windows'
