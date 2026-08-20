@@ -28,6 +28,7 @@ import { useKanbanSseStore } from '../stores/kanbanSse'
 import { useDesignSseStore } from '../stores/designSse'
 import * as api from '../api'
 import type { DesignElement as DesignElementApi } from '../api'
+import { buildToggle } from '../stores/agentToolToggle'
 import {
   OPEN_IN_CODE_EDITOR_KEY,
   type OpenInCodeEditorFn,
@@ -1070,8 +1071,32 @@ async function handleAgentRemoveKnowledge(knowledgeId: string) {
   void knowledgeId
 }
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
-  // v1.1 wiring. For now, no-op.
-  void toolName; void enabled
+  if (!activeWorkspaceItem.value) return
+  const agentId = activeWorkspaceItem.value.id
+  const { nextLocal, serverPromise } = buildToggle(
+    agentTools.value, toolName, enabled, agentId,
+    {
+      enableAgentTool: api.enableAgentTool,
+      disableAgentTool: api.disableAgentTool,
+      refetchAgentTools: async (id) => {
+        const data = await api.getAgentTools(id)
+        return data.tools
+      },
+    },
+  )
+  // Optimistic update.
+  agentTools.value = nextLocal
+  const out = await serverPromise
+  if ('error' in out) {
+    // Revert + log.
+    agentTools.value = enabled
+      ? agentTools.value.filter((n) => n !== toolName)
+      : [...agentTools.value, toolName]
+    console.error('[AppLayout] toggle tool failed:', out.error)
+    return
+  }
+  // Canonical state from server.
+  agentTools.value = out.canonical
 }
 function handleAgentNewChat() {
   // TODO (v1.1): open a chat dialog. The current iteration ships

@@ -3769,14 +3769,17 @@ export async function enableAgentTool(
 /**
  * Disable a tool for the agent (deletes the row).
  *
- * DELETE /api/agents/:agentId/tools/:toolId
+ * `tool_name` must match a tool the agent currently has enabled
+ * (the registry name; backend returns 404 on unknown / not-enabled).
+ *
+ * DELETE /api/agents/:agentId/tools/:toolName
  */
 export async function disableAgentTool(
   agentId: string,
-  toolId: string,
+  toolName: string,
 ): Promise<{ ok: true }> {
   return await apiFetch<{ ok: true }>(
-    `/agents/${agentId}/tools/${toolId}`,
+    `/agents/${agentId}/tools/${toolName}`,
     { method: 'DELETE' },
   )
 }
