@@ -40,7 +40,8 @@ test {
     _ = @import("migration_073_test.zig");  // session_activity append-only log (new-table-session-activity plan, 2026-08-13)
     _ = @import("migration_074_test.zig");  // llm_history.cache_creation_input_tokens + cache_read_input_tokens (fix-anthropic-total-tokens plan, 2026-08-13)
     _ = @import("migration_075_test.zig");  // rename 5 timestamp columns to _nano suffix (rename-timestamp-columns-nano-suffix plan, 2026-08-16)
-    // Migration 076 tests live inline at the bottom of migration.zig
+    _ = @import("migration_077_test.zig");  // users + user_companies + user_company_members + workspaces.user_id + sessions.user_id + user_system + backfill (users-rbac-foundation plan, 2026-08-21)
+    // Migration 078 tests live inline at the bottom of migration.zig
     // (impl + tests in one file — project convention for Agent Mode).
     // The @import below is what makes those top-level `test` blocks
     // discoverable by `zig build test`.
