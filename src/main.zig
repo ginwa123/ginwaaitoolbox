@@ -13,6 +13,9 @@ const migration = nalarcore.migrations_mod.migration;
 // in both modules and trigger Zig's "file exists in two modules"
 // error. See root.zig's `pub const cleanup_stale_worker = ...`.
 const cleanup_stale_worker = nalarcore.cleanup_stale_worker;
+// cleanup_stale_background_process: same routing as above — re-exported
+// via nalarcore so the exe module doesn't directly @import the file.
+const cleanup_stale_background_process = nalarcore.cleanup_stale_background_process;
 
 // state_file and main_service are re-exported from nalarcore (see src/root.zig).
 // Access them via nalarcore.* to avoid duplicating the module symbol
@@ -529,6 +532,20 @@ pub fn main(init: std.process.Init) !void {
         boot_unix,
     ) catch |err| {
         std.debug.print("Failed to register heartbeat cron: {s}\n", .{@errorName(err)});
+    };
+    // Delete rows from `session_background_process` whose PID is no
+    // longer alive — see plan 2026-08-19-cleanup-stale-background-process.
+    // Ignores the `status` column entirely (the only criterion is
+    // "is the process actually running right now?" via
+    // `helpers.process_status.isProcessRunning`).
+    _ = gs.cronjob_manager.register(
+        "* * * * *", // every minute, on the minute
+        "cleanup_stale_background_process",
+        cleanup_stale_background_process.handle,
+        null,
+        boot_unix,
+    ) catch |err| {
+        std.debug.print("Failed to register cleanup_stale_background_process cron: {s}\n", .{@errorName(err)});
     };
 
     try gs.listen(); // blocks until the server is stopped
