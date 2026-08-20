@@ -1,0 +1,244 @@
+//! `DELETE /api/agents/:agent_id/tools/:tool_id`.
+//! Removes a tool from the agent's allowlist. Returns `{ok: true}` on
+//! success, 404 if not found.
+//!
+//! Layered as:
+//!   - `useCase` — business logic (validate params → DELETE row).
+//!   - `agentToolsDeleteHandler` — thin orchestrator over `useCase`:
+//!     parses the path params, resolves the singleton DB handle,
+//!     delegates to `useCase`, maps the use-case outcome to an HTTP
+//!     response.
+//!
+//! Memory: the per-request arena reaps all allocations at request
+//! end, so neither layer needs explicit `free`s.
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const http_response = @import("http_response.zig");
+
+/// Domain-level error set for `useCase`. The handler maps each
+/// variant to an HTTP status code + message via two exhaustive
+/// switches (intentional — adding a new variant fails to compile in
+/// the handler until both switches are updated, keeping status
+/// codes in lockstep with the error set).
+pub const ToolDeleteError = error{
+    /// `agent_id` or `tool_id` path param was missing or empty.
+    IdsRequired,
+    /// `db.exec` failed on the DELETE.
+    DeleteFailed,
+};
+
+/// Inputs to the delete-tool use-case.
+pub const ToolDeleteInput = struct {
+    agent_id: []const u8,
+    tool_id: []const u8,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Delete a tool row for the given agent. The use-case is
+/// transport-agnostic: it works for both the per-request arena
+/// (production HTTP handler) and `testing.allocator` (unit tests
+/// below) — all allocations go through the passed-in allocator.
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: ToolDeleteInput,
+) ToolDeleteError!void {
+    if (input.agent_id.len == 0 or input.tool_id.len == 0) {
+        return error.IdsRequired;
+    }
+
+    db.exec(allocator,
+        "DELETE FROM agent_tools WHERE id = ? AND agent_id = ?",
+        &[_][]const u8{ input.tool_id, input.agent_id },
+    ) catch return error.DeleteFailed;
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+/// Thin orchestrator over `useCase`. Validates the HTTP request,
+/// resolves the singleton DB handle, delegates to `useCase`, and
+/// maps the use-case outcome to an HTTP response.
+pub fn agentToolsDeleteHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const agent_id = req.params.get("agent_id") orelse "";
+    const tool_id = req.params.get("tool_id") orelse "";
+
+    useCase(allocator, sqlite_db, .{
+        .agent_id = agent_id,
+        .tool_id = tool_id,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.IdsRequired => 400,
+            error.DeleteFailed => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.IdsRequired => "agent_id and tool_id required",
+            error.DeleteFailed => "Failed to delete",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    const data = try std.json.Stringify.valueAlloc(allocator, .{ .ok = true }, .{});
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+//
+// impl + tests in one file (project convention for Agent Mode).
+// 4 behavioural tests cover the use-case:
+//
+//   1. Validation: empty agent_id OR tool_id → IdsRequired
+//   2. Happy path: a matching row is removed
+//   3. Scoped: DELETE matches by both id AND agent_id (won't delete
+//      a tool row that belongs to a different agent)
+//   4. Non-matching: tool_id that doesn't exist is a no-op (no error)
+
+const sqlite = @import("nalarcore").sqlite;
+const testing = std.testing;
+const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // See agent_knowledge_delete.zig for why we re-create
+    // workspace_items with the full shape instead of relying on
+    // Migration 001.
+    try db.exec(testing.allocator,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &[_][]const u8{},
+    );
+
+    try Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up(&db, testing.allocator);
+
+    // Seed: 2 agents (so the scoped test can verify cross-agent
+    // isolation) + 1 tool on each.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_1', 'ws_1', 'agent', 'Agent 1')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_2', 'ws_1', 'agent', 'Agent 2')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agents (id, workspace_item_id, description) VALUES ('ws_item_1', 'ws_item_1', '')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agents (id, workspace_item_id, description) VALUES ('ws_item_2', 'ws_item_2', '')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_1', 'ws_item_1', 'bash', 1)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_tools (id, agent_id, tool_name, enabled) VALUES ('at_2', 'ws_item_2', 'bash', 1)",
+        &[_][]const u8{},
+    );
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn countToolsForAgent(
+    db: *sqlite.SqliteBackend,
+    allocator: std.mem.Allocator,
+    agent_id: []const u8,
+) !u32 {
+    var q = try db.query(allocator,
+        "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?",
+        &[_][]const u8{agent_id},
+    );
+    defer q.deinit();
+    const row = (q.next() catch null) orelse return 0;
+    defer row.deinit(allocator);
+    return try std.fmt.parseInt(u32, row.values[0], 10);
+}
+
+test "useCase: empty agent_id returns IdsRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.IdsRequired,
+        useCase(alloc, &ctx.db, .{ .agent_id = "", .tool_id = "at_1" }),
+    );
+}
+
+test "useCase: empty tool_id returns IdsRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.IdsRequired,
+        useCase(alloc, &ctx.db, .{ .agent_id = "ws_item_1", .tool_id = "" }),
+    );
+}
+
+test "useCase: matches scoped by both id AND agent_id (no cross-agent delete)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: each agent has 1 tool
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_1"));
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_2"));
+
+    // Delete at_1 — but lie and say agent_id is ws_item_2. Should be
+    // a no-op because the WHERE clause requires both to match.
+    useCase(alloc, &ctx.db, .{ .agent_id = "ws_item_2", .tool_id = "at_1" }) catch {};
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_1"));
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_2"));
+
+    // Now the legit delete.
+    try useCase(alloc, &ctx.db, .{ .agent_id = "ws_item_1", .tool_id = "at_1" });
+    try testing.expectEqual(@as(u32, 0), try countToolsForAgent(&ctx.db, alloc, "ws_item_1"));
+    // Other agent untouched.
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_2"));
+}
+
+test "useCase: non-matching tool_id is a no-op (no error)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_1"));
+
+    try useCase(alloc, &ctx.db, .{ .agent_id = "ws_item_1", .tool_id = "at_404" });
+
+    try testing.expectEqual(@as(u32, 1), try countToolsForAgent(&ctx.db, alloc, "ws_item_1"));
+}

@@ -93,7 +93,7 @@ test "Migration077 creates users table with all 9 columns" {
     const expected = [_]struct { name: []const u8, type: []const u8, default: []const u8 }{
         .{ .name = "id", .type = "TEXT", .default = "" },
         .{ .name = "email", .type = "TEXT", .default = "" },
-        .{ .name = "name", .type = "TEXT", .default = "'" },
+        .{ .name = "name", .type = "TEXT", .default = "''" },
         .{ .name = "password_hash", .type = "TEXT", .default = "" },
         .{ .name = "role", .type = "TEXT", .default = "'user'" },
         .{ .name = "is_active", .type = "INTEGER", .default = "1" },
@@ -113,7 +113,7 @@ test "Migration077 creates users table with all 9 columns" {
         try testing.expect(idx < expected.len);
         try testing.expectEqualStrings(expected[idx].name, row.values[0]);
         try testing.expectEqualStrings(expected[idx].type, row.values[1]);
-        // SQLite's dflt_value is the raw literal (e.g. "'" for empty-string DEFAULT,
+        // SQLite's dflt_value is the raw literal (e.g. "''" for empty-string DEFAULT,
         // "'user'" for the role default). Compare as-is.
         if (expected[idx].default.len > 0) {
             try testing.expectEqualStrings(expected[idx].default, row.values[2]);
@@ -138,7 +138,7 @@ test "Migration077 creates user_companies table with all 8 columns" {
         .{ .name = "id", .type = "TEXT", .default = "" },
         .{ .name = "name", .type = "TEXT", .default = "" },
         .{ .name = "slug", .type = "TEXT", .default = "" },
-        .{ .name = "description", .type = "TEXT", .default = "'" },
+        .{ .name = "description", .type = "TEXT", .default = "''" },
         .{ .name = "is_active", .type = "INTEGER", .default = "1" },
         .{ .name = "created_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
         .{ .name = "updated_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
@@ -235,7 +235,7 @@ test "Migration077 creates user_company_members table with composite PK" {
         "INSERT INTO user_company_members (user_id, user_company_id, role) " ++
             "VALUES ('u_pk', 'c_pk', 'superuser')",
         &.{});
-    try testing.expectError(error.SqliteError, result);
+    try testing.expectError(error.ExecuteFailed, result);
 }
 
 // ============================================================================
@@ -250,7 +250,7 @@ test "Migration077 adds user_id to workspaces and backfills legacy rows to user_
 
     // Verify the column exists with type=TEXT, nullable.
     var col_q = try ctx.db.query(alloc,
-        \\SELECT type, \"notnull\" FROM pragma_table_info('workspaces')
+        \\SELECT type, "notnull" FROM pragma_table_info('workspaces')
         \\WHERE name = 'user_id'
     , &.{});
     defer col_q.deinit();
@@ -308,7 +308,7 @@ test "Migration077 adds user_id to sessions and backfills legacy rows to user_sy
 
     // Verify the column exists with type=TEXT, nullable.
     var col_q = try ctx.db.query(alloc,
-        \\SELECT type, \"notnull\" FROM pragma_table_info('sessions')
+        \\SELECT type, "notnull" FROM pragma_table_info('sessions')
         \\WHERE name = 'user_id'
     , &.{});
     defer col_q.deinit();

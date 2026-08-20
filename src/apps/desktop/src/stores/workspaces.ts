@@ -1395,6 +1395,46 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0).
+  // Mirrors addDesignItem — POST /api/workspaces/:wsId/items/agent
+  // and push the new item + a default Agent metadata block into the
+  // local store. The backend seeds the agents row with an empty
+  // knowledge list AND an empty tool allowlist (secure-by-default).
+  async function addAgentItem(
+    workspaceId: string,
+    name: string,
+    path: string,
+  ): Promise<string | undefined> {
+    try {
+      const { item, agent } = await api.createAgent(workspaceId, name, path)
+      const ws = workspaces.value.find((w) => w.id === workspaceId)
+      if (ws) {
+        ws.items.push({
+          ...item,
+          name: item.name ?? name,
+          item_type: item.item_type ?? 'agent',
+          path: item.path ?? path,
+          tasks: [],
+          design_elements: [],
+        })
+        if (!ws.expanded) {
+          ws.expanded = true
+          const expandedWorkspaces = loadExpandedWorkspaces()
+          expandedWorkspaces.add(ws.id)
+          saveExpandedWorkspaces(expandedWorkspaces)
+        }
+      }
+      activeWorkspaceItemId.value = item.id
+      // Agent metadata is fetched lazily by AgentView via api.getAgent
+      // on mount; no eager push here. We just return the new item id.
+      void agent // silence unused-variable lint
+      return item.id
+    } catch (err) {
+      console.error('[workspacesStore.addAgentItem] API call failed:', err)
+      return undefined
+    }
+  }
+
   // Backfill (or change) the `path` of a kanban workspace item. Used
   // by the KanbanView "Set project root" banner that surfaces when a
   // kanban was created before the path field existed (the user's
@@ -3999,6 +4039,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // item so the user lands in the new DesignView. Plan:
     // docs/superpowers/plans/2026-06-13-design-mode.md.
     addDesignItem,
+    // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+    // creates an agent-mode workspace item. POSTs to
+    // /api/workspaces/:wsId/items/agent and pushes the new item.
+    addAgentItem,
     addKanbanColumn,
     updateKanbanColumn,
     copyKanbanSpecFrom,

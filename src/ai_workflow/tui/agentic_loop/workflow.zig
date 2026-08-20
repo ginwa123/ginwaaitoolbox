@@ -442,7 +442,35 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
     const copy_message = try parent_allocator.dupe(u8, params.message);
     const copy_cwd = try parent_allocator.dupe(u8, params.cwd);
-    const copy_allowed_tools = try parent_allocator.dupe(u8, params.allowed_tools);
+
+    // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+    // If this is a top-level session bound to an Agent workspace_item,
+    // OVERRIDE `copy_allowed_tools` with the agent's allowlist from
+    // the `agent_tools` table. Secure-by-default semantics per D1:
+    //   - Empty allowlist → `""` → `filterAndMergeTools` registers
+    //     zero tools (no tools in the LLM's function-call schema)
+    //   - Non-empty allowlist → comma-separated tool_names (passed
+    //     to `filterAndMergeTools` which already supports this)
+    //
+    // Sub-agents (params.is_sub_agent == true) are NOT filtered —
+    // the spawned sub-agent's `allowed_tools` is set by the
+    // `spawn_sub_agent` tool call (see tools_exec_spawn_sub_agent.zig),
+    // and we don't override that.
+    var copy_allowed_tools: []const u8 = parent_allocator.dupe(u8, params.allowed_tools) catch "";
+    if (!params.is_sub_agent) {
+        if (try maybeOverrideAllowedToolsForAgent(
+            parent_allocator,
+            db,
+            params.session_id,
+            &copy_allowed_tools,
+        )) {
+            logger.infoFmt(
+                "[CHECKPOINT] agent_mode: session_id={s} is bound to an Agent — allowed_tools overridden to '{s}'",
+                .{ params.session_id, copy_allowed_tools },
+            );
+        }
+    }
+
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
@@ -1884,6 +1912,75 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
             try testing.expectEqualStrings("bash", m.tool_name.?);
         }
     }
+}
+
+/// Agent Mode helper: if `session_id` is bound to a workspace_item
+/// whose item_type='agent', resolve the agent's allowed_tools from
+/// the `agent_tools` table and overwrite `out_allowed_tools` with
+/// the comma-joined list (or "" for the secure-by-default empty
+/// case — which `filterAndMergeTools` interprets as zero tools).
+///
+/// Returns `true` when an override was applied, `false` otherwise
+/// (session not bound to an agent, or DB error — non-fatal; the
+/// caller falls back to the original `out_allowed_tools`).
+///
+/// Plan: docs/superpowers/plans/2026-08-15-agent-mode.md (Task 12).
+fn maybeOverrideAllowedToolsForAgent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    out_allowed_tools: *[]const u8,
+) !bool {
+    if (session_id.len == 0) return false;
+
+    // Resolve session_id → workspace_item_id.
+    var q1 = db.query(allocator,
+        "SELECT workspace_item_id FROM workspace_item_tasks WHERE id = ?",
+        &[_][]const u8{session_id},
+    ) catch return false;
+    defer q1.deinit();
+    const row1 = (q1.next() catch null) orelse return false;
+    defer row1.deinit(allocator);
+    const workspace_item_id = row1.values[0];
+
+    // Only filter when the workspace_item is an agent.
+    var q2 = db.query(allocator,
+        "SELECT id FROM agents WHERE id = ?",
+        &[_][]const u8{workspace_item_id},
+    ) catch return false;
+    defer q2.deinit();
+    const row2 = (q2.next() catch null) orelse return false;
+    defer row2.deinit(allocator);
+
+    // Fetch the enabled tool_names.
+    var q3 = db.query(allocator,
+        \\SELECT tool_name FROM agent_tools
+        \\WHERE agent_id = ? AND enabled = 1
+        \\ORDER BY tool_name ASC
+    , &[_][]const u8{workspace_item_id}) catch return false;
+    defer q3.deinit();
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+    while ((q3.next() catch null)) |r| {
+        defer r.deinit(allocator);
+        try names.append(allocator, try allocator.dupe(u8, r.values[0]));
+    }
+
+    // Empty allowlist → secure-by-default: zero tools. Pass "" to
+    // filterAndMergeTools, which already interprets "" as "register
+    // zero tools".
+    if (names.items.len == 0) {
+        out_allowed_tools.* = "";
+        return true;
+    }
+
+    // Non-empty: join with ','.
+    out_allowed_tools.* = try std.mem.join(allocator, ",", names.items);
+    return true;
 }
 
 // ════════════════════════════════════════════════════════════════════════════

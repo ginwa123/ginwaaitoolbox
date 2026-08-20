@@ -15,6 +15,8 @@ import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
+import AgentView from './views/AgentView.vue'
+import AgentChatDialog from './dialogs/AgentChatDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
@@ -1025,6 +1027,58 @@ watch(
   },
   { immediate: true },
 )
+
+// Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+// agent chat dialog visibility. Driven by `activeTask` — when the
+// user clicks a chat task under an agent, `activeTaskWorkspaceItemId`
+// equals the agent's item id and `activeTaskWorkspaceItem.item_type`
+// is `'agent'`. The AgentChatDialog's v-if gates on this exact case.
+const agentChatDialogOpen = ref(false)
+const agentKnowledge = ref<api.AgentKnowledgeRow[]>([])
+const agentTools = ref<string[]>([])
+
+watch(
+  () => activeTask.value,
+  async (t) => {
+    agentChatDialogOpen.value = !!t && activeWorkspaceItem.value?.item_type === 'agent'
+    if (t && activeWorkspaceItem.value?.item_type === 'agent') {
+      // Lazy-fetch agent data when a chat opens under an agent.
+      try {
+        const wsId = activeWorkspace?.value?.id
+        if (!wsId) return
+        const data = await api.getAgent(wsId, activeWorkspaceItem.value!.id)
+        agentKnowledge.value = data.knowledge
+        agentTools.value = data.tools
+      } catch (e) {
+        console.error('[AppLayout] failed to load agent:', e)
+      }
+    }
+  },
+  { immediate: true },
+)
+
+// Agent view emit handlers — delegated to workspacesStore / API.
+async function handleAgentAddKnowledge() {
+  // TODO (v1.1): wire to api.addAgentKnowledge via a new dialog
+  // (AgentKnowledgeDialog). For v1, the button is present but the
+  // wiring is gated on the parent component providing the dialog.
+  // The click handler is here so AgentView's emit reaches us.
+  console.warn('[AppLayout] handleAgentAddKnowledge: not yet wired (v1.1)')
+}
+async function handleAgentRemoveKnowledge(knowledgeId: string) {
+  // v1.1 wiring. For now, no-op.
+  void knowledgeId
+}
+async function handleAgentToggleTool(toolName: string, enabled: boolean) {
+  // v1.1 wiring. For now, no-op.
+  void toolName; void enabled
+}
+function handleAgentNewChat() {
+  // TODO (v1.1): open a chat dialog. The current iteration ships
+  // the AgentView + dialog shells; the New Chat button's wired
+  // behaviour is a follow-up commit.
+  console.warn('[AppLayout] handleAgentNewChat: not yet wired (v1.1)')
+}
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -2101,17 +2155,56 @@ defineExpose({
         @delete-element="handleDesignDeleteElement"
         @open-chat="handleDesignOpenChat"
       />
+      <!-- Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+           4th workspace-item type. Mounted when item_type='agent'.
+           The view is responsible for fetching its own agent data
+           (knowledge + tools) via /api/workspaces/:wsId/items/:itemId/agent.
+           The chat dialog (below) opens when the user clicks a
+           chat task under this agent.
+           IMPORTANT: this v-else-if must come BEFORE the new
+           standard-task ChatView below (origin/main's blank-chatview
+           fix) so 'agent' items render AgentView, not a plain
+           ChatView. The new ChatView's v-else-if condition
+           (`item_type !== 'kanban' && !== 'design'`) WOULD match
+           'agent' items, so order matters. -->
+      <AgentView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        :key="'agent-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :knowledge="agentKnowledge"
+        :tools="agentTools"
+        @add-knowledge="handleAgentAddKnowledge"
+        @remove-knowledge="handleAgentRemoveKnowledge"
+        @toggle-tool="handleAgentToggleTool"
+        @new-chat="handleAgentNewChat"
+      />
+      <AgentChatDialog
+        v-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'agent' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        v-model:show="agentChatDialogOpen"
+        :task="activeTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
+      />
       <!--
         Standard task chat (folder / memory / chat items — anything
-        that isn't a kanban or design). FIX for blank chatview
-        (task_1787027750097, 2026-08-14): the simplify-url-browser
-        plan (#246) wired kanban (KanbanChatDialog) and design
-        (DesignChatDialog) chat-open paths but listed "folder
-        tasks … out-of-scope edge case". A user with a chat task
-        on a folder / memory / chat workspace item hit a dead
-        zone: setActiveTask fires, clears activeChatId, and NONE
-        of the v-else-if branches above matched — right pane was
-        blank.
+        that isn't a kanban, design, OR agent). FIX for blank
+        chatview (task_1787027750097, 2026-08-14): the
+        simplify-url-browser plan (#246) wired kanban
+        (KanbanChatDialog) and design (DesignChatDialog) chat-open
+        paths but listed "folder tasks … out-of-scope edge case".
+        A user with a chat task on a folder / memory / chat
+        workspace item hit a dead zone: setActiveTask fires,
+        clears activeChatId, and NONE of the v-else-if branches
+        above matched — right pane was blank.
 
         Render <StandardTaskChatView> with the active task —
         encapsulates the chat-id / chat-name / :key wiring (see
@@ -2123,16 +2216,19 @@ defineExpose({
         fight the activeTask state the kanban + design branches
         depend on.
 
-        Mount order matters: this v-else-if precedes the standalone
-        `<ChatView v-else-if="activeChatId.startsWith('chat-')">`
-        branch below, so a folder task lands here even when
-        activeChatId is empty (cleared by setActiveTask).
+        Mount order matters: this v-else-if is AFTER AgentView
+        (above), so 'agent' items render AgentView not ChatView.
+        It precedes the standalone `<ChatView v-else-if=
+        "activeChatId.startsWith('chat-')">` branch below, so a
+        folder task lands here even when activeChatId is empty
+        (cleared by setActiveTask).
       -->
       <StandardTaskChatView
         v-else-if="
           activeWorkspaceItem &&
           activeWorkspaceItem.item_type !== 'kanban' &&
           activeWorkspaceItem.item_type !== 'design' &&
+          activeWorkspaceItem.item_type !== 'agent' &&
           activeTask
         "
         :task="activeTask"

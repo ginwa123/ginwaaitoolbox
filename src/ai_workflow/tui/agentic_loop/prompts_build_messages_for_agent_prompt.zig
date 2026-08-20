@@ -127,6 +127,13 @@ pub fn buildMessages(
     const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
     defer allocator.free(workspaceContext);
 
+    // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+    // Build the "## Agent Knowledge" section. Reads the agent's
+    // markdown knowledge files from disk. Empty for non-agent sessions
+    // (helper silently returns "").
+    const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKnowledgeContent);
+
     // Build the "Kanban Status Tracking" section. Only rendered when
     // the session's parent item has item_type === 'kanban' (the
     // helper silently returns "" otherwise). Rendered right after
@@ -177,6 +184,12 @@ pub fn buildMessages(
     var final_system: std.ArrayList(u8) = .empty;
     defer final_system.deinit(allocator);
     try final_system.appendSlice(allocator, systemContent);
+    // Agent Mode: inject the '## Agent Knowledge' section right
+    // after the workspace-context section emitted by build_agent_prompt.
+    // Empty when item_type != 'agent' OR agent has no knowledge rows.
+    if (agentKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKnowledgeContent);
+    }
     if (inherited_md.len > 0) {
         try final_system.appendSlice(allocator, "\n\n");
         try final_system.appendSlice(allocator, inherited_md);

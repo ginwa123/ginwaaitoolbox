@@ -48,6 +48,21 @@ pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;
 pub const workspaceItemsCreateKanbanHandler = @import("workspace_items_create_kanban.zig").workspaceItemsCreateKanbanHandler;
 pub const workspaceItemsCreateDesignHandler = @import("design_items_create.zig").workspaceItemsCreateDesignHandler;
+// Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0) — 4th
+// workspace-item type. See workspace_items_create_agent.zig.
+pub const workspaceItemsCreateAgentHandler = @import("workspace_items_create_agent.zig").workspaceItemsCreateAgentHandler;
+pub const agentsGetHandler = @import("agents_get.zig").agentsGetHandler;
+pub const agentsUpdateHandler = @import("agents_update.zig").agentsUpdateHandler;
+// Agent Mode knowledge CRUD (Task 6)
+pub const agentKnowledgeCreateHandler = @import("agent_knowledge_create.zig").agentKnowledgeCreateHandler;
+pub const agentKnowledgeUpdateHandler = @import("agent_knowledge_update.zig").agentKnowledgeUpdateHandler;
+pub const agentKnowledgeDeleteHandler = @import("agent_knowledge_delete.zig").agentKnowledgeDeleteHandler;
+pub const agentKnowledgeReorderHandler = @import("agent_knowledge_reorder.zig").agentKnowledgeReorderHandler;
+// Agent Mode tools CRUD (Tasks 7-8)
+pub const agentToolsRegistryHandler = @import("agent_tools_registry.zig").agentToolsRegistryHandler;
+pub const agentToolsListHandler = @import("agent_tools_list.zig").agentToolsListHandler;
+pub const agentToolsCreateHandler = @import("agent_tools_create.zig").agentToolsCreateHandler;
+pub const agentToolsDeleteHandler = @import("agent_tools_delete.zig").agentToolsDeleteHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
