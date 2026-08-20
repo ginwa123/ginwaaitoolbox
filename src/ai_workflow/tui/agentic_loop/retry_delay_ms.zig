@@ -1,4 +1,6 @@
 const std = @import("std");
+const testing = std.testing;
+const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
 const isWorkerCancelled = @import("is_worker_cancelled.zig").isWorkerCancelled;
 
@@ -68,5 +70,49 @@ pub fn retryDelayMs(
             .nsec = chunk_ms * std.time.ns_per_ms,
         };
         _ = nanosleep(&ts, null);
+    }
+}
+
+fn setupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc, "CREATE TABLE workers (id TEXT PRIMARY KEY)", &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn teardownDb(s: *@TypeOf(setupDb() catch unreachable)) void {
+    s.db.deinit();
+    s.threaded.deinit();
+}
+
+test "retryDelayMs does not panic over 200 calls with delay_ms = 1 (race-window stress)" {
+    if (builtin.mode != .Debug) return error.SkipZigTest;
+
+    var s = try setupDb();
+    defer teardownDb(&s);
+    const alloc = testing.allocator;
+
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+
+    var i: usize = 0;
+    while (i < 200) : (i += 1) {
+        const result = retryDelayMs(.{
+            .allocator = alloc,
+            .delay_ms = 1,
+            .db = &s.db,
+            .session_id = "race_test_session",
+            .io = s.threaded.io(),
+            .logger = &lg,
+        });
+        try testing.expect(result == true);
     }
 }

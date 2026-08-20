@@ -30,7 +30,7 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         std.testing.io,
         path,
         allocator,
-        .limited(256 * 1024),
+        .limited(1024 * 1024),
     );
     const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
     allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy

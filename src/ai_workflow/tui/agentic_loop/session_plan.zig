@@ -21,7 +21,9 @@
 //! (`agent_memories.zig`, `session_skills.zig`).
 
 const std = @import("std");
+const testing = std.testing;
 const sqlite = @import("nalarcore").sqlite;
+const migration = @import("../../../migrations/migration.zig");
 
 /// One row in `session_plan`. All string fields are allocator-owned and
 /// must be freed by the caller via `deinit`.
@@ -133,4 +135,150 @@ pub fn getPlanOpt(
         .plan_md = plan_md_owned,
         .updated_at = updated_at_owned,
     };
+}
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: round-trip save + getPlan returns the same content ──────────
+
+test "savePlan + getPlan round-trip preserves content" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const session_id = "test_session_1";
+    {
+        const ts = try savePlan(allocator, &ctx.db, .{
+            .session_id = session_id,
+            .content = "# My Plan\n\n- [ ] step 1\n- [x] step 2\n",
+        });
+        defer allocator.free(ts);
+    }
+
+    const got = try getPlan(allocator, &ctx.db, session_id);
+    defer allocator.free(got);
+    try testing.expectEqualStrings("# My Plan\n\n- [ ] step 1\n- [x] step 2\n", got);
+}
+
+// ─── Test 2: getPlan on missing session returns empty string ─────────────
+
+test "getPlan on missing session returns empty string" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const got = try getPlan(allocator, &ctx.db, "nonexistent");
+    defer allocator.free(got);
+    try testing.expectEqualStrings("", got);
+}
+
+// ─── Test 3: UPSERT semantics — second save replaces the first ────────────
+
+test "savePlan overwrites existing row (UPSERT semantics)" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const sid = "upsert_test";
+
+    {
+        const ts1 = try savePlan(allocator, &ctx.db, .{ .session_id = sid, .content = "v1" });
+        defer allocator.free(ts1);
+        const ts2 = try savePlan(allocator, &ctx.db, .{ .session_id = sid, .content = "v2 longer" });
+        defer allocator.free(ts2);
+    }
+
+    const got = try getPlan(allocator, &ctx.db, sid);
+    defer allocator.free(got);
+    try testing.expectEqualStrings("v2 longer", got);
+
+    // Confirm there is still exactly ONE row in the DB (UPSERT, not
+    // INSERT-OR-APPEND).
+    var q = try ctx.db.query(allocator,
+        "SELECT COUNT(*) FROM session_plan WHERE session_id = ?",
+        &.{sid});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(allocator);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+// ─── Test 4: content > MAX_PLAN_BYTES returns ContentTooLarge ─────────────
+
+test "savePlan rejects content > 256 KiB with ContentTooLarge" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const big = try allocator.alloc(u8, MAX_PLAN_BYTES + 1);
+    defer allocator.free(big);
+    @memset(big, 'a');
+
+    const result = savePlan(allocator, &ctx.db, .{
+        .session_id = "big", .content = big,
+    });
+    try testing.expectError(error.ContentTooLarge, result);
+}
+
+// ─── Test 5: empty content returns InvalidContent ─────────────────────────
+
+test "savePlan rejects empty content with InvalidContent" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const result = savePlan(allocator, &ctx.db, .{
+        .session_id = "empty", .content = "",
+    });
+    try testing.expectError(error.InvalidContent, result);
+}
+
+// ─── Test 6: getPlanOpt — null when absent, populated PlanRow when present
+
+test "getPlanOpt returns null when no row, populated struct when present" {
+    const allocator = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // absent
+    const absent = try getPlanOpt(allocator, &ctx.db, "nope");
+    try testing.expect(absent == null);
+
+    // present
+    {
+        const ts = try savePlan(allocator, &ctx.db, .{ .session_id = "s", .content = "hello" });
+        defer allocator.free(ts);
+    }
+    const present = try getPlanOpt(allocator, &ctx.db, "s");
+    try testing.expect(present != null);
+    if (present) |row| {
+        defer row.deinit(allocator);
+        try testing.expectEqualStrings("hello", row.plan_md);
+        try testing.expect(row.updated_at.len > 0);
+    }
 }
