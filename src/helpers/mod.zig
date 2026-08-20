@@ -325,8 +325,12 @@ fn monotonicTimestampNanosWindows() u64 {
     // Convert ticks to ns: ns = ticks * 1e9 / freq. Both inputs are
     // strictly positive after a successful RtlQuery call, so the unsigned
     // math is safe. Use u128 intermediate to dodge the i64 multiplication
-    // overflow at GHz-class TSC frequencies.
-    return @intCast(@divTrunc(@as(u128, @intCast(counter)) * 1_000_000_000, @as(u128, freq)));
+    // overflow at GHz-class TSC frequencies. `freq` is `i64` on
+    // Windows in Zig 0.16 (it's a Win32 LARGE_INTEGER typedef) — cast
+    // up to u128 the same way the counter is.
+    const ns_u128: u128 = @as(u128, @intCast(counter)) * 1_000_000_000;
+    const freq_u128: u128 = @as(u128, @intCast(freq));
+    return @intCast(@divTrunc(ns_u128, freq_u128));
 }
 
 /// Returns the current UTC time as an ISO-8601 string (`"2026-07-15 19:43:09"`).
