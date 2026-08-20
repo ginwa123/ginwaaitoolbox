@@ -1,0 +1,401 @@
+/**
+ * Tests for the update_plan + get_plan tool dispatcher in ChatView.vue.
+ *
+ * The component imports UpdatePlan.vue + GetPlan.vue which must be
+ * stubbed via vi.mock(...) following the SubAgentPeekPanel.spec.ts
+ * pattern. The stubs emit a recognisable DOM marker (data-tool-name +
+ * a class hook) so we can assert which tool renderer was selected for
+ * each message.
+ *
+ * Behavioural contract:
+ *   - A `role: 'tool'` message with `tool_name === 'update_plan'`
+ *     dispatches to <UpdatePlan :message="msg" />.
+ *   - A `role: 'tool'` message with `tool_name === 'get_plan'`
+ *     dispatches to <GetPlan :message="msg" />.
+ *   - Other tool names do NOT route to either component.
+ *
+ * Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
+ *   Task 8
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
+import { createApp, nextTick, ref } from 'vue'
+import { mount, flushPromises } from '@vue/test-utils'
+
+import * as api from '../api'
+import ChatView from '../components/views/ChatView.vue'
+import {
+  installSseBus,
+  __resetSseBus,
+  __setSseBusGlobalClient,
+} from '../helpers/sseBus'
+import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+import { makeLocalStorageStub } from './helpers'
+import type { Message } from '../api'
+
+// ────────────────────────────────────────────────────────────────────────
+// Stub the new tool-output components. We don't need to assert their
+// internal rendering here (that lives in UpdatePlan.spec.ts /
+// GetPlan.spec.ts if we ever write them) — we only need to know that
+// the ChatView dispatcher routes the right tool_name to the right
+// component. The stubs expose `data-tool-name` so we can verify the
+// vnode was emitted with the expected `msg.tool_name` prop.
+// ────────────────────────────────────────────────────────────────────────
+
+vi.mock('../components/tool_outputs/UpdatePlan.vue', () => ({
+  default: {
+    name: 'UpdatePlan',
+    props: ['message'],
+    template: '<div class="update-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
+  },
+}))
+
+vi.mock('../components/tool_outputs/GetPlan.vue', () => ({
+  default: {
+    name: 'GetPlan',
+    props: ['message'],
+    template: '<div class="get-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
+  },
+}))
+
+// jsdom 29 dropped Element.prototype.scrollTo; polyfill for VirtualScroller.
+if (
+  typeof (globalThis as { HTMLElement?: { prototype: { scrollTo?: unknown } } }).HTMLElement
+    ?.prototype.scrollTo === 'undefined'
+) {
+  ;(
+    globalThis as unknown as { HTMLElement: { prototype: { scrollTo: () => void } } }
+  ).HTMLElement.prototype.scrollTo = function () {
+    // no-op
+  }
+}
+
+function makeStubClient(initial: SseState): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => stub._state,
+    onStateChange: (_cb: (s: SseState, _info: SseStateInfo) => void) => {
+      return () => {}
+    },
+  }
+  stub._state = initial
+  return stub as SseClient
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Wire envelope helpers (mirrors the backend's `wrapToolOutput` shape)
+// ────────────────────────────────────────────────────────────────────────
+
+const wireToolEnvelope = (inner: string, paramsJson: string): string =>
+  '<tool>' +
+  '<name>tool</name>' +
+  `<parameters>${paramsJson}</parameters>` +
+  '<success>true</success>' +
+  `<data>${inner}</data>` +
+  '</tool>'
+
+const updatePlanSuccessEnvelope = (
+  sessionId = 's_test_001',
+  updatedAt = '2026-08-19 21:00:00',
+): string =>
+  `<update_plan><session_id>${sessionId}</session_id><updated_at>${updatedAt}</updated_at></update_plan>`
+
+const getPlanPresentEnvelope = (markdown: string): string => {
+  // Mirror the backend's CDATA wrap (executeGetPlan.zig). We emit the
+  // markdown verbatim inside CDATA so the test doesn't have to know
+  // about XML-escaping.
+  return `<get_plan><plan><![CDATA[\n${markdown}\n]]></plan></get_plan>`
+}
+
+const getPlanEmptyEnvelope = (): string => `<get_plan><empty/></get_plan>`
+
+// ────────────────────────────────────────────────────────────────────────
+// Test helpers — mock the api module + SSE bus + localStorage so the
+// mount is fast and stable (parity with profileCascade.spec.ts).
+// ────────────────────────────────────────────────────────────────────────
+
+function installChatViewMocks(opts: { messages: Message[] }) {
+  vi.spyOn(api, 'getChatHistory').mockResolvedValue({
+    messages: opts.messages,
+    has_more: false,
+    next_cursor: null,
+    cwd: '/tmp',
+    git_worktree_cwd: '',
+    max_total_tokens: 0,
+    max_capacity_total_tokens: 0,
+  })
+  vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [], count: 0 })
+  vi.spyOn(api, 'getSession').mockResolvedValue({
+    sessionId: 's_test_001',
+    sessionName: '',
+    createdAt: '2026-08-19 00:00:00',
+    agent: '',
+    selectedProfile: '',
+    cwd: '',
+    git_worktree_cwd: '',
+  })
+
+  vi.spyOn(api, 'getGitStatus').mockResolvedValue({
+    is_git_repo: false,
+    branch: '',
+    has_changes: false,
+    is_clean: true,
+    current: '',
+    status: '',
+  })
+  vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} })
+}
+
+async function mountChatViewWithMessages() {
+  const processingState = ref<Record<string, boolean>>({})
+
+  // Use a per-test container so multiple mounts don't bleed DOM
+  // into each other. attachTo: document.body would persist the
+  // previous test's stub across cases.
+  const container = document.createElement('div')
+  container.id = 'chatview-test-container'
+  document.body.appendChild(container)
+
+  const wrapper = mount(ChatView, {
+    props: { chatId: 's_test_001', chatName: 'Test Chat' },
+    attachTo: container,
+    global: {
+      provide: { processingState },
+    },
+  })
+  // Wait for onMounted's loadChatHistory + the watch on sessionId to
+  // settle. Same loop as ChatView.profileCascade.spec.ts.
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    const streaming = (wrapper.vm as unknown as { isStreaming?: boolean }).isStreaming
+    if (streaming) break
+  }
+  await flushPromises()
+  await nextTick()
+  return wrapper
+}
+
+let vueApp: ReturnType<typeof createApp> | null = null
+let sseBusGlobalClient: SseClient | null = null
+
+beforeEach(() => {
+  setActivePinia(createPinia())
+  vueApp = createApp({})
+  installSseBus(vueApp)
+  sseBusGlobalClient = makeStubClient('open')
+  __setSseBusGlobalClient(sseBusGlobalClient)
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: makeLocalStorageStub(),
+    writable: true,
+    configurable: true,
+  })
+})
+
+afterEach(() => {
+  // Tear down any leftover container elements from the previous
+  // mount so the next test starts with a clean DOM.
+  document.querySelectorAll('#chatview-test-container').forEach((el) => el.remove())
+  __resetSseBus()
+  vueApp = null
+  sseBusGlobalClient = null
+  vi.restoreAllMocks()
+})
+
+// ────────────────────────────────────────────────────────────────────────
+// Tests
+// ────────────────────────────────────────────────────────────────────────
+
+describe('ChatView tool dispatcher — update_plan + get_plan', () => {
+  it('routes an update_plan tool result to the <UpdatePlan> component', async () => {
+    installChatViewMocks({
+      messages: [
+        {
+          id: 'm_user',
+          role: 'user',
+          content: 'Build feature X',
+          created_at: 1000,
+        },
+        {
+          id: 'm_asst',
+          role: 'assistant',
+          content: '',
+          created_at: 1001,
+          finish_reason: 'tool_calls',
+          tool_calls_json: JSON.stringify([
+            { id: 'tc1', type: 'function', function: { name: 'update_plan' } },
+          ]),
+        },
+        {
+          id: 'm_update_plan',
+          role: 'tool',
+          content: wireToolEnvelope(
+            updatePlanSuccessEnvelope('s_test_001', '2026-08-19 21:00:00'),
+            JSON.stringify({ content: '## Goal\n- [ ] step 1' }),
+          ),
+          created_at: 1002,
+          tool_name: 'update_plan',
+          tool_call_id: 'tc1',
+        },
+      ],
+    })
+
+    await mountChatViewWithMessages()
+
+    const stub = document.querySelector('.update-plan-stub')
+    expect(stub).not.toBeNull()
+    expect(stub?.getAttribute('data-tool-name')).toBe('update_plan')
+    expect(stub?.getAttribute('data-msg-id')).toBe('m_update_plan')
+
+    // The get_plan stub must NOT render in this scenario.
+    expect(document.querySelector('.get-plan-stub')).toBeNull()
+  })
+
+  it('routes a get_plan tool result (with plan body) to the <GetPlan> component', async () => {
+    installChatViewMocks({
+      messages: [
+        {
+          id: 'm_user',
+          role: 'user',
+          content: 'Show me the plan',
+          created_at: 1000,
+        },
+        {
+          id: 'm_asst',
+          role: 'assistant',
+          content: '',
+          created_at: 1001,
+          finish_reason: 'tool_calls',
+          tool_calls_json: JSON.stringify([
+            { id: 'tc1', type: 'function', function: { name: 'get_plan' } },
+          ]),
+        },
+        {
+          id: 'm_get_plan',
+          role: 'tool',
+          content: wireToolEnvelope(
+            getPlanPresentEnvelope('## Goal\n- [x] step 1 done\n- [ ] step 2'),
+            '{}',
+          ),
+          created_at: 1002,
+          tool_name: 'get_plan',
+          tool_call_id: 'tc1',
+        },
+      ],
+    })
+
+    await mountChatViewWithMessages()
+
+    const stub = document.querySelector('.get-plan-stub')
+    expect(stub).not.toBeNull()
+    expect(stub?.getAttribute('data-tool-name')).toBe('get_plan')
+    expect(stub?.getAttribute('data-msg-id')).toBe('m_get_plan')
+
+    // The update_plan stub must NOT render in this scenario.
+    expect(document.querySelector('.update-plan-stub')).toBeNull()
+  })
+
+  it('routes a get_plan <empty/> result to the <GetPlan> component too', async () => {
+    // The empty/no-plan sentinel still belongs to get_plan — the
+    // dispatcher must not skip it.
+    installChatViewMocks({
+      messages: [
+        {
+          id: 'm_asst',
+          role: 'assistant',
+          content: '',
+          created_at: 1001,
+          finish_reason: 'tool_calls',
+          tool_calls_json: JSON.stringify([
+            { id: 'tc1', type: 'function', function: { name: 'get_plan' } },
+          ]),
+        },
+        {
+          id: 'm_get_plan_empty',
+          role: 'tool',
+          content: wireToolEnvelope(getPlanEmptyEnvelope(), '{}'),
+          created_at: 1002,
+          tool_name: 'get_plan',
+          tool_call_id: 'tc1',
+        },
+      ],
+    })
+
+    await mountChatViewWithMessages()
+
+    const stub = document.querySelector('.get-plan-stub')
+    expect(stub).not.toBeNull()
+    expect(stub?.getAttribute('data-tool-name')).toBe('get_plan')
+  })
+
+  it('routes both update_plan and get_plan in the same session', async () => {
+    // The agent often chains update_plan → get_plan within a single
+    // turn (or across adjacent turns). The dispatcher must handle
+    // both messages with their respective components.
+    installChatViewMocks({
+      messages: [
+        {
+          id: 'm_update_plan',
+          role: 'tool',
+          content: wireToolEnvelope(
+            updatePlanSuccessEnvelope(),
+            JSON.stringify({ content: '## Steps\n- [x] step 1' }),
+          ),
+          created_at: 1002,
+          tool_name: 'update_plan',
+          tool_call_id: 'tc1',
+        },
+        {
+          id: 'm_get_plan',
+          role: 'tool',
+          content: wireToolEnvelope(
+            getPlanPresentEnvelope('## Steps\n- [x] step 1'),
+            '{}',
+          ),
+          created_at: 1003,
+          tool_name: 'get_plan',
+          tool_call_id: 'tc2',
+        },
+      ],
+    })
+
+    await mountChatViewWithMessages()
+
+    const updateStub = document.querySelector('.update-plan-stub')
+    const getStub = document.querySelector('.get-plan-stub')
+    expect(updateStub).not.toBeNull()
+    expect(getStub).not.toBeNull()
+    expect(updateStub?.getAttribute('data-tool-name')).toBe('update_plan')
+    expect(updateStub?.getAttribute('data-msg-id')).toBe('m_update_plan')
+    expect(getStub?.getAttribute('data-tool-name')).toBe('get_plan')
+    expect(getStub?.getAttribute('data-msg-id')).toBe('m_get_plan')
+  })
+
+  it('does NOT route other tool names to either component', async () => {
+    // A read_file tool result must dispatch to its own component,
+    // not bleed into the plan tools. This guards against future
+    // dispatcher refactors that might widen the v-else-if branch.
+    installChatViewMocks({
+      messages: [
+        {
+          id: 'm_read_file',
+          role: 'tool',
+          content: wireToolEnvelope(
+            '<path>/tmp/foo.txt</path><content>hello</content>',
+            JSON.stringify({ path: '/tmp/foo.txt' }),
+          ),
+          created_at: 1002,
+          tool_name: 'read_file',
+          tool_call_id: 'tc1',
+        },
+      ],
+    })
+
+    await mountChatViewWithMessages()
+
+    expect(document.querySelector('.update-plan-stub')).toBeNull()
+    expect(document.querySelector('.get-plan-stub')).toBeNull()
+  })
+})

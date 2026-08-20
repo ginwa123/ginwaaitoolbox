@@ -45,6 +45,8 @@ import KanbanList from '../tool_outputs/KanbanList.vue'
 import ListDirectory from '../tool_outputs/ListDirectory.vue'
 import SaveMemory from '../tool_outputs/SaveMemory.vue'
 import LoadMemory from '../tool_outputs/LoadMemory.vue'
+import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
+import GetPlan from '../tool_outputs/GetPlan.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
@@ -310,6 +312,56 @@ const renderResponse = (
         const count = countMatch?.[1] ?? '?'
         const session = sessionMatch?.[1]?.trim() ?? ''
         return `<span class="tool-inline">${tool_name} → ${escapeHtml(mode)} mode · ${count} ${count === '1' ? 'message' : 'messages'}${session ? ' · ' + escapeHtml(session) : ''}</span>`
+      }
+
+      if (tool_name === 'update_plan') {
+        // Collapsed-bubble summary for the inline tool pill in ChatView.
+        // Mirrors the structured UpdatePlan.vue card so users see "wrote
+        // N bytes" whether they look at the collapsed bubble or expand
+        // the structured card. We approximate the byte count from the
+        // envelope's `<updated_at>` timestamp + the presence of
+        // `<session_id>` — the raw `content` argument isn't the LLM's
+        // input, so we can't show the exact byte count without
+        // threading the tool-call params through; the byte count from
+        // the plan body would require re-unwrapping, so we settle for
+        // a length-derived estimate from the inner envelope.
+        const updateError = content.match(/<error>([\s\S]*?)<\/error>/)
+        if (updateError && updateError[1]) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(updateError[1].trim()) || 'error'}</span>`
+        }
+        // Estimate byte count from the inner envelope length as a
+        // rough "how big was this plan write" signal. We pull the
+        // inner envelope (stripping both <tool> and <update_plan>
+        // wrappers) so the number reflects the actual content, not
+        // the XML envelope chrome.
+        const innerPlanMatch = content.match(/<update_plan>([\s\S]*?)<\/update_plan>/)
+        const innerBytes = innerPlanMatch?.[1]?.length ?? 0
+        return `<span class="tool-inline">${tool_name} → wrote ${innerBytes}b of plan</span>`
+      }
+
+      if (tool_name === 'get_plan') {
+        // Collapsed-bubble summary for the inline tool pill in ChatView.
+        // Mirrors the structured GetPlan.vue card so users see "fetched
+        // current plan · N items" whether they look at the collapsed
+        // bubble or expand the structured card.
+        const getError = content.match(/<error>([\s\S]*?)<\/error>/)
+        if (getError && getError[1]) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(getError[1].trim()) || 'error'}</span>`
+        }
+        // No-plan sentinel: <get_plan><empty/></get_plan>
+        if (/<empty\s*\/?>/.test(content)) {
+          return `<span class="tool-inline">${tool_name} → no plan set</span>`
+        }
+        // Count `- [ ]` / `- [x]` items in the CDATA-wrapped body for
+        // the "N items" hint. We strip the CDATA wrappers first so we
+        // only match checklist markers, not any literal `[ ]` text
+        // inside non-checklist prose.
+        const cdataMatch = content.match(/<!\[CDATA\[([\s\S]*?)\]\]>/)
+        const cdata = cdataMatch?.[1] ?? ''
+        const itemMatches = cdata.match(/^- \[(x| )\]\s+/gim)
+        const itemCount = itemMatches?.length ?? 0
+        const itemLabel = itemCount === 1 ? 'item' : 'items'
+        return `<span class="tool-inline">${tool_name} → fetched current plan${itemCount > 0 ? ` · ${itemCount} ${itemLabel}` : ''}</span>`
       }
 
       if (tool_name === 'nalar_browser') {
@@ -2617,6 +2669,23 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'load_memory'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                          />
+                          <!--
+                            `update_plan` + `get_plan` (Task 8 — optional UI).
+                            These render the agent's per-session task plan as
+                            a checklist card. The components take the whole
+                            `message` prop and parse the inner envelope
+                            themselves, so they're self-contained (no
+                            `expanded` from the dispatcher — local toggle
+                            is enough for an optional UI).
+                          -->
+                          <UpdatePlan
+                            v-else-if="msg.tool_name === 'update_plan'"
+                            :message="msg"
+                          />
+                          <GetPlan
+                            v-else-if="msg.tool_name === 'get_plan'"
+                            :message="msg"
                           />
                           <!--
                             `show_preview` is intentionally NOT

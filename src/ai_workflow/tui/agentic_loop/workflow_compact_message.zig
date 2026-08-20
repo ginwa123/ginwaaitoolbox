@@ -30,8 +30,8 @@
 //! as `nalarcore.ai_mod.ai_workflow.agentic_loop.<name>`):
 //!   - `buildCompactMessagePrompt` (prompt builder)
 //!   - `parseReadFilePath`, `fetchUserChatHistory`, `fetchReadFilePaths`,
-//!     `fetchRecentActivities`, `fetchSessionSkills`, `enrichCompactionXml`
-//!     (envelope helpers)
+//!     `fetchRecentActivities`, `fetchSessionSkills`, `fetchSessionPlan`,
+//!     `enrichCompactionXml` (envelope helpers)
 //!   - `UserTurn`, `ReadFileTurn`, `RecentActivity` (row types)
 
 const std = @import("std");
@@ -44,6 +44,11 @@ const xml_escape = nalarcore.helpers.xml_escape;
 const agent = nalarcore.agent;
 const llm_history = @import("llm_history.zig");
 const migration = @import("../../../migrations/migration.zig");
+// 2026-08-19 — session_plan agent tools (Task 6 of
+// 2026-08-19-session-plan-agent-tool.md). `fetchSessionPlan` reads the
+// current plan row from `session_plan` (Migration 076) and `enrichCompactionXml`
+// embeds it as a `<plan>` section in the compaction envelope.
+const session_plan_mod = nalarcore.session_plan;
 
 // ─── Compaction-context types ────────────────────────────────────────────────
 //
@@ -282,6 +287,18 @@ pub fn fetchSessionSkills(
     return llm_history.getSessionSkills(allocator, db, session_id);
 }
 
+/// Fetch the current session plan for the compaction envelope. Returns
+/// `null` when no plan exists (matches the convention used by the other
+/// compaction fetchers). Caller owns the returned `PlanRow` and must
+/// call `.deinit(allocator)` on it (or `null`).
+pub fn fetchSessionPlan(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !?session_plan_mod.PlanRow {
+    return session_plan_mod.getPlanOpt(allocator, db, session_id);
+}
+
 /// Embed the user history, read_file paths, recent session activities,
 /// and loaded session skills into the compacted XML. Returns a new
 /// `[]u8` allocated from `allocator`; caller owns it. The original
@@ -302,6 +319,9 @@ pub fn enrichCompactionXml(
     read_files: []const ReadFileTurn,
     recent_activities: []const RecentActivity,
     session_skills: []const llm_history.SkillInfo,
+    /// Optional plan row fetched BEFORE mark_history_not_for_llmrun.
+    /// `null` when no plan exists (silently omitted from the envelope).
+    plan: ?session_plan_mod.PlanRow,
     cwd: []const u8,
 ) ![]u8 {
     const MAX_USER_TURNS: usize = 100;
@@ -422,6 +442,32 @@ pub fn enrichCompactionXml(
         try out.appendSlice(allocator, "    </skill>\n");
     }
     try out.appendSlice(allocator, "  </session_skills>\n");
+
+    // ── plan (current task plan, when set) ─────────────────────────
+    // Mirrors the session_skills pattern: omitted entirely when absent
+    // so the envelope stays clean for sessions without a plan. Wrapped
+    // in CDATA so the raw `<`, `>`, `&` inside the plan markdown never
+    // breaks the envelope.
+    if (plan) |p| {
+        try out.appendSlice(allocator, "  <plan");
+        if (p.updated_at.len > 0) {
+            try out.print(allocator, " updated_at=\"{s}\"", .{p.updated_at});
+        }
+        try out.appendSlice(allocator, ">\n    <content><![CDATA[\n");
+        // CDATA escape: same pattern as session_skills — split on `]]>`.
+        if (std.mem.indexOf(u8, p.plan_md, "]]>") == null) {
+            try out.appendSlice(allocator, p.plan_md);
+        } else {
+            var rest = p.plan_md;
+            while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
+                try out.appendSlice(allocator, rest[0..idx]);
+                try out.appendSlice(allocator, "]]><![CDATA[>");
+                rest = rest[idx + 3 ..];
+            }
+            try out.appendSlice(allocator, rest);
+        }
+        try out.appendSlice(allocator, "\n    ]]></content>\n  </plan>\n");
+    }
 
     // ── summary (the original compactor output, wrapped in CDATA) ─
     try out.appendSlice(allocator, "  <summary><![CDATA[\n");
@@ -882,6 +928,7 @@ test "enrichCompactionXml with empty user history and empty read files returns t
         &.{},
         &.{},
         &.{},
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -915,6 +962,7 @@ test "enrichCompactionXml embeds user history and read files with the right cont
         &read_files,
         &.{},
         &.{},
+        null, // no plan
         "/home/user",
     );
     defer alloc.free(result);
@@ -945,6 +993,7 @@ test "enrichCompactionXml emits all 50 user turns when the cap is hit" {
         &.{},
         &.{},
         &.{},
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -972,6 +1021,7 @@ test "enrichCompactionXml deduplicates read_file on the same path" {
         &read_files,
         &.{},
         &.{},
+        null, // no plan
         "/home/user",
     );
     defer alloc.free(result);
@@ -1000,6 +1050,7 @@ test "enrichCompactionXml embeds recent_activities inside <compaction_context>" 
         &.{},
         &recent_activities,
         &.{},
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -1037,6 +1088,7 @@ test "enrichCompactionXml omits <recent_activities> when the slice is empty" {
         &.{},
         &.{},
         &.{},
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -1150,6 +1202,7 @@ test "enrichCompactionXml embeds session_skills with name, loaded_at, and CDATA-
         &.{},
         &.{},
         &skills,
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -1181,6 +1234,7 @@ test "enrichCompactionXml escapes XML special chars in skill name" {
         &.{},
         &.{},
         &skills,
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -1206,6 +1260,7 @@ test "enrichCompactionXml splits skill content CDATA on ']]>' boundary" {
         &.{},
         &.{},
         &skills,
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -1244,6 +1299,7 @@ test "enrichCompactionXml adds truncated_by when session_skills exceeds the 50-c
         &.{},
         &.{},
         &skills,
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);
@@ -1276,6 +1332,7 @@ test "enrichCompactionXml positions session_skills between read_files and summar
         &read_files,
         &.{},
         &skills,
+        null, // no plan
         "/tmp",
     );
     defer alloc.free(result);

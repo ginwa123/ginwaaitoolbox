@@ -402,7 +402,10 @@ describe('KanbanTaskDetailDialog — edit-mode cwd picker', () => {
       '[data-testid="kanban-task-detail-cwd-picker"]',
     )
     expect(picker).not.toBeNull()
-    expect(picker!.textContent).toContain('no project root')
+    // The chip label uses "(none)" for the cwd slot when unset (new
+    // "Project root" + value layout — see the cwd-picker chip).
+    expect(picker!.textContent).toContain('Project root')
+    expect(picker!.textContent).toContain('(none)')
     // The title for the empty state in edit mode tells the user they
     // can click to set one (different from create-mode "optional").
     expect(picker!.getAttribute('title') ?? '').toMatch(
@@ -422,7 +425,8 @@ describe('KanbanTaskDetailDialog — edit-mode cwd picker', () => {
       '[data-testid="kanban-task-detail-cwd-picker"]',
     )
     expect(picker).not.toBeNull()
-    expect(picker!.textContent).toContain('no project root')
+    expect(picker!.textContent).toContain('Project root')
+    expect(picker!.textContent).toContain('(none)')
   })
 
   it('edit mode: opening the picker mounts the FilePickerDialog dropdown', async () => {

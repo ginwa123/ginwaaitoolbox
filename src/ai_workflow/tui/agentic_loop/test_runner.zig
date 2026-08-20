@@ -43,6 +43,7 @@ test {
     _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
     _ = @import("inherited_context.zig"); // Phase 3 — inlined tests from inherited_context_test.zig
     _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
+    _ = @import("session_plan_test.zig"); // 2026-08-19-session-plan-agent-tool — Task 1 (storage layer + Migration 076)
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
@@ -67,10 +68,19 @@ test {
     _ = @import("workflow_compact_message.zig"); // 2026-08-14-consolidate-compaction-message — buildCompactMessagePrompt (8) + compaction_context helpers (22) = 30 inline tests
     _ = @import("workflow_compact_call_agent_test.zig"); // regression test for url_style propagation to CompactionAgent (fix-compact-url-style plan)
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
+    _ = @import("prompts_make_plan_context_test.zig"); // 2026-08-19-session-plan-agent-tool — Task 5 (system prompt injection) — 3 live-DB tests
 
 
     // 2026-08-14 — list_directory exec wrapper (Task 5 of the same plan).
     _ = @import("tools_exec_list_directory_test.zig");
+
+    // 2026-08-19 — session_plan agent tools (Task 4 of
+    // 2026-08-19-session-plan-agent-tool). Exec wrappers for the
+    // update_plan + get_plan tools. Pure-fn layer lives in
+    // src/modules/agent/tools/update_plan.zig + get_plan.zig and is
+    // tested there.
+    _ = @import("tools_exec_update_plan_test.zig");
+    _ = @import("tools_exec_get_plan_test.zig");
 
     // 2026-08-14 — inline `test "...relative path..."` blocks at the
     // bottom of every tool's exec wrapper (follow-up commit proving

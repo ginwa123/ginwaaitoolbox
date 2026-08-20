@@ -60,6 +60,12 @@ pub const execListDirectory = @import("tools_exec_list_directory.zig").execListD
 pub const execUpdateActivity = @import("tools_exec_update_activity.zig").execUpdateActivity;
 pub const execSpawnSubAgent = @import("tools_exec_spawn_sub_agent.zig").execSpawnSubAgent;
 
+// 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
+// update_plan (UPSERT) + get_plan (fetch) — the markdown task plan that
+// persists across iterations and gets re-injected into the system prompt.
+pub const execUpdatePlan = @import("tools_exec_update_plan.zig").execUpdatePlan;
+pub const execGetPlan = @import("tools_exec_get_plan.zig").execGetPlan;
+
 pub const SkillSaveInfo = struct {
     name: []const u8,
     content: []const u8,
