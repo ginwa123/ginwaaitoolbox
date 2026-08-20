@@ -2673,11 +2673,12 @@ const compactSession = async () => {
                           <!--
                             `update_plan` + `get_plan` (Task 8 — optional UI).
                             These render the agent's per-session task plan as
-                            a checklist card. The components take the whole
-                            `message` prop and parse the inner envelope
-                            themselves, so they're self-contained (no
-                            `expanded` from the dispatcher — local toggle
-                            is enough for an optional UI).
+                            a checklist card. Both components parse the
+                            inner envelope themselves and extract the plan
+                            body from the canonical `<plan><![CDATA[...]]></plan>`
+                            block — no `parameters` prop threading needed.
+                            Self-contained (no `expanded` from the dispatcher
+                            — local toggle is enough for an optional UI).
                           -->
                           <UpdatePlan
                             v-else-if="msg.tool_name === 'update_plan'"

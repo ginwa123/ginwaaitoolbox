@@ -45,6 +45,10 @@ import type { Message } from '../api'
 vi.mock('../components/tool_outputs/UpdatePlan.vue', () => ({
   default: {
     name: 'UpdatePlan',
+    // No `parameters` prop — the component parses the plan body
+    // directly from the inner <plan><![CDATA[...]]></plan> block of
+    // the <tool> envelope (mirrors get_plan's wire shape). The
+    // dispatcher doesn't thread anything extra.
     props: ['message'],
     template: '<div class="update-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
   },

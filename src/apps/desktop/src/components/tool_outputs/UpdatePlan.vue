@@ -12,16 +12,18 @@
       <update_plan>
         <session_id>s_xxx</session_id>
         <updated_at>YYYY-MM-DD HH:MM:SS</updated_at>
+        <plan><![CDATA[
+          ...markdown body...
+        ]]></plan>
       </update_plan>
     Error:
       <update_plan><error>...</error></update_plan>
 
-  Description (the agent's input — the actual plan content the LLM
-  just wrote) lives in `message.parameters` as JSON:
-    { "content": "## Goal\n...\n- [x] step 1\n- [ ] step 2" }
-  We extract `content` and render it as a checklist inside the expanded
-  body so users see the new plan state without having to call get_plan
-  separately.
+  The `<plan>` block carries the just-written content (CDATA-wrapped,
+  byte-for-byte) — this is the SAME body the LLM sees back, and the
+  source the frontend renders. Mirrors `get_plan`'s
+  `<plan><![CDATA[...]]></plan>` shape so the two components share
+  the same envelope parser (no separate `parameters` prop needed).
 
   Header (always visible, via ToolCardHeader):
     `update_plan ✓` (success)            — right-meta shows byte count
@@ -52,9 +54,6 @@ interface ToolMessageLike {
   role?: string
   content: string
   tool_name?: string
-  /** JSON-stringified tool input arguments (e.g.
-   *  `'{"content":"## Goal\\n- [x] step 1"}'` for update_plan). */
-  parameters?: string
 }
 
 interface ParsedUpdatePlan {
@@ -62,9 +61,8 @@ interface ParsedUpdatePlan {
   sessionId: string | null
   updatedAt: string | null
   error: string | null
-  /** The agent's input `content` field, or null when missing /
-   *  malformed. Drives the description checklist rendering. */
-  description: string | null
+  /** Plain-text markdown body (CDATA-stripped), or null when absent / error. */
+  body: string | null
 }
 
 interface ChecklistLine {
@@ -107,42 +105,36 @@ function extractTag(content: string, tag: string): string | null {
   return raw.length > 0 ? raw : null
 }
 
-/**
- * Extract the `content` field from the JSON-stringified `parameters`.
- * Returns null on missing / malformed / empty (the body's empty-state
- * hint then renders instead of a checklist).
- */
-function extractDescription(parameters: string | undefined): string | null {
-  if (!parameters) return null
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(parameters)
-  } catch {
-    return null
-  }
-  if (parsed === null || typeof parsed !== 'object') return null
-  const content = (parsed as { content?: unknown }).content
-  if (typeof content !== 'string') return null
-  const trimmed = content.trim()
-  return trimmed.length > 0 ? content : null
-}
-
 const parsed = computed((): ParsedUpdatePlan => {
   const inner = findInnerEnvelope(props.message.content)
   const error = extractTag(inner, 'error')
+  if (error !== null) {
+    return {
+      success: false,
+      sessionId: null,
+      updatedAt: null,
+      error,
+      body: null,
+    }
+  }
+  // Extract the <plan><![CDATA[...]]></plan> body. Mirrors
+  // GetPlan.vue::parsed.body exactly — same regex, same fallback
+  // semantics — so the two components share the wire contract.
+  const planMatch = inner.match(/<plan>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/plan>/)
+  const body = planMatch && planMatch[1] !== undefined ? planMatch[1] : null
   return {
-    success: error === null,
+    success: true,
     sessionId: extractTag(inner, 'session_id'),
     updatedAt: extractTag(inner, 'updated_at'),
-    error,
-    description: extractDescription(props.message.parameters),
+    error: null,
+    body,
   }
 })
 
-/** Render the description body as a list of checklist / text lines. */
+/** Render the body as a list of checklist / text lines. */
 const checklistLines = computed((): ChecklistLine[] => {
-  if (!parsed.value.description) return []
-  const lines = parsed.value.description.split(/\r?\n/)
+  if (!parsed.value.body) return []
+  const lines = parsed.value.body.split(/\r?\n/)
   const out: ChecklistLine[] = []
   for (const raw of lines) {
     const line = raw.trimEnd()
@@ -218,7 +210,7 @@ const handleToggle = (next: boolean) => {
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
 
-      <!-- Success path: metadata strip + description checklist. -->
+      <!-- Success path: metadata strip + plan checklist. -->
       <template v-if="parsed.success">
         <div
           v-if="parsed.sessionId"
@@ -237,9 +229,10 @@ const handleToggle = (next: boolean) => {
           <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ parsed.updatedAt }}</span>
         </div>
 
-        <!-- Description (the agent's input content) rendered as a checklist.
-             Mirrors GetPlan.vue's UX so users see what the plan looks like
-             now, without calling get_plan separately. -->
+        <!-- Plan body rendered as a checklist. Mirrors GetPlan.vue::template
+             so users see what the plan looks like now, without calling
+             get_plan separately. The body comes from the <plan><![CDATA[...]]></plan>
+             block of the response envelope (NOT from the tool's input args). -->
         <div
           v-if="hasChecklist"
           class="px-3 py-2 space-y-0.5"
@@ -276,7 +269,7 @@ const handleToggle = (next: boolean) => {
 
         <!-- Hint when no fields (empty envelope edge case). -->
         <div
-          v-if="!parsed.sessionId && !parsed.updatedAt"
+          v-if="!parsed.sessionId && !parsed.updatedAt && !hasChecklist"
           class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
           data-testid="update-plan-empty"
         >

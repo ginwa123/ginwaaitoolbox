@@ -6,6 +6,11 @@
 // the result in the standard `<tool>...</tool>` envelope via
 // `wrapToolOutput`.
 //
+// The inner success XML (in `<data>`) carries the just-written plan
+// body as `<plan><![CDATA[...]]></plan>` so the LLM AND the frontend
+// UI see the canonical plan back without depending on `parameters`
+// (the agent's input args). Mirrors `executeGetPlan`'s shape.
+//
 // Plan: docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md
 // Task: task_1787073929852_8 (Task 4 of 9)
 
@@ -144,6 +149,15 @@ test "execUpdatePlan: writes to session_plan and returns wrapped success" {
     try testing.expect(std.mem.indexOf(u8, result.output, "<data>") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "<session_id>sess_exec</session_id>") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "<updated_at>") != null);
+
+    // The inner envelope MUST echo the just-written plan body via
+    // <plan><![CDATA[...]]></plan> — the frontend renders the
+    // checklist from this CDATA block, NOT from the tool's input
+    // arguments.
+    try testing.expect(std.mem.indexOf(u8, result.output, "<plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<![CDATA[") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "]]></plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "# Plan\n- [ ] step") != null);
 
     // The inner envelope's success path must NOT carry an <error> tag.
     try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
