@@ -1038,22 +1038,46 @@ const agentChatDialogOpen = ref(false)
 const agentKnowledge = ref<api.AgentKnowledgeRow[]>([])
 const agentTools = ref<string[]>([])
 
+// FIX (agent-tools-fetch-on-view): the previous code only fetched
+// `agentTools` inside the `activeTask` watcher. When the user landed
+// directly on the agent view (?view=workspace&itemId=AGENT_ID,
+// no chat task), activeTask was null and the watcher never fired —
+// the Tools panel rendered with an empty `tools` array, every
+// checkbox showed as unchecked, and clicking one POSTed against an
+// existing row → 409 "tool already enabled for this agent".
+//
+// Now: a dedicated watcher on `activeWorkspaceItemId` fetches the
+// agent data whenever the user lands on (or navigates between)
+// agent items, regardless of whether a chat task is active. The
+// `activeTask` watcher is reduced to only controlling the chat
+// dialog visibility (no fetch).
+async function loadAgentData(agentItemId: string) {
+  try {
+    const wsId = activeWorkspace?.value?.id
+    if (!wsId) return
+    const data = await api.getAgent(wsId, agentItemId)
+    agentKnowledge.value = data.knowledge
+    agentTools.value = data.tools
+  } catch (e) {
+    console.error('[AppLayout] failed to load agent:', e)
+  }
+}
+
+watch(
+  () => activeWorkspaceItem.value?.id,
+  (id) => {
+    if (id && activeWorkspaceItem.value?.item_type === 'agent') {
+      // Fire-and-forget; loadAgentData assigns the refs itself.
+      void loadAgentData(id)
+    }
+  },
+  { immediate: true },
+)
+
 watch(
   () => activeTask.value,
-  async (t) => {
+  (t) => {
     agentChatDialogOpen.value = !!t && activeWorkspaceItem.value?.item_type === 'agent'
-    if (t && activeWorkspaceItem.value?.item_type === 'agent') {
-      // Lazy-fetch agent data when a chat opens under an agent.
-      try {
-        const wsId = activeWorkspace?.value?.id
-        if (!wsId) return
-        const data = await api.getAgent(wsId, activeWorkspaceItem.value!.id)
-        agentKnowledge.value = data.knowledge
-        agentTools.value = data.tools
-      } catch (e) {
-        console.error('[AppLayout] failed to load agent:', e)
-      }
-    }
   },
   { immediate: true },
 )
