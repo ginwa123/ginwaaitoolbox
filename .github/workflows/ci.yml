@@ -549,7 +549,15 @@ jobs:
           # vcpkg exit code: 0 = all OK, 1 = build failure, 2 =
           # dependency resolution failure. We map any non-zero to
           # exit 1 so the step fails loudly.
-          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3:x64-windows"
+          # sqlite3 needs explicit `fts5` feature — the vcpkg default
+          # features don't include it. Without FTS5, Migration 058 +
+          # Migration 070 (which create messages_fts / agent_memories_fts
+          # FTS5 virtual tables) fail with `no such module: fts5` at
+          # migration.up() time (observed on CI run 32323478653 — 184
+          # tests fail with that error). Other tests (agent_memories,
+          # session_plan, prompts_make_plan_context) cascade because
+          # their setupDb() runs runMigrations() which trips on 058.
+          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3:x64-windows[fts5]"
           Write-Host ("Running: vcpkg install " + ($portList -join " "))
           & C:\vcpkg\vcpkg.exe install --recurse $portList
           if ($LASTEXITCODE -ne 0) {
