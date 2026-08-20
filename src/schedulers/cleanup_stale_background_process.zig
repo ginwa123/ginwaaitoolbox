@@ -39,6 +39,14 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const process_status = nalarcore.helpers.process_status;
 const logger_mod = nalarcore.loggermod;
+// `migration.zig` lives in `src/migrations/` — one `..` up from
+// `src/schedulers/`. Per project memory `project-test-use-migrations-module`:
+// test setupDb MUST use `MigrationManager.registerAllMigrations +
+// runMigrations()` to spin up an in-memory DB that walks ALL migrations
+// from 001 → latest, never hand-roll CREATE TABLE bodies. The migration
+// chain is the single source of truth; hand-rolled schemas drift from
+// production the moment a new column or trigger lands.
+const migration = @import("../migrations/migration.zig");
 const testing = std.testing;
 
 pub const CleanupStaleBackgroundProcessInput = struct {
@@ -55,16 +63,27 @@ pub const CleanupResult = struct {
 
 // ─── Production helper ────────────────────────────────────────────────────
 //
-// Iterate every row in `session_background_process`. For each row,
-// check the actual OS process via `helpers.process_status.isProcessRunning`.
-// If alive → keep. If dead → DELETE the row. The `status` column is
-// deliberately IGNORED — it can drift from reality (a `kill -9` leaves
-// it at `'running'` because the defer that updates it never ran; or a
-// process can be alive while the row says otherwise).
+// Two-pass cleanup. Pass 1: SELECT every (session_id, pid) pair and
+// check the actual OS process via
+// `helpers.process_status.isProcessRunning`. Dead processes are
+// collected. Pass 2: batch DELETE all collected rows in one (or a few)
+// statements. The `status` column is deliberately IGNORED — it can
+// drift from reality (a `kill -9` leaves it at `'running'` because the
+// defer that updates it never ran; or a process can be alive while the
+// row says otherwise).
 //
-// Per-row isolation: if one row's DELETE fails, log via
-// `logger.?errFmt` and continue to the next row. The cron tick must
-// NOT abort the whole batch on a single bad row.
+// Batching is chunked at `max_pairs_per_stmt` pairs per DELETE
+// statement because SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is
+// 999 and each pair binds 2 params — 499 pairs max per statement.
+// Anything more becomes a second DELETE.
+//
+// Per-chunk isolation: if one batch DELETE fails, log via
+// `logger.?errFmt` and continue to the next chunk. The cron tick
+// must NOT abort the whole cleanup on a single bad chunk.
+
+/// Max (session_id, pid) pairs per single DELETE statement.
+/// `SQLITE_MAX_VARIABLE_NUMBER` defaults to 999; each pair = 2 params.
+const max_pairs_per_stmt: usize = 499;
 
 pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput) anyerror!CleanupResult {
     const allocator = input.allocator;
@@ -73,19 +92,37 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
 
     var result = CleanupResult{};
 
-    // Select the composite PK columns so we can use them in the
-    // DELETE WHERE clause. The `status` column is intentionally NOT
-    // selected — it has no bearing on the keep/delete decision.
+    // Per-call arena for the dead-rows collection. The slice pointers
+    // we collect from `row.values[0]` / `row.values[1]` are owned by
+    // the row and freed on `row.deinit`; without the arena, we'd have
+    // to dupe each one (or worse, use-after-free). Using a per-call
+    // arena gives us "borrow the row's slice memory" semantics with
+    // zero per-row alloc/free overhead — the arena frees everything
+    // in one shot when this function returns.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Pass 1: SELECT every (session_id, pid) pair. For each row, ask
+    // the OS whether the process is alive. Dead rows get collected
+    // for the batch DELETE in pass 2.
+    const DeadPair = struct {
+        session_id: []const u8,
+        pid: []const u8,
+    };
+    var dead: std.ArrayListUnmanaged(DeadPair) = .empty;
+    defer dead.deinit(a);
+
     const select_sql =
         \\SELECT session_id, pid
         \\FROM session_background_process
     ;
 
-    var rows = try db.query(allocator, select_sql, &.{});
+    var rows = try db.query(a, select_sql, &.{});
     defer rows.deinit();
 
     while (try rows.next()) |row| {
-        defer row.deinit(allocator);
+        defer row.deinit(a);
 
         if (row.values.len < 2) continue;
         const session_id = row.values[0];
@@ -105,25 +142,116 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
             continue;
         }
 
-        // Process is dead — DELETE the row. Composite PK means we
-        // MUST match both session_id AND pid (the same PID can exist
-        // under multiple sessions; deleting only by pid would
-        // clobber unrelated rows).
-        const delete_sql =
-            \\DELETE FROM session_background_process
-            \\WHERE session_id = ? AND pid = ?
-        ;
-        db.exec(allocator, delete_sql, &.{ session_id, pid_str }) catch |err| {
+        // Process is dead — collect (session_id, pid) for the batch
+        // DELETE in pass 2.
+        //
+        // CRITICAL: row.values[i] is freed by `row.deinit(a)` (which
+        // fires at the end of this iteration block). Without duping,
+        // the slices stored in `dead` would dangle by the time pass 2
+        // runs. Duping into the arena gives us stable copies that
+        // outlive every row.deinit() and live until arena.deinit() at
+        // the end of this function.
+        const sid_copy = a.dupe(u8, session_id) catch |err| {
             if (logger) |log| {
                 log.errFmt(
-                    "[cleanup_stale_background_process] DELETE failed for session_id={s} pid={s}: {s}\n",
-                    .{ session_id, pid_str, @errorName(err) },
+                    "[cleanup_stale_background_process] arena dupe(session_id) failed: {s}\n",
+                    .{@errorName(err)},
+                );
+            }
+            return result;
+        };
+        const pid_copy = a.dupe(u8, pid_str) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] arena dupe(pid) failed: {s}\n",
+                    .{@errorName(err)},
+                );
+            }
+            return result;
+        };
+        dead.append(a, .{ .session_id = sid_copy, .pid = pid_copy }) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] dead-list append failed: {s}\n",
+                    .{@errorName(err)},
+                );
+            }
+            return result;
+        };
+    }
+
+    if (dead.items.len == 0) return result;
+
+    // Pass 2: batch DELETE all collected rows in chunks. Each chunk
+    // builds ONE statement of the form
+    //   DELETE FROM session_background_process
+    //   WHERE (session_id = ? AND pid = ?)
+    //      OR (session_id = ? AND pid = ?)
+    //      OR ...
+    // The OR-chain form is the simplest portable SQLite pattern; it
+    // binds exactly 2 params per pair and avoids the version-fuss of
+    // row-value `IN ((?, ?), ...)` syntax. Composite PK means we MUST
+    // match both session_id AND pid — the same PID can exist under
+    // multiple sessions and deleting only by pid would clobber
+    // unrelated rows.
+    var chunk_start: usize = 0;
+    while (chunk_start < dead.items.len) {
+        const chunk_end = @min(chunk_start + max_pairs_per_stmt, dead.items.len);
+        const chunk = dead.items[chunk_start..chunk_end];
+
+        // Build SQL + params in the arena — both are scoped to this
+        // chunk iteration so the arena frees them when chunk_start
+        // advances.
+        var sql_buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer sql_buf.deinit(a);
+        sql_buf.appendSlice(a, "DELETE FROM session_background_process WHERE ") catch continue;
+
+        var params: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer params.deinit(a);
+
+        var ok = true;
+        for (chunk, 0..) |pair, i| {
+            if (i > 0) {
+                sql_buf.appendSlice(a, " OR ") catch {
+                    ok = false;
+                    break;
+                };
+            }
+            sql_buf.appendSlice(a, "(session_id = ? AND pid = ?)") catch {
+                ok = false;
+                break;
+            };
+            params.append(a, pair.session_id) catch {
+                ok = false;
+                break;
+            };
+            params.append(a, pair.pid) catch {
+                ok = false;
+                break;
+            };
+        }
+        if (!ok) {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] SQL build failed at chunk offset {d}\n",
+                    .{chunk_start},
+                );
+            }
+            continue;
+        }
+
+        db.exec(a, sql_buf.items, params.items) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] batch DELETE failed at chunk offset {d} (size={d}): {s}\n",
+                    .{ chunk_start, chunk.len, @errorName(err) },
                 );
             }
             continue;
         };
 
-        result.deleted_count += 1;
+        result.deleted_count += chunk.len;
+        chunk_start = chunk_end;
     }
 
     return result;
@@ -192,19 +320,17 @@ fn setupCtx() !TestCtx {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    // Mirror the production schema exactly (migration 014 — src/migrations/migration.zig:218).
-    // Hand-rolling here is acceptable for tests, matching cleanup_stale_worker.zig's pattern.
-    try db.exec(alloc,
-        \\CREATE TABLE session_background_process (
-        \\    session_id TEXT NOT NULL,
-        \\    pid INTEGER NOT NULL,
-        \\    command TEXT NOT NULL,
-        \\    log_path TEXT NOT NULL,
-        \\    started_at INTEGER NOT NULL,
-        \\    status TEXT NOT NULL DEFAULT 'running',
-        \\    PRIMARY KEY (session_id, pid)
-        \\)
-    , &.{});
+    // Walk every production migration (001 → latest). After this returns,
+    // the schema is exactly what a production DB looks like — including
+    // the `session_background_process` table created by Migration 014.
+    // No hand-rolled CREATE TABLE — that's the project convention
+    // (see project-test-use-migrations-module memory; reviewer note on
+    // PR #172: "when setup db, use from migrations module, migrations
+    // module will load all table").
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
 
     return .{
         .db = db,
@@ -411,4 +537,65 @@ test "cleanupStaleBackgroundProcesses returns the DB error when the session_back
     // missing-table to PrepareFailed (Sqlite.zig:568) which the helper
     // propagates verbatim.
     try testing.expectError(error.PrepareFailed, result);
+}
+
+test "cleanupStaleBackgroundProcesses batch-chunks deletes when more than max_pairs_per_stmt dead rows exist" {
+    // Verify the chunking logic at the 499-pair boundary. We seed 600
+    // dead rows (PID 999_999_990..999_999_999 is more than enough
+    // distinct dead PIDs at i64 magnitudes no real system would have).
+    // 600 > 499 means the helper MUST issue at least 2 batch DELETEs
+    // — the first 499-pair statement + a 101-pair statement. If the
+    // chunking regressed to a single unbounded statement, SQLite would
+    // either accept it (newer SQLite, variable limit 32766) or reject
+    // it (older SQLite, limit 999). Either way, the externally
+    // observable contract — "every dead row is gone, every alive row
+    // stays, counts are accurate" — must still hold.
+    //
+    // We also seed 2 live rows (self PID × 2 distinct sessions) and
+    // confirm they survive the cleanup.
+    var ctx = try setupCtx();
+    defer ctx.deinit();
+
+    const self_pid = process_status.getCurrentProcessIdInt();
+
+    // 600 dead rows
+    var i: i64 = 0;
+    while (i < 600) : (i += 1) {
+        // Use i64 PID 999_999_990 + i to stay below max i32 (≈2.1B).
+        try seedRow(&ctx.db, testing.allocator, "s_dead", 999_999_990 + i, "running");
+    }
+
+    // 2 live rows under different session_ids (composite PK is
+    // (session_id, pid); the same PID CAN appear under multiple
+    // sessions, so this is a valid setup).
+    try seedRow(&ctx.db, testing.allocator, "s_alive_a", @intCast(self_pid), "running");
+    try seedRow(&ctx.db, testing.allocator, "s_alive_b", @intCast(self_pid), "running");
+
+    const result = try cleanupStaleBackgroundProcesses(.{
+        .allocator = testing.allocator,
+        .db = &ctx.db,
+        .logger = null,
+    });
+
+    try testing.expectEqual(@as(usize, 602), result.checked_count);
+    try testing.expectEqual(@as(usize, 2), result.kept_count);
+    try testing.expectEqual(@as(usize, 600), result.deleted_count);
+
+    // All 600 dead rows gone
+    var q = try ctx.db.query(testing.allocator,
+        "SELECT COUNT(*) FROM session_background_process WHERE session_id = 's_dead'",
+        &.{});
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(testing.allocator);
+        var count_buf: [32]u8 = undefined;
+        const count_str = try std.fmt.bufPrint(&count_buf, "{s}", .{row.values[0]});
+        try testing.expectEqualStrings("0", count_str);
+    } else {
+        return error.TestExpectedRow;
+    }
+
+    // Both alive rows still present
+    try testing.expectEqual(@as(usize, 1), try rowCountForSession(&ctx.db, testing.allocator, "s_alive_a"));
+    try testing.expectEqual(@as(usize, 1), try rowCountForSession(&ctx.db, testing.allocator, "s_alive_b"));
 }
