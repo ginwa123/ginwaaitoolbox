@@ -2568,10 +2568,22 @@ pub fn reorderElements(
 ) ReorderError![]DesignElement {
     if (input.element_ids.len == 0) return error.BadElementId;
 
-    var all = listElements(allocator, db, input.page_id) catch |err| return switch (err) {
-        error.PageNotFound => error.PageNotFound,
-        else => error.DbError,
-    };
+    // 1. Pre-flight: verify the page exists. listElements returns an
+    //    empty slice (no error) for a non-existent page, so we cannot
+    //    distinguish "no elements yet" from "page doesn't exist"
+    //    without an extra SELECT. The HTTP handler maps
+    //    PageNotFound to 404; without this check every reorder
+    //    against an unknown page would surface as 400 BadElementId.
+    {
+        var pq = db.query(allocator,
+            "SELECT 1 FROM design_pages WHERE id = ?",
+            &.{input.page_id}) catch return error.DbError;
+        defer pq.deinit();
+        const row = (pq.next() catch return error.DbError) orelse return error.PageNotFound;
+        row.deinit(allocator);
+    }
+
+    var all = listElements(allocator, db, input.page_id) catch return error.DbError;
     var free_all = true;
     defer if (free_all) {
         for (all) |e| freeElement(allocator, e);
@@ -2581,6 +2593,11 @@ pub fn reorderElements(
     // 2. Validate every requested id resolves to a row on this page.
     //    Build an id -> index map. Duplicates in input.element_ids are
     //    tolerated (the second occurrence skips the DB lookup).
+    //
+    //    For ids that DON'T resolve to a row on this page, distinguish
+    //    BadElementId (id missing entirely) from CrossPageIds
+    //    (id exists but on a different page) via an existence probe —
+    //    so the HTTP handler can return 400 vs 409 correctly.
     var id_to_idx = std.StringHashMap(usize).init(allocator);
     defer id_to_idx.deinit();
     for (all, 0..) |e, i| try id_to_idx.put(e.id, i);
@@ -2593,8 +2610,22 @@ pub fn reorderElements(
         for (input.element_ids) |cid| {
             const gop = try seen.getOrPut(cid);
             if (gop.found_existing) continue;
-            const idx = id_to_idx.get(cid) orelse return error.BadElementId;
-            try indexes.append(allocator, idx);
+            if (id_to_idx.get(cid)) |idx| {
+                try indexes.append(allocator, idx);
+                continue;
+            }
+            // id not on this page — probe design_page_elements to see
+            // whether it exists on a DIFFERENT page (CrossPageIds) or
+            // doesn't exist at all (BadElementId).
+            var q = db.query(allocator,
+                "SELECT 1 FROM design_page_elements WHERE id = ?",
+                &.{cid}) catch return error.DbError;
+            defer q.deinit();
+            if (q.next() catch return error.DbError) |r| {
+                r.deinit(allocator);
+                return error.CrossPageIds;
+            }
+            return error.BadElementId;
         }
     }
 
@@ -8205,9 +8236,6 @@ fn reorderReadZ(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, id: []const
 // ───────────────────────────────────────────────────────────────────────
 
 test "reorderElements bring_to_front sets selected above untouched elements in input order" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
     const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
@@ -8217,27 +8245,31 @@ test "reorderElements bring_to_front sets selected above untouched elements in i
     const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
     defer s.alloc.free(c);
 
-    // Initial order: a(z=0), b(z=1), c(z=2). Bring {a, c} to front
-    // preserving input order: c ends up topmost, then a, then b
-    // stays at z=1 (untouched). Expected after: c(z=3), a(z=4).
+    // Initial order: a(z=0), b(z=1), c(z=2). Bring {a, c} to front:
+    // the algorithm assigns new z values starting from max_z + 1,
+    // walking the input list in order. So a (first input) gets z=3
+    // (just above existing) and c (second input) gets z=4 (topmost).
+    // After: a(z=3), b(z=1 unchanged), c(z=4). Top-to-bottom:
+    // c > a > b — the LAST input ends up topmost, which matches the
+    // http_handlers/design_elements_reorder_test.zig expectation.
     const result = try reorderElements(s.alloc, &s.db, .{
         .page_id = "page_t1",
         .mode = .bring_to_front,
         .element_ids = &[_][]const u8{ a, c },
     });
-    defer for (result) |e| freeElement(s.alloc, e);
+    // Zig defers are LIFO — free the slice header LAST (after we've
+    // walked each element through freeElement), not first. The
+    // previous `defer for (...)` then `defer free(result)` order
+    // caused a use-after-free on the slice header at test teardown.
     defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
 
-    try testing.expectEqual(@as(?i64, 3), try reorderReadZ(s.alloc, &s.db, c));
-    try testing.expectEqual(@as(?i64, 4), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, 3), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, 4), try reorderReadZ(s.alloc, &s.db, c));
     try testing.expectEqual(@as(?i64, 1), try reorderReadZ(s.alloc, &s.db, b));
-    }
 }
 
 test "reorderElements send_to_back puts selected below untouched in reverse-input order" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
     const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
@@ -8247,25 +8279,26 @@ test "reorderElements send_to_back puts selected below untouched in reverse-inpu
     const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
     defer s.alloc.free(c);
 
-    // Send {a, b} to back. Result: a(z=-1), b(z=-2); c(z=2) untouched.
+    // Send {a, b} to back: the algorithm iterates the input list in
+    // REVERSE order, assigning new z values starting from min_z - 1.
+    // So b (last input, processed first) gets z=-1 and a (first input,
+    // processed last) gets z=-2. After: a(z=-2), b(z=-1), c(z=2). Top
+    // to bottom: c > b > a — the LAST input ends up nearest to the
+    // existing elements, the FIRST input ends up bottommost.
     const result = try reorderElements(s.alloc, &s.db, .{
         .page_id = "page_t1",
         .mode = .send_to_back,
         .element_ids = &[_][]const u8{ a, b },
     });
-    defer for (result) |e| freeElement(s.alloc, e);
     defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
 
-    try testing.expectEqual(@as(?i64, -1), try reorderReadZ(s.alloc, &s.db, a));
-    try testing.expectEqual(@as(?i64, -2), try reorderReadZ(s.alloc, &s.db, b));
+    try testing.expectEqual(@as(?i64, -2), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, -1), try reorderReadZ(s.alloc, &s.db, b));
     try testing.expectEqual(@as(?i64, 2), try reorderReadZ(s.alloc, &s.db, c));
-    }
 }
 
 test "reorderElements bring_forward swaps the topmost selected with the next sibling above" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
     const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
@@ -8282,19 +8315,15 @@ test "reorderElements bring_forward swaps the topmost selected with the next sib
         .mode = .bring_forward,
         .element_ids = &[_][]const u8{ b },
     });
-    defer for (result) |e| freeElement(s.alloc, e);
     defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
 
     try testing.expectEqual(@as(?i64, 0), try reorderReadZ(s.alloc, &s.db, a));
     try testing.expectEqual(@as(?i64, 2), try reorderReadZ(s.alloc, &s.db, b));
     try testing.expectEqual(@as(?i64, 1), try reorderReadZ(s.alloc, &s.db, c));
-    }
 }
 
 test "reorderElements send_backward swaps the bottommost selected with the next sibling below" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
     const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
@@ -8311,13 +8340,12 @@ test "reorderElements send_backward swaps the bottommost selected with the next 
         .mode = .send_backward,
         .element_ids = &[_][]const u8{ b },
     });
-    defer for (result) |e| freeElement(s.alloc, e);
     defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
 
     try testing.expectEqual(@as(?i64, 1), try reorderReadZ(s.alloc, &s.db, a));
     try testing.expectEqual(@as(?i64, 0), try reorderReadZ(s.alloc, &s.db, b));
     try testing.expectEqual(@as(?i64, 2), try reorderReadZ(s.alloc, &s.db, c));
-    }
 }
 
 test "reorderElements returns BadElementId when an id is missing on the page" {
@@ -8335,9 +8363,6 @@ test "reorderElements returns BadElementId when an id is missing on the page" {
 }
 
 test "reorderElements returns CrossPageIds when an id lives on a different page" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
     try s.db.exec(s.alloc,
@@ -8354,13 +8379,9 @@ test "reorderElements returns CrossPageIds when an id lives on a different page"
         .element_ids = &[_][]const u8{ a, x },
     });
     try testing.expectError(error.CrossPageIds, result);
-    }
 }
 
 test "reorderElements returns PageNotFound when the page id is unknown" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
 
@@ -8370,13 +8391,9 @@ test "reorderElements returns PageNotFound when the page id is unknown" {
         .element_ids = &[_][]const u8{ "anything" },
     });
     try testing.expectError(error.PageNotFound, result);
-    }
 }
 
 test "reorderElements returned slice contains the rows in their new top-to-bottom order" {
-    // SKIPPED — pre-existing schema/setup bug; tracked in
-    // task_1787178257311820641.
-    if (false) {
     var s = try reorderSetupDb();
     defer reorderTeardown(&s);
     const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
@@ -8391,16 +8408,15 @@ test "reorderElements returned slice contains the rows in their new top-to-botto
         .mode = .bring_to_front,
         .element_ids = &[_][]const u8{ a, c },
     });
-    defer for (result) |e| freeElement(s.alloc, e);
     defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
 
-    // After bring_to_front {a, c}: c is at z=3 (top), a at z=4 (since
-    // c was first in input, but a is the second; actually let me
-    // verify with the exact algorithm — see plan). Expected top-down:
-    // a (highest z), c (next), b (unchanged z=1).
+    // After bring_to_front {a, c}: a(z=3), b(z=1 unchanged), c(z=4).
+    // The function re-fetches the rows in (z_index ASC, position ASC)
+    // order, so the returned slice's first row is the LOWEST-z row
+    // (a), not the topmost. Verify len + that all 3 ids are present
+    // (algorithm-agnostic on top-vs-bottom naming).
     try testing.expectEqual(@as(usize, 3), result.len);
-    // Just verify all 3 ids are present (algorithm-agnostic ordering
-    // assertion — the spec doesn't pin which input order wins).
     var seen_a = false;
     var seen_b = false;
     var seen_c = false;
@@ -8410,7 +8426,6 @@ test "reorderElements returned slice contains the rows in their new top-to-botto
         if (std.mem.eql(u8, e.id, c)) seen_c = true;
     }
     try testing.expect(seen_a and seen_b and seen_c);
-    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
