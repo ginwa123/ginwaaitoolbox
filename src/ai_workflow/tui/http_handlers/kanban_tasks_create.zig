@@ -297,37 +297,38 @@ pub fn kanbanTasksCreateHandler(
                 const now_ns = std.Io.Timestamp.now(ctx.io, .real).nanoseconds;
                 const id_str = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
                 const created_at_str = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
-                _ = nalarcore.ai_mod.ai_workflow.insertLLMHistories(.{
-                    .allocator = allocator,
-                    .io = ctx.io,
-                    .db = sqlite_db,
-                    .logger = di.logger,
-                    .is_emit_sse = true,
-                    .event_bus = di.event_bus,
-                    .cwd = standard_result.cwd,
-                    .entity = .{
-                        .id = id_str,
-                        .session_id = standard_result.task_id,
-                        .model = nalarcore.getLlmConfig(di).model,
-                        .response_content = initial_message,
-                        .reasoning_content = null,
-                        .role = "user",
-                        .finish_reason = "null",
-                        .tool_calls_json = "",
-                        .tool_call_id = null,
-                        .agent = "Agent",
-                        .loop_index = 0,
-                        .temperature = 0,
-                        .is_thinking = false,
-                        .parent_id = standard_result.task_id,
-                        .parent_session_id = standard_result.task_id,
-                        .is_input = true,
-                        .is_output = false,
-                        .image_urls = null,
-                        .created_at = created_at_str,
-                        .is_feed_to_llm = true,
+                // Direct INSERT (vs. inserLLMHistories) — keeps the
+                // patch minimal and avoids relying on the helper's
+                // SSE/FTS plumbing for what is effectively a one-shot
+                // wire-side message. The FTS trigger on llm_history
+                // (see migration.zig) still keeps messages_fts in sync;
+                // the SSE emit goes through the existing
+                // session_created SSE emitted a few lines below.
+                // columns: id, session_id, model, response_content,
+                // finish_reason, role, agent, parent_id,
+                // parent_session_id, is_input, created_at_nano,
+                // created_iso, is_feed_to_llm — every other column
+                // uses its DEFAULT.
+                sqlite_db.exec(
+                    allocator,
+                    "INSERT INTO llm_history " ++
+                        "(id, session_id, model, response_content, finish_reason, role, " ++
+                        "agent, parent_id, parent_session_id, is_input, is_feed_to_llm, " ++
+                        "created_at_nano, created_iso) " ++
+                        // model uses '' literal (NOT NULL constraint +
+                        // the empty-slice-binds-as-null SQLite backend
+                        // quirk — see project memory). All other params
+                        // are non-empty so `?` is safe.
+                        "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, 1, ?, '')",
+                    &[_][]const u8{
+                        id_str,
+                        standard_result.task_id,
+                        initial_message,
+                        standard_result.task_id,
+                        standard_result.task_id,
+                        created_at_str,
                     },
-                }) catch |err| {
+                ) catch |err| {
                     std.log.warn("kanban_tasks_create: initial user llm_history insert failed (non-fatal): {s}", .{@errorName(err)});
                 };
             }
