@@ -42,6 +42,90 @@
 
 const std = @import("std");
 
+/// Cross-platform "does this file exist" check used by the system-deps
+/// probe below. Earlier revisions ran `sh -c "test -f ..."` here,
+/// which is unreliable on Windows dev boxes (Git for Windows ships
+/// git.exe + bash.exe but doesn't add `C:\Program Files\Git\bin` to
+/// PATH automatically). The probe then silently fell through to
+/// "vendor fallback" even when vcpkg had the libraries installed at
+/// `C:\vcpkg\installed\x64-windows\` — same failure mode the root
+/// build.zig hit (and fixed). Host-OS-specific direct syscalls via
+/// `std.os`, NOT `std.c` — build.zig doesn't link libc by default
+/// (Zig 0.16 requires an explicit `link_libc = true` on the build
+/// runner module for `std.c` to resolve `fopen`).
+///
+///   - Linux:   `faccessat(AT_FDCWD, path, mode=0)` returns 0 when
+///              the file exists.
+///   - macOS:   same `faccessat` (POSIX).
+///   - Windows: `GetFileAttributesW` returns INVALID_FILE_ATTRIBUTES
+///              on missing; existence = attrs != invalid AND attrs
+///              doesn't have the DIRECTORY bit set (mirror `test -f`).
+fn fileExists(absolute_path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (absolute_path.len >= buf.len) return false;
+    @memcpy(buf[0..absolute_path.len], absolute_path);
+    buf[absolute_path.len] = 0;
+    return switch (@import("builtin").os.tag) {
+        .linux => blk: {
+            const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+            break :blk rc == 0;
+        },
+        .macos => fileExistsViaShell(absolute_path),
+        .windows => blk: {
+            // Win32 GetFileAttributesW (kernel32.dll, always linked on
+            // Windows). UTF-8 path → WTF-16. Directory bit excluded
+            // so this matches `test -f` semantics.
+            var wide: [std.fs.max_path_bytes]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&wide, absolute_path) catch break :blk false;
+            if (written >= wide.len) break :blk false;
+            wide[written] = 0;
+            const attrs = GetFileAttributesW(@ptrCast(&wide));
+            if (attrs == INVALID_FILE_ATTRIBUTES) break :blk false;
+            if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) break :blk false;
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+/// macOS-only fallback for `fileExists`. Mac always has `/bin/sh`
+/// available (Darwin requires a POSIX shell), so the shell-out is
+/// reliable there — it just isn't reliable on Windows dev boxes
+/// where bash.exe exists but isn't on PATH.
+fn fileExistsViaShell(absolute_path: []const u8) bool {
+    var cmd_buf: [std.fs.max_path_bytes * 2:0]u8 = undefined;
+    const cmd_slice = std.fmt.bufPrint(
+        &cmd_buf,
+        "test -f '{s}' && echo 1 || echo 0",
+        .{absolute_path},
+    ) catch return false;
+    cmd_buf[cmd_slice.len] = 0;
+    const cmd_z: [*:0]const u8 = &cmd_buf;
+
+    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa_state.deinit();
+    const result = std.process.run(
+        gpa_state.allocator(),
+        .{ .stdout = .piped, .stderr = .piped },
+        .{
+            .argv = &.{ "/bin/sh", "-c", cmd_z },
+            .stdout_limit = .limited(64),
+            .stderr_limit = .limited(64),
+        },
+    ) catch return false;
+    defer gpa_state.allocator().free(result.stdout);
+    defer gpa_state.allocator().free(result.stderr);
+    const trimmed = std.mem.trim(u8, result.stdout, " \n\r\t");
+    return std.mem.eql(u8, trimmed, "1");
+}
+
+// Win32 GetFileAttributesW (mirrors the root build.zig declarations —
+// declared locally because std.os.windows.kernel32 0.16 doesn't expose
+// it. Win32 kernel32.dll is always linked on Windows).
+extern "kernel32" fn GetFileAttributesW(lpPathName: [*:0]const u16) callconv(.winapi) u32;
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+
 /// Result of probing the host system for libcurl / libssl / libcrypto.
 ///
 /// SYSTEM-ONLY LINKS: when `use_system` is true, the package links against
@@ -114,107 +198,106 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         };
     }
 
-    // Probe via a single shell command. Each line of output is
-    // `<key>=<0|1>` — the parser below reads 5 keys.
+    // Pure-Zig probe — no shell, no `bash` / `sh` dependency.
     //
-    // Linux: checks /usr/include + /usr/lib (Arch / Debian /
-    // Ubuntu / Fedora layouts). `ldconfig -p` matches both unversioned
-    // `libcurl.so` and versioned `libcurl.so.4`.
+    // Earlier revisions ran `sh -c "test -f ..."` here via
+    // `std.process.run`. Windows dev boxes without `bash` / `sh` on
+    // PATH (Git for Windows ships bash.exe at `C:\Program Files\Git\
+    // bin` but doesn't add it to PATH automatically) saw the probe
+    // spawn-fail, fall through to `use_system = false`, and end up
+    // looking for the vendored `vendor/curl/<target>/lib/libcurl.a`
+    // archive — which on Windows is hardcoded to `windows-amd64/` and
+    // doesn't exist for any host (the script
+    // `scripts/build-vendor-curl.sh` only cross-compiles Linux + macOS
+    // archives; Windows archives are intentionally NOT built).
     //
-    // macOS: Homebrew installs keg-only libs at
-    // `/opt/homebrew/opt/<name>/{include,lib}/`. There is no
-    // ldconfig equivalent on macOS — we test for the .dylib file
-    // directly at the canonical brew path. We also accept a system
-    // `/usr/include` install (rare, but documented for completeness).
-    const probe_script = switch (b.graph.host.result.os.tag) {
-        .linux =>
-        \\{ \
-        \\  echo "curl_hdr=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0)"; \
-        \\  echo "curl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcurl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
-        \\  echo "ssl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libssl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "crypto_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcrypto\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\}
-        ,
-        .macos =>
-        // Accept either Homebrew's keg-only paths OR a system
-        // /usr/include install. CI runners need `brew install curl`
-        // (currently NOT in ci.yml — see fix-ci-mac plan) for the
-        // curl half to be picked up; openssl@3 is already installed.
-        \\{ \
-        \\  echo "curl_hdr=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0)"; \
-        \\  echo "curl_lib=$(test -f /opt/homebrew/opt/curl/lib/libcurl.dylib -o -f /opt/homebrew/opt/curl/lib/libcurl.4.dylib -o -f /usr/lib/libcurl.dylib && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
-        \\  echo "ssl_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libssl.dylib -o -f /opt/homebrew/opt/openssl/lib/libssl.dylib -o -f /usr/lib/libssl.dylib && echo 1 || echo 0)"; \
-        \\  echo "crypto_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libcrypto.dylib -o -f /opt/homebrew/opt/openssl/lib/libcrypto.dylib -o -f /usr/lib/libcrypto.dylib && echo 1 || echo 0)"; \
-        \\}
-        ,
-        else =>
-        // Windows: probe vcpkg-installed curl + openssl at the canonical
-        // `C:/vcpkg/installed/x64-windows/` path. The CI installs curl
-        // + openssl via `vcpkg install --recurse <port>:x64-windows`.
-        // Probe runs under `sh -c` (git-bash on the self-hosted
-        // Windows runner); forward-slash paths work.
-        //
-        // Header-only probe: vcpkg's lib/ filenames differ between
-        // MSVC (`curl.lib`) and MinGW (`libcurl.lib`) toolchains, and
-        // the lib files may also be hidden behind `.dll.lib` or other
-        // vendor-specific names. Rather than enumerate every naming
-        // variant, just check headers — `linkSystemLibrary` will
-        // fail loudly with "file not found" if the lib is actually
-        // missing. Headers are stable across toolchain variants.
-        \\{ \
-        \\  VCPKG=/c/vcpkg/installed/x64-windows; \
-        \\  echo "curl_hdr=$([ -f $VCPKG/include/curl/curl.h ] && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$([ -f $VCPKG/include/openssl/ssl.h ] && echo 1 || echo 0)"; \
-        \\}
-        ,
-    };
-
-    const result = std.process.run(
-        b.allocator,
-        b.graph.io,
-        .{
-            .argv = &.{ "sh", "-c", probe_script },
-            .stdout_limit = .limited(4096),
-            .stderr_limit = .limited(4096),
-        },
-    ) catch {
-        // Probe failed — fall back to vendor.
-        return .{
-            .use_system = false,
-            .found_curl = false,
-            .found_ssl = false,
-            .found_crypto = false,
-        };
-    };
-    defer b.allocator.free(result.stdout);
-    defer b.allocator.free(result.stderr);
-
+    // Pure-Zig fix: use the local `fileExists` helper (defined above)
+    // with host-OS-specific paths. Mirrors the equivalent change in
+    // the root build.zig's system-deps probe.
     var curl_hdr: bool = false;
+    var found_curl_lib: bool = false;
     var ssl_hdr: bool = false;
-
-    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "curl_hdr=")) {
-            curl_hdr = std.mem.eql(u8, line["curl_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "ssl_hdr=")) {
-            ssl_hdr = std.mem.eql(u8, line["ssl_hdr=".len..], "1");
-        }
+    var found_ssl_lib: bool = false;
+    var found_crypto_lib: bool = false;
+    switch (b.graph.host.result.os.tag) {
+        .linux => {
+            // Linux: checks /usr/include + /usr/lib (Arch / Debian /
+            // Ubuntu / Fedora layouts). Headers at the canonical
+            // paths; libs probed via direct .so path glob since
+            // `ldconfig -p` is shell-only.
+            //
+            // (We check the unversioned `libcurl.so` symlink AND the
+            // unversioned `libssl.so` / `libcrypto.so` — most distros
+            // keep these as symlinks to the versioned .so.N library.)
+            curl_hdr = fileExists("/usr/include/curl/curl.h");
+            found_curl_lib = fileExists("/usr/lib/libcurl.so");
+            ssl_hdr = fileExists("/usr/include/openssl/ssl.h");
+            found_ssl_lib = fileExists("/usr/lib/libssl.so");
+            found_crypto_lib = fileExists("/usr/lib/libcrypto.so");
+        },
+        .macos => {
+            // macOS: Homebrew installs keg-only libs at
+            // `/opt/homebrew/opt/<name>/{include,lib}/`. No ldconfig
+            // equivalent — we test for the .dylib file directly at the
+            // canonical brew path. We also accept a system
+            // `/usr/include` install (rare).
+            curl_hdr = fileExists("/opt/homebrew/opt/curl/include/curl/curl.h") or
+                fileExists("/usr/include/curl/curl.h");
+            found_curl_lib = fileExists("/opt/homebrew/opt/curl/lib/libcurl.dylib") or
+                fileExists("/usr/lib/libcurl.dylib");
+            ssl_hdr = fileExists("/opt/homebrew/opt/openssl@3/include/openssl/ssl.h") or
+                fileExists("/opt/homebrew/opt/openssl/include/openssl/ssl.h") or
+                fileExists("/usr/include/openssl/ssl.h");
+            found_ssl_lib = fileExists("/opt/homebrew/opt/openssl@3/lib/libssl.dylib") or
+                fileExists("/usr/lib/libssl.dylib");
+            found_crypto_lib = fileExists("/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib") or
+                fileExists("/usr/lib/libcrypto.dylib");
+        },
+        .windows => {
+            // Windows: vcpkg at `C:/vcpkg/installed/x64-windows/`.
+            // The CI installs curl + openssl via
+            // `vcpkg install --recurse <port>:x64-windows`. Header-only
+            // probe: vcpkg's `lib/` filenames differ between MSVC
+            // (`curl.lib`) and MinGW (`libcurl.lib`), and may also be
+            // hidden behind `.dll.lib` or vendor-specific names. Rather
+            // than enumerate every naming variant, we just check
+            // headers — `linkSystemLibrary` / `addObjectFile` will
+            // fail loudly with "file not found" if the lib is actually
+            // missing. Headers are stable across toolchain variants.
+            curl_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/curl/curl.h");
+            ssl_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/openssl/ssl.h");
+        },
+        else => {
+            // Cross-compile to an unknown OS — bail.
+            curl_hdr = false;
+            found_curl_lib = false;
+            ssl_hdr = false;
+            found_ssl_lib = false;
+            found_crypto_lib = false;
+        },
     }
 
-    // Header-only probe (see probe_script above): on vcpkg-equipped
-    // hosts, the package links against the vcpkg sysroot and relies
-    // on the linker's search path + the explicit `addLibraryPath`
-    // call to find the .lib files. We assume "headers present → libs
-    // will be too" — if not, the linker reports `file not found` and
-    // the user sees a clear diagnostic. This avoids the brittle
-    // per-toolchain lib-name enumeration (MSVC `curl.lib` vs MinGW
-    // `libcurl.lib` vs `curl.dll.lib`).
+    // Two patterns of use_system:
+    //
+    //   - Linux/macOS: require header + matching .so/.dylib to be
+    //     present. We need both: header alone (libcurl dev package
+    //     installed without runtime) means consumer compile passes
+    //     but the linked .so is missing → runtime crash. The .so/.dylib
+    //     files live under the same brew keg / distro paths.
+    //   - Windows: header-only. The custom_http_client module uses
+    //     `addObjectFile` to wire the exact `.lib` path into the
+    //     link line; that fails loudly if the lib is actually
+    //     missing (Zig prints the missing path). So we don't need
+    //     a redundant lib check.
+    const use_system: bool = switch (b.graph.host.result.os.tag) {
+        .linux => curl_hdr and found_curl_lib and ssl_hdr and found_ssl_lib and found_crypto_lib,
+        .macos => curl_hdr and found_curl_lib and ssl_hdr and found_ssl_lib and found_crypto_lib,
+        .windows => curl_hdr and ssl_hdr,
+        else => false,
+    };
     const found_curl = curl_hdr;
     const found_ssl = ssl_hdr;
     const found_crypto = ssl_hdr; // crypto lives under openssl/ssl.h — same header
-    const use_system = found_curl and found_ssl and found_crypto;
 
     // Log the probe result so the operator sees which path was taken.
     // On a quiet build (no --verbose) zig's std.debug.print routes to

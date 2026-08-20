@@ -31,6 +31,83 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Cross-platform "does this file exist" check used by the system-deps
+/// probe below. Earlier revisions ran `sh -c "test -f ..."` here, which
+/// is unreliable on Windows dev boxes (Git for Windows ships bash.exe at
+/// `C:\Program Files\Git\bin` but doesn't add it to PATH automatically).
+/// The probe then silently spawned-failed and fell through to the vendored
+/// path even when vcpkg had the libraries installed at
+/// `C:\vcpkg\installed\x64-windows\`. Host-OS-specific direct syscalls
+/// via `std.os`, NOT `std.c` — build.zig doesn't link libc by default
+/// (Zig 0.16 requires an explicit `link_libc = true` on the build runner
+/// module for `std.c` to resolve `fopen`).
+///
+///   - Linux:   `faccessat(AT_FDCWD, path, mode=0)` returns 0 when
+///              the file exists.
+///   - macOS:   same `faccessat` (POSIX).
+///   - Windows: `GetFileAttributesW` returns INVALID_FILE_ATTRIBUTES on
+///              missing; existence = attrs != invalid AND attrs doesn't
+///              have the DIRECTORY bit set (mirror `test -f`).
+fn fileExists(absolute_path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (absolute_path.len >= buf.len) return false;
+    @memcpy(buf[0..absolute_path.len], absolute_path);
+    buf[absolute_path.len] = 0;
+    return switch (builtin.os.tag) {
+        .linux => blk: {
+            const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+            break :blk rc == 0;
+        },
+        .macos => fileExistsViaShell(absolute_path),
+        .windows => blk: {
+            var wide: [std.fs.max_path_bytes]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&wide, absolute_path) catch break :blk false;
+            if (written >= wide.len) break :blk false;
+            wide[written] = 0;
+            const attrs = GetFileAttributesW(@ptrCast(&wide));
+            if (attrs == INVALID_FILE_ATTRIBUTES) break :blk false;
+            if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) break :blk false;
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+extern "kernel32" fn GetFileAttributesW(lpPathName: [*:0]const u16) callconv(.winapi) u32;
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+
+/// macOS-only fallback for `fileExists`. Mac always has `/bin/sh`
+/// available (Darwin requires a POSIX shell), so the shell-out is
+/// reliable there — it just isn't reliable on Windows dev boxes
+/// where bash.exe exists but isn't on PATH.
+fn fileExistsViaShell(absolute_path: []const u8) bool {
+    var cmd_buf: [std.fs.max_path_bytes * 2:0]u8 = undefined;
+    const cmd_slice = std.fmt.bufPrint(
+        &cmd_buf,
+        "test -f '{s}' && echo 1 || echo 0",
+        .{absolute_path},
+    ) catch return false;
+    cmd_buf[cmd_slice.len] = 0;
+    const cmd_z: [*:0]const u8 = &cmd_buf;
+
+    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa_state.deinit();
+    const result = std.process.run(
+        gpa_state.allocator(),
+        .{ .stdout = .piped, .stderr = .piped },
+        .{
+            .argv = &.{ "/bin/sh", "-c", cmd_z },
+            .stdout_limit = .limited(64),
+            .stderr_limit = .limited(64),
+        },
+    ) catch return false;
+    defer gpa_state.allocator().free(result.stdout);
+    defer gpa_state.allocator().free(result.stderr);
+    const trimmed = std.mem.trim(u8, result.stdout, " \n\r\t");
+    return std.mem.eql(u8, trimmed, "1");
+}
+
 /// Result of probing the host system for sqlite3 + libpq + openssl.
 const SystemLibs = struct {
     /// True when the probe found sqlite3.h AND libsqlite3.so on the host.
@@ -81,100 +158,98 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     // on macOS — we test the .dylib file directly. The probe accepts
     // either the keg-only path OR the system /usr/include (rare but
     // documented for completeness).
-    const probe_script = switch (b.graph.host.result.os.tag) {
-        .linux =>
-        \\{ \
-        \\  echo "sqlite_hdr=$(test -f /usr/include/sqlite3.h && echo 1 || echo 0)"; \
-        \\  echo "sqlite_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libsqlite3\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "pq_hdr=$(test -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0)"; \
-        \\  echo "pq_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libpq\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
-        \\  echo "ssl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libssl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "crypto_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcrypto\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\}
-        ,
-        .macos =>
-        // `pq` is not currently used by macOS targets (the project
-        // doesn't ship libpq-backed code on Mac). The probe still
-        // returns it as a hint — if a future commit adds libpq usage
-        // on macOS, the brew probe is already wired.
-        \\{ \
-        \\  echo "sqlite_hdr=$(test -f /opt/homebrew/opt/sqlite3/include/sqlite3.h -o -f /usr/include/sqlite3.h && echo 1 || echo 0)"; \
-        \\  echo "sqlite_lib=$(test -f /opt/homebrew/opt/sqlite3/lib/libsqlite3.dylib -o -f /usr/lib/libsqlite3.dylib && echo 1 || echo 0)"; \
-        \\  echo "pq_hdr=$(test -f /opt/homebrew/opt/libpq/include/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0)"; \
-        \\  echo "pq_lib=$(test -f /opt/homebrew/opt/libpq/lib/libpq.dylib -o -f /usr/lib/libpq.dylib && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
-        \\  echo "ssl_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libssl.dylib -o -f /opt/homebrew/opt/openssl/lib/libssl.dylib -o -f /usr/lib/libssl.dylib && echo 1 || echo 0)"; \
-        \\  echo "crypto_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libcrypto.dylib -o -f /opt/homebrew/opt/openssl/lib/libcrypto.dylib -o -f /usr/lib/libcrypto.dylib && echo 1 || echo 0)"; \
-        \\}
-        ,
-        else =>
-        // Windows: probe vcpkg-installed headers at the canonical
-        // `C:/vcpkg/installed/x64-windows/` path. The CI installs
-        // sqlite3, openssl, libpq via `vcpkg install --recurse
-        // <port>:x64-windows`. Probe runs under `sh -c` (git-bash on
-        // the self-hosted Windows runner); forward-slash paths work.
-        //
-        // Header-only probe: vcpkg's lib/ filenames differ between
-        // MSVC (`sqlite3.lib`) and MinGW (`libsqlite3.lib`) toolchains,
-        // and the lib files may also be `*.dll.lib` etc. Rather than
-        // enumerate every naming variant, just check headers —
-        // `linkSystemLibrary` will fail loudly with `file not found`
-        // if the lib is actually missing.
-        \\{ \
-        \\  VCPKG=/c/vcpkg/installed/x64-windows; \
-        \\  echo "sqlite_hdr=$([ -f $VCPKG/include/sqlite3.h ] && echo 1 || echo 0)"; \
-        \\  echo "pq_hdr=$([ -f $VCPKG/include/libpq-fe.h ] && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$([ -f $VCPKG/include/openssl/ssl.h ] && echo 1 || echo 0)"; \
-        \\}
-        ,
-    };
-
-    const result = std.process.run(
-        b.allocator,
-        b.graph.io,
-        .{
-            .argv = &.{ "sh", "-c", probe_script },
-            .stdout_limit = .limited(4096),
-            .stderr_limit = .limited(4096),
-        },
-    ) catch {
-        // Probe failed — fall back to vendor.
-        return .{
-            .use_system_sqlite3 = false,
-            .use_system_pq = false,
-            .use_system_ssl = false,
-            .use_system_crypto = false,
-        };
-    };
-    defer b.allocator.free(result.stdout);
-    defer b.allocator.free(result.stderr);
-
+    //
+    // Pure-Zig probe (no shell, no `bash`/`sh` dependency). Earlier
+    // revisions ran `sh -c "test -f ..."` + `ldconfig -p | grep ...`
+    // via `std.process.run`. On Windows dev boxes without `bash`/`sh`
+    // on PATH the spawn failed and the probe fell through to "vendor
+    // fallback" — which then tried to compile the 9 MB sqlite3.c
+    // amalgamation even though vcpkg already had vcpkg-installed
+    // sqlite3.lib. Same failure mode as the root build.zig + the
+    // custom_http_client probe — all three get fixed by the same
+    // `fileExists(...)` helper at the top of this file.
     var sqlite_hdr: bool = false;
+    var sqlite_lib: bool = false;
     var pq_hdr: bool = false;
+    var pq_lib: bool = false;
     var ssl_hdr: bool = false;
-
-    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "sqlite_hdr=")) {
-            sqlite_hdr = std.mem.eql(u8, line["sqlite_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "pq_hdr=")) {
-            pq_hdr = std.mem.eql(u8, line["pq_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "ssl_hdr=")) {
-            ssl_hdr = std.mem.eql(u8, line["ssl_hdr=".len..], "1");
-        }
+    var ssl_lib: bool = false;
+    var crypto_lib: bool = false;
+    switch (b.graph.host.result.os.tag) {
+        .linux => {
+            sqlite_hdr = fileExists("/usr/include/sqlite3.h");
+            sqlite_lib = fileExists("/usr/lib/libsqlite3.so");
+            pq_hdr = fileExists("/usr/include/postgresql/libpq-fe.h") or
+                fileExists("/usr/include/libpq-fe.h");
+            pq_lib = fileExists("/usr/lib/libpq.so");
+            ssl_hdr = fileExists("/usr/include/openssl/ssl.h");
+            ssl_lib = fileExists("/usr/lib/libssl.so");
+            crypto_lib = fileExists("/usr/lib/libcrypto.so");
+        },
+        .macos => {
+            sqlite_hdr = fileExists("/opt/homebrew/opt/sqlite3/include/sqlite3.h") or
+                fileExists("/usr/include/sqlite3.h");
+            sqlite_lib = fileExists("/opt/homebrew/opt/sqlite3/lib/libsqlite3.dylib") or
+                fileExists("/usr/lib/libsqlite3.dylib");
+            pq_hdr = fileExists("/opt/homebrew/opt/libpq/include/libpq-fe.h") or
+                fileExists("/usr/include/libpq-fe.h");
+            pq_lib = fileExists("/opt/homebrew/opt/libpq/lib/libpq.dylib") or
+                fileExists("/usr/lib/libpq.dylib");
+            ssl_hdr = fileExists("/opt/homebrew/opt/openssl@3/include/openssl/ssl.h") or
+                fileExists("/opt/homebrew/opt/openssl/include/openssl/ssl.h") or
+                fileExists("/usr/include/openssl/ssl.h");
+            ssl_lib = fileExists("/opt/homebrew/opt/openssl@3/lib/libssl.dylib") or
+                fileExists("/usr/lib/libssl.dylib");
+            crypto_lib = fileExists("/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib") or
+                fileExists("/usr/lib/libcrypto.dylib");
+        },
+        .windows => {
+            // Header-only on vcpkg (Windows): lib filenames differ
+            // between MSVC and MinGW toolchains — rely on the linker
+            // to surface `file not found` if the lib is missing.
+            sqlite_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/sqlite3.h");
+            pq_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/libpq-fe.h");
+            ssl_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/openssl/ssl.h");
+        },
+        else => {
+            sqlite_hdr = false;
+            sqlite_lib = false;
+            pq_hdr = false;
+            pq_lib = false;
+            ssl_hdr = false;
+            ssl_lib = false;
+            crypto_lib = false;
+        },
     }
 
-    // Header-only probe (see probe_script above): on vcpkg-equipped
-    // hosts the package links against the vcpkg sysroot and relies
-    // on the linker's search path to find the .lib files. If the lib
-    // is missing the linker reports `file not found` with a clear
-    // diagnostic. This avoids the per-toolchain lib-name enum (MSVC
-    // `sqlite3.lib` vs MinGW `libsqlite3.lib` vs `sqlite3.dll.lib`).
-    const use_system_sqlite3 = sqlite_hdr;
-    const use_system_pq = pq_hdr;
-    const use_system_ssl = ssl_hdr;
-    const use_system_crypto = ssl_hdr; // crypto's header is in openssl/ssl.h — same as ssl
+    // Header-only probe on Windows (vcpkg): the package links against the
+    // vcpkg sysroot and relies on the linker's search path to find the
+    // .lib files. If the lib is missing the linker reports
+    // `file not found` with a clear diagnostic. This avoids the
+    // per-toolchain lib-name enum (MSVC `sqlite3.lib` vs MinGW
+    // `libsqlite3.lib` vs `sqlite3.dll.lib`).
+//
+// On Linux / macOS we ALSO require the matching .so / .dylib to be
+// present — a header-only dev install (sqlite3-dev but no libsqlite3
+// runtime) would compile fine but fail at runtime. Cross-checking the
+// .so path is a cheap O(1) `faccessat` per probe field and saves the
+// consumer from a confusing `dyld: Library not loaded` at first use.
+    const use_system_sqlite3 = sqlite_hdr and switch (b.graph.host.result.os.tag) {
+        .windows => true,
+        else => sqlite_lib,
+    };
+    const use_system_pq = pq_hdr and switch (b.graph.host.result.os.tag) {
+        .windows => true,
+        else => pq_lib,
+    };
+    const use_system_ssl = ssl_hdr and switch (b.graph.host.result.os.tag) {
+        .windows => true,
+        else => ssl_lib,
+    };
+    const use_system_crypto = ssl_hdr and switch (b.graph.host.result.os.tag) {
+        .windows => true,
+        else => crypto_lib,
+    };
 
     std.debug.print(
         "[databases] probe: sqlite3={} libpq={} ssl={} crypto={}\n",

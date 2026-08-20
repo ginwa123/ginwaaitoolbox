@@ -1,6 +1,124 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Win32 GetFileAttributesW — declared locally because std.os.windows
+// 0.16 doesn't expose it (std.os.windows.kernel32 only ships the
+// functions the std lib's own files need). Win32 kernel32.lib exports
+// it natively, so a single `extern` decl is enough — no libc linkage,
+// no `link_libc = true` on the build runner.
+extern "kernel32" fn GetFileAttributesW(lpPathName: [*:0]const u16) callconv(.winapi) u32;
+// NTSTATUS-like sentinel: when the path is missing/inaccessible,
+// GetFileAttributesW returns `INVALID_FILE_ATTRIBUTES` (0xFFFFFFFF).
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+// File-sys flag bit (0x10 = bit 4) indicating the path is a directory,
+// not a regular file. Probe mirrors `test -f <path>` semantics, so
+// directories count as NOT-a-file.
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+
+/// Cross-platform, pure-Zig "does this file exist" check.
+///
+/// Used by the system-deps probe (`dbs_uses_system`, `curl_uses_system`)
+/// below. Earlier revisions ran `sh -c "test -f ..."` here, which is
+/// unreliable on Windows dev boxes: Git for Windows ships git.exe +
+/// bash.exe but doesn't add `C:\Program Files\Git\bin` or
+/// `C:\Program Files\Git\usr\bin` to PATH automatically, so the probe
+/// silently fell through to "vendor fallback" even when vcpkg had the
+/// libraries installed. The pure-Zig version works on every host
+/// regardless of which shells (if any) are on PATH.
+///
+/// Implementation: host-OS-specific direct syscalls, not `std.c`,
+/// because build.zig itself doesn't link libc by default (Zig 0.16
+/// requires an explicit `link_libc = true` on the build runner's
+/// module for `std.c` to resolve `fopen` etc.).
+///
+///   - Linux:    `faccessat(AT_FDCWD, path, mode=0)` — direct POSIX
+///              syscall via `std.os.linux.faccessat`. Matches the
+///              inline node_modules probe at line ~700 below (same
+///              host syscall). Linux is the dev/CI primary; we
+///              don't pay a shell-out cost here.
+///   - macOS:    POSIX `faccessat` via `std.process.run` + `/bin/sh`
+///              shelling out to `test -f`. The `std.os.linux.*`
+///              wrappers are kernel-syscall-only — `.faccessat`'s
+///              Linux syscall number is meaningless on Darwin's BSD
+///              layer — so we shell-out instead. Darwin always has
+///              `/bin/sh` on PATH (POSIX-required), so this is safe.
+///   - Windows:  `GetFileAttributesW` returns INVALID_FILE_ATTRIBUTES
+///              on missing; existence = attrs != invalid AND attrs
+///              doesn't have the DIRECTORY bit set (mirror `test -f`).
+fn fileExists(absolute_path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (absolute_path.len >= buf.len) return false;
+    @memcpy(buf[0..absolute_path.len], absolute_path);
+    buf[absolute_path.len] = 0;
+    return switch (builtin.os.tag) {
+        .linux => blk: {
+            const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+            break :blk rc == 0;
+        },
+        .macos => fileExistsViaShell(absolute_path),
+        .windows => blk: {
+            // WTF-8 (Zig's UTF-8 with surrogate-half support) → WTF-16
+            // little-endian (Win32's wide-char path) for the Win32 API
+            // call. `wtf8ToWtf16Le` writes the wide path into the
+            // saturated caller-provided buffer and RETURNS the count
+            // of u16 units written (`usize`), not a slice. We append
+            // a NUL because the Win32 API takes NUL-terminated wide
+            // strings.
+            var wide: [std.fs.max_path_bytes]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&wide, absolute_path) catch break :blk false;
+            if (written >= wide.len) break :blk false;
+            wide[written] = 0;
+            const attrs = GetFileAttributesW(@ptrCast(&wide));
+            if (attrs == INVALID_FILE_ATTRIBUTES) break :blk false;
+            if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) break :blk false;
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+/// macOS-only fallback for `fileExists`. Mac always has `/bin/sh`
+/// available (Darwin requires a POSIX shell), so the shell-out is
+/// reliable there — it just isn't reliable on Windows dev boxes
+/// where bash.exe exists but isn't on PATH.
+fn fileExistsViaShell(absolute_path: []const u8) bool {
+    var cmd_buf: [std.fs.max_path_bytes * 2:0]u8 = undefined;
+    const cmd_slice = std.fmt.bufPrint(
+        &cmd_buf,
+        "test -f '{s}' && echo 1 || echo 0",
+        .{absolute_path},
+    ) catch return false;
+    cmd_buf[cmd_slice.len] = 0;
+    const cmd_z: [*:0]const u8 = &cmd_buf;
+
+    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa_state.deinit();
+    const result = std.process.run(
+        gpa_state.allocator(),
+        .{ .stdout = .piped, .stderr = .piped },
+        .{
+            .argv = &.{ "/bin/sh", "-c", cmd_z },
+            .stdout_limit = .limited(64),
+            .stderr_limit = .limited(64),
+        },
+    ) catch return false;
+    defer gpa_state.allocator().free(result.stdout);
+    defer gpa_state.allocator().free(result.stderr);
+    const trimmed = std.mem.trim(u8, result.stdout, " \n\r\t");
+    return std.mem.eql(u8, trimmed, "1");
+}
+
+/// Return the first entry of `candidates` that exists as a file, or null
+/// when none match. Used by the system-deps probe to handle Homebrew
+/// keg-only paths (`/opt/homebrew/opt/<name>/...`) AND fallback
+/// `/usr/include/...` paths in either order.
+fn pickFirstExisting(candidates: []const []const u8) ?[]const u8 {
+    for (candidates) |p| {
+        if (fileExists(p)) return p;
+    }
+    return null;
+}
+
 /// Link platform-specific system libraries + include paths for a Compile
 /// step based on the COMPILE'S OWN target (NOT the global default target).
 /// Every caller that produces a binary linked against nalarcore MUST
@@ -136,6 +254,40 @@ pub fn build(b: *std.Build) void {
             .abi = .gnu,
             .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
         },
+        .windows => blk: {
+            // === Why default to x86_64-windows-gnu on Windows ===
+            //
+            // The CI's self-hosted Windows runner installs all native deps
+            // (libcurl, libssl, libcrypto, libpq, sqlite3) via
+            //     vcpkg install --recurse ...:x64-windows
+            // (see .github/workflows/ci.yml:560). vcpkg emits artefacts as
+            // x64 — `libcurl.lib`/`libssl.lib`/etc. live at
+            // `C:\vcpkg\installed\x64-windows\...`. The custom_http_client
+            // and databases packages wire those exact paths into the link
+            // line.
+            //
+            // On ARM64 Windows (Snapdragon X dev machines) Zig's stock
+            // host-following default would produce target = aarch64-windows-
+            // gnu, which can't link x64 vcpkg artefacts — every Compile
+            // step would fail with "file not found" for the .lib files
+            // (and the vendored curl target_subdir is hardcoded
+            // "windows-amd64" anyway, so vendored archives don't exist for
+            // the aarch64 path either).
+            //
+            // Pinning Windows to x86_64-windows-gnu aligns dev boxes with
+            // the CI's binary layout, so `zig build` Just Works on both
+            // X64 and ARM64 Windows hosts when vcpkg x64 is present.
+            //
+            // To target aarch64-windows-gnu natively, install the matching
+            // vcpkg triplet first:
+            //     vcpkg install ... --triplet=arm64-windows
+            // then pass `-Dtarget=aarch64-windows-gnu`.
+            break :blk .{
+                .cpu_arch = .x86_64,
+                .os_tag = .windows,
+                .abi = .gnu,
+            };
+        },
         else => .{
             .cpu_arch = b.graph.host.result.cpu.arch,
             .os_tag = b.graph.host.result.os.tag,
@@ -260,69 +412,56 @@ pub fn build(b: *std.Build) void {
     // the host's libs are Linux .so, can't link into a Mach-O binary.
     const dbs_uses_system = blk: {
         if (target.result.os.tag != b.graph.host.result.os.tag) break :blk false;
-        const probe_script = switch (b.graph.host.result.os.tag) {
-            .linux =>
-            \\{ \
-            \\  s=$(test -f /usr/include/sqlite3.h && echo 1 || echo 0); \
-            \\  q=$(test -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
-            \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$s$q$h"; \
-            \\}
-            ,
-            .macos =>
-            // Homebrew keg-only: every keg under /opt/homebrew/opt/<name>/
-            // has both include/ and lib/ subdirs (symlinked into the
-            // cellar). curl.h is bundled inside the curl keg at
-            // /opt/homebrew/opt/curl/include/curl/curl.h. libpq isn't
-            // usually installed via brew on a dev Mac (the project doesn't
-            // use it on macOS today), so we treat pq as optional on macos.
-            \\{ \
-            \\  s=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0); \
-            \\  q=$(test -f /opt/homebrew/opt/libpq/include/libpq-fe.h -o -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
-            \\  h=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$s$q$h"; \
-            \\}
-            ,
-            else =>
-            // Windows: probe vcpkg-installed headers at the canonical
-            // `C:/vcpkg/installed/x64-windows/include/` path. The CI
-            // installs sqlite3, openssl, libpq, curl via
-            // `vcpkg install --recurse <port>:x64-windows` — the
-            // package-level probes verify each header separately,
-            // this top-level probe just decides whether to skip the
-            // `fetch-vendor-{sqlite3,curl}` build steps. Probe runs
-            // under `sh -c` (git-bash on the self-hosted Windows runner)
-            // and forward-slash paths work natively there.
-            //
-            // Header-only probe (3 bits, no separate lib check): the
-            // package-level probes also check only headers, so they
-            // stay consistent with this top-level one. Lib presence
-            // is verified at link time by the linker (a missing .lib
-            // gives `file not found`, which is a clear diagnostic).
-            \\{ \
-            \\  VCPKG=/c/vcpkg/installed/x64-windows/include; \
-            \\  s=$(test -f "$VCPKG/sqlite3.h" && echo 1 || echo 0); \
-            \\  q=$(test -f "$VCPKG/libpq-fe.h" && echo 1 || echo 0); \
-            \\  h=$(test -f "$VCPKG/openssl/ssl.h" && echo 1 || echo 0); \
-            \\  echo "use_system=$s$q$h"; \
-            \\}
-            ,
+        // Pure-Zig header probe (no shell, no `bash` dependency).
+        //
+        // Earlier revisions ran `sh -c "test -f ..."` here, which silently
+        // failed on Windows dev boxes without `bash` / `sh` on PATH
+        // (Git for Windows ships git.exe + bash.exe but doesn't add
+        // Git\bin or Git\usr\bin to PATH automatically). The probe then
+        // fell through to `use_system=false`, the build went on to look
+        // for the vendored libcurl archive, and `zig build` failed with
+        // "file not found" — even though vcpkg had the libs installed at
+        // `C:\vcpkg\installed\x64-windows\`. See commit history for the
+        // PR that switched to std.fs.cwd().openFile (build-script-safe
+        // across hosts).
+        //
+        // Probe checks: sqlite3.h AND libpq-fe.h AND openssl/ssl.h.
+        // Missing any one → vendor fallback. Lib presence is verified
+        // separately by the linker (a missing .lib gives a clear "file
+        // not found" diagnostic).
+        const sqlite_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/sqlite3.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/sqlite3/include/sqlite3.h",
+                "/usr/include/sqlite3.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/sqlite3.h",
+            else => break :blk false,
         };
-        const result = std.process.run(
-            b.allocator,
-            b.graph.io,
-            .{
-                .argv = &.{ "sh", "-c", probe_script },
-                .stdout_limit = .limited(256),
-                .stderr_limit = .limited(256),
-            },
-        ) catch break :blk false;
-        defer b.allocator.free(result.stdout);
-        defer b.allocator.free(result.stderr);
-        // All three: sqlite3 + libpq + openssl headers. Library files
-        // (.lib) are resolved at link time against the vcpkg sysroot
-        // added by the package-level build.zig's `.windows =>` arm.
-        break :blk std.mem.indexOf(u8, result.stdout, "use_system=111") != null;
+        const libpq_h = switch (b.graph.host.result.os.tag) {
+            .linux => pickFirstExisting(&.{
+                "/usr/include/postgresql/libpq-fe.h",
+                "/usr/include/libpq-fe.h",
+            }) orelse break :blk false,
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/libpq/include/libpq-fe.h",
+                "/usr/include/postgresql/libpq-fe.h",
+                "/usr/include/libpq-fe.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/libpq-fe.h",
+            else => break :blk false,
+        };
+        const openssl_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/openssl/ssl.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/openssl@3/include/openssl/ssl.h",
+                "/opt/homebrew/opt/openssl/include/openssl/ssl.h",
+                "/usr/include/openssl/ssl.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h",
+            else => break :blk false,
+        };
+        break :blk fileExists(sqlite_h) and fileExists(libpq_h) and fileExists(openssl_h);
     };
 
     // Probe host for system libcurl + openssl. Same probe layout as
@@ -332,67 +471,43 @@ pub fn build(b: *std.Build) void {
     // at consumer link time.
     const curl_uses_system = blk: {
         if (target.result.os.tag != b.graph.host.result.os.tag) break :blk false;
-        const probe_script = switch (b.graph.host.result.os.tag) {
-            .linux =>
-            \\{ \
-            \\  c=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0); \
-            \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$c$h"; \
-            \\}
-            ,
-            .macos =>
-            // Homebrew keg-only curl: /opt/homebrew/opt/curl/{include,lib}/.
-            // Also accept the LDFLAGS/CPPFLAGS env vars the CI yml sets
-            // (`brew install pkg-config openssl@3 coreutils` + export
-            // LDFLAGS/CPPFLAGS/PKG_CONFIG_PATH from `brew --prefix
-            // openssl@3`). The CI installs openssl@3 + coreutils but
-            // NOT curl by default — brew install openssl@3 alone doesn't
-            // pull in libcurl. So curl probe = curl.h present (any of the
-            // three locations) AND libcurl.dylib present. If brew install
-            // curl is added to CI later, the probe finds it; until then,
-            // the Mac runner needs `brew install curl` for system libcurl
-            // to be picked up here.
-            \\{ \
-            \\  HDR=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0); \
-            \\  LIB=$(test -f /opt/homebrew/opt/curl/lib/libcurl.dylib -o -f /usr/lib/libcurl.dylib && echo 1 || echo 0); \
-            \\  SSL=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$HDR$LIB$SSL"; \
-            \\}
-            ,
-            else =>
-            // Windows: vcpkg at `C:/vcpkg/installed/x64-windows/include/`.
-            // Both curl.h + openssl/ssl.h must be present. Library
-            // files (.lib) are resolved at link time against the vcpkg
-            // sysroot added by custom_http_client/build.zig's
-            // `.windows =>` arm.
-            \\{ \
-            \\  VCPKG=/c/vcpkg/installed/x64-windows/include; \
-            \\  c=$(test -f "$VCPKG/curl/curl.h" && echo 1 || echo 0); \
-            \\  h=$(test -f "$VCPKG/openssl/ssl.h" && echo 1 || echo 0); \
-            \\  echo "use_system=$c$h"; \
-            \\}
-            ,
+        // Pure-Zig probe mirroring the dbs_uses_system helper above.
+        // No shell, no bash dependency.
+        //
+        // On macOS we additionally verify a libcurl.dylib exists — having
+        // only the header (rare) would fail at consumer link time.
+        // The CI installs openssl@3 + coreutils via brew but NOT curl, so
+        // the Mac runner needs `brew install curl` for system libcurl to
+        // be picked up.
+        const curl_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/curl/curl.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/curl/include/curl/curl.h",
+                "/usr/include/curl/curl.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/curl/curl.h",
+            else => break :blk false,
         };
-        const result = std.process.run(
-            b.allocator,
-            b.graph.io,
-            .{
-                .argv = &.{ "sh", "-c", probe_script },
-                .stdout_limit = .limited(256),
-                .stderr_limit = .limited(256),
-            },
-        ) catch break :blk false;
-        defer b.allocator.free(result.stdout);
-        defer b.allocator.free(result.stderr);
-        // Both: curl.h + openssl/ssl.h. On macOS we also require
-        // libcurl.dylib (header+lib both present). libssl/libcrypto
-        // verification is done by the package's own probe.
-        break :blk std.mem.indexOf(u8, result.stdout, "use_system=") != null and
-            std.mem.indexOf(u8, result.stdout, "use_system=000") == null and
-            // linux shape: "use_system=11" (curl + openssl)
-            // macos shape: "use_system=111" (curl_hdr + libcurl.dylib + openssl)
-            (std.mem.indexOf(u8, result.stdout, "use_system=11") != null or
-            std.mem.indexOf(u8, result.stdout, "use_system=111") != null);
+        const openssl_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/openssl/ssl.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/openssl@3/include/openssl/ssl.h",
+                "/opt/homebrew/opt/openssl/include/openssl/ssl.h",
+                "/usr/include/openssl/ssl.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h",
+            else => break :blk false,
+        };
+        if (!fileExists(curl_h) or !fileExists(openssl_h)) break :blk false;
+        // macOS extra check: libcurl.dylib present (header+lib pair).
+        if (b.graph.host.result.os.tag == .macos) {
+            const libcurl_dylib = pickFirstExisting(&.{
+                "/opt/homebrew/opt/curl/lib/libcurl.dylib",
+                "/usr/lib/libcurl.dylib",
+            }) orelse break :blk false;
+            _ = libcurl_dylib;
+        }
+        break :blk true;
     };
 
     std.debug.print(
@@ -425,14 +540,20 @@ pub fn build(b: *std.Build) void {
         "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout. SKIPPED when the host has system sqlite3 (see system-deps probe output).",
     );
     if (dbs_uses_system) {
-        // System sqlite3 present — replace the fetch with a no-op
-        // message so `zig build --verbose` shows WHY the step was
-        // skipped. The step still exists in --list-steps so any
-        // external automation that depends on it doesn't break.
-        const skip_msg = b.addSystemCommand(&.{
-            "sh", "-c",
-            \\echo "[fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected)."
-        ,
+        // System sqlite3 present — emit a step that runs the literal
+        // `echo` builtin via the host shell so `zig build --verbose`
+        // shows WHY the fetch was skipped. The step still exists in
+        // --list-steps so external automation depending on it doesn't
+        // break.
+        //
+        // Shell selection (cross-platform fix): the previous revision
+        // hardcoded `sh -c "echo ..."` which silently failed on Windows
+        // dev boxes without bash/sh on PATH. We pick the shell by host
+        // OS: `cmd.exe /c` on Windows (always present), `sh -c` on
+        // Linux/macOS.
+        const skip_msg = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+            .windows => &.{ "cmd.exe", "/c", "echo [fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected)." },
+            else => &.{ "sh", "-c", "echo '[fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected).'" },
         });
         vendor_sqlite3_step.dependOn(&skip_msg.step);
     } else {
@@ -493,10 +614,11 @@ pub fn build(b: *std.Build) void {
             "Auto-runs on `zig build` or any install:* target when the vendor dir is missing. SKIPPED when the host has system libcurl + ssl + crypto (see system-deps probe output).",
     );
     if (curl_uses_system) {
-        const skip_msg = b.addSystemCommand(&.{
-            "sh", "-c",
-            \\echo "[fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected)."
-        ,
+        // Shell selection (cross-platform fix): see the matching
+        // fetch-vendor-sqlite3 block above for the rationale.
+        const skip_msg = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+            .windows => &.{ "cmd.exe", "/c", "echo [fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected)." },
+            else => &.{ "sh", "-c", "echo '[fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected).'" },
         });
         fetch_vendor_curl_step.dependOn(&skip_msg.step);
     } else {
@@ -1424,37 +1546,82 @@ pub fn build(b: *std.Build) void {
     // use the runtime allocPrint + b.allocator. The script slice is
     // leaked (b.allocator is the build-graph arena; everything is freed
     // when the build runner exits).
-    const banner_script = std.fmt.allocPrint(
-        b.allocator,
-        \\
-        \\D=zig-out/bin
-        \\echo ""
-        \\echo "[zig build success]"
-        \\echo ""
-        \\echo "  nalar service binary  →  $D/{s}"
-        \\echo "  nalar desktop binary  →  $D/{s}"
-        \\echo "  nalarcli binary       →  $D/{s}"
-        \\echo ""
-        \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
-        \\echo "   to force a fresh install — the cache sometimes hides"
-        \\echo "   manual deletions.)"
-        \\echo ""
-        \\echo "  Run with:  $D/{s} service start --port 8080"
-        \\echo "             $D/{s} --devtools"
-        \\echo "             $D/{s} sessions list"
-        \\echo ""
-    ,
-        .{
-            host_binary_name,
-            desktop_binary_name,
-            cli_binary_name,
-            host_binary_name,
-            desktop_binary_name,
-            cli_binary_name,
+    //
+    // Cross-platform shell: Linux/macOS use `/bin/sh -c` (POSIX echo,
+    // $D variable). Windows uses `cmd /c` with explicit `echo` lines
+    // (no $D-variable interpolation; each line spells the directory
+    // literally). Earlier revisions hardcoded `/bin/sh -c ...` which
+    // failed silently on Windows dev boxes where `/bin/sh` doesn't
+    // exist (Git for Windows ships bash at `C:\Program Files\Git\bin`
+    // but the canonical `/bin/sh` path is on Cygwin / MSYS only).
+    const banner_args = switch (b.graph.host.result.os.tag) {
+        .windows => blk: {
+            const script = std.fmt.allocPrint(
+                b.allocator,
+                \\
+                \\echo.
+                \\echo [zig build success]
+                \\echo.
+                \\echo   nalar service binary  ---^> zig-out\\bin\\{s}
+                \\echo   nalar desktop binary  ---^> zig-out\\bin\\{s}
+                \\echo   nalarcli binary       ---^> zig-out\\bin\\{s}
+                \\echo.
+                \\echo   (If a binary is missing, run "rmdir /s /q zig-out && zig build"
+                \\echo    to force a fresh install -- the cache sometimes hides
+                \\echo    manual deletions.)
+                \\echo.
+                \\echo   Run with:  zig-out\\bin\\{s} service start --port 8080
+                \\echo              zig-out\\bin\\{s} --devtools
+                \\echo              zig-out\\bin\\{s} sessions list
+                \\echo.
+                \\
+            ,
+                .{
+                    host_binary_name,
+                    desktop_binary_name,
+                    cli_binary_name,
+                    host_binary_name,
+                    desktop_binary_name,
+                    cli_binary_name,
+                },
+            ) catch @panic("OOM allocating Windows build banner");
+            break :blk &.{ "cmd.exe", "/c", script };
         },
-    ) catch @panic("OOM allocating build banner");
+        else => blk: {
+            const script = std.fmt.allocPrint(
+                b.allocator,
+                \\
+                \\D=zig-out/bin
+                \\echo ""
+                \\echo "[zig build success]"
+                \\echo ""
+                \\echo "  nalar service binary  →  $D/{s}"
+                \\echo "  nalar desktop binary  →  $D/{s}"
+                \\echo "  nalarcli binary       →  $D/{s}"
+                \\echo ""
+                \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
+                \\echo "   to force a fresh install — the cache sometimes hides"
+                \\echo "   manual deletions.)"
+                \\echo ""
+                \\echo "  Run with:  $D/{s} service start --port 8080"
+                \\echo "             $D/{s} --devtools"
+                \\echo "             $D/{s} sessions list"
+                \\echo ""
+            ,
+                .{
+                    host_binary_name,
+                    desktop_binary_name,
+                    cli_binary_name,
+                    host_binary_name,
+                    desktop_binary_name,
+                    cli_binary_name,
+                },
+            ) catch @panic("OOM allocating POSIX build banner");
+            break :blk &.{ "/bin/sh", "-c", script };
+        },
+    };
 
-    const build_banner = b.addSystemCommand(&.{ "/bin/sh", "-c", banner_script });
+    const build_banner = b.addSystemCommand(banner_args);
     const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
     // The binaries live on different top-level install steps:
     //   - host-specific nalarcore binary → install:<host> (Linux / macOS-arm / macOS / Windows)
