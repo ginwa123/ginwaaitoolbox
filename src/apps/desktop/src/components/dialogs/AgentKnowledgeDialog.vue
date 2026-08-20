@@ -6,15 +6,24 @@
     - label (optional)
 
   Public API:
-    props:  show (boolean)
+    props:  show (boolean), busy (boolean), error (string | null)
     emits:  close, create(file_path: string, label: string)
 
   Plan: 2026-08-15-agent-mode (Task 16)
+  Updated 2026-08-20 to support `busy` + `error` so AppLayout can
+  show submit progress + server error without unmounting the dialog.
+  Also added a "Browse" button that opens FilePickerDialog in 'file'
+  mode — typing absolute paths by hand is error-prone.
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
+import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
+import FilePickerDialog from '../FilePickerDialog.vue'
 
-const props = defineProps<{ show: boolean }>()
+const props = withDefaults(
+  defineProps<{ show: boolean; busy?: boolean; error?: string | null }>(),
+  { busy: false, error: null },
+)
 
 const emit = defineEmits<{
   close: []
@@ -25,6 +34,7 @@ const filePath = ref('')
 const label = ref('')
 const pathInput = ref<HTMLInputElement | null>(null)
 const pathTouched = ref(false)
+const showPicker = ref(false)
 
 const pathError = computed<string | null>(() => {
   if (!pathTouched.value) return null
@@ -33,19 +43,48 @@ const pathError = computed<string | null>(() => {
   return null
 })
 
-const canSubmit = computed(() => filePath.value.startsWith('/') && filePath.value.length > 0)
+const canSubmit = computed(
+  () => filePath.value.startsWith('/') && filePath.value.length > 0 && !props.busy,
+)
 
 const handleCreate = () => {
-  if (canSubmit.value) {
-    emit('create', filePath.value, label.value)
-    handleClose()
-  }
+  if (!canSubmit.value) return
+  // Don't close the dialog here — let the parent decide based on the
+  // server response. The parent toggles `show=false` on success.
+  emit('create', filePath.value, label.value)
 }
 
-const handleClose = () => emit('close')
+const handleClose = () => {
+  if (props.busy) return
+  showPicker.value = false
+  emit('close')
+}
 
 const handleKeydown = (event: KeyboardEvent) => {
-  if (event.key === 'Escape') handleClose()
+  if (event.key === 'Escape' && !props.busy && !showPicker.value) handleClose()
+}
+
+const loadItemsForPicker = async (path: string): Promise<FolderEntry[]> => {
+  // FilePickerDialog calls this with `''` on first open (to list the
+  // system root) and with a folder path when the user navigates.
+  // Empty path → use `getSystemFolder` (same pattern as AddAgentDialog)
+  // because the backend rejects `path=''` in /system/folder.
+  const data = path ? await listFolder(path) : await getSystemFolder()
+  return (data.entries || []) as FolderEntry[]
+}
+
+const handleFileSelected = (path: string) => {
+  filePath.value = path
+  pathTouched.value = true
+  showPicker.value = false
+  // Auto-fill the label from the basename if empty.
+  if (!label.value.trim()) {
+    const idx = path.lastIndexOf('/')
+    const base = idx === -1 ? path : path.slice(idx + 1)
+    const dot = base.lastIndexOf('.')
+    label.value = dot > 0 ? base.slice(0, dot) : base
+  }
+  pathInput.value?.focus()
 }
 
 watch(() => props.show, async (show) => {
@@ -53,6 +92,7 @@ watch(() => props.show, async (show) => {
     filePath.value = ''
     label.value = ''
     pathTouched.value = false
+    showPicker.value = false
     await nextTick()
     pathInput.value?.focus()
   }
@@ -86,7 +126,19 @@ watch(() => props.show, async (show) => {
             </p>
           </div>
           <div class="px-5 pb-4">
-            <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">File Path (absolute)</label>
+            <div class="flex items-center justify-between mb-2">
+              <label class="text-xs font-medium" style="color: var(--semantic-text-dim);">File Path (absolute)</label>
+              <button
+                type="button"
+                @click="showPicker = true"
+                data-testid="agent-knowledge-browse"
+                class="text-[11px] font-medium px-2 py-0.5 rounded hover:opacity-80"
+                style="background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
+                :disabled="props.busy"
+              >
+                📂 Browse…
+              </button>
+            </div>
             <input
               ref="pathInput"
               v-model="filePath"
@@ -119,14 +171,33 @@ watch(() => props.show, async (show) => {
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
             />
           </div>
+          <div v-if="props.error" data-testid="agent-knowledge-error" class="mx-5 mb-3 text-xs p-2 rounded" style="background: var(--color-red); color: var(--color-bg);">
+            {{ props.error }}
+          </div>
           <div class="px-5 pb-5 flex justify-end gap-2">
-            <button type="button" @click="handleClose" data-testid="agent-knowledge-cancel" class="px-3 py-1.5 rounded-lg text-sm font-medium" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);">Cancel</button>
-            <button type="button" @click="handleCreate" :disabled="!canSubmit" data-testid="agent-knowledge-submit" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);">Add</button>
+            <button type="button" @click="handleClose" :disabled="props.busy" data-testid="agent-knowledge-cancel" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);">Cancel</button>
+            <button type="button" @click="handleCreate" :disabled="!canSubmit" data-testid="agent-knowledge-submit" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);">
+              <span v-if="props.busy">Adding…</span>
+              <span v-else>Add</span>
+            </button>
           </div>
         </div>
       </div>
     </Transition>
   </Teleport>
+
+  <FilePickerDialog
+    v-model="showPicker"
+    mode="file"
+    :load-items="loadItemsForPicker"
+    :key-for="(e: any) => e.path as string"
+    :path-for="(e: any) => e.path as string"
+    :is-expandable="(e: any) => e.is_directory as boolean"
+    :label-for="(e: any) => e.name as string"
+    :close-on-select="true"
+    title="Select Knowledge Markdown File"
+    @select="handleFileSelected"
+  />
 </template>
 
 <style scoped>

@@ -17,6 +17,7 @@ import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
 import AgentChatDialog from './dialogs/AgentChatDialog.vue'
+import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
@@ -1082,17 +1083,75 @@ watch(
   { immediate: true },
 )
 
-// Agent view emit handlers — delegated to workspacesStore / API.
-async function handleAgentAddKnowledge() {
-  // TODO (v1.1): wire to api.addAgentKnowledge via a new dialog
-  // (AgentKnowledgeDialog). For v1, the button is present but the
-  // wiring is gated on the parent component providing the dialog.
-  // The click handler is here so AgentView's emit reaches us.
-  console.warn('[AppLayout] handleAgentAddKnowledge: not yet wired (v1.1)')
+// Agent knowledge dialog open state + last-targeted agent id.
+// `show` drives `AgentKnowledgeDialog`'s v-model:show. We capture
+// `agentId` at open-time so the create handler doesn't depend on
+// `activeWorkspaceItem` still being set when the user submits (the
+// user could navigate away mid-dialog).
+const agentKnowledgeDialogOpen = ref(false)
+const agentKnowledgeError = ref<string | null>(null)
+const agentKnowledgeBusy = ref(false)
+
+function openAgentKnowledgeDialog() {
+  if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
+  agentKnowledgeError.value = null
+  agentKnowledgeDialogOpen.value = true
 }
+
+async function handleAgentAddKnowledge() {
+  // v1.1 wiring: open the AgentKnowledgeDialog. Submission is
+  // handled by `handleAgentKnowledgeCreate` (the dialog's `create`
+  // emit). Keep this as a thin open-dialog shim so AgentView's emit
+  // contract stays stable.
+  openAgentKnowledgeDialog()
+}
+
+function closeAgentKnowledgeDialog() {
+  agentKnowledgeDialogOpen.value = false
+  agentKnowledgeError.value = null
+}
+
+async function handleAgentKnowledgeCreate(filePath: string, label: string) {
+  const wsId = activeWorkspace?.value?.id
+  const itemId = activeWorkspaceItem.value?.id
+  if (!wsId || !itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  agentKnowledgeBusy.value = true
+  agentKnowledgeError.value = null
+  try {
+    // The backend expects `agentId` (== workspace_item_id for agents)
+    // on `POST /api/agents/:agentId/knowledge`. AddAgentItem's
+    // convention (Migration 076) is that agents.id == workspace_items.id.
+    const newRow = await api.addAgentKnowledge(itemId, filePath, label)
+    // Optimistic append — the GET /agent response won't be re-fetched
+    // until the user navigates away and back. Without this, the new
+    // row is invisible in the UI until a full reload.
+    agentKnowledge.value = [...agentKnowledge.value, newRow]
+    closeAgentKnowledgeDialog()
+  } catch (e) {
+    agentKnowledgeError.value =
+      e instanceof Error ? e.message : 'Failed to add knowledge'
+    // Keep the dialog open so the user can see + retry.
+  } finally {
+    agentKnowledgeBusy.value = false
+  }
+}
+
 async function handleAgentRemoveKnowledge(knowledgeId: string) {
-  // v1.1 wiring. For now, no-op.
-  void knowledgeId
+  const wsId = activeWorkspace?.value?.id
+  const itemId = activeWorkspaceItem.value?.id
+  if (!wsId || !itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  // Optimistic remove + restore on failure.
+  const previous = agentKnowledge.value
+  agentKnowledge.value = previous.filter((k) => k.id !== knowledgeId)
+  try {
+    await api.deleteAgentKnowledge(itemId, knowledgeId)
+  } catch (e) {
+    // Restore the row so the user can retry.
+    agentKnowledge.value = previous
+    console.error('[AppLayout] failed to remove knowledge:', e)
+  }
 }
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
   if (!activeWorkspaceItem.value) return
@@ -1121,6 +1180,61 @@ async function handleAgentToggleTool(toolName: string, enabled: boolean) {
   }
   // Canonical state from server.
   agentTools.value = out.canonical
+}
+
+/**
+ * Bulk-toggle multiple tools at once (fired by AgentView's
+ * "Select all" / "Clear" buttons in the Tools panel). Runs every
+ * tool through the same optimistic-then-server-confirm path as a
+ * single toggle so failures are observable per-tool and the UI
+ * stays in sync with the server canonical list.
+ *
+ * Concurrency: requests are fired in parallel (Promise.all) — the
+ * backend handler is per-tool INSERT/DELETE so there is no
+ * cross-row contention. On any failure we re-fetch the canonical
+ * list from the server, which collapses partial successes into a
+ * single coherent view.
+ *
+ * On the wire, individual enable/disable failures are logged but
+ * don't abort the rest of the batch — the user gets the best-
+ * effort outcome (everything they could enable was enabled) and
+ * a re-fetch corrects any drift.
+ */
+async function handleAgentToggleToolsBulk(toolNames: string[], enabled: boolean) {
+  if (!activeWorkspaceItem.value) return
+  const agentId = activeWorkspaceItem.value.id
+  if (toolNames.length === 0) return
+
+  // Optimistic apply.
+  const set = new Set(agentTools.value)
+  for (const n of toolNames) {
+    if (enabled) set.add(n)
+    else set.delete(n)
+  }
+  agentTools.value = Array.from(set)
+
+  try {
+    const ops = toolNames.map(async (n) => {
+      try {
+        if (enabled) await api.enableAgentTool(agentId, n)
+        else await api.disableAgentTool(agentId, n)
+        return { name: n, ok: true as const }
+      } catch (e) {
+        return { name: n, ok: false as const, error: e }
+      }
+    })
+    const results = await Promise.all(ops)
+    const failures = results.filter((r) => !r.ok)
+    if (failures.length > 0) {
+      console.error('[AppLayout] bulk toggle: some tools failed:', failures)
+    }
+    // Re-fetch the canonical list so partial successes + races collapse
+    // into one coherent view. Cheap (one GET).
+    const data = await api.getAgentTools(agentId)
+    agentTools.value = data.tools
+  } catch (e) {
+    console.error('[AppLayout] bulk toggle failed:', e)
+  }
 }
 function handleAgentNewChat() {
   // TODO (v1.1): open a chat dialog. The current iteration ships
@@ -2227,6 +2341,7 @@ defineExpose({
         @add-knowledge="handleAgentAddKnowledge"
         @remove-knowledge="handleAgentRemoveKnowledge"
         @toggle-tool="handleAgentToggleTool"
+        @toggle-tools-bulk="(names, enabled) => handleAgentToggleToolsBulk(names, enabled)"
         @new-chat="handleAgentNewChat"
       />
       <AgentChatDialog
@@ -2242,6 +2357,22 @@ defineExpose({
         :item-id="activeWorkspaceItem.id"
         :cwd="activeWorkspaceItem.path ?? ''"
         @close="handleCloseTaskView"
+      />
+      <!--
+        AgentKnowledgeDialog — mounted at the AppLayout level so the
+        AgentView's `+ Add` button emits up to open this dialog. Uses
+        the same v-model:show pattern as the AgentChatDialog above.
+        Gated on `item_type === 'agent'` so the dialog only opens
+        while an agent item is active. The agent id == workspace item
+        id per Migration 076 (agents.id is the workspace_item_id).
+      -->
+      <AgentKnowledgeDialog
+        v-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        v-model:show="agentKnowledgeDialogOpen"
+        :busy="agentKnowledgeBusy"
+        :error="agentKnowledgeError"
+        @close="closeAgentKnowledgeDialog"
+        @create="handleAgentKnowledgeCreate"
       />
       <!--
         Standard task chat (folder / memory / chat items — anything
