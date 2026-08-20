@@ -3,7 +3,12 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
-const helpers = nalarcore.helpers;
+// `helpers` is now its own Zig module (see `src/helpers/build.zig`);
+// promoted out of `nalarcore` so multiple sub-packages can share a
+// single module instance. The root build.zig wires it via
+// `mod.addImport("helpers", helpers_mod)` — consumers reference it
+// directly via `@import("helpers")`.
+const helpers = @import("helpers");
 const gserverz = nalarcore.gserverz;
 const startup = nalarcore.startup;
 const static_files = nalarcore.static_files;
@@ -552,7 +557,13 @@ fn dispatchServiceSubcommand(
 ) !bool {
     _ = environment;
     const args = init.minimal.args;
-    var it = std.process.Args.Iterator.init(args);
+    // Zig 0.16: `std.process.Args.Iterator.init` is `compileError`-blocked
+    // on Windows (`@compileError("In Windows, use initAllocator instead.")`).
+    // Use `initAllocator(args, allocator)` instead — it works on every
+    // host (POSIX uses a no-op allocator-style init; Windows uses the
+    // custom-MultiByteToWideChar-based parser). Caller MUST call
+    // `it.deinit()` to free the buffer Windows internally allocates.
+    var it = try std.process.Args.Iterator.initAllocator(args, allocator);
     defer it.deinit();
     _ = it.next(); // skip argv[0]
     const arg1 = it.next() orelse return false;

@@ -19,6 +19,14 @@
         .custom_http_client = .{
             .path = "src/modules/custom_http_client",
         },
+        // Cross-platform portable helpers (sleep, fileExists,
+        // unixTimestampNanos, etc.) used by every module. Promoted
+        // to its own package so multiple sub-packages can `b.dependency`
+        // it without each creating a separate `helpers` module that
+        // would collide on the file's module ownership.
+        .helpers = .{
+            .path = "src/helpers",
+        },
     },
     .paths = .{
         "build.zig",

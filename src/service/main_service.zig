@@ -20,7 +20,7 @@ const state_file = @import("state_file.zig");
 const daemon = @import("daemon.zig");
 const signal_handlers = @import("signal_handlers.zig");
 // helpers/ lives at src/helpers/, one directory up from src/service/.
-const helpers = @import("../helpers/mod.zig");
+const helpers = @import("helpers");
 
 pub const Subcommand = union(enum) {
     start: struct {

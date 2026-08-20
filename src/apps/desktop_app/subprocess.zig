@@ -38,6 +38,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const helpers = @import("helpers");
 
 /// Handle to a running nalar subprocess. Caller MUST call `terminate()`
 /// (or `kill` + `wait`) before discarding, otherwise nalar becomes a
@@ -100,13 +101,23 @@ pub fn waitForHealth(
         // we cap the remaining deadline and pick the smaller of
         // (deadline - now) and poll_ns. For typical small poll_ms
         // values this is just poll_ns.
+        //
+        // Zig 0.16: `std.c.timespec` is `void` on Windows, so we
+        // route the nanosleep through `helpers` which exposes
+        // `PosixTimespec` + `nanosleep` (POSIX-only — but the
+        // process never reaches this branch on Windows because
+        // `ntdll.WaitForSingleObject` etc. instead pump the loop;
+        // see `tryProbe` which uses Win32 APIs on Windows hosts).
+        // The cross-platform `sleepMillis` helper would quantize
+        // to millisecond granularity — too coarse for the 50ms
+        // poll cadence — so we keep the ns-precision path here.
         const remaining = deadline_ns - now_ts;
         const sleep_ns: u64 = if (remaining < poll_ns) remaining else poll_ns;
-        const sleep_ts: std.c.timespec = .{
+        const sleep_ts: helpers.PosixTimespec = .{
             .sec = @intCast(@divFloor(sleep_ns, std.time.ns_per_s)),
             .nsec = @intCast(@mod(sleep_ns, std.time.ns_per_s)),
         };
-        _ = std.c.nanosleep(&sleep_ts, null);
+        helpers.nanosleep(&sleep_ts, null);
     }
 }
 
@@ -195,12 +206,18 @@ fn tryProbe(port: u16) bool {
 }
 
 fn readMonotonicNs() u64 {
-    // Uses libc `std.c.clock_gettime` instead of `std.os.linux.clock_gettime`.
-    // The latter invokes the Linux syscall number directly, which doesn't
-    // exist on Darwin (SIGSYS = "Bad system call: 12"). `std.c.clock_gettime`
-    // goes through libc, which dispatches the correct syscall per platform.
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    // Uses libc `helpers.clock_gettime` (POSIX) instead of
+    // `std.os.linux.clock_gettime`. The latter invokes the Linux
+    // syscall number directly, which doesn't exist on Darwin
+    // (SIGSYS = "Bad system call: 12"). `helpers.clock_gettime` is
+    // declared as a plain `extern "c"` and routes through libc,
+    // which dispatches the correct syscall per platform. std.c's
+    // version requires `clockid_t` (a `void` param on Windows in
+    // Zig 0.16 — same Windows compile-error class as `std.c.timespec`),
+    // so we expose `PosixTimespec` + a clean extern decl in
+    // helpers/mod.zig.
+    var ts: helpers.PosixTimespec = undefined;
+    _ = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 

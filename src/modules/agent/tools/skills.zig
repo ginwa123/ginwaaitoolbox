@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 /// Maximum size for skills.md file (100KB)
 const MAX_SKILLS_SIZE: usize = 100 * 1024;

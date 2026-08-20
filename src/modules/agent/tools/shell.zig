@@ -33,7 +33,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const helpers = @import("nalarcore").helpers;
+const helpers = @import("helpers");
 const schemas = @import("schemas.zig");
 
 const selfkill = @import("bash_selfkill.zig"); // shared per D5 (bash + pwsh)
@@ -132,12 +132,47 @@ const WaitResult = struct {
 /// Does NOT close pipe FDs — the caller is responsible for that AFTER
 /// this function returns, so the reader threads can exit cleanly.
 ///
-/// Cross-platform: works on Linux and macOS. Both expose `std.c.W.NOHANG`.
-/// On Windows this path is unreachable because the existing code uses
-/// `std.posix.kill` which doesn't exist on Windows.
-pub fn wait_pid_bounded(io: std.Io, pid: std.posix.pid_t, grace_period_ns: u64) WaitResult {
+/// Cross-platform: uses `std.os.linux.waitpid` directly on POSIX (Linux
+/// + macOS via the Darwin kernel-call wrappers), and `WaitForSingleObject`
+/// via `std.os.windows` on Windows. The `pid` argument is whatever
+/// `child.id.?` produces (`std.posix.pid_t` on POSIX, `HANDLE` on
+/// Windows) — we pass it through to the right syscall for each host.
+pub fn wait_pid_bounded(
+    io: std.Io,
+    child: *const std.process.Child,
+    grace_period_ns: u64,
+) WaitResult {
     const start_ns: u64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
     const deadline_ns: u64 = start_ns + grace_period_ns;
+    return switch (builtin.os.tag) {
+        .linux, .macos => wait_pid_boundedPosix(child, deadline_ns),
+        .windows => wait_pid_boundedWindows(io, child, deadline_ns),
+        else => .{ .outcome = .grace_period_expired, .status = 0 },
+    };
+}
+
+fn wait_pid_boundedPosix(child: *const std.process.Child, deadline_ns: u64) WaitResult {
+    // `posix.pid_t` is `void` on Windows — Zig 0.16 resolves the
+    // type on every host even inside a body that's only called from
+    // POSIX-gated callers, so we can't reference `posix.pid_t`
+    // here at all. Cast through `c_int` (the POSIX `pid_t` is a
+    // 32-bit signed integer on every supported POSIX host), and
+    // cast `child.id.?` (Windows HANDLE / POSIX pid_t) back to
+    // `c_int` via the `Id` switch — `Id = std.posix.pid_t` on POSIX
+    // (`c_int` on Linux x86_64 / aarch64 / macOS), so the cast is
+    // a no-op at runtime.
+    const pid: c_int = blk: {
+        const id_opt: std.process.Id = child.id.?;
+        const T = @TypeOf(id_opt);
+        if (@typeInfo(T) == .int) {
+            break :blk @as(c_int, @intCast(id_opt));
+        }
+        // Non-int Id is `HANDLE` (Windows). Unreachable at runtime
+        // because callers gate this fn on `.linux, .macos =>`,
+        // but emit a clear compile-time error if someone ever
+        // removes that gate.
+        @compileError("wait_pid_boundedPosix called on a non-POSIX host");
+    };
     while (true) {
         var status: c_int = 0;
         // WNOHANG = 1: don't block; return 0 if not exited yet.
@@ -155,8 +190,7 @@ pub fn wait_pid_bounded(io: std.Io, pid: std.posix.pid_t, grace_period_ns: u64) 
             return .{ .outcome = .unexpected_error, .status = 0 };
         }
         // rc == 0 → child not yet exited. Check the deadline.
-        const now_ns: u64 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
-        if (now_ns >= deadline_ns) {
+        if (helpers.monotonicTimestampNanos() >= deadline_ns) {
             return .{ .outcome = .grace_period_expired, .status = 0 };
         }
         const ts = NanoSleepTimespec{
@@ -164,6 +198,49 @@ pub fn wait_pid_bounded(io: std.Io, pid: std.posix.pid_t, grace_period_ns: u64) 
             .nsec = 10 * std.time.ns_per_ms,
         };
         _ = nanosleep(&ts, null);
+    }
+}
+
+fn wait_pid_boundedWindows(
+    io: std.Io,
+    child: *const std.process.Child,
+    deadline_ns: u64,
+) WaitResult {
+    const handle: std.os.windows.HANDLE = child.id.?;
+    // Poll WaitForSingleObject with a short timeout until the
+    // deadline. On expiry we return .grace_period_expired without
+    // calling `child.wait(io)` — that would block past the deadline,
+    // and `child.kill(io)` is the caller's responsibility on the
+    // `.grace_period_expired` branch.
+    while (true) {
+        // 100ms waits between polls — fine-grained enough that we
+        // don't overshoot `deadline_ns` by more than ~100ms.
+        const rc = std.os.windows.WaitForSingleObject(handle, 100);
+        if (rc == std.os.windows.WAIT_OBJECT_0) {
+            // Process signalled; harvest the exit code via
+            // GetExitCodeProcess so the .status slot has the same
+            // shape the POSIX path produces.
+            var exit_code: std.os.windows.DWORD = 0;
+            _ = std.os.windows.kernel32.GetExitCodeProcess(handle, &exit_code);
+            // Match std.process.Child.Term's `exited: u8` slot:
+            // low 8 bits of the POSIX status word are the exit code
+            // for normal termination on Windows we use exit_code
+            // directly shifted to mimic WIFEXITED layout.
+            const synthetic: c_int = @intCast((@as(c_int, 0) << 8) | @as(c_int, @intCast(@as(u8, @intCast(exit_code & 0xff)))));
+            return .{ .outcome = .reaped, .status = synthetic };
+        }
+        if (rc != std.os.windows.WAIT_TIMEOUT) {
+            std.log.warn(
+                "shell.zig: WaitForSingleObject(handle={*}) returned unexpected result {d}; abandoning wait",
+                .{ handle, rc },
+            );
+            return .{ .outcome = .unexpected_error, .status = 0 };
+        }
+        if (helpers.monotonicTimestampNanos() >= deadline_ns) {
+            return .{ .outcome = .grace_period_expired, .status = 0 };
+        }
+        // Tight loop — the 100ms wait above already throttles.
+        _ = io;
     }
 }
 
@@ -280,12 +357,34 @@ pub fn run_shell_command(
         .stdin = if (input.stdin_data != null) .pipe else .close,
         .stdout = .pipe,
         .stderr = .pipe,
-        .pgid = 0,
+        // Zig 0.16: the type is `?posix.pid_t = null` — Windows has
+        // `posix.pid_t = void`, so the literal `0` we used previously
+        // doesn't compile there (`?*anyopaque` from the void-typed
+        // posix.pid_t). Keep the historical POSIX behavior on
+        // Linux/macOS (setpgid to the child's own pid so we can
+        // `kill(-child_pgid, KILL)` the whole group below), and pass
+        // null on Windows (no pgid concept).
+        .pgid = if (builtin.os.tag == .windows) null else @as(?std.posix.pid_t, 0),
     });
-    const child_pgid: std.posix.pid_t = child.id.?;
+    // On Windows, `posix.pid_t` is `void` (Windows has no POSIX pid
+    // concept), so the historical `kill(-child_pgid, .KILL)` group-
+    // kill pattern compiles only on POSIX. Gate the group-kill path
+    // by host OS: Windows children use the .id HANDLE directly via
+    // `child.kill(io)` (in the cleanup branches below — no group-kill
+    // because Windows has no `setpgid(0)` equivalent). `wait_pid_bounded`
+    // is now OS-dispatched (see its `switch (builtin.os.tag)` body).
+    const child_pgid: c_int = blk: {
+        if (builtin.os.tag == .windows) break :blk 0;
+        const id_opt: std.process.Id = child.id.?;
+        const T = @TypeOf(id_opt);
+        if (@typeInfo(T) == .int) break :blk @as(c_int, @intCast(id_opt));
+        @compileError("child.id is not a POSIX pid_t on a POSIX host");
+    };
     errdefer {
-        _ = std.posix.kill(-child_pgid, .KILL) catch {};
-        _ = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        if (builtin.os.tag != .windows) {
+            _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        }
+        _ = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
         if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
         if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
         if (child.stdin) |stdin_pipe| stdin_pipe.close(io);
@@ -407,8 +506,8 @@ pub fn run_shell_command(
     const stdout_thread = try std.Thread.spawn(.{}, readLoopFn, .{stdout_ctx});
     const stderr_thread = try std.Thread.spawn(.{}, readLoopFn, .{stderr_ctx});
     errdefer {
-        _ = std.posix.kill(-child_pgid, .KILL) catch {};
-        _ = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        if (builtin.os.tag != .windows) _ = std.posix.kill(-child_pgid, .KILL) catch {};
+        _ = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
         if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
         if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
         stdout_thread.join();
@@ -422,7 +521,7 @@ pub fn run_shell_command(
     child_term = blk: {
         while (true) {
             if (stdout_eof.load(.acquire) and stderr_eof.load(.acquire)) {
-                const wait_result = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+                const wait_result = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
                 break :blk switch (wait_result.outcome) {
                     .reaped => status_to_term(wait_result.status),
                     .no_child => .{ .exited = 0 },
@@ -431,8 +530,8 @@ pub fn run_shell_command(
             }
             if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
                 timeout_hit = true;
-                _ = std.posix.kill(-child_pgid, .KILL) catch {};
-                const wait_result = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+                if (builtin.os.tag != .windows) _ = std.posix.kill(-child_pgid, .KILL) catch {};
+                const wait_result = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
                 break :blk switch (wait_result.outcome) {
                     .reaped => status_to_term(wait_result.status),
                     .no_child => .{ .exited = 0 },
@@ -453,7 +552,7 @@ pub fn run_shell_command(
     stdout_thread.join();
     stderr_thread.join();
     if (child_term == null) {
-        const wait_result = wait_pid_bounded(io, child_pgid, KILL_GRACE_PERIOD_NS);
+        const wait_result = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
         child_term = switch (wait_result.outcome) {
             .reaped => status_to_term(wait_result.status),
             .no_child => .{ .exited = 0 },

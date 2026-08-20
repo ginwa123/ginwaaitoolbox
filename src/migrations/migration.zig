@@ -2,7 +2,7 @@ const std = @import("std");
 const mod = @import("mod.zig");
 const nalarcore = mod.nalarcore;
 const sqlite_mod = nalarcore.sqlite;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 pub const SqliteBackend = sqlite_mod.SqliteBackend;
 

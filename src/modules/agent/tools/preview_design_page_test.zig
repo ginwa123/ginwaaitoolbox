@@ -17,7 +17,7 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const preview_design_page = @import("preview_design_page.zig");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 const design_model = @import("../../../ai_workflow/tui/agentic_loop/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/preview_design_page.zig";

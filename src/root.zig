@@ -556,7 +556,11 @@ pub const daemon = service.daemon;
 pub const signal_handlers = service.signal_handlers;
 pub const crash_handler = service.crash_handler;
 pub const main_service = service.main_service;
-pub const helpers = @import("helpers/mod.zig");
+// `pub const helpers = ...` was removed: `helpers` is now its own
+// Zig module (see `b.createModule` in build.zig) wired in via
+// `mod.addImport("helpers", helpers_mod)`. Source files inside
+// nalarcore use `@import("helpers")` (not a relative path) to
+// reach it.
 pub const kerjabot_get_session = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const kerjabot_create_session = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const kerjabot_get_list_session = @import("ai_workflow/tui/agentic_loop/llm_history.zig");

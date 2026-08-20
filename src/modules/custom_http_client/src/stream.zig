@@ -17,6 +17,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const helpers = @import("helpers");
 const curl = @import("curl.zig");
 const root = @import("root.zig");
 const Method = @import("request.zig").Method;
@@ -49,8 +50,13 @@ fn monotonicNs() u64 {
     if (builtin.os.tag == .windows) {
         return monotonicNsWindows();
     }
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    // `helpers.PosixTimespec` is the project-wide portable `timespec`
+    // — std.c's `clock_gettime` takes `clockid_t` which resolves to
+    // `void` on Windows x86_64 (MSVC's libc has no `clock_gettime`),
+    // so we route through `helpers.clock_gettime` (an `extern "c"`
+    // decl with `c_int clk_id` parameter).
+    var ts: helpers.PosixTimespec = undefined;
+    _ = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 

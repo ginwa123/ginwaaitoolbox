@@ -1,6 +1,5 @@
 const std = @import("std");
-const nalarcore = @import("nalarcore");
-const process = nalarcore.helpers.process;
+const process = @import("process.zig");
 
 /// Hex digits for ID generation
 pub const hex_digits = "0123456789abcdef";

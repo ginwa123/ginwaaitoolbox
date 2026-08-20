@@ -19,7 +19,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 const generate_image = @import("generate_image.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/generate_image.zig";

@@ -266,7 +266,7 @@ pub fn startAgentHandler(
 // `task_create_routines_test.zig` etc.
 
 const testing = std.testing;
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/start_agent.zig";
 const MOD_PATH = "src/ai_workflow/tui/http_handlers/mod.zig";
 

@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const json = std.json;
 const Io = std.Io;
 const LLMModels = @import("../agent/LLMModels.zig");
-const helpers = @import("../../helpers/mod.zig");
+const helpers = @import("helpers");
 
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,

@@ -23,7 +23,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 const show_preview = @import("show_preview.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/show_preview.zig";

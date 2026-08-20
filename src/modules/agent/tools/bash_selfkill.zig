@@ -1,5 +1,5 @@
 const std = @import("std");
-const process = @import("nalarcore").helpers.process;
+const process = @import("helpers").process;
 
 /// Self-kill detection result: null = safe, error message = dangerous
 pub const SelfKillResult = ?[]const u8;

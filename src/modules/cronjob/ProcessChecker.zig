@@ -1,6 +1,6 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
-const process_status = nalarcore.helpers.process_status;
+const process_status = @import("helpers").process_status;
 
 /// Process status enumeration
 pub const ProcessStatus = enum {

@@ -12,6 +12,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
+const helpers = @import("helpers");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -27,12 +28,13 @@ pub fn main(init: std.process.Init) !void {
     nalarcore.crash_handler.installCrashHandlers();
 
     // Give the signal handler a moment to be installed before we trip it.
-    // On POSIX, std.c.nanosleep is the standard async-safe delay. On
-    // Windows, installCrashHandlers is synchronous (no sleep needed —
-    // the SetUnhandledExceptionFilter call returned before we got here).
+    // On POSIX, `helpers.nanosleep` (libc `nanosleep` exposed via
+    // `extern "c"`) is the standard async-safe delay. On Windows,
+    // installCrashHandlers is synchronous (no sleep needed — the
+    // SetUnhandledExceptionFilter call returned before we got here).
     if (builtin.os.tag != .windows) {
-        var ts = std.c.timespec{ .sec = 0, .nsec = 50_000_000 };
-        _ = std.c.nanosleep(&ts, null);
+        var ts: helpers.PosixTimespec = .{ .sec = 0, .nsec = 50_000_000 };
+        _ = helpers.nanosleep(&ts, null);
     }
 
     std.debug.print("[smoke] crash_handler installed for log='{s}'; triggering {s}\n", .{ log_path_arg, signal_arg });

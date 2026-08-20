@@ -22,6 +22,7 @@
 //!     test_sleep.sleep(sec: u32, nsec: u32) void;
 const std = @import("std");
 const builtin = @import("builtin");
+const helpers = @import("helpers");
 
 // Win32 kernel32 `Sleep` — declared at module scope to match the
 // project's existing pattern (src/helpers/mod.zig:86). The decl is
@@ -50,16 +51,14 @@ fn sleepPosix(sec: u32, nsec: u32) void {
     // POSIX: nanosleep with a 1-second + 0-nanosecond argument
     // covers the test's "bump DATETIME granularity" need.
     //
-    // Zig 0.16's std.c.timespec SEC field type on POSIX is `time_t`
-    // (a `c_long` alias) and NSEC is `c_long`. We cast to those
-    // exact types so the struct literal type-checks on every POSIX
-    // (Linux/BSD/macOS c_long=i64 — same signed width; the cast is
-    // a no-op at runtime).
-    const SecT = @TypeOf(@as(std.c.timespec, undefined).sec);
-    const NsecT = @TypeOf(@as(std.c.timespec, undefined).nsec);
-    var ts = std.c.timespec{
-        .sec = @as(SecT, @intCast(sec)),
-        .nsec = @as(NsecT, @intCast(nsec)),
+    // We use the project-wide `helpers.PosixTimespec` struct
+    // (defined in src/helpers/mod.zig) — its fields are typed
+    // `Clong` (an i64 on POSIX, i32 on Windows) but `@intCast` to
+    // the field's actual type (inferred from the struct decl) keeps
+    // the cast portable without spelling out the alias here.
+    var ts: helpers.PosixTimespec = .{
+        .sec = @intCast(sec),
+        .nsec = @intCast(nsec),
     };
-    _ = std.c.nanosleep(&ts, null);
+    _ = helpers.nanosleep(&ts, null);
 }

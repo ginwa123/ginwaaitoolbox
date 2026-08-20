@@ -7,7 +7,7 @@ const onEventSendLLMHistory = @import("sse_on_event_send_llm_history.zig").onEve
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const event_bus_mod = nalarcore.event_bus;
 const keyword = "INSERTLLMHISTORIES";
 

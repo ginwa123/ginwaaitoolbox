@@ -26,7 +26,7 @@ const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 /// Hard cap on the size of a single preview's `content` payload.
 /// Set to 1 MiB so even a large markdown rendering or a base64 image

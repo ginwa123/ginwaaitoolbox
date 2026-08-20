@@ -11,7 +11,7 @@ const AgentToolFunction = schemas.AgentToolFunction;
 pub const AgentTool = schemas.AgentTool;
 pub const prompt = @import("prompts.zig");
 pub const LLMModels = @import("LLMModels.zig");
-const helpers = @import("../../helpers/mod.zig");
+const helpers = @import("helpers");
 const custom_http_client = @import("custom_http_client");
 
 /// Log level for agent logging

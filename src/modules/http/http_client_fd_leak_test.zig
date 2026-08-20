@@ -36,7 +36,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const HTTP_CLIENT_PATH = "src/modules/http/HttpClient.zig";
 

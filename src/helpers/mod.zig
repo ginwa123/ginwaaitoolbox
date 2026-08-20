@@ -64,7 +64,12 @@ const PosixTimeval = extern struct {
 /// Windows 64-bit). Matches libc's `long` and `time_t` sizes on all
 /// supported platforms. We avoid `std.c.c_long` because it's not
 /// exposed in this Zig 0.16 stdlib version.
-const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
+///
+/// `pub` so callers (e.g. `subprocess.zig`'s `PosixTimespec` literal)
+/// can name this type explicitly when they need to `@intCast` values
+/// into the struct fields. Internal users reference fields without
+/// the explicit cast via field-type inference.
+pub const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
 
 /// `void GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime);` (Win32).
 extern "kernel32" fn GetSystemTimeAsFileTime(lp_system_time_as_file_time: *std.os.windows.FILETIME) callconv(.winapi) void;
@@ -431,16 +436,28 @@ pub const PosixTimespec = extern struct {
 pub extern "c" fn clock_gettime(clk_id: c_int, tp: *PosixTimespec) c_int;
 
 /// `int nanosleep(const struct timespec *req, struct timespec *rem);` (POSIX).
-extern "c" fn nanosleep(req: *const PosixTimespec, rem: ?*PosixTimespec) c_int;
+///
+/// `pub` so callers (e.g. `src/apps/desktop_app/subprocess.zig`,
+/// `src/.../shutdown.zig`) can drive the loop themselves on POSIX
+/// hosts without going through `sleepMillis` (which quantizes to
+/// 1 ms and is fine for ~50 ms shutdown delays but too coarse for
+/// the 50 ms poll cadence in `waitForHealth`). On Windows the
+/// `std.c.timespec` struct is exposed as `void` by Zig 0.16
+/// (`/lib/std/c.zig:10635`) — using `PosixTimespec` from this file
+/// sidesteps that compile error.
+pub extern "c" fn nanosleep(req: *const PosixTimespec, rem: ?*PosixTimespec) c_int;
 
 /// POSIX CLOCK_REALTIME. Linux glibc = 0; macOS = 0; matches across
 /// POSIX platforms. Declared as `c_int` literal because `std.c.CLOCK`
 /// is not exposed on all platforms.
-const CLOCK_REALTIME: c_int = 0;
+pub const CLOCK_REALTIME: c_int = 0;
 
 /// POSIX CLOCK_MONOTONIC. Linux glibc = 1; macOS = 1; matches across
-/// all the POSIX variants we target. Used by `monotonicTimestampNanosPosix`.
-const CLOCK_MONOTONIC: c_int = 1;
+/// all the POSIX variants we target. Used by `monotonicTimestampNanosPosix`
+/// and by `subprocess.zig`'s `readMonotonicNs` (which refuses to
+/// route through `std.c.clock_gettime` because `clockid_t` is `void`
+/// on Windows in Zig 0.16 — see `helpers/mod.zig:235`).
+pub const CLOCK_MONOTONIC: c_int = 1;
 
 // === Tests ===
 

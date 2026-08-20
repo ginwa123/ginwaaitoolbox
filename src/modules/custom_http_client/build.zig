@@ -347,14 +347,14 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
 
     const mod = b.addModule("custom_http_client", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    .root_source_file = b.path("src/root.zig"),
+    .target = target,
+    .optimize = optimize,
+});
 
-    // Universal: libc is required by every libcurl binding + cimport.
-    mod.linkSystemLibrary("c", .{});
-    mod.link_libc = true;
+// Universal: libc is required by every libcurl binding + cimport.
+mod.linkSystemLibrary("c", .{});
+mod.link_libc = true;
 
     // Probe host system for libcurl + openssl. When the probe finds
     // usable system libs (typical Arch / Debian / Fedora dev hosts),

@@ -2,7 +2,7 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const ai_mod = nalarcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 

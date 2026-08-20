@@ -6,7 +6,7 @@ const loggermod = @import("nalarcore").loggermod;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
-const helpers = tree1_mod.helpers;
+const helpers = @import("helpers");
 
 // ============================================================================
 // Session-to-Client ID mapping for SSE event bus integration

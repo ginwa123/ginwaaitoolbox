@@ -213,6 +213,7 @@ fn getMacosSdkPath(b: *std.Build) []const u8 {
 fn createPlatformExe(
     b: *std.Build,
     mod: *std.Build.Module,
+    helpers_mod: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     name: []const u8,
@@ -223,7 +224,10 @@ fn createPlatformExe(
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "nalarcore", .module = mod }},
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
+            },
         }),
     });
     linkPlatformDeps(b, exe, target);
@@ -296,6 +300,28 @@ pub fn build(b: *std.Build) void {
     } });
     const optimize = b.standardOptimizeOption(.{});
 
+    // `helpers` package (`src/helpers/`): project-wide portable sleep /
+    // time / file-existence helpers. Created EARLY (before any
+    // `b.addExecutable(...)` or `b.createModule(...)` calls below) so
+    // every downstream Compile can include it in its `imports` list
+    // via `.module = helpers_mod`.
+    //
+    // We promote `helpers` to its own Zig package (declared in
+    // `build.zig.zon`) instead of creating a top-level `helpers`
+    // module from a plain `b.createModule` so multiple sub-packages
+    // (custom_http_client, databases, …) can all reach it through a
+    // single shared module instance. In Zig 0.16 every `.zig` file
+    // belongs to exactly one module, so duplicating the helpers
+    // module from each sub-build.zig would collide on the file
+    // ownership of `helpers/mod.zig`. Declaring it as a package via
+    // `b.dependency("helpers", ...)` gives it a single owner and
+    // lets every consumer reference it as `@import("helpers")`.
+    const helpers_dep = b.dependency("helpers", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const helpers_mod = helpers_dep.module("helpers");
+
     // Cross-platform Homebrew / vcpkg prefix options. Declared ONCE here
     // so `b.option()`'s anti-duplicate rule isn't violated when the same
     // value feeds multiple link sites (linux_exe / windows_exe / macos_exe
@@ -317,6 +343,9 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "helpers", .module = helpers_mod },
+        },
     });
 
     mod.addImport("nalarcore", mod);
@@ -583,6 +612,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -852,6 +882,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -1055,6 +1086,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "cli", .module = cli_module },
                 .{ .name = "custom_http_client", .module = custom_http_client_mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -1160,6 +1192,7 @@ pub fn build(b: *std.Build) void {
     });
     mod_tests_module.addImport("nalarcore", mod_tests_module);
     mod_tests_module.addImport("custom_http_client", custom_http_client_mod);
+    mod_tests_module.addImport("helpers", helpers_mod);
     // Same `databases` import as `mod` — tests that touch sqlite3 get
     // the package's deps (link_libc + sqlite3.c amalgamation + openssl +
     // libpq) via the module-graph dep propagation. No need to re-link
@@ -1250,7 +1283,7 @@ pub fn build(b: *std.Build) void {
         .abi = .gnu,
         .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
     });
-    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
+    const linux_exe = createPlatformExe(b, mod, helpers_mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via custom_http_client_mod's transitive deps
@@ -1278,7 +1311,7 @@ pub fn build(b: *std.Build) void {
     // auto-appends `.exe` on Windows targets, so passing a name with `.exe`
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
-    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
+    const windows_exe = createPlatformExe(b, mod, helpers_mod, windows_target, optimize, "nalarcore-windows-x86_64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
     // NOTE: src/modules/custom_http_client/vendor/curl/windows-amd64/
     // is NOT built yet (MinGW setup pending — see the curl build
@@ -1319,7 +1352,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .macos,
     });
-    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64");
+    const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "nalarcore-macos-x86_64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
     macos_step.dependOn(fetch_vendor_curl_step);
@@ -1342,7 +1375,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .aarch64,
         .os_tag = .macos,
     });
-    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
+    const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
     macos_arm_step.dependOn(fetch_vendor_curl_step);
@@ -1356,7 +1389,7 @@ pub fn build(b: *std.Build) void {
     _ = is_native_macos;
 
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system");
-    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");
+    const linux_system_exe = createPlatformExe(b, mod, helpers_mod, target, optimize, "nalar");
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via custom_http_client_mod's transitive deps.
@@ -1389,6 +1422,7 @@ pub fn build(b: *std.Build) void {
             .optimize = dev_optimize,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -1473,6 +1507,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/modules/custom_http_server/src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "helpers", .module = helpers_mod },
+            },
         }),
     });
     tcp_exe.root_module.linkSystemLibrary("c", .{});

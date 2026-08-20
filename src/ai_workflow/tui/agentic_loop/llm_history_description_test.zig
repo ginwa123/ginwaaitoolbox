@@ -24,7 +24,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
 

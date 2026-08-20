@@ -4,7 +4,7 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const llm_history = nalarcore.llm_history;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const xmlEscape = helpers.xml_escape;
 
 /// Input for search_history.

@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const subprocess = @import("subprocess.zig");
+const helpers = @import("helpers");
 const testing = std.testing;
 
 test "waitForHealth: returns error.HealthCheckTimeout when target unreachable" {
@@ -110,8 +111,11 @@ test "waitForHealth: succeeds when target returns 200" {
 
     // Give the server thread a beat to enter accept(). Without this, a
     // very fast client connect could race the listen() install.
-    var setup_ts: std.posix.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
-    _ = std.c.nanosleep(&setup_ts, null);
+    // We use `helpers.PosixTimespec` (and `helpers.nanosleep`) instead
+    // of `std.posix.timespec` because the stdlib version is `void` on
+    // Windows in Zig 0.16.
+    var setup_ts: helpers.PosixTimespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
+    _ = helpers.nanosleep(&setup_ts, null);
 
     // Client side uses raw syscalls via waitForHealth (no Io).
     const result = subprocess.waitForHealth(port, 2000, 50);

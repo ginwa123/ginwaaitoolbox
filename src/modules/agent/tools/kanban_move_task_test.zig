@@ -4,7 +4,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const kanban_move_task = @import("kanban_move_task.zig");
 const kanban_model = nalarcore.ai_mod.kanban_model;
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_move_task.zig";
 const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan

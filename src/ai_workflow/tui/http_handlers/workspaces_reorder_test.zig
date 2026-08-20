@@ -27,7 +27,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspaces_reorder.zig";
 const LIST_PATH = "src/ai_workflow/tui/http_handlers/workspaces_list.zig";

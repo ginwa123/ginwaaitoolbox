@@ -39,7 +39,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const LIST_PATH = "src/ai_workflow/tui/http_handlers/local_memories_list.zig";
 const DETAIL_PATH = "src/ai_workflow/tui/http_handlers/local_memories_detail.zig";

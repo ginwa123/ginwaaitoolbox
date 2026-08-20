@@ -18,7 +18,7 @@ const config_mod = nalarcore.config;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 const json = std.json;
 

@@ -30,7 +30,7 @@ const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 /// Request body for the kanban-item create endpoint.
 const CreateKanbanBody = struct {

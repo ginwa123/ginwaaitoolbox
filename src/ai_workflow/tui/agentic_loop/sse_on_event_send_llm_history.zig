@@ -6,7 +6,7 @@ const SkillInfo = @import("session_skills.zig").SkillInfo;
 const agent = nalarcore.agent;
 const event_bus_mod = nalarcore.event_bus;
 const logger_mod = nalarcore.loggermod;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const testing = std.testing;
 
 /// JSON representation of a tool call

@@ -2,7 +2,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
 
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const agent = nalarcore.agent;
 const AgentTool = nalarcore.agent.AgentTool;
 
