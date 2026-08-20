@@ -1932,6 +1932,13 @@ pub const allMigrations: []const Migration = &.{
     // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md. Task:
     // task_1787073929852_8.
     .{ .version = Migration076CreateSessionPlan.version, .name = Migration076CreateSessionPlan.name, .up = Migration076CreateSessionPlan.up },
+    // Migration 077 — `users` + `user_companies` + `user_company_members`
+    // + additive `workspaces.user_id` + `sessions.user_id` + default
+    // `user_system` user + backfill. Sub-project 1 of 4 (foundation for
+    // multi-user / multi-tenant nalar). Plan:
+    // docs/superpowers/plans/2026-08-21-users-rbac-foundation.md. Task:
+    // task_1787199963946_1.
+    .{ .version = Migration077AddUsersAndRbacSchema.version, .name = Migration077AddUsersAndRbacSchema.name, .up = Migration077AddUsersAndRbacSchema.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3396,5 +3403,195 @@ pub const Migration076CreateSessionPlan = struct {
         , &[_][]const u8{});
         // No FK on session_id (matches session_activity Migration 073 precedent).
         // No index — session_id IS the PK, lookups are O(log n) by definition.
+    }
+};
+
+// ============================================================================
+// Migration 077 — users + user_companies + user_company_members +
+// workspaces.user_id + sessions.user_id + default user_system + backfill.
+//
+// What this migration creates
+// ────────────────────────────
+// The schema foundation for multi-user / multi-tenant nalar — sub-project 1 of 4.
+//   1. `users` (id, email, name, password_hash, role, is_active,
+    //      created_at, updated_at, last_login_at) — identity table.
+    //   2. `user_companies` (id, name, slug, description, is_active,
+    //      created_at, updated_at, created_by) — org / tenant entity.
+    //   3. `user_company_members` (user_id, user_company_id, role,
+    //      joined_at, invited_by) with composite PRIMARY KEY on
+    //      (user_id, user_company_id) — many-to-many user ↔ company.
+    //   4. Additive `user_id` column on `workspaces` (nullable, no FK
+    //      constraint — matches Migration 066 `design_pages.workspace_item_task_id`
+    //      precedent; SQLite does NOT support ALTER TABLE … ADD CONSTRAINT FK).
+    //   5. Additive `user_id` column on `sessions` (same shape).
+    //   6. Default `user_system` user — id='user_system', email='system@local',
+    //      password_hash='!disabled' (sentinel; can never match any real
+    //      argon2id output), is_active=0 (can never log in), role='admin'
+    //      (so any future RBAC query that resolves to it gets the widest
+    //      permission).
+    //   7. Backfill every legacy row (workspaces.user_id, sessions.user_id)
+    //      WHERE user_id IS NULL → user_id = 'user_system'.
+    //
+    // Why BEGIN..COMMIT wraps the whole thing
+    // ───────────────────────────────────────
+    // 6 operations that must commit together. A crash mid-migration would
+    // otherwise leave a half-built schema (e.g. users exists but
+    // user_companies doesn't, or user_id columns added but backfill not
+    // run), which the next migration would silently compound into a
+    // never-ending recovery loop.
+    //
+    // Why no FK constraints
+    // ─────────────────────
+    // SQLite does not support ALTER TABLE … ADD CONSTRAINT FK. The two
+    // canonical alternatives are triggers or recreate-table — both add
+    // complexity that's out of scope for v1. The application layer is the
+    // second line of defense (referential integrity enforced by JOIN
+    // clauses at read time; the user_company_members composite PK
+    // enforces "no duplicate membership" at the SQL layer). This matches
+    // the project precedent — Migration 066's docstring explicitly notes
+    // the same decision for `design_pages.workspace_item_task_id`.
+    //
+    // Idempotency
+    // ───────────
+    // Re-running this migration is safe via three mechanisms:
+    //   1. CREATE TABLE IF NOT EXISTS — no-op if the tables exist.
+    //   2. addColumnIfMissing — probes pragma_table_info before ALTER.
+    //   3. INSERT OR IGNORE — no-op if the user_system row already exists.
+    //   4. UPDATE … WHERE user_id IS NULL — no-op if no rows are NULL.
+    //
+    // Plan: docs/superpowers/plans/2026-08-21-users-rbac-foundation.md
+    // Spec: docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md
+    // Task: task_1787199963946_1 (kanban: sprint bulan juni → "table users and rbac")
+pub const Migration077AddUsersAndRbacSchema = struct {
+    pub const version: u32 = 77;
+    pub const name = "add_users_and_rbac_schema";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // BEGIN..COMMIT — atomic; see "Why BEGIN..COMMIT" in the
+        // docstring above.
+        try db.exec(allocator, "BEGIN", &.{});
+        errdefer {
+            // Best-effort rollback on any error below. The errdefer
+            // doesn't fire on the success path (the explicit COMMIT runs
+            // first).
+            db.exec(allocator, "ROLLBACK", &.{}) catch {};
+        }
+
+        // 1. users — identity table.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS users (
+            \\    id TEXT PRIMARY KEY,
+            \\    email TEXT NOT NULL UNIQUE,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    password_hash TEXT NOT NULL,
+            \\    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'bot')),
+            \\    is_active INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    last_login_at DATETIME DEFAULT NULL
+            \\)
+        , &[_][]const u8{});
+
+        // 2. user_companies — org / tenant entity.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS user_companies (
+            \\    id TEXT PRIMARY KEY,
+            \\    name TEXT NOT NULL,
+            \\    slug TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    is_active INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    created_by TEXT
+            \\)
+        , &[_][]const u8{});
+
+        // 3. user_company_members — many-to-many user ↔ company.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS user_company_members (
+            \\    user_id TEXT NOT NULL,
+            \\    user_company_id TEXT NOT NULL,
+            \\    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member', 'guest')),
+            \\    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    invited_by TEXT,
+            \\    PRIMARY KEY (user_id, user_company_id)
+            \\)
+        , &[_][]const u8{});
+
+        // 4. workspaces.user_id — additive, nullable, no FK.
+        //    `addColumnIfMissing` probes pragma_table_info before ALTER,
+        //    so re-running is a no-op (the canonical pattern from
+        //    Migrations 020 / 052 / 065 / 066 / 067 / 074).
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "workspaces",
+            "user_id",
+            "user_id TEXT",
+        );
+
+        // 5. sessions.user_id — same shape as workspaces.user_id.
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "sessions",
+            "user_id",
+            "user_id TEXT",
+        );
+
+        // 6. Indexes — 6 total. CREATE INDEX IF NOT EXISTS is idempotent.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_companies_slug ON user_companies(slug)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_companies_active ON user_companies(is_active)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_company_members_user ON user_company_members(user_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_company_members_company ON user_company_members(user_company_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
+            &[_][]const u8{});
+
+        // 7. Default user_system — INSERT OR IGNORE makes it idempotent.
+        //    See the spec §3.6 for the full reasoning (password_hash
+        //    sentinel, is_active=0, system@local reserved per RFC 6762).
+        try db.exec(allocator,
+            "INSERT OR IGNORE INTO users (id, email, name, password_hash, role, is_active) " ++
+                "VALUES ('user_system', 'system@local', 'System', '!disabled', 'admin', 0)",
+            &[_][]const u8{});
+
+        // 8. Backfill — convert every legacy row (workspaces,
+        //    sessions) WHERE user_id IS NULL to user_id='user_system'.
+        //    WHERE user_id IS NULL makes the UPDATE idempotent on
+        //    re-run: rows that already have user_id set are not
+        //    touched. On a fresh DB with zero legacy rows, both UPDATEs
+        //    are no-ops.
+        try db.exec(allocator,
+            "UPDATE workspaces SET user_id = 'user_system' WHERE user_id IS NULL",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "UPDATE sessions SET user_id = 'user_system' WHERE user_id IS NULL",
+            &[_][]const u8{});
+
+        // Commit the transaction. After this, the new schema is durable.
+        try db.exec(allocator, "COMMIT", &[_][]const u8{});
+
+        // Refresh query-planner stats so the new indexes are picked on
+        // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
+        // pattern used by Migrations 041/042/043/048/049/050/051/052/070/072).
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
     }
 };
