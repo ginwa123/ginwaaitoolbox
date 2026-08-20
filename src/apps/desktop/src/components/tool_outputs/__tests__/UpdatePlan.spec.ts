@@ -279,3 +279,195 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
     expect(wrapper.text()).toContain('✓')
   })
 })
+
+// ────────────────────────────────────────────────────────────────────────
+// Description rendering (content from `parameters` JSON).
+//
+// The agent's input to `update_plan` is `{"content": "## Goal\n..."}`.
+// That JSON lives in `msg.parameters` (the dispatcher's
+// `getParametersForMessage(msg)` helper). We extract `content` from
+// there and render it as a checklist — same UX as expanding a
+// GetPlan card — so users see what the agent just wrote without
+// having to call get_plan separately.
+// ────────────────────────────────────────────────────────────────────────
+
+/** Helper: build the JSON-stringified parameters payload an
+ *  update_plan tool call would carry. */
+const makeParameters = (content: string): string =>
+  JSON.stringify({ content })
+
+describe('UpdatePlan.vue — description from parameters', () => {
+  it('renders the description as a checklist inside the expanded body', async () => {
+    const content = '- [x] step 1 done\n- [ ] step 2 todo\n- [ ] step 3 todo'
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: makeParameters(content),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('step 1 done')
+    expect(wrapper.text()).toContain('step 2 todo')
+    expect(wrapper.text()).toContain('step 3 todo')
+  })
+
+  it('renders ☐ for unchecked items and ☑ for checked items', async () => {
+    const content = '- [x] step 1\n- [ ] step 2'
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: makeParameters(content),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+
+    // Content from `parameters` is raw markdown without a leading \n,
+    // so line 0 is "- [x] step 1" (checked) → ☑, line 1 is "- [ ] step 2"
+    // (unchecked) → ☐.
+    const checkedLine = wrapper.find('[data-testid="update-plan-line-0"]')
+    const uncheckedLine = wrapper.find('[data-testid="update-plan-line-1"]')
+    expect(checkedLine.exists()).toBe(true)
+    expect(uncheckedLine.exists()).toBe(true)
+    expect(checkedLine.attributes('data-kind')).toBe('checked')
+    expect(uncheckedLine.attributes('data-kind')).toBe('unchecked')
+
+    const checkedGlyph = checkedLine.find('span').text()
+    const uncheckedGlyph = uncheckedLine.find('span').text()
+    expect(checkedGlyph).toBe('☑')
+    expect(uncheckedGlyph).toBe('☐')
+  })
+
+  it('applies line-through to checked items', async () => {
+    const content = '- [x] step 1\n- [ ] step 2'
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: makeParameters(content),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+
+    const checkedText = wrapper.find('[data-testid="update-plan-line-0"]').find('span.line-through')
+    expect(checkedText.exists()).toBe(true)
+    expect(checkedText.text()).toContain('step 1')
+
+    const uncheckedText = wrapper.find('[data-testid="update-plan-line-1"]').find('span.line-through')
+    expect(uncheckedText.exists()).toBe(false)
+  })
+
+  it('renders plain (non-checklist) lines as text rows', async () => {
+    const content = '## Goal\nBuild the whole thing\n\n## Steps\n- [x] step 1'
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: makeParameters(content),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+
+    expect(wrapper.text()).toContain('Build the whole thing')
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
+  })
+
+  it('does NOT render the description when collapsed', () => {
+    const content = '- [x] step 1 done'
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: makeParameters(content),
+        },
+      },
+    })
+    // Default collapsed — no checklist body visible.
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+  })
+
+  it('falls back gracefully when parameters is missing', async () => {
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: { content: makeSuccessContent() },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+    // Existing session/updated rows still render.
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+  })
+
+  it('falls back gracefully when parameters is malformed JSON', async () => {
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: 'not valid json {{',
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+  })
+
+  it('falls back gracefully when parameters has no content field', async () => {
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: JSON.stringify({ other: 'field' }),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+  })
+
+  it('falls back gracefully when parameters.content is empty string', async () => {
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeSuccessContent(),
+          parameters: JSON.stringify({ content: '' }),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+  })
+
+  it('does NOT render the description on error', async () => {
+    const content = '- [x] step 1'
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: {
+          content: makeErrorContent(),
+          parameters: makeParameters(content),
+        },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+    // Error path shows the error block, not the description.
+    expect(wrapper.find('[data-testid="update-plan-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+  })
+})
