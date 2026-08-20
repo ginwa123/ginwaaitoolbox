@@ -14,6 +14,7 @@ import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import UpdatePlan from '../UpdatePlan.vue'
+import { tryUnwrapToolOutput } from '@/helpers/unwrapToolOutput'
 
 // ────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -22,13 +23,23 @@ import UpdatePlan from '../UpdatePlan.vue'
 const makeSuccessContent = (opts: {
   sessionId?: string
   updatedAt?: string
+  /** The markdown body — wrapped in <plan><![CDATA[...]]></plan>. Default:
+   *  `''` (no plan block), so tests that don't care about the body just
+   *  see session_id + updated_at metadata. Pass a value to render the
+   *  checklist section. */
+  body?: string
 } = {}) => {
   const sessionId = opts.sessionId ?? 's_1787073929852_8'
   const updatedAt = opts.updatedAt ?? '2026-08-19 21:00:00'
+  const planBlock =
+    opts.body === undefined
+      ? ''
+      : `<plan><![CDATA[\n${opts.body}\n]]></plan>`
   return [
     `<update_plan>`,
     `<session_id>${sessionId}</session_id>`,
     `<updated_at>${updatedAt}</updated_at>`,
+    planBlock,
     `</update_plan>`,
   ].join('')
 }
@@ -281,30 +292,22 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────────
-// Description rendering (content from `parameters` JSON).
+// Description rendering (content from the <plan><![CDATA[...]]></plan>
+// block in the response envelope — mirrors get_plan's wire shape).
 //
-// The agent's input to `update_plan` is `{"content": "## Goal\n..."}`.
-// That JSON lives in `msg.parameters` (the dispatcher's
-// `getParametersForMessage(msg)` helper). We extract `content` from
-// there and render it as a checklist — same UX as expanding a
-// GetPlan card — so users see what the agent just wrote without
-// having to call get_plan separately.
+// The backend's `executeUpdatePlan` embeds the just-written body in
+// `<plan><![CDATA[...]]></plan>` so the frontend renders the checklist
+// directly from the response, NOT from the tool's input arguments.
+// Same UX as expanding a GetPlan card — users see what the agent
+// just wrote without having to call get_plan separately.
 // ────────────────────────────────────────────────────────────────────────
 
-/** Helper: build the JSON-stringified parameters payload an
- *  update_plan tool call would carry. */
-const makeParameters = (content: string): string =>
-  JSON.stringify({ content })
-
-describe('UpdatePlan.vue — description from parameters', () => {
-  it('renders the description as a checklist inside the expanded body', async () => {
-    const content = '- [x] step 1 done\n- [ ] step 2 todo\n- [ ] step 3 todo'
+describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
+  it('renders the plan body as a checklist inside the expanded body', async () => {
+    const body = '- [x] step 1 done\n- [ ] step 2 todo\n- [ ] step 3 todo'
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: makeParameters(content),
-        },
+        message: { content: makeSuccessContent({ body }) },
       },
       attachTo: document.body,
     })
@@ -317,23 +320,23 @@ describe('UpdatePlan.vue — description from parameters', () => {
   })
 
   it('renders ☐ for unchecked items and ☑ for checked items', async () => {
-    const content = '- [x] step 1\n- [ ] step 2'
+    const body = '- [x] step 1\n- [ ] step 2'
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: makeParameters(content),
-        },
+        message: { content: makeSuccessContent({ body }) },
       },
       attachTo: document.body,
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    // Content from `parameters` is raw markdown without a leading \n,
-    // so line 0 is "- [x] step 1" (checked) → ☑, line 1 is "- [ ] step 2"
-    // (unchecked) → ☐.
-    const checkedLine = wrapper.find('[data-testid="update-plan-line-0"]')
-    const uncheckedLine = wrapper.find('[data-testid="update-plan-line-1"]')
+    // Body from <plan><![CDATA[...]]></plan> starts with a leading
+    // \n (the CDATA wrapper inserts one — matches get_plan's wire
+    // shape, see `executeGetPlan.zig`), so line 0 is the empty
+    // text-row before the checklist proper. Line 1 is "- [x] step 1"
+    // (checked -> ☑) and line 2 is "- [ ] step 2" (unchecked -> ☐).
+    // Same convention as GetPlan.spec.ts -> "renders ☑/☐".
+    const checkedLine = wrapper.find('[data-testid="update-plan-line-1"]')
+    const uncheckedLine = wrapper.find('[data-testid="update-plan-line-2"]')
     expect(checkedLine.exists()).toBe(true)
     expect(uncheckedLine.exists()).toBe(true)
     expect(checkedLine.attributes('data-kind')).toBe('checked')
@@ -346,34 +349,29 @@ describe('UpdatePlan.vue — description from parameters', () => {
   })
 
   it('applies line-through to checked items', async () => {
-    const content = '- [x] step 1\n- [ ] step 2'
+    const body = '- [x] step 1\n- [ ] step 2'
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: makeParameters(content),
-        },
+        message: { content: makeSuccessContent({ body }) },
       },
       attachTo: document.body,
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    const checkedText = wrapper.find('[data-testid="update-plan-line-0"]').find('span.line-through')
+    // Line 1 is `- [x] step 1` (after the leading CDATA newline).
+    const checkedText = wrapper.find('[data-testid="update-plan-line-1"]').find('span.line-through')
     expect(checkedText.exists()).toBe(true)
     expect(checkedText.text()).toContain('step 1')
 
-    const uncheckedText = wrapper.find('[data-testid="update-plan-line-1"]').find('span.line-through')
+    const uncheckedText = wrapper.find('[data-testid="update-plan-line-2"]').find('span.line-through')
     expect(uncheckedText.exists()).toBe(false)
   })
 
   it('renders plain (non-checklist) lines as text rows', async () => {
-    const content = '## Goal\nBuild the whole thing\n\n## Steps\n- [x] step 1'
+    const body = '## Goal\nBuild the whole thing\n\n## Steps\n- [x] step 1'
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: makeParameters(content),
-        },
+        message: { content: makeSuccessContent({ body }) },
       },
       attachTo: document.body,
     })
@@ -383,21 +381,18 @@ describe('UpdatePlan.vue — description from parameters', () => {
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
   })
 
-  it('does NOT render the description when collapsed', () => {
-    const content = '- [x] step 1 done'
+  it('does NOT render the plan body when collapsed', () => {
+    const body = '- [x] step 1 done'
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: makeParameters(content),
-        },
+        message: { content: makeSuccessContent({ body }) },
       },
     })
     // Default collapsed — no checklist body visible.
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
   })
 
-  it('falls back gracefully when parameters is missing', async () => {
+  it('falls back gracefully when the envelope has no <plan> block', async () => {
     const wrapper = mount(UpdatePlan, {
       props: {
         message: { content: makeSuccessContent() },
@@ -408,66 +403,137 @@ describe('UpdatePlan.vue — description from parameters', () => {
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
     // Existing session/updated rows still render.
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="update-plan-updated-row"]').exists()).toBe(true)
   })
 
-  it('falls back gracefully when parameters is malformed JSON', async () => {
+  it('preserves raw <, >, & bytes verbatim inside the CDATA body', async () => {
+    const body = '## Notes\nIf arr[i] > 0 && x < 10, then done.'
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: 'not valid json {{',
-        },
+        message: { content: makeSuccessContent({ body }) },
       },
       attachTo: document.body,
     })
     await wrapper.find('[role="button"]').trigger('click')
-    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+
+    // Raw bytes appear verbatim — no XML escape substitution.
+    expect(wrapper.text()).toContain('arr[i] > 0')
+    expect(wrapper.text()).toContain('x < 10')
+    expect(wrapper.text()).toContain('&& x')
+    // None of the escape substitutions should appear.
+    expect(wrapper.text()).not.toContain('&lt;')
+    expect(wrapper.text()).not.toContain('&gt;')
+    expect(wrapper.text()).not.toContain('&amp;')
   })
 
-  it('falls back gracefully when parameters has no content field', async () => {
+  it('does NOT render the plan body on error', async () => {
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: JSON.stringify({ other: 'field' }),
-        },
+        message: { content: makeErrorContent() },
       },
       attachTo: document.body,
     })
     await wrapper.find('[role="button"]').trigger('click')
-    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
-  })
-
-  it('falls back gracefully when parameters.content is empty string', async () => {
-    const wrapper = mount(UpdatePlan, {
-      props: {
-        message: {
-          content: makeSuccessContent(),
-          parameters: JSON.stringify({ content: '' }),
-        },
-      },
-      attachTo: document.body,
-    })
-    await wrapper.find('[role="button"]').trigger('click')
-    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
-  })
-
-  it('does NOT render the description on error', async () => {
-    const content = '- [x] step 1'
-    const wrapper = mount(UpdatePlan, {
-      props: {
-        message: {
-          content: makeErrorContent(),
-          parameters: makeParameters(content),
-        },
-      },
-      attachTo: document.body,
-    })
-    await wrapper.find('[role="button"]').trigger('click')
-    // Error path shows the error block, not the description.
+    // Error path shows the error block, not the plan body.
     expect(wrapper.find('[data-testid="update-plan-error"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────
+// Regression: real ChatView dispatcher path
+// ────────────────────────────────────────────────────────────────────────
+//
+// Pins the wire contract that the BACKEND `executeUpdatePlan` enforces:
+// the response envelope embeds `<plan><![CDATA[...]]></plan>` so the
+// component can render the checklist directly from `message.content`,
+// without depending on the dispatcher threading `parameters` through
+// (the agent's input args, which the dispatcher might forget).
+//
+// The full wire shape the test simulates:
+//   <tool>
+//     <name>update_plan</name>
+//     <parameters>{ "content": "..." }</parameters>  ← ignored by UpdatePlan.vue
+//     <success>true</success>
+//     <data>
+//       <update_plan>
+//         <session_id>...</session_id>
+//         <updated_at>...</updated_at>
+//         <plan><![CDATA[ ... ]]></plan>             ← source of truth
+//       </update_plan>
+//     </data>
+//   </tool>
+
+/** Build a `<tool>...</tool>` envelope with the agent's input args in
+ *  `<parameters>` and the just-written plan body in `<plan><![CDATA[...]]></plan>`.
+ *  Mirrors the backend's `wrapToolOutput` shape (success path). */
+const wrapAsFullToolEnvelope = (
+  inner: string,
+  parametersJson: string,
+): string =>
+  '<tool>' +
+  '<name>update_plan</name>' +
+  `<parameters>${parametersJson}</parameters>` +
+  '<success>true</success>' +
+  `<data>${inner}</data>` +
+  '</tool>'
+
+describe('UpdatePlan.vue — full <tool> envelope from the dispatcher', () => {
+  it('renders the checklist when fed the production wire shape (no parameters prop needed)', async () => {
+    const body = '- [x] step 1 done\n- [ ] step 2 todo'
+    const fullEnvelope = wrapAsFullToolEnvelope(
+      makeSuccessContent({ body }),
+      JSON.stringify({ content: body }),
+    )
+    // Sanity-check the unwrap path (ChatView uses it for OTHER
+    // components; here we only care that the envelope parses).
+    const unwrapped = tryUnwrapToolOutput(fullEnvelope)
+    expect(unwrapped).not.toBeNull()
+
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        // ChatView passes the raw <tool> envelope as message.content
+        // — the component extracts the plan body from <plan><![CDATA[...]]></plan>
+        // inside the inner <update_plan>, NOT from <parameters>.
+        message: { content: fullEnvelope },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('step 1 done')
+    expect(wrapper.text()).toContain('step 2 todo')
+    // Metadata strip also renders.
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="update-plan-updated-row"]').exists()).toBe(true)
+  })
+
+  it('does NOT silently fall back to <parameters> if the <plan> block is missing', async () => {
+    // Construct an envelope where <parameters> carries the agent's
+    // input but the response envelope's <data> has NO <plan> block
+    // (legacy backend, or a backend bug). The component must NOT
+    // silently read from <parameters> — that field is the agent's
+    // input, not the canonical plan body. The user sees session +
+    // updated metadata only (no checklist), which is the safe
+    // fallback behavior.
+    const body = '- [x] step 1'
+    const fullEnvelope = wrapAsFullToolEnvelope(
+      makeSuccessContent(), // no body → no <plan> block
+      JSON.stringify({ content: body }),
+    )
+
+    const wrapper = mount(UpdatePlan, {
+      props: {
+        message: { content: fullEnvelope },
+      },
+      attachTo: document.body,
+    })
+    await wrapper.find('[role="button"]').trigger('click')
+
+    // No checklist — because the backend envelope has no <plan> block.
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+    // Metadata still renders.
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
   })
 })
