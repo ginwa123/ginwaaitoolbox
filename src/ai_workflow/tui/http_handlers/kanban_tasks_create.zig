@@ -288,7 +288,17 @@ pub fn kanbanTasksCreateHandler(
         // reaps on handler return.
         if (is_create_session) {
             const description = parsed.description orelse "";
-            if (description.len > 0) {
+            // image_urls on the wire is `||`-joined (Migration 069).
+            // For create_session we attach them to the user-role
+            // llm_history row so the chatview shows the user's
+            // attachments inline with the message they typed. The
+            // create_and_run path goes through emit_run_agent →
+            // workflow queue-drain → inserLLMHistories which handles
+            // image_urls separately.
+            // Gate on `description.len > 0 OR image_urls_wire.len > 0`
+            // so the new contract also fires for image-only tasks
+            // (description empty but with attachments).
+            if (description.len > 0 or image_urls_wire.len > 0) {
                 const initial_message = try std.fmt.allocPrint(
                     allocator,
                     "{s}\n\n{s}",
@@ -306,26 +316,28 @@ pub fn kanbanTasksCreateHandler(
                 // session_created SSE emitted a few lines below.
                 // columns: id, session_id, model, response_content,
                 // finish_reason, role, agent, parent_id,
-                // parent_session_id, is_input, created_at_nano,
-                // created_iso, is_feed_to_llm — every other column
-                // uses its DEFAULT.
+                // parent_session_id, is_input, image_url,
+                // created_at_nano, created_iso, is_feed_to_llm —
+                // every other column uses its DEFAULT. model uses ''
+                // literal (NOT NULL constraint + the
+                // empty-slice-binds-as-null SQLite backend quirk).
+                // image_url is the `||`-joined wire value (passes
+                // through verbatim; production rows on a real DB use
+                // the same shape).
                 sqlite_db.exec(
                     allocator,
                     "INSERT INTO llm_history " ++
                         "(id, session_id, model, response_content, finish_reason, role, " ++
-                        "agent, parent_id, parent_session_id, is_input, is_feed_to_llm, " ++
-                        "created_at_nano, created_iso) " ++
-                        // model uses '' literal (NOT NULL constraint +
-                        // the empty-slice-binds-as-null SQLite backend
-                        // quirk — see project memory). All other params
-                        // are non-empty so `?` is safe.
-                        "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, 1, ?, '')",
+                        "agent, parent_id, parent_session_id, is_input, image_url, " ++
+                        "is_feed_to_llm, created_at_nano, created_iso) " ++
+                        "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')",
                     &[_][]const u8{
                         id_str,
                         standard_result.task_id,
                         initial_message,
                         standard_result.task_id,
                         standard_result.task_id,
+                        image_urls_wire,
                         created_at_str,
                     },
                 ) catch |err| {
