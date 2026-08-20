@@ -274,6 +274,65 @@ pub fn kanbanTasksCreateHandler(
             };
         }
 
+        // FIX (bug: "create task still not insert user llm history role"):
+        // for create_session (plain "Create task" button) the sessions
+        // row is inserted but NO user-role row is added to llm_history —
+        // so the chatview lands on an empty session and the user's
+        // description is silently dropped. create_and_run already does
+        // this via the workflow's queue-drain path; here we mirror it
+        // inline so the description becomes a visible user message
+        // before the user types anything. Skip when description is
+        // empty — title-only tasks stay on a clean chat so the user
+        // can type the first message. Borrowed slices are safe:
+        // inserLLMHistories heap-dupes them and the per-request arena
+        // reaps on handler return.
+        if (is_create_session) {
+            const description = parsed.description orelse "";
+            if (description.len > 0) {
+                const initial_message = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}\n\n{s}",
+                    .{ standard_result.name, description },
+                );
+                const now_ns = std.Io.Timestamp.now(ctx.io, .real).nanoseconds;
+                const id_str = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
+                const created_at_str = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
+                _ = nalarcore.ai_mod.ai_workflow.insertLLMHistories(.{
+                    .allocator = allocator,
+                    .io = ctx.io,
+                    .db = sqlite_db,
+                    .logger = di.logger,
+                    .is_emit_sse = true,
+                    .event_bus = di.event_bus,
+                    .cwd = standard_result.cwd,
+                    .entity = .{
+                        .id = id_str,
+                        .session_id = standard_result.task_id,
+                        .model = nalarcore.getLlmConfig(di).model,
+                        .response_content = initial_message,
+                        .reasoning_content = null,
+                        .role = "user",
+                        .finish_reason = "null",
+                        .tool_calls_json = "",
+                        .tool_call_id = null,
+                        .agent = "Agent",
+                        .loop_index = 0,
+                        .temperature = 0,
+                        .is_thinking = false,
+                        .parent_id = standard_result.task_id,
+                        .parent_session_id = standard_result.task_id,
+                        .is_input = true,
+                        .is_output = false,
+                        .image_urls = null,
+                        .created_at = created_at_str,
+                        .is_feed_to_llm = true,
+                    },
+                }) catch |err| {
+                    std.log.warn("kanban_tasks_create: initial user llm_history insert failed (non-fatal): {s}", .{@errorName(err)});
+                };
+            }
+        }
+
         // Emit the session_created SSE so the sidebar's ChatsList
         // gets the new session without a manual refetch. Mirrors
         // session_create.zig::insertWorker's onEventSendSessions
