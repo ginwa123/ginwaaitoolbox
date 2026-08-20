@@ -557,7 +557,7 @@ jobs:
           # tests fail with that error). Other tests (agent_memories,
           # session_plan, prompts_make_plan_context) cascade because
           # their setupDb() runs runMigrations() which trips on 058.
-          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3:x64-windows[fts5]"
+          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3[fts5]:x64-windows"
           Write-Host ("Running: vcpkg install " + ($portList -join " "))
           & C:\vcpkg\vcpkg.exe install --recurse $portList
           if ($LASTEXITCODE -ne 0) {
