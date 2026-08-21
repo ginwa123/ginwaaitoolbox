@@ -57,6 +57,7 @@ describe('AgentView', () => {
             agent_id: 'item_1',
             file_path: '/home/me/spec.md',
             label: 'Spec',
+            content: '',
             position: 0,
             created_at: '',
             updated_at: '',
@@ -80,6 +81,7 @@ describe('AgentView', () => {
             agent_id: 'item_1',
             file_path: '/home/me/spec.md',
             label: 'Spec',
+            content: '',
             position: 0,
             created_at: '',
             updated_at: '',
@@ -92,6 +94,35 @@ describe('AgentView', () => {
     expect(items.length).toBe(1)
     await wrapper.find('[data-testid="agent-remove-knowledge"]').trigger('click')
     expect(wrapper.emitted('removeKnowledge')![0]).toEqual(['k_1'])
+  })
+
+  it('renders an Inline text badge for content rows instead of a file path', async () => {
+    const wrapper = mount(AgentView, {
+      props: {
+        ...baseProps(),
+        knowledge: [
+          {
+            id: 'k_inline',
+            agent_id: 'item_1',
+            file_path: '',
+            label: 'Notes',
+            content: 'Manual knowledge body for the agent to read.',
+            position: 0,
+            created_at: '',
+            updated_at: '',
+          },
+        ],
+      },
+    })
+    await nextTick()
+    const item = wrapper.find('[data-testid="agent-knowledge-item"]')
+    expect(item.exists()).toBe(true)
+    // Label shown as the title.
+    expect(item.text()).toContain('Notes')
+    // "Inline text" badge present.
+    expect(item.text()).toContain('Inline text')
+    // No absolute path rendered.
+    expect(item.text()).not.toContain('/')
   })
 
   it('renders Tools panel with registry checkboxes', async () => {

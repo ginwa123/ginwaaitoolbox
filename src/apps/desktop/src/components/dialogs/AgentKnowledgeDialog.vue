@@ -1,19 +1,24 @@
 <!--
-  AgentKnowledgeDialog — modal for adding a markdown knowledge file to an Agent.
+  AgentKnowledgeDialog — modal for adding a knowledge entry to an Agent.
 
-  Body:
-    - file_path (required, must be absolute)
-    - label (optional)
+  Two modes (tab toggle):
+    - file: file_path (required, must be absolute) + optional label.
+      Browse button opens FilePickerDialog.
+    - text: inline manual text (required, non-empty) + optional label.
 
   Public API:
     props:  show (boolean), busy (boolean), error (string | null)
-    emits:  close, create(file_path: string, label: string)
+    emits:  close, create(filePath: string, label: string, content: string)
+            — file mode passes content=''; text mode passes filePath=''.
 
   Plan: 2026-08-15-agent-mode (Task 16)
   Updated 2026-08-20 to support `busy` + `error` so AppLayout can
   show submit progress + server error without unmounting the dialog.
   Also added a "Browse" button that opens FilePickerDialog in 'file'
   mode — typing absolute paths by hand is error-prone.
+  Updated 2026-08-21 (plan 2026-08-21-agent-knowledge-manual-text):
+  added the File/Text mode toggle + textarea for inline knowledge;
+  `create` emit gained the `content` arg.
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
@@ -27,11 +32,13 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   close: []
-  create: [filePath: string, label: string]
+  create: [filePath: string, label: string, content: string]
 }>()
 
+const mode = ref<'file' | 'text'>('file')
 const filePath = ref('')
 const label = ref('')
+const content = ref('')
 const pathInput = ref<HTMLInputElement | null>(null)
 const pathTouched = ref(false)
 const showPicker = ref(false)
@@ -43,15 +50,19 @@ const pathError = computed<string | null>(() => {
   return null
 })
 
-const canSubmit = computed(
-  () => filePath.value.startsWith('/') && filePath.value.length > 0 && !props.busy,
-)
+const canSubmit = computed(() => {
+  if (props.busy) return false
+  if (mode.value === 'file') {
+    return filePath.value.startsWith('/') && filePath.value.length > 0
+  }
+  return content.value.trim().length > 0
+})
 
 const handleCreate = () => {
   if (!canSubmit.value) return
   // Don't close the dialog here — let the parent decide based on the
   // server response. The parent toggles `show=false` on success.
-  emit('create', filePath.value, label.value)
+  emit('create', mode.value === 'file' ? filePath.value : '', label.value, mode.value === 'text' ? content.value : '')
 }
 
 const handleClose = () => {
@@ -89,8 +100,10 @@ const handleFileSelected = (path: string) => {
 
 watch(() => props.show, async (show) => {
   if (show) {
+    mode.value = 'file'
     filePath.value = ''
     label.value = ''
+    content.value = ''
     pathTouched.value = false
     showPicker.value = false
     await nextTick()
@@ -122,10 +135,32 @@ watch(() => props.show, async (show) => {
               Add Knowledge
             </h3>
             <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
-              Attach a markdown file the agent will read at chat start
+              {{ mode === 'file'
+                ? 'Attach a markdown file the agent will read at chat start'
+                : 'Write or paste text the agent will read at chat start' }}
             </p>
+            <div class="flex gap-1 mt-3" role="tablist" data-testid="agent-knowledge-mode-tabs">
+              <button type="button" role="tab" :aria-selected="mode === 'file'"
+                @click="mode = 'file'" :disabled="props.busy"
+                data-testid="agent-knowledge-mode-file"
+                class="text-xs px-2.5 py-1 rounded-md font-medium disabled:opacity-50"
+                :style="mode === 'file'
+                  ? 'background: var(--color-violet); color: var(--color-bg);'
+                  : 'background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'">
+                📄 File
+              </button>
+              <button type="button" role="tab" :aria-selected="mode === 'text'"
+                @click="mode = 'text'" :disabled="props.busy"
+                data-testid="agent-knowledge-mode-text"
+                class="text-xs px-2.5 py-1 rounded-md font-medium disabled:opacity-50"
+                :style="mode === 'text'
+                  ? 'background: var(--color-violet); color: var(--color-bg);'
+                  : 'background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'">
+                ✍️ Text
+              </button>
+            </div>
           </div>
-          <div class="px-5 pb-4">
+          <div v-if="mode === 'file'" class="px-5 pb-4">
             <div class="flex items-center justify-between mb-2">
               <label class="text-xs font-medium" style="color: var(--semantic-text-dim);">File Path (absolute)</label>
               <button
@@ -159,6 +194,17 @@ watch(() => props.show, async (show) => {
             <p v-if="pathError" class="text-xs mt-1" style="color: var(--color-red);" data-testid="agent-knowledge-path-error">
               {{ pathError }}
             </p>
+          </div>
+          <div v-else class="px-5 pb-4">
+            <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">Knowledge text</label>
+            <textarea
+              v-model="content"
+              rows="6"
+              placeholder="Paste or write the knowledge the agent should read at chat start…"
+              data-testid="agent-knowledge-content"
+              class="w-full px-3 py-2 rounded-lg text-sm outline-none resize-y"
+              style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+            ></textarea>
           </div>
           <div class="px-5 pb-4">
             <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">Label (optional)</label>

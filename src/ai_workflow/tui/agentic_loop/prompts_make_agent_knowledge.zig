@@ -110,7 +110,7 @@ pub fn makeAgentKnowledge(
 
     // Fetch the knowledge rows.
     var q = db.query(allocator,
-        \\SELECT file_path, label FROM agent_knowledge
+        \\SELECT file_path, label, content FROM agent_knowledge
         \\WHERE agent_id = ? ORDER BY position DESC
     , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
     defer q.deinit();
@@ -119,6 +119,7 @@ pub fn makeAgentKnowledge(
     var rows: std.ArrayList(struct {
         file_path: []const u8,
         label: []const u8,
+        content: []const u8,
     }) = .empty;
     defer rows.deinit(allocator);
 
@@ -127,6 +128,7 @@ pub fn makeAgentKnowledge(
         try rows.append(allocator, .{
             .file_path = try allocator.dupe(u8, r.values[0]),
             .label = try allocator.dupe(u8, r.values[1]),
+            .content = try allocator.dupe(u8, r.values[2]),
         });
     }
 
@@ -149,19 +151,35 @@ pub fn makeAgentKnowledge(
     for (rows.items) |row| {
         defer allocator.free(row.file_path);
         defer allocator.free(row.label);
+        defer allocator.free(row.content);
 
+        // Inline text entry — no <file: ...> marker (the path is empty
+        // and the marker would be meaningless to the model).
+        if (row.content.len > 0) {
+            try out.appendSlice(allocator, "\n### ");
+            if (row.label.len > 0) {
+                try out.appendSlice(allocator, row.label);
+            } else {
+                try out.appendSlice(allocator, "Inline knowledge");
+            }
+            try out.appendSlice(allocator, "\n\n");
+            try out.appendSlice(allocator, row.content);
+            try out.appendSlice(allocator, "\n");
+            continue;
+        }
+
+        // File-backed entry — existing read-from-disk path. Read FIRST
+        // so an unreadable file is skipped without leaking its header
+        // into the section (pre-existing test contract).
         const contents = readFileContents(io, allocator, row.file_path) catch continue;
         const owned = contents orelse continue;
         defer allocator.free(owned);
 
-        // Section header per file.
         try out.appendSlice(allocator, "\n### ");
         if (row.label.len > 0) {
             try out.appendSlice(allocator, row.label);
         } else {
-            // Basename fallback.
-            const basename = std.fs.path.basename(row.file_path);
-            try out.appendSlice(allocator, basename);
+            try out.appendSlice(allocator, std.fs.path.basename(row.file_path));
         }
         try out.appendSlice(allocator, "\n<file: ");
         try out.appendSlice(allocator, row.file_path);
@@ -179,6 +197,7 @@ const testing = std.testing;
 // member shadowing (file-level `const sqlite` already exists).
 const test_sqlite = @import("nalarcore").sqlite;
 const Migration076 = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+const Migration079 = @import("../../../migrations/migration.zig").Migration079AddContentToAgentKnowledge;
 
 const TestCtx = struct {
     db: test_sqlite.SqliteBackend,
@@ -216,6 +235,10 @@ fn setupDb() !TestCtx {
         \\)
     , &[_][]const u8{});
     try Migration076.up(&db, alloc);
+    // Production DBs run every migration in order — the harness must
+    // mirror that, or the `content` column (Migration 079) is missing
+    // and content-row INSERTs fail.
+    try Migration079.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -372,4 +395,59 @@ test "makeAgentKnowledge: skips unreadable file paths with logged warning" {
 
     try testing.expect(std.mem.indexOf(u8, result, "## Agent Knowledge") != null);
     try testing.expect(std.mem.indexOf(u8, result, "non_existent_path_xyz_12345") == null);
+}
+
+// ─── content (manual text) tests — plan 2026-08-21-agent-knowledge-manual-text ──
+
+test "makeAgentKnowledge: inlines content rows without <file:> marker" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertSession(&ctx, "sess_1", "ws_item_1");
+
+    // Insert an inline-content row directly (content non-empty, path
+    // empty). Parameter binding via db.exec argv (NOT bufPrint) so the
+    // text can contain quotes safely.
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path, label, content, position) VALUES ('know_inline', 'ws_item_1', '', 'Deploy notes', 'Always deploy with the canary flag enabled.', 0)",
+        &[_][]const u8{},
+    );
+
+    const result = try makeAgentKnowledge(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "## Agent Knowledge") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "### Deploy notes") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Always deploy with the canary flag enabled.") != null);
+    // Inline rows must NOT carry a <file: ...> marker.
+    try testing.expect(std.mem.indexOf(u8, result, "<file: ") == null);
+}
+
+test "makeAgentKnowledge: mixed file + content rows both render" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertSession(&ctx, "sess_1", "ws_item_1");
+
+    const tmp_path = try writeTestFile(alloc, ctx.threaded.io(), "file marker content\n");
+    defer alloc.free(tmp_path);
+    defer std.Io.Dir.deleteFileAbsolute(ctx.threaded.io(), tmp_path) catch {};
+
+    try insertKnowledge(&ctx, "know_file", "ws_item_1", tmp_path, 0);
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path, label, content, position) VALUES ('know_inline', 'ws_item_1', '', 'Notes', 'inline marker content', 1)",
+        &[_][]const u8{},
+    );
+
+    const result = try makeAgentKnowledge(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "file marker content") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "inline marker content") != null);
 }

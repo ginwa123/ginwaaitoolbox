@@ -37,6 +37,8 @@ pub const AgentKnowledgeRow = struct {
     agent_id: []const u8,
     file_path: []const u8,
     label: []const u8,
+    /// Inline manual text ('' = file-backed row).
+    content: []const u8,
     position: i64,
     created_at: []const u8,
     updated_at: []const u8,
@@ -125,7 +127,7 @@ fn useCase(
     }
     {
         var qk = db.query(allocator,
-            \\SELECT id, agent_id, file_path, label, position,
+            \\SELECT id, agent_id, file_path, label, content, position,
             \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
             \\FROM agent_knowledge WHERE agent_id = ?
             \\ORDER BY position DESC
@@ -133,15 +135,16 @@ fn useCase(
         defer qk.deinit();
         while ((qk.next() catch null)) |r| {
             defer r.deinit(allocator);
-            const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
+            const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
             try knowledge.append(allocator, .{
                 .id = try allocator.dupe(u8, r.values[0]),
                 .agent_id = try allocator.dupe(u8, r.values[1]),
                 .file_path = try allocator.dupe(u8, r.values[2]),
                 .label = try allocator.dupe(u8, r.values[3]),
+                .content = try allocator.dupe(u8, r.values[4]),
                 .position = position,
-                .created_at = try allocator.dupe(u8, r.values[5]),
-                .updated_at = try allocator.dupe(u8, r.values[6]),
+                .created_at = try allocator.dupe(u8, r.values[6]),
+                .updated_at = try allocator.dupe(u8, r.values[7]),
             });
         }
     }
@@ -202,6 +205,7 @@ fn freeKnowledgeRow(allocator: std.mem.Allocator, k: AgentKnowledgeRow) void {
     allocator.free(k.agent_id);
     allocator.free(k.file_path);
     if (k.label.len > 0) allocator.free(k.label);
+    if (k.content.len > 0) allocator.free(k.content);
     if (k.created_at.len > 0) allocator.free(k.created_at);
     if (k.updated_at.len > 0) allocator.free(k.updated_at);
 }
@@ -271,6 +275,7 @@ pub fn agentsGetHandler(
 const sqlite = @import("nalarcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+const Migration079AddContentToAgentKnowledge = @import("../../../migrations/migration.zig").Migration079AddContentToAgentKnowledge;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -292,6 +297,9 @@ fn setupDb() !TestCtx {
         &[_][]const u8{},
     );
     try Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up(&db, testing.allocator);
+    // Production DBs run every migration in order — the harness must
+    // mirror that, or the `content` column (Migration 079) is missing.
+    try Migration079AddContentToAgentKnowledge.up(&db, testing.allocator);
 
     // Seed: 1 agent + 2 knowledge rows + 2 enabled tools + 1 disabled tool.
     try db.exec(testing.allocator,
@@ -415,4 +423,28 @@ test "useCase: happy path returns agent + knowledge DESC + tools enabled ASC" {
     try testing.expectEqual(@as(usize, 2), output.tools.len);
     try testing.expectEqualStrings("bash", output.tools[0]);
     try testing.expectEqualStrings("read_file", output.tools[1]);
+}
+
+test "useCase: returns content field for knowledge rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Seed one inline-content row (position 5 → sorts first under DESC).
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path, label, content, position) VALUES ('know_inline', 'ws_item_1', '', 'Notes', 'inline body', 5)",
+        &[_][]const u8{},
+    );
+
+    const output = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_1" });
+    defer freeOutput(alloc, output);
+
+    try testing.expectEqual(@as(usize, 3), output.knowledge.len);
+    // know_inline first (position 5 DESC), then know_2 (1), then know_1 (0).
+    try testing.expectEqualStrings("know_inline", output.knowledge[0].id);
+    try testing.expectEqualStrings("inline body", output.knowledge[0].content);
+    // File-backed rows round-trip with empty content.
+    try testing.expectEqualStrings("", output.knowledge[1].content);
+    try testing.expectEqualStrings("", output.knowledge[2].content);
 }

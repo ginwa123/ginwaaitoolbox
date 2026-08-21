@@ -1111,7 +1111,7 @@ function closeAgentKnowledgeDialog() {
   agentKnowledgeError.value = null
 }
 
-async function handleAgentKnowledgeCreate(filePath: string, label: string) {
+async function handleAgentKnowledgeCreate(filePath: string, label: string, content: string) {
   const wsId = activeWorkspace?.value?.id
   const itemId = activeWorkspaceItem.value?.id
   if (!wsId || !itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
@@ -1122,7 +1122,9 @@ async function handleAgentKnowledgeCreate(filePath: string, label: string) {
     // The backend expects `agentId` (== workspace_item_id for agents)
     // on `POST /api/agents/:agentId/knowledge`. AddAgentItem's
     // convention (Migration 076) is that agents.id == workspace_items.id.
-    const newRow = await api.addAgentKnowledge(itemId, filePath, label)
+    // `content` is non-empty for text-mode adds; the backend
+    // XOR-validates file_path vs content.
+    const newRow = await api.addAgentKnowledge(itemId, filePath, label, content)
     // Optimistic append — the GET /agent response won't be re-fetched
     // until the user navigates away and back. Without this, the new
     // row is invisible in the UI until a full reload.

@@ -3615,6 +3615,8 @@ export interface AgentKnowledgeRow {
   agent_id: string
   file_path: string
   label: string
+  /** Inline manual text ('' = file-backed row). */
+  content: string
   position: number
   created_at: string
   updated_at: string
@@ -3683,8 +3685,9 @@ export async function updateAgent(
 }
 
 /**
- * Add a knowledge entry (markdown file path on disk) to an agent.
- * The backend validates `file_path` is absolute.
+ * Add a knowledge entry to an agent — either a markdown file path on
+ * disk (`filePath`) or inline manual text (`content`). Exactly one of
+ * the two must be non-empty (backend XOR-validates).
  *
  * POST /api/agents/:agentId/knowledge
  */
@@ -3692,17 +3695,18 @@ export async function addAgentKnowledge(
   agentId: string,
   filePath: string,
   label?: string,
+  content?: string,
 ): Promise<AgentKnowledgeRow> {
   return await apiFetch<AgentKnowledgeRow>(`/agents/${agentId}/knowledge`, {
     method: 'POST',
-    body: { file_path: filePath, label: label ?? '' },
+    body: { file_path: filePath, label: label ?? '', content: content ?? '' },
   })
 }
 
 export async function updateAgentKnowledge(
   agentId: string,
   knowledgeId: string,
-  updates: { file_path?: string; label?: string },
+  updates: { file_path?: string; label?: string; content?: string },
 ): Promise<AgentKnowledgeRow> {
   return await apiFetch<AgentKnowledgeRow>(
     `/agents/${agentId}/knowledge/${knowledgeId}`,
