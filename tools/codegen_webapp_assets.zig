@@ -531,7 +531,7 @@ extern "kernel32" fn ReadFile(
     lpBuffer: [*]u8,
     nNumberOfBytesToRead: std.os.windows.DWORD,
     lpNumberOfBytesRead: ?*std.os.windows.DWORD,
-    lpOverlapped: ?*std.os.windows.OVERLAPPED,
+    lpOverlapped: ?*anyopaque,
 ) callconv(.winapi) std.os.windows.BOOL;
 
 fn readFileAllWindows(allocator: std.mem.Allocator, path: []const u8, max_bytes: usize) ![]u8 {
