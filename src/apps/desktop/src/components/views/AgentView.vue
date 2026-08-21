@@ -176,9 +176,17 @@ async function handleNewChat() {
           >
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
-                {{ k.label || basename(k.file_path) }}
+                {{ k.label || (k.content ? 'Inline knowledge' : basename(k.file_path)) }}
               </div>
-              <div class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
+              <div v-if="k.content" class="text-[11px] mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
+                <span
+                  class="px-1.5 py-0.5 rounded shrink-0"
+                  data-testid="agent-knowledge-inline-badge"
+                  style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+                >Inline text</span>
+                <span class="truncate" :title="k.content">{{ k.content.slice(0, 60) }}{{ k.content.length > 60 ? '…' : '' }}</span>
+              </div>
+              <div v-else class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
                 {{ k.file_path }}
               </div>
             </div>
