@@ -32,6 +32,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   addKnowledge: []
   removeKnowledge: [knowledgeId: string]
+  editKnowledge: [row: api.AgentKnowledgeRow]
   toggleTool: [toolName: string, enabled: boolean]
   toggleToolsBulk: [toolNames: string[], enabled: boolean]
   newChat: []
@@ -48,16 +49,25 @@ const loading = ref(true)
 // cached in the Pinia store, so re-filtering on every keystroke is
 // cheap and doesn't need debouncing.
 //
-// `collapsedCategories` is reserved for a future category-grouping
-// iteration; for now we keep the flat filtered list.
+// `toolsFilter` narrows the list by enabled state (All / Enabled /
+// Disabled chips) and COMPOSES with `searchQuery` — a tool must pass
+// both to be visible.
+//
+// `expandedTools` tracks which tool rows show their full (unclamped)
+// description. Descriptions default to a 2-line CSS clamp; clicking
+// the row's expander chevron toggles.
 const searchQuery = ref('')
+const toolsFilter = ref<'all' | 'enabled' | 'disabled'>('all')
+const expandedTools = ref(new Set<string>())
 
 const trimmedQuery = computed(() => searchQuery.value.trim().toLowerCase())
 
 const filteredTools = computed(() => {
   const q = trimmedQuery.value
-  if (q.length === 0) return agentToolsStore.registry
   return agentToolsStore.registry.filter((t) => {
+    if (toolsFilter.value === 'enabled' && !enabledToolSet.value.has(t.name)) return false
+    if (toolsFilter.value === 'disabled' && enabledToolSet.value.has(t.name)) return false
+    if (q.length === 0) return true
     return (
       t.name.toLowerCase().includes(q) ||
       t.description.toLowerCase().includes(q)
@@ -65,7 +75,42 @@ const filteredTools = computed(() => {
   })
 })
 
+function toggleToolExpanded(name: string) {
+  const next = new Set(expandedTools.value)
+  if (next.has(name)) next.delete(name)
+  else next.add(name)
+  expandedTools.value = next
+}
+
+// ─── Knowledge panel UI state ───────────────────────────────────────────
+//
+// `expandedKnowledge` tracks which knowledge rows are expanded. Expanded
+// inline rows reveal their full content in a scrollable block; expanded
+// file-backed rows show the absolute path + a hint line.
+const expandedKnowledge = ref(new Set<string>())
+
+function toggleKnowledgeExpanded(id: string) {
+  const next = new Set(expandedKnowledge.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedKnowledge.value = next
+}
+
+async function copyKnowledgeContent(text: string) {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // Clipboard can fail (permissions / non-secure context) — non-fatal.
+  }
+}
+
 const enabledToolSet = computed(() => new Set(props.tools))
+
+// Live counts for the All / Enabled / Disabled filter chips.
+const enabledFilterCount = computed(() => props.tools.length)
+const disabledFilterCount = computed(() =>
+  agentToolsStore.registry.length - props.tools.length,
+)
 
 const enabledCountInFiltered = computed(() => {
   let n = 0
@@ -171,36 +216,94 @@ async function handleNewChat() {
             v-for="k in knowledge"
             :key="k.id"
             data-testid="agent-knowledge-item"
-            class="group p-2 rounded flex items-start gap-2 border"
+            class="group p-2 rounded border"
             style="background: var(--semantic-sidebar-bg); border-color: var(--color-border);"
           >
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
-                {{ k.label || (k.content ? 'Inline knowledge' : basename(k.file_path)) }}
+            <div class="flex items-start gap-2">
+              <button
+                type="button"
+                @click="toggleKnowledgeExpanded(k.id)"
+                :data-testid="`agent-knowledge-expand-${k.id}`"
+                class="shrink-0 w-4 h-4 mt-0.5 flex items-center justify-center rounded hover:opacity-80 transition-transform"
+                :style="{ color: 'var(--semantic-text-dim)', transform: expandedKnowledge.has(k.id) ? 'rotate(90deg)' : 'none' }"
+                :aria-expanded="expandedKnowledge.has(k.id)"
+                :aria-label="expandedKnowledge.has(k.id) ? 'Collapse details' : 'Expand details'"
+                title="Show / hide details"
+              >
+                ▸
+              </button>
+              <div class="flex-1 min-w-0 cursor-pointer" @click="toggleKnowledgeExpanded(k.id)">
+                <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                  {{ k.label || (k.content ? 'Inline knowledge' : basename(k.file_path)) }}
+                </div>
+                <div v-if="k.content" class="text-[11px] mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
+                  <span
+                    class="px-1.5 py-0.5 rounded shrink-0"
+                    data-testid="agent-knowledge-inline-badge"
+                    style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+                  >Inline text</span>
+                  <span v-if="!expandedKnowledge.has(k.id)" class="truncate" :title="k.content">{{ k.content.slice(0, 60) }}{{ k.content.length > 60 ? '…' : '' }}</span>
+                </div>
+                <div v-else class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
+                  {{ k.file_path }}
+                </div>
               </div>
-              <div v-if="k.content" class="text-[11px] mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
-                <span
-                  class="px-1.5 py-0.5 rounded shrink-0"
-                  data-testid="agent-knowledge-inline-badge"
-                  style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-                >Inline text</span>
-                <span class="truncate" :title="k.content">{{ k.content.slice(0, 60) }}{{ k.content.length > 60 ? '…' : '' }}</span>
-              </div>
-              <div v-else class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
-                {{ k.file_path }}
-              </div>
+              <button
+                type="button"
+                @click="emit('editKnowledge', k)"
+                data-testid="agent-edit-knowledge"
+                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-white/10"
+                style="color: var(--semantic-text-muted);"
+                :aria-label="`Edit ${k.label || basename(k.file_path)}`"
+                title="Edit this knowledge entry"
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                @click="emit('removeKnowledge', k.id)"
+                data-testid="agent-remove-knowledge"
+                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-red-500/10"
+                style="color: var(--color-red);"
+                :aria-label="`Remove ${k.label || basename(k.file_path)}`"
+                title="Remove this knowledge file"
+              >
+                ✕
+              </button>
             </div>
-            <button
-              type="button"
-              @click="emit('removeKnowledge', k.id)"
-              data-testid="agent-remove-knowledge"
-              class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-red-500/10"
-              style="color: var(--color-red);"
-              :aria-label="`Remove ${k.label || basename(k.file_path)}`"
-              title="Remove this knowledge file"
+            <!-- Expanded detail area -->
+            <div
+              v-if="expandedKnowledge.has(k.id)"
+              data-testid="agent-knowledge-detail"
+              class="mt-2 pt-2 border-t space-y-1.5"
+              style="border-color: var(--color-border);"
             >
-              ✕
-            </button>
+              <template v-if="k.content">
+                <pre
+                  data-testid="agent-knowledge-content-preview"
+                  class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto p-2 rounded"
+                  style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);"
+                >{{ k.content }}</pre>
+                <button
+                  type="button"
+                  @click="copyKnowledgeContent(k.content)"
+                  data-testid="agent-knowledge-copy"
+                  class="text-[11px] px-1.5 py-0.5 rounded font-medium hover:opacity-80"
+                  style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
+                  title="Copy content to clipboard"
+                >
+                  ⧉ Copy
+                </button>
+              </template>
+              <template v-else>
+                <div class="text-[11px] font-mono break-all p-2 rounded" style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);">
+                  {{ k.file_path }}
+                </div>
+                <div class="text-[11px]" style="color: var(--semantic-text-dim);">
+                  File-backed — the agent reads this file at chat start.
+                </div>
+              </template>
+            </div>
           </li>
         </ul>
       </section>
@@ -263,9 +366,48 @@ async function handleNewChat() {
               ✕
             </button>
           </div>
+          <!-- Filter chips: All / Enabled / Disabled (composes with search) -->
+          <div class="flex items-center gap-1" role="group" aria-label="Filter tools by enabled state" data-testid="agent-tools-filter-chips">
+            <button
+              type="button"
+              @click="toolsFilter = 'all'"
+              :data-testid="`agent-tools-filter-all`"
+              :aria-pressed="toolsFilter === 'all'"
+              class="text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors"
+              :style="toolsFilter === 'all'
+                ? 'background: var(--color-violet); color: var(--color-bg);'
+                : 'background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'"
+            >
+              All ({{ agentToolsStore.registry.length }})
+            </button>
+            <button
+              type="button"
+              @click="toolsFilter = 'enabled'"
+              data-testid="agent-tools-filter-enabled"
+              :aria-pressed="toolsFilter === 'enabled'"
+              class="text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors"
+              :style="toolsFilter === 'enabled'
+                ? 'background: var(--color-violet); color: var(--color-bg);'
+                : 'background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'"
+            >
+              Enabled ({{ enabledFilterCount }})
+            </button>
+            <button
+              type="button"
+              @click="toolsFilter = 'disabled'"
+              data-testid="agent-tools-filter-disabled"
+              :aria-pressed="toolsFilter === 'disabled'"
+              class="text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors"
+              :style="toolsFilter === 'disabled'
+                ? 'background: var(--color-violet); color: var(--color-bg);'
+                : 'background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'"
+            >
+              Disabled ({{ disabledFilterCount }})
+            </button>
+          </div>
           <div class="flex items-center justify-between text-[11px]" style="color: var(--semantic-text-dim);">
             <span data-testid="agent-tools-filter-status">
-              <template v-if="trimmedQuery.length === 0">
+              <template v-if="trimmedQuery.length === 0 && toolsFilter === 'all'">
                 Showing all {{ filteredTools.length }} tools
               </template>
               <template v-else>
@@ -317,12 +459,29 @@ async function handleNewChat() {
             style="color: var(--color-violet);"
           >Clear search</button>
         </div>
+        <div
+          v-else-if="filteredTools.length === 0 && toolsFilter !== 'all'"
+          class="text-xs p-3 rounded space-y-1.5"
+          style="color: var(--semantic-text-dim); background: var(--semantic-sidebar-bg);"
+          data-testid="agent-tools-empty-filter"
+        >
+          <div>
+            No {{ toolsFilter === 'enabled' ? 'enabled' : 'disabled' }} tools{{ trimmedQuery.length > 0 ? ' match this search' : '' }}.
+          </div>
+          <button
+            type="button"
+            @click="toolsFilter = 'all'"
+            data-testid="agent-tools-empty-filter-reset"
+            class="underline font-medium"
+            style="color: var(--color-violet);"
+          >Show all tools</button>
+        </div>
         <ul v-else class="space-y-1 max-h-[60vh] overflow-y-auto pr-1" data-testid="agent-tools-list">
           <li
             v-for="tool in filteredTools"
             :key="tool.name"
             data-testid="agent-tool-item"
-            class="flex items-start gap-2 p-2 rounded border transition-colors"
+            class="flex items-start gap-2 p-2 rounded border transition-colors hover:brightness-110"
             :style="{
               backgroundColor: isToolEnabled(tool.name) ? 'var(--semantic-active-bg)' : 'var(--semantic-sidebar-bg)',
               borderColor: isToolEnabled(tool.name) ? 'var(--color-violet)' : 'var(--color-border)',
@@ -337,8 +496,8 @@ async function handleNewChat() {
               :data-testid="`agent-tool-checkbox-${tool.name}`"
               class="mt-0.5 shrink-0 cursor-pointer"
             />
-            <label :for="`tool-${tool.name}`" class="text-xs cursor-pointer flex-1 min-w-0 block">
-              <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0">
+              <label :for="`tool-${tool.name}`" class="text-xs cursor-pointer flex items-center gap-2">
                 <span class="font-mono font-semibold" style="color: var(--semantic-text);">{{ tool.name }}</span>
                 <span
                   v-if="isToolEnabled(tool.name)"
@@ -346,15 +505,32 @@ async function handleNewChat() {
                   class="text-[9px] uppercase tracking-wider font-bold px-1 py-px rounded"
                   style="background: var(--color-violet); color: var(--color-bg);"
                 >ON</span>
-              </div>
+              </label>
+              <!-- Description: 2-line clamp by default, full text when expanded.
+                   Clicking the row (not the checkbox) toggles expansion. -->
               <div
-                class="text-[11px] mt-0.5 leading-snug"
+                class="text-[11px] mt-0.5 leading-snug cursor-pointer"
+                :class="{ 'agent-desc-clamped': !expandedTools.has(tool.name) }"
                 style="color: var(--semantic-text-dim);"
                 :title="tool.description"
+                :data-testid="`agent-tool-desc-${tool.name}`"
+                @click="toggleToolExpanded(tool.name)"
               >
                 {{ tool.description }}
               </div>
-            </label>
+            </div>
+            <button
+              type="button"
+              @click.stop="toggleToolExpanded(tool.name)"
+              :data-testid="`agent-tool-expand-${tool.name}`"
+              class="shrink-0 w-4 h-4 mt-0.5 flex items-center justify-center rounded hover:opacity-80 transition-transform"
+              :style="{ color: 'var(--semantic-text-dim)', transform: expandedTools.has(tool.name) ? 'rotate(90deg)' : 'none' }"
+              :aria-expanded="expandedTools.has(tool.name)"
+              :aria-label="expandedTools.has(tool.name) ? 'Collapse description' : 'Expand description'"
+              title="Show / hide full description"
+            >
+              ▸
+            </button>
           </li>
         </ul>
       </section>
@@ -383,3 +559,15 @@ async function handleNewChat() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Feature B1 (2026-08-22): 2-line description clamp. Expanded rows drop
+   the class and render full height. -webkit-line-clamp is fine for the
+   Chromium/Electron target. */
+.agent-desc-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+</style>

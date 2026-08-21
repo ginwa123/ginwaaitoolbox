@@ -18,6 +18,7 @@ import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
 import AgentChatDialog from './dialogs/AgentChatDialog.vue'
 import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
+import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
@@ -1153,6 +1154,53 @@ async function handleAgentRemoveKnowledge(knowledgeId: string) {
     // Restore the row so the user can retry.
     agentKnowledge.value = previous
     console.error('[AppLayout] failed to remove knowledge:', e)
+  }
+}
+
+// Agent knowledge EDIT dialog (plan 2026-08-22-agent-mode-ui-ux, A2).
+// Same open/busy/error pattern as the add dialog above. `row` is
+// captured at open-time so navigation mid-dialog can't break the save.
+const agentKnowledgeDetailOpen = ref(false)
+const agentKnowledgeDetailRow = ref<api.AgentKnowledgeRow | null>(null)
+const agentKnowledgeDetailBusy = ref(false)
+const agentKnowledgeDetailError = ref<string | null>(null)
+
+function handleAgentEditKnowledge(row: api.AgentKnowledgeRow) {
+  if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
+  agentKnowledgeDetailRow.value = row
+  agentKnowledgeDetailError.value = null
+  agentKnowledgeDetailOpen.value = true
+}
+
+function closeAgentKnowledgeDetailDialog() {
+  agentKnowledgeDetailOpen.value = false
+  agentKnowledgeDetailError.value = null
+}
+
+async function handleAgentKnowledgeSave(
+  knowledgeId: string,
+  updates: { label: string; file_path?: string; content?: string },
+) {
+  const itemId = activeWorkspaceItem.value?.id
+  if (!itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  agentKnowledgeDetailBusy.value = true
+  agentKnowledgeDetailError.value = null
+  try {
+    // The dialog always sends both source fields (file_path + content,
+    // one of them '') so a File↔Text mode switch flips the row cleanly.
+    const updated = await api.updateAgentKnowledge(itemId, knowledgeId, updates)
+    // Replace in place so list order is preserved.
+    agentKnowledge.value = agentKnowledge.value.map((k) =>
+      k.id === knowledgeId ? updated : k,
+    )
+    closeAgentKnowledgeDetailDialog()
+  } catch (e) {
+    agentKnowledgeDetailError.value =
+      e instanceof Error ? e.message : 'Failed to update knowledge'
+    // Keep the dialog open so the user can see + retry.
+  } finally {
+    agentKnowledgeDetailBusy.value = false
   }
 }
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
@@ -2342,6 +2390,7 @@ defineExpose({
         :tools="agentTools"
         @add-knowledge="handleAgentAddKnowledge"
         @remove-knowledge="handleAgentRemoveKnowledge"
+        @edit-knowledge="handleAgentEditKnowledge"
         @toggle-tool="handleAgentToggleTool"
         @toggle-tools-bulk="(names, enabled) => handleAgentToggleToolsBulk(names, enabled)"
         @new-chat="handleAgentNewChat"
@@ -2375,6 +2424,21 @@ defineExpose({
         :error="agentKnowledgeError"
         @close="closeAgentKnowledgeDialog"
         @create="handleAgentKnowledgeCreate"
+      />
+      <!--
+        AgentKnowledgeDetailDialog — edit mode for an existing knowledge
+        row (plan 2026-08-22-agent-mode-ui-ux, A2). Opened by AgentView's
+        per-row ✎ button via the `edit-knowledge` emit. Same v-model:show
+        + busy/error pattern as the add dialog above.
+      -->
+      <AgentKnowledgeDetailDialog
+        v-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        :show="agentKnowledgeDetailOpen"
+        :row="agentKnowledgeDetailRow"
+        :busy="agentKnowledgeDetailBusy"
+        :error="agentKnowledgeDetailError"
+        @close="closeAgentKnowledgeDetailDialog"
+        @save="handleAgentKnowledgeSave"
       />
       <!--
         Standard task chat (folder / memory / chat items — anything

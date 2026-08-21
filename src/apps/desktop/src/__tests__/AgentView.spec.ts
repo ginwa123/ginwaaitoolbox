@@ -301,4 +301,204 @@ describe('AgentView', () => {
     await wrapper.find('[data-testid="agent-new-chat"]').trigger('click')
     expect(wrapper.emitted('newChat')).toBeTruthy()
   })
+
+  // ─── Feature B1: description clamp + expander (2026-08-22) ──────────
+  describe('tool description expand/collapse', () => {
+    it('renders descriptions clamped by default (no agent-desc-clamped after expand)', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      const desc = wrapper.find('[data-testid="agent-tool-desc-bash"]')
+      expect(desc.exists()).toBe(true)
+      expect(desc.classes()).toContain('agent-desc-clamped')
+      // Expand it.
+      await wrapper.find('[data-testid="agent-tool-expand-bash"]').trigger('click')
+      expect(desc.classes()).not.toContain('agent-desc-clamped')
+      // Collapse again.
+      await wrapper.find('[data-testid="agent-tool-expand-bash"]').trigger('click')
+      expect(desc.classes()).toContain('agent-desc-clamped')
+    })
+
+    it('clicking the description text toggles expansion too', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      const desc = wrapper.find('[data-testid="agent-tool-desc-bash"]')
+      await desc.trigger('click')
+      expect(desc.classes()).not.toContain('agent-desc-clamped')
+    })
+
+    it('expansion is per-tool (independent rows)', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tool-expand-bash"]').trigger('click')
+      expect(wrapper.find('[data-testid="agent-tool-desc-bash"]').classes()).not.toContain('agent-desc-clamped')
+      expect(wrapper.find('[data-testid="agent-tool-desc-read_file"]').classes()).toContain('agent-desc-clamped')
+    })
+  })
+
+  // ─── Feature B2: All / Enabled / Disabled filter chips ──────────────
+  describe('enabled-state filter chips', () => {
+    it('renders All/Enabled/Disabled chips with live counts', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), tools: ['bash'] },
+      })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      expect(wrapper.find('[data-testid="agent-tools-filter-all"]').text()).toBe('All (4)')
+      expect(wrapper.find('[data-testid="agent-tools-filter-enabled"]').text()).toBe('Enabled (1)')
+      expect(wrapper.find('[data-testid="agent-tools-filter-disabled"]').text()).toBe('Disabled (3)')
+    })
+
+    it('Enabled chip narrows the list to enabled tools', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), tools: ['bash', 'read_file'] },
+      })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tools-filter-enabled"]').trigger('click')
+      await nextTick()
+      const visible = wrapper.findAll('[data-testid="agent-tool-item"]')
+      expect(visible.length).toBe(2)
+      expect(wrapper.text()).toContain('bash')
+      expect(wrapper.text()).toContain('read_file')
+      expect(wrapper.text()).not.toContain('write_file')
+    })
+
+    it('Disabled chip narrows the list to disabled tools', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), tools: ['bash'] },
+      })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tools-filter-disabled"]').trigger('click')
+      await nextTick()
+      const visible = wrapper.findAll('[data-testid="agent-tool-item"]')
+      expect(visible.length).toBe(3)
+      expect(wrapper.text()).not.toContain('bash')
+    })
+
+    it('filter composes with search query', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), tools: ['bash'] },
+      })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tools-filter-disabled"]').trigger('click')
+      const search = wrapper.find('[data-testid="agent-tools-search"]')
+      await search.setValue('file')
+      await nextTick()
+      // 'file' matches read_file + write_file + kanban_list (description),
+      // but only disabled ones survive → read_file + write_file.
+      const visible = wrapper.findAll('[data-testid="agent-tool-item"]')
+      expect(visible.length).toBe(2)
+    })
+
+    it('shows the filter empty state with a reset when Enabled has no matches', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tools-filter-enabled"]').trigger('click')
+      await nextTick()
+      const empty = wrapper.find('[data-testid="agent-tools-empty-filter"]')
+      expect(empty.exists()).toBe(true)
+      expect(empty.text()).toContain('No enabled tools')
+      // Reset returns to All.
+      await wrapper.find('[data-testid="agent-tools-empty-filter-reset"]').trigger('click')
+      await nextTick()
+      expect(wrapper.findAll('[data-testid="agent-tool-item"]').length).toBe(4)
+    })
+
+    it('bulk Select all still operates on the filtered visible set', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), tools: ['bash'] },
+      })
+      await nextTick()
+      await new Promise((r) => setTimeout(r, 50))
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tools-filter-disabled"]').trigger('click')
+      await nextTick()
+      await wrapper.find('[data-testid="agent-tools-select-all"]').trigger('click')
+      const events = wrapper.emitted('toggleToolsBulk')!
+      const [names, enabled] = events[0] as [string[], boolean]
+      expect(enabled).toBe(true)
+      expect(names.sort()).toEqual(['kanban_list', 'read_file', 'write_file'].sort())
+    })
+  })
+
+  // ─── Feature A1/A3: knowledge expand/collapse + copy ────────────────
+  describe('knowledge expand/collapse', () => {
+    const inlineRow = () => ({
+      id: 'k_inline',
+      agent_id: 'item_1',
+      file_path: '',
+      label: 'Notes',
+      content: 'Line one of knowledge.\nLine two of knowledge.',
+      position: 0,
+      created_at: '',
+      updated_at: '',
+    })
+
+    it('expands an inline row to reveal full content + copy button', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), knowledge: [inlineRow()] },
+      })
+      await nextTick()
+      expect(wrapper.find('[data-testid="agent-knowledge-detail"]').exists()).toBe(false)
+      await wrapper.find('[data-testid="agent-knowledge-expand-k_inline"]').trigger('click')
+      await nextTick()
+      const detail = wrapper.find('[data-testid="agent-knowledge-detail"]')
+      expect(detail.exists()).toBe(true)
+      expect(detail.text()).toContain('Line two of knowledge.')
+      expect(wrapper.find('[data-testid="agent-knowledge-copy"]').exists()).toBe(true)
+    })
+
+    it('expands a file-backed row to show path + hint (no copy)', async () => {
+      const wrapper = mount(AgentView, {
+        props: {
+          ...baseProps(),
+          knowledge: [
+            {
+              id: 'k_file',
+              agent_id: 'item_1',
+              file_path: '/home/me/spec.md',
+              label: 'Spec',
+              content: '',
+              position: 0,
+              created_at: '',
+              updated_at: '',
+            },
+          ],
+        },
+      })
+      await nextTick()
+      await wrapper.find('[data-testid="agent-knowledge-expand-k_file"]').trigger('click')
+      await nextTick()
+      const detail = wrapper.find('[data-testid="agent-knowledge-detail"]')
+      expect(detail.exists()).toBe(true)
+      expect(detail.text()).toContain('/home/me/spec.md')
+      expect(detail.text()).toContain('File-backed')
+      expect(wrapper.find('[data-testid="agent-knowledge-copy"]').exists()).toBe(false)
+    })
+
+    it('emits editKnowledge with the row when ✎ is clicked', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), knowledge: [inlineRow()] },
+      })
+      await nextTick()
+      await wrapper.find('[data-testid="agent-edit-knowledge"]').trigger('click')
+      const events = wrapper.emitted('editKnowledge')
+      expect(events).toBeTruthy()
+      expect((events![0] as unknown[])[0]).toMatchObject({ id: 'k_inline', label: 'Notes' })
+    })
+  })
 })
