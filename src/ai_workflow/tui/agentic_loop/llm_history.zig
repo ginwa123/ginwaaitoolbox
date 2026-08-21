@@ -840,6 +840,35 @@ pub fn resolveMaxCapacityTotalTokens(
     return cfg.maxCapacityForModel(profile, null, cfg, model);
 }
 
+/// Resolve the profile a session effectively runs under — the shared
+/// cascade used by BOTH the workflow loop (workflow.zig `iter_profile`)
+/// and the HTTP read paths (messages endpoint, manual compact). Order:
+///
+///   1. The session's explicit `selected_profile_model` (chat dropdown)
+///   2. The user's `config.active_profile` ("Set as active profile" in
+///      NalarSettings) — this is what a "Default" chat uses when the
+///      user has designated a default profile
+///   3. `null` → top-level Defaults-tab / built-in per-model defaults
+///
+/// 2026-08-21 follow-up: the first cut of the fix only honored step 1,
+/// so a Default chat with active_profile=alpha showed 500k in the
+/// footer while the workflow compacted against alpha's 950k. This
+/// helper makes every consumer agree.
+pub fn resolveSessionProfile(
+    cfg: *const config_mod.LlmConfig,
+    selected_profile_model: []const u8,
+) ?config_mod.LlmConfig.LlmProfile {
+    if (selected_profile_model.len > 0) {
+        if (cfg.getProfile(selected_profile_model)) |p| return p;
+    }
+    if (cfg.active_profile) |ap| {
+        if (ap.len > 0) {
+            if (cfg.getProfile(ap)) |p| return p;
+        }
+    }
+    return null;
+}
+
 /// Get the total count of messages for a session
 fn getTotalMessageCountForSession(
     allocator: std.mem.Allocator,

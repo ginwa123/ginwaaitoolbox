@@ -64,12 +64,12 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // in `zig build test` (lib mode) but Zig 0.16's `zig build-exe`
     // rejects it because the root module only exposes the `Config`
     // struct under `modules.config`. Same fix as session_messages_get.zig.
+    //
+    // `resolveSessionProfile` walks session selection → active_profile →
+    // null, matching the workflow loop.
     const compact_profile: ?config.LlmConfig.LlmProfile = blk: {
         const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
-        if (profile_name.len > 0) {
-            if (live_cfg.getProfile(profile_name)) |p| break :blk p;
-        }
-        break :blk null;
+        break :blk llm_history.resolveSessionProfile(live_cfg, profile_name);
     };
 
     // Load the DB-stored message history and turn it into the in-memory
