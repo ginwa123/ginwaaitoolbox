@@ -148,6 +148,16 @@ pub const ThresholdCtx = struct {
     total_tokens: u32,
     model: []const u8,
     llm_config: *const LlmConfig,
+    /// The session's selected profile, resolved by the caller from
+    /// `sessions.selected_profile_model`. Feeds cascade step 2 of
+    /// `maxCapacityForModel` / `compactionThresholdPercent` so a
+    /// profile's `max_capacity_tokens` / `compaction_threshold_percent`
+    /// overrides shape the compaction decision. 2026-08-21-fix-ui-
+    /// context-window: previously hardcoded null, so the backend compacted
+    /// at 80% of the built-in window even when the selected profile
+    /// overrode it — disagreeing with the (now profile-aware) chat footer.
+    /// `null` → fall through to Defaults-tab → built-in default.
+    profile: ?*const LlmConfig.LlmProfile = null,
 };
 
 /// All non-std-lib function dependencies of `maybeCompactMessagesNew`. Bundled
@@ -188,8 +198,8 @@ pub fn shouldCompactDefault(ctx: ThresholdCtx) bool {
     if (ctx.force) return true;
     return agent.LLMModels.shouldCompact(
         ctx.total_tokens,
-        ctx.llm_config.maxCapacityForModel(null, null, ctx.llm_config, ctx.model),
-        ctx.llm_config.compactionThresholdPercent(null, null, ctx.llm_config),
+        ctx.llm_config.maxCapacityForModel(ctx.profile, null, ctx.llm_config, ctx.model),
+        ctx.llm_config.compactionThresholdPercent(ctx.profile, null, ctx.llm_config),
     );
 }
 /// All production dependencies wired into one bundle. Pass this as the first
@@ -243,12 +253,20 @@ pub fn maybeCompactMessagesNew(
     /// regardless — `null` only skips the SSE fanout.
     event_bus: ?*event_bus_mod.EventBus,
     llm_config: *const LlmConfig,
+    /// The session's selected profile (resolved by the caller from
+    /// `sessions.selected_profile_model` via `LlmConfig.getProfile`).
+    /// Threaded into `ThresholdCtx` so `shouldCompactDefault` honors the
+    /// profile's `max_capacity_tokens` / `compaction_threshold_percent`
+    /// overrides. `null` → Defaults-tab → built-in default (old behavior).
+    /// 2026-08-21-fix-ui-context-window.
+    profile: ?*const LlmConfig.LlmProfile,
 ) !bool {
     if (!deps.shouldCompact(.{
         .force = force,
         .total_tokens = total_tokens,
         .model = model,
         .llm_config = llm_config,
+        .profile = profile,
     })) {
         return false;
     }
@@ -831,6 +849,7 @@ test "shouldCompact dep is called with the right context (force, tokens, model)"
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expectEqual(@as(u32, 1), mock_state.should_compact_calls);
@@ -867,6 +886,7 @@ test "shouldCompact returning false short-circuits — no other deps called" {
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expectEqual(false, result);
@@ -904,6 +924,7 @@ test "shouldCompact returning true routes through callCompactAgent" {
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expectEqual(false, result);
@@ -948,6 +969,7 @@ test "callCompactAgent returning null short-circuits — compact_messages_in_mem
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expectEqual(false, result);
@@ -987,6 +1009,7 @@ test "full happy path: all three deps called, returns true" {
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expectEqual(true, result);
@@ -1033,6 +1056,7 @@ test "compact_messages_in_memory error propagates to caller" {
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expectError(error.Skip, result);
@@ -1179,6 +1203,7 @@ test "happy path embeds user history and read_file paths into the compaction XML
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expect(result);
@@ -1228,6 +1253,7 @@ test "compaction still proceeds when fetchUserChatHistory returns empty (no user
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expect(result);
@@ -1291,6 +1317,7 @@ test "happy path embeds prior session_activity rows in <recent_activities>" {
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expect(result);
@@ -1361,6 +1388,7 @@ test "omits <recent_activities> when session has no prior activity" {
         &lg,
         null, // event_bus — test has no SSE subscriber
         &cfg,
+        null, // profile — no override in these tests
     );
 
     try testing.expect(result);
@@ -1697,6 +1725,64 @@ test "shouldCompactDefault: url_style is ignored by the decision (Anthropic conf
         shouldCompactDefault(ctx_openai),
     );
     try testing.expect(!shouldCompactDefault(ctx_openai));
+}
+
+test "shouldCompactDefault: profile override shapes the decision (cap + threshold)" {
+    // 2026-08-21-fix-ui-context-window — the compaction decision must
+    // honor the session profile's `max_capacity_tokens` and
+    // `compaction_threshold_percent` overrides, matching the (now
+    // profile-aware) chat footer. Previously `shouldCompactDefault`
+    // hardcoded a null profile, so a session with a 400k override +
+    // 50% threshold compacted at 80% of the built-in window instead of
+    // 50% of 400k.
+    //
+    // Setup: profile cap 400_000, threshold 50% → compact when
+    // total_tokens >= 200_000. claude-sonnet-4-5's built-in window is
+    // 200_000 with the 80% default → 160_000, so 210_000 tokens would
+    // NOT compact under the old null-profile code (210k < 80% of
+    // built-in? no — 210k > 160k... but with the profile it's 210k >=
+    // 200k → true). Use 190_000 to make the two paths disagree:
+    //   old (null profile): 190k < 160k? no → 190k >= 160k → TRUE
+    // Hmm — pick numbers where old=false, new=true instead:
+    //   profile: cap 400_000, threshold 50% → trigger at 200_000
+    //   built-in: cap 200_000, threshold 80% → trigger at 160_000
+    // 190_000: old → true (190k >= 160k), new → false (190k < 200k).
+    // So assert the NEGATIVE: with the profile, 190_000 must NOT compact.
+    const profile = LlmConfig.LlmProfile{
+        .model = "claude-sonnet-4-5",
+        .max_capacity_tokens = 400_000,
+        .compaction_threshold_percent = 50,
+    };
+    const cfg = buildShouldCompactTestConfig(testing.allocator, "claude-sonnet-4-5", null, null, "anthropic");
+
+    // With the profile: 190_000 < 50% of 400_000 (200_000) → no compaction.
+    // Under the old null-profile code this WAS a compaction (190k >= 80% of
+    // 200k = 160k) — the assertion below fails on the old code.
+    try testing.expect(!shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 190_000,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+        .profile = &profile,
+    }));
+
+    // And 210_000 >= 200_000 → compaction fires with the profile.
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 210_000,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+        .profile = &profile,
+    }));
+
+    // null profile → old behavior (built-in cascade): 190_000 >= 160_000 → true.
+    try testing.expect(shouldCompactDefault(.{
+        .force = false,
+        .total_tokens = 190_000,
+        .model = "claude-sonnet-4-5",
+        .llm_config = &cfg,
+        .profile = null,
+    }));
 }
 
 // ─── Inlined from workflow_compact_call_agent_test.zig ────────────────────────
