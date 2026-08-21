@@ -26,6 +26,7 @@ const http_response = @import("http_response.zig");
 const UpdateKnowledgeBody = struct {
     file_path: ?[]const u8 = null,
     label: ?[]const u8 = null,
+    content: ?[]const u8 = null,
 };
 
 /// Subset of the knowledge row returned by the use-case.
@@ -34,6 +35,8 @@ pub const Knowledge = struct {
     agent_id: []const u8,
     file_path: []const u8,
     label: []const u8,
+    /// Inline manual text ('' = file-backed row).
+    content: []const u8,
     position: i64,
 };
 
@@ -67,6 +70,9 @@ pub const KnowledgeUpdateInput = struct {
     knowledge_id: []const u8,
     file_path: ?[]const u8,
     label: ?[]const u8,
+    /// Inline manual text. Providing it switches the row to
+    /// content-backed; null leaves the column untouched.
+    content: ?[]const u8 = null,
 };
 
 /// Output of the knowledge-update use-case. `knowledge` is owned by
@@ -94,7 +100,7 @@ fn useCase(
     if (input.agent_id.len == 0 or input.knowledge_id.len == 0) {
         return error.IdsRequired;
     }
-    if (input.file_path == null and input.label == null) {
+    if (input.file_path == null and input.label == null and input.content == null) {
         return error.NothingToUpdate;
     }
     if (input.file_path) |fp| {
@@ -109,10 +115,11 @@ fn useCase(
     try sql_list.appendSlice(allocator, "UPDATE agent_knowledge SET updated_at = datetime('now')");
     if (input.file_path != null) try sql_list.appendSlice(allocator, ", file_path = ?");
     if (input.label != null) try sql_list.appendSlice(allocator, ", label = ?");
+    if (input.content != null) try sql_list.appendSlice(allocator, ", content = ?");
     try sql_list.appendSlice(allocator, " WHERE id = ? AND agent_id = ?");
 
-    // Bind args. Max 4 slots: file_path, label, knowledge_id, agent_id.
-    var args_buf: [4][]const u8 = undefined;
+    // Bind args. Max 5 slots: file_path, label, content, knowledge_id, agent_id.
+    var args_buf: [5][]const u8 = undefined;
     var arg_idx: usize = 0;
     if (input.file_path) |fp| {
         args_buf[arg_idx] = fp;
@@ -120,6 +127,10 @@ fn useCase(
     }
     if (input.label) |lb| {
         args_buf[arg_idx] = lb;
+        arg_idx += 1;
+    }
+    if (input.content) |ct| {
+        args_buf[arg_idx] = ct;
         arg_idx += 1;
     }
     args_buf[arg_idx] = input.knowledge_id;
@@ -136,13 +147,13 @@ fn useCase(
 
     // Read back.
     var q = db.query(allocator,
-        "SELECT id, agent_id, file_path, label, position FROM agent_knowledge WHERE id = ?",
+        "SELECT id, agent_id, file_path, label, content, position FROM agent_knowledge WHERE id = ?",
         &[_][]const u8{input.knowledge_id},
     ) catch return error.RefetchFailed;
     defer q.deinit();
     const r = (q.next() catch null) orelse return error.RowNotFound;
     defer r.deinit(allocator); // safe — we dupe the slices below
-    const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
+    const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
 
     // Dupe the slices out of row.values[] so the Knowledge struct
     // owns them. Production: arena allocator reaps these at request
@@ -155,6 +166,8 @@ fn useCase(
     errdefer allocator.free(file_path);
     const label = try allocator.dupe(u8, r.values[3]);
     errdefer allocator.free(label);
+    const content = try allocator.dupe(u8, r.values[4]);
+    errdefer allocator.free(content);
 
     return .{
         .knowledge = .{
@@ -162,6 +175,7 @@ fn useCase(
             .agent_id = agent_id,
             .file_path = file_path,
             .label = label,
+            .content = content,
             .position = position,
         },
     };
@@ -199,6 +213,7 @@ pub fn agentKnowledgeUpdateHandler(
         .knowledge_id = knowledge_id,
         .file_path = parsed.file_path,
         .label = parsed.label,
+        .content = parsed.content,
     }) catch |err| {
         const status: u16 = switch (err) {
             error.IdsRequired => 400,
@@ -242,6 +257,7 @@ pub fn agentKnowledgeUpdateHandler(
 const sqlite = @import("nalarcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+const Migration079AddContentToAgentKnowledge = @import("../../../migrations/migration.zig").Migration079AddContentToAgentKnowledge;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -263,6 +279,9 @@ fn setupDb() !TestCtx {
         &[_][]const u8{},
     );
     try Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up(&db, testing.allocator);
+    // Production DBs run every migration in order — the harness must
+    // mirror that, or the `content` column (Migration 079) is missing.
+    try Migration079AddContentToAgentKnowledge.up(&db, testing.allocator);
 
     // Seed: 1 agent + 1 knowledge row.
     try db.exec(testing.allocator,
@@ -366,6 +385,7 @@ test "useCase: happy path updates both file_path AND label" {
         alloc.free(output.knowledge.agent_id);
         alloc.free(output.knowledge.file_path);
         alloc.free(output.knowledge.label);
+        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
     }
     try testing.expectEqualStrings("know_1", output.knowledge.id);
     try testing.expectEqualStrings("/tmp/new.md", output.knowledge.file_path);
@@ -389,7 +409,35 @@ test "useCase: label-only update keeps file_path" {
         alloc.free(output.knowledge.agent_id);
         alloc.free(output.knowledge.file_path);
         alloc.free(output.knowledge.label);
+        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
     }
     try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
     try testing.expectEqualStrings("Updated label only", output.knowledge.label);
+}
+
+// ─── content (manual text) tests — plan 2026-08-21-agent-knowledge-manual-text ──
+
+test "useCase: PATCH can set content on an existing row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .agent_id = "ws_item_1",
+        .knowledge_id = "know_1",
+        .file_path = null,
+        .label = null,
+        .content = "new inline text",
+    });
+    defer {
+        alloc.free(output.knowledge.id);
+        alloc.free(output.knowledge.agent_id);
+        alloc.free(output.knowledge.file_path);
+        alloc.free(output.knowledge.label);
+        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
+    }
+    // Content is set; file_path unchanged (row keeps its old path).
+    try testing.expectEqualStrings("new inline text", output.knowledge.content);
+    try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
 }
