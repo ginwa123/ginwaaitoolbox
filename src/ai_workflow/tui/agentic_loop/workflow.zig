@@ -244,7 +244,6 @@ fn resolveProfileField(
     return top_level;
 }
 
-
 // ─── re_read_selected_profile_model — live-re-read from sessions table ─────
 //
 // **Why this helper exists** (bug report task_1786031708725, 2026-08-06):
@@ -475,7 +474,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
     var is_have_queue_message = false;
-
 
     const initial_agent_state = try llm_history.get_current_agent_by_session_id(
         parent_allocator,
@@ -1090,6 +1088,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     "[CHECKPOINT] finish_reason=stop session_id={s} loop_counter={d} content_len={d}",
                     .{ copy_session_id, loop_counter, if (res_dynamic_agent.content) |c| c.len else 0 },
                 );
+
+                const content_is_empty = if (res_dynamic_agent.content) |c| c.len == 0 else true;
+                if (content_is_empty) {
+                    logger.infoFmt(
+                        "[CHECKPOINT] finish_reason=stop but content is empty session_id={s} loop_counter={d} content_len={d}",
+                        .{ copy_session_id, loop_counter, if (res_dynamic_agent.content) |c| c.len else 0 },
+                    );
+                    continue;
+                }
                 _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
@@ -1783,13 +1790,10 @@ test "resolveProfileField: profile with empty field falls through to top-level f
     try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
 }
 
-
-
 // ─── Inline tests (formerly compaction_long_context_test.zig) ────────────
 // Long-context compaction test. Inlined here. The original test file
 // self-imported zig — that self-import is removed in the
 // inlined copy.
-
 
 /// Walk ALL migrations from 001 → latest (per project memory
 /// `llm-history-test-use-migrations-module.md`). No hand-rolled
@@ -1866,8 +1870,15 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
     defer lg.deinit();
 
     const new_messages = try compactMessageInMemoryNew(
-        alloc, messages, "GOAL: ship the fix\nNEXT: deploy",
-        session_id, "gpt-4o", "/tmp", &s.db, s.threaded.io(), &lg,
+        alloc,
+        messages,
+        "GOAL: ship the fix\nNEXT: deploy",
+        session_id,
+        "gpt-4o",
+        "/tmp",
+        &s.db,
+        s.threaded.io(),
+        &lg,
         null, // event_bus — no SSE subscriber in tests
     );
     defer {
@@ -1934,7 +1945,8 @@ fn maybeOverrideAllowedToolsForAgent(
     if (session_id.len == 0) return false;
 
     // Resolve session_id → workspace_item_id.
-    var q1 = db.query(allocator,
+    var q1 = db.query(
+        allocator,
         "SELECT workspace_item_id FROM workspace_item_tasks WHERE id = ?",
         &[_][]const u8{session_id},
     ) catch return false;
@@ -1944,7 +1956,8 @@ fn maybeOverrideAllowedToolsForAgent(
     const workspace_item_id = row1.values[0];
 
     // Only filter when the workspace_item is an agent.
-    var q2 = db.query(allocator,
+    var q2 = db.query(
+        allocator,
         "SELECT id FROM agents WHERE id = ?",
         &[_][]const u8{workspace_item_id},
     ) catch return false;
