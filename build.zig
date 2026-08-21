@@ -55,7 +55,16 @@ fn fileExists(absolute_path: []const u8) bool {
             const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
             break :blk rc == 0;
         },
-        .macos => fileExistsViaShell(absolute_path),
+        // macOS: libc `access()` — same F_OK check as `test -f`.
+        // (The build runner links libc, so the extern is always
+        // resolvable; no shell-out needed. Zig 0.16 removed
+        // std.posix.access / made it Io-based, and the old shell-out
+        // used std.heap.GeneralPurposeAllocator + a pre-0.16
+        // std.process.run signature that no longer compile.)
+        .macos => blk: {
+            const rc = std.c.access(&buf, 0); // F_OK = 0
+            break :blk rc == 0;
+        },
         .windows => blk: {
             // WTF-8 (Zig's UTF-8 with surrogate-half support) → WTF-16
             // little-endian (Win32's wide-char path) for the Win32 API
@@ -75,37 +84,6 @@ fn fileExists(absolute_path: []const u8) bool {
         },
         else => false,
     };
-}
-
-/// macOS-only fallback for `fileExists`. Mac always has `/bin/sh`
-/// available (Darwin requires a POSIX shell), so the shell-out is
-/// reliable there — it just isn't reliable on Windows dev boxes
-/// where bash.exe exists but isn't on PATH.
-fn fileExistsViaShell(absolute_path: []const u8) bool {
-    var cmd_buf: [std.fs.max_path_bytes * 2:0]u8 = undefined;
-    const cmd_slice = std.fmt.bufPrint(
-        &cmd_buf,
-        "test -f '{s}' && echo 1 || echo 0",
-        .{absolute_path},
-    ) catch return false;
-    cmd_buf[cmd_slice.len] = 0;
-    const cmd_z: [*:0]const u8 = &cmd_buf;
-
-    var gpa_state = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa_state.deinit();
-    const result = std.process.run(
-        gpa_state.allocator(),
-        .{ .stdout = .piped, .stderr = .piped },
-        .{
-            .argv = &.{ "/bin/sh", "-c", cmd_z },
-            .stdout_limit = .limited(64),
-            .stderr_limit = .limited(64),
-        },
-    ) catch return false;
-    defer gpa_state.allocator().free(result.stdout);
-    defer gpa_state.allocator().free(result.stderr);
-    const trimmed = std.mem.trim(u8, result.stdout, " \n\r\t");
-    return std.mem.eql(u8, trimmed, "1");
 }
 
 /// Return the first entry of `candidates` that exists as a file, or null

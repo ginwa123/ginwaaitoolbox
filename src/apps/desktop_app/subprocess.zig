@@ -117,7 +117,7 @@ pub fn waitForHealth(
             .sec = @intCast(@divFloor(sleep_ns, std.time.ns_per_s)),
             .nsec = @intCast(@mod(sleep_ns, std.time.ns_per_s)),
         };
-        helpers.nanosleep(&sleep_ts, null);
+        _ = helpers.nanosleep(&sleep_ts, null);
     }
 }
 
