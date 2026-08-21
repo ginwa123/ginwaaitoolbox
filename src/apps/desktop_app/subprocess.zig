@@ -215,9 +215,17 @@ fn readMonotonicNs() u64 {
     // version requires `clockid_t` (a `void` param on Windows in
     // Zig 0.16 — same Windows compile-error class as `std.c.timespec`),
     // so we expose `PosixTimespec` + a clean extern decl in
-    // helpers/mod.zig.
+    // helpers/mod.zig. helpers.CLOCK_MONOTONIC is platform-correct
+    // (Linux 1 / Darwin 6).
     var ts: helpers.PosixTimespec = undefined;
-    _ = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
+    const rc = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
+    if (rc != 0) {
+        // Fall back to CLOCK_REALTIME rather than reading an undefined
+        // timespec (@intCast would panic on the garbage bytes in Debug).
+        var wall: helpers.PosixTimespec = undefined;
+        if (helpers.clock_gettime(helpers.CLOCK_REALTIME, &wall) != 0) return 0;
+        return @as(u64, @intCast(wall.sec)) * std.time.ns_per_s + @as(u64, @intCast(wall.nsec));
+    }
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 

@@ -61,7 +61,9 @@ fn monotonicNs() u64 {
         .name = "clock_gettime",
         .library_name = "c",
     });
-    const CLOCK_MONOTONIC: c_int = 1;
+    // Platform-correct: Linux CLOCK_MONOTONIC = 1, Darwin = 6
+    // (see src/helpers/mod.zig for the full rationale).
+    const CLOCK_MONOTONIC: c_int = if (builtin.os.tag.isDarwin()) 6 else 1;
     var ts: PosixTimespec = undefined;
     _ = clock_gettime_c(CLOCK_MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));

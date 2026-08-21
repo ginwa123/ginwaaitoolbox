@@ -313,7 +313,16 @@ pub fn monotonicTimestampNanos() u64 {
 
 fn monotonicTimestampNanosPosix() u64 {
     var ts: PosixTimespec = undefined;
-    _ = clock_gettime(CLOCK_MONOTONIC, &ts);
+    const rc = clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (rc != 0) {
+        // clock_gettime with a valid per-OS CLOCK_MONOTONIC should never
+        // fail; if it somehow does, fall back to CLOCK_REALTIME rather
+        // than reading an undefined timespec (@intCast would panic on
+        // the garbage bytes in Debug mode).
+        var wall: PosixTimespec = undefined;
+        if (clock_gettime(CLOCK_REALTIME, &wall) != 0) return 0;
+        return @as(u64, @intCast(wall.sec)) * std.time.ns_per_s + @as(u64, @intCast(wall.nsec));
+    }
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
@@ -461,7 +470,14 @@ pub const CLOCK_REALTIME: c_int = 0;
 /// and by `subprocess.zig`'s `readMonotonicNs` (which refuses to
 /// route through `std.c.clock_gettime` because `clockid_t` is `void`
 /// on Windows in Zig 0.16 — see `helpers/mod.zig:235`).
-pub const CLOCK_MONOTONIC: c_int = 1;
+///
+/// Platform-correct value: Linux glibc/musl define CLOCK_MONOTONIC = 1,
+/// but Darwin's <mach/time.h> defines it as 6 (CLOCK_MONOTONIC_RAW is 4,
+/// CLOCK_UPTIME_RAW is 8). Passing Linux's `1` on macOS hits a different
+/// clock id — observed on the macOS CI runner as clock_gettime failing
+/// (leaving the timespec undefined → @intCast panic downstream), so the
+/// constant must be selected per-OS at comptime.
+pub const CLOCK_MONOTONIC: c_int = if (builtin.os.tag.isDarwin()) 6 else 1;
 
 // === Tests ===
 
