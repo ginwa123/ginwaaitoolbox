@@ -1944,6 +1944,10 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md.
     // Task: task_1786962724740_0.
     .{ .version = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.version, .name = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.name, .up = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up },
+    // Migration 079 — agent_knowledge.content (manual text knowledge).
+    // Plan: docs/superpowers/plans/2026-08-21-agent-knowledge-manual-text.md.
+    // Task: task_1787315943769_9.
+    .{ .version = Migration079AddContentToAgentKnowledge.version, .name = Migration079AddContentToAgentKnowledge.name, .up = Migration079AddContentToAgentKnowledge.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3893,6 +3897,118 @@ test "Migration078 is registered in allMigrations" {
     }
     return error.Migration078NotRegistered;
 }
+
+// ============================================================================
+// Migration 079 tests — agent_knowledge.content column
+// ============================================================================
+
+const Migration079 = Migration079AddContentToAgentKnowledge;
+
+test "Migration079 adds content column to agent_knowledge" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+    try Migration079.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "agent_knowledge");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    // content appended after the original 7 columns.
+    const expected = [_][]const u8{
+        "id", "agent_id", "file_path", "label", "position", "created_at", "updated_at", "content",
+    };
+    try expectColumnsEqual(cols, &expected);
+}
+
+test "Migration079 is idempotent (safe to run twice)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+    try Migration079.up(&ctx.db, alloc);
+    try Migration079.up(&ctx.db, alloc); // must not throw
+
+    // Column still exists exactly once.
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM pragma_table_info('agent_knowledge') WHERE name = 'content'",
+        &.{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration079 preserves existing rows with default empty content" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+
+    // Seed a file-backed row the old way (pre-079 shape).
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path, label, position) VALUES ('k1', 'a1', '/tmp/x.md', '', 0)",
+        &.{},
+    );
+
+    try Migration079.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT content FROM agent_knowledge WHERE id = 'k1'",
+        &.{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "Migration079 is registered in allMigrations" {
+    const all = @import("migration.zig").allMigrations;
+    for (all) |m| {
+        if (m.version == Migration079.version) return;
+    }
+    return error.Migration079NotRegistered;
+}
+
+// ============================================================================
+// Migration 079 — agent_knowledge.content (manual text knowledge)
+// ============================================================================
+//
+// Adds a `content` column so a knowledge row can be either file-backed
+// (content = '') or inline text (content = text). Empty-string sentinel
+// matches the `label` convention. NOT NULL DEFAULT '' keeps every existing
+// INSERT/SELECT working unchanged and backfills old rows as file-backed.
+//
+// Idempotency: addColumnIfMissing probes pragma_table_info before ALTER,
+// so re-running is a no-op (canonical pattern from Migrations 020 / 052 /
+// 065 / 066 / 067 / 074 / 077).
+//
+// Plan: docs/superpowers/plans/2026-08-21-agent-knowledge-manual-text.md
+// Task: task_1787315943769_9
+pub const Migration079AddContentToAgentKnowledge = struct {
+    pub const version: u32 = 79;
+    pub const name = "add_content_to_agent_knowledge";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "agent_knowledge",
+            "content",
+            "content TEXT NOT NULL DEFAULT ''",
+        );
+    }
+};
 
 // ============================================================================
 // Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
