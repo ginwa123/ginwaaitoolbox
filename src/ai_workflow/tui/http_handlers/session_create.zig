@@ -168,7 +168,22 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
     if (parsed.image_urls.len > 0) image_urls = parsed.image_urls;
 
     var selected_profile_model: []const u8 = "";
-    if (parsed.selected_profile_model.len > 0) selected_profile_model = parsed.selected_profile_model;
+    if (parsed.selected_profile_model.len > 0) {
+        selected_profile_model = parsed.selected_profile_model;
+    } else if (nalarcore.getLlmConfig(di).active_profile) |ap| {
+        // 2026-08-21 — snapshot the user's active profile into the
+        // session row at create time. Without this, a "Default" chat
+        // inherits the active profile only implicitly (via the workflow's
+        // resolveProfileField cascade), so the chat footer computed its
+        // context window from the built-in per-model default instead of
+        // the active profile's max_capacity_tokens override. Snapshotting
+        // makes the row self-contained: the messages endpoint, the manual
+        // compact endpoint, and the workflow all read the same name.
+        // The user can still switch the chat to another profile later
+        // via the dropdown (PUT /api/llm/session/:id overwrites the
+        // column) or back to true-default by picking Default explicitly.
+        selected_profile_model = ap;
+    }
 
     // Migration 063 — opt into unattended mode. Empty / anything other
     // than "1" stays off (matches the production SQL default '0').
@@ -211,7 +226,16 @@ fn insertWorker(allocator: std.mem.Allocator, sqlite_db: *sqlite_db_mod.SqliteBa
     const session_id = parsed.session_id;
     const session_name = parsed.session_name;
     const effective_cwd = parsed.cwd_session;
-    const effective_profile = parsed.selected_profile_model;
+    // 2026-08-21 — same active_profile snapshot as useCase: when the
+    // caller didn't pick a profile, persist the user's active profile
+    // so the session row is self-contained (footer context window,
+    // compaction decision, and workflow all agree from message #1).
+    const effective_profile: []const u8 = blk: {
+        if (parsed.selected_profile_model.len > 0) break :blk parsed.selected_profile_model;
+        const di = nalarcore.getSingleton() catch break :blk "";
+        if (nalarcore.getLlmConfig(di).active_profile) |ap| break :blk ap;
+        break :blk "";
+    };
     const effective_auto_retry: []const u8 = blk: {
         if (std.mem.eql(u8, parsed.is_auto_retry_until_stop, "1")) break :blk "1";
         break :blk "0";

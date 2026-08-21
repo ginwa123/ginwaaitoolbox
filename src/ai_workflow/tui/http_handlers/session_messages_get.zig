@@ -62,10 +62,14 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     // `zig build-exe` (exe module lookup) rejects it because the parent
     // struct in the root module is `modules.config.Config` and has no
     // top-level `LlmProfile` member. CI fix 2026-08-21.
+    //
+    // `resolveSessionProfile` walks session selection → active_profile →
+    // null, matching the workflow loop — so a Default chat with
+    // active_profile=alpha shows alpha's 950k window, not 500k.
     const cfg = nalarcore.getLlmConfig(di);
     const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
     const profile: ?config.LlmConfig.LlmProfile =
-        if (profile_name.len > 0) cfg.getProfile(profile_name) else null;
+        llm_history.resolveSessionProfile(cfg, profile_name);
 
     const msg_response = llm_history.getSessionMessagesSorted(allocator, sqlite_db, session_id, limit_val, cursor, sort_spec, if (profile) |*p| p else null) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
