@@ -1932,6 +1932,18 @@ pub const allMigrations: []const Migration = &.{
     // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md. Task:
     // task_1787073929852_8.
     .{ .version = Migration076CreateSessionPlan.version, .name = Migration076CreateSessionPlan.name, .up = Migration076CreateSessionPlan.up },
+    // Migration 077 — `users` + `user_companies` + `user_company_members`
+    // + additive `workspaces.user_id` + `sessions.user_id` + default
+    // `user_system` user + backfill. Sub-project 1 of 4 (foundation for
+    // multi-user / multi-tenant nalar). Plan:
+    // docs/superpowers/plans/2026-08-21-users-rbac-foundation.md. Task:
+    // task_1787199963946_1.
+    .{ .version = Migration077AddUsersAndRbacSchema.version, .name = Migration077AddUsersAndRbacSchema.name, .up = Migration077AddUsersAndRbacSchema.up },
+    // Migration 078 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
+    // (4th workspace-item type, knowledge injection, tool allowlist).
+    // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md.
+    // Task: task_1786962724740_0.
+    .{ .version = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.version, .name = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.name, .up = Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3234,6 +3246,152 @@ pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
 };
 
 // ============================================================================
+// Migration 076 — Agent Mode: `agents` + `agent_knowledge` + `agent_tools`
+// ============================================================================
+//
+// What this migration creates
+// ────────────────────────────
+// Agent Mode adds a fourth workspace-item type — `agent` — alongside
+// `folder` / `kanban` / `design`. Each Agent is a persistent chatbot
+// configuration with:
+//   - a `path` (cwd for its chat sessions, like Kanban/Design)
+//   - a list of absolute-path markdown knowledge files on disk
+//     (injected into the system prompt as `## Agent Knowledge`)
+//   - a tool allowlist (filtering the LLM's function-call schema)
+//
+// Three new tables back this:
+//
+//   1. `agents` — 1-1 with `workspace_items` (UNIQUE workspace_item_id).
+//      Holds the agent's description (free-form). Empty agents table
+//      means no Agents exist yet on a workspace.
+//
+//   2. `agent_knowledge` — N-1 with `agents`. Each row = a markdown file
+//      path on disk + an optional label + a position for drag-reorder.
+//      The backend re-reads file contents from disk at every chat start
+//      (no content is duplicated into SQLite).
+//
+//   3. `agent_tools` — N-1 with `agents`. Each row = one tool explicitly
+//      allowed for the agent. `tool_name` matches the canonical registry
+//      at `tools_equipped.zig:118`. UNIQUE (agent_id, tool_name) so the
+//      same tool can't be added twice.
+//
+// All 3 tables use `CREATE ... IF NOT EXISTS` — re-running the
+// migration is a no-op. All FKs use `ON DELETE CASCADE` so deleting the
+// parent workspace_item drops the agent + (cascade) its knowledge +
+// tool rows.
+//
+// Why a separate agents table (and not just columns on workspace_items)
+// ─────────────────────────────────────────────────────────────────────
+// The user's spec specifies a 1-1 table. Keeping it separate:
+//   - Future agent-specific columns (system-prompt override, default
+//     model, allowed-tools baseline, embedding-config toggle) become
+//     additive columns on `agents`, NOT on `workspace_items` (which
+//     would affect kanban / design / folder rows too).
+//   - Enforces the 1-1 invariant via `UNIQUE(workspace_item_id)` at the
+//     schema level, not just at the application layer.
+//
+// Why a separate agent_knowledge table
+// ─────────────────────────────────────
+// One Agent has N knowledge files. A TEXT column on `agents` can't
+// model N rows. The backend re-reads file contents from disk every
+// chat (no content duplicated into SQLite). Storage stays small (paths
+// only). A separate table also enables per-entry metadata (label,
+// position, created_at) without future migrations.
+//
+// Why a separate agent_tools table
+// ─────────────────────────────────
+// One Agent has N tools enabled. The runtime filter is a single SQL
+// query. `tool_name` + `enabled` give us per-row toggling for v1 +
+// future per-tool overrides (e.g. per-tool rate limit) without another
+// migration. UNIQUE (agent_id, tool_name) prevents duplicates.
+//
+// Secure-by-default semantics
+// ───────────────────────────
+// An empty `agent_tools` allowlist for an Agent means zero tools —
+// the runtime filter at `workflow.zig:1478` returns no functions for
+// the LLM to call. The user must opt in via the Tools panel. This is
+// intentional and matches the user's framing "we need to limit the
+// tool that's used".
+//
+// Plan: docs/superpowers/plans/2026-08-15-agent-mode.md
+// Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md
+// Task: task_1786962724740_0
+pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = struct {
+    pub const version: u32 = 78;
+    pub const name = "add_agents_and_agent_knowledge_and_agent_tools";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. `agents` — 1-1 with `workspace_items` (UNIQUE workspace_item_id).
+        //    `id` == `workspace_item_id` (per spec D3); both rows share the
+        //    same string id. `description` defaults to '' (canonical "no
+        //    description" sentinel, matching `workspace_item_tasks.description`
+        //    from Migration 062).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agents (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agents_workspace_item_id ON agents(workspace_item_id)",
+            &[_][]const u8{});
+
+        // 2. `agent_knowledge` — N-1 with `agents`. Position-ordered for
+        //    drag-reorder UI. `file_path` is NOT NULL (handlers validate
+        //    it's absolute on insert). `label` defaults to '' (canonical
+        //    "no label" sentinel).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_knowledge (
+            \\    id TEXT PRIMARY KEY,
+            \\    agent_id TEXT NOT NULL,
+            \\    file_path TEXT NOT NULL,
+            \\    label TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent_id ON agent_knowledge(agent_id)",
+            &[_][]const u8{});
+        // Composite index for the position DESC ordering used by the
+        // `agentKnowledgeListHandler` SELECT.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent_id_position ON agent_knowledge(agent_id, position DESC)",
+            &[_][]const u8{});
+
+        // 3. `agent_tools` — N-1 with `agents`. UNIQUE (agent_id,
+        //    tool_name) so the same tool can't be added twice for the
+        //    same agent. `enabled` defaults to 1 (v1 never offers a
+        //    "disabled" toggle, but the column exists so future UX
+        //    doesn't need a migration — per spec D10).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_tools (
+            \\    id TEXT PRIMARY KEY,
+            \\    agent_id TEXT NOT NULL,
+            \\    tool_name TEXT NOT NULL,
+            \\    enabled INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_tools_agent_id ON agent_tools(agent_id)",
+            &[_][]const u8{});
+        // Named UNIQUE index — checked by name in the migration test,
+        // and the handler maps UNIQUE violations to HTTP 409.
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_tools_agent_tool ON agent_tools(agent_id, tool_name)",
+            &[_][]const u8{});
+    }
+};
+
+// ============================================================================
 // Migration 070 — `agent_memories` + `agent_memories_fts` for save_memory /
 // load_memory tools
 // ============================================================================
@@ -3359,6 +3517,383 @@ pub const Migration070AddAgentMemories = struct {
     }
 };
 
+// ─── Tests for Migration 078 (Agent Mode) ──────────────────────────────
+// impl + tests in one file (project convention).
+// `std` is already in scope from line 1; only the local aliases need adding.
+const testing = std.testing;
+const sqlite = @import("nalarcore").sqlite;
+const Migration078 = Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+
+
+/// Top-level named struct (NOT inline anonymous) per project memory
+/// `zig-anonymous-struct-type-identity.md` — Zig 0.16 treats two anonymous
+/// `struct { db, threaded }` types as distinct types even with identical
+/// fields.
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Helper: run the migration, then return the list of column names for a
+/// given table (ordered by `cid`, the original CREATE order).
+fn columnsOf(ctx: *TestCtx, table: []const u8) ![]const []const u8 {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM pragma_table_info(?) ORDER BY cid",
+        &[_][]const u8{table},
+    );
+    defer q.deinit();
+    var list = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (list.items) |c| alloc.free(c);
+        list.deinit(alloc);
+    }
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try list.append(alloc, try alloc.dupe(u8, row.values[0]));
+    }
+    // Transfer ownership of the slice (and each element) to the caller.
+    // Caller MUST `free` the slice header AND each element. We use
+    // `toOwnedSlice` so the ArrayList's buffer is detached and the
+    // returned slice header survives past function return.
+    return try list.toOwnedSlice(alloc);
+}
+
+/// Helper: assert `list` contains exactly `expected` (in order). Uses comptime
+/// `expected` so the comparison can be inlined.
+fn expectColumnsEqual(list: []const []const u8, comptime expected: anytype) !void {
+    const expected_len: usize = expected.len;
+    try testing.expectEqual(expected_len, list.len);
+    var i: usize = 0;
+    while (i < expected_len) : (i += 1) {
+        try testing.expectEqualStrings(expected[i], list[i]);
+    }
+}
+
+test "Migration078 creates agents table with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: pre-migration, the agents table doesn't exist.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agents'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // pre-migration should NOT have agents
+        }
+    }
+
+    try Migration078.up(&ctx.db, alloc);
+
+    // Post-migration: table exists in sqlite_master.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agents'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.AgentsTableNotCreated;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("agents", row.values[0]);
+    }
+
+    // Columns must be exactly: id, workspace_item_id, description, created_at, updated_at.
+    const cols = try columnsOf(&ctx, "agents");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    const expected = [_][]const u8{ "id", "workspace_item_id", "description", "created_at", "updated_at" };
+    try expectColumnsEqual(cols, &expected);
+}
+
+test "Migration078 creates agent_knowledge table with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "agent_knowledge");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    // Spec columns: id, agent_id, file_path, label, position, created_at, updated_at.
+    const expected = [_][]const u8{
+        "id", "agent_id", "file_path", "label", "position", "created_at", "updated_at",
+    };
+    try expectColumnsEqual(cols, &expected);
+}
+
+test "Migration078 creates agent_tools table with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "agent_tools");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    // Spec columns: id, agent_id, tool_name, enabled, created_at.
+    const expected = [_][]const u8{
+        "id", "agent_id", "tool_name", "enabled", "created_at",
+    };
+    try expectColumnsEqual(cols, &expected);
+}
+
+test "Migration078 agents.workspace_item_id is UNIQUE" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+
+    // Probe sqlite_master for a UNIQUE index on the agents.workspace_item_id column.
+    // The standard SQLite convention is that UNIQUE constraints create
+    // auto-named indexes "sqlite_autoindex_<table>_<n>"; query sqlite_master.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agents'",
+        &.{});
+    defer q.deinit();
+    var found = false;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        // The UNIQUE constraint produces an auto-index; the existence of
+        // ANY index on agents in addition to idx_agents_workspace_item_id
+        // is our proxy. We'll do a tighter check via INSERT below.
+        // Just record that an index exists.
+        found = true;
+    }
+    try testing.expect(found); // at least one index exists
+
+    // Tighter check: INSERT two rows with the same workspace_item_id. The
+    // second must fail with a UNIQUE violation. We need a parent
+    // workspace_items row first (FK).
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'agent', 'Test Agent', '/tmp/agent', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agents (id, workspace_item_id) VALUES ('agent_1', 'ws_item_1')",
+        &.{});
+
+    // Duplicate INSERT must fail. Catch the SqliteError.
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO agents (id, workspace_item_id) VALUES ('agent_2', 'ws_item_1')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+}
+
+test "Migration078 agent_tools(agent_id, tool_name) is UNIQUE" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+
+    // Verify the named UNIQUE index exists.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_agent_tools_agent_tool'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.UniqueIndexNotCreated;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("uq_agent_tools_agent_tool", row.values[0]);
+
+    // Tighter check: insert parent rows, then duplicate tool_name → expect UNIQUE violation.
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'agent', 'Test Agent', '/tmp/agent', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agents (id, workspace_item_id) VALUES ('agent_1', 'ws_item_1')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_tools (id, agent_id, tool_name) VALUES ('at_1', 'agent_1', 'bash')",
+        &.{});
+
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO agent_tools (id, agent_id, tool_name) VALUES ('at_2', 'agent_1', 'bash')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+}
+
+test "Migration078 ON DELETE CASCADE: agents dropped when workspace_items row deleted" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Enable FK enforcement (off by default in SQLite, on for this test).
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+    try Migration078.up(&ctx.db, alloc);
+
+    // Create the parent workspace_items row + agent + 1 knowledge + 1 tool.
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'agent', 'Cascade Test', '/tmp/cascade', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agents (id, workspace_item_id, description) VALUES ('agent_1', 'ws_item_1', 'test')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path) VALUES ('know_1', 'agent_1', '/tmp/x.md')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_tools (id, agent_id, tool_name) VALUES ('at_1', 'agent_1', 'bash')",
+        &.{});
+
+    // Sanity: all 4 rows exist.
+    {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agents WHERE id='agent_1'", &.{});
+        defer q.deinit();
+        const r = (try q.next()) orelse return error.RowMissing;
+        defer r.deinit(alloc);
+        try testing.expectEqualStrings("1", r.values[0]);
+    }
+
+    // Delete the parent workspace_items row. CASCADE should drop agents.
+    try ctx.db.exec(alloc, "DELETE FROM workspace_items WHERE id = 'ws_item_1'", &.{});
+
+    // The agent row should be gone (FK CASCADE from agents.workspace_item_id).
+    {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agents WHERE id='agent_1'", &.{});
+        defer q.deinit();
+        const r = (try q.next()) orelse return error.RowMissing;
+        defer r.deinit(alloc);
+        try testing.expectEqualStrings("0", r.values[0]);
+    }
+}
+
+test "Migration078 ON DELETE CASCADE: knowledge + tools dropped when agent row deleted" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+    try Migration078.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'agent', 'Cascade Test', '/tmp/cascade', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agents (id, workspace_item_id) VALUES ('agent_1', 'ws_item_1')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path) VALUES ('know_1', 'agent_1', '/tmp/x.md')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_knowledge (id, agent_id, file_path) VALUES ('know_2', 'agent_1', '/tmp/y.md')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_tools (id, agent_id, tool_name) VALUES ('at_1', 'agent_1', 'bash')",
+        &.{});
+
+    // Delete the agent row directly.
+    try ctx.db.exec(alloc, "DELETE FROM agents WHERE id = 'agent_1'", &.{});
+
+    // Both knowledge rows + tool row should be CASCADE-deleted.
+    {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_knowledge WHERE agent_id='agent_1'", &.{});
+        defer q.deinit();
+        const r = (try q.next()) orelse return error.RowMissing;
+        defer r.deinit(alloc);
+        try testing.expectEqualStrings("0", r.values[0]);
+    }
+    {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_tools WHERE agent_id='agent_1'", &.{});
+        defer q.deinit();
+        const r = (try q.next()) orelse return error.RowMissing;
+        defer r.deinit(alloc);
+        try testing.expectEqualStrings("0", r.values[0]);
+    }
+}
+
+test "Migration078 creates agent_knowledge.position + agent_id composite index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+
+    // The named index from the spec: idx_agent_knowledge_agent_id_position.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_agent_knowledge_agent_id_position'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.PositionIndexNotCreated;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("idx_agent_knowledge_agent_id_position", row.values[0]);
+}
+
+test "Migration078 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration078.up(&ctx.db, alloc);
+    try Migration078.up(&ctx.db, alloc); // second run must not crash
+
+    // Each of the 3 tables should still exist exactly once.
+    for ([_][]const u8{ "agents", "agent_knowledge", "agent_tools" }) |table| {
+        var q = try ctx.db.query(alloc,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+            &[_][]const u8{table},
+        );
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1", row.values[0]);
+    }
+}
+
+test "Migration078 is registered in allMigrations" {
+    // Catches the silent-skip regression where the struct is defined but
+    // the registration tuple is missing (per project memory
+    // `migration-registration-trap`).
+    const all = @import("migration.zig").allMigrations;
+    for (all) |m| {
+        if (m.version == Migration078.version) return;
+    }
+    return error.Migration078NotRegistered;
+}
+
 // ============================================================================
 // Migration 076 — `session_plan` 1:1 table with `sessions` for the agent's
 // persistent task plan (markdown + checklist).
@@ -3396,5 +3931,195 @@ pub const Migration076CreateSessionPlan = struct {
         , &[_][]const u8{});
         // No FK on session_id (matches session_activity Migration 073 precedent).
         // No index — session_id IS the PK, lookups are O(log n) by definition.
+    }
+};
+
+// ============================================================================
+// Migration 077 — users + user_companies + user_company_members +
+// workspaces.user_id + sessions.user_id + default user_system + backfill.
+//
+// What this migration creates
+// ────────────────────────────
+// The schema foundation for multi-user / multi-tenant nalar — sub-project 1 of 4.
+//   1. `users` (id, email, name, password_hash, role, is_active,
+    //      created_at, updated_at, last_login_at) — identity table.
+    //   2. `user_companies` (id, name, slug, description, is_active,
+    //      created_at, updated_at, created_by) — org / tenant entity.
+    //   3. `user_company_members` (user_id, user_company_id, role,
+    //      joined_at, invited_by) with composite PRIMARY KEY on
+    //      (user_id, user_company_id) — many-to-many user ↔ company.
+    //   4. Additive `user_id` column on `workspaces` (nullable, no FK
+    //      constraint — matches Migration 066 `design_pages.workspace_item_task_id`
+    //      precedent; SQLite does NOT support ALTER TABLE … ADD CONSTRAINT FK).
+    //   5. Additive `user_id` column on `sessions` (same shape).
+    //   6. Default `user_system` user — id='user_system', email='system@local',
+    //      password_hash='!disabled' (sentinel; can never match any real
+    //      argon2id output), is_active=0 (can never log in), role='admin'
+    //      (so any future RBAC query that resolves to it gets the widest
+    //      permission).
+    //   7. Backfill every legacy row (workspaces.user_id, sessions.user_id)
+    //      WHERE user_id IS NULL → user_id = 'user_system'.
+    //
+    // Why BEGIN..COMMIT wraps the whole thing
+    // ───────────────────────────────────────
+    // 6 operations that must commit together. A crash mid-migration would
+    // otherwise leave a half-built schema (e.g. users exists but
+    // user_companies doesn't, or user_id columns added but backfill not
+    // run), which the next migration would silently compound into a
+    // never-ending recovery loop.
+    //
+    // Why no FK constraints
+    // ─────────────────────
+    // SQLite does not support ALTER TABLE … ADD CONSTRAINT FK. The two
+    // canonical alternatives are triggers or recreate-table — both add
+    // complexity that's out of scope for v1. The application layer is the
+    // second line of defense (referential integrity enforced by JOIN
+    // clauses at read time; the user_company_members composite PK
+    // enforces "no duplicate membership" at the SQL layer). This matches
+    // the project precedent — Migration 066's docstring explicitly notes
+    // the same decision for `design_pages.workspace_item_task_id`.
+    //
+    // Idempotency
+    // ───────────
+    // Re-running this migration is safe via three mechanisms:
+    //   1. CREATE TABLE IF NOT EXISTS — no-op if the tables exist.
+    //   2. addColumnIfMissing — probes pragma_table_info before ALTER.
+    //   3. INSERT OR IGNORE — no-op if the user_system row already exists.
+    //   4. UPDATE … WHERE user_id IS NULL — no-op if no rows are NULL.
+    //
+    // Plan: docs/superpowers/plans/2026-08-21-users-rbac-foundation.md
+    // Spec: docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md
+    // Task: task_1787199963946_1 (kanban: sprint bulan juni → "table users and rbac")
+pub const Migration077AddUsersAndRbacSchema = struct {
+    pub const version: u32 = 77;
+    pub const name = "add_users_and_rbac_schema";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // BEGIN..COMMIT — atomic; see "Why BEGIN..COMMIT" in the
+        // docstring above.
+        try db.exec(allocator, "BEGIN", &.{});
+        errdefer {
+            // Best-effort rollback on any error below. The errdefer
+            // doesn't fire on the success path (the explicit COMMIT runs
+            // first).
+            db.exec(allocator, "ROLLBACK", &.{}) catch {};
+        }
+
+        // 1. users — identity table.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS users (
+            \\    id TEXT PRIMARY KEY,
+            \\    email TEXT NOT NULL UNIQUE,
+            \\    name TEXT NOT NULL DEFAULT '',
+            \\    password_hash TEXT NOT NULL,
+            \\    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'bot')),
+            \\    is_active INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    last_login_at DATETIME DEFAULT NULL
+            \\)
+        , &[_][]const u8{});
+
+        // 2. user_companies — org / tenant entity.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS user_companies (
+            \\    id TEXT PRIMARY KEY,
+            \\    name TEXT NOT NULL,
+            \\    slug TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    is_active INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    created_by TEXT
+            \\)
+        , &[_][]const u8{});
+
+        // 3. user_company_members — many-to-many user ↔ company.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS user_company_members (
+            \\    user_id TEXT NOT NULL,
+            \\    user_company_id TEXT NOT NULL,
+            \\    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member', 'guest')),
+            \\    joined_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    invited_by TEXT,
+            \\    PRIMARY KEY (user_id, user_company_id)
+            \\)
+        , &[_][]const u8{});
+
+        // 4. workspaces.user_id — additive, nullable, no FK.
+        //    `addColumnIfMissing` probes pragma_table_info before ALTER,
+        //    so re-running is a no-op (the canonical pattern from
+        //    Migrations 020 / 052 / 065 / 066 / 067 / 074).
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "workspaces",
+            "user_id",
+            "user_id TEXT",
+        );
+
+        // 5. sessions.user_id — same shape as workspaces.user_id.
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "sessions",
+            "user_id",
+            "user_id TEXT",
+        );
+
+        // 6. Indexes — 6 total. CREATE INDEX IF NOT EXISTS is idempotent.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_companies_slug ON user_companies(slug)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_companies_active ON user_companies(is_active)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_company_members_user ON user_company_members(user_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_user_company_members_company ON user_company_members(user_company_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
+            &[_][]const u8{});
+
+        // 7. Default user_system — INSERT OR IGNORE makes it idempotent.
+        //    See the spec §3.6 for the full reasoning (password_hash
+        //    sentinel, is_active=0, system@local reserved per RFC 6762).
+        try db.exec(allocator,
+            "INSERT OR IGNORE INTO users (id, email, name, password_hash, role, is_active) " ++
+                "VALUES ('user_system', 'system@local', 'System', '!disabled', 'admin', 0)",
+            &[_][]const u8{});
+
+        // 8. Backfill — convert every legacy row (workspaces,
+        //    sessions) WHERE user_id IS NULL to user_id='user_system'.
+        //    WHERE user_id IS NULL makes the UPDATE idempotent on
+        //    re-run: rows that already have user_id set are not
+        //    touched. On a fresh DB with zero legacy rows, both UPDATEs
+        //    are no-ops.
+        try db.exec(allocator,
+            "UPDATE workspaces SET user_id = 'user_system' WHERE user_id IS NULL",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "UPDATE sessions SET user_id = 'user_system' WHERE user_id IS NULL",
+            &[_][]const u8{});
+
+        // Commit the transaction. After this, the new schema is durable.
+        try db.exec(allocator, "COMMIT", &[_][]const u8{});
+
+        // Refresh query-planner stats so the new indexes are picked on
+        // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
+        // pattern used by Migrations 041/042/043/048/049/050/051/052/070/072).
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
     }
 };

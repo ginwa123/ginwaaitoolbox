@@ -577,6 +577,9 @@ pub const session_plan = @import("ai_workflow/tui/agentic_loop/session_plan.zig"
 // directly @import'ing the file (which would put it in two modules
 // and trigger Zig's "file exists in two modules" error).
 pub const cleanup_stale_worker = @import("schedulers/cleanup_stale_worker.zig");
+// Re-export cleanup_stale_background_process for the same reason as
+// above — see plan 2026-08-19-cleanup-stale-background-process.
+pub const cleanup_stale_background_process = @import("schedulers/cleanup_stale_background_process.zig");
 pub const workspace_items = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const workspace_item_tasks = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
 pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.zig");
@@ -596,6 +599,10 @@ pub const migrations_mod = @import("migrations/mod.zig");
 test {
     _ = @import("ai_workflow/tui/test_runner.zig");
     _ = @import("modules/agent/test_runner.zig");
+    // Agent Mode helpers: impl + tests in one file. Importing these
+    // makes their inline `test` blocks discoverable by `zig build test`.
+    _ = @import("ai_workflow/tui/agentic_loop/agent_tools_allowed.zig");
+    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_knowledge.zig");
     // `databases` package tests run via its own `zig build test`
     // (cd src/modules/databases && zig build test) — see the
     // package's build.zig. The main test step doesn't import them
@@ -631,5 +638,9 @@ test {
     // inside the test block so `zig build test` discovers the inline
     // tests (the `pub const` alone doesn't trigger discovery).
     _ = @import("schedulers/cleanup_stale_worker.zig");
+    // schedulers/cleanup_stale_background_process.zig has inline tests
+    // (mirrors cleanup_stale_worker pattern). Re-imported here for the
+    // same reason — see plan 2026-08-19-cleanup-stale-background-process.
+    _ = @import("schedulers/cleanup_stale_background_process.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }

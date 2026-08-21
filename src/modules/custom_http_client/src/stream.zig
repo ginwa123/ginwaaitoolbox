@@ -17,7 +17,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const helpers = @import("helpers");
 const curl = @import("curl.zig");
 const root = @import("root.zig");
 const Method = @import("request.zig").Method;
@@ -50,13 +49,21 @@ fn monotonicNs() u64 {
     if (builtin.os.tag == .windows) {
         return monotonicNsWindows();
     }
-    // `helpers.PosixTimespec` is the project-wide portable `timespec`
-    // — std.c's `clock_gettime` takes `clockid_t` which resolves to
-    // `void` on Windows x86_64 (MSVC's libc has no `clock_gettime`),
-    // so we route through `helpers.clock_gettime` (an `extern "c"`
-    // decl with `c_int clk_id` parameter).
-    var ts: helpers.PosixTimespec = undefined;
-    _ = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
+    // Portable `timespec` + `clock_gettime` inlined from src/helpers/mod.zig
+    // (this module's build graph does not wire the `helpers` package in —
+    // see custom_http_client/build.zig). std.c's `clock_gettime` takes
+    // `clockid_t` which resolves to `void` on Windows x86_64 (MSVC's libc
+    // has no `clock_gettime`), so we declare an `extern "c"` with a plain
+    // `c_int clk_id` parameter instead.
+    const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
+    const PosixTimespec = extern struct { sec: Clong, nsec: Clong };
+    const clock_gettime_c = @extern(*const fn (c_int, *PosixTimespec) callconv(.c) c_int, .{
+        .name = "clock_gettime",
+        .library_name = "c",
+    });
+    const CLOCK_MONOTONIC: c_int = 1;
+    var ts: PosixTimespec = undefined;
+    _ = clock_gettime_c(CLOCK_MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 

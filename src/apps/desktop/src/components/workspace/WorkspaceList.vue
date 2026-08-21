@@ -746,6 +746,20 @@ const handleItemDragEnd = () => {
                   Add Design
                 </button>
               </li>
+              <!-- Agent Mode (plan 2026-08-15-agent-mode,
+                   task_1786962724740_0): fourth dropdown option for
+                   creating an Agent workspace item. Sidebar.handleAddItem
+                   routes the 'agent' itemType to the new AddAgentDialog. -->
+              <li>
+                <button
+                  @click="handleAddItem(workspace.id, 'agent')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+                  style="color: var(--semantic-text);"
+                  data-testid="workspace-add-agent-option"
+                >
+                  Add Agent
+                </button>
+              </li>
             </ul>
           </li>
         </ul>

@@ -244,7 +244,6 @@ fn resolveProfileField(
     return top_level;
 }
 
-
 // ─── re_read_selected_profile_model — live-re-read from sessions table ─────
 //
 // **Why this helper exists** (bug report task_1786031708725, 2026-08-06):
@@ -442,12 +441,39 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_session_id = try parent_allocator.dupe(u8, params.session_id);
     const copy_message = try parent_allocator.dupe(u8, params.message);
     const copy_cwd = try parent_allocator.dupe(u8, params.cwd);
-    const copy_allowed_tools = try parent_allocator.dupe(u8, params.allowed_tools);
+
+    // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+    // If this is a top-level session bound to an Agent workspace_item,
+    // OVERRIDE `copy_allowed_tools` with the agent's allowlist from
+    // the `agent_tools` table. Secure-by-default semantics per D1:
+    //   - Empty allowlist → `""` → `filterAndMergeTools` registers
+    //     zero tools (no tools in the LLM's function-call schema)
+    //   - Non-empty allowlist → comma-separated tool_names (passed
+    //     to `filterAndMergeTools` which already supports this)
+    //
+    // Sub-agents (params.is_sub_agent == true) are NOT filtered —
+    // the spawned sub-agent's `allowed_tools` is set by the
+    // `spawn_sub_agent` tool call (see tools_exec_spawn_sub_agent.zig),
+    // and we don't override that.
+    var copy_allowed_tools: []const u8 = parent_allocator.dupe(u8, params.allowed_tools) catch "";
+    if (!params.is_sub_agent) {
+        if (try maybeOverrideAllowedToolsForAgent(
+            parent_allocator,
+            db,
+            params.session_id,
+            &copy_allowed_tools,
+        )) {
+            logger.infoFmt(
+                "[CHECKPOINT] agent_mode: session_id={s} is bound to an Agent — allowed_tools overridden to '{s}'",
+                .{ params.session_id, copy_allowed_tools },
+            );
+        }
+    }
+
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
     var is_have_queue_message = false;
-
 
     const initial_agent_state = try llm_history.get_current_agent_by_session_id(
         parent_allocator,
@@ -635,6 +661,27 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         effective_model = resolveProfileField("model", config, live_selected_profile_model, config.active_profile, config.model);
         effective_base_url = resolveProfileField("base_url", config, live_selected_profile_model, config.active_profile, config.base_url);
         effective_url_style = resolveProfileField("url_style", config, live_selected_profile_model, config.active_profile, config.url_style);
+
+        // 2026-08-21-fix-ui-context-window — resolve the session's
+        // selected profile once per iteration so the compaction threshold
+        // decision (maybeCompactMessagesNew → shouldCompactDefault) honors
+        // the profile's `max_capacity_tokens` / `compaction_threshold_percent`
+        // overrides. Mirrors the resolveProfileField cascade: session
+        // selection → active_profile → null (top-level defaults).
+        // `getProfile` returns the profile by value borrowing from the
+        // config (process-lifetime singleton) — safe to use within the
+        // iteration; no free needed.
+        const iter_profile: ?config_mod.LlmConfig.LlmProfile = blk: {
+            if (live_selected_profile_model.len > 0) {
+                if (config.getProfile(live_selected_profile_model)) |p| break :blk p;
+            }
+            if (config.active_profile) |ap| {
+                if (ap.len > 0) {
+                    if (config.getProfile(ap)) |p| break :blk p;
+                }
+            }
+            break :blk null;
+        };
 
         logger.infoFmt(
             "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} effective_model={s}",
@@ -943,7 +990,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config);
+        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config, if (iter_profile) |*p| p else null);
         if (is_do_compaction) {
             logger.infoFmt(
                 "[CHECKPOINT] compaction triggered session_id={s} loop_counter={d} total_tokens={d} prompt_msg_count={d}",
@@ -1062,6 +1109,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     "[CHECKPOINT] finish_reason=stop session_id={s} loop_counter={d} content_len={d}",
                     .{ copy_session_id, loop_counter, if (res_dynamic_agent.content) |c| c.len else 0 },
                 );
+
+                const content_is_empty = if (res_dynamic_agent.content) |c| c.len == 0 else true;
+                if (content_is_empty) {
+                    logger.infoFmt(
+                        "[CHECKPOINT] finish_reason=stop but content is empty session_id={s} loop_counter={d} content_len={d}",
+                        .{ copy_session_id, loop_counter, if (res_dynamic_agent.content) |c| c.len else 0 },
+                    );
+                    continue;
+                }
                 _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
@@ -1755,13 +1811,10 @@ test "resolveProfileField: profile with empty field falls through to top-level f
     try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
 }
 
-
-
 // ─── Inline tests (formerly compaction_long_context_test.zig) ────────────
 // Long-context compaction test. Inlined here. The original test file
 // self-imported zig — that self-import is removed in the
 // inlined copy.
-
 
 /// Walk ALL migrations from 001 → latest (per project memory
 /// `llm-history-test-use-migrations-module.md`). No hand-rolled
@@ -1838,8 +1891,15 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
     defer lg.deinit();
 
     const new_messages = try compactMessageInMemoryNew(
-        alloc, messages, "GOAL: ship the fix\nNEXT: deploy",
-        session_id, "gpt-4o", "/tmp", &s.db, s.threaded.io(), &lg,
+        alloc,
+        messages,
+        "GOAL: ship the fix\nNEXT: deploy",
+        session_id,
+        "gpt-4o",
+        "/tmp",
+        &s.db,
+        s.threaded.io(),
+        &lg,
         null, // event_bus — no SSE subscriber in tests
     );
     defer {
@@ -1883,5 +1943,176 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
             try testing.expect(m.tool_name != null);
             try testing.expectEqualStrings("bash", m.tool_name.?);
         }
+    }
+}
+
+/// Agent Mode helper: if `session_id` is bound to a workspace_item
+/// whose item_type='agent', resolve the agent's allowed_tools from
+/// the `agent_tools` table and overwrite `out_allowed_tools` with
+/// the comma-joined list (or "" for the secure-by-default empty
+/// case — which `filterAndMergeTools` interprets as zero tools).
+///
+/// Returns `true` when an override was applied, `false` otherwise
+/// (session not bound to an agent, or DB error — non-fatal; the
+/// caller falls back to the original `out_allowed_tools`).
+///
+/// Plan: docs/superpowers/plans/2026-08-15-agent-mode.md (Task 12).
+fn maybeOverrideAllowedToolsForAgent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    out_allowed_tools: *[]const u8,
+) !bool {
+    if (session_id.len == 0) return false;
+
+    // Resolve session_id → workspace_item_id.
+    var q1 = db.query(
+        allocator,
+        "SELECT workspace_item_id FROM workspace_item_tasks WHERE id = ?",
+        &[_][]const u8{session_id},
+    ) catch return false;
+    defer q1.deinit();
+    const row1 = (q1.next() catch null) orelse return false;
+    defer row1.deinit(allocator);
+    const workspace_item_id = row1.values[0];
+
+    // Only filter when the workspace_item is an agent.
+    var q2 = db.query(
+        allocator,
+        "SELECT id FROM agents WHERE id = ?",
+        &[_][]const u8{workspace_item_id},
+    ) catch return false;
+    defer q2.deinit();
+    const row2 = (q2.next() catch null) orelse return false;
+    defer row2.deinit(allocator);
+
+    // Fetch the enabled tool_names.
+    var q3 = db.query(allocator,
+        \\SELECT tool_name FROM agent_tools
+        \\WHERE agent_id = ? AND enabled = 1
+        \\ORDER BY tool_name ASC
+    , &[_][]const u8{workspace_item_id}) catch return false;
+    defer q3.deinit();
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+    while ((q3.next() catch null)) |r| {
+        defer r.deinit(allocator);
+        try names.append(allocator, try allocator.dupe(u8, r.values[0]));
+    }
+
+    // Empty allowlist → secure-by-default: zero tools. Pass "" to
+    // filterAndMergeTools, which already interprets "" as "register
+    // zero tools".
+    if (names.items.len == 0) {
+        out_allowed_tools.* = "";
+        return true;
+    }
+
+    // Non-empty: join with ','.
+    out_allowed_tools.* = try std.mem.join(allocator, ",", names.items);
+    return true;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from workspace_items_update_name_test.zig
+//
+// Static regression checks for the `name` branch of the
+// `PUT /workspaces/:wsId/items/:itemId` handler
+// (`workspace_items_update.zig`). Tests check for substring patterns in the
+// http_handlers/workspace_items_update.zig source file — they live in
+// agentic_loop because the rename request flows through the session
+// orchestration, but the actual contracts being verified belong to the
+// http_handlers layer.
+// ════════════════════════════════════════════════════════════════════════════
+
+const text_normalize = @import("helpers").text_normalize;
+
+const workspaceItemsUpdateHandlerPath =
+    "src/ai_workflow/tui/http_handlers/workspace_items_update.zig";
+
+fn workspaceItemsUpdateReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+test "workspace_items_update handler reads name from body via root.get(\"name\")" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "root.get(\"name\")") == null) {
+        std.debug.print(
+            "\n!! {s} does not read `name` from the request body !!\n" ++
+                "   The rename branch requires `root.get(\"name\")` to be\n" ++
+                "   referenced (so the rename request reaches the `name_valid`\n" ++
+                "   gate). Mirror the existing `root.get(\"path\")` extraction.\n",
+            .{workspaceItemsUpdateHandlerPath},
+        );
+        return error.NameExtractionMissing;
+    }
+}
+
+test "workspace_items_update handler calls updateWorkspaceItemName" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "updateWorkspaceItemName") == null) {
+        std.debug.print(
+            "\n!! {s} does not call updateWorkspaceItemName !!\n" ++
+                "   The rename branch must call `updateWorkspaceItemName` so\n" ++
+                "   the SQL UPDATE writes the new name.\n",
+            .{workspaceItemsUpdateHandlerPath},
+        );
+        return error.UpdateNameCallMissing;
+    }
+}
+
+test "workspace_items_update handler returns 400 for empty name" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "name must be a non-empty string when present") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 400 for empty name !!\n" ++
+                "   The rename branch must reject `{{name: \"\"}}` or `{{name: null}}`\n" ++
+                "   with HTTP 400 BEFORE the DB round-trip.\n",
+            .{workspaceItemsUpdateHandlerPath},
+        );
+        return error.EmptyNameNotRejected;
+    }
+}
+
+test "workspace_items_update handler makes item_type optional (falls back to existing row)" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "effective_item_type") == null) {
+        std.debug.print("\n!! " ++ workspaceItemsUpdateHandlerPath ++ " does not compute effective_item_type !!\n", .{});
+        return error.ItemTypeFallbackMissing;
+    }
+}
+
+test "workspace_items_update handler rejects empty body with 400" {
+    const allocator = testing.allocator;
+    const source = try workspaceItemsUpdateReadSource(allocator, workspaceItemsUpdateHandlerPath);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "At least one of item_type, name, or path is required") == null) {
+        std.debug.print("\n!! " ++ workspaceItemsUpdateHandlerPath ++ " does not return 400 for empty body !!\n", .{});
+        return error.EmptyBodyNotRejected;
     }
 }

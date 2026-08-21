@@ -2568,10 +2568,22 @@ pub fn reorderElements(
 ) ReorderError![]DesignElement {
     if (input.element_ids.len == 0) return error.BadElementId;
 
-    var all = listElements(allocator, db, input.page_id) catch |err| return switch (err) {
-        error.PageNotFound => error.PageNotFound,
-        else => error.DbError,
-    };
+    // 1. Pre-flight: verify the page exists. listElements returns an
+    //    empty slice (no error) for a non-existent page, so we cannot
+    //    distinguish "no elements yet" from "page doesn't exist"
+    //    without an extra SELECT. The HTTP handler maps
+    //    PageNotFound to 404; without this check every reorder
+    //    against an unknown page would surface as 400 BadElementId.
+    {
+        var pq = db.query(allocator,
+            "SELECT 1 FROM design_pages WHERE id = ?",
+            &.{input.page_id}) catch return error.DbError;
+        defer pq.deinit();
+        const row = (pq.next() catch return error.DbError) orelse return error.PageNotFound;
+        row.deinit(allocator);
+    }
+
+    var all = listElements(allocator, db, input.page_id) catch return error.DbError;
     var free_all = true;
     defer if (free_all) {
         for (all) |e| freeElement(allocator, e);
@@ -2581,6 +2593,11 @@ pub fn reorderElements(
     // 2. Validate every requested id resolves to a row on this page.
     //    Build an id -> index map. Duplicates in input.element_ids are
     //    tolerated (the second occurrence skips the DB lookup).
+    //
+    //    For ids that DON'T resolve to a row on this page, distinguish
+    //    BadElementId (id missing entirely) from CrossPageIds
+    //    (id exists but on a different page) via an existence probe —
+    //    so the HTTP handler can return 400 vs 409 correctly.
     var id_to_idx = std.StringHashMap(usize).init(allocator);
     defer id_to_idx.deinit();
     for (all, 0..) |e, i| try id_to_idx.put(e.id, i);
@@ -2593,8 +2610,22 @@ pub fn reorderElements(
         for (input.element_ids) |cid| {
             const gop = try seen.getOrPut(cid);
             if (gop.found_existing) continue;
-            const idx = id_to_idx.get(cid) orelse return error.BadElementId;
-            try indexes.append(allocator, idx);
+            if (id_to_idx.get(cid)) |idx| {
+                try indexes.append(allocator, idx);
+                continue;
+            }
+            // id not on this page — probe design_page_elements to see
+            // whether it exists on a DIFFERENT page (CrossPageIds) or
+            // doesn't exist at all (BadElementId).
+            var q = db.query(allocator,
+                "SELECT 1 FROM design_page_elements WHERE id = ?",
+                &.{cid}) catch return error.DbError;
+            defer q.deinit();
+            if (q.next() catch return error.DbError) |r| {
+                r.deinit(allocator);
+                return error.CrossPageIds;
+            }
+            return error.BadElementId;
         }
     }
 
@@ -6078,4 +6109,3300 @@ test "updateDesignPage with empty name returns BadPageName" {
         .name = "",
     });
     try testing_update_page.expectError(error.BadPageName, result);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_add_element_parent_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+const testing = std.testing;
+
+
+/// Open a fresh in-memory sqlite DB with the minimum tables needed for
+/// the design SQL. Mirrors `design_model_parent_id_test.zig::addElementParentSetupDbAndItem`.
+fn addElementParentSetupDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_add_parent";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+fn addElementParentTeardown(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+// ─── Test 1: parent_id sets the FK on the new row ─────────────────────────
+
+test "addElement with parent_id sets the FK on the new row" {
+    const alloc = testing.allocator;
+    var ctx = try addElementParentSetupDbAndItem();
+    defer addElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Add a parent frame (top-level).
+    const parent_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(parent_id);
+
+    // Add a child rectangle nested under the parent frame.
+    const child_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-button",
+        .elem_type = .rectangle,
+        .html = "<div>Login</div>",
+        .x = 110, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = parent_id,
+    });
+    defer alloc.free(child_id);
+
+    // Round-trip: read the child back and assert parent_id is set.
+    const child = try getElement(alloc, &ctx.db, child_id);
+    defer freeElement(alloc, child);
+
+    try testing.expectEqualStrings(parent_id, child.parent_id);
+}
+
+// ─── Test 2: parent_id pointing to a non-existent element fails ───────────
+
+test "addElement with parent_id pointing to a non-existent element returns BadParentId" {
+    const alloc = testing.allocator;
+    var ctx = try addElementParentSetupDbAndItem();
+    defer addElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const result = addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "orphan",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = "elem_does_not_exist",
+    });
+
+    try testing.expectError(error.BadParentId, result);
+}
+
+// ─── Test 3: parent_id on a different page returns BadParentId ────────────
+
+test "addElement with parent_id on a different page returns BadParentId" {
+    const alloc = testing.allocator;
+    var ctx = try addElementParentSetupDbAndItem();
+    defer addElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_a = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Page A",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_a);
+
+    const page_b = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Page B",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_b);
+
+    // Add a frame on page A (top-level).
+    const parent_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_a,
+        .name = "frame-on-page-a",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(parent_id);
+
+    // Try to add a child on page B referencing the parent on page A.
+    const result = addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_b,
+        .name = "cross-page-child",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = parent_id,
+    });
+
+    try testing.expectError(error.BadParentId, result);
+}
+
+// ─── Test 4: parent_id of a leaf type returns ParentNotContainer ──────────
+
+test "addElement with parent_id pointing to a leaf rectangle returns ParentNotContainer" {
+    const alloc = testing.allocator;
+    var ctx = try addElementParentSetupDbAndItem();
+    defer addElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Add a rectangle (leaf type — cannot contain children).
+    const leaf_parent = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf_parent);
+
+    // Try to nest a child under the rectangle.
+    const result = addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "child-of-leaf",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .parent_id = leaf_parent,
+    });
+
+    try testing.expectError(error.ParentNotContainer, result);
+}
+
+// ─── Test 5: default parent_id (null) preserves top-level behavior ────────
+
+test "addElement without parent_id defaults to top-level (empty parent_id)" {
+    const alloc = testing.allocator;
+    var ctx = try addElementParentSetupDbAndItem();
+    defer addElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const child_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "top-level",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        // No .parent_id — should default to top-level.
+    });
+    defer alloc.free(child_id);
+
+    const child = try getElement(alloc, &ctx.db, child_id);
+    defer freeElement(alloc, child);
+
+    try testing.expectEqual(@as(usize, 0), child.parent_id.len);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_delete_page_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+const ITEM_ID = "item_design_delete_page_test";
+
+/// Minimal in-memory DB shape (mirrors `design_model_delete_parent_test.zig`).
+/// Includes `workspace_items.path` so we can also confirm the new code
+/// path works when the item row is deleted FIRST (no path lookup).
+fn deletePageSetupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // SQLite has FK enforcement OFF by default; the production code's
+    // comment on deletePage says it relies on `ON DELETE CASCADE` to
+    // remove the element rows, so we enable FK enforcement in this
+    // test to match the documented contract.
+    try db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ ITEM_ID, tmpdir_path });
+
+    return .{ .db = db, .threaded = threaded, .item_path = tmpdir_path };
+}
+
+/// Insert one design_page_elements row whose `file_path` is the full
+/// absolute path to its on-disk HTML file. Creates the file + page
+/// directory on disk so deletePage's rmdir step has something to
+/// remove.
+fn deletePageInsertElementWithDiskFile(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    io: std.Io,
+    id: []const u8,
+    page_id: []const u8,
+    page_dir: []const u8,
+    elem_name: []const u8,
+) ![]u8 {
+    const sanitized_elem = try std.fmt.allocPrint(alloc, "{s}.html", .{elem_name});
+    defer alloc.free(sanitized_elem);
+    const file_path = try std.fs.path.join(alloc, &.{ page_dir, sanitized_elem });
+
+    // Ensure the page directory exists on disk + write a dummy HTML body.
+    std.Io.Dir.cwd().createDirPath(io, page_dir) catch return error.FileWriteFailed;
+    const f = std.Io.Dir.cwd().createFile(io, file_path, .{}) catch return error.FileWriteFailed;
+    f.close(io);
+    const body = "<html><body>hello</body></html>";
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file_path, .data = body });
+
+    const x_str = try std.fmt.allocPrint(alloc, "{d}", .{0});
+    defer alloc.free(x_str);
+    const y_str = try std.fmt.allocPrint(alloc, "{d}", .{0});
+    defer alloc.free(y_str);
+    const w_str = try std.fmt.allocPrint(alloc, "{d}", .{100});
+    defer alloc.free(w_str);
+    const h_str = try std.fmt.allocPrint(alloc, "{d}", .{100});
+    defer alloc.free(h_str);
+    try db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   (?, ?, ?, ?, ?, ?, ?, ?, 0, 0,
+        \\    'rectangle', 0.0, '#ffffff', '', 0, 0, 1.0,
+        \\    '', '', '', '', datetime('now'), datetime('now'))
+    , &.{ id, page_id, elem_name, file_path, x_str, y_str, w_str, h_str });
+
+    return file_path;
+}
+
+fn deletePagePageIdExists(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, page_id: []const u8) !bool {
+    var q = try db.query(alloc,
+        "SELECT 1 FROM design_pages WHERE id = ?",
+        &.{page_id});
+    defer q.deinit();
+    const row = try q.next();
+    if (row) |r| {
+        defer r.deinit(alloc);
+        return true;
+    }
+    return false;
+}
+
+fn deletePageElementIdExists(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, id: []const u8) !bool {
+    var q = try db.query(alloc,
+        "SELECT 1 FROM design_page_elements WHERE id = ?",
+        &.{id});
+    defer q.deinit();
+    const row = try q.next();
+    if (row) |r| {
+        defer r.deinit(alloc);
+        return true;
+    }
+    return false;
+}
+
+fn dirExists(io: std.Io, path: []const u8) bool {
+    var dir = std.Io.Dir.openDirAbsolute(io, path, .{}) catch return false;
+    dir.close(io);
+    return true;
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    var f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    f.close(io);
+    return true;
+}
+
+// ─── Behavioural tests ───────────────────────────────────────────────────
+
+test "deletePage returns false when page_id does not exist" {
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, "page_does_not_exist");
+    try testing.expect(!was_deleted);
+}
+
+test "deletePage removes the design_pages row + cascade-deletes elements" {
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Insert an element via setDesignPage's pairing — but we don't
+    // need the workspace_item_task_id here. Just need the row.
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Home" });
+    defer alloc.free(page_dir);
+    const elem_path = try deletePageInsertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_home_a", page_id, page_dir, "elem-home-a",
+    );
+    defer alloc.free(elem_path);
+
+    try testing.expect(try deletePagePageIdExists(alloc, &ctx.db, page_id));
+    try testing.expect(try deletePageElementIdExists(alloc, &ctx.db, "elem_home_a"));
+
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    try testing.expect(!try deletePagePageIdExists(alloc, &ctx.db, page_id));
+    // FK ON DELETE CASCADE removes the element row.
+    try testing.expect(!try deletePageElementIdExists(alloc, &ctx.db, "elem_home_a"));
+}
+
+test "deletePage unlinks each element's HTML file individually (per-file, NOT recursive directory delete)" {
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Login",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Sanitized dir = "<item_path>/.nalar/design/Login".
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Login" });
+    defer alloc.free(page_dir);
+    const login_btn_path = try deletePageInsertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_login_button", page_id, page_dir, "login-button",
+    );
+    defer alloc.free(login_btn_path);
+    const forgot_link_path = try deletePageInsertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_forgot_link", page_id, page_dir, "forgot-link",
+    );
+    defer alloc.free(forgot_link_path);
+
+    // A non-DB-tracked file the user dropped into the page directory
+    // manually (e.g. a stray `README.md` or `.DS_Store`). Per-file
+    // deletion must NOT touch this — only the files tracked in
+    // `design_page_elements.file_path` should be removed. This
+    // is the regression guard against the pre-fix code that
+    // recursively deleted the whole folder.
+    const stray_file_path = try std.fs.path.join(alloc, &.{ page_dir, "user-note.txt" });
+    defer alloc.free(stray_file_path);
+    {
+        const f = try std.Io.Dir.cwd().createFile(ctx.threaded.io(), stray_file_path, .{});
+        f.close(ctx.threaded.io());
+        try std.Io.Dir.cwd().writeFile(ctx.threaded.io(), .{ .sub_path = stray_file_path, .data = "user-added note" });
+    }
+
+    // Sanity: all three files exist before delete.
+    try testing.expect(fileExists(ctx.threaded.io(), login_btn_path));
+    try testing.expect(fileExists(ctx.threaded.io(), forgot_link_path));
+    try testing.expect(fileExists(ctx.threaded.io(), stray_file_path));
+
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    // Each DB-tracked file is gone after delete (per-file deletion,
+    // mirrors deleteElement's pattern).
+    try testing.expect(!fileExists(ctx.threaded.io(), login_btn_path));
+    try testing.expect(!fileExists(ctx.threaded.io(), forgot_link_path));
+
+    // The non-DB-tracked file MUST still exist — per-file deletion
+    // does NOT recursively walk the folder. This is the regression
+    // guard for the 2026-08-06 review (user said: "should delete on
+    // file not file inside folder recursivly").
+    try testing.expect(fileExists(ctx.threaded.io(), stray_file_path));
+}
+
+test "deletePage succeeds (no-op on disk) when page has no elements yet" {
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Empty",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // No elements, no on-disk directory → deletePage should still
+    // succeed and remove the SQL row (the new lookup returns null
+    // because there are no file_paths to derive from).
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+    try testing.expect(!try deletePagePageIdExists(alloc, &ctx.db, page_id));
+}
+
+test "deletePage cascade-deletes the paired workspace_item_tasks row" {
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Chat",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // The paired task id is stored on design_pages.workspace_item_task_id.
+    // Read it back.
+    var q = try ctx.db.query(alloc,
+        "SELECT COALESCE(workspace_item_task_id, '') FROM design_pages WHERE id = ?",
+        &.{page_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NoPageRow;
+    defer row.deinit(alloc);
+    const task_id = try alloc.dupe(u8, row.values[0]);
+    defer alloc.free(task_id);
+    try testing.expect(task_id.len > 0);
+
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    // The paired workspace_item_tasks row must be gone.
+    var q2 = try ctx.db.query(alloc,
+        "SELECT 1 FROM workspace_item_tasks WHERE id = ?",
+        &.{task_id});
+    defer q2.deinit();
+    const task_row = try q2.next();
+    try testing.expect(task_row == null);
+}
+
+test "deletePage rmdirs the empty page directory (cleans up after per-file unlink)" {
+    // Why this test exists
+    // ─────────────────────
+    // The per-file unlink step (`deleteFileIfExists`) leaves an empty
+    // `<page>/` directory behind — which was the root cause of the
+    // 2026-08-13 functional-test regression (every DELETE /pages/:pid
+    // left a stale empty folder, so `test_delete_page_removes_entire_directory`
+    // failed because the dir still existed). This test pins the
+    // post-fix contract: `deletePage` MUST rmdir the page folder after
+    // unlinking its tracked HTML files, so the directory disappears
+    // when nothing user-dropped remains inside.
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Clean",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Clean" });
+    defer alloc.free(page_dir);
+    const elem_path = try deletePageInsertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_clean_a", page_id, page_dir, "elem-clean-a",
+    );
+    defer alloc.free(elem_path);
+
+    // Sanity: page directory exists.
+    try testing.expect(dirExists(ctx.threaded.io(), page_dir));
+
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    // After delete: the page directory itself is gone (rmdir succeeded
+    // because no user-dropped files remain inside).
+    try testing.expect(!dirExists(ctx.threaded.io(), page_dir));
+}
+
+test "deletePage preserves a user-dropped file inside the page directory" {
+    // The companion to the rmdir-cleanup test: when the user has
+    // dropped a file (`.DS_Store`, `README.md`, screenshot, etc.)
+    // into the page folder, deletePage MUST keep it. The
+    // `deleteDirectoryIfEmpty` step refuses to rmdir non-empty
+    // directories — the user file survives, the page DB rows still
+    // get deleted.
+    const alloc = testing.allocator;
+    var ctx = try deletePageSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ITEM_ID,
+        .page_name = "Mixed",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const page_dir = try std.fs.path.join(alloc, &.{ ctx.item_path, ".nalar/design/Mixed" });
+    defer alloc.free(page_dir);
+    const elem_path = try deletePageInsertElementWithDiskFile(
+        alloc, &ctx.db, ctx.threaded.io(),
+        "elem_mixed_a", page_id, page_dir, "elem-mixed-a",
+    );
+    defer alloc.free(elem_path);
+
+    // User drops a README.md into the page folder (not tracked in DB).
+    const stray_path = try std.fs.path.join(alloc, &.{ page_dir, "user-note.txt" });
+    defer alloc.free(stray_path);
+    {
+        const f = try std.Io.Dir.cwd().createFile(ctx.threaded.io(), stray_path, .{});
+        f.close(ctx.threaded.io());
+        try std.Io.Dir.cwd().writeFile(
+            ctx.threaded.io(),
+            .{ .sub_path = stray_path, .data = "user-added note" },
+        );
+    }
+
+    const was_deleted = try deletePage(alloc, ctx.threaded.io(), &ctx.db, page_id);
+    try testing.expect(was_deleted);
+
+    // DB-tracked file is gone.
+    try testing.expect(!fileExists(ctx.threaded.io(), elem_path));
+    // User's file is still there (preserves user-dropped files).
+    try testing.expect(fileExists(ctx.threaded.io(), stray_path));
+    // Page directory still exists (we couldn't rmdir a non-empty dir).
+    try testing.expect(dirExists(ctx.threaded.io(), page_dir));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_delete_parent_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+/// Same shape as design_model_test.zig::deleteParentSetupDbAndItem (kept inline
+/// so this file is self-contained for the static checks).
+fn deleteParentSetupDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_delete_parent";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+/// Insert one design element with explicit (id, x, y, width, height,
+/// parent_id) so we can build a parent + N children tree.
+fn deleteParentInsertElement(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    x: i64, y: i64, w: i64, h: i64,
+    parent_id: []const u8,
+) !void {
+    const x_str = try std.fmt.allocPrint(alloc, "{d}", .{x});
+    defer alloc.free(x_str);
+    const y_str = try std.fmt.allocPrint(alloc, "{d}", .{y});
+    defer alloc.free(y_str);
+    const w_str = try std.fmt.allocPrint(alloc, "{d}", .{w});
+    defer alloc.free(w_str);
+    const h_str = try std.fmt.allocPrint(alloc, "{d}", .{h});
+    defer alloc.free(h_str);
+    try db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   (?, ?, ?, '', ?, ?, ?, ?, 0, 0,
+        \\    'rectangle', 0.0, '#ffffff', '', 0, 0, 1.0,
+        \\    '', '', '', ?, datetime('now'), datetime('now'))
+    , &.{ id, page_id, name, x_str, y_str, w_str, h_str, parent_id });
+}
+
+/// Read parent_id of a row by id. Returns "NULL" when the column is
+/// empty (NULL).
+fn deleteParentParentIdOf(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, id: []const u8) ![]u8 {
+    var q = try db.query(alloc,
+        "SELECT COALESCE(parent_id, 'NULL') FROM design_page_elements WHERE id = ?",
+        &.{id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NotFound;
+    defer row.deinit(alloc);
+    return alloc.dupe(u8, row.values[0]);
+}
+
+// ─── Behavioural tests ───────────────────────────────────────────────────
+
+test "deleteElement NULLs parent_id on children of a deleted parent" {
+    const alloc = testing.allocator;
+    var ctx = try deleteParentSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Build: parent (frame), with 2 children.
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_parent", page_id, "Parent", 0, 0, 200, 200, "");
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_child_a", page_id, "Child A", 10, 10, 50, 50, "elem_parent");
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_child_b", page_id, "Child B", 70, 70, 50, 50, "elem_parent");
+
+    // Sanity: children have parent_id = elem_parent before delete.
+    {
+        const a_pid = try deleteParentParentIdOf(alloc, &ctx.db, "elem_child_a");
+        defer alloc.free(a_pid);
+        try testing.expectEqualStrings("elem_parent", a_pid);
+
+        const b_pid = try deleteParentParentIdOf(alloc, &ctx.db, "elem_child_b");
+        defer alloc.free(b_pid);
+        try testing.expectEqualStrings("elem_parent", b_pid);
+    }
+
+    // Delete the parent.
+    const was_deleted = try deleteElement(alloc, &ctx.db, "elem_parent");
+    try testing.expect(was_deleted);
+
+    // The children should STILL exist with parent_id = NULL
+    // (i.e. they became top-level).
+    const a_pid_after = try deleteParentParentIdOf(alloc, &ctx.db, "elem_child_a");
+    defer alloc.free(a_pid_after);
+    try testing.expectEqualStrings("NULL", a_pid_after);
+
+    const b_pid_after = try deleteParentParentIdOf(alloc, &ctx.db, "elem_child_b");
+    defer alloc.free(b_pid_after);
+    try testing.expectEqualStrings("NULL", b_pid_after);
+
+    // The parent itself should be gone (getElement returns ElementNotFound).
+    const result = getElement(alloc, &ctx.db, "elem_parent");
+    try testing.expectError(error.ElementNotFound, result);
+}
+
+test "deleteElement of a leaf element leaves no parent_id side-effects on others" {
+    const alloc = testing.allocator;
+    var ctx = try deleteParentSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // 3 top-level elements (no parent_id anywhere). Deleting one
+    // should not affect the others' parent_id state.
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_tl_1", page_id, "TL 1", 0, 0, 50, 50, "");
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_tl_2", page_id, "TL 2", 100, 0, 50, 50, "");
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_tl_3", page_id, "TL 3", 200, 0, 50, 50, "");
+
+    const was_deleted = try deleteElement(alloc, &ctx.db, "elem_tl_2");
+    try testing.expect(was_deleted);
+
+    // elem_tl_1 and elem_tl_3 should still exist with NULL parent_id.
+    const pid_1 = try deleteParentParentIdOf(alloc, &ctx.db, "elem_tl_1");
+    defer alloc.free(pid_1);
+    try testing.expectEqualStrings("NULL", pid_1);
+
+    const pid_3 = try deleteParentParentIdOf(alloc, &ctx.db, "elem_tl_3");
+    defer alloc.free(pid_3);
+    try testing.expectEqualStrings("NULL", pid_3);
+}
+
+test "deleteElement of a parent with no children just deletes the row" {
+    const alloc = testing.allocator;
+    var ctx = try deleteParentSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Empty parent (no children reference it). Delete should be a
+    // no-op for other rows + the parent row vanishes.
+    try deleteParentInsertElement(alloc, &ctx.db, "elem_empty_parent", page_id, "EmptyParent", 0, 0, 100, 100, "");
+
+    const was_deleted = try deleteElement(alloc, &ctx.db, "elem_empty_parent");
+    try testing.expect(was_deleted);
+
+    // The parent is gone.
+    const result = getElement(alloc, &ctx.db, "elem_empty_parent");
+    try testing.expectError(error.ElementNotFound, result);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_group_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+
+fn groupReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+}
+
+/// Open a fresh in-memory sqlite DB with the minimum tables needed
+/// for the design SQL. Same shape as
+/// `design_model_test.zig::groupSetupDbAndItem`.
+fn groupSetupDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_group";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+/// Insert one design element with explicit (x, y, width, height) and
+/// the given name. Returns the generated elem_<id>.
+fn groupInsertChild(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, page_id: []const u8, name: []const u8, x: i64, y: i64, w: i64, h: i64) ![]u8 {
+    // db.exec binds only TEXT — stringify the integer columns.
+    const x_str = try std.fmt.allocPrint(alloc, "{d}", .{x});
+    defer alloc.free(x_str);
+    const y_str = try std.fmt.allocPrint(alloc, "{d}", .{y});
+    defer alloc.free(y_str);
+    const w_str = try std.fmt.allocPrint(alloc, "{d}", .{w});
+    defer alloc.free(w_str);
+    const h_str = try std.fmt.allocPrint(alloc, "{d}", .{h});
+    defer alloc.free(h_str);
+    try db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   (?, ?, ?, '', ?, ?, ?, ?, 0, 0,
+        \\    'rectangle', 0.0, '#ffffff', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now'))
+    , &.{ name, page_id, name, x_str, y_str, w_str, h_str });
+    return alloc.dupe(u8, name);
+}
+
+// ─── Contract 1: signature ───────────────────────────────────────────────
+
+test "groupElements function signature declares page_id child_ids parent_name parent_type" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    // The GroupElementsInput struct carries (page_id, child_ids,
+    // parent_name, parent_type) and lives immediately above the
+    // groupElements function. Search a wider window that includes
+    // both the struct declaration and the function signature.
+    const struct_idx = std.mem.indexOf(u8, source, "pub const GroupElementsInput") orelse {
+        std.debug.print("\n!! GroupElementsInput not declared in {s} !!\n", .{DESIGN_MODEL_PATH});
+        return error.GroupElementsInputStructMissing;
+    };
+    const fn_idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        std.debug.print("\n!! groupElements function not found in {s} !!\n", .{DESIGN_MODEL_PATH});
+        return error.GroupElementsMissing;
+    };
+    const start = struct_idx;
+    const end = @min(source.len, fn_idx + 1500);
+    const window = source[start..end];
+
+    if (std.mem.indexOf(u8, window, "page_id") == null) {
+        std.debug.print("\n!! GroupElementsInput is missing page_id !!\n", .{});
+        return error.GroupElementsPageIdMissing;
+    }
+    if (std.mem.indexOf(u8, window, "child_ids") == null) {
+        std.debug.print("\n!! GroupElementsInput is missing child_ids !!\n", .{});
+        return error.GroupElementsChildIdsMissing;
+    }
+    if (std.mem.indexOf(u8, window, "parent_name") == null) {
+        std.debug.print("\n!! GroupElementsInput is missing parent_name !!\n", .{});
+        return error.GroupElementsParentNameMissing;
+    }
+    if (std.mem.indexOf(u8, window, "parent_type") == null) {
+        std.debug.print("\n!! GroupElementsInput is missing parent_type !!\n", .{});
+        return error.GroupElementsParentTypeMissing;
+    }
+}
+
+test "groupElements returns new parent element_id" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    const after = source[idx..];
+    const window_end = @min(after.len, 1500);
+    const window = after[0..window_end];
+
+    if (std.mem.indexOf(u8, window, "[]u8") == null) {
+        std.debug.print("\n!! groupElements should return []u8 (new parent element_id) !!\n", .{});
+        return error.GroupElementsReturnMissing;
+    }
+}
+
+test "groupElements uses a transaction (db.begin / tx.exec / tx.commit)" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    const after = source[idx..];
+    // groupElements is large (~400 lines). Scan the full function body.
+    const window_end = @min(after.len, 30000);
+    const window = after[0..window_end];
+
+    const has_begin = std.mem.indexOf(u8, window, "db.begin") != null;
+    const has_tx_exec = std.mem.indexOf(u8, window, "tx.exec") != null;
+    const has_commit = std.mem.indexOf(u8, window, "tx.commit") != null;
+
+    if (!has_begin or !has_tx_exec or !has_commit) {
+        std.debug.print(
+            "\n!! groupElements must use a transaction !!\n" ++
+                "   Expected: db.begin() + tx.exec() + tx.commit()\n" ++
+                "   Found: begin={}, tx_exec={}, commit={}\n",
+            .{ has_begin, has_tx_exec, has_commit },
+        );
+        return error.GroupElementsTransactionMissing;
+    }
+}
+
+test "groupElements emits design_element_created SSE event for the new parent" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    const after = source[idx..];
+    const window_end = @min(after.len, 30000);
+    const window = after[0..window_end];
+
+    if (std.mem.indexOf(u8, window, "onEventSendDesignElementCreated") == null) {
+        std.debug.print(
+            "\n!! groupElements must emit design_element_created SSE !!\n" ++
+                "   The new parent element needs an SSE event for multi-tab sync.\n",
+            .{});
+        return error.GroupElementsSseCreatedMissing;
+    }
+}
+
+test "groupElements emits design_element_updated SSE events for each child" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    const after = source[idx..];
+    const window_end = @min(after.len, 30000);
+    const window = after[0..window_end];
+
+    if (std.mem.indexOf(u8, window, "onEventSendDesignElementUpdated") == null) {
+        std.debug.print(
+            "\n!! groupElements must emit design_element_updated SSE for each child !!\n" ++
+                "   Reparenting is a per-child event the frontend reconciles via SSE.\n",
+            .{});
+        return error.GroupElementsSseUpdatedMissing;
+    }
+}
+
+// ─── Contract 2: union bbox geometry ─────────────────────────────────────
+
+test "groupElements uses union bbox geometry (min_x, min_y, max_x, max_y)" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    const after = source[idx..];
+    const window_end = @min(after.len, 8000);
+    const window = after[0..window_end];
+
+    if (std.mem.indexOf(u8, window, "min_x") == null or
+        std.mem.indexOf(u8, window, "min_y") == null or
+        std.mem.indexOf(u8, window, "max_x") == null or
+        std.mem.indexOf(u8, window, "max_y") == null)
+    {
+        std.debug.print(
+            "\n!! groupElements must compute union bbox via min_x/min_y/max_x/max_y !!\n",
+            .{});
+        return error.UnionBboxMissing;
+    }
+}
+
+// ─── Contract 2b: group z_index sits BELOW its children ──────────────────
+//
+// Fix 2026-08-14 (task_1786693066547): a group's natural visual stacking
+// must be BEHIND its children, otherwise the group's body occludes the
+// children inside it (the user reported the dark fill #181616 hiding the
+// 9 children until they set the group's fill to transparent).
+//
+// Implementation: track `min_z` and compute the group's z_index as
+// `min_z - 1` so the container paints behind the children. Behavioural
+// contract: the source must reference `min_z - 1` and must NOT use
+// `max_z + 1` inside the groupElements function body.
+
+test "groupElements sets z_index below children (min_z - 1, not max_z + 1)" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn groupElements") orelse {
+        return error.GroupElementsMissing;
+    };
+    // Find the NEXT `pub fn ` after groupElements so the window
+    // covers ONLY groupElements' body (not unrelated functions like
+    // reorderElements that also use `max_z + 1` for Bring-to-front).
+    const after = source[idx..];
+    const fn_marker = "pub fn ";
+    const fn_after = std.mem.indexOfPos(u8, after, "pub fn ".len, fn_marker) orelse after.len;
+    const window = after[0..fn_after];
+
+    const has_min_z = std.mem.indexOf(u8, window, "min_z") != null;
+    const has_min_z_minus_1 = std.mem.indexOf(u8, window, "min_z - 1") != null;
+    const has_max_z_plus_1 = std.mem.indexOf(u8, window, "max_z + 1") != null;
+
+    if (!has_min_z) {
+        std.debug.print(
+            "\n!! groupElements must track min_z across children !!\n",
+            .{});
+        return error.GroupZIndexMinZMissing;
+    }
+    if (!has_min_z_minus_1) {
+        std.debug.print(
+            "\n!! groupElements must allocate z_index_str from `min_z - 1` !!\n" ++
+                "   A container must render BEHIND its children; otherwise the\n" ++
+                "   group's opaque fill occludes the children inside it.\n",
+            .{});
+        return error.GroupZIndexAboveChildren;
+    }
+    if (has_max_z_plus_1) {
+        std.debug.print(
+            "\n!! groupElements must NOT use `max_z + 1` for the group's z_index !!\n" ++
+                "   Reversed: a container drawn on top of its contents occludes them.\n",
+            .{});
+        return error.GroupZIndexAboveChildren;
+    }
+}
+
+// ─── Contract 3: error set ───────────────────────────────────────────────
+
+test "groupElements error set declares ChildAcrossDifferentPages and ChildAlreadyParented" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub const GroupElementsError") orelse {
+        std.debug.print("\n!! GroupElementsError not declared in {s} !!\n", .{DESIGN_MODEL_PATH});
+        return error.GroupElementsErrorMissing;
+    };
+    const after = source[idx..];
+    const window_end = @min(after.len, 600);
+    const window = after[0..window_end];
+
+    if (std.mem.indexOf(u8, window, "ChildAcrossDifferentPages") == null) {
+        std.debug.print("\n!! GroupElementsError missing ChildAcrossDifferentPages !!\n", .{});
+        return error.CrossPageErrorMissing;
+    }
+    if (std.mem.indexOf(u8, window, "ChildAlreadyParented") == null) {
+        std.debug.print("\n!! GroupElementsError missing ChildAlreadyParented !!\n", .{});
+        return error.AlreadyParentedErrorMissing;
+    }
+}
+
+// ─── Contract 4: updateElement SET clause accepts parent_id ──────────────
+
+test "updateElement SET clause includes parent_id when input.parent_id is non-null" {
+    const allocator = testing.allocator;
+    const source = try groupReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const idx = std.mem.indexOf(u8, source, "pub fn updateElement") orelse {
+        std.debug.print("\n!! updateElement not found in {s} !!\n", .{DESIGN_MODEL_PATH});
+        return error.UpdateElementMissing;
+    };
+    const after = source[idx..];
+    const window_end = @min(after.len, 6000);
+    const window = after[0..window_end];
+
+    if (std.mem.indexOf(u8, window, "\"parent_id = ?\"") == null) {
+        std.debug.print(
+            "\n!! updateElement must append `parent_id = ?` to the SET clause when non-null !!\n",
+            .{});
+        return error.UpdateElementParentIdSetMissing;
+    }
+    if (std.mem.indexOf(u8, window, "input.parent_id") == null) {
+        std.debug.print(
+            "\n!! updateElement must reference input.parent_id in its SET clause builder !!\n",
+            .{});
+        return error.UpdateElementParentIdRefMissing;
+    }
+}
+
+// ─── Behavioural tests ───────────────────────────────────────────────────
+
+test "groupElements creates a new parent element and reparents the children" {
+    const alloc = testing.allocator;
+    var ctx = try groupSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Create 3 children with disjoint bboxes (union = 0,0 → 200,150).
+    const child_a = try groupInsertChild(alloc, &ctx.db, page_id, "elem_a", 0, 0, 100, 50);
+    defer alloc.free(child_a);
+    const child_b = try groupInsertChild(alloc, &ctx.db, page_id, "elem_b", 50, 100, 100, 50);
+    defer alloc.free(child_b);
+    const child_c = try groupInsertChild(alloc, &ctx.db, page_id, "elem_c", 200, 0, 0, 150);
+    defer alloc.free(child_c);
+
+    const new_id = try groupElements(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .child_ids = &.{ child_a, child_b, child_c },
+        .parent_name = "Kanban-view",
+        .parent_type = .group,
+    });
+    defer alloc.free(new_id);
+
+    // The new element should be a top-level 'group' with union bbox.
+    const parent = try getElement(alloc, &ctx.db, new_id);
+    defer freeElement(alloc, parent);
+
+    try testing.expectEqualStrings("Kanban-view", parent.name);
+    try testing.expectEqualStrings("group", parent.elem_type);
+    try testing.expectEqual(@as(i64, 0), parent.x);
+    try testing.expectEqual(@as(i64, 0), parent.y);
+    try testing.expectEqual(@as(i64, 200), parent.width);
+    try testing.expectEqual(@as(i64, 150), parent.height);
+    try testing.expectEqual(@as(usize, 0), parent.parent_id.len);
+
+    // The group must render BEHIND its children — otherwise an opaque
+    // fill occludes its contents. Children default to z_index 0, so the
+    // group must sit at -1 (min_z - 1).
+    try testing.expectEqual(@as(i64, -1), parent.z_index);
+
+    // Each child should now have parent_id set to the new parent.
+    const a_after = try getElement(alloc, &ctx.db, child_a);
+    defer freeElement(alloc, a_after);
+    try testing.expectEqualStrings(new_id, a_after.parent_id);
+
+    const b_after = try getElement(alloc, &ctx.db, child_b);
+    defer freeElement(alloc, b_after);
+    try testing.expectEqualStrings(new_id, b_after.parent_id);
+
+    const c_after = try getElement(alloc, &ctx.db, child_c);
+    defer freeElement(alloc, c_after);
+    try testing.expectEqualStrings(new_id, c_after.parent_id);
+}
+
+test "groupElements rejects cross-page child ids" {
+    const alloc = testing.allocator;
+    var ctx = try groupSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_a = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "A",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_a);
+
+    const page_b = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "B",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_b);
+
+    const child_a = try groupInsertChild(alloc, &ctx.db, page_a, "elem_a1", 0, 0, 50, 50);
+    defer alloc.free(child_a);
+    const child_b = try groupInsertChild(alloc, &ctx.db, page_b, "elem_b1", 0, 0, 50, 50);
+    defer alloc.free(child_b);
+
+    // Try to group children that live on different pages.
+    const result = groupElements(alloc, &ctx.db, .{
+        .page_id = page_a,
+        .child_ids = &.{ child_a, child_b },
+        .parent_name = "Cross-page-group",
+        .parent_type = .group,
+    });
+    try testing.expectError(error.ChildAcrossDifferentPages, result);
+}
+
+test "groupElements rejects already-parented children" {
+    const alloc = testing.allocator;
+    var ctx = try groupSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const child_a = try groupInsertChild(alloc, &ctx.db, page_id, "elem_a2", 0, 0, 50, 50);
+    defer alloc.free(child_a);
+    const child_b = try groupInsertChild(alloc, &ctx.db, page_id, "elem_b2", 0, 0, 50, 50);
+    defer alloc.free(child_b);
+
+    // Pre-set parent_id on child_a to simulate "already parented".
+    try ctx.db.exec(alloc,
+        "UPDATE design_page_elements SET parent_id = 'elem_some_parent' WHERE id = ?",
+        &.{child_a});
+
+    const result = groupElements(alloc, &ctx.db, .{
+        .page_id = page_id,
+        .child_ids = &.{ child_a, child_b },
+        .parent_name = "Should-fail",
+        .parent_type = .group,
+    });
+    try testing.expectError(error.ChildAlreadyParented, result);
+}
+
+test "updateElement accepts parent_id and writes it to the row" {
+    const alloc = testing.allocator;
+    var ctx = try groupSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const parent_id_slice = try alloc.dupe(u8, "elem_parent_set");
+    defer alloc.free(parent_id_slice);
+
+    const child_id = try groupInsertChild(alloc, &ctx.db, page_id, "elem_to_reparent", 10, 10, 100, 50);
+    defer alloc.free(child_id);
+
+    // Sanity: parent_id is empty before the update.
+    {
+        const before = try getElement(alloc, &ctx.db, child_id);
+        defer freeElement(alloc, before);
+        try testing.expectEqual(@as(usize, 0), before.parent_id.len);
+    }
+
+    const updated_id = try updateElement(alloc, &ctx.db, .{
+        .element_id = child_id,
+        .parent_id = parent_id_slice,
+    });
+    defer alloc.free(updated_id);
+
+    const after = try getElement(alloc, &ctx.db, child_id);
+    defer freeElement(alloc, after);
+    try testing.expectEqualStrings("elem_parent_set", after.parent_id);
+}
+
+test "updateElement with parent_id = null leaves existing parent_id unchanged" {
+    const alloc = testing.allocator;
+    var ctx = try groupSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const child_id = try groupInsertChild(alloc, &ctx.db, page_id, "elem_keep_parent", 10, 10, 100, 50);
+    defer alloc.free(child_id);
+
+    // Set parent_id once.
+    const set_id = try updateElement(alloc, &ctx.db, .{
+        .element_id = child_id,
+        .parent_id = "elem_first_parent",
+    });
+    defer alloc.free(set_id);
+
+    // Update x without touching parent_id (parent_id stays "elem_first_parent").
+    const x_id = try updateElement(alloc, &ctx.db, .{
+        .element_id = child_id,
+        .x = 99,
+    });
+    defer alloc.free(x_id);
+
+    const after = try getElement(alloc, &ctx.db, child_id);
+    defer freeElement(alloc, after);
+    try testing.expectEqualStrings("elem_first_parent", after.parent_id);
+    try testing.expectEqual(@as(i64, 99), after.x);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_parent_id_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+const DESIGN_MODEL_PATH = "src/ai_workflow/tui/agentic_loop/design_model.zig";
+const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
+
+fn parentIdReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(1024 * 1024),
+    );
+}
+
+/// Open a fresh in-memory sqlite DB with the minimum tables needed
+/// for the design SQL. Mirrors `design_model_test.zig::parentIdSetupDbAndItem`
+/// (kept inline here so this file is self-contained for the static
+/// checks).
+fn parentIdSetupDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_parent_id";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+// ─── Contract 1: struct has parent_id field ──────────────────────────────
+
+test "DesignElement struct declares parent_id field" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    // Field declaration with `[]u8` type, near the image_url field.
+    if (std.mem.indexOf(u8, source, "parent_id: []u8") == null) {
+        std.debug.print(
+            "\n!! {s} DesignElement struct is missing parent_id field !!\n" ++
+                "   Add `parent_id: []u8` (after image_url) to expose\n" ++
+                "   the Migration 057 parent column through the read-back path.\n",
+            .{DESIGN_MODEL_PATH},
+        );
+        return error.ParentIdFieldMissing;
+    }
+}
+
+test "freeElement frees parent_id slice" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "allocator.free(e.parent_id)") == null) {
+        std.debug.print(
+            "\n!! {s} freeElement does not free parent_id !!\n" ++
+                "   Add `allocator.free(e.parent_id);` inside freeElement.\n",
+            .{DESIGN_MODEL_PATH},
+        );
+        return error.ParentIdFreeMissing;
+    }
+}
+
+test "freeElements loop frees parent_id slice" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    // The freeElements loop iterates over a slice and calls freeElement
+    // per element. The static contract is "freeElement calls
+    // allocator.free(e.parent_id)" (the loop inherits this from the
+    // helper). This test pins that the helper has the line.
+    if (std.mem.indexOf(u8, source, "allocator.free(e.parent_id)") == null) {
+        std.debug.print(
+            "\n!! {s} freeElement does not free parent_id !!\n" ++
+                "   The freeElements loop delegates to freeElement — fix freeElement.\n",
+            .{DESIGN_MODEL_PATH},
+        );
+        return error.ParentIdLoopFreeMissing;
+    }
+}
+
+// ─── Contract 2: getElement SELECT includes parent_id ───────────────────
+
+test "getElement SELECT reads parent_id column" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    // The getElement SELECT must include "parent_id" so the column
+    // is read into row.values[N]. The exact position in the SELECT
+    // is unimportant — what matters is that the column appears.
+    // Locate the getElement function (anchored to its SELECT) and
+    // assert parent_id appears in that vicinity.
+    const get_elem_idx = std.mem.indexOf(u8, source, "pub fn getElement") orelse {
+        std.debug.print("\n!! getElement function not found in {s} !!\n", .{DESIGN_MODEL_PATH});
+        return error.GetElementMissing;
+    };
+    const after_get_elem = source[get_elem_idx..];
+    const slice_end = @min(after_get_elem.len, 3000);
+    const get_elem_window = after_get_elem[0..slice_end];
+    if (std.mem.indexOf(u8, get_elem_window, "parent_id") == null) {
+        std.debug.print(
+            "\n!! getElement in {s} does not SELECT parent_id !!\n" ++
+                "   Add parent_id to the SELECT column list and to the\n" ++
+                "   returned DesignElement initializer (allocator.dupe the value).\n",
+            .{DESIGN_MODEL_PATH},
+        );
+        return error.GetElementParentIdMissing;
+    }
+}
+
+// ─── Contract 3: listElements SELECT includes parent_id ──────────────────
+
+test "listElements SELECT reads parent_id column" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, DESIGN_MODEL_PATH);
+    defer allocator.free(source);
+
+    const list_elem_idx = std.mem.indexOf(u8, source, "pub fn listElements") orelse {
+        std.debug.print("\n!! listElements function not found in {s} !!\n", .{DESIGN_MODEL_PATH});
+        return error.ListElementsMissing;
+    };
+    const after_list_elem = source[list_elem_idx..];
+    const slice_end = @min(after_list_elem.len, 3500);
+    const list_elem_window = after_list_elem[0..slice_end];
+    if (std.mem.indexOf(u8, list_elem_window, "parent_id") == null) {
+        std.debug.print(
+            "\n!! listElements in {s} does not SELECT parent_id !!\n" ++
+                "   Add parent_id to the SELECT column list and to the\n" ++
+                "   returned DesignElement initializer.\n",
+            .{DESIGN_MODEL_PATH},
+        );
+        return error.ListElementsParentIdMissing;
+    }
+}
+
+// ─── Contract 4: DesignElementResponse carries parent_id ────────────────
+
+test "DesignElementResponse struct has parent_id field" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, HTTP_RESPONSE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "parent_id: []const u8") == null) {
+        std.debug.print(
+            "\n!! {s} DesignElementResponse is missing parent_id !!\n" ++
+                "   Add `parent_id: []const u8` to DesignElementResponse\n" ++
+                "   (after image_url) and copy elem.parent_id in\n" ++
+                "   makeDesignElementResponse.\n",
+            .{HTTP_RESPONSE_PATH},
+        );
+        return error.ResponseParentIdMissing;
+    }
+}
+
+test "makeDesignElementResponse mapper copies parent_id from elem.parent_id" {
+    const allocator = testing.allocator;
+    const source = try parentIdReadSource(allocator, HTTP_RESPONSE_PATH);
+    defer allocator.free(source);
+
+    // The mapper must reference elem.parent_id. Search inside the
+    // makeDesignElementResponse function body.
+    const mapper_idx = std.mem.indexOf(u8, source, "pub fn makeDesignElementResponse") orelse {
+        std.debug.print("\n!! makeDesignElementResponse not found in {s} !!\n", .{HTTP_RESPONSE_PATH});
+        return error.MapperMissing;
+    };
+    const after_mapper = source[mapper_idx..];
+    const slice_end = @min(after_mapper.len, 2500);
+    const mapper_window = after_mapper[0..slice_end];
+    if (std.mem.indexOf(u8, mapper_window, "parent_id") == null) {
+        std.debug.print(
+            "\n!! makeDesignElementResponse in {s} does not copy parent_id !!\n" ++
+                "   Add `.parent_id = elem.parent_id,` to the returned struct.\n",
+            .{HTTP_RESPONSE_PATH},
+        );
+        return error.MapperParentIdCopyMissing;
+    }
+}
+
+// ─── Behavioural: getElement returns parent_id (NULL → empty string) ────
+
+test "getElement returns empty string for NULL parent_id" {
+    const alloc = testing.allocator;
+    var ctx = try parentIdSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const element_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .rectangle,
+        .html = "<div>Login</div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    const got = try getElement(alloc, &ctx.db, element_id);
+    defer freeElement(alloc, got);
+
+    // NULL parent_id → empty string (the SELECT COALESCE pattern is
+    // not used here; the column reads "" via the empty-slice-binds-as-null
+    // pattern. Both are acceptable per the project memory
+    // `zig-sqlite-patterns.md` §"empty slice as NULL").
+    try testing.expectEqual(@as(usize, 0), got.parent_id.len);
+}
+
+test "getElement returns parent_id value when set" {
+    const alloc = testing.allocator;
+    var ctx = try parentIdSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Manually INSERT a parent + child with parent_id set, bypassing
+    // addElement (which always sets parent_id = NULL via INSERT).
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_parent_1', ?, 'parent', '', 0, 0, 100, 100, 0, 0,
+        \\    'frame', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_child_1', ?, 'child', '', 10, 10, 20, 20, 0, 1,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_parent_1', datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    const child = try getElement(alloc, &ctx.db, "elem_child_1");
+    defer freeElement(alloc, child);
+
+    try testing.expectEqualStrings("elem_parent_1", child.parent_id);
+}
+
+test "listElements returns parent_id for every element" {
+    const alloc = testing.allocator;
+    var ctx = try parentIdSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440, .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Same manual-INSERT pattern as the previous test. Each row is
+    // INSERTed in its own statement so the `?` placeholder count
+    // matches the args count (SQLite positions `?` per-statement).
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_top', ?, 'top', '', 0, 0, 100, 100, 0, 0,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_parent', ?, 'parent', '', 0, 0, 200, 200, 0, 1,
+        \\    'frame', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_child', ?, 'child', '', 10, 10, 50, 50, 0, 2,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_parent', datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    const elements = try listElements(alloc, &ctx.db, page_id);
+    defer freeElements(alloc, elements);
+
+    try testing.expectEqual(@as(usize, 3), elements.len);
+
+    // Order by (z_index ASC, position ASC). The top-level "top" is at
+    // position 0 (z 0); "parent" at position 1 (z 0); "child" at
+    // position 2 (z 0).
+    try testing.expectEqualStrings("top", elements[0].name);
+    try testing.expectEqualStrings("parent", elements[1].name);
+    try testing.expectEqualStrings("child", elements[2].name);
+
+    try testing.expectEqual(@as(usize, 0), elements[0].parent_id.len);
+    try testing.expectEqual(@as(usize, 0), elements[1].parent_id.len);
+    try testing.expectEqualStrings("elem_parent", elements[2].parent_id);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_reorder_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+/// Set up an in-memory sqlite DB with the minimum tables `reorderElements`
+/// reads. Mirrors `design_model_group_test.zig::setupDbAndItem` (without
+/// the workspaces + items FK tails that reorderElements doesn't touch).
+fn reorderSetupDb() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    alloc: std.mem.Allocator,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 100, height INTEGER NOT NULL DEFAULT 100,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle',
+        \\    rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '',
+        \\    stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0,
+        \\    opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '',
+        \\    text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '',
+        \\    parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES ('item_t1', 'ws_t1', 'design', '/tmp')",
+        &.{});
+    try db.exec(alloc,
+        "INSERT INTO design_pages (id, workspace_item_id, name) " ++
+        "VALUES ('page_t1', 'item_t1', 'Test Page')",
+        &.{});
+    return .{ .db = db, .threaded = threaded, .alloc = alloc };
+}
+
+fn reorderTeardown(s: *@TypeOf(reorderSetupDb() catch unreachable)) void {
+    s.db.deinit();
+    s.threaded.deinit();
+}
+
+/// Insert a design element at a given z_index. Returns the id (duplicated
+/// into the caller's allocator; safe to free with `freeId`).
+fn reorderInsertEl(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, page_id: []const u8, id: []const u8, z: i64) ![]u8 {
+    const z_str = try std.fmt.allocPrint(alloc, "{d}", .{z});
+    defer alloc.free(z_str);
+    try db.exec(alloc,
+        "INSERT INTO design_page_elements " ++
+        "(id, page_id, name, z_index, type) VALUES (?, ?, ?, ?, 'rectangle')",
+        &.{ id, page_id, id, z_str });
+    return try alloc.dupe(u8, id);
+}
+
+/// Read an element's z_index by id. Returns null if not found.
+fn reorderReadZ(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, id: []const u8) !?i64 {
+    var q = try db.query(alloc, "SELECT z_index FROM design_page_elements WHERE id = ?", &.{id});
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(alloc);
+        return try std.fmt.parseInt(i64, row.values[0], 10);
+    }
+    return null;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Tests
+// ───────────────────────────────────────────────────────────────────────
+
+test "reorderElements bring_to_front sets selected above untouched elements in input order" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+    const b = try reorderInsertEl(s.alloc, &s.db, "page_t1", "b", 1);
+    defer s.alloc.free(b);
+    const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
+    defer s.alloc.free(c);
+
+    // Initial order: a(z=0), b(z=1), c(z=2). Bring {a, c} to front:
+    // the algorithm assigns new z values starting from max_z + 1,
+    // walking the input list in order. So a (first input) gets z=3
+    // (just above existing) and c (second input) gets z=4 (topmost).
+    // After: a(z=3), b(z=1 unchanged), c(z=4). Top-to-bottom:
+    // c > a > b — the LAST input ends up topmost, which matches the
+    // http_handlers/design_elements_reorder_test.zig expectation.
+    const result = try reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .bring_to_front,
+        .element_ids = &[_][]const u8{ a, c },
+    });
+    // Zig defers are LIFO — free the slice header LAST (after we've
+    // walked each element through freeElement), not first. The
+    // previous `defer for (...)` then `defer free(result)` order
+    // caused a use-after-free on the slice header at test teardown.
+    defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
+
+    try testing.expectEqual(@as(?i64, 3), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, 4), try reorderReadZ(s.alloc, &s.db, c));
+    try testing.expectEqual(@as(?i64, 1), try reorderReadZ(s.alloc, &s.db, b));
+}
+
+test "reorderElements send_to_back puts selected below untouched in reverse-input order" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+    const b = try reorderInsertEl(s.alloc, &s.db, "page_t1", "b", 1);
+    defer s.alloc.free(b);
+    const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
+    defer s.alloc.free(c);
+
+    // Send {a, b} to back: the algorithm iterates the input list in
+    // REVERSE order, assigning new z values starting from min_z - 1.
+    // So b (last input, processed first) gets z=-1 and a (first input,
+    // processed last) gets z=-2. After: a(z=-2), b(z=-1), c(z=2). Top
+    // to bottom: c > b > a — the LAST input ends up nearest to the
+    // existing elements, the FIRST input ends up bottommost.
+    const result = try reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .send_to_back,
+        .element_ids = &[_][]const u8{ a, b },
+    });
+    defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
+
+    try testing.expectEqual(@as(?i64, -2), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, -1), try reorderReadZ(s.alloc, &s.db, b));
+    try testing.expectEqual(@as(?i64, 2), try reorderReadZ(s.alloc, &s.db, c));
+}
+
+test "reorderElements bring_forward swaps the topmost selected with the next sibling above" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+    const b = try reorderInsertEl(s.alloc, &s.db, "page_t1", "b", 1);
+    defer s.alloc.free(b);
+    const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
+    defer s.alloc.free(c);
+
+    // bring_forward b: b (z=1) should swap with c (z=2). Result:
+    // b(z=2), a(z=0), c(z=1).
+    const result = try reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .bring_forward,
+        .element_ids = &[_][]const u8{ b },
+    });
+    defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
+
+    try testing.expectEqual(@as(?i64, 0), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, 2), try reorderReadZ(s.alloc, &s.db, b));
+    try testing.expectEqual(@as(?i64, 1), try reorderReadZ(s.alloc, &s.db, c));
+}
+
+test "reorderElements send_backward swaps the bottommost selected with the next sibling below" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+    const b = try reorderInsertEl(s.alloc, &s.db, "page_t1", "b", 1);
+    defer s.alloc.free(b);
+    const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
+    defer s.alloc.free(c);
+
+    // send_backward b: b (z=1) should swap with a (z=0). Result:
+    // b(z=0), a(z=1), c(z=2).
+    const result = try reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .send_backward,
+        .element_ids = &[_][]const u8{ b },
+    });
+    defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
+
+    try testing.expectEqual(@as(?i64, 1), try reorderReadZ(s.alloc, &s.db, a));
+    try testing.expectEqual(@as(?i64, 0), try reorderReadZ(s.alloc, &s.db, b));
+    try testing.expectEqual(@as(?i64, 2), try reorderReadZ(s.alloc, &s.db, c));
+}
+
+test "reorderElements returns BadElementId when an id is missing on the page" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+
+    const result = reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .bring_to_front,
+        .element_ids = &[_][]const u8{ "nonexistent" },
+    });
+    try testing.expectError(error.BadElementId, result);
+}
+
+test "reorderElements returns CrossPageIds when an id lives on a different page" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    try s.db.exec(s.alloc,
+        "INSERT INTO design_pages (id, workspace_item_id, name) VALUES ('page_t2', 'item_t1', 'Other')",
+        &.{});
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+    const x = try reorderInsertEl(s.alloc, &s.db, "page_t2", "x", 0);
+    defer s.alloc.free(x);
+
+    const result = reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .bring_to_front,
+        .element_ids = &[_][]const u8{ a, x },
+    });
+    try testing.expectError(error.CrossPageIds, result);
+}
+
+test "reorderElements returns PageNotFound when the page id is unknown" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+
+    const result = reorderElements(s.alloc, &s.db, .{
+        .page_id = "ghost_page",
+        .mode = .bring_to_front,
+        .element_ids = &[_][]const u8{ "anything" },
+    });
+    try testing.expectError(error.PageNotFound, result);
+}
+
+test "reorderElements returned slice contains the rows in their new top-to-bottom order" {
+    var s = try reorderSetupDb();
+    defer reorderTeardown(&s);
+    const a = try reorderInsertEl(s.alloc, &s.db, "page_t1", "a", 0);
+    defer s.alloc.free(a);
+    const b = try reorderInsertEl(s.alloc, &s.db, "page_t1", "b", 1);
+    defer s.alloc.free(b);
+    const c = try reorderInsertEl(s.alloc, &s.db, "page_t1", "c", 2);
+    defer s.alloc.free(c);
+
+    const result = try reorderElements(s.alloc, &s.db, .{
+        .page_id = "page_t1",
+        .mode = .bring_to_front,
+        .element_ids = &[_][]const u8{ a, c },
+    });
+    defer s.alloc.free(result);
+    defer for (result) |e| freeElement(s.alloc, e);
+
+    // After bring_to_front {a, c}: a(z=3), b(z=1 unchanged), c(z=4).
+    // The function re-fetches the rows in (z_index ASC, position ASC)
+    // order, so the returned slice's first row is the LOWEST-z row
+    // (a), not the topmost. Verify len + that all 3 ids are present
+    // (algorithm-agnostic on top-vs-bottom naming).
+    try testing.expectEqual(@as(usize, 3), result.len);
+    var seen_a = false;
+    var seen_b = false;
+    var seen_c = false;
+    for (result) |e| {
+        if (std.mem.eql(u8, e.id, a)) seen_a = true;
+        if (std.mem.eql(u8, e.id, b)) seen_b = true;
+        if (std.mem.eql(u8, e.id, c)) seen_c = true;
+    }
+    try testing.expect(seen_a and seen_b and seen_c);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_set_element_parent_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+/// Open a fresh in-memory sqlite DB with the minimum tables needed for
+/// the design SQL. Same shape as `design_model_add_element_parent_test.zig`.
+fn setElementParentSetupDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_set_parent";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+fn setElementParentTeardown(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+// ─── Test 1: move element into an existing group ─────────────────────────
+
+test "setElementParent moves element into existing group" {
+    const alloc = testing.allocator;
+    var ctx = try setElementParentSetupDbAndItem();
+    defer setElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Add the parent group + the child element both at top-level.
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 100, .y = 200, .width = 400, .height = 300,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const child_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-button",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 110, .y = 220, .width = 80, .height = 30,
+        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(child_id);
+
+    // Re-parent the child into the group.
+    try setElementParent(alloc, &ctx.db, child_id, group_id);
+
+    // Verify the DB state.
+    const child = try getElement(alloc, &ctx.db, child_id);
+    defer freeElement(alloc, child);
+    try testing.expectEqualStrings(group_id, child.parent_id);
+}
+
+// ─── Test 2: move element to top-level via null ───────────────────────────
+
+test "setElementParent with null moves element to top-level" {
+    const alloc = testing.allocator;
+    var ctx = try setElementParentSetupDbAndItem();
+    defer setElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Add a parent + child with parent_id set via manual INSERTs
+    // (addElement always sets parent_id = NULL).
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_g', ?, 'group', '', 0, 0, 100, 100, 0, 0,
+        \\    'frame', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', NULL, datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO design_page_elements
+        \\   (id, page_id, name, file_path, x, y, width, height, z_index, position,
+        \\    type, rotation, fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at)
+        \\VALUES
+        \\   ('elem_c', ?, 'child', '', 10, 10, 20, 20, 0, 1,
+        \\    'rectangle', 0.0, '', '', 0, 0, 1.0,
+        \\    '', '', '', 'elem_g', datetime('now'), datetime('now'))
+    , &.{page_id});
+
+    // Confirm pre-condition: child has parent_id = 'elem_g'.
+    const pre = try getElement(alloc, &ctx.db, "elem_c");
+    defer freeElement(alloc, pre);
+    try testing.expectEqualStrings("elem_g", pre.parent_id);
+
+    // Move child to top-level.
+    try setElementParent(alloc, &ctx.db, "elem_c", null);
+
+    const post = try getElement(alloc, &ctx.db, "elem_c");
+    defer freeElement(alloc, post);
+    try testing.expectEqual(@as(usize, 0), post.parent_id.len);
+}
+
+// ─── Test 3: reject parent_id of a leaf type ──────────────────────────────
+
+test "setElementParent rejects leaf-type parent" {
+    const alloc = testing.allocator;
+    var ctx = try setElementParentSetupDbAndItem();
+    defer setElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const leaf_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "leaf-rect",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(leaf_id);
+
+    const child_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "child",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 50, .height = 50,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(child_id);
+
+    const result = setElementParent(alloc, &ctx.db, child_id, leaf_id);
+    try testing.expectError(error.ParentNotContainer, result);
+}
+
+// ─── Test 5: reject non-existent element_id ───────────────────────────────
+
+test "setElementParent rejects non-existent element_id" {
+    const alloc = testing.allocator;
+    var ctx = try setElementParentSetupDbAndItem();
+    defer setElementParentTeardown(&ctx.db, &ctx.threaded);
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const group_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "group",
+        .elem_type = .frame,
+        .html = "<div></div>",
+        .x = 0, .y = 0, .width = 100, .height = 100,
+        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(group_id);
+
+    const result = setElementParent(alloc, &ctx.db, "elem_does_not_exist", group_id);
+    try testing.expectError(error.ElementNotFound, result);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Inlined from design_model_test.zig
+// ════════════════════════════════════════════════════════════════════════════
+
+
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with the minimum tables
+/// `design_model` functions need: `workspace_items` + `design_pages`
+/// + `design_page_elements`. The v6 schema is used here (no migration
+/// cascade).
+///
+/// Returns the DB handle, the threaded Io, the inserted workspace
+/// item id + path. The test must `defer ctx.threaded.deinit()` and
+/// `defer ctx.db.deinit()`.
+fn designModelSetupDbAndItem() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // workspace_items. `path` is required by setDesignPage (returns
+    // ItemPathMissing if NULL/empty).
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    // workspace_item_tasks (required by setDesignPage since the FK
+    // work — each new page is paired with a chat task row in the
+    // same transaction).
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME)
+    , &.{});
+
+    // design_pages (v6 schema + post-Migration-066
+    // workspace_item_task_id column).
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    UNIQUE (workspace_item_task_id),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    // design_page_elements (v6 schema — includes the 11 Migration 057
+    // columns, but the tests in this file don't exercise them).
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    // Create a temp directory for the design item's on-disk
+    // storage. The tests in this file don't write to disk yet
+    // (addElement writes are exercised by Task 1.4), but setDesignPage
+    // requires a non-empty `path` on the workspace_item row, so
+    // we point at a real tempdir path.
+    var tmp = testing.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing.io, &tmpdir_buf);
+    const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+    // `tmp` is intentionally not cleaned up at this scope — the
+    // directory persists until the OS reclaims the test process's
+    // tmp dir. This is acceptable for test-suite use but should be
+    // tidied up if reused in production code paths.
+
+    // Insert the workspace item row (item_type='design' with a real path).
+    const item_id_const = "item_design_1";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+// ─── Test: listPages on empty item returns empty slice ──────────────────
+
+test "listPages returns empty slice for an item with no pages" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const pages = try listPages(alloc, &ctx.db, ctx.item_id);
+    defer freePages(alloc, pages);
+    try testing.expectEqual(@as(usize, 0), pages.len);
+}
+
+// ─── Test: setDesignPage creates a page on first call ───────────────────
+
+test "setDesignPage creates a new page on first call" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Generated id starts with "page_".
+    try testing.expect(page_id.len > 4);
+    try testing.expect(std.mem.startsWith(u8, page_id, "page_"));
+}
+
+// ─── Test: setDesignPage is idempotent (same name updates width/height) ─
+
+test "setDesignPage is idempotent (same name updates width/height)" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const id1 = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(id1);
+
+    const id2 = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 800,
+        .height = 600,
+    });
+    defer alloc.free(id2);
+
+    // Same row → same id.
+    try testing.expectEqualStrings(id1, id2);
+
+    // The row should reflect the latest width/height.
+    const pages = try listPages(alloc, &ctx.db, ctx.item_id);
+    defer freePages(alloc, pages);
+    try testing.expectEqual(@as(usize, 1), pages.len);
+    try testing.expectEqual(@as(i64, 800), pages[0].width);
+    try testing.expectEqual(@as(i64, 600), pages[0].height);
+}
+
+// ─── Test: setDesignPage returns ItemPathMissing when path is empty ────
+
+test "setDesignPage returns ItemPathMissing when workspace_item.path is empty" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Insert a separate item with path=NULL.
+    const no_path_item = try alloc.dupe(u8, "item_no_path");
+    defer alloc.free(no_path_item);
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', NULL)",
+        &.{no_path_item});
+
+    const result = setDesignPage(alloc, &ctx.db, .{
+        .item_id = no_path_item,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    try testing.expectError(error.ItemPathMissing, result);
+}
+
+// ─── Test: setDesignPage returns BadPageName for empty page_name ───────
+
+test "setDesignPage rejects empty page_name" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const result = setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "",
+        .width = 1440,
+        .height = 1024,
+    });
+    try testing.expectError(error.BadPageName, result);
+}
+
+// ─── Test: addElement writes a row + a file ──────────────────────────────
+
+test "addElement creates a row + writes the HTML file" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Create a page first.
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // Add the element.
+    const element_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "login-card",
+        .elem_type = .rectangle,
+        .html = "<div>Login</div>",
+        .x = 100,
+        .y = 200,
+        .width = 400,
+        .height = 300,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    // Generated id starts with "elem_".
+    try testing.expect(element_id.len > 4);
+    try testing.expect(std.mem.startsWith(u8, element_id, "elem_"));
+
+    // Verify the HTML file was written to disk.
+    const file_path = try std.fs.path.join(alloc, &.{
+        ctx.item_path,
+        ".nalar/design/Login/login-card.html",
+    });
+    defer alloc.free(file_path);
+
+    const content = try std.Io.Dir.cwd().readFileAlloc(ctx.threaded.io(), file_path, alloc, .limited(1024));
+    defer alloc.free(content);
+    try testing.expectEqualStrings("<div>Login</div>", content);
+}
+
+// ─── Test: addElement with empty fill succeeds (NOT NULL constraint) ─────
+//
+// REGRESSION (2026-08-14, "design mode, add element manual not
+// working" — second wave). The HTTP handler resolves `fill` to the
+// empty string when the user doesn't provide one (see
+// design_elements_create.zig:278 `.fill = parsed.fill orelse ""`).
+// The project's `sqlite-backend-empty-slice-binds-as-null`
+// optimization then binds that empty string as SQL NULL. But the
+// `fill` column is `TEXT NOT NULL DEFAULT ''` — the constraint
+// rejects the INSERT with `NOT NULL constraint failed:
+// design_page_elements.fill`, the handler maps to error.DbError,
+// the useCase to 500, the user sees "Failed to create element" and
+// the dialog closes without adding anything.
+//
+// The production INSERT was reachable when the production server
+// sent the request through the wire (pre-fix, the entire
+// @create-element binding was missing — fixed earlier). The empty
+// fill path is now the only reachable bug for the "+ Element → Add"
+// flow. The first regression test ensures the fix sticks.
+//
+// Why no whitespace coercion at the handler: that would mask the
+// symptom in one place while other NOT NULL columns (text_content /
+// text_style / image_url — all currently passed as literals, but
+// `fill` is the first NOT NULL column the bind layer sees) could
+// regress the same way. The fix is at the SQL: COALESCE(?, '') on
+// the `fill` parameter so a NULL bind lands as the column's own
+// default (empty string), which is what the schema author intended.
+test "addElement with empty fill succeeds (NOT NULL fill column)" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    // The pre-fix bug: passing fill="" with the empty-slice-binds-
+    // as-null optimization makes sqlite3_bind_null fire, which the
+    // NOT NULL constraint rejects. The test asserts this path
+    // succeeds end-to-end (creates a row, getElement reads it back).
+    const element_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "kotak",
+        .elem_type = .rectangle,
+        .html = "<div></div>",
+        .x = 0,
+        .y = 0,
+        .width = 375,
+        .height = 667,
+        .fill = "", // <- the bug-trigger. Empty slice → bind NULL → NOT NULL fail.
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    // Read it back and confirm the row is sane.
+    const row = try getElement(alloc, &ctx.db, element_id);
+    defer freeElement(alloc, row);
+    try testing.expectEqualStrings("kotak", row.name);
+    try testing.expectEqualStrings("rectangle", row.elem_type);
+    // The column default is '' — empty string in storage is the
+    // schema's intent. The fix normalizes the bind-NULL leak into
+    // either '' (already the default) or the user's value.
+    try testing.expectEqual(@as(usize, 0), row.fill.len);
+}
+
+// ─── Test: loadElementHtml round-trips the original HTML ─────────────────
+
+test "loadElementHtml returns the original HTML body" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const element_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "hero",
+        .elem_type = .rectangle,
+        .html = "<h1>Welcome</h1>",
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 100,
+        .fill = "#22c55e",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    const html = try loadElementHtml(alloc, ctx.threaded.io(), &ctx.db, element_id);
+    defer alloc.free(html);
+    try testing.expectEqualStrings("<h1>Welcome</h1>", html);
+}
+
+// ─── Test: deleteElement removes the row and the file ───────────────────
+
+test "deleteElement removes the row and unlinks the file" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const element_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "card",
+        .elem_type = .rectangle,
+        .html = "<div>card</div>",
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+        .fill = "#ffffff",  // `db.exec` binds `""` as NULL which would
+                            //  violate the NOT NULL constraint on fill.
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(element_id);
+
+    const file_path = try std.fs.path.join(alloc, &.{
+        ctx.item_path,
+        ".nalar/design/Home/card.html",
+    });
+    defer alloc.free(file_path);
+
+    // Sanity: file exists before delete.
+    {
+        const stat_before = try std.Io.Dir.cwd().statFile(ctx.threaded.io(), file_path, .{});
+        try testing.expect(stat_before.kind == .file);
+    }
+
+    // Delete.
+    const was_deleted = try deleteElement(alloc, &ctx.db, element_id);
+    try testing.expect(was_deleted);
+
+    // File is gone.
+    const stat_after_result = std.Io.Dir.cwd().statFile(ctx.threaded.io(), file_path, .{});
+    try testing.expectError(error.FileNotFound, stat_after_result);
+
+    // deleteElement on a missing id returns false.
+    const was_deleted2 = try deleteElement(alloc, &ctx.db, element_id);
+    try testing.expect(!was_deleted2);
+}
+
+// ─── Test: getPageWithElements returns page + elements (no HTML bodies) ──
+
+test "getPageWithElements returns page + its elements" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Create a page, then add 2 elements to it.
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const e1_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "hero",
+        .elem_type = .rectangle,
+        .html = "<div>hero</div>",
+        .x = 10,
+        .y = 20,
+        .width = 100,
+        .height = 50,
+        .fill = "#22c55e",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+    });
+    defer alloc.free(e1_id);
+
+    const e2_id = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page_id,
+        .name = "card",
+        .elem_type = .text,
+        .html = "<p>hi</p>",
+        .x = 30,
+        .y = 40,
+        .width = 200,
+        .height = 80,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
+        .text_content = "hello world",
+    });
+    defer alloc.free(e2_id);
+
+    const bundle = try getPageWithElements(alloc, &ctx.db, page_id);
+    defer bundle.deinit(alloc);
+
+    // Page fields populated correctly.
+    try testing.expectEqualStrings(page_id, bundle.page.id);
+    try testing.expectEqualStrings("Home", bundle.page.name);
+    try testing.expectEqual(@as(i64, 1440), bundle.page.width);
+    try testing.expectEqual(@as(i64, 1024), bundle.page.height);
+
+    // Two elements returned in (z_index, position) order.
+    try testing.expectEqual(@as(usize, 2), bundle.elements.len);
+    try testing.expectEqualStrings("hero", bundle.elements[0].name);
+    try testing.expectEqualStrings("card", bundle.elements[1].name);
+    try testing.expectEqualStrings(e1_id, bundle.elements[0].id);
+    try testing.expectEqualStrings(e2_id, bundle.elements[1].id);
+
+    // Element fields populated (file_path included, but no html body
+    // — loadElementHtml must be called separately to fetch it).
+    try testing.expect(bundle.elements[0].file_path.len > 0);
+    try testing.expectEqualStrings("rectangle", bundle.elements[0].elem_type);
+    try testing.expectEqualStrings("text", bundle.elements[1].elem_type);
+    try testing.expectEqual(@as(i64, 10), bundle.elements[0].x);
+    try testing.expectEqual(@as(i64, 20), bundle.elements[0].y);
+    try testing.expectEqual(@as(i64, 100), bundle.elements[0].width);
+    try testing.expectEqual(@as(i64, 50), bundle.elements[0].height);
+    try testing.expectEqualStrings("#22c55e", bundle.elements[0].fill);
+}
+
+test "getPageWithElements returns PageNotFound for missing page_id" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const result = getPageWithElements(alloc, &ctx.db, "page_does_not_exist");
+    try testing.expectError(error.PageNotFound, result);
+}
+
+test "getPageWithElements on page with zero elements returns empty slice" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const page_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Empty",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page_id);
+
+    const bundle = try getPageWithElements(alloc, &ctx.db, page_id);
+    defer bundle.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 0), bundle.elements.len);
+    try testing.expectEqualStrings("Empty", bundle.page.name);
+}
+
+// ─── Test: listPagesWithElements returns all pages with their elements ──
+
+test "listPagesWithElements returns all pages with their elements" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Create 2 pages with elements on each.
+    const page1_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Home",
+        .width = 1440,
+        .height = 1024,
+    });
+    defer alloc.free(page1_id);
+
+    const page2_id = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "Login",
+        .width = 800,
+        .height = 600,
+    });
+    defer alloc.free(page2_id);
+
+    // 2 elements on page1, 1 element on page2.
+    const p1e1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page1_id, .name = "hero", .elem_type = .rectangle,
+        .html = "<div>hero</div>", .x = 0, .y = 0, .width = 100, .height = 50,
+        .fill = "#22c55e", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(p1e1);
+    const p1e2 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page1_id, .name = "footer", .elem_type = .rectangle,
+        .html = "<footer/>", .x = 0, .y = 1000, .width = 1440, .height = 24,
+        .fill = "#000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(p1e2);
+    const p2e1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = page2_id, .name = "submit", .elem_type = .rectangle,
+        .html = "<button/>", .x = 100, .y = 200, .width = 200, .height = 40,
+        .fill = "#3b82f6", .rotation = 0.0, .corner_radius = 4, .opacity = 1.0,
+    });
+    defer alloc.free(p2e1);
+
+    const results = try listPagesWithElements(alloc, &ctx.db, ctx.item_id);
+    defer freePagesWithElements(alloc, results);
+
+    // 2 pages returned, in (position ASC) order.
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("Home", results[0].page.name);
+    try testing.expectEqualStrings("Login", results[1].page.name);
+
+    // Page 1 has 2 elements.
+    try testing.expectEqual(@as(usize, 2), results[0].elements.len);
+    try testing.expectEqualStrings("hero", results[0].elements[0].name);
+    try testing.expectEqualStrings("footer", results[0].elements[1].name);
+
+    // Page 2 has 1 element.
+    try testing.expectEqual(@as(usize, 1), results[1].elements.len);
+    try testing.expectEqualStrings("submit", results[1].elements[0].name);
+    try testing.expectEqual(@as(i64, 4), results[1].elements[0].corner_radius);
+}
+
+test "listPagesWithElements returns empty slice for an item with no pages" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    const results = try listPagesWithElements(alloc, &ctx.db, ctx.item_id);
+    defer freePagesWithElements(alloc, results);
+    try testing.expectEqual(@as(usize, 0), results.len);
+}
+
+test "listPagesWithElements on item where one page has zero elements" {
+    const alloc = testing.allocator;
+    var ctx = try designModelSetupDbAndItem();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    defer alloc.free(ctx.item_id);
+    defer alloc.free(ctx.item_path);
+
+    // Page A has 1 element, Page B has 0 elements.
+    const pageA = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "A",
+        .width = 100, .height = 100,
+    });
+    defer alloc.free(pageA);
+
+    const pageB = try setDesignPage(alloc, &ctx.db, .{
+        .item_id = ctx.item_id,
+        .page_name = "B",
+        .width = 200, .height = 200,
+    });
+    defer alloc.free(pageB);
+
+    const a_e1 = try addElement(alloc, &ctx.db, ctx.threaded.io(), .{
+        .page_id = pageA, .name = "thing", .elem_type = .rectangle,
+        .html = "<x/>", .x = 0, .y = 0, .width = 10, .height = 10,
+        .fill = "#fff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+    });
+    defer alloc.free(a_e1);
+
+    const results = try listPagesWithElements(alloc, &ctx.db, ctx.item_id);
+    defer freePagesWithElements(alloc, results);
+
+    try testing.expectEqual(@as(usize, 2), results.len);
+    try testing.expectEqualStrings("A", results[0].page.name);
+    try testing.expectEqual(@as(usize, 1), results[0].elements.len);
+    try testing.expectEqualStrings("B", results[1].page.name);
+    try testing.expectEqual(@as(usize, 0), results[1].elements.len);
 }

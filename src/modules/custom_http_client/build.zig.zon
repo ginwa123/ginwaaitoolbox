@@ -3,7 +3,14 @@
     .version = "0.0.0",
     .fingerprint = 0xea0a69586896b76d,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        // Portable helpers (PosixTimespec / clock_gettime) used by
+        // cpu_usage_test.zig. Path is relative to this package dir
+        // (src/modules/custom_http_client → src/helpers).
+        .helpers = .{
+            .path = "../../helpers",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

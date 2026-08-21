@@ -19,6 +19,7 @@ import AddKanbanDialog from '../dialogs/AddKanbanDialog.vue'
 // "+ Add Item → Add Design" dropdown option in WorkspaceList.
 // Plan: docs/superpowers/plans/2026-06-13-design-mode.md.
 import AddDesignDialog from '../design/AddDesignDialog.vue'
+import AddAgentDialog from '../dialogs/AddAgentDialog.vue'
 import AddMemoryDialog from '../dialogs/AddMemoryDialog.vue'
 import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import AddTaskPickerDialog from '../dialogs/AddTaskPickerDialog.vue'
@@ -482,6 +483,9 @@ const handleAddItem = (workspaceId: string, itemType: string) => {
   // emitted by WorkspaceList. Plan:
   // docs/superpowers/plans/2026-06-13-design-mode.md.
   if (itemType === 'design') showAddDesignDialog.value = true
+  // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+  // routes the 'agent' itemType to the new AddAgentDialog.
+  if (itemType === 'agent') showAddAgentDialog.value = true
   if (itemType === 'memory') {
     addMemoryTargetWorkspaceId.value = workspaceId
     showAddMemoryDialog.value = true
@@ -545,6 +549,23 @@ const handleCreateDesign = async (name: string, path: string) => {
 
 const handleCloseAddDesignDialog = () => {
   showAddDesignDialog.value = false
+}
+
+// Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+// agent item create + dialog state — mirrors the design flow above.
+const showAddAgentDialog = ref(false)
+const handleCreateAgent = async (name: string, path: string) => {
+  if (addItemTargetWorkspaceId.value) {
+    await workspacesStore.addAgentItem(
+      addItemTargetWorkspaceId.value,
+      name,
+      path,
+    )
+  }
+  showAddAgentDialog.value = false
+}
+const handleCloseAddAgentDialog = () => {
+  showAddAgentDialog.value = false
 }
 
 /**
@@ -1593,6 +1614,7 @@ defineExpose({
          internal flow. Plan:
          docs/superpowers/plans/2026-06-13-design-mode.md. -->
     <AddDesignDialog :show="showAddDesignDialog" @close="handleCloseAddDesignDialog" @create="handleCreateDesign" />
+    <AddAgentDialog :show="showAddAgentDialog" @close="handleCloseAddAgentDialog" @create="handleCreateAgent" />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"

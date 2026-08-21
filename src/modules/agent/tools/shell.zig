@@ -170,7 +170,7 @@ fn wait_pid_boundedPosix(child: *const std.process.Child, deadline_ns: u64) Wait
     // (`c_int` on Linux x86_64 / aarch64 / macOS), so the cast is
     // a no-op at runtime.
     const pid: c_int = blk: {
-        const id_opt: std.process.Id = child.id.?;
+        const id_opt: std.process.Child.Id = child.id.?;
         const T = @TypeOf(id_opt);
         if (@typeInfo(T) == .int) {
             break :blk @as(c_int, @intCast(id_opt));
@@ -470,7 +470,7 @@ pub fn run_shell_command(
     // is now OS-dispatched (see its `switch (builtin.os.tag)` body).
     const child_pgid: c_int = blk: {
         if (comptime builtin.os.tag == .windows) break :blk 0;
-        const id_opt: std.process.Id = child.id.?;
+        const id_opt: std.process.Child.Id = child.id.?;
         const T = @TypeOf(id_opt);
         if (@typeInfo(T) == .int) break :blk @as(c_int, @intCast(id_opt));
         @compileError("child.id is not a POSIX pid_t on a POSIX host");

@@ -352,6 +352,15 @@ pub fn build(b: *std.Build) void {
     .optimize = optimize,
 });
 
+// Portable helpers (PosixTimespec / clock_gettime) — used by
+// cpu_usage_test.zig. Declared as a package dependency in this
+// build.zig.zon; mirrors how the root build.zig wires `helpers`.
+const helpers_dep = b.dependency("helpers", .{
+    .target = target,
+    .optimize = optimize,
+});
+mod.addImport("helpers", helpers_dep.module("helpers"));
+
 // Universal: libc is required by every libcurl binding + cimport.
 mod.linkSystemLibrary("c", .{});
 mod.link_libc = true;

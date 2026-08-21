@@ -274,6 +274,78 @@ pub fn kanbanTasksCreateHandler(
             };
         }
 
+        // FIX (bug: "create task still not insert user llm history role"):
+        // for create_session (plain "Create task" button) the sessions
+        // row is inserted but NO user-role row is added to llm_history —
+        // so the chatview lands on an empty session and the user's
+        // description is silently dropped. create_and_run already does
+        // this via the workflow's queue-drain path; here we mirror it
+        // inline so the description becomes a visible user message
+        // before the user types anything. Skip when description is
+        // empty — title-only tasks stay on a clean chat so the user
+        // can type the first message. Borrowed slices are safe:
+        // inserLLMHistories heap-dupes them and the per-request arena
+        // reaps on handler return.
+        if (is_create_session) {
+            const description = parsed.description orelse "";
+            // image_urls on the wire is `||`-joined (Migration 069).
+            // For create_session we attach them to the user-role
+            // llm_history row so the chatview shows the user's
+            // attachments inline with the message they typed. The
+            // create_and_run path goes through emit_run_agent →
+            // workflow queue-drain → inserLLMHistories which handles
+            // image_urls separately.
+            // Gate on `description.len > 0 OR image_urls_wire.len > 0`
+            // so the new contract also fires for image-only tasks
+            // (description empty but with attachments).
+            if (description.len > 0 or image_urls_wire.len > 0) {
+                const initial_message = try std.fmt.allocPrint(
+                    allocator,
+                    "{s}\n\n{s}",
+                    .{ standard_result.name, description },
+                );
+                const now_ns = std.Io.Timestamp.now(ctx.io, .real).nanoseconds;
+                const id_str = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
+                const created_at_str = try std.fmt.allocPrint(allocator, "{}", .{now_ns});
+                // Direct INSERT (vs. inserLLMHistories) — keeps the
+                // patch minimal and avoids relying on the helper's
+                // SSE/FTS plumbing for what is effectively a one-shot
+                // wire-side message. The FTS trigger on llm_history
+                // (see migration.zig) still keeps messages_fts in sync;
+                // the SSE emit goes through the existing
+                // session_created SSE emitted a few lines below.
+                // columns: id, session_id, model, response_content,
+                // finish_reason, role, agent, parent_id,
+                // parent_session_id, is_input, image_url,
+                // created_at_nano, created_iso, is_feed_to_llm —
+                // every other column uses its DEFAULT. model uses ''
+                // literal (NOT NULL constraint + the
+                // empty-slice-binds-as-null SQLite backend quirk).
+                // image_url is the `||`-joined wire value (passes
+                // through verbatim; production rows on a real DB use
+                // the same shape).
+                sqlite_db.exec(
+                    allocator,
+                    "INSERT INTO llm_history " ++
+                        "(id, session_id, model, response_content, finish_reason, role, " ++
+                        "agent, parent_id, parent_session_id, is_input, image_url, " ++
+                        "is_feed_to_llm, created_at_nano, created_iso) " ++
+                        "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')",
+                    &[_][]const u8{
+                        id_str,
+                        standard_result.task_id,
+                        initial_message,
+                        standard_result.task_id,
+                        standard_result.task_id,
+                        image_urls_wire,
+                        created_at_str,
+                    },
+                ) catch |err| {
+                    std.log.warn("kanban_tasks_create: initial user llm_history insert failed (non-fatal): {s}", .{@errorName(err)});
+                };
+            }
+        }
+
         // Emit the session_created SSE so the sidebar's ChatsList
         // gets the new session without a manual refetch. Mirrors
         // session_create.zig::insertWorker's onEventSendSessions

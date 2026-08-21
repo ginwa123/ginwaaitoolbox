@@ -12,9 +12,18 @@
       <update_plan>
         <session_id>s_xxx</session_id>
         <updated_at>YYYY-MM-DD HH:MM:SS</updated_at>
+        <plan><![CDATA[
+          ...markdown body...
+        ]]></plan>
       </update_plan>
     Error:
       <update_plan><error>...</error></update_plan>
+
+  The `<plan>` block carries the just-written content (CDATA-wrapped,
+  byte-for-byte) — this is the SAME body the LLM sees back, and the
+  source the frontend renders. Mirrors `get_plan`'s
+  `<plan><![CDATA[...]]></plan>` shape so the two components share
+  the same envelope parser (no separate `parameters` prop needed).
 
   Header (always visible, via ToolCardHeader):
     `update_plan ✓` (success)            — right-meta shows byte count
@@ -52,6 +61,15 @@ interface ParsedUpdatePlan {
   sessionId: string | null
   updatedAt: string | null
   error: string | null
+  /** Plain-text markdown body (CDATA-stripped), or null when absent / error. */
+  body: string | null
+}
+
+interface ChecklistLine {
+  /** "checked" (- [x]), "unchecked" (- [ ]), or "text" (no checkbox prefix). */
+  kind: 'checked' | 'unchecked' | 'text'
+  /** Display text (with the checkbox prefix stripped for checklist items). */
+  text: string
 }
 
 const props = defineProps<{
@@ -90,13 +108,52 @@ function extractTag(content: string, tag: string): string | null {
 const parsed = computed((): ParsedUpdatePlan => {
   const inner = findInnerEnvelope(props.message.content)
   const error = extractTag(inner, 'error')
+  if (error !== null) {
+    return {
+      success: false,
+      sessionId: null,
+      updatedAt: null,
+      error,
+      body: null,
+    }
+  }
+  // Extract the <plan><![CDATA[...]]></plan> body. Mirrors
+  // GetPlan.vue::parsed.body exactly — same regex, same fallback
+  // semantics — so the two components share the wire contract.
+  const planMatch = inner.match(/<plan>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/plan>/)
+  const body = planMatch && planMatch[1] !== undefined ? planMatch[1] : null
   return {
-    success: error === null,
+    success: true,
     sessionId: extractTag(inner, 'session_id'),
     updatedAt: extractTag(inner, 'updated_at'),
-    error,
+    error: null,
+    body,
   }
 })
+
+/** Render the body as a list of checklist / text lines. */
+const checklistLines = computed((): ChecklistLine[] => {
+  if (!parsed.value.body) return []
+  const lines = parsed.value.body.split(/\r?\n/)
+  const out: ChecklistLine[] = []
+  for (const raw of lines) {
+    const line = raw.trimEnd()
+    const checkedMatch = line.match(/^(\s*)- \[x\]\s+(.*)$/i)
+    if (checkedMatch && checkedMatch[2] !== undefined) {
+      out.push({ kind: 'checked', text: checkedMatch[2] })
+      continue
+    }
+    const uncheckedMatch = line.match(/^(\s*)- \[ \]\s+(.*)$/)
+    if (uncheckedMatch && uncheckedMatch[2] !== undefined) {
+      out.push({ kind: 'unchecked', text: uncheckedMatch[2] })
+      continue
+    }
+    out.push({ kind: 'text', text: line })
+  }
+  return out
+})
+
+const hasChecklist = computed(() => checklistLines.value.length > 0)
 
 const primaryLabel = computed((): string => {
   if (!parsed.value.success) return 'error'
@@ -153,7 +210,7 @@ const handleToggle = (next: boolean) => {
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
 
-      <!-- Success path: metadata strip. -->
+      <!-- Success path: metadata strip + plan checklist. -->
       <template v-if="parsed.success">
         <div
           v-if="parsed.sessionId"
@@ -165,16 +222,54 @@ const handleToggle = (next: boolean) => {
         </div>
         <div
           v-if="parsed.updatedAt"
-          class="flex gap-2 px-2 py-1.5 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
           data-testid="update-plan-updated-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Updated:</span>
           <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ parsed.updatedAt }}</span>
         </div>
 
+        <!-- Plan body rendered as a checklist. Mirrors GetPlan.vue::template
+             so users see what the plan looks like now, without calling
+             get_plan separately. The body comes from the <plan><![CDATA[...]]></plan>
+             block of the response envelope (NOT from the tool's input args). -->
+        <div
+          v-if="hasChecklist"
+          class="px-3 py-2 space-y-0.5"
+          data-testid="update-plan-checklist"
+        >
+          <div
+            v-for="(line, idx) in checklistLines"
+            :key="idx"
+            class="flex items-start gap-2 text-[var(--semantic-text)]"
+            :data-testid="`update-plan-line-${idx}`"
+            :data-kind="line.kind"
+          >
+            <span
+              v-if="line.kind === 'checked'"
+              class="shrink-0 text-green-500 w-4 text-center"
+              aria-hidden="true"
+            >☑</span>
+            <span
+              v-else-if="line.kind === 'unchecked'"
+              class="shrink-0 text-[var(--semantic-text-muted)] w-4 text-center"
+              aria-hidden="true"
+            >☐</span>
+            <span
+              v-else
+              class="shrink-0 w-4"
+              aria-hidden="true"
+            ></span>
+            <span
+              class="whitespace-pre-wrap break-words flex-1 min-w-0"
+              :class="line.kind === 'checked' ? 'line-through text-[var(--semantic-text-muted)]' : ''"
+            >{{ line.text }}</span>
+          </div>
+        </div>
+
         <!-- Hint when no fields (empty envelope edge case). -->
         <div
-          v-if="!parsed.sessionId && !parsed.updatedAt"
+          v-if="!parsed.sessionId && !parsed.updatedAt && !hasChecklist"
           class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
           data-testid="update-plan-empty"
         >

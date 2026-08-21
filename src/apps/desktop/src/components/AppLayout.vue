@@ -15,6 +15,9 @@ import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
+import AgentView from './views/AgentView.vue'
+import AgentChatDialog from './dialogs/AgentChatDialog.vue'
+import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
@@ -26,6 +29,7 @@ import { useKanbanSseStore } from '../stores/kanbanSse'
 import { useDesignSseStore } from '../stores/designSse'
 import * as api from '../api'
 import type { DesignElement as DesignElementApi } from '../api'
+import { buildToggle } from '../stores/agentToolToggle'
 import {
   OPEN_IN_CODE_EDITOR_KEY,
   type OpenInCodeEditorFn,
@@ -1025,6 +1029,219 @@ watch(
   },
   { immediate: true },
 )
+
+// Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+// agent chat dialog visibility. Driven by `activeTask` — when the
+// user clicks a chat task under an agent, `activeTaskWorkspaceItemId`
+// equals the agent's item id and `activeTaskWorkspaceItem.item_type`
+// is `'agent'`. The AgentChatDialog's v-if gates on this exact case.
+const agentChatDialogOpen = ref(false)
+const agentKnowledge = ref<api.AgentKnowledgeRow[]>([])
+const agentTools = ref<string[]>([])
+
+// FIX (agent-tools-fetch-on-view): the previous code only fetched
+// `agentTools` inside the `activeTask` watcher. When the user landed
+// directly on the agent view (?view=workspace&itemId=AGENT_ID,
+// no chat task), activeTask was null and the watcher never fired —
+// the Tools panel rendered with an empty `tools` array, every
+// checkbox showed as unchecked, and clicking one POSTed against an
+// existing row → 409 "tool already enabled for this agent".
+//
+// Now: a dedicated watcher on `activeWorkspaceItemId` fetches the
+// agent data whenever the user lands on (or navigates between)
+// agent items, regardless of whether a chat task is active. The
+// `activeTask` watcher is reduced to only controlling the chat
+// dialog visibility (no fetch).
+async function loadAgentData(agentItemId: string) {
+  try {
+    const wsId = activeWorkspace?.value?.id
+    if (!wsId) return
+    const data = await api.getAgent(wsId, agentItemId)
+    agentKnowledge.value = data.knowledge
+    agentTools.value = data.tools
+  } catch (e) {
+    console.error('[AppLayout] failed to load agent:', e)
+  }
+}
+
+watch(
+  () => activeWorkspaceItem.value?.id,
+  (id) => {
+    if (id && activeWorkspaceItem.value?.item_type === 'agent') {
+      // Fire-and-forget; loadAgentData assigns the refs itself.
+      void loadAgentData(id)
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => activeTask.value,
+  (t) => {
+    agentChatDialogOpen.value = !!t && activeWorkspaceItem.value?.item_type === 'agent'
+  },
+  { immediate: true },
+)
+
+// Agent knowledge dialog open state + last-targeted agent id.
+// `show` drives `AgentKnowledgeDialog`'s v-model:show. We capture
+// `agentId` at open-time so the create handler doesn't depend on
+// `activeWorkspaceItem` still being set when the user submits (the
+// user could navigate away mid-dialog).
+const agentKnowledgeDialogOpen = ref(false)
+const agentKnowledgeError = ref<string | null>(null)
+const agentKnowledgeBusy = ref(false)
+
+function openAgentKnowledgeDialog() {
+  if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
+  agentKnowledgeError.value = null
+  agentKnowledgeDialogOpen.value = true
+}
+
+async function handleAgentAddKnowledge() {
+  // v1.1 wiring: open the AgentKnowledgeDialog. Submission is
+  // handled by `handleAgentKnowledgeCreate` (the dialog's `create`
+  // emit). Keep this as a thin open-dialog shim so AgentView's emit
+  // contract stays stable.
+  openAgentKnowledgeDialog()
+}
+
+function closeAgentKnowledgeDialog() {
+  agentKnowledgeDialogOpen.value = false
+  agentKnowledgeError.value = null
+}
+
+async function handleAgentKnowledgeCreate(filePath: string, label: string) {
+  const wsId = activeWorkspace?.value?.id
+  const itemId = activeWorkspaceItem.value?.id
+  if (!wsId || !itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  agentKnowledgeBusy.value = true
+  agentKnowledgeError.value = null
+  try {
+    // The backend expects `agentId` (== workspace_item_id for agents)
+    // on `POST /api/agents/:agentId/knowledge`. AddAgentItem's
+    // convention (Migration 076) is that agents.id == workspace_items.id.
+    const newRow = await api.addAgentKnowledge(itemId, filePath, label)
+    // Optimistic append — the GET /agent response won't be re-fetched
+    // until the user navigates away and back. Without this, the new
+    // row is invisible in the UI until a full reload.
+    agentKnowledge.value = [...agentKnowledge.value, newRow]
+    closeAgentKnowledgeDialog()
+  } catch (e) {
+    agentKnowledgeError.value =
+      e instanceof Error ? e.message : 'Failed to add knowledge'
+    // Keep the dialog open so the user can see + retry.
+  } finally {
+    agentKnowledgeBusy.value = false
+  }
+}
+
+async function handleAgentRemoveKnowledge(knowledgeId: string) {
+  const wsId = activeWorkspace?.value?.id
+  const itemId = activeWorkspaceItem.value?.id
+  if (!wsId || !itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  // Optimistic remove + restore on failure.
+  const previous = agentKnowledge.value
+  agentKnowledge.value = previous.filter((k) => k.id !== knowledgeId)
+  try {
+    await api.deleteAgentKnowledge(itemId, knowledgeId)
+  } catch (e) {
+    // Restore the row so the user can retry.
+    agentKnowledge.value = previous
+    console.error('[AppLayout] failed to remove knowledge:', e)
+  }
+}
+async function handleAgentToggleTool(toolName: string, enabled: boolean) {
+  if (!activeWorkspaceItem.value) return
+  const agentId = activeWorkspaceItem.value.id
+  const { nextLocal, serverPromise } = buildToggle(
+    agentTools.value, toolName, enabled, agentId,
+    {
+      enableAgentTool: api.enableAgentTool,
+      disableAgentTool: api.disableAgentTool,
+      refetchAgentTools: async (id) => {
+        const data = await api.getAgentTools(id)
+        return data.tools
+      },
+    },
+  )
+  // Optimistic update.
+  agentTools.value = nextLocal
+  const out = await serverPromise
+  if ('error' in out) {
+    // Revert + log.
+    agentTools.value = enabled
+      ? agentTools.value.filter((n) => n !== toolName)
+      : [...agentTools.value, toolName]
+    console.error('[AppLayout] toggle tool failed:', out.error)
+    return
+  }
+  // Canonical state from server.
+  agentTools.value = out.canonical
+}
+
+/**
+ * Bulk-toggle multiple tools at once (fired by AgentView's
+ * "Select all" / "Clear" buttons in the Tools panel). Runs every
+ * tool through the same optimistic-then-server-confirm path as a
+ * single toggle so failures are observable per-tool and the UI
+ * stays in sync with the server canonical list.
+ *
+ * Concurrency: requests are fired in parallel (Promise.all) — the
+ * backend handler is per-tool INSERT/DELETE so there is no
+ * cross-row contention. On any failure we re-fetch the canonical
+ * list from the server, which collapses partial successes into a
+ * single coherent view.
+ *
+ * On the wire, individual enable/disable failures are logged but
+ * don't abort the rest of the batch — the user gets the best-
+ * effort outcome (everything they could enable was enabled) and
+ * a re-fetch corrects any drift.
+ */
+async function handleAgentToggleToolsBulk(toolNames: string[], enabled: boolean) {
+  if (!activeWorkspaceItem.value) return
+  const agentId = activeWorkspaceItem.value.id
+  if (toolNames.length === 0) return
+
+  // Optimistic apply.
+  const set = new Set(agentTools.value)
+  for (const n of toolNames) {
+    if (enabled) set.add(n)
+    else set.delete(n)
+  }
+  agentTools.value = Array.from(set)
+
+  try {
+    const ops = toolNames.map(async (n) => {
+      try {
+        if (enabled) await api.enableAgentTool(agentId, n)
+        else await api.disableAgentTool(agentId, n)
+        return { name: n, ok: true as const }
+      } catch (e) {
+        return { name: n, ok: false as const, error: e }
+      }
+    })
+    const results = await Promise.all(ops)
+    const failures = results.filter((r) => !r.ok)
+    if (failures.length > 0) {
+      console.error('[AppLayout] bulk toggle: some tools failed:', failures)
+    }
+    // Re-fetch the canonical list so partial successes + races collapse
+    // into one coherent view. Cheap (one GET).
+    const data = await api.getAgentTools(agentId)
+    agentTools.value = data.tools
+  } catch (e) {
+    console.error('[AppLayout] bulk toggle failed:', e)
+  }
+}
+function handleAgentNewChat() {
+  // TODO (v1.1): open a chat dialog. The current iteration ships
+  // the AgentView + dialog shells; the New Chat button's wired
+  // behaviour is a follow-up commit.
+  console.warn('[AppLayout] handleAgentNewChat: not yet wired (v1.1)')
+}
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -2101,17 +2318,73 @@ defineExpose({
         @delete-element="handleDesignDeleteElement"
         @open-chat="handleDesignOpenChat"
       />
+      <!-- Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
+           4th workspace-item type. Mounted when item_type='agent'.
+           The view is responsible for fetching its own agent data
+           (knowledge + tools) via /api/workspaces/:wsId/items/:itemId/agent.
+           The chat dialog (below) opens when the user clicks a
+           chat task under this agent.
+           IMPORTANT: this v-else-if must come BEFORE the new
+           standard-task ChatView below (origin/main's blank-chatview
+           fix) so 'agent' items render AgentView, not a plain
+           ChatView. The new ChatView's v-else-if condition
+           (`item_type !== 'kanban' && !== 'design'`) WOULD match
+           'agent' items, so order matters. -->
+      <AgentView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        :key="'agent-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :knowledge="agentKnowledge"
+        :tools="agentTools"
+        @add-knowledge="handleAgentAddKnowledge"
+        @remove-knowledge="handleAgentRemoveKnowledge"
+        @toggle-tool="handleAgentToggleTool"
+        @toggle-tools-bulk="(names, enabled) => handleAgentToggleToolsBulk(names, enabled)"
+        @new-chat="handleAgentNewChat"
+      />
+      <AgentChatDialog
+        v-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'agent' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        v-model:show="agentChatDialogOpen"
+        :task="activeTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
+      />
+      <!--
+        AgentKnowledgeDialog — mounted at the AppLayout level so the
+        AgentView's `+ Add` button emits up to open this dialog. Uses
+        the same v-model:show pattern as the AgentChatDialog above.
+        Gated on `item_type === 'agent'` so the dialog only opens
+        while an agent item is active. The agent id == workspace item
+        id per Migration 076 (agents.id is the workspace_item_id).
+      -->
+      <AgentKnowledgeDialog
+        v-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        v-model:show="agentKnowledgeDialogOpen"
+        :busy="agentKnowledgeBusy"
+        :error="agentKnowledgeError"
+        @close="closeAgentKnowledgeDialog"
+        @create="handleAgentKnowledgeCreate"
+      />
       <!--
         Standard task chat (folder / memory / chat items — anything
-        that isn't a kanban or design). FIX for blank chatview
-        (task_1787027750097, 2026-08-14): the simplify-url-browser
-        plan (#246) wired kanban (KanbanChatDialog) and design
-        (DesignChatDialog) chat-open paths but listed "folder
-        tasks … out-of-scope edge case". A user with a chat task
-        on a folder / memory / chat workspace item hit a dead
-        zone: setActiveTask fires, clears activeChatId, and NONE
-        of the v-else-if branches above matched — right pane was
-        blank.
+        that isn't a kanban, design, OR agent). FIX for blank
+        chatview (task_1787027750097, 2026-08-14): the
+        simplify-url-browser plan (#246) wired kanban
+        (KanbanChatDialog) and design (DesignChatDialog) chat-open
+        paths but listed "folder tasks … out-of-scope edge case".
+        A user with a chat task on a folder / memory / chat
+        workspace item hit a dead zone: setActiveTask fires,
+        clears activeChatId, and NONE of the v-else-if branches
+        above matched — right pane was blank.
 
         Render <StandardTaskChatView> with the active task —
         encapsulates the chat-id / chat-name / :key wiring (see
@@ -2123,16 +2396,19 @@ defineExpose({
         fight the activeTask state the kanban + design branches
         depend on.
 
-        Mount order matters: this v-else-if precedes the standalone
-        `<ChatView v-else-if="activeChatId.startsWith('chat-')">`
-        branch below, so a folder task lands here even when
-        activeChatId is empty (cleared by setActiveTask).
+        Mount order matters: this v-else-if is AFTER AgentView
+        (above), so 'agent' items render AgentView not ChatView.
+        It precedes the standalone `<ChatView v-else-if=
+        "activeChatId.startsWith('chat-')">` branch below, so a
+        folder task lands here even when activeChatId is empty
+        (cleared by setActiveTask).
       -->
       <StandardTaskChatView
         v-else-if="
           activeWorkspaceItem &&
           activeWorkspaceItem.item_type !== 'kanban' &&
           activeWorkspaceItem.item_type !== 'design' &&
+          activeWorkspaceItem.item_type !== 'agent' &&
           activeTask
         "
         :task="activeTask"

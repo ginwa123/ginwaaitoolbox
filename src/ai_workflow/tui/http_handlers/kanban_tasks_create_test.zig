@@ -500,3 +500,131 @@ test "kanban_tasks_create response for create_session returns session.status='id
         return error.IdleStatusMissing;
     }
 }
+
+// =====================================================================
+// create_session inserts user-role llm_history row (bug: "create task
+// still not insert user llm history role")
+//
+// The plain "Create task" button in the dialog emits mode='create' but
+// the host (KanbanView.handleCreateTaskSave) overrides it to
+// mode='create_session' on the wire. Pre-fix the backend only inserted
+// the sessions row — the user's typed description was silently dropped,
+// so the chatview landed on an empty session. Post-fix the handler
+// mirrors the create_and_run wire format ("name\n\ndescription") and
+// persists it as a user-role row in `llm_history`, gated on
+// `is_create_session AND description.len > 0` so title-only tasks stay
+// on a clean chat. Skips when description is empty (user types the
+// first message).
+//
+// This static check locks in the wire shape: it asserts the handler
+// (1) references the `description` field on the parsed body, (2)
+// reaches for `insertLLMHistories` (the helper that owns the
+// role='user' write + SSE emit), and (3) the new INSERT is gated
+// behind the `is_create_session` boolean so create_and_run doesn't
+// double-insert (that path uses the workflow queue-drain instead).
+// =====================================================================
+
+test "kanban_tasks_create (mode=create_session) inserts user-role llm_history row when description is non-empty" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // 1. The handler must read `parsed.description` somewhere — that's
+    // the source for the new user message. Skipping this check means
+    // the bug regressed silently (no description → no llm_history row).
+    if (std.mem.indexOf(u8, source, "parsed.description") == null) {
+        std.debug.print(
+            "\n!! {s} never reads `parsed.description` !!\n" ++
+                "   The new user-role llm_history INSERT needs the user's\n" ++
+                "   typed description. The handler must read `parsed.description`\n" ++
+                "   and format it as 'name + \"\\n\\n\" + description' (matches\n" ++
+                "   the wire format KanbanView.handleCreateTaskSave uses for\n" ++
+                "   create_and_run).\n",
+            .{HANDLER_PATH},
+        );
+        return error.DescriptionNotRead;
+    }
+
+    // 2. The handler must INSERT into llm_history with role='user'
+    // (the bug is exactly that this row was missing). Coarse source-
+    // order check: the INSERT SQL string must contain both the column
+    // list and a `'user'` role literal — proves the wire-shape intent.
+    if (std.mem.indexOf(u8, source, "INSERT INTO llm_history") == null) {
+        std.debug.print(
+            "\n!! {s} has no `INSERT INTO llm_history` !!\n" ++
+                "   The new user-role row must INSERT into llm_history.\n",
+            .{HANDLER_PATH},
+        );
+        return error.InsertLlmHistoryMissing;
+    }
+    if (std.mem.indexOf(u8, source, "'user'") == null) {
+        std.debug.print(
+            "\n!! {s} has no `'user'` role literal !!\n" ++
+                "   The new INSERT must specify role='user' (the bug is\n" ++
+                "   that this row was missing entirely).\n",
+            .{HANDLER_PATH},
+        );
+        return error.UserRoleLiteralMissing;
+    }
+
+    // 3. The INSERT must be guarded by `is_create_session` so
+    // create_and_run doesn't double-insert (that path writes via
+    // the workflow's queue-drain → insertLLMHistories chain in
+    // agentic_loop/workflow.zig:716-740). Coarse source-order check:
+    // the literal `is_create_session` token must appear BEFORE the
+    // literal `INSERT INTO llm_history` call.
+    const guard_pos = std.mem.indexOf(u8, source, "is_create_session") orelse {
+        std.debug.print(
+            "\n!! {s} has no `is_create_session` reference !!\n" ++
+                "   The new user-role INSERT must be guarded by\n" ++
+                "   `if (is_create_session)` so create_and_run doesn't\n" ++
+                "   double-insert (create_and_run writes via the workflow's\n" ++
+                "   queue-drain path instead).\n",
+            .{HANDLER_PATH},
+        );
+        return error.IsCreateSessionMissing;
+    };
+    const insert_pos = std.mem.indexOf(u8, source, "INSERT INTO llm_history") orelse {
+        // unreachable — indexOf check above already failed
+        return error.InsertLlmHistoryMissing;
+    };
+    if (guard_pos > insert_pos) {
+        std.debug.print(
+            "\n!! {s} has `INSERT INTO llm_history` BEFORE the `is_create_session` guard !!\n" ++
+                "   The new INSERT must be INSIDE the `if (is_create_session)`\n" ++
+                "   block. Otherwise create_and_run (which also fires this code\n" ++
+                "   path) would double-insert — once here and once via the\n" ++
+                "   workflow's queue-drain → insertLLMHistories chain.\n",
+            .{HANDLER_PATH},
+        );
+        return error.InsertUnguarded;
+    }
+}
+
+test "kanban_tasks_create (mode=create_session) skips llm_history insert when description is empty" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The fix must skip the insert when description is empty —
+    // title-only tasks stay on a clean chat so the user types the
+    // first message. We assert the source contains an explicit
+    // empty-string guard (`description.len > 0` or equivalent
+    // `.len == 0` early-return). Without it, empty-description
+    // tasks would get a stray 'name\n\n' user message, which would
+    // land on the chatview as a confusing blank user bubble.
+    const has_empty_guard = std.mem.indexOf(u8, source, "description.len > 0") != null or
+        std.mem.indexOf(u8, source, "description.len == 0") != null or
+        std.mem.indexOf(u8, source, "description.len == 0") != null;
+    if (!has_empty_guard) {
+        std.debug.print(
+            "\n!! {s} has no explicit empty-description guard !!\n" ++
+                "   Title-only tasks (description == '' or null) must NOT get\n" ++
+                "   a stray 'name\\\\n\\\\n' user message — add `if (description.len > 0)`\n" ++
+                "   around the new user-role INSERT.\n",
+            .{HANDLER_PATH},
+        );
+        return error.EmptyDescriptionGuardMissing;
+    }
+}
+

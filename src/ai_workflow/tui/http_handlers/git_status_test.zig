@@ -17,7 +17,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalar_core = @import("nalarcore");
-const text_normalize = nalar_core.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/git_status.zig";
 

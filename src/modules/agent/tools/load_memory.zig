@@ -6,20 +6,30 @@
 //! Task: task_1785958319567
 //!
 //! Wire shape:
-//!   input:  { query: string, tags?: string[], limit?: number=10,
-//!            offset?: number=0, with_content?: boolean=false }
-//!   output: <load_memory query="..." limit="10" offset="0">
+//!   input:  { query?: string, id?: string, tags?: string[],
+//!             limit?: number=10, offset?: number=0,
+//!             with_content?: boolean=false }
+//!           Either `query` or `id` must be non-empty (validated at
+//!           runtime — the OpenAI schema DSL has no `oneOf` for primitive
+//!           strings, so the validation lives in `executeLoadMemory`).
+//!   output: <load_memory query="..." id="..." by_id="0|1" limit="..."
+//!                    offset="..." with_content="0|1">
 //!            <count>N</count>
 //!            <total_count>M</total_count>
 //!            <results>
 //!              <memory id="..." tags="..." created_at="..." updated_at="...">
 //!                <snippet>...[match]...</snippet>
-//!                <content truncated="0|1">...</content> (only when with_content=true)
+//!                <content truncated="0|1">...</content> (when with_content=true,
+//!                                                     OR when by-id is used —
+//!                                                     full body, no 2 KiB cap)
 //!              </memory>
 //!              ...
 //!            </results>
 //!          </load_memory>
 //!   or:     <load_memory><error>...</error></load_memory>
+//!           Errors: "must supply either query or id" (both empty),
+//!                   "not found: <id>" (id given but row missing),
+//!                   FTS5 / DB errors.
 //!
 //! Context anti-bloat guarantees:
 //!   - **Snippets by default** (10-token window with [match] markers).
@@ -52,23 +62,32 @@ const xmlEscape = helpers.xml_escape;
 
 /// Input for `load_memory`.
 pub const LoadMemoryInput = struct {
-    /// FTS5 phrase search. Required, non-empty. Sanitized via
-    /// `agent_memories.loadMemoriesByFts` (which calls `escapeFtsQuery`
-    /// to strip FTS5 operators like `.`, `-`, `:`, `*`).
+    /// FTS5 phrase search. Required when `id` is empty. Sanitized
+    /// via `agent_memories.loadMemoriesByFts` (which calls
+    /// `escapeFtsQuery` to strip FTS5 operators like `.`, `-`, `:`, `*`).
     query: []const u8 = "",
+    /// Look up a single memory by exact id. When non-empty, FTS5 is
+    /// skipped and `agent_memories.getMemoryById` does a single-row
+    /// SELECT that returns the FULL content (no MAX_FULL_CONTENT_BYTES
+    /// 2 KiB cap — only the storage layer's 1 MiB MAX_CONTENT_BYTES).
+    /// `tags` is ignored when `id` is set (only 1 row can match).
+    /// Either `query` or `id` must be non-empty — supplying both is OK
+    /// (the by-id path wins).
+    id: []const u8 = "",
     /// Optional AND filter as a single string. Multiple tags separated
     /// by `||` (preferred), `|`, `,`, or space. Empty string = no
     /// filter. Split at the boundary into `[]const []const u8` before
-    /// passing to `agent_memories.loadMemoriesByFts`.
+    /// passing to `agent_memories.loadMemoriesByFts`. Ignored when `id`
+    /// is set.
     tags: []const u8 = "",
     /// Max rows to return. Default 10, hard cap MAX_LIMIT (50).
     limit: u32 = 10,
     /// Skip the first N rows. Default 0.
     offset: u32 = 0,
-    /// When true, include the full content of each hit (truncated
+    /// When true, include the full content of each FTS hit (truncated
     /// to MAX_FULL_CONTENT_BYTES per row). When false (default),
     /// only the snippet is included — protects the LLM context
-    /// budget. Use `with_content=true` when you need the full body.
+    /// budget. Ignored in the by-id path (content is always full).
     with_content: bool = false,
 };
 
@@ -91,30 +110,39 @@ pub const load_memory_tool = AgentTool{
         .description =
             \\Search your saved notes (from `save_memory`) using SQLite FTS5 search. Returns ranked hits with a short `<snippet>` (10-token window with `[match]` markers) per row.
             \\
-            \\Context anti-bloat: by default, only `<snippet>` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content.
+            \\BY-ID LOOKUP: pass `id="mem_xxx"` to fetch a single memory by its exact id (no FTS5, no 2 KiB snippet cap, returns the full body up to 1 MiB). When `id` is set, `tags` is ignored. Either `query` or `id` must be non-empty — supplying both is allowed (by-id wins).
+            \\
+            \\Context anti-bloat: by default, only `<snippet>` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
             \\
             \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
             \\
             \\FTS5 QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — so you can write "handle_tool.zig" or "2026-08-06" without crashes. FTS5's default tokenizer splits on those characters like the indexer did.
             \\
-            \\Tags filter: AND semantics. Every tag in the `tags` array must be present in the row's tags (substring match). Empty `tags` = no filter.
+            \\Tags filter: AND semantics. Every tag in the `tags` array must be present in the row's tags (substring match). Empty `tags` = no filter. Ignored when `id` is set.
             \\
             \\Pagination: use `offset` to walk through more results. The `<total_count>` field tells you how many total matches exist.
             \\
             \\Example: {"query": "preferred model", "tags": "user"} — finds memories about either preference OR model.
             \\Example: {"query": "AGENTS.md", "limit": 3}
             \\Example: {"query": "dark mode", "with_content": true}
+            \\Example: {"id": "user-dark-mode"} — fetch a specific memory's full body, no FTS.
         ,
         .parameters = .{
             .type = "object",
             .properties = &.{
-                .{ .name = "query", .type = "string", .description = "FTS5 search keywords. Required, non-empty. Auto-sanitized (FTS5 operators stripped); multi-word queries are joined with OR for natural recall." },
-                .{ .name = "tags", .type = "string", .description = "Optional AND filter as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators. Empty string = no filter." },
+                .{ .name = "query", .type = "string", .description = "FTS5 search keywords. Required when `id` is empty. Auto-sanitized (FTS5 operators stripped); multi-word queries are joined with OR for natural recall." },
+                .{ .name = "id", .type = "string", .description = "Look up a single memory by exact id (e.g. 'mem_aabbcc...' or a user-supplied slug). When non-empty, FTS5 is skipped and the full body is included (no 2 KiB cap). When set, `tags` is ignored." },
+                .{ .name = "tags", .type = "string", .description = "Optional AND filter as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators. Empty string = no filter. Ignored when `id` is set." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 10, hard cap 50." },
                 .{ .name = "offset", .type = "number", .description = "Skip the first N results. Default 0. Use <total_count> to know when to stop." },
-                .{ .name = "with_content", .type = "boolean", .description = "Include truncated full content (max 2 KiB per row). Default false (snippet-only — anti-bloat)." },
+                .{ .name = "with_content", .type = "boolean", .description = "Include truncated full content (max 2 KiB per row) for FTS hits. Default false (snippet-only — anti-bloat). Ignored when `id` is set (by-id always returns full content)." },
             },
-            .required = &.{"query"},
+            // `query` was previously the only required field. With the
+            // 2026-08-19 by-id addition, EITHER `query` OR `id` must be
+            // supplied — but the OpenAI tool-schema DSL has no `oneOf`
+            // for primitive strings, so the validation moves to
+            // `executeLoadMemory` (returns <error> when both are empty).
+            .required = &.{},
         },
     },
 };
@@ -122,15 +150,33 @@ pub const load_memory_tool = AgentTool{
 /// Execute load_memory. Returns an XML string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
+///
+/// Branches on `input.id`:
+///   - When `id` is non-empty: bypass FTS5, call
+///     `agent_memories.getMemoryById`, return a single-row
+///     `<results>` response with the FULL content (no
+///     MAX_FULL_CONTENT_BYTES 2 KiB cap). Not-found → `<error>`.
+///   - When `id` is empty: run the existing FTS5 path.
 pub fn executeLoadMemory(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: LoadMemoryInput,
 ) ![]const u8 {
-    if (input.query.len == 0) {
-        return errorXml(allocator, "query must be non-empty");
+    // Either id OR query must be non-empty. The OpenAI tool-schema DSL
+    // can't express "oneOf: query OR id" for primitive strings, so the
+    // validation lives here.
+    if (input.id.len == 0 and input.query.len == 0) {
+        return errorXml(allocator, "must supply either query or id");
     }
 
+    // By-id path: skip FTS5 entirely. Storage layer's `getMemoryById`
+    // returns the FULL content (up to 1 MiB) — no MAX_FULL_CONTENT_BYTES
+    // 2 KiB cap. `tags` is ignored (only 1 row can match).
+    if (input.id.len > 0) {
+        return executeById(allocator, db, input);
+    }
+
+    // FTS5 path (unchanged from the 2026-08-06 implementation).
     const effective_limit = @min(input.limit, MAX_LIMIT);
 
     // Split the wire-string tags into an array for the storage layer.
@@ -183,6 +229,35 @@ pub fn executeLoadMemory(
     }
 
     return successXml(allocator, hits, contents, input, effective_limit);
+}
+
+/// By-id branch of `executeLoadMemory`. Single-row SELECT against
+/// `agent_memories`, returns the same `<results>` shape as the FTS5
+/// path (one `<memory>` entry) so the LLM only learns one XML
+/// structure regardless of which branch ran.
+///
+/// The content is the FULL body — no MAX_FULL_CONTENT_BYTES 2 KiB cap.
+/// `saveMemory` rejects content > 1 MiB at write time (storage's
+/// MAX_CONTENT_BYTES), so the by-id response is bounded at 1 MiB.
+fn executeById(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    input: LoadMemoryInput,
+) ![]u8 {
+    const row = agent_memories.getMemoryById(allocator, db, input.id) catch |err| {
+        const msg = std.fmt.allocPrint(allocator, "getMemoryById failed: {s}", .{@errorName(err)}) catch "?";
+        defer allocator.free(msg);
+        return errorXml(allocator, msg);
+    };
+
+    const r = row orelse {
+        const msg = std.fmt.allocPrint(allocator, "not found: {s}", .{input.id}) catch "?";
+        defer allocator.free(msg);
+        return errorXml(allocator, msg);
+    };
+    defer agent_memories.freeMemoryRow(allocator, r);
+
+    return successByIdXml(allocator, r, input);
 }
 
 fn successXml(
@@ -248,6 +323,68 @@ fn successXml(
     }
 
     try xml.appendSlice(allocator, "  </results>\n</load_memory>\n");
+    return try xml.toOwnedSlice(allocator);
+}
+
+/// Build the success XML for the by-id branch. Mirrors `successXml`'s
+/// shape (one `<memory>` wrapped in `<results>`) so the LLM sees the
+/// same XML structure regardless of which branch ran.
+///
+/// Differences from `successXml`:
+///   - `<load_memory>` includes `id="..." by_id="1"` attribute pair.
+///   - `<memory>` includes `<content>` with the FULL body
+///     (no MAX_FULL_CONTENT_BYTES cap; `truncated="0"` is hardcoded
+///     because `saveMemory` rejects content > 1 MiB at write time).
+///   - No `<snippet>` — the by-id path is targeted, not a search hit.
+fn successByIdXml(
+    allocator: std.mem.Allocator,
+    row: agent_memories.MemoryRow,
+    input: LoadMemoryInput,
+) ![]u8 {
+    const id_e = try xmlEscape(allocator, row.id);
+    defer allocator.free(id_e);
+    const tags_e = try xmlEscape(allocator, row.tags);
+    defer allocator.free(tags_e);
+    const created_at_e = try xmlEscape(allocator, row.created_at);
+    defer allocator.free(created_at_e);
+    const updated_at_e = try xmlEscape(allocator, row.updated_at);
+    defer allocator.free(updated_at_e);
+    const content_e = try xmlEscape(allocator, row.content);
+    defer allocator.free(content_e);
+
+    var xml: std.ArrayList(u8) = .empty;
+    errdefer xml.deinit(allocator);
+
+    // <load_memory id="..." by_id="1" with_content="1"> — by-id always
+    // carries full content, so the with_content attribute is "1".
+    // query="", limit/offset echo the caller's input for symmetry.
+    try xml.print(allocator,
+        "<load_memory query=\"\" id=\"{s}\" by_id=\"1\" limit=\"{d}\" offset=\"{d}\" with_content=\"1\">\n",
+        .{ id_e, input.limit, input.offset });
+
+    try xml.appendSlice(allocator,
+        "  <count>1</count>\n" ++
+        "  <total_count>1</total_count>\n" ++
+        "  <results>\n");
+
+    try xml.appendSlice(allocator, "    <memory>\n");
+    try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
+    try xml.print(allocator, "      <tags>{s}</tags>\n", .{tags_e});
+    if (row.created_at.len > 0) {
+        try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{created_at_e});
+    }
+    if (row.updated_at.len > 0) {
+        try xml.print(allocator, "      <updated_at>{s}</updated_at>\n", .{updated_at_e});
+    }
+    // Full body — `saveMemory` enforces MAX_CONTENT_BYTES (1 MiB) at
+    // write time, so the truncation flag is always "0" for by-id.
+    try xml.print(allocator,
+        "      <content truncated=\"0\">{s}</content>\n",
+        .{content_e});
+
+    try xml.appendSlice(allocator,
+        "    </memory>\n" ++
+        "  </results>\n</load_memory>\n");
     return try xml.toOwnedSlice(allocator);
 }
 

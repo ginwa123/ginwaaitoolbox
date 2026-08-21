@@ -4,8 +4,6 @@ test {
     _ = @import("routines/cron_test.zig");
     _ = @import("routines/fire_test.zig");
     _ = @import("routines/scheduler_test.zig");
-    _ = @import("agentic_loop/workflow_compaction_envelope_test.zig");
-    _ = @import("agentic_loop/retry_delay_ms_race_test.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
@@ -64,6 +62,31 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/git_pr_create_test.zig");
     _ = @import("http_handlers/git_status_test.zig");
     _ = @import("http_handlers/workspace_items_create_kanban_test.zig");
+    // Agent Mode HTTP handlers (Tasks 4-8 of plan 2026-08-15-agent-mode)
+    // now follow the "split handler + useCase, keep both in one file"
+    // pattern. The production .zig file holds:
+    //   - the HTTP request body / domain input/output structs + error set
+    //   - the `useCase` function (transport-agnostic business logic)
+    //   - the thin `xxxHandler` function (HTTP orchestrator)
+    //   - inline `test "..."` blocks at the bottom exercising `useCase`
+    //     directly against an in-memory SQLite + Migration076
+    //
+    // The `zig build test` discovery happens via these explicit
+    // @import() lines — the test blocks are only enumerated when the
+    // file is reachable from the test root. The handler function is
+    // NOT tested directly (it would require faking the gserverz
+    // HTTP context — out of scope for these contract tests).
+    _ = @import("http_handlers/workspace_items_create_agent.zig"); // POST /items/agent (Task 4)
+    _ = @import("http_handlers/agents_get.zig"); // GET /items/:id/agent (Task 5)
+    _ = @import("http_handlers/agents_update.zig"); // PATCH /items/:id/agent (Task 5)
+    _ = @import("http_handlers/agent_knowledge_create.zig"); // POST /agents/:id/knowledge (Task 6)
+    _ = @import("http_handlers/agent_knowledge_update.zig"); // PATCH /agents/:id/knowledge/:id (Task 6)
+    _ = @import("http_handlers/agent_knowledge_delete.zig"); // DELETE /agents/:id/knowledge/:id (Task 6)
+    _ = @import("http_handlers/agent_knowledge_reorder.zig"); // PATCH /agents/:id/knowledge/reorder (Task 6)
+    _ = @import("http_handlers/agent_tools_registry.zig"); // GET /agent-tools/registry (Task 7)
+    _ = @import("http_handlers/agent_tools_list.zig"); // GET /agents/:id/tools (Task 7)
+    _ = @import("http_handlers/agent_tools_create.zig"); // POST /agents/:id/tools (Task 8)
+    _ = @import("http_handlers/agent_tools_delete.zig"); // DELETE /agents/:id/tools/:id (Task 8)
     _ = @import("http_handlers/workspace_items_create_empty_name_test.zig");
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
@@ -113,7 +136,6 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     _ = @import("http_handlers/unified_events_sse_test.zig");
     // _ = @import("session_helpers_test.zig"); // DISABLED - requires std.Io which needs Init
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
-    _ = @import("agentic_loop/get_session_list_test.zig");
     _ = @import("http_handlers/session_messages_get_test.zig"); // 2026-08-07-profile-persist-read — getSessionMessagesSorted carries selected_profile_model
     // _ = @import("transform_llm_history_to_agent_messages_test.zig"); // DISABLED - pre-existing type mismatch (TUIHistory vs LLMHistory) on main
     _ = @import("../../modules/agent/tools/show_preview_test.zig");

@@ -6,9 +6,20 @@
 //!
 //! Wire shape:
 //!   input:  { content: string }
-//!   output: <update_plan><session_id>...</session_id>
-//!            <updated_at>...</updated_at></update_plan>
+//!   output: <update_plan>
+//!            <session_id>...</session_id>
+//!            <updated_at>...</updated_at>
+//!            <plan><![CDATA[
+//!            ...markdown body...
+//!            ]]></plan>
+//!          </update_plan>
 //!   or:     <update_plan><error>...</error></update_plan>
+//!
+//! The `<plan>` block carries the just-written content (CDATA-wrapped,
+//! byte-for-byte) so the LLM AND the frontend UI see the same canonical
+//! body back without depending on `parameters` (the agent's input args).
+//! Mirrors `get_plan`'s `<plan><![CDATA[...]]></plan>` shape exactly so
+//! the frontend can reuse the same envelope parser.
 //!
 //! The actual UPSERT lives in `session_plan.savePlan`. This file is a
 //! thin XML wrapper (mirrors the `save_memory.zig` pattern — same
@@ -24,6 +35,9 @@
 //!     "no plan" (use `get_plan`, see `<empty/>`) from "explicitly clear"
 //!     (caller should not call update_plan with empty; use a final marker
 //!     like `# Plan complete\nAll steps done.` instead).
+//!   - CDATA wrapping (vs. `helpers.xml_escape`) preserves the user's
+//!     exact markdown byte-for-byte; the LLM sees its own plan back
+//!     without any escape substitutions. Same trade-off as `get_plan`.
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -114,6 +128,10 @@ pub const update_plan_tool = AgentTool{
 /// `session_id` is passed explicitly (NOT via `ToolExecContext`) so this
 /// pure fn is testable in isolation. The exec adapter in Task 4 will pull
 /// `session_id` from `ctx.session_id` and forward it here.
+///
+/// The success envelope echoes the just-written `content` (CDATA-wrapped)
+/// so the LLM AND the frontend UI see the canonical body back. Mirrors
+/// `executeGetPlan`'s `<plan><![CDATA[...]]></plan>` shape.
 pub fn executeUpdatePlan(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -135,24 +153,54 @@ pub fn executeUpdatePlan(
     };
     defer allocator.free(updated_at);
 
-    return successXml(allocator, session_id, updated_at);
+    return successXml(allocator, session_id, updated_at, input.content);
 }
 
 fn successXml(
     allocator: std.mem.Allocator,
     session_id: []const u8,
     updated_at: []const u8,
+    content: []const u8,
 ) ![]u8 {
     const sid_e = try xmlEscape(allocator, session_id);
     defer allocator.free(sid_e);
     const ts_e = try xmlEscape(allocator, updated_at);
     defer allocator.free(ts_e);
+
+    // Build the <plan> block in CDATA. Mirrors executeGetPlan.zig so
+    // the frontend can reuse the same envelope parser. CDATA preserves
+    // raw `<`, `>`, `&` bytes verbatim; the only escape we need is the
+    // literal `]]>` sequence (would terminate the CDATA section early).
+    var plan_buf: std.ArrayList(u8) = .empty;
+    defer plan_buf.deinit(allocator);
+
+    try plan_buf.appendSlice(allocator, "<plan><![CDATA[\n");
+    if (std.mem.indexOf(u8, content, "]]>") == null) {
+        // Fast path — append verbatim.
+        try plan_buf.appendSlice(allocator, content);
+    } else {
+        // Slow path — split on each `]]>` boundary, mirroring
+        // session_skills' CDATA escape in enrichCompactionXml. On the
+        // wire this reads as `...]]><![CDATA[>...` — the `>` between
+        // `]]` and `<![CDATA[` is the escaped-then-replayed end of
+        // the original sequence.
+        var rest = content;
+        while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
+            try plan_buf.appendSlice(allocator, rest[0..idx]); // up to but NOT incl "]]"
+            try plan_buf.appendSlice(allocator, "]]><![CDATA[>"); // close, reopen, literal '>'
+            rest = rest[idx + 3 ..];
+        }
+        try plan_buf.appendSlice(allocator, rest);
+    }
+    try plan_buf.appendSlice(allocator, "\n]]></plan>");
+
     return std.fmt.allocPrint(allocator,
         "<update_plan>" ++
         "<session_id>{s}</session_id>" ++
         "<updated_at>{s}</updated_at>" ++
+        "{s}" ++
         "</update_plan>",
-        .{ sid_e, ts_e });
+        .{ sid_e, ts_e, plan_buf.items });
 }
 
 fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {

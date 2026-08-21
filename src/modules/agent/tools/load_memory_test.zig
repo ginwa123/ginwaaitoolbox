@@ -33,20 +33,23 @@ test "load_memory_tool: tool name is 'load_memory'" {
     try testing.expectEqualStrings("load_memory", load_memory_mod.load_memory_tool.function.name);
 }
 
-test "load_memory_tool: parameters include query, tags, limit, offset, with_content" {
+test "load_memory_tool: parameters include query, id, tags, limit, offset, with_content" {
     var found_query = false;
+    var found_id = false;
     var found_tags = false;
     var found_limit = false;
     var found_offset = false;
     var found_with_content = false;
     for (load_memory_mod.load_memory_tool.function.parameters.properties) |prop| {
         if (std.mem.eql(u8, prop.name, "query")) found_query = true;
+        if (std.mem.eql(u8, prop.name, "id")) found_id = true;
         if (std.mem.eql(u8, prop.name, "tags")) found_tags = true;
         if (std.mem.eql(u8, prop.name, "limit")) found_limit = true;
         if (std.mem.eql(u8, prop.name, "offset")) found_offset = true;
         if (std.mem.eql(u8, prop.name, "with_content")) found_with_content = true;
     }
     try testing.expect(found_query);
+    try testing.expect(found_id);
     try testing.expect(found_tags);
     try testing.expect(found_limit);
     try testing.expect(found_offset);
@@ -458,4 +461,179 @@ test "load_memory_tool: empty-after-sanitize query returns empty results (no cra
 
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
     try testing.expect(std.mem.indexOf(u8, out, "<count>0</count>") != null);
+}
+
+// ─── by-id lookup (Task 1 of 2026-08-19-load-memory-by-id) ──────────────
+//
+// Adds an `id` parameter to `load_memory` so the LLM can fetch a
+// specific memory's FULL body (no 2 KiB cap) without running an FTS5
+// query. Wire contract:
+//   - When `id` is non-empty, FTS5 is skipped — `agent_memories.getMemoryById`
+//     does a single-row SELECT and returns the full content (up to 1 MiB).
+//   - When `id` is empty, the FTS5 path runs as before (no behaviour change).
+//   - When both `id` and `query` are empty → `<error>must supply either
+//     query or id</error>`.
+//   - When `id` is non-empty but no row exists → `<error>not found: <id></error>`.
+//   - `tags` is ignored when `id` is set (only 1 row can match anyway).
+
+test "load_memory_tool: by-id lookup returns single row with full content" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "the user's preferred model is claude-sonnet",
+        .tags = "preferences||user",
+        .id = "mem-coding-pref",
+    });
+    defer alloc.free(_out);
+
+    // id-only, with_content defaults to false — content still comes back
+    // because the by-id path is targeted (not an FTS snippet).
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "",
+        .id = "mem-coding-pref",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-coding-pref</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<tags>preferences||user</tags>") != null);
+    // Full body, not just a 10-token snippet.
+    try testing.expect(std.mem.indexOf(u8, out, "preferred model is claude-sonnet") != null);
+    // Wrapped in <results> for shape consistency with the FTS path.
+    try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<total_count>1</total_count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<results>") != null);
+}
+
+test "load_memory_tool: by-id lookup returns content beyond 2 KiB (no MAX_FULL_CONTENT_BYTES cap)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Seed a memory with content > 2 KiB so the FTS5 + with_content=true
+    // path would truncate at MAX_FULL_CONTENT_BYTES (2 KiB). The by-id
+    // path must return the FULL body.
+    var big: std.ArrayList(u8) = .empty;
+    defer big.deinit(alloc);
+    const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit ";
+    var i: u32 = 0;
+    while (big.items.len < 4096) : (i += 1) {
+        try big.print(alloc, "{s}", .{filler});
+    }
+    try big.appendSlice(alloc, "DISTINCT_TAIL_TOKEN_AFTER_2KIB_MARK");
+
+    const _out = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = big.items,
+        .tags = "",
+        .id = "mem-big-content",
+    });
+    defer alloc.free(_out);
+
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "",
+        .id = "mem-big-content",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    // Tail marker is well past the 2 KiB cutoff — only reachable if the
+    // by-id path bypasses MAX_FULL_CONTENT_BYTES.
+    try testing.expect(std.mem.indexOf(u8, out, "DISTINCT_TAIL_TOKEN_AFTER_2KIB_MARK") != null);
+    // No <content truncated="1"> flag — content is not truncated.
+    try testing.expect(std.mem.indexOf(u8, out, "<content truncated=\"1\">") == null);
+}
+
+test "load_memory_tool: by-id lookup returns error when id not found" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "",
+        .id = "mem-does-not-exist",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "not found") != null);
+    // No empty <results> — error shape only.
+    try testing.expect(std.mem.indexOf(u8, out, "<results>") == null);
+}
+
+test "load_memory_tool: empty id + empty query returns error" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "",
+        .id = "",
+        .tags = "",
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "must supply either query or id") != null);
+}
+
+test "load_memory_tool: by-id ignores tags (only one row can match anyway)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Seed two memories — the by-id lookup must return only the one
+    // with the matching id, regardless of the tags filter.
+    const _a = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "memory alpha",
+        .tags = "alpha",
+        .id = "mem-alpha",
+    });
+    defer alloc.free(_a);
+    const _b = try save_memory_mod.executeSaveMemory(alloc, &ctx.db, .{
+        .content = "memory beta",
+        .tags = "beta",
+        .id = "mem-beta",
+    });
+    defer alloc.free(_b);
+
+    const input = load_memory_mod.LoadMemoryInput{
+        .query = "",
+        .id = "mem-alpha",
+        .tags = "beta", // intentionally wrong tag — must be ignored
+        .limit = 10,
+        .offset = 0,
+        .with_content = false,
+    };
+    const out = try load_memory_mod.executeLoadMemory(alloc, &ctx.db, input);
+    defer alloc.free(out);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-alpha</id>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-beta</id>") == null);
 }

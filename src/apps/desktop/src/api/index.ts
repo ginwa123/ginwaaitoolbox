@@ -3591,3 +3591,195 @@ export async function unstageGitFiles(cwd: string, files: string[]): Promise<Git
 // string via `api.updateTaskSimple`.
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
+
+// =====================================================================
+// Agent Mode API (plan 2026-08-15-agent-mode, task_1786962724740_0)
+//
+// 12 endpoints exposed by the backend for the new `item_type='agent'`
+// workspace item. Mirrors the kanban wrappers above — same error
+// contract (ApiError on 4xx/5xx), same {item, agent} envelope shape
+// on create, same comma-joined tool_names semantics on the allowlist
+// CRUD.
+// =====================================================================
+
+export interface Agent {
+  id: string
+  workspace_item_id: string
+  description: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentKnowledgeRow {
+  id: string
+  agent_id: string
+  file_path: string
+  label: string
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentToolRow {
+  id: string
+  agent_id: string
+  tool_name: string
+  enabled: number
+  created_at: string
+}
+
+export interface AgentRegistryEntry {
+  name: string
+  description: string
+}
+
+/**
+ * Create a new agent workspace item. The backend seeds the agent
+ * with an empty knowledge list AND an empty tool allowlist
+ * (secure-by-default — empty allowlist = zero tools per spec D1).
+ *
+ * POST /api/workspaces/:workspaceId/items/agent
+ */
+export async function createAgent(
+  workspaceId: string,
+  name: string,
+  path: string,
+): Promise<{ item: WorkspaceItem; agent: Agent }> {
+  return await apiFetch<{ item: WorkspaceItem; agent: Agent }>(
+    `/workspaces/${workspaceId}/items/agent`,
+    { method: 'POST', body: { name, path } },
+  )
+}
+
+/**
+ * Get agent + knowledge + tools for a workspace_item. Returns the
+ * 3 sections AgentView needs in one round-trip.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/agent
+ */
+export async function getAgent(
+  workspaceId: string,
+  itemId: string,
+): Promise<{ agent: Agent; knowledge: AgentKnowledgeRow[]; tools: string[] }> {
+  return await apiFetch<{ agent: Agent; knowledge: AgentKnowledgeRow[]; tools: string[] }>(
+    `/workspaces/${workspaceId}/items/${itemId}/agent`,
+  )
+}
+
+/**
+ * Update an agent's description.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/agent
+ */
+export async function updateAgent(
+  workspaceId: string,
+  itemId: string,
+  description: string,
+): Promise<{ agent: Agent }> {
+  return await apiFetch<{ agent: Agent }>(
+    `/workspaces/${workspaceId}/items/${itemId}/agent`,
+    { method: 'PATCH', body: { description } },
+  )
+}
+
+/**
+ * Add a knowledge entry (markdown file path on disk) to an agent.
+ * The backend validates `file_path` is absolute.
+ *
+ * POST /api/agents/:agentId/knowledge
+ */
+export async function addAgentKnowledge(
+  agentId: string,
+  filePath: string,
+  label?: string,
+): Promise<AgentKnowledgeRow> {
+  return await apiFetch<AgentKnowledgeRow>(`/agents/${agentId}/knowledge`, {
+    method: 'POST',
+    body: { file_path: filePath, label: label ?? '' },
+  })
+}
+
+export async function updateAgentKnowledge(
+  agentId: string,
+  knowledgeId: string,
+  updates: { file_path?: string; label?: string },
+): Promise<AgentKnowledgeRow> {
+  return await apiFetch<AgentKnowledgeRow>(
+    `/agents/${agentId}/knowledge/${knowledgeId}`,
+    { method: 'PATCH', body: updates },
+  )
+}
+
+export async function deleteAgentKnowledge(
+  agentId: string,
+  knowledgeId: string,
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agents/${agentId}/knowledge/${knowledgeId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function reorderAgentKnowledge(
+  agentId: string,
+  orderedIds: string[],
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agents/${agentId}/knowledge/reorder`,
+    { method: 'PATCH', body: { ordered_ids: orderedIds } },
+  )
+}
+
+/**
+ * Get the canonical tool registry. The Tools panel renders
+ * checkboxes from this list. Sourced from the runtime's
+ * UNIFIED_TOOL_REGISTRY (single source of truth per spec D4).
+ *
+ * GET /api/agent-tools/registry
+ */
+export async function getAgentToolsRegistry(): Promise<{ tools: AgentRegistryEntry[] }> {
+  return await apiFetch<{ tools: AgentRegistryEntry[] }>(`/agent-tools/registry`)
+}
+
+/**
+ * Get the enabled tool names for an agent. Empty array = secure-by-default.
+ *
+ * GET /api/agents/:agentId/tools
+ */
+export async function getAgentTools(agentId: string): Promise<{ tools: string[] }> {
+  return await apiFetch<{ tools: string[] }>(`/agents/${agentId}/tools`)
+}
+
+/**
+ * Enable a tool for the agent. Backend validates `tool_name`
+ * against the registry (400 if unknown) and returns 409 on duplicate.
+ *
+ * POST /api/agents/:agentId/tools
+ */
+export async function enableAgentTool(
+  agentId: string,
+  toolName: string,
+): Promise<AgentToolRow> {
+  return await apiFetch<AgentToolRow>(`/agents/${agentId}/tools`, {
+    method: 'POST',
+    body: { tool_name: toolName },
+  })
+}
+
+/**
+ * Disable a tool for the agent (deletes the row).
+ *
+ * `tool_name` must match a tool the agent currently has enabled
+ * (the registry name; backend returns 404 on unknown / not-enabled).
+ *
+ * DELETE /api/agents/:agentId/tools/:toolName
+ */
+export async function disableAgentTool(
+  agentId: string,
+  toolName: string,
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agents/${agentId}/tools/${toolName}`,
+    { method: 'DELETE' },
+  )
+}
