@@ -58,7 +58,13 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // `max_capacity_tokens` / `compaction_threshold_percent` overrides,
     // matching the workflow loop and the (now profile-aware) chat footer.
     // Graceful degrade: empty/unknown profile → null → old cascade.
-    const compact_profile: ?config.LlmProfile = blk: {
+    //
+    // `LlmProfile` is nested inside `LlmConfig` — use the qualified path
+    // `config.LlmConfig.LlmProfile`. Bare `config.LlmProfile` compiles
+    // in `zig build test` (lib mode) but Zig 0.16's `zig build-exe`
+    // rejects it because the root module only exposes the `Config`
+    // struct under `modules.config`. Same fix as session_messages_get.zig.
+    const compact_profile: ?config.LlmConfig.LlmProfile = blk: {
         const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
         if (profile_name.len > 0) {
             if (live_cfg.getProfile(profile_name)) |p| break :blk p;
