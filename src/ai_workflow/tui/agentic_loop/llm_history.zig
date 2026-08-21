@@ -5,6 +5,7 @@ const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
 const logger_mod = nalarcore.loggermod;
 const helpers = nalarcore.helpers;
+const config_mod = nalarcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 const on_event_sent = @import("on_event_sent.zig");
@@ -559,6 +560,16 @@ fn parseRowBool(s: []const u8) bool {
 }
 
 /// Get messages for a session with cursor-based pagination and sorting
+///
+/// `profile` — the session's selected profile, resolved by the caller
+/// (HTTP handler) from `sessions.selected_profile_model` via
+/// `LlmConfig.getProfile`. Passed in (dependency injection) rather than
+/// resolved here so tests can supply a profile without touching the
+/// process-global singleton. It feeds the `max_capacity_total_tokens`
+/// cascade (`maxCapacityForModel` step 2) so a profile's
+/// `max_capacity_tokens` override is reflected in the chat footer's
+/// context-window readout. `null` → fall through to the Defaults-tab
+/// override → built-in per-model default (pre-2026-08-21 behavior).
 pub fn getSessionMessagesSorted(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -566,6 +577,7 @@ pub fn getSessionMessagesSorted(
     limit: u32,
     cursor: ?[]const u8,
     sort_spec: SortSpec,
+    profile: ?*const config_mod.LlmConfig.LlmProfile,
 ) !SessionMessageResponse {
     // Query limit + 1 to check if more results exist
     const query_limit = limit + 1;
@@ -742,20 +754,90 @@ pub fn getSessionMessagesSorted(
             // override applies regardless of which model is being used —
             // it's a global "treat this session as if the model had a
             // context window of N tokens" knob.
+            //
+            // 2026-08-21-fix-ui-context-window: `profile` is the session's
+            // selected profile (resolved by the HTTP handler from
+            // `sessions.selected_profile_model`). Passing it into the
+            // cascade lets a profile's `max_capacity_tokens` override win —
+            // previously this call site hardcoded null, so the chat footer
+            // always showed the built-in per-model default even when the
+            // user had a profile with an explicit override selected.
+            //
+            // `maxCapacityForModel` never dereferences its receiver
+            // (`_ = self`), so a stack-allocated empty config is a valid
+            // receiver when the singleton is unavailable (unit tests) —
+            // the profile override still flows through the cascade.
             const di_opt = nalarcore.getSingleton() catch null;
             if (di_opt) |di| {
                 const cfg = nalarcore.getLlmConfig(di);
-                // No profile/sub-agent in scope at this call site — pass
-                // null for both. Pass `cfg` as the defaults arg so
-                // the top-level `max_capacity_token_model` override
-                // (Defaults tab) flows through to this session view.
-                break :blk cfg.maxCapacityForModel(null, null, cfg, cfg.model);
+                break :blk resolveMaxCapacityTotalTokens(cfg, profile, cfg.model);
             }
-            break :blk llm_models.getModelTokenCount("");
+            const empty_cfg = config_mod.LlmConfig{
+                .allocator = allocator,
+                .api_key = "",
+                .model = "",
+                .base_url = "",
+                .model_compaction_size_kb = 100,
+                .mcpServers_parsed = null,
+                .mcp_servers = std.StringHashMap(config_mod.LlmConfig.McpServerConfig).init(allocator),
+                .profiles_models = std.StringHashMap(config_mod.LlmConfig.LlmProfile).init(allocator),
+                .sub_agents = &.{},
+                .url_style = "openai",
+            };
+            break :blk resolveMaxCapacityTotalTokens(&empty_cfg, profile, empty_cfg.model);
         },
         .total_count = total_count,
         .skills = session_skills,
     };
+}
+
+/// Read `sessions.selected_profile_model` for one session. Returns ""
+/// when the column is NULL, the session row is missing, or the query
+/// fails — callers treat "" as "no profile selected" and fall through
+/// the cascade (Defaults tab → built-in default). The returned slice is
+/// allocated in `allocator` (the per-request arena in production);
+/// mirrors the graceful-degrade contract of workflow.zig's
+/// `re_read_selected_profile_model`.
+pub fn getSessionProfileName(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]const u8 {
+    var rows = try db.query(
+        allocator,
+        "SELECT COALESCE(selected_profile_model, '') FROM sessions WHERE id = ?",
+        &.{session_id},
+    );
+    defer rows.deinit();
+
+    const maybe_row = try rows.next();
+    if (maybe_row) |row| {
+        defer row.deinit(allocator);
+        // CRITICAL: row.deinit() frees row.values[0]'s backing memory.
+        // Dupe into `allocator` so the returned slice outlives the
+        // deferred free (same pattern as re_read_selected_profile_model).
+        return allocator.dupe(u8, row.values[0]);
+    }
+    return "";
+}
+
+/// Resolve the effective context window for a session view. Pure
+/// function over (config, profile, model) so tests can pin the cascade
+/// without the process-global singleton.
+///
+/// Cascade (`maxCapacityForModel`): profile.max_capacity_tokens →
+/// defaults.max_capacity_token_model → built-in per-model default.
+///
+/// 2026-08-21-fix-ui-context-window: extracted from the
+/// `max_capacity_total_tokens` blk in `getSessionMessagesSorted` — that
+/// call site previously hardcoded a null profile, so the chat footer
+/// ignored the selected profile's override entirely.
+pub fn resolveMaxCapacityTotalTokens(
+    cfg: *const config_mod.LlmConfig,
+    profile: ?*const config_mod.LlmConfig.LlmProfile,
+    model: []const u8,
+) u32 {
+    return cfg.maxCapacityForModel(profile, null, cfg, model);
 }
 
 /// Get the total count of messages for a session

@@ -4,6 +4,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const helpers = nalarcore.helpers;
 const ai_mod = nalarcore.ai_mod;
+const config = nalarcore.config;
 const llm_history = ai_mod.llm_history;
 
 /// Get messages for a session
@@ -46,7 +47,27 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
-    const msg_response = llm_history.getSessionMessagesSorted(allocator, sqlite_db, session_id, limit_val, cursor, sort_spec) catch {
+    // 2026-08-21-fix-ui-context-window — resolve the session's selected
+    // profile so the response's `max_capacity_total_tokens` honors the
+    // profile's `max_capacity_tokens` override (cascade step 2 in
+    // `maxCapacityForModel`). Previously this handler passed no profile,
+    // so the chat footer always showed the built-in per-model default
+    // (e.g. 500,000) even when the selected profile overrode the window
+    // (e.g. 950,000). Graceful degradation: empty name / unknown profile
+    // → null → Defaults-tab → built-in default (old behavior).
+    //
+    // `LlmProfile` is nested inside `LlmConfig` — refer to it as
+    // `config.LlmConfig.LlmProfile`. The bare `nalarcore.config.LlmProfile`
+    // path compiles in `zig build test` (lib module lookup) but Zig 0.16's
+    // `zig build-exe` (exe module lookup) rejects it because the parent
+    // struct in the root module is `modules.config.Config` and has no
+    // top-level `LlmProfile` member. CI fix 2026-08-21.
+    const cfg = nalarcore.getLlmConfig(di);
+    const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
+    const profile: ?config.LlmConfig.LlmProfile =
+        if (profile_name.len > 0) cfg.getProfile(profile_name) else null;
+
+    const msg_response = llm_history.getSessionMessagesSorted(allocator, sqlite_db, session_id, limit_val, cursor, sort_spec, if (profile) |*p| p else null) catch {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
     };
 

@@ -662,6 +662,27 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         effective_base_url = resolveProfileField("base_url", config, live_selected_profile_model, config.active_profile, config.base_url);
         effective_url_style = resolveProfileField("url_style", config, live_selected_profile_model, config.active_profile, config.url_style);
 
+        // 2026-08-21-fix-ui-context-window — resolve the session's
+        // selected profile once per iteration so the compaction threshold
+        // decision (maybeCompactMessagesNew → shouldCompactDefault) honors
+        // the profile's `max_capacity_tokens` / `compaction_threshold_percent`
+        // overrides. Mirrors the resolveProfileField cascade: session
+        // selection → active_profile → null (top-level defaults).
+        // `getProfile` returns the profile by value borrowing from the
+        // config (process-lifetime singleton) — safe to use within the
+        // iteration; no free needed.
+        const iter_profile: ?config_mod.LlmConfig.LlmProfile = blk: {
+            if (live_selected_profile_model.len > 0) {
+                if (config.getProfile(live_selected_profile_model)) |p| break :blk p;
+            }
+            if (config.active_profile) |ap| {
+                if (ap.len > 0) {
+                    if (config.getProfile(ap)) |p| break :blk p;
+                }
+            }
+            break :blk null;
+        };
+
         logger.infoFmt(
             "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} effective_model={s}",
             .{ copy_session_id, loop_counter, retry_count, effective_model },
@@ -969,7 +990,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config);
+        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config, if (iter_profile) |*p| p else null);
         if (is_do_compaction) {
             logger.infoFmt(
                 "[CHECKPOINT] compaction triggered session_id={s} loop_counter={d} total_tokens={d} prompt_msg_count={d}",

@@ -53,6 +53,25 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // fix (PR companion).
     const url_style = live_cfg.url_style;
 
+    // 2026-08-21-fix-ui-context-window — resolve the session's selected
+    // profile so the compaction decision honors the profile's
+    // `max_capacity_tokens` / `compaction_threshold_percent` overrides,
+    // matching the workflow loop and the (now profile-aware) chat footer.
+    // Graceful degrade: empty/unknown profile → null → old cascade.
+    //
+    // `LlmProfile` is nested inside `LlmConfig` — use the qualified path
+    // `config.LlmConfig.LlmProfile`. Bare `config.LlmProfile` compiles
+    // in `zig build test` (lib mode) but Zig 0.16's `zig build-exe`
+    // rejects it because the root module only exposes the `Config`
+    // struct under `modules.config`. Same fix as session_messages_get.zig.
+    const compact_profile: ?config.LlmConfig.LlmProfile = blk: {
+        const profile_name = llm_history.getSessionProfileName(allocator, sqlite_db, session_id) catch "";
+        if (profile_name.len > 0) {
+            if (live_cfg.getProfile(profile_name)) |p| break :blk p;
+        }
+        break :blk null;
+    };
+
     // Load the DB-stored message history and turn it into the in-memory
     // agent-message form that the compact agent operates on.
     const db_messages = llm_history.getMessages(allocator, sqlite_db, session_id) catch |err| {
@@ -104,6 +123,7 @@ pub fn sessionCompactHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         // a second `getSingleton()` round-trip.
         di.event_bus,
         live_cfg,
+        if (compact_profile) |*p| p else null,
     ) catch |err| {
         logger.errFmt("[COMPACTION] manual compaction failed: {s}", .{@errorName(err)});
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "compaction failed" }) });
