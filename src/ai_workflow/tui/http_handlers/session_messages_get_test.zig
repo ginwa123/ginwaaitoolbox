@@ -163,6 +163,7 @@ test "getSessionMessagesSorted: returns selected_profile_model from joined sessi
         50,
         null,
         .{ .created_at_asc = {} },
+        null,
     );
 
     // The whole point: the response carries the profile.
@@ -193,12 +194,92 @@ test "getSessionMessagesSorted: returns null when session has no profile set" {
         50,
         null,
         .{ .created_at_asc = {} },
+        null,
     );
 
     // COALESCE-on-NULL → empty string → frontend coerces to null.
     if (resp.selected_profile_model) |p| {
         try testing.expectEqualStrings("", p);
     }
+}
+
+test "getSessionMessagesSorted: profile override flows into max_capacity_total_tokens" {
+    // 2026-08-21-fix-ui-context-window — the chat footer's context
+    // window readout must honor the session's selected profile's
+    // `max_capacity_tokens` override. Previously the capacity blk in
+    // `getSessionMessagesSorted` hardcoded a null profile, so a profile
+    // with an explicit override (e.g. 950,000) was ignored and the UI
+    // showed the built-in per-model default (e.g. 500,000).
+    //
+    // The profile is passed in directly (dependency injection) so this
+    // test doesn't need the process-global singleton.
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedSession(&ctx, arena_alloc, "s_cap", "900ribu");
+    try seedMessage(&ctx, arena_alloc, "m1", "s_cap", "x");
+
+    // Build a minimal LlmConfig via the same JSON round-trip the
+    // config tests use, with one profile carrying an explicit
+    // max_capacity_tokens override.
+    const config_json =
+        \\{ "api_key": "k", "model": "MiniMax-M3", "base_url": "b",
+        \\  "profiles_models": { "900ribu": { "model": "m", "max_capacity_tokens": 950000 } } }
+    ;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{
+        .sub_path = "config.json",
+        .data = config_json,
+        .flags = .{ .truncate = true },
+    });
+    const config_path = try tmp.dir.realPathFileAlloc(testing.io, "config.json", arena_alloc);
+    var env_map = std.process.Environ.Map.init(arena_alloc);
+    try env_map.put("HOME", "/tmp");
+    try env_map.put("XDG_CONFIG_HOME", "/tmp");
+    var cfg = try nalarcore.config.LlmConfig.init(arena_alloc, testing.io, config_path, &env_map);
+    defer cfg.deinit();
+
+    const profile = cfg.profiles_models.get("900ribu") orelse unreachable;
+
+    const resp = try llm_history.getSessionMessagesSorted(
+        arena_alloc,
+        &ctx.db,
+        "s_cap",
+        50,
+        null,
+        .{ .created_at_asc = {} },
+        &profile,
+    );
+
+    // The whole point: the override wins over the built-in default.
+    try testing.expectEqual(@as(u32, 950000), resp.max_capacity_total_tokens);
+}
+
+test "getSessionProfileName: returns selected_profile_model for a session" {
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedSession(&ctx, arena_alloc, "s_name", "alpha model");
+
+    const name = try llm_history.getSessionProfileName(arena_alloc, &ctx.db, "s_name");
+    try testing.expectEqualStrings("alpha model", name);
+
+    // Missing session row → "" (graceful degrade, no error).
+    const missing = try llm_history.getSessionProfileName(arena_alloc, &ctx.db, "nope");
+    try testing.expectEqualStrings("", missing);
 }
 
 test "getSessionMessagesSorted: SessionMessagesResponse wire shape includes selected_profile_model" {
@@ -228,6 +309,7 @@ test "getSessionMessagesSorted: SessionMessagesResponse wire shape includes sele
         50,
         null,
         .{ .created_at_asc = {} },
+        null,
     );
 
     // Build the wire response exactly the way sessionMessagesHandler
