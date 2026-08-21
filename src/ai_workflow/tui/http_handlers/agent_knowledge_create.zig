@@ -24,8 +24,11 @@ const helpers = nalarcore.helpers;
 /// evolve independently (e.g. adding `?` optional fields) without
 /// touching the use-case.
 const CreateKnowledgeBody = struct {
-    file_path: []const u8,
+    file_path: []const u8 = "",
     label: []const u8 = "",
+    /// Inline manual text. Mutually exclusive with `file_path`
+    /// (exactly one must be non-empty). Empty = file-backed row.
+    content: []const u8 = "",
 };
 
 /// Subset of the knowledge row returned by the use-case.
@@ -34,6 +37,8 @@ pub const Knowledge = struct {
     agent_id: []const u8,
     file_path: []const u8,
     label: []const u8,
+    /// Inline manual text ('' = file-backed row).
+    content: []const u8,
     position: i64,
 };
 
@@ -49,6 +54,9 @@ pub const KnowledgeCreateError = error{
     FilePathRequired,
     /// `file_path` is not absolute.
     NotAbsolutePath,
+    /// Both `file_path` and `content` were provided — exactly one
+    /// source must be set.
+    BothSourcesSet,
     /// `db.query` failed while looking up the agent.
     LookupFailed,
     /// The workspace_item row did not exist or was not of type `'agent'`.
@@ -71,6 +79,8 @@ pub const KnowledgeCreateInput = struct {
     agent_id: []const u8,
     file_path: []const u8,
     label: []const u8,
+    /// Inline manual text. Mutually exclusive with `file_path`.
+    content: []const u8 = "",
 };
 
 /// Output of the knowledge-create use-case. `knowledge` is owned by
@@ -97,8 +107,12 @@ fn useCase(
     input: KnowledgeCreateInput,
 ) KnowledgeCreateError!KnowledgeCreateOutput {
     if (input.agent_id.len == 0) return error.AgentIdRequired;
-    if (input.file_path.len == 0) return error.FilePathRequired;
-    if (!std.fs.path.isAbsolute(input.file_path)) return error.NotAbsolutePath;
+    // XOR: exactly one of file_path / content must be non-empty.
+    const has_file = input.file_path.len > 0;
+    const has_content = input.content.len > 0;
+    if (!has_file and !has_content) return error.FilePathRequired;
+    if (has_file and has_content) return error.BothSourcesSet;
+    if (has_file and !std.fs.path.isAbsolute(input.file_path)) return error.NotAbsolutePath;
 
     // Validate agent exists + is an agent.
     var q = db.query(allocator,
@@ -118,9 +132,14 @@ fn useCase(
     const id = try std.fmt.allocPrint(allocator, "know_{d}", .{ts});
 
     // INSERT with COALESCE for position (mirrors kanban_column_create).
+    // COALESCE(?, '') on file_path/label/content: SqliteBackend.exec
+    // binds an empty slice as SQL NULL (project memory
+    // `sqlite-backend-empty-slice-binds-as-null`), which would trip the
+    // columns' NOT NULL DEFAULT '' constraint. Same pattern as
+    // design_model.zig addElement's `fill` column.
     db.exec(allocator,
-        "INSERT INTO agent_knowledge (id, agent_id, file_path, label, position, created_at, updated_at) VALUES (?, ?, ?, ?, COALESCE((SELECT MAX(position) FROM agent_knowledge WHERE agent_id = ?), -1) + 1, datetime('now'), datetime('now'))",
-        &.{ id, input.agent_id, input.file_path, input.label, input.agent_id },
+        "INSERT INTO agent_knowledge (id, agent_id, file_path, label, content, position, created_at, updated_at) VALUES (?, ?, COALESCE(?, ''), COALESCE(?, ''), COALESCE(?, ''), COALESCE((SELECT MAX(position) FROM agent_knowledge WHERE agent_id = ?), -1) + 1, datetime('now'), datetime('now'))",
+        &.{ id, input.agent_id, input.file_path, input.label, input.content, input.agent_id },
     ) catch return error.InsertFailed;
 
     // Read back position.
@@ -139,6 +158,7 @@ fn useCase(
             .agent_id = input.agent_id,
             .file_path = input.file_path,
             .label = input.label,
+            .content = input.content,
             .position = position,
         },
     };
@@ -181,11 +201,13 @@ pub fn agentKnowledgeCreateHandler(
         .agent_id = agent_id,
         .file_path = parsed.file_path,
         .label = parsed.label,
+        .content = parsed.content,
     }) catch |err| {
         const status: u16 = switch (err) {
             error.AgentIdRequired => 400,
             error.FilePathRequired => 400,
             error.NotAbsolutePath => 400,
+            error.BothSourcesSet => 400,
             error.LookupFailed => 500,
             error.AgentNotFound => 404,
             error.InsertFailed => 500,
@@ -195,8 +217,9 @@ pub fn agentKnowledgeCreateHandler(
         };
         const message: []const u8 = switch (err) {
             error.AgentIdRequired => "agent_id required",
-            error.FilePathRequired => "file_path is required",
+            error.FilePathRequired => "file_path or content is required",
             error.NotAbsolutePath => "file_path must be absolute",
+            error.BothSourcesSet => "file_path and content are mutually exclusive",
             error.LookupFailed => "DB error",
             error.AgentNotFound => "agent not found",
             error.InsertFailed => "Failed to insert knowledge",
@@ -228,6 +251,7 @@ pub fn agentKnowledgeCreateHandler(
 const sqlite = @import("nalarcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
+const Migration079AddContentToAgentKnowledge = @import("../../../migrations/migration.zig").Migration079AddContentToAgentKnowledge;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -250,6 +274,10 @@ fn setupDb() !TestCtx {
         &[_][]const u8{},
     );
     try Migration076AddAgentsAndAgentKnowledgeAndAgentTools.up(&db, testing.allocator);
+    // Production DBs run every migration in order — the harness must
+    // mirror that, or the `content` column (Migration 079) is missing
+    // and the INSERT in useCase fails with PrepareFailed.
+    try Migration079AddContentToAgentKnowledge.up(&db, testing.allocator);
 
     // Seed: 1 workspace_item of type 'agent' + matching agents row.
     try db.exec(testing.allocator,
@@ -344,4 +372,80 @@ test "useCase: happy path inserts with position 0 (COALESCE handles empty agents
     try testing.expectEqual(@as(i64, 0), output.knowledge.position);
     try testing.expectEqualStrings("/tmp/a.md", output.knowledge.file_path);
     try testing.expectEqualStrings("First", output.knowledge.label);
+}
+
+// ─── content (manual text) tests — plan 2026-08-21-agent-knowledge-manual-text ──
+
+test "useCase: inline content happy path inserts row with content" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .agent_id = "ws_item_1",
+        .file_path = "",
+        .content = "Manual notes about the deploy process.\nSecond line.",
+        .label = "Deploy notes",
+    });
+    defer alloc.free(output.knowledge.id);
+
+    try testing.expectEqualStrings("Deploy notes", output.knowledge.label);
+    try testing.expectEqualStrings(
+        "Manual notes about the deploy process.\nSecond line.",
+        output.knowledge.content,
+    );
+    try testing.expectEqual(@as(i64, 0), output.knowledge.position);
+    try testing.expectEqualStrings("", output.knowledge.file_path);
+}
+
+test "useCase: both file_path and content empty returns FilePathRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.FilePathRequired,
+        useCase(alloc, &ctx.db, .{
+            .agent_id = "ws_item_1",
+            .file_path = "",
+            .content = "",
+            .label = "",
+        }),
+    );
+}
+
+test "useCase: both file_path and content set returns BothSourcesSet" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.BothSourcesSet,
+        useCase(alloc, &ctx.db, .{
+            .agent_id = "ws_item_1",
+            .file_path = "/tmp/a.md",
+            .content = "inline text",
+            .label = "",
+        }),
+    );
+}
+
+test "useCase: file-backed path still works with content empty (no regression)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .agent_id = "ws_item_1",
+        .file_path = "/tmp/a.md",
+        .content = "",
+        .label = "First",
+    });
+    defer alloc.free(output.knowledge.id);
+    try testing.expectEqualStrings("/tmp/a.md", output.knowledge.file_path);
+    try testing.expectEqualStrings("", output.knowledge.content);
 }
