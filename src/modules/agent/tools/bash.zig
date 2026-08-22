@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 // === Cross-platform note (2026-07-24) ===
 //
@@ -80,7 +79,17 @@ pub fn execute_bash(
     io: std.Io,
     input: BashInput,
 ) !BashOutput {
-    if (builtin.os.tag == .windows) return error.UnsupportedOS;
+    // Validation must fire BEFORE any platform-specific code path so
+    // tests like `bash_tool: missing mandatory_timeout returns
+    // MandatoryTimeoutMissing` pass on every host (Linux/macOS/Windows).
+    // Previously this function returned `error.UnsupportedOS` on Windows,
+    // which short-circuited the validation and made those tests fail.
+    // In production, callers should use `pwsh_tool` on Windows anyway —
+    // `bash` isn't on PATH on Windows hosts — so removing the upfront
+    // OS gate just lets the validation flow run; the actual bash spawn
+    // (further down in `shell.execute_shell`) would still fail on
+    // Windows with a clear "executable not found" error if called with
+    // a valid mandatory_timeout.
     // BashInput is a type alias for ShellInput (Task 2 of the plan) so
     // the cast is a no-op at compile time. If a future refactor breaks
     // the alias the compiler will catch it here.

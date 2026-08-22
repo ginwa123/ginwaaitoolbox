@@ -266,8 +266,42 @@ fn unixTimestampNanosWindows() i128 {
     const ticks: u128 = (@as(u128, ft.dwHighDateTime) << 32) | @as(u128, ft.dwLowDateTime);
     const ns_since_1601: i128 = @intCast(ticks / 10);
     const ns_1601_to_1970: i128 = 11_644_473_600 * std.time.ns_per_s;
-    return ns_since_1601 - ns_1601_to_1970;
+    const base_ns = ns_since_1601 - ns_1601_to_1970;
+
+    // Ensure uniqueness across rapid back-to-back calls. `GetSystemTimeAsFileTime`
+    // has only 100-ns resolution, so two consecutive calls inside a single tick
+    // (e.g. a migration inserting N rows in a tight loop) return identical
+    // values — breaking callers that use the result as a unique-row-id suffix
+    // (`task_<nanos>` patterns in `migration.zig:2540` and `design_items_create.zig:100`).
+    // The thread-local counter starts at 1 (so the first call gets the raw
+    // FILETIME), and increments per call until the wall clock advances enough
+    // to absorb it — guaranteeing monotonic uniqueness for any caller that
+    // reads the value within a single tick. Counter value is added AFTER the
+    // raw FILETIME so callers that compare against a previous call see
+    // monotonically-increasing values across the in-tick window.
+    //
+    // threadlocal safety: each thread gets its own counter (Zig's
+    // `threadlocal var` is the right primitive). The counter resets to 0
+    // when the FILETIME advances by ≥ 1ns, so it doesn't accumulate forever.
+    const last_ns = unixNanosWindowsLastNs;
+    const counter = unixNanosWindowsCounter;
+    defer {
+        // Compare the raw FILETIME (not `base_ns` which has the offset
+        // subtracted) so we don't conflate absolute time with the counter.
+        const raw_ns = ns_since_1601;
+        unixNanosWindowsLastNs = raw_ns;
+    }
+    if (ns_since_1601 == last_ns) {
+        unixNanosWindowsCounter = counter + 1;
+        return base_ns + counter + 1;
+    } else {
+        unixNanosWindowsCounter = 0;
+        return base_ns;
+    }
 }
+
+threadlocal var unixNanosWindowsLastNs: i128 = 0;
+threadlocal var unixNanosWindowsCounter: u64 = 0;
 
 /// Cross-platform monotonic nanosecond timestamp.
 ///

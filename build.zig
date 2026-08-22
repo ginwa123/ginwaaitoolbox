@@ -97,6 +97,38 @@ fn pickFirstExisting(candidates: []const []const u8) ?[]const u8 {
     return null;
 }
 
+/// Locate `bash.exe` on Windows hosts where Git for Windows is installed
+/// but its bin dir is not on PATH.
+///
+/// Git for Windows ships git.exe + bash.exe at `C:\Program Files\Git\bin`
+/// and `C:\Program Files\Git\usr\bin`, but does NOT add either directory
+/// to the system PATH automatically — only git.exe's parent (e.g.
+/// `C:\Program Files\Git\cmd`) is wired in by the installer. Calling
+/// `b.addSystemCommand(.{ "bash", ... })` then fails at spawn with
+/// "FileNotFound" because Windows CreateProcess only searches PATH, not
+/// Git's hard-coded install dir.
+///
+/// Linux/macOS hosts always have bash on PATH (POSIX-required), so this
+/// helper is a Windows-only escape hatch. Returns the absolute path of
+/// the first `bash.exe` found among the known Git install locations, or
+/// null when none exist — the caller is expected to fall back to a
+/// clear error message in that case.
+///
+/// Checked in priority order (newest Git release convention first):
+///   - `C:\Program Files\Git\bin\bash.exe`     — Git for Windows default
+///   - `C:\Program Files\Git\usr\bin\bash.exe` — Git for Windows MSYS2 sysroot
+///   - `C:\Program Files (x86)\Git\bin\bash.exe` — 32-bit Git on 64-bit Windows (rare)
+///   - `C:\Program Files (x86)\Git\usr\bin\bash.exe` — 32-bit Git MSYS2 sysroot
+fn findBashOnWindows() ?[]const u8 {
+    const candidates = [_][]const u8{
+        "C:/Program Files/Git/bin/bash.exe",
+        "C:/Program Files/Git/usr/bin/bash.exe",
+        "C:/Program Files (x86)/Git/bin/bash.exe",
+        "C:/Program Files (x86)/Git/usr/bin/bash.exe",
+    };
+    return pickFirstExisting(&candidates);
+}
+
 /// Link platform-specific system libraries + include paths for a Compile
 /// step based on the COMPILE'S OWN target (NOT the global default target).
 /// Every caller that produces a binary linked against nalarcore MUST
@@ -564,8 +596,22 @@ pub fn build(b: *std.Build) void {
         });
         vendor_sqlite3_step.dependOn(&skip_msg.step);
     } else {
+        // Windows: `bash` is not on PATH (Git for Windows ships it at
+        // `C:\Program Files\Git\bin\bash.exe` without adding that dir to
+        // PATH). `findBashOnWindows()` probes the canonical install
+        // locations and returns the absolute path; CreateProcess
+        // accepts absolute paths verbatim. Linux/macOS hosts keep the
+        // bare `"bash"` (always on PATH on POSIX). Falling through to
+        // the absolute path on Windows is required because
+        // `addSystemCommand(.{ "bash", ... })` would otherwise fail at
+        // spawn with "FileNotFound" — see the `findBashOnWindows` doc
+        // comment for the full rationale.
+        const bash_path: []const u8 = switch (b.graph.host.result.os.tag) {
+            .windows => findBashOnWindows() orelse "bash", // last-resort: PATH lookup
+            else => "bash",
+        };
         const vendor_sqlite3_fetch = b.addSystemCommand(&.{
-            "bash", "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
+            bash_path, "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
         });
         vendor_sqlite3_fetch.setCwd(b.path(""));
         vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
@@ -630,8 +676,25 @@ pub fn build(b: *std.Build) void {
         });
         fetch_vendor_curl_step.dependOn(&skip_msg.step);
     } else {
+        // Windows: `bash` is not on PATH (Git for Windows ships it at
+        // `C:\Program Files\Git\bin\bash.exe` without adding that dir to
+        // PATH). `findBashOnWindows()` probes the canonical install
+        // locations and returns the absolute path. Linux/macOS hosts
+        // keep the bare `"bash"` (always on PATH on POSIX).
+        //
+        // Even with bash found, building libcurl + OpenSSL from source
+        // on Windows requires gcc/make/perl + the Perl Locale/Maketext
+        // module that the OpenSSL Configure script pulls in. On a
+        // typical dev box those aren't installed. The script itself
+        // detects a Windows host via `uname -s == *MINGW* / MSYS*` and
+        // exits with a clear error so the user gets an actionable
+        // message instead of an opaque `process exited with error code 49`.
+        const bash_path: []const u8 = switch (b.graph.host.result.os.tag) {
+            .windows => findBashOnWindows() orelse "bash",
+            else => "bash",
+        };
         const fetch_vendor_curl_run = b.addSystemCommand(&.{
-            "bash", "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
+            bash_path, "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
         });
         fetch_vendor_curl_run.setCwd(b.path(""));
         fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);

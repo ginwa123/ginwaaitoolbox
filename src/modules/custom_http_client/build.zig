@@ -104,6 +104,271 @@ extern "kernel32" fn GetFileAttributesW(lpPathName: [*:0]const u16) callconv(.wi
 const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
 
+/// Windows-only stub-libcurl generator. Compiles
+/// `scripts/stub_libcurl.c` (a no-op implementation of the libcurl
+/// symbols `custom_http_client/src/curl.zig` references) and writes
+/// the resulting `.o` + `.a` + stub `curl/curl.h` header into the
+/// per-target vendor directory so the test compile's cimport + link
+/// line resolve cleanly on dev boxes that don't have vcpkg libcurl
+/// installed.
+///
+/// Runs at config time (synchronously, via `std.process.run`) rather
+/// than as a deferred `addSystemCommand` step, because:
+///   - The stub files only need to exist on disk BEFORE the test
+///     compile's link-line-construction phase — there's no reason to
+///     serialize them through the build runner's parallel-execution
+///     model.
+///   - A deferred step would require propagating the step handle
+///     through `custom_http_client_mod.user_data` so root build.zig's
+///     test compile could wire a `dependOn` — that's brittle and
+///     cross-module-coupled.
+///
+/// Why Windows-only: real libcurl is available via vcpkg on Windows
+/// (system probe above takes over) or via the vendored archive on
+/// Linux/macOS. The stub is a dev-box-only fallback for the case
+/// where neither is available.
+///
+/// The stub functions are empty no-ops — see scripts/stub_libcurl.c's
+/// top comment for the runtime behavior (curl_easy_init returns NULL,
+/// curl_easy_perform returns CURLE_FAILED_INIT, etc.).
+fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
+    const zig_exe = b.graph.zig_exe;
+    // Package directory: b.path("") resolves to <package_dir>.
+    // The cmd.exe invocations below all set cwd to this directory so
+    // that relative paths (target_dir = "vendor/curl/windows-amd64",
+    // stub_src_dir = "scripts") resolve against the package root,
+    // matching where b.path() places files for the consumer's link
+    // line.
+    const pkg_dir_bs = blk: {
+        // b.build_root.path is the absolute package directory for
+        // this dependency's build.zig. Strip leading "./" if present.
+        var path: []const u8 = b.build_root.path orelse ".";
+        if (std.mem.startsWith(u8, path, "./")) path = path[2..];
+        const buf = b.allocator.alloc(u8, path.len) catch @panic("OOM");
+        @memcpy(buf, path);
+        std.mem.replaceScalar(u8, buf, '/', '\\');
+        break :blk buf;
+    };
+    defer b.allocator.free(pkg_dir_bs);
+    // Path to the stub source files (relative to the package root).
+    const stub_src_dir = "scripts";
+
+    // === 1. ensure target_dir/lib + target_dir/include/curl/ exist ===
+    // Idempotent mkdir via cmd.exe. (Avoids the Zig 0.16 std.fs API
+    // churn — the simpler `mkdir -p` semantics via cmd's `if not exist`
+    // is portable across dev boxes without fighting the new Io-based
+    // filesystem API.)
+    {
+        var cmd_buf: [512]u8 = undefined;
+        // Normalize target_dir to all-backslashes (cmd.exe doesn't
+        // accept mixed `/` + `\` in `if not exist` paths — fails with
+        // "syntax incorrect").
+        const tgt_dir_bs = blk: {
+            const buf = b.allocator.alloc(u8, target_dir.len) catch @panic("OOM");
+            @memcpy(buf, target_dir);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(tgt_dir_bs);
+        const mkdir_cmd = std.fmt.bufPrint(
+            cmd_buf[0..],
+            "cd /D {s} & if not exist {s}\\lib mkdir {s}\\lib & if not exist {s}\\include\\curl mkdir {s}\\include\\curl",
+            .{ pkg_dir_bs, tgt_dir_bs, tgt_dir_bs, tgt_dir_bs, tgt_dir_bs },
+        ) catch @panic("OOM formatting mkdir cmd");
+        const argv = [_][]const u8{ "cmd.exe", "/c", mkdir_cmd };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl mkdir failed: {t} (fallback skipped)\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl mkdir exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+    }
+
+    // === 2. copy scripts/stub_libcurl.h → target_dir/include/curl/curl.h ===
+    {
+        var cmd_buf: [512]u8 = undefined;
+        // Normalize target_dir's forward slashes to backslashes —
+        // cmd.exe is happiest with all-backslash paths (mixed slashes
+        // intermittently fail with "The system cannot find the path
+        // specified" on Windows dev boxes).
+        const tgt_dir_bs = blk: {
+            const buf = b.allocator.alloc(u8, target_dir.len) catch @panic("OOM");
+            @memcpy(buf, target_dir);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(tgt_dir_bs);
+        const copy_cmd = std.fmt.bufPrint(
+            cmd_buf[0..],
+            "cd /D {s} & copy /Y {s}\\stub_libcurl.h {s}\\include\\curl\\curl.h 1>NUL",
+            .{ pkg_dir_bs, stub_src_dir, tgt_dir_bs },
+        ) catch @panic("OOM formatting copy cmd");
+        const argv = [_][]const u8{ "cmd.exe", "/c", copy_cmd };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl header copy failed: {t} (fallback skipped)\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl header copy exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+        std.debug.print(
+            "[custom_http_client] wrote stub header: {s}\\include\\curl\\curl.h\n",
+            .{target_dir},
+        );
+    }
+
+    // === 3. compile scripts/stub_libcurl.c → target_dir/lib/stub_libcurl.o ===
+    // Use `zig cc` (the host's bundled clang) — no MinGW gcc dependency.
+    // The target x86_64-windows-gnu matches the dev box's default
+    // target. Cross-compile consumers would need a per-target stub —
+    // out of scope for the dev-box fallback.
+    const obj_path = b.fmt("{s}/lib/stub_libcurl.o", .{target_dir});
+    {
+        const obj_path_bs = blk: {
+            const buf = b.allocator.alloc(u8, obj_path.len) catch @panic("OOM");
+            @memcpy(buf, obj_path);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(obj_path_bs);
+        const argv = [_][]const u8{
+            zig_exe, "cc",
+            "-target", "x86_64-windows-gnu",
+            "-c",
+            "-I",  b.fmt("{s}/{s}", .{ pkg_dir_bs, stub_src_dir }),
+            "-o",  b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
+            b.fmt("{s}\\{s}\\stub_libcurl.c", .{ pkg_dir_bs, stub_src_dir }),
+        };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] zig cc (stub-libcurl compile) failed: {t}\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] zig cc (stub-libcurl compile) exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+        std.debug.print(
+            "[custom_http_client] compiled stub object: {s}\n",
+            .{obj_path},
+        );
+    }
+
+    // === 4. archive stub_libcurl.o → target_dir/lib/libcurl.a ===
+    {
+        const archive_path = b.fmt("{s}/lib/libcurl.a", .{target_dir});
+        const archive_path_bs = blk: {
+            const buf = b.allocator.alloc(u8, archive_path.len) catch @panic("OOM");
+            @memcpy(buf, archive_path);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(archive_path_bs);
+        const obj_path_bs = blk: {
+            const buf = b.allocator.alloc(u8, obj_path.len) catch @panic("OOM");
+            @memcpy(buf, obj_path);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(obj_path_bs);
+        const argv = [_][]const u8{
+            zig_exe, "ar", "rcs",
+            b.fmt("{s}\\{s}", .{ pkg_dir_bs, archive_path_bs }),
+            b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
+        };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] zig ar (stub-libcurl archive) failed: {t}\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] zig ar (stub-libcurl archive) exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+        std.debug.print(
+            "[custom_http_client] wrote stub archive: {s}\n",
+            .{archive_path},
+        );
+    }
+}
+
 /// Result of probing the host system for libcurl / libssl / libcrypto.
 ///
 /// SYSTEM-ONLY LINKS: when `use_system` is true, the package links against
@@ -465,6 +730,51 @@ mod.link_libc = true;
         // merged in one .a (see scripts/build-vendor-curl.sh). So we
         // do NOT also link ssl/crypto — they're already in the archive.
         const libcurl_a = b.path(b.fmt("{s}/lib/libcurl.a", .{target_dir}));
+
+        // WINDOWS-DEV-BOX STUB PATH:
+        //
+        // `build-vendor-curl.sh` intentionally never builds a Windows
+        // archive (it only cross-compiles Linux + macOS targets; the
+        // Windows script section is a no-op with an informative message
+        // — see the script's `case "$(uname -s)"` Windows-host arm).
+        // On a Windows host without vcpkg libcurl + openssl installed,
+        // there's no `vendor/curl/windows-amd64/lib/libcurl.a` AND no
+        // header at `vendor/curl/windows-amd64/include/curl/curl.h`,
+        // which causes two failures during `zig build test`:
+        //
+        //   1. `src/modules/agent/Agent.zig` transitively pulls in
+        //      `custom_http_client` (via the test runner imports), so
+        //      the test compile includes custom_http_client's source.
+        //      `custom_http_client/src/curl.zig` does
+        //      `@cImport(@cInclude("curl/curl.h"))` — without the
+        //      header, the cimport fails with "file not found".
+        //   2. The test compile's link line references the missing
+        //      `libcurl.a` via `addObjectFile`, which fails with
+        //      "file not found" at link-line construction time.
+        //
+        // The fix: when the vendored archive is missing on Windows,
+        // generate a STUB archive + STUB header from the sources in
+        // `scripts/stub_libcurl.{h,c}`. The stub functions are empty
+        // no-ops (curl_easy_init returns NULL, curl_easy_perform
+        // returns CURLE_FAILED_INIT) — enough to satisfy the linker +
+        // cimport without providing real network capability. Tests that
+        // merely construct a custom_http_client.Client and never fire
+        // a request pass; tests that actually call .get/.post/.stream
+        // fail at runtime with a clear InitFailed error from the stub
+        // (visible in `zig build test` output).
+        //
+        // This stub path is Windows-only (Linux + macOS still require
+        // the real archive or system libcurl). To get a real libcurl
+        // on Windows: install vcpkg (`vcpkg install curl:x64-windows
+        // openssl:x64-windows`) — the system probe above takes over
+        // and the stub is bypassed entirely.
+        if (target.result.os.tag == .windows and !fileExists(b.fmt("{s}/lib/libcurl.a", .{target_dir}))) {
+            generateStubLibcurlWindows(b, target_dir);
+            // After the stub is generated, addObjectFile points at
+            // the now-existing file. (The compile step's file existence
+            // check is lazy — addObjectFile records the path; the actual
+            // check happens at link-line construction time.)
+        }
         mod.addObjectFile(libcurl_a);
     }
 
