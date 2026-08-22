@@ -240,7 +240,6 @@ fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
 fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const result = try handle_mcp_tool.handle_mcp_tool_run(
         ctx.allocator,
-        ctx.io,
         ctx.logger,
         tool_call,
         ctx.config,
@@ -578,7 +577,6 @@ pub fn handle_tool(
                 // Call MCP handler
                 tool_result = handle_mcp_tool.handle_mcp_tool_run(
                     allocator,
-                    io,
                     logger,
                     tool_call,
                     config,

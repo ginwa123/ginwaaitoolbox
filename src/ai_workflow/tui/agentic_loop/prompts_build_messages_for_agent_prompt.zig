@@ -9,7 +9,7 @@ const prompt = nalarcore.prompt;
 const TUIHistory = @import("models.zig").TUIHistory;
 const tool_models = nalarcore.tool_models;
 const config_mod = nalarcore.config;
-const http_client = nalarcore.http_client;
+const custom_http_client = @import("custom_http_client");
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");
@@ -340,7 +340,7 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn buildMCPToolsRun(allocator: std.mem.Allocator, io: std.Io, mcpServers: std.json.Value) !?[]tool_models.AgentTool {
+pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value) !?[]tool_models.AgentTool {
     // Check if mcpServers is configured
     const mcp_servers = switch (mcpServers) {
         .object => |obj| obj,
@@ -386,7 +386,7 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, io: std.Io, mcpServers: st
         }
 
         // Fetch tools from this server
-        const tools = try fetchToolsFromServer(allocator, io, url, headers.items, server_name);
+        const tools = try fetchToolsFromServer(allocator, url, headers.items, server_name);
 
         try all_tools.appendSlice(allocator, tools);
     }
@@ -397,33 +397,44 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, io: std.Io, mcpServers: st
 /// Fetch tools from a single MCP server
 fn fetchToolsFromServer(
     allocator: std.mem.Allocator,
-    io: std.Io,
     url: []const u8,
     _headers: []const McpHeader,
     server_name: []const u8,
 ) ![]tool_models.AgentTool {
     const tools_url = url;
 
-    var client = http_client.HttpClient.init(allocator, io);
+    var client = custom_http_client.Client.init(allocator);
     defer client.deinit();
 
     const request_body = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
     defer allocator.free(request_body);
 
-    var headers_hash = std.StringHashMap([]const u8).init(allocator);
-    defer headers_hash.deinit();
-
-    try headers_hash.put("Accept", "application/json, text/event-stream");
-
-    for (_headers) |header| {
-        try headers_hash.put(header.key, header.value);
+    // Flatten the small bounded `_headers` slice + the Accept header into
+    // a `[]const custom_http_client.Header` slice (the type the
+    // custom_http_client.post() API takes). Stack-allocated; MCP headers
+    // are bounded by the user's MCP server config so this never grows.
+    var header_buf: [16]custom_http_client.Header = undefined;
+    var header_count: usize = 0;
+    header_buf[header_count] = .{ .name = "Accept", .value = "application/json, text/event-stream" };
+    header_count += 1;
+    for (_headers) |h| {
+        if (header_count >= header_buf.len) return error.InvalidMCPHeaders;
+        header_buf[header_count] = .{ .name = h.key, .value = h.value };
+        header_count += 1;
     }
+    const header_slice = header_buf[0..header_count];
 
-    const result = client.post(tools_url, request_body, headers_hash) catch |err| {
+    const result = custom_http_client.post(
+        &client,
+        tools_url,
+        request_body,
+        header_slice,
+        .{ .timeout_ms = 30_000 },
+    ) catch |err| {
         std.log.warn("Failed to fetch MCP tools from {s}: {s}", .{ server_name, @errorName(err) });
         return error.HttpRequestError;
     };
-    defer allocator.free(result.body);
+    defer result.deinit(allocator);
 
     if (result.status_code != 200) {
         std.log.warn("MCP server {s} returned status {d}", .{ server_name, result.status_code });

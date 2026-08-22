@@ -574,7 +574,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const initial_config = nalarcore.getLlmConfig(di.di);
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, initial_config.mcpServers() orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, initial_config.mcpServers() orelse .null) catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};

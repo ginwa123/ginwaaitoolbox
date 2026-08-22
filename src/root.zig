@@ -502,7 +502,11 @@ pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
 pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 
-pub const http_client = @import("modules/http/HttpClient.zig");
+// `modules/http/HttpClient.zig` was removed — the project uses the
+// libcurl-backed `custom_http_client` module (imported directly via
+// `@import("custom_http_client")`; the dep is added in build.zig).
+// The MCP call sites in `handle_mcp_tool.zig` and
+// `prompts_build_messages_for_agent_prompt.zig` were migrated to it.
 pub const loggermod = @import("modules/logger/Logger.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
@@ -609,7 +613,6 @@ test {
     // here because the package already discovers its own tests via
     // its root.zig's `test { ... }` block.
     _ = @import("modules/event_bus/src/test_runner.zig");
-    _ = @import("modules/http/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
     // custom_http_server tests run mostly through the module's own
     // `zig build test` (run from src/modules/custom_http_server/). The
