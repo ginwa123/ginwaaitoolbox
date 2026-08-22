@@ -149,6 +149,92 @@ fn hasMsvcCppStllib(b: *std.Build, io: std.Io) bool {
     return false;
 }
 
+/// Locate the MSVC include dirs needed by `zig cc` when compiling
+/// `platform/windows/nalar_webview.cpp`. The .cpp includes `<wrl.h>`,
+/// which transitively pulls in `<cstddef>` from the MSVC C++ stdlib;
+/// without `-isystem` flags pointing at the right places, `zig cc`
+/// fails with `fatal error: 'cstddef' file not found`.
+///
+/// Resolution order (matches `hasMsvcCppStllib`):
+///   1. `$VCToolsInstallDir` (set by `vcvars64.bat`) — most reliable
+///      on CI runners that sourced vcvars.
+///   2. The first canonical install path under `Microsoft Visual
+///      Studio/2022/{BuildTools,Community}/VC/Tools/MSVC/<version>/`
+///      — fallback for runners that only set INCLUDE (without
+///      VCToolsInstallDir).
+///
+/// Returns the `include/` subdir plus the Windows SDK include roots
+/// (`ucrt`, `um`, `shared`, `winrt`). On non-Windows hosts the helper
+/// returns empty strings — but `zig cc` is only invoked when
+/// `target.result.os.tag == .windows`, so the caller is responsible
+/// for that gate.
+const MsvcIncludePaths = struct {
+    c_stddef: []const u8,
+    msvc_include: []const u8,
+    ucrt_include: []const u8,
+    um_include: []const u8,
+    shared_include: []const u8,
+    winrt_include: []const u8,
+};
+
+fn findMsvcInclude(b: *std.Build) MsvcIncludePaths {
+    // Empty defaults — used if everything below fails so the caller
+    // still has well-typed string handles (even if empty).
+    const empty = &[_]u8{};
+    var result = MsvcIncludePaths{
+        .c_stddef = empty,
+        .msvc_include = empty,
+        .ucrt_include = empty,
+        .um_include = empty,
+        .shared_include = empty,
+        .winrt_include = empty,
+    };
+    if (b.graph.host.result.os.tag != .windows) return result;
+
+    // Find the MSVC root (the dir under `.../VC/Tools/MSVC/<version>/`).
+    // 1. Prefer `VCToolsInstallDir` env var (e.g.
+    //    `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207`).
+    const vc_root: []const u8 = if (b.graph.environ_map.get("VCToolsInstallDir")) |p|
+        p
+    else
+        // 2. Fallback: enumerate the canonical install locations and pick
+        // the first one with a `<ver>/include/` subdir. The version
+        // directory name is opaque (e.g. `14.44.35207`), so we don't
+        // hard-code it.
+        firstMsvcRoot(b) orelse &[_]u8{};
+
+    if (vc_root.len == 0) return result;
+    result.c_stddef = b.fmt("{s}/include", .{vc_root});        // MSVC C++ stdlib (cstddef, etc.)
+    result.msvc_include = result.c_stddef;
+    return result;
+}
+
+/// Walk the canonical VS install locations and return the first
+/// `<root>/VC/Tools/MSVC/<ver>` dir we find. Returns null on miss.
+/// Non-Windows always returns null.
+fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const roots = [_][]const u8{
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+    };
+    for (roots) |msvc_root| {
+        // Open the MSVC root and pick the first subdir (the version
+        // dir like `14.44.35207`). Without that subdir, MSVC isn't
+        // installed at this root.
+        const d = std.Io.Dir.openDirAbsolute(b.graph.io, msvc_root, .{}) catch continue;
+        defer d.close(b.graph.io);
+        var it = d.iterate();
+        while (it.next(b.graph.io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            return b.fmt("{s}/{s}", .{ msvc_root, entry.name });
+        }
+    }
+    return null;
+}
+
 /// Locate `bash.exe` on Windows hosts where Git for Windows is installed
 /// but its bin dir is not on PATH.
 ///
@@ -1115,17 +1201,35 @@ pub fn build(b: *std.Build) void {
             // The .cpp needs C++17 (for WRL templates) and exception
             // handling (for WebView2 COM callbacks). Compile to a .obj,
             // then addObjectFile so the desktop_exe links it.
+            //
+            // CRITICAL: `zig cc` on Windows does NOT auto-pick up the MSVC
+            // include path. `wrl/client.h` (transitively included via
+            // `wrl.h` in the .cpp) starts with `#include <cstddef>` —
+            // without `-I` pointing at the MSVC `VC/Tools/MSVC/<ver>/include/`
+            // dir, the compile dies with `fatal error: 'cstddef' file not
+            // found`. Re-derive the path from `VCToolsInstallDir` (set by
+            // `vcvars64.bat`) with a fallback to the canonical install
+            // locations — matching `hasMsvcCppStllib` above.
             const cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview.cpp";
             const cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview.obj";
-            const cpp_compile = b.addSystemCommand(&.{
-                b.graph.zig_exe, "cc",
-                "-target", "x86_64-windows-gnu",
+            const msvc_include = findMsvcInclude(b);
+            const cpp_compile_args: []const []const u8 = &.{
+                b.graph.zig_exe,
+                "cc",
+                "-target",         "x86_64-windows-gnu",
                 "-c",
                 "-std=c++17",
                 "-fcxx-exceptions",
-                "-o",  cpp_obj,
+                "-isystem",        msvc_include.c_stddef,
+                "-isystem",        msvc_include.msvc_include,
+                "-isystem",        msvc_include.ucrt_include,
+                "-isystem",        msvc_include.um_include,
+                "-isystem",        msvc_include.shared_include,
+                "-isystem",        msvc_include.winrt_include,
+                "-o",              cpp_obj,
                 cpp_src,
-            });
+            };
+            const cpp_compile = b.addSystemCommand(cpp_compile_args);
             cpp_compile.setCwd(b.path(""));
             desktop_exe.step.dependOn(&cpp_compile.step);
             desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
