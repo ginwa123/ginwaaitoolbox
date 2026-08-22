@@ -1221,6 +1221,7 @@ function tryParseErrorBody(body: string): string | null {
     return null
   }
 }
+
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
   if (!activeWorkspaceItem.value) return
   const agentId = activeWorkspaceItem.value.id
