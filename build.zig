@@ -1040,11 +1040,32 @@ pub fn build(b: *std.Build) void {
             // methods on `root_module` (not on the Compile step like in
             // older versions) — see the Linux branch above for the matching
             // addCSourceFile pattern.
-            const cpp_file = b.path("src/apps/desktop_app/platform/windows/nalar_webview.cpp");
-            desktop_exe.root_module.addCSourceFile(.{
-                .file = cpp_file,
-                .flags = &.{ "/std:c++17", "/EHsc" },
+            // Compile nalar_webview.cpp manually with zig cc. We can't use
+            // `addCSourceFile` here because Zig 0.16's build-exe CLI
+            // doesn't accept multiple flags after `-cflags` (each flag has
+            // to be its own `-cflags <flag>`, and the second `-cflags`
+            // is rejected as "unknown argument"). The MSVC-style flags
+            // `/std:c++17` and `/EHsc` also don't work with `zig cc` (the
+            // leading `/` makes them look like file paths). Switch to the
+            // clang-style equivalents: `-std=c++17` and `-fcxx-exceptions`.
+            //
+            // The .cpp needs C++17 (for WRL templates) and exception
+            // handling (for WebView2 COM callbacks). Compile to a .obj,
+            // then addObjectFile so the desktop_exe links it.
+            const cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview.cpp";
+            const cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview.obj";
+            const cpp_compile = b.addSystemCommand(&.{
+                b.graph.zig_exe, "cc",
+                "-target", "x86_64-windows-gnu",
+                "-c",
+                "-std=c++17",
+                "-fcxx-exceptions",
+                "-o",  cpp_obj,
+                cpp_src,
             });
+            cpp_compile.setCwd(b.path(""));
+            desktop_exe.step.dependOn(&cpp_compile.step);
+            desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
             // WebView2's static-link import library (`WebView2Loader.lib`) is
