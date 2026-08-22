@@ -134,6 +134,14 @@ pub fn buildMessages(
     const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
     defer allocator.free(agentKnowledgeContent);
 
+    // Agent System Prompt (plan 2026-08-21-agent-system-prompt,
+    // task_1787408958280_1): Build the "## Agent System Prompt" section
+    // from the agent_system_prompt table (Migration 080). Empty for
+    // non-agent sessions. Injected BEFORE the knowledge block so persona
+    // instructions precede reference data.
+    const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentSystemPromptContent);
+
     // Build the "Kanban Status Tracking" section. Only rendered when
     // the session's parent item has item_type === 'kanban' (the
     // helper silently returns "" otherwise). Rendered right after
@@ -184,6 +192,13 @@ pub fn buildMessages(
     var final_system: std.ArrayList(u8) = .empty;
     defer final_system.deinit(allocator);
     try final_system.appendSlice(allocator, systemContent);
+    // Agent System Prompt (Migration 080): inject the
+    // '## Agent System Prompt' section BEFORE the knowledge block —
+    // persona instructions precede reference data. Empty when
+    // item_type != 'agent' OR agent has no prompt rows.
+    if (agentSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentSystemPromptContent);
+    }
     // Agent Mode: inject the '## Agent Knowledge' section right
     // after the workspace-context section emitted by build_agent_prompt.
     // Empty when item_type != 'agent' OR agent has no knowledge rows.

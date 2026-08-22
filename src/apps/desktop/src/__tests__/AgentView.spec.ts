@@ -501,4 +501,67 @@ describe('AgentView', () => {
       expect((events![0] as unknown[])[0]).toMatchObject({ id: 'k_inline', label: 'Notes' })
     })
   })
+
+  // ─── System Prompt section (plan 2026-08-21-agent-system-prompt) ────
+
+  describe('System Prompt section', () => {
+    const promptRow = () => ({
+      id: 'asp_1',
+      agent_id: 'item_1',
+      title: 'Persona',
+      content: 'You are a pirate captain.',
+      position: 0,
+      created_at: '',
+      updated_at: '',
+    })
+
+    it('renders the system-prompt panel in the main content area', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      expect(wrapper.find('[data-testid="agent-system-prompt-panel"]').exists()).toBe(true)
+    })
+
+    it('shows an empty state when no prompts exist', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      expect(wrapper.text()).toContain('No system prompts yet')
+    })
+
+    it('renders rows from the systemPrompts prop', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), systemPrompts: [promptRow()] },
+      })
+      await nextTick()
+      expect(wrapper.find('[data-testid="agent-system-prompt-item"]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('Persona')
+    })
+
+    it('emits addSystemPrompt when + Add is clicked', async () => {
+      const wrapper = mount(AgentView, { props: baseProps() })
+      await nextTick()
+      await wrapper.find('[data-testid="agent-add-system-prompt"]').trigger('click')
+      expect(wrapper.emitted('addSystemPrompt')).toBeTruthy()
+    })
+
+    it('emits editSystemPrompt with the row when ✎ is clicked', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), systemPrompts: [promptRow()] },
+      })
+      await nextTick()
+      await wrapper.find('[data-testid="agent-edit-system-prompt"]').trigger('click')
+      const events = wrapper.emitted('editSystemPrompt')
+      expect(events).toBeTruthy()
+      expect((events![0] as unknown[])[0]).toMatchObject({ id: 'asp_1', title: 'Persona' })
+    })
+
+    it('emits removeSystemPrompt with the id when ✕ is clicked', async () => {
+      const wrapper = mount(AgentView, {
+        props: { ...baseProps(), systemPrompts: [promptRow()] },
+      })
+      await nextTick()
+      await wrapper.find('[data-testid="agent-remove-system-prompt"]').trigger('click')
+      expect(wrapper.emitted('removeSystemPrompt')).toBeTruthy()
+      expect(wrapper.emitted('removeSystemPrompt')![0]).toEqual(['asp_1'])
+    })
+  })
 })

@@ -1948,6 +1948,11 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-08-21-agent-knowledge-manual-text.md.
     // Task: task_1787315943769_9.
     .{ .version = Migration079AddContentToAgentKnowledge.version, .name = Migration079AddContentToAgentKnowledge.name, .up = Migration079AddContentToAgentKnowledge.up },
+    // Migration 080 — agent_system_prompt (N-1 with agents, per-agent named
+    // prompt blocks injected into the LLM system message).
+    // Plan: docs/superpowers/plans/2026-08-21-agent-system-prompt.md.
+    // Task: task_1787408958280_1.
+    .{ .version = Migration080AddAgentSystemPrompt.version, .name = Migration080AddAgentSystemPrompt.name, .up = Migration080AddAgentSystemPrompt.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4256,3 +4261,140 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         try db.exec(allocator, "ANALYZE", &[_][]const u8{});
     }
 };
+
+// ============================================================================
+// Migration 080 — `agent_system_prompt` (N-1 with agents)
+// ============================================================================
+//
+// Per-agent named system-prompt blocks, injected into the LLM system message
+// at chat time (before the knowledge block). Relationship shape mirrors
+// `agent_knowledge` exactly: id TEXT PK, agent_id FK → agents ON DELETE
+// CASCADE, position ordering, timestamps.
+//
+// Schema:
+//   - id TEXT PRIMARY KEY  (TEXT ids generated in Zig — project convention,
+//     never INTEGER AUTOINCREMENT)
+//   - agent_id TEXT NOT NULL  (== workspace_item_id per Agent Mode spec D3;
+//     FK CASCADE so deleting an agent drops its prompts)
+//   - title TEXT NOT NULL DEFAULT ''  (display name; '' = untitled)
+//   - content TEXT NOT NULL DEFAULT ''  (the prompt body; empty rows are
+//     skipped by the injector)
+//   - position INTEGER NOT NULL DEFAULT 0  (ordering; rendered position DESC
+//     like agent_knowledge)
+//   - created_at / updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+//
+// Idempotency: CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS.
+//
+// Gotcha honored: one statement per db.exec — sqlite3_prepare_v2 compiles
+// only the first statement, so the table and each index get their own exec.
+//
+// Plan: docs/superpowers/plans/2026-08-21-agent-system-prompt.md
+// Task: task_1787408958280_1
+pub const Migration080AddAgentSystemPrompt = struct {
+    pub const version: u32 = 80;
+    pub const name = "add_agent_system_prompt";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_system_prompt (
+            \\    id TEXT PRIMARY KEY,
+            \\    agent_id TEXT NOT NULL,
+            \\    title TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_system_prompt_agent_id ON agent_system_prompt(agent_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_system_prompt_agent_id_position ON agent_system_prompt(agent_id, position DESC)",
+            &[_][]const u8{});
+    }
+};
+
+// ============================================================================
+// Migration 080 — agent_system_prompt (N-1 with agents) — inline tests
+// ============================================================================
+
+test "Migration080 creates agent_system_prompt table with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration080AddAgentSystemPrompt.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "agent_system_prompt");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "agent_id", "title", "content", "position", "created_at", "updated_at",
+    });
+}
+
+test "Migration080 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration080AddAgentSystemPrompt.up(&ctx.db, alloc);
+    try Migration080AddAgentSystemPrompt.up(&ctx.db, alloc);
+
+    // Table still exists and is usable after double-run.
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_system_prompt (id, agent_id, title, content) VALUES ('p_1', 'a_1', 'T', 'C')",
+        &.{});
+}
+
+test "Migration080 is registered in allMigrations" {
+    const all = @import("migration.zig").allMigrations;
+    for (all) |m| {
+        if (m.version == Migration080AddAgentSystemPrompt.version) return;
+    }
+    return error.Migration080NotRegistered;
+}
+
+test "Migration080 ON DELETE CASCADE removes prompts when agent row deleted" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+    // Production order: parent tables first (agents), then the new table.
+    try Migration078.up(&ctx.db, alloc);
+    try Migration080AddAgentSystemPrompt.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'agent', 'Cascade Test', '/tmp/cascade', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agents (id, workspace_item_id) VALUES ('agent_1', 'ws_item_1')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_system_prompt (id, agent_id, title, content) VALUES ('sp_1', 'agent_1', 'Persona', 'You are X')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_system_prompt (id, agent_id, title, content) VALUES ('sp_2', 'agent_1', 'Style', 'Be terse')",
+        &.{});
+
+    // Delete the agent row directly.
+    try ctx.db.exec(alloc, "DELETE FROM agents WHERE id = 'agent_1'", &.{});
+
+    // Both prompt rows should be CASCADE-deleted.
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_system_prompt WHERE agent_id='agent_1'", &.{});
+    defer q.deinit();
+    const r = (try q.next()) orelse return error.RowMissing;
+    defer r.deinit(alloc);
+    try testing.expectEqualStrings("0", r.values[0]);
+}
