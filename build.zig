@@ -1047,6 +1047,21 @@ pub fn build(b: *std.Build) void {
             });
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
+            // WebView2's static-link import library (`WebView2Loader.lib`) is
+            // staged by the CI workflow at `src\apps\desktop_app\platform\windows\`
+            // next to the .cpp — same directory as `#pragma comment(lib,
+            // "WebView2Loader.lib")` would resolve it on MSVC. Zig's LLD linker
+            // doesn't auto-search that directory; `linkSystemLibrary("WebView2Loader")`
+            // translates to `-lWebView2Loader` which searches LIB paths only
+            // (default Windows LIB = MSVC install dirs + a few system dirs —
+            // NOT the source tree). Add the WebView2 dir as a library search
+            // path so LLD finds `WebView2Loader.lib` next to the .cpp. The
+            // runtime DLL (`WebView2Loader.dll`) is shipped alongside the
+            // .exe by `install-nalar-desktop.sh` — see the runtime comment
+            // in `nalar_webview.cpp:51`.
+            desktop_exe.root_module.addLibraryPath(.{
+                .cwd_relative = "src/apps/desktop_app/platform/windows",
+            });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
         },
         else => {},
