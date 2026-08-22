@@ -694,16 +694,21 @@ pub const GinwaServer = struct {
             _ = winsock.setsockopt(fd, 6, 16, &keepcnt, @sizeOf(c_int));
         } else {
             posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
-            // `TCP.KEEPIDLE` is Linux-only; on macOS the equivalent is
-            // the KEEPALIVE TCP option (which doubles as the idle
-            // timer on Darwin). Skip on macOS — the default ~2h idle
-            // combined with 5s probe + 3 probes still detects dead
-            // connections quickly via SO_KEEPALIVE alone.
-            if (builtin.os.tag == .linux) {
-                posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+            // TCP keepalive tuning. KEEPIDLE / KEEPINTVL / KEEPCNT are
+            // Linux-only — macOS doesn't have them (it uses
+            // SO_KEEPALIVE's default 2h idle, which works fine in
+            // practice). Zig 0.16's cross-target module compile
+            // (mod=x86_64-linux-gnu inside exe=aarch64-macos) checks
+            // the struct membership against the ROOT target, so even
+            // an unreachable reference is a compile error on macOS.
+            // The `if (comptime builtin.os.tag == .linux)` block
+            // scopes the std.os.linux.TCP_* references inside it; the
+            // else branch (macOS / BSD) skips them entirely.
+            if (comptime builtin.os.tag == .linux) {
+                posix.setsockopt(fd, posix.IPPROTO.TCP, @as(i32, @intCast(std.os.linux.TCP.KEEPIDLE)), std.mem.asBytes(&keepidle)) catch {};
+                posix.setsockopt(fd, posix.IPPROTO.TCP, @as(i32, @intCast(std.os.linux.TCP.KEEPINTVL)), std.mem.asBytes(&keepintvl)) catch {};
+                posix.setsockopt(fd, posix.IPPROTO.TCP, @as(i32, @intCast(std.os.linux.TCP.KEEPCNT)), std.mem.asBytes(&keepcnt)) catch {};
             }
-            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
-            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
         }
 
         return fd;

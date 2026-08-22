@@ -640,6 +640,18 @@ mod.link_libc = true;
         switch (target.result.os.tag) {
             .linux => {
                 mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+                // Library search path. Without this, Zig 0.16's
+                // `linkSystemLibrary("curl"/"ssl"/"crypto")` calls
+                // below fail with
+                //   "unable to find dynamic system library 'curl'
+                //    using strategy 'paths_first'.
+                //    searched paths: none"
+                // because the glibc 2.38+ default target's link search
+                // path doesn't include /usr/lib for some Compile steps
+                // (cli tests, package tests) — even though it works for
+                // the main exe via the root build.zig's
+                // `linkPlatformDeps`. Mirrors the macOS branch below.
+                mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             },
             .macos => {
                 // Probe uses an OR-of-paths predicate, but link only

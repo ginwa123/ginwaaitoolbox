@@ -1874,72 +1874,79 @@ pub fn build(b: *std.Build) void {
     // failed silently on Windows dev boxes where `/bin/sh` doesn't
     // exist (Git for Windows ships bash at `C:\Program Files\Git\bin`
     // but the canonical `/bin/sh` path is on Cygwin / MSYS only).
-    const banner_args = switch (b.graph.host.result.os.tag) {
-        .windows => blk: {
-            const script = std.fmt.allocPrint(
-                b.allocator,
-                \\
-                \\echo.
-                \\echo [zig build success]
-                \\echo.
-                \\echo   nalar service binary  ---^> zig-out\\bin\\{s}
-                \\echo   nalar desktop binary  ---^> zig-out\\bin\\{s}
-                \\echo   nalarcli binary       ---^> zig-out\\bin\\{s}
-                \\echo.
-                \\echo   (If a binary is missing, run "rmdir /s /q zig-out && zig build"
-                \\echo    to force a fresh install -- the cache sometimes hides
-                \\echo    manual deletions.)
-                \\echo.
-                \\echo   Run with:  zig-out\\bin\\{s} service start --port 8080
-                \\echo              zig-out\\bin\\{s} --devtools
-                \\echo              zig-out\\bin\\{s} sessions list
-                \\echo.
-                \\
-            ,
-                .{
-                    host_binary_name,
-                    desktop_binary_name,
-                    cli_binary_name,
-                    host_binary_name,
-                    desktop_binary_name,
-                    cli_binary_name,
-                },
-            ) catch @panic("OOM allocating Windows build banner");
-            break :blk &.{ "cmd.exe", "/c", script };
-        },
-        else => blk: {
-            const script = std.fmt.allocPrint(
-                b.allocator,
-                \\
-                \\D=zig-out/bin
-                \\echo ""
-                \\echo "[zig build success]"
-                \\echo ""
-                \\echo "  nalar service binary  →  $D/{s}"
-                \\echo "  nalar desktop binary  →  $D/{s}"
-                \\echo "  nalarcli binary       →  $D/{s}"
-                \\echo ""
-                \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
-                \\echo "   to force a fresh install — the cache sometimes hides"
-                \\echo "   manual deletions.)"
-                \\echo ""
-                \\echo "  Run with:  $D/{s} service start --port 8080"
-                \\echo "             $D/{s} --devtools"
-                \\echo "             $D/{s} sessions list"
-                \\echo ""
-            ,
-                .{
-                    host_binary_name,
-                    desktop_binary_name,
-                    cli_binary_name,
-                    host_binary_name,
-                    desktop_binary_name,
-                    cli_binary_name,
-                },
-            ) catch @panic("OOM allocating POSIX build banner");
-            break :blk &.{ "/bin/sh", "-c", script };
-        },
-    };
+    //
+    // WORKAROUND: Zig 0.16 compiler bug — capturing the result of
+    //   `const x = switch (rt) { .a => &.{...}, .b => &.{...} };`
+    //   where each arm is an anonymous tuple with heterogeneous string
+    //   lengths returns the FIRST arm's value regardless of which arm
+    //   matched. We sidestep it with `if/else` + an explicit slice type.
+    //   See plan `2026-08-22-fix-zig-0.16-switch-capture-bug.md` for the
+    //   8-line repro. DO NOT REVERT TO `switch` — re-introduces the
+    //   Windows `cmd.exe` spawn on Linux/macOS hosts.
+    var banner_args: []const []const u8 = &.{};
+    if (b.graph.host.result.os.tag == .windows) {
+        const script = std.fmt.allocPrint(
+            b.allocator,
+            \\
+            \\echo.
+            \\echo [zig build success]
+            \\echo.
+            \\echo   nalar service binary  ---^> zig-out\\bin\\{s}
+            \\echo   nalar desktop binary  ---^> zig-out\\bin\\{s}
+            \\echo   nalarcli binary       ---^> zig-out\\bin\\{s}
+            \\echo.
+            \\echo   (If a binary is missing, run "rmdir /s /q zig-out && zig build"
+            \\echo    to force a fresh install -- the cache sometimes hides
+            \\echo    manual deletions.)
+            \\echo.
+            \\echo   Run with:  zig-out\\bin\\{s} service start --port 8080
+            \\echo              zig-out\\bin\\{s} --devtools
+            \\echo              zig-out\\bin\\{s} sessions list
+            \\echo.
+            \\
+        ,
+            .{
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+            },
+        ) catch @panic("OOM allocating Windows build banner");
+        banner_args = &.{ "cmd.exe", "/c", script };
+    } else {
+        const script = std.fmt.allocPrint(
+            b.allocator,
+            \\
+            \\D=zig-out/bin
+            \\echo ""
+            \\echo "[zig build success]"
+            \\echo ""
+            \\echo "  nalar service binary  →  $D/{s}"
+            \\echo "  nalar desktop binary  →  $D/{s}"
+            \\echo "  nalarcli binary       →  $D/{s}"
+            \\echo ""
+            \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
+            \\echo "   to force a fresh install — the cache sometimes hides"
+            \\echo "   manual deletions.)"
+            \\echo ""
+            \\echo "  Run with:  $D/{s} service start --port 8080"
+            \\echo "             $D/{s} --devtools"
+            \\echo "             $D/{s} sessions list"
+            \\echo ""
+        ,
+            .{
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+            },
+        ) catch @panic("OOM allocating POSIX build banner");
+        banner_args = &.{ "/bin/sh", "-c", script };
+    }
 
     const build_banner = b.addSystemCommand(banner_args);
     const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
