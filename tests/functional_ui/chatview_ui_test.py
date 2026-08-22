@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from chatview_fixtures import ChatviewSeed, TINY_PNG_DATA_URL
+from db_seed import DbSeed, TINY_PNG_DATA_URL
 from ui_harness import UIHarness
 
 
@@ -36,7 +36,7 @@ def _seed_db_path(h: UIHarness) -> Path:
     """Return the path to the harness's isolated ``agent.db``.
 
     The harness's tempdir already passed ``is_safe_tmp`` validation
-    before boot. We pass that dir to ``ChatviewSeed``, which
+    before boot. We pass that dir to ``DbSeed``, which
     re-validates as belt-and-suspenders.
     """
     return h.temp_dir / ".config" / "nalar" / "agent.db"
@@ -112,7 +112,7 @@ def test_chatview_renders_empty_state(ui_harness: UIHarness, page) -> None:
     """
     h = ui_harness
     session_id = "sess_chatview_empty_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Empty Chat")
 
@@ -131,10 +131,10 @@ def test_chatview_renders_plain_user_assistant_exchange(
     """A session with 1 user + 1 assistant message renders both bubbles."""
     h = ui_harness
     session_id = "sess_chatview_plain_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Plain Chat")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "hi there", created_at=ts[0])
         seed.seed_assistant_message(
             conn, session_id, "hello! how can I help?", created_at=ts[1],
@@ -165,11 +165,11 @@ def test_chatview_renders_multi_turn_conversation(ui_harness: UIHarness, page) -
     """
     h = ui_harness
     session_id = "sess_chatview_multi_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Multi-turn")
         # 8 messages × 30s gap = 4 minutes of conversation.
-        ts = ChatviewSeed.baseline_timestamps(count=8, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=8, interval_seconds=30)
         for i in range(4):
             seed.seed_user_message(
                 conn, session_id, f"user turn {i + 1}", created_at=ts[i * 2],
@@ -211,10 +211,10 @@ def test_chatview_renders_assistant_with_tool_calls(
     """
     h = ui_harness
     session_id = "sess_chatview_toolcall_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Tool-call only")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "list files", created_at=ts[0])
         seed.seed_assistant_message(
             conn, session_id,
@@ -254,7 +254,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
     """
     h = ui_harness
     session_id = "sess_chatview_toolresult_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     # The shell tool envelope (per docs/superpowers/plans/2026-08-14-pwsh-tool.md):
     #   <command>ls</command>
     #   <stdout>file1.txt\nfile2.txt\nfile3.txt</stdout>
@@ -268,7 +268,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Tool-call result")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "list files", created_at=ts[0])
         seed.seed_assistant_message(
             conn, session_id,
@@ -313,7 +313,7 @@ def test_chatview_renders_markdown_in_assistant_message(
     """
     h = ui_harness
     session_id = "sess_chatview_markdown_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     md_text = (
         "# Heading\n"
         "Some **bold** text and `inline_code` here.\n"
@@ -324,7 +324,7 @@ def test_chatview_renders_markdown_in_assistant_message(
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Markdown")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "tell me a story", created_at=ts[0])
         seed.seed_assistant_message(conn, session_id, md_text, created_at=ts[1])
 
@@ -361,11 +361,11 @@ def test_chatview_renders_user_message_with_images(
     """
     h = ui_harness
     session_id = "sess_chatview_images_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     urls = [TINY_PNG_DATA_URL, TINY_PNG_DATA_URL]
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Images")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(
             conn, session_id, "look at these screenshots",
             image_urls=urls, created_at=ts[0],
@@ -405,7 +405,7 @@ def test_chatview_renders_reasoning_content(ui_harness: UIHarness, page) -> None
     """
     h = ui_harness
     session_id = "sess_chatview_reasoning_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     trace = "think about this carefully"
     response_text = (
         "I will run a command.\n"
@@ -413,7 +413,7 @@ def test_chatview_renders_reasoning_content(ui_harness: UIHarness, page) -> None
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Reasoning")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "list files", created_at=ts[0])
         # The assistant content wraps the reasoning in <thinking> tags.
         # The chatview renders the inner text via getThinkingTags and
@@ -445,7 +445,7 @@ def test_chatview_renders_code_block_copy_button(ui_harness: UIHarness, page) ->
     """
     h = ui_harness
     session_id = "sess_chatview_copy_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     code_text = (
         "Here is the snippet:\n"
         "\n"
@@ -456,7 +456,7 @@ def test_chatview_renders_code_block_copy_button(ui_harness: UIHarness, page) ->
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Copy button")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "show me", created_at=ts[0])
         seed.seed_assistant_message(conn, session_id, code_text, created_at=ts[1])
 
@@ -502,11 +502,11 @@ def test_chatview_renders_compaction_card(ui_harness: UIHarness, page) -> None:
     """
     h = ui_harness
     session_id = "sess_chatview_compaction_001"
-    seed = ChatviewSeed(_seed_db_path(h))
+    seed = DbSeed(_seed_db_path(h))
     summary_text = "Compacted 12 messages into a high-level summary."
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Compaction")
-        ts = ChatviewSeed.baseline_timestamps(count=2, interval_seconds=30)
+        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_compaction_user_message(
             conn, session_id,
             summary=summary_text,

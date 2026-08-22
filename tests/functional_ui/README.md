@@ -216,21 +216,21 @@ Each test does:
 
 1. Boot harness (function-scoped, fresh `agent.db` per test).
 2. Open Python `sqlite3` against `temp_dir/.config/nalar/agent.db`.
-3. INSERT `sessions` + `llm_history` rows via the `ChatviewSeed`
-   helper in `tests/functional_ui/chatview_fixtures.py`.
+3. INSERT `sessions` + `llm_history` rows via the `DbSeed`
+   helper in `tests/functional_ui/db_seed.py`.
 4. Navigate headless Chromium to `/app/chat/<session_id>` and
    assert the rendered DOM matches the seeded data.
 
-The `ChatviewSeed` helper validates the DB path with `is_safe_tmp`
+The `DbSeed` helper validates the DB path with `is_safe_tmp`
 as belt-and-suspenders — the harness already validated the
 tempdir, but a regression there would let a test touch the real
 home. The double-check raises `FunctionalHarnessError` and aborts
 the test before any INSERT runs.
 
-### Available helpers (`chatview_fixtures.py`)
+### Available helpers (`db_seed.py`)
 
 ```python
-seed = ChatviewSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
 with seed.connect() as conn:
     sid = "sess_test_001"
     seed.seed_session(conn, sid, "Test Chat")
@@ -240,7 +240,7 @@ with seed.connect() as conn:
     seed.seed_compaction_user_message(conn, sid, summary="...", message_count=12)
 ```
 
-`ChatviewSeed.baseline_timestamps(count=8)` returns a chronologically
+`DbSeed.baseline_timestamps(count=8)` returns a chronologically
 spaced list of UTC ISO strings — useful for tests that seed
 multiple messages and need them in `created_at_at_nano` order.
 

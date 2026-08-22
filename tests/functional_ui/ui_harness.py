@@ -472,20 +472,26 @@ class UIHarness:
     def _find_project_root() -> Path:
         """Walk up from cwd looking for a directory with package.json + vite.config.ts.
 
-        Falls back to the relative path ``src/apps/desktop`` from the
-        repo root (the project's expected layout). If the harness is
-        invoked from elsewhere, override via ``project_root=``.
+        Also checks the standard ``src/apps/desktop/`` subdirectory at
+        each level (the project's expected layout: package.json +
+        vite.config.ts live inside src/apps/desktop/, NOT at the repo
+        root). Falls back to the relative path ``src/apps/desktop`` from
+        the cwd. If the harness is invoked from elsewhere, override via
+        ``project_root=``.
         """
         cwd = Path.cwd().resolve()
         for candidate in (cwd, *cwd.parents):
+            # 1. Both files in the SAME directory (monorepo-style).
             if (candidate / "package.json").exists() and (
                 candidate / "vite.config.ts"
             ).exists():
                 return candidate
-        # Fallback: assume the standard layout.
-        standard = cwd / "src" / "apps" / "desktop"
-        if standard.exists():
-            return standard
+            # 2. Standard project layout: vite lives in src/apps/desktop/.
+            standard = candidate / "src" / "apps" / "desktop"
+            if (standard / "package.json").exists() and (
+                standard / "vite.config.ts"
+            ).exists():
+                return standard
         raise FunctionalHarnessError(
             f"Could not find a project_root with package.json + vite.config.ts "
             f"starting from {cwd}. Pass project_root= explicitly."

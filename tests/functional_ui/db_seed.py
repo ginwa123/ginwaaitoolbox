@@ -91,11 +91,11 @@ DEFAULT_MODEL = "claude-sonnet-4-5"
 
 
 # ============================================================================
-# ChatviewSeed
+# DbSeed
 # ============================================================================
 
 
-class ChatviewSeed:
+class DbSeed:
     """DB-seed helpers for the chatview UI tests.
 
     Each method INSERTs one row and returns the inserted primary key
@@ -109,7 +109,7 @@ class ChatviewSeed:
 
     Example::
 
-        seed = ChatviewSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+        seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
         with seed.connect() as conn:
             sid = "sess_test_001"
             seed.seed_session(conn, sid, "Test Chat")
@@ -542,7 +542,7 @@ class ChatviewSeed:
 
 
 __all__ = [
-    "ChatviewSeed",
+    "DbSeed",
     "TINY_PNG_DATA_URL",
     "DEFAULT_MODEL",
 ]
