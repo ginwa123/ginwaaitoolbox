@@ -56,15 +56,21 @@ from typing import Any, Iterator
 #: Tuple of absolute path prefixes that the harness recognises as "tmpdir".
 #: ``tempfile.mkdtemp`` on Linux returns ``/tmp/...``; on macOS it returns
 #: ``/var/folders/.../T/...`` (or ``/private/var/folders/.../T/...`` after
-#: ``realpath``). Including ``tempfile.gettempdir() + "/"`` covers the
-#: case where the host has a non-standard temp layout (e.g. ``$TMPDIR``
-#: overridden to a custom path).
+#: ``realpath``); on Windows it returns ``C:\Users\<u>\AppData\Local\Temp\...``
+#: (or a custom ``%TEMP%`` location). The POSIX prefix list is unused on
+#: Windows and the Windows prefix uses native backslashes so ``startswith``
+#: matches ``realpath``'s output on that OS.
 ALLOWED_TMP_PREFIXES: tuple[str, ...] = (
     "/tmp/",
     "/private/tmp/",
     "/private/var/folders/",
     "/var/folders/",
     tempfile.gettempdir() + "/",
+) if os.name != "nt" else (
+    # Windows: only ``tempfile.gettempdir()`` (e.g. ``C:\Users\u\AppData\Local\Temp``)
+    # is a valid tmpdir — the POSIX prefixes above don't exist. Use native
+    # backslashes so the prefix matches ``os.path.realpath``'s output.
+    tempfile.gettempdir().rstrip("\\") + "\\",
 )
 
 #: Substring that every harness-allocated tmpdir must contain. Acts as

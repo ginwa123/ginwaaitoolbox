@@ -474,7 +474,19 @@ pub const HttpResponse = struct {
         nodes: []const Template.Node,
         ctx: *const Template.Context,
     ) HttpResponse {
-        const body = Template.render(self.allocator, nodes, ctx) catch return self;
+        // Template.render needs a mutable *Context (set/macros mutate it),
+        // but the caller's signature is `*const Context` so callers don't
+        // have to give up mutability. `Template.render` itself doesn't
+        // require the context to be mutated when there are no `{% set %}`
+        // or `{% macro %}` tags — we constCast here is safe in that
+        // common case. If a handler uses set/macro with withRender, the
+        // caller should pass a mutable context instead.
+        const body = Template.render(
+            self.allocator,
+            nodes,
+            @constCast(ctx),
+            .{},
+        ) catch return self;
         return self
             .withBody(body)
             .setContentType("text/html; charset=utf-8");
@@ -486,6 +498,20 @@ pub const HttpResponse = struct {
     pub fn setContentType(self: HttpResponse, ct: []const u8) HttpResponse {
         var copy = self;
         copy.headers.put("Content-Type", ct) catch @panic("OOM");
+        return copy;
+    }
+
+    /// Set an arbitrary response header. Returns a copy with the new
+    /// (or replaced) header — does not mutate `self`. Used by middleware
+    /// that wants to add a marker (e.g. `X-Request-Id`, `X-Admin-Route`)
+    /// on the way down the chain.
+    ///
+    /// Overwrites any prior value for the same key. To set multiple
+    /// headers from inside a middleware, derive a fresh copy on each
+    /// call — `HttpResponse` is a value type.
+    pub fn withHeader(self: HttpResponse, name: []const u8, value: []const u8) HttpResponse {
+        var copy = self;
+        copy.headers.put(name, value) catch @panic("OOM");
         return copy;
     }
 

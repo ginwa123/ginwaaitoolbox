@@ -1203,13 +1203,32 @@ async function handleAgentKnowledgeSave(
     )
     closeAgentKnowledgeDetailDialog()
   } catch (e) {
+    // ApiError carries the backend's JSON body (e.g. {"error":"..."}).
+    // Surface the specific message, not the generic "HTTP 400 Bad
+    // Request" — the user needs to know WHAT was rejected.
     agentKnowledgeDetailError.value =
-      e instanceof Error ? e.message : 'Failed to update knowledge'
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to update knowledge'
     // Keep the dialog open so the user can see + retry.
   } finally {
     agentKnowledgeDetailBusy.value = false
   }
 }
+
+/** Extract the `error` field from a JSON error body, if present. */
+function tryParseErrorBody(body: string): string | null {
+  try {
+    const obj = JSON.parse(body)
+    if (obj && typeof obj === 'object' && typeof obj.error === 'string') {
+      return obj.error
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 // ─── Agent System Prompt dialog (Migration 080, plan 2026-08-21-agent-system-prompt) ──
 // Same open/busy/error pattern as the knowledge dialogs above. One
 // dialog serves add (row=null) and edit (row set).
@@ -1250,8 +1269,11 @@ async function handleAgentSystemPromptCreate(title: string, content: string) {
     agentSystemPrompts.value = [...agentSystemPrompts.value, newRow]
     closeAgentSystemPromptDialog()
   } catch (e) {
+    // Surface the backend's specific error message when available.
     agentSystemPromptError.value =
-      e instanceof Error ? e.message : 'Failed to add system prompt'
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to add system prompt'
     // Keep the dialog open so the user can see + retry.
   } finally {
     agentSystemPromptBusy.value = false
@@ -1276,7 +1298,9 @@ async function handleAgentSystemPromptSave(
     closeAgentSystemPromptDialog()
   } catch (e) {
     agentSystemPromptError.value =
-      e instanceof Error ? e.message : 'Failed to update system prompt'
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to update system prompt'
   } finally {
     agentSystemPromptBusy.value = false
   }

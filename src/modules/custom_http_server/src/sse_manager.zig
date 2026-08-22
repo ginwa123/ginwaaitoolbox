@@ -154,15 +154,7 @@ pub const SseManager = struct {
             var byte_buf: [1]u8 = .{'q'};
             _ = socket.write(self.notify_pipe[1], &byte_buf, 1);
         }
-        // `deinit` is called during server shutdown, by which time the
-        // Io runtime that backs this mutex may already be tearing down
-        // (`main.zig:271` runs `defer group.cancel(io)` on the way out).
-        // A blocking `lock()` on a canceling runtime returns
-        // `error.Canceled` — fall back to `tryLock` (non-blocking) so
-        // the cleanup proceeds even when the runtime is already gone.
-        // Without this, every shutdown panics on the first worker that
-        // happens to be mid-`lock()` when the cancel fires.
-        if (!self.lock.tryLock()) return;
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         var it = self.clients.iterator();
@@ -239,14 +231,7 @@ pub const SseManager = struct {
     }
 
     pub fn removeClient(self: *SseManager, id: [16]u8, reason: RemoveReason) void {
-        // `error.Canceled` means the Io runtime is shutting down — bail
-        // out gracefully (the OS will reclaim the fds + memory on
-        // process exit). `unreachable` on any OTHER error is correct:
-        // the mutex API only returns `Canceled`.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         if (self.clients.fetchRemove(id)) |entry| {
@@ -268,15 +253,7 @@ pub const SseManager = struct {
     }
 
     pub fn removeClientByFd(self: *SseManager, fd: i32, reason: RemoveReason) ?[16]u8 {
-        // `error.Canceled` from the runtime shutdown path → no-op. The
-        // `removeClientByFd` callers (poll-loop reapers) don't care
-        // about the return value when the runtime is being torn down,
-        // so `null` is the right sentinel. See the comment block on
-        // `runEventLoop` below for the full shutdown-race story.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return null,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         if (self.fd_to_id.fetchRemove(fd)) |entry| {
@@ -301,12 +278,7 @@ pub const SseManager = struct {
     }
 
     pub fn getClientIdByFd(self: *SseManager, fd: i32) ?[16]u8 {
-        // See `removeClient` for the rationale — runtime-cancel turns
-        // into "no client by that fd", which is benign.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return null,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
         return self.getClientIdByFdLocked(fd);
     }
@@ -342,11 +314,7 @@ pub const SseManager = struct {
     pub fn gracefulShutdown(self: *SseManager) void {
         const close_msg = "event: close\ndata: Server shutting down\n\n";
 
-        // `gracefulShutdown` is called during server teardown — by this
-        // point the Io runtime may already be canceling (see `deinit`'s
-        // comment). Best-effort: if we can't grab the lock, skip the
-        // close-message broadcast; the OS will reap the fds.
-        if (!self.lock.tryLock()) return;
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         var it = self.clients.iterator();
@@ -392,17 +360,7 @@ pub const SseManager = struct {
 
         while (self.running) {
             // --- snapshot fds under lock (fast, no poll while holding lock) ---
-            //
-            // `error.Canceled` here means the Io runtime is being torn
-            // down (the outer `std.Io.Group` in `main.zig` was canceled
-            // — see `docs/superpowers/plans/<this-plan>.md` for the
-            // shutdown-race story). Bail out cleanly: another worker
-            // might still be holding the lock, but we don't need it
-            // because we're about to exit anyway.
-            self.lock.lock(self.io) catch |err| switch (err) {
-                error.Canceled => return,
-                else => unreachable,
-            };
+            self.lock.lock(self.io) catch unreachable;
 
             var my_fds = std.ArrayListUnmanaged(i32).empty;
             defer my_fds.deinit(self.allocator);
@@ -570,12 +528,7 @@ pub const SseManager = struct {
     pub fn sweepStaleClients(self: *SseManager, max_stale_ms: u64, max_per_call: usize) void {
         const now = timestamp(self.io);
 
-        // Runtime-cancel ⇒ don't sweep this tick. The next tick (after
-        // a restart) will catch whatever we missed.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         var stale_ids: std.ArrayListUnmanaged([16]u8) = .empty;
@@ -623,13 +576,7 @@ pub const SseManager = struct {
         // The probability of hitting this race grows with uptime and
         // concurrent register/remove activity, which matches the
         // "long period on page" symptom from the user report.
-        //
-        // Runtime-cancel ⇒ skip this heartbeat tick. The next tick
-        // after a restart will resume pinging.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
 
@@ -685,15 +632,7 @@ pub const SseManager = struct {
         // failure path to fire against a foreign client and leak the
         // real victim's fd). See the "sendToClient UAF" audit in
         // docs/superpowers/plans/2026-07-01-fix-remaining-fd-leak-risks.md.
-        //
-        // `error.Canceled` from the runtime-shutdown path maps to
-        // `error.ClientDisconnected` (the only error the public API
-        // exposes), so request handlers can keep their `catch {}`
-        // shape unchanged.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return error.ClientDisconnected,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
 
         const client = self.clients.get(id) orelse return error.ClientNotFound;
@@ -740,12 +679,7 @@ pub const SseManager = struct {
         const event = try std.fmt.allocPrint(self.allocator, "data: {s}\n\n", .{data});
         defer self.allocator.free(event);
 
-        // Runtime-cancel ⇒ drop the broadcast (no clients to iterate
-        // anyway, since the SSE event loop is being torn down).
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
 
@@ -773,12 +707,7 @@ pub const SseManager = struct {
         const event = try std.fmt.allocPrint(self.allocator, "event: {s}\ndata: {s}\n\n", .{ event_type, data });
         defer self.allocator.free(event);
 
-        // See `broadcast` — runtime-cancel short-circuits to a no-op
-        // (the allocPrint'd event string is freed by the `defer` above).
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         var client_ptrs: std.ArrayListUnmanaged(*SseClient) = .empty;
         defer client_ptrs.deinit(self.allocator);
 
@@ -803,13 +732,7 @@ pub const SseManager = struct {
     }
 
     pub fn clientCount(self: *SseManager) usize {
-        // Runtime-cancel ⇒ return 0. Callers only use this for stats
-        // / "is anyone listening?" checks, where 0 is indistinguishable
-        // from "the manager is going away" and lets the caller move on.
-        self.lock.lock(self.io) catch |err| switch (err) {
-            error.Canceled => return 0,
-            else => unreachable,
-        };
+        self.lock.lock(self.io) catch unreachable;
         defer self.lock.unlock(self.io);
         return self.clients.count();
     }

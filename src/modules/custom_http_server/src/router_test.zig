@@ -579,3 +579,724 @@ test "Router.preserves context data" {
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u16, 200), result.?.handler.res.status_code);
 }
+
+// ============================================================================
+// Group + Middleware Edge-Case Tests
+//
+// Each test below exercises one specific corner of the group / middleware
+// API. Cases are deliberately narrow — they verify one behaviour each so
+// failures point at the right invariant.
+// ============================================================================
+
+test "Group.get: prefix is prepended to the route path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("ok");
+        }
+    };
+
+    var api = r.group("/api");
+    try api.get("/v1/health", Handler.h);
+
+    try std.testing.expectEqual(@as(usize, 1), r.routes.items.len);
+    try std.testing.expectEqualStrings("/api/v1/health", r.routes.items[0].path);
+    try std.testing.expectEqualStrings("GET", r.routes.items[0].method);
+}
+
+test "Group.post registers with method POST and prefix combined" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return http_parser.ok("", std.testing.allocator);
+        }
+    };
+
+    var g = r.group("/api/v1");
+    try g.post("/users", Handler.h);
+
+    try std.testing.expectEqualStrings("/api/v1/users", r.routes.items[0].path);
+    try std.testing.expectEqualStrings("POST", r.routes.items[0].method);
+}
+
+test "Group.put / delete / patch each register correctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return http_parser.ok("", std.testing.allocator);
+        }
+    };
+
+    var g = r.group("/api");
+    try g.put("/r", Handler.h);
+    try g.delete("/r", Handler.h);
+    try g.patch("/r", Handler.h);
+
+    try std.testing.expectEqual(@as(usize, 3), r.routes.items.len);
+    try std.testing.expectEqualStrings("PUT", r.routes.items[0].method);
+    try std.testing.expectEqualStrings("DELETE", r.routes.items[1].method);
+    try std.testing.expectEqualStrings("PATCH", r.routes.items[2].method);
+    for (r.routes.items) |route| {
+        try std.testing.expectEqualStrings("/api/r", route.path);
+    }
+}
+
+test "Empty group prefix registers routes at their raw path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return http_parser.ok("", std.testing.allocator);
+        }
+    };
+
+    var g = r.group("");
+    try g.get("/raw", Handler.h);
+
+    try std.testing.expectEqualStrings("/raw", r.routes.items[0].path);
+}
+
+test "Group with prefix that ends in / does not double-slash" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return http_parser.ok("", std.testing.allocator);
+        }
+    };
+
+    var g = r.group("/api/");
+    try g.get("/v1/foo", Handler.h);
+    try g.get("v1/bar", Handler.h); // missing leading slash → still joins correctly
+
+    try std.testing.expectEqualStrings("/api/v1/foo", r.routes.items[0].path);
+    try std.testing.expectEqualStrings("/api/v1/bar", r.routes.items[1].path);
+}
+
+test "Nested group concatenates prefixes correctly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return http_parser.ok("", std.testing.allocator);
+        }
+    };
+
+    var api = r.group("/api");
+    var v1 = try api.group("/v1");
+    try v1.get("/users", Handler.h);
+
+    try std.testing.expectEqualStrings("/api/v1/users", r.routes.items[0].path);
+}
+
+test "Nested group inherits parent middlewares" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    // Each middleware stamps a unique HEADER (different keys so they
+    // coexist on the final response). The handler sets the body.
+    // Inspecting the headers proves which middleware ran.
+
+    const OuterMw = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-Outer", "yes"));
+        }
+    }.h;
+
+    const InnerMw = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-Inner", "yes"));
+        }
+    }.h;
+
+    const Handler = struct {
+        fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("HANDLER-RAN");
+        }
+    }.h;
+
+    var api = r.group("/api");
+    try api.use(OuterMw);
+    var v1 = try api.group("/v1");
+    try v1.use(InnerMw);
+    try v1.get("/users", Handler);
+
+    var req = createMockRequest("GET", "/api/v1/users", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/api/v1/users", &req, ctx);
+    try std.testing.expect(result != null);
+
+    switch (result.?) {
+        .handler => |h| {
+            try std.testing.expectEqual(@as(usize, 2), h.chain.middlewares.len);
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            // Both middlewares ran (each left its header) AND the
+            // chain reached the handler (body is "HANDLER-RAN").
+            try std.testing.expectEqualStrings("yes", final_res.headers.get("X-Mw-Outer").?);
+            try std.testing.expectEqualStrings("yes", final_res.headers.get("X-Mw-Inner").?);
+            try std.testing.expectEqualStrings("HANDLER-RAN", final_res.body);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Middleware order: multiple group.use() calls run in registration order" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    // Each middleware stamps a DIFFERENT-KEYED header so they all
+    // accumulate on the final response. We then assert each one is
+    // present, proving the chain visited all three.
+
+    const First = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-1", "ran"));
+        }
+    }.h;
+    const Second = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-2", "ran"));
+        }
+    }.h;
+    const Third = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-3", "ran"));
+        }
+    }.h;
+
+    const Final = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("HANDLER-RAN");
+        }
+    }.h;
+
+    var g = r.group("");
+    try g.use(First);
+    try g.use(Second);
+    try g.use(Third);
+    try g.get("/m", Final);
+
+    var req = createMockRequest("GET", "/m", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/m", &req, ctx);
+    try std.testing.expect(result != null);
+
+    switch (result.?) {
+        .handler => |h| {
+            try std.testing.expectEqual(@as(usize, 3), h.chain.middlewares.len);
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            // All three middlewares visited — each left its own header.
+            try std.testing.expectEqualStrings("ran", final_res.headers.get("X-Mw-1").?);
+            try std.testing.expectEqualStrings("ran", final_res.headers.get("X-Mw-2").?);
+            try std.testing.expectEqualStrings("ran", final_res.headers.get("X-Mw-3").?);
+            // Chain reached the handler.
+            try std.testing.expectEqualStrings("HANDLER-RAN", final_res.body);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Middleware that short-circuits skips later middlewares and the handler" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const First = struct {
+        pub fn h(
+            _: http_parser.HttpContext,
+            _: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            _: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            // Short-circuit — return without calling next. Body is
+            // unique ("BLOCKED") so we can tell it never made it to
+            // the handler (which would have set body to "REACHED").
+            return res.withBody("BLOCKED");
+        }
+    }.h;
+    // If this runs, it would stamp "LATER_RAN" on the body — the
+    // first middleware's BLOCKED proves it never did.
+    const Second = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withBody("LATER_RAN,"));
+        }
+    }.h;
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("REACHED");
+        }
+    }.h;
+
+    var g = r.group("");
+    try g.use(First);
+    try g.use(Second);
+    try g.get("/blocked", Handler);
+
+    var req = createMockRequest("GET", "/blocked", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/blocked", &req, ctx);
+
+    switch (result.?) {
+        .handler => |h| {
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            // First middleware short-circuited — body is its message,
+            // not the handler's "REACHED" and not the second
+            // middleware's "LATER_RAN," prefix.
+            try std.testing.expectEqualStrings("BLOCKED", final_res.body);
+            try std.testing.expect(std.mem.indexOf(u8, final_res.body, "LATER_RAN") == null);
+            try std.testing.expect(std.mem.indexOf(u8, final_res.body, "REACHED") == null);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Route with zero middleware runs the handler directly through chain.run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("DIRECT");
+        }
+    }.h;
+
+    try r.get("/direct", Handler);
+
+    var req = createMockRequest("GET", "/direct", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/direct", &req, ctx);
+
+    switch (result.?) {
+        .handler => |h| {
+            try std.testing.expectEqual(@as(usize, 0), h.chain.middlewares.len);
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            try std.testing.expectEqualStrings("DIRECT", final_res.body);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Middleware error propagates up to chain.run" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Boom = struct {
+        pub fn h(
+            _: http_parser.HttpContext,
+            _: http_parser.HttpRequest,
+            _: http_parser.HttpResponse,
+            _: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return error.MiddlewareBoom;
+        }
+    }.h;
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("should not run");
+        }
+    }.h;
+
+    var g = r.group("");
+    try g.use(Boom);
+    try g.get("/explode", Handler);
+
+    var req = createMockRequest("GET", "/explode", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/explode", &req, ctx);
+
+    switch (result.?) {
+        .handler => |h| {
+            // Error from middleware propagates — matchRoute itself
+            // succeeds (the error happens at run time).
+            const final_res = h.chain.run(h.ctx, h.req, h.res);
+            try std.testing.expectError(error.MiddlewareBoom, final_res);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Group.use after route registration does NOT retroactively apply" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    // The middleware stamps a header on the way IN. If it runs, that
+    // header appears on the final response (the handler doesn't touch
+    // headers). If middleware DIDN'T run, the header is absent.
+    const LateMw = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Late-Mw", "ran"));
+        }
+    }.h;
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("handler ran");
+        }
+    }.h;
+
+    var g = r.group("");
+    try g.get("/route", Handler); // snapshot at this point: 0 middleware
+    try g.use(LateMw); // middleware registered AFTER the route
+    try g.get("/late", Handler); // snapshot at this point: 1 middleware
+
+    // Hit /route — late middleware must NOT run. /route was registered
+    // before LateMw was added, so its middlewares slice was duped
+    // before the change.
+    var req1 = createMockRequest("GET", "/route", arena.allocator());
+    defer req1.params.deinit();
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result1 = r.matchRoute("GET", "/route", &req1, ctx);
+
+    switch (result1.?) {
+        .handler => |h| {
+            try std.testing.expectEqual(@as(usize, 0), h.chain.middlewares.len);
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            try std.testing.expectEqualStrings("handler ran", final_res.body);
+            try std.testing.expect(final_res.headers.get("X-Late-Mw") == null);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+
+    // Hit /late — middleware DOES run because /late was registered
+    // AFTER LateMw was added.
+    var req2 = createMockRequest("GET", "/late", arena.allocator());
+    defer req2.params.deinit();
+    const result2 = r.matchRoute("GET", "/late", &req2, ctx);
+
+    switch (result2.?) {
+        .handler => |h| {
+            try std.testing.expectEqual(@as(usize, 1), h.chain.middlewares.len);
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            try std.testing.expectEqualStrings("handler ran", final_res.body);
+            try std.testing.expectEqualStrings("ran", final_res.headers.get("X-Late-Mw").?);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Group.route conflict: same full path registered twice via two groups, first wins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const First = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("first");
+        }
+    }.h;
+    const Second = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("second");
+        }
+    }.h;
+
+    var g1 = r.group("/api/v1");
+    try g1.get("/users", First);
+
+    var g2 = r.group("/api/v1");
+    try g2.get("/users", Second);
+
+    var req = createMockRequest("GET", "/api/v1/users", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/api/v1/users", &req, ctx);
+
+    switch (result.?) {
+        .handler => |h| {
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            // First-wins semantics: the body is "first", not "second".
+            try std.testing.expectEqualStrings("first", final_res.body);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Path params work inside a group" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("ok");
+        }
+    }.h;
+
+    var api = r.group("/api");
+    try api.get("/users/:id/posts/:postId", Handler);
+
+    var req = createMockRequest("GET", "/api/users/42/posts/abc", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/api/users/42/posts/abc", &req, ctx);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("42", req.params.get("id").?);
+    try std.testing.expectEqualStrings("abc", req.params.get("postId").?);
+}
+
+test "Empty prefix group + path with leading slash joins cleanly" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, _: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return http_parser.ok("", std.testing.allocator);
+        }
+    }.h;
+
+    var g = r.group("");
+    try g.get("/health", Handler); // path starts with /
+    try g.get("health2", Handler); // path doesn't start with /
+
+    // Empty prefix + path-with-slash → path as-is (already "/health").
+    // Empty prefix + path-without-slash → path as-is (no leading / added).
+    try std.testing.expectEqualStrings("/health", r.routes.items[0].path);
+    try std.testing.expectEqualStrings("health2", r.routes.items[1].path);
+}
+
+test "Three-level nested groups: prefix and middleware chain both stack" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    // Each middleware stamps a header. All three headers must
+    // survive on the final response — proving the chain visited all
+    // three middlewares.
+    const A = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-A", "yes"));
+        }
+    }.h;
+    const B = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-B", "yes"));
+        }
+    }.h;
+    const C = struct {
+        pub fn h(
+            ctx: http_parser.HttpContext,
+            req: http_parser.HttpRequest,
+            res: http_parser.HttpResponse,
+            chain: *router.MiddlewareChain,
+        ) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-C", "yes"));
+        }
+    }.h;
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("LEAF-RAN");
+        }
+    }.h;
+
+    var g1 = r.group("/a");
+    try g1.use(A);
+    var g2 = try g1.group("/b");
+    try g2.use(B);
+    var g3 = try g2.group("/c");
+    try g3.use(C);
+    try g3.get("/leaf", Handler);
+
+    var req = createMockRequest("GET", "/a/b/c/leaf", arena.allocator());
+    defer req.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+    const result = r.matchRoute("GET", "/a/b/c/leaf", &req, ctx);
+
+    switch (result.?) {
+        .handler => |h| {
+            try std.testing.expectEqual(@as(usize, 3), h.chain.middlewares.len);
+            const final_res = try h.chain.run(h.ctx, h.req, h.res);
+            // All three middlewares visited.
+            try std.testing.expectEqualStrings("yes", final_res.headers.get("X-Mw-A").?);
+            try std.testing.expectEqualStrings("yes", final_res.headers.get("X-Mw-B").?);
+            try std.testing.expectEqualStrings("yes", final_res.headers.get("X-Mw-C").?);
+            // Chain reached the handler.
+            try std.testing.expectEqualStrings("LEAF-RAN", final_res.body);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Sibling groups are independent (one group's middleware doesn't bleed)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    // Each middleware stamps a unique HEADER. After running, we
+    // inspect the final response to see which middleware stamped.
+    const ApiMw = struct {
+        pub fn h(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse, chain: *router.MiddlewareChain) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-Ran", "api"));
+        }
+    }.h;
+    const AdminMw = struct {
+        pub fn h(ctx: http_parser.HttpContext, req: http_parser.HttpRequest, res: http_parser.HttpResponse, chain: *router.MiddlewareChain) anyerror!http_parser.HttpResponse {
+            return chain.next(ctx, req, res.withHeader("X-Mw-Ran", "admin"));
+        }
+    }.h;
+
+    const Handler = struct {
+        pub fn h(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+            return res.withBody("ok");
+        }
+    }.h;
+
+    var api = r.group("/api");
+    try api.use(ApiMw);
+    try api.get("/health", Handler);
+
+    var admin = r.group("/admin");
+    try admin.use(AdminMw);
+    try admin.get("/secret", Handler);
+
+    var req1 = createMockRequest("GET", "/api/health", arena.allocator());
+    defer req1.params.deinit();
+    var req2 = createMockRequest("GET", "/admin/secret", arena.allocator());
+    defer req2.params.deinit();
+
+    const ctx = http_parser.HttpContext{ .allocator = arena.allocator(), .io = undefined };
+
+    // Hit /api/health — only ApiMw runs.
+    switch (r.matchRoute("GET", "/api/health", &req1, ctx).?) {
+        .handler => |h| {
+            const resp = try h.chain.run(h.ctx, h.req, h.res);
+            try std.testing.expectEqualStrings("api", resp.headers.get("X-Mw-Ran").?);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+
+    // Hit /admin/secret — only AdminMw runs.
+    switch (r.matchRoute("GET", "/admin/secret", &req2, ctx).?) {
+        .handler => |h| {
+            const resp = try h.chain.run(h.ctx, h.req, h.res);
+            try std.testing.expectEqualStrings("admin", resp.headers.get("X-Mw-Ran").?);
+        },
+        else => return error.UnexpectedMatchVariant,
+    }
+}
+
+test "Group with no routes does not crash and does not pollute routes list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    _ = r.group("/empty");
+    try std.testing.expectEqual(@as(usize, 0), r.routes.items.len);
+}

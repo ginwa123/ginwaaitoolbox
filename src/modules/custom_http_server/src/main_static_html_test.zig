@@ -117,8 +117,14 @@ test "GET / route is registered to landingPageHandler" {
 
     // The router registration line must point at landingPageHandler —
     // protects against someone "fixing" the registration to a different
-    // handler while leaving the HTML handler dangling.
-    const line = std.mem.indexOf(u8, source, "router.get(\"/\", landingPageHandler)") orelse {
+    // handler while leaving the HTML handler dangling. Accepts either
+    // a direct `server.router.get(...)` registration OR a group-relative
+    // `root.get(...)` (the latter is the recommended pattern when
+    // middleware is applied at the root group level).
+    const line = std.mem.indexOf(u8, source, "router.get(\"/\", landingPageHandler)") orelse
+        std.mem.indexOf(u8, source, "root.get(\"/\", landingPageHandler)") orelse
+        std.mem.indexOf(u8, source, "root.get(\"/\", http_handlers_mod.landingPageHandler)") orelse
+    {
         std.debug.print("!! main.zig does not register GET / -> landingPageHandler !!\n", .{});
         return error.LandingPageRouteMissing;
     };

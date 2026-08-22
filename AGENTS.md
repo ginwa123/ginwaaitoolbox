@@ -3,6 +3,75 @@
 DONT KILL THE PORT 8081 SERVER,
 for testing use another port like 8080
 
+## Verification — Always Use Functional Tests, Never a Live Server
+
+When verifying HTTP behavior (route order, wire payloads, error messages, JSON
+serialization, authentication), do NOT spin up a live `nalar` binary and `curl`
+it. Three recurring failure modes only surface from a real wire round-trip and
+NONE of them are visible from unit tests:
+
+1. **Route-order shadowing** — `matchRoute` walks routes in registration order
+   (see `src/modules/custom_http_server/src/router.zig:182`), so a literal
+   `/foo/reorder` registered AFTER `/foo/:bar` is captured with `bar="reorder"`.
+   Unit tests on the useCase don't exercise routing.
+2. **Empty-slice-as-NULL binding** — `SqliteBackend.exec` binds `""` slices as
+   SQL NULL, which violates `NOT NULL` columns (precedent: Migration 079's
+   `content` column). Unit tests that pass `""` directly to a SQLite column via
+   `INSERT VALUES ('')` work, but PATCH flows that pass `""` through
+   `useCase` don't — the bind collapses to NULL mid-execution.
+3. **Strict validators treating `""` as a value** — `std.fs.path.isAbsolute("")`
+   is false, so an empty `file_path` from an "atomic mode switch" payload fails
+   validation. Unit tests usually pass a non-empty path; the empty case is only
+   exercised by the frontend's real wire body.
+
+**What to do instead — write an isolated functional test** that boots a fresh
+`nalar` binary against an isolated tmpdir HOME per test, then replays the EXACT
+JSON body the frontend sends:
+
+```python
+# tests/functional/agent_knowledge_edit_test.py — PR #291 follow-up
+def test_text_mode_save_clears_file_path_and_sets_content(harness):
+    """The edit dialog's Text-mode save sends {label, content, file_path:""}."""
+    ws = _create_workspace(harness)
+    agent = _create_agent(harness, ws)
+    row = _add_file_knowledge(harness, agent)
+    updated = _patch(harness, agent, row["id"], {
+        "label": "Switched to text",
+        "content": "inline body after switch",
+        "file_path": "",
+    })
+    assert updated["file_path"] == ""
+    assert updated["content"] == "inline body after switch"
+```
+
+The harness at `tests/functional/harness.py` does all the heavy lifting:
+- Picks a free port in 8080..8199 (excluding 8081 — see the mandatory note above).
+- Sets `HOME` to an isolated tmpdir (`/tmp/nalar-func-<uuid>/`) — the harness's
+  `is_safe_tmp()` validator gates every `rmtree` so your real `$HOME` is never
+  touched (see `tests/functional/README.md` ⛔ section).
+- Tears down the binary + tmpdir on test exit (even on assert-fail).
+- Runs `zig-out/bin/nalarcore-linux-x86_64` (or whatever `$NALAR_BIN` points at).
+
+For static checks (route order, function signatures, error mappings), prefer a
+Zig static-contract test in the same file as the impl (`<feature>_test.zig`
+inline with `pub const` exports + greps). For Zig-only behavior, an in-memory
+SQLite test in the same `useCase` file is enough — but for any HTTP route or
+wire payload, ALWAYS graduate to the python functional harness.
+
+**Anti-pattern: `nohup ./zig-out/bin/nalar... --port 8080` + `curl`.** Leaks the
+process across tool calls, conflicts with the harness, and is exactly what
+missed the bugs in PR #291.
+
+**Verification command** for any HTTP-layer fix:
+```bash
+NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 \
+  python3 -m pytest tests/functional/<your>_test.py -v
+zig build test --summary all   # unit + static-contract tests still pass
+```
+
+Concrete worked example + lesson at
+`.nalar/skills/replay-frontend-wire-payload-in-functional-tests`.
+
 ## Per-Request Arena Cleanup — Don't `defer free` in handlers
 
 The HTTP server (`src/modules/custom_http_server/src/http_server.zig:349-362`) allocates a fresh `std.heap.ArenaAllocator` for every request and `deinit()`s it when the request scope ends:
