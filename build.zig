@@ -1038,6 +1038,19 @@ pub fn build(b: *std.Build) void {
         build_webapp_step.dependOn(&install_cmd.step);
     }
 
+    // Hoisted so the webapp-rebuild path can also depend on it (fresh
+    // checkout → `zig build nalar-desktop` needs node_modules too).
+    // Declared unconditionally; the dependency edge is attached further
+    // down, after webapp_rebuild_bun exists.
+    const rebuild_install_cmd = b.addSystemCommand(&.{ "bun", "install" });
+    rebuild_install_cmd.setCwd(b.path(webapp_dir));
+    if (node_modules_exists) {
+        // Mirror the cached path's skip: node_modules already present,
+        // so the install would be a wasted 1-2 s. Keep the step in the
+        // graph but never reached — nothing depends on it.
+        _ = &rebuild_install_cmd;
+    }
+
     const bun_build = b.addSystemCommand(&.{ "bun", "run", "build" });
     bun_build.setCwd(b.path(webapp_dir));
     bun_build.step.dependOn(&check_webapp_node.step);
@@ -1055,27 +1068,23 @@ pub fn build(b: *std.Build) void {
     // byte-stable across runs (sourcemap/manifest drift), so the directory
     // hash drifted and triggered spurious bun runs.
     //
-    // The intentional, predictable workflow is:
+    // The workflow is now FRESH ASSETS BY DEFAULT:
     //
-    //     1. Edit src/apps/desktop/src/**/*.vue as usual.
-    //     2. Run `zig build webapp-rebuild` to nuke the stale embedded
-    //        file + dist/ and rebuild from scratch (~10 s; cached
-    //        after this).
-    //     3. Run `zig build nalar-desktop` to embed and link (~free
-    //        when webapp_assets.zig hasn't changed).
+    //     `zig build nalar-desktop` always runs
+    //       clean → `bun run build` → codegen → compile + link,
+    //     so the embedded webapp matches the current .vue sources every
+    //     time. Cost: every nalar-desktop build pays the vite build
+    //     (~10 s+) plus an exe relink (the generated webapp_assets.zig is
+    //     not byte-stable across vite runs). This is intentional — the
+    //     user asked for fresh assets over cache-friendliness.
     //
-    // OR all-in-one during development:
-    //
-    //     zig build webapp-rebuild && zig build nalar-desktop && \
-    //         ./zig-out/bin/nalar-desktop
-    //
-    // `zig build nalar-desktop` on its own is the cache-friendly path:
-    // when nothing has changed, it's ~free. Use `webapp-rebuild`
-    // when you've edited the webapp.
+    // `zig build webapp-rebuild` remains as a standalone alias for the
+    // same chain (useful when you want to rebuild ONLY the webapp assets
+    // without also compiling the desktop binary).
     //
     // Implementation: webapp_rebuild_step has its OWN copy of
-    // `bun run build` (not the cached one used by nalar-desktop's
-    // happy path), chained after a clean step. The clean step deletes
+    // `bun run build` (not the cached one used by the standalone
+    // codegen path), chained after a clean step. The clean step deletes
     // the embedded file + dist/, so the rebuild's bun_build sees an
     // empty dist/, has actual work to do, and produces fresh output.
     const webapp_rebuild_step = b.step(
@@ -1083,13 +1092,19 @@ pub fn build(b: *std.Build) void {
         "Nuke stale webapp_assets.zig + dist/ and rebuild via bun run build + codegen",
     );
 
-    const webapp_rebuild_clean = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\rm -rf src/apps/desktop_app/embedded/webapp_assets.zig &&
-        \\rm -rf src/apps/desktop/dist &&
-        \\echo "webapp-rebuild: deleted embedded + dist; rebuilding...",
-    });
-    webapp_rebuild_clean.setCwd(b.path(""));
+    // Clean step — a small Zig CLI instead of `sh -c 'rm -rf ...'` so it
+    // works with native Windows shells too (no Git Bash dependency).
+    const webapp_rebuild_clean = b.addRunArtifact(b.addExecutable(.{
+        .name = "clean_webapp_cache",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/clean_webapp_cache.zig"),
+            // Same cross-compile rationale as codegen_webapp_assets below:
+            // avoid the Zig 0.16 + GCC 16 host-native link failure by using
+            // the main target's glibc (no .sframe section in its crt1.o).
+            .target = target,
+            .link_libc = true,
+        }),
+    }));
 
     // Separate bun_build step for the rebuild path. Has the SAME
     // command + cwd as the cached one, but chained AFTER the clean
@@ -1098,6 +1113,15 @@ pub fn build(b: *std.Build) void {
     webapp_rebuild_bun.setCwd(b.path(webapp_dir));
     webapp_rebuild_bun.step.dependOn(&webapp_rebuild_clean.step);
     webapp_rebuild_bun.step.dependOn(&check_webapp_node.step);
+    // Fresh-checkout fix: the cached path gets a conditional `bun install`
+    // via the node_modules_exists probe above, but that only attaches to
+    // build_webapp_step. Attach the same install here so a fresh checkout
+    // running straight into `zig build nalar-desktop` doesn't fail with
+    // "vite: not found" inside the rebuild's bun run build. (The
+    // rebuild_install_cmd step is declared next to install_cmd above.)
+    if (!node_modules_exists) {
+        webapp_rebuild_bun.step.dependOn(&rebuild_install_cmd.step);
+    }
     webapp_rebuild_step.dependOn(&webapp_rebuild_bun.step);
 
     // The codegen step is shared with the cached path — its output
@@ -1455,11 +1479,13 @@ pub fn build(b: *std.Build) void {
     // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
 
-    // Make the desktop binary depend on the codegen step. The codegen runs
-    // `bun run build` first (via build_webapp_step) and then walks dist/ to
-    // emit webapp_assets.zig, so by the time desktop_exe compiles the
-    // embedded/ directory is populated with the latest assets.
-    desktop_exe.step.dependOn(&codegen.step);
+    // Make the desktop binary depend on the FRESH-ASSETS codegen chain:
+    // clean → `bun run build` → codegen. Every nalar-desktop build
+    // rebuilds the webapp from current sources and re-embeds it, so the
+    // binary always matches the .vue files on disk (user-requested
+    // behavior; see the "Webapp rebuild workflow" comment above for the
+    // cost trade-off).
+    desktop_exe.step.dependOn(&webapp_rebuild_codegen.step);
 
     // `zig build nalar-desktop` alias — depends on:
     //   - the install step (which includes `nalar` via b.installArtifact
