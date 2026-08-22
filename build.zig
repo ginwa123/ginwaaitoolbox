@@ -203,10 +203,76 @@ fn findMsvcInclude(b: *std.Build) MsvcIncludePaths {
         // hard-code it.
         firstMsvcRoot(b) orelse &[_]u8{};
 
-    if (vc_root.len == 0) return result;
+    if (vc_root.len == 0) {
+        // No MSVC STL root resolved (e.g. standalone Windows SDK
+        // install without VS). The Windows SDK dirs are independent of
+        // VS — still resolve them instead of bailing with six empties.
+        fillWindowsSdkIncludes(b, &result);
+        return result;
+    }
     result.c_stddef = b.fmt("{s}/include", .{vc_root});        // MSVC C++ stdlib (cstddef, etc.)
     result.msvc_include = result.c_stddef;
+    fillWindowsSdkIncludes(b, &result);
     return result;
+}
+
+/// Populate the four Windows SDK include subdirs in `result` (`ucrt`,
+/// `um`, `shared`, `winrt`). Resolution order:
+///   1. `$INCLUDE` entries (set by vcvars64.bat / VS dev shells) whose
+///      last path component is exactly one of the four leaf dirs.
+///   2. Canonical `Windows Kits/10/include/<version>/<leaf>` probe.
+///
+/// Fields that resolve to nothing stay empty — the caller must skip
+/// `-isystem` for empty values (a bare `-isystem ""` is at best a
+/// confusing no-op; it previously leaked into the CI compile line as
+/// `-isystem -isystem -isystem -isystem`).
+fn fillWindowsSdkIncludes(b: *std.Build, result: *MsvcIncludePaths) void {
+    if (b.graph.environ_map.get("INCLUDE")) |inc| {
+        var it = std.mem.splitScalar(u8, inc, ';');
+        while (it.next()) |entry_raw| {
+            const entry = std.mem.trim(u8, entry_raw, " \t\"");
+            if (entry.len == 0) continue;
+            const leaf = std.fs.path.basename(entry);
+            if (std.mem.eql(u8, leaf, "ucrt") and result.ucrt_include.len == 0) {
+                result.ucrt_include = entry;
+            } else if (std.mem.eql(u8, leaf, "um") and result.um_include.len == 0) {
+                result.um_include = entry;
+            } else if (std.mem.eql(u8, leaf, "shared") and result.shared_include.len == 0) {
+                result.shared_include = entry;
+            } else if (std.mem.eql(u8, leaf, "winrt") and result.winrt_include.len == 0) {
+                // Exact basename match — "cppwinrt" deliberately does NOT land here.
+                result.winrt_include = entry;
+            }
+        }
+    }
+
+    const kit_roots = [_][]const u8{
+        "C:/Program Files (x86)/Windows Kits/10/include",
+        "C:/Program Files/Windows Kits/10/include",
+    };
+    const leaves = [_]struct { leaf: []const u8, field: *[]const u8 }{
+        .{ .leaf = "ucrt", .field = &result.ucrt_include },
+        .{ .leaf = "um", .field = &result.um_include },
+        .{ .leaf = "shared", .field = &result.shared_include },
+        .{ .leaf = "winrt", .field = &result.winrt_include },
+    };
+    for (kit_roots) |root| {
+        const ver_root = firstSubdir(b, root) orelse continue;
+        for (leaves) |l| {
+            if (l.field.*.len != 0) continue;
+            const candidate = b.fmt("{s}/{s}", .{ ver_root, l.leaf });
+            if (dirExists(b, candidate)) l.field.* = candidate;
+        }
+    }
+}
+
+/// Return true when `abs_path` exists and is a directory. Mirrors the
+/// openDir probe pattern used by `hasMsvcCppStllib` (fileExists only
+/// matches files — it explicitly rejects FILE_ATTRIBUTE_DIRECTORY).
+fn dirExists(b: *std.Build, abs_path: []const u8) bool {
+    const d = std.Io.Dir.cwd().openDir(b.graph.io, abs_path, .{}) catch return false;
+    d.close(b.graph.io);
+    return true;
 }
 
 /// Walk the canonical VS install locations and return the first
@@ -231,6 +297,46 @@ fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
             if (entry.kind != .directory) continue;
             return b.fmt("{s}/{s}", .{ msvc_root, entry.name });
         }
+    }
+    return null;
+}
+
+/// Return `<root>/<first-subdirectory>`, or null when `root` doesn't
+/// exist or contains no subdirectories. Used to resolve opaque version
+/// directories (`14.44.35207`, `10.0.22621.0`) without hard-coding them.
+fn firstSubdir(b: *std.Build, root: []const u8) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{}) catch return null;
+    defer d.close(b.graph.io);
+    var it = d.iterate();
+    while (it.next(b.graph.io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        return b.fmt("{s}/{s}", .{ root, entry.name });
+    }
+    return null;
+}
+
+/// Check that ALL WebView2 NuGet prerequisites sit next to
+/// nalar_webview.cpp. Returns null when complete; otherwise a
+/// human-readable name of the first missing file (for the
+/// stub-fallback warning).
+///
+/// Why EventToken.h is checked explicitly: Microsoft's WebView2.h does
+/// `#include "EventToken.h"` from its own directory, so a partial NuGet
+/// extraction that copies WebView2.h alone compiles fine right up until
+/// clang dies deep inside Microsoft's header with
+/// `fatal error: 'EventToken.h' file not found`
+/// (seen on the self-hosted Windows CI runner, 2026-08-22).
+fn webview2MissingPrereq(b: *std.Build) ?[]const u8 {
+    const prereqs = [_][]const u8{
+        "WebView2.h",
+        "EventToken.h",
+        "WebView2Loader.h",
+        "WebView2Loader.lib",
+    };
+    for (prereqs) |name| {
+        const full = b.fmt("src/apps/desktop_app/platform/windows/{s}", .{name});
+        if (!fileExists(full)) return name;
     }
     return null;
 }
@@ -1169,7 +1275,29 @@ pub fn build(b: *std.Build) void {
             // keeps `zig build nalar-desktop` working on a fresh Windows
             // checkout that hasn't installed Visual Studio (CI installs
             // MSVC via the bootstrapper; local dev boxes can skip it).
-            if (hasMsvcCppStllib(b, b.graph.io)) {
+            // Two gates for the real WebView2 shim:
+            //   1. An MSVC C++ toolchain must be installed (WRL pulls in
+            //      MSVC STL headers like <cstddef>).
+            //   2. ALL WebView2 NuGet files must sit next to the .cpp.
+            //      A partial extraction (WebView2.h without its
+            //      EventToken.h sibling) previously poisoned the CI
+            //      runner: the compile died deep inside Microsoft's
+            //      header. Fall back to the stub instead of failing.
+            const use_real_webview = blk: {
+                if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
+                if (webview2MissingPrereq(b)) |missing| {
+                    std.log.warn(
+                        "nalar-desktop: MSVC C++ toolchain found, but WebView2 prerequisite {s} is missing under " ++
+                            "src/apps/desktop_app/platform/windows/ — using the no-op webview stub instead. " ++
+                            "Extract build/native/include/* + runtimes/win-x64/native/WebView2Loader.dll from the " ++
+                            "Microsoft.Web.WebView2 NuGet package there to enable the real webview.",
+                        .{missing},
+                    );
+                    break :blk false;
+                }
+                break :blk true;
+            };
+            if (use_real_webview) {
             //
             // The C++ shim at platform/windows/nalar_webview.cpp implements
             // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
@@ -1213,23 +1341,48 @@ pub fn build(b: *std.Build) void {
             const cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview.cpp";
             const cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview.obj";
             const msvc_include = findMsvcInclude(b);
-            const cpp_compile_args: []const []const u8 = &.{
-                b.graph.zig_exe,
-                "cc",
-                "-target",         "x86_64-windows-gnu",
-                "-c",
-                "-std=c++17",
-                "-fcxx-exceptions",
-                "-isystem",        msvc_include.c_stddef,
-                "-isystem",        msvc_include.msvc_include,
-                "-isystem",        msvc_include.ucrt_include,
-                "-isystem",        msvc_include.um_include,
-                "-isystem",        msvc_include.shared_include,
-                "-isystem",        msvc_include.winrt_include,
-                "-o",              cpp_obj,
-                cpp_src,
+            // Build the arg list dynamically: skip any include dir that
+            // failed to resolve. Emitting `-isystem ""` is a confusing
+            // no-op and previously leaked four bare `-isystem` flags
+            // into the CI compile command line.
+            const candidate_dirs = [_][]const u8{
+                msvc_include.c_stddef,
+                msvc_include.msvc_include,
+                msvc_include.ucrt_include,
+                msvc_include.um_include,
+                msvc_include.shared_include,
+                msvc_include.winrt_include,
             };
-            const cpp_compile = b.addSystemCommand(cpp_compile_args);
+            var cpp_args: [24][]const u8 = undefined;
+            var n: usize = 0;
+            cpp_args[n] = b.graph.zig_exe;
+            n += 1;
+            cpp_args[n] = "cc";
+            n += 1;
+            cpp_args[n] = "-target";
+            n += 1;
+            cpp_args[n] = "x86_64-windows-gnu";
+            n += 1;
+            cpp_args[n] = "-c";
+            n += 1;
+            cpp_args[n] = "-std=c++17";
+            n += 1;
+            cpp_args[n] = "-fcxx-exceptions";
+            n += 1;
+            for (candidate_dirs) |dir| {
+                if (dir.len == 0) continue;
+                cpp_args[n] = "-isystem";
+                n += 1;
+                cpp_args[n] = dir;
+                n += 1;
+            }
+            cpp_args[n] = "-o";
+            n += 1;
+            cpp_args[n] = cpp_obj;
+            n += 1;
+            cpp_args[n] = cpp_src;
+            n += 1;
+            const cpp_compile = b.addSystemCommand(cpp_args[0..n]);
             cpp_compile.setCwd(b.path(""));
             desktop_exe.step.dependOn(&cpp_compile.step);
             desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });

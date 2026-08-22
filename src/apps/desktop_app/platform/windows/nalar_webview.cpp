@@ -47,6 +47,9 @@
 //   `src/apps/desktop_app/platform/windows/`:
 //
 //     - WebView2.h         (Microsoft's main WebView2 COM API header)
+//     - EventToken.h       (sibling required by WebView2.h — a partial
+//                           extraction without it fails deep inside
+//                           Microsoft's header: "EventToken.h not found")
 //     - WebView2Loader.h   (the static-link helper declarations)
 //     - WebView2Loader.dll (runtime — must be next to nalar-desktop.exe)
 //
