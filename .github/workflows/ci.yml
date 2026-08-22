@@ -1305,16 +1305,32 @@ jobs:
     name: frontend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
     runs-on: ${{ matrix.os }}
     # Same matrix shape as the backend job (self-hosted Linux X64 +
-    # macOS ARM64). Windows excluded for the first cut — Bun on the
-    # Windows self-hosted runner has unverified edge cases. See
-    # docs/superpowers/plans/2026-07-04-nalar-desktop-ci-cd.md for the
-    # original analysis. Revisit if a Windows run is needed.
+    # macOS ARM64 + Windows X64). The Windows cell was added after the
+    # backend job proved out every runner-level prerequisite on
+    # WIN-53JVAKR3O5B: setup-node@v4, oven-sh/setup-bun@v2 and
+    # actions/cache@v4 all work there, and bun.lock already carries the
+    # win32-x64 native bindings (@oxlint/binding-win32-x64-msvc,
+    # @rolldown/binding-win32-x64-msvc, @tailwindcss/oxide-win32-x64-msvc,
+    # lightningcss-win32-x64-msvc) so `bun install --frozen-lockfile`
+    # resolves without lockfile changes.
+    #
+    # Shell note: this runner ships ONLY Windows PowerShell 5.1 — no pwsh
+    # (the backend job installs pwsh itself in a dedicated step; the
+    # frontend job deliberately doesn't, because its steps are one-liners).
+    # `shell: bash` is also untrusted here: the runner service account's
+    # PATH does not reliably contain Git's bin dir (the backend job's
+    # Windows steps manually prepend 'C:\Program Files\Git\bin' for the
+    # same reason). So each `run:` step uses a matrix-aware shell:
+    # powershell.exe (5.1) on Windows, bash elsewhere. PS 5.1 parses these
+    # one-liner steps fine — the historical MissingEndCurlyBrace parser
+    # bugs only bit long multi-branch scripts (see backend job comments).
     strategy:
       fail-fast: false
       matrix:
         os:
           - [self-hosted, Linux, X64]
           - [self-hosted, macOS, ARM64]
+          - [self-hosted, Windows, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1361,6 +1377,11 @@ jobs:
         # always re-checks the lockfile. On a cache HIT, this is a
         # near-no-op. On a cache MISS, this is the real install.
         working-directory: src/apps/desktop
+        # powershell.exe (5.1) on the Windows cell, bash elsewhere. The
+        # Windows runner has no pwsh and no Git-bash on the service
+        # account's PATH (see the job-level comment above). PS 5.1 parses
+        # this one-liner fine; `bun` resolves via PATH set by setup-bun.
+        shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}
         run: bun install --frozen-lockfile
 
       - name: Lint (oxlint + eslint, fail-on-issue mode)
@@ -1370,6 +1391,11 @@ jobs:
         # instead of `bun run` so the script invocations go through
         # real Node, not Bun's runtime.
         working-directory: src/apps/desktop
+        # Matrix-aware shell (see job-level comment). The `&&` inside the
+        # lint:check script is executed by npm's script runner, which uses
+        # cmd.exe on Windows — NOT by this step's shell — so PS 5.1 never
+        # sees it.
+        shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}
         run: npm run lint:check
 
       - name: Test (vitest, non-watch)
@@ -1378,6 +1404,10 @@ jobs:
         # CI-safe script (NOT `test:unit` which preserves watch mode
         # for local dev). `npm run` invokes it under real Node.
         working-directory: src/apps/desktop
+        # Matrix-aware shell (see job-level comment). vitest's file
+        # watchers (chokidar) handle Windows paths; the test suite is
+        # jsdom-based so no OS-specific DOM assumptions.
+        shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}
         run: npm run test
 
       - name: Build (vue-tsc + vite)
@@ -1389,4 +1419,9 @@ jobs:
         # the real Node.js binary installed by the `Install Node.js
         # 24` step earlier in this job.
         working-directory: src/apps/desktop
+        # Matrix-aware shell (see job-level comment). `npm run build`
+        # chains vue-tsc + vite via npm-run-all2's run-p, which spawns
+        # cmd.exe on Windows for each child script — PS 5.1 never sees
+        # the internal chaining.
+        shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}
         run: npm run build
