@@ -3,7 +3,7 @@ const posix = std.posix;
 const builtin = @import("builtin");
 
 pub const http_parser = @import("http_parser.zig");
-const router = @import("router.zig");
+pub const router = @import("router.zig");
 pub const security = @import("security.zig");
 pub const sse_manager = @import("sse_manager.zig");
 pub const ws_manager = @import("websocket_manager.zig");
@@ -27,6 +27,14 @@ pub const WsManager = ws_manager.WsManager;
 pub const CronjobManager = cronjob_manager.CronjobManager;
 pub const WsOpcode = ws_frames.Opcode;
 pub const WsConnection = ws_manager.WsClient;
+// Router re-exports — let module users (and other modules referencing
+// `gserverz.MiddlewareFn` / `gserverz.MiddlewareChain`) wire up groups
+// and middlewares without reaching into the file-private Router module.
+pub const Router = router.Router;
+pub const Group = router.Group;
+pub const HandlerFn = router.HandlerFn;
+pub const MiddlewareFn = router.MiddlewareFn;
+pub const MiddlewareChain = router.MiddlewareChain;
 
 /// Platform abstraction for socket operations
 /// On POSIX: uses std.posix.system (low-level socket API)
@@ -225,17 +233,25 @@ pub const GinwaServer = struct {
     is_running: bool = false,
 
     /// Server-side ContextStore passed to handlers via `HttpContext`.
-    /// Optional — handlers that don't use cross-redirect state can
-    /// ignore it. Initialised lazily: if `null` at request time, the
-    /// handler's HttpContext gets `context_store = null` and any
-    /// `redirectWithContext` call degrades to a plain redirect (or
-    /// returns an error, depending on the handler's policy).
+    /// Always non-null after a successful `init()` — the server heap-
+    /// allocates the store on init and deinits it on `deinit()` so
+    /// callers don't have to manage its lifetime. Handlers that don't
+    /// use cross-redirect state can simply ignore it. The pointer is
+    /// typed as optional to preserve the existing `Session.set`
+    /// `error.NoContextStore` contract (defensive — the listen loop
+    /// always populates `Session.context_store` from this field).
     context_store: ?*gserverz_context.ContextStore = null,
 
     /// HMAC secret used by `security.csrfTokenIssue` / `csrfTokenValidate`.
     /// Defaults to a dev-only constant; production deployments should
     /// override via `server.csrf_secret = "..."` after `GinwaServer.init`.
     csrf_secret: []const u8 = "dev-only-csrf-secret-change-in-prod",
+
+    /// Server-wide CORS configuration. Defaults to "CORS off" (same-origin
+    /// only) so existing routes are unchanged. Configure after init:
+    ///   server.cors = .{ .enabled = true, .allowed_origins = &.{"..."} };
+    /// See `CORSConfig` for the full surface.
+    cors: CORSConfig = .{},
 
     /// Optional fallback handler invoked when no route matches. It is
     /// expected to write a complete HTTP response directly to `fd` (status
@@ -265,6 +281,17 @@ pub const GinwaServer = struct {
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, address: Address) !*GinwaServer {
         const gs = try allocator.create(GinwaServer);
+        errdefer allocator.destroy(gs);
+
+        // Heap-allocate the cross-redirect ContextStore eagerly so
+        // handlers can use `Session.set` / `redirectWithContext` without
+        // any per-server wiring. The pointer is stored on `gs` and
+        // freed by `deinit()` — callers (e.g. main.zig) never have to
+        // touch it. Tests that don't need a store still get one (it's
+        // just an empty StringHashMap); the cost is one allocation.
+        const store = try gserverz_context.ContextStore.create(allocator);
+        errdefer store.deinit();
+
         gs.* = .{
             .allocator = allocator,
             .io = io,
@@ -275,6 +302,7 @@ pub const GinwaServer = struct {
             .cronjob_manager = CronjobManager.init(allocator, io),
             .ctx = null,
             .environment = null,
+            .context_store = store,
         };
         return gs;
     }
@@ -307,6 +335,10 @@ pub const GinwaServer = struct {
         self.sse_manager.deinit();
         self.ws_manager.destroy();
         self.router.deinit();
+        // Drop the auto-allocated ContextStore last — it owns no threads
+        // and only references the server's allocator, so it can free
+        // safely after every other subsystem has shut down.
+        if (self.context_store) |store| store.deinit();
     }
 
     /// Free the GinwaServer struct itself. Callers that allocated the
@@ -407,17 +439,50 @@ pub const GinwaServer = struct {
                         // call `req.session.set / getString` directly. The
                         // pointer outlives the listen loop's handle scope.
                         req.session = &session;
+
+                        // CORS preflight: when CORS is enabled and the
+                        // request is OPTIONS, reply with the configured
+                        // `Access-Control-*` headers and short-circuit
+                        // before the router sees the request. Preflight
+                        // is browser-driven and doesn't carry a route
+                        // match, so handling it globally keeps route
+                        // registration simple.
+                        if (server.cors.enabled and std.mem.eql(u8, req.method, "OPTIONS")) {
+                            const preflight = server.buildCORSPreflight(&req, allocator) catch |err| {
+                                std.debug.print("HTTP_SERVER: buildCORSPreflight failed: {s}\n", .{@errorName(err)});
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            const preflight_bytes = preflight.toBytes() catch {
+                                std.debug.print("HTTP_SERVER: preflight toBytes failed\n", .{});
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            defer preflight.allocator.free(preflight_bytes);
+                            _ = server.sendToClient(fd, preflight_bytes) catch {
+                                std.debug.print("HTTP_SERVER: preflight send failed\n", .{});
+                            };
+                            return;
+                        }
+
                         if (server.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
                                 .handler => |h| {
-                                    // Handlers take `HttpContext` BY VALUE (allocator +
-                                    // io + optional SSE client_id — a small 3-field
-                                    // struct), `HttpRequest` BY VALUE (a shallow snapshot
-                                    // from the post-route-match request — see HttpRequest
-                                    // doc for the safety invariants), and `HttpResponse`.
-                                    // The session pointer is part of `req` (set by
-                                    // the listen loop before matchRoute).
-                                    const final_res = h.handler(h.ctx, h.req, h.res) catch http_parser.internalError("Handler error", allocator);
+                                    // Run the per-request middleware chain. When the
+                                    // route has no middleware the chain dispatches
+                                    // straight to the final handler — same behavior
+                                    // as before groups/middleware were added. When
+                                    // middlewares exist they run in registration
+                                    // order (outermost group first, innermost last);
+                                    // a middleware that returns without calling
+                                    // `chain.next(...)` short-circuits the chain.
+                                    var final_res = h.chain.run(h.ctx, h.req, h.res) catch http_parser.internalError("Handler error", allocator);
+
+                                    // CORS response headers — only when CORS is
+                                    // enabled and the request carried an Origin
+                                    // that matches `cors.allowed_origins`.
+                                    server.applyCORSResponse(&h.req, &final_res) catch @panic("OOM");
+
                                     const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
                                         _ = closeFd(fd);
@@ -583,7 +648,12 @@ pub const GinwaServer = struct {
                                 }
                             }
                             if (!static_served) {
-                                const not_found = http_parser.notFound(allocator);
+                                var not_found = http_parser.notFound(allocator);
+                                // Attach CORS headers to the 404 so cross-origin
+                                // callers see the rejection (with CORS headers
+                                // echoed) instead of an opaque browser-blocked
+                                // response.
+                                server.applyCORSResponse(&req, &not_found) catch @panic("OOM");
                                 const res_bytes = not_found.toBytes() catch {
                                     _ = closeFd(fd);
                                     return;
@@ -789,6 +859,19 @@ pub const GinwaServer = struct {
             self.address.sock_fd = -1;
         }
     }
+
+    /// Apply CORS response headers to a response built elsewhere (a
+    /// handler return, a 404 fallback). Thin shim that forwards to
+    /// `security.applyCORSResponse`.
+    fn applyCORSResponse(self: *GinwaServer, request: *const HttpRequest, resp: *HttpResponse) !void {
+        return security.applyCORSResponse(resp, request, self.cors);
+    }
+
+    /// Build a `204 No Content` CORS preflight response. Thin shim
+    /// that forwards to `security.buildPreflightResponse`.
+    fn buildCORSPreflight(self: *GinwaServer, request: *const HttpRequest, allocator: std.mem.Allocator) !HttpResponse {
+        return security.buildPreflightResponse(allocator, request, self.cors);
+    }
 };
 
 fn recvFromSock(fd: SocketFd, buf: [*]u8, len: usize) isize {
@@ -919,3 +1002,32 @@ pub const SseEvent = struct {
     data: []const u8,
     event_type: ?[]const u8 = null,
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CORS configuration
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// CORS (Cross-Origin Resource Sharing) configuration applied server-wide
+/// when `enabled` is true. Defaults to "CORS off" — same-origin only — so
+/// existing routes keep working with no behaviour change.
+///
+/// Configure after `GinwaServer.init`:
+///   server.cors = .{
+///       .enabled = true,
+///       .allowed_origins = &.{ "localhost:4021", "app.example.com" },
+///       .allow_credentials = true,
+///   };
+///
+/// When `enabled`:
+///   * `OPTIONS <path>` requests are auto-answered with the configured
+///     methods + headers + max_age (`204 No Content`).
+///   * Every response carries `Access-Control-Allow-Origin` (echoed from
+///     the request Origin) when the Origin matches an `allowed_origins`
+///     entry; requests with mismatched Origin are rejected with `403`.
+///   * `Vary: Origin` is attached so caches don't leak across origins.
+///
+/// The pure helper functions live in `security.zig`
+/// (`security.buildPreflightResponse`, `security.buildPreHandlerFailRedirect`,
+/// `security.applyCORSResponse`) — this type is a thin field-mirror so
+/// `GinwaServer.cors` can be forwarded by value into those helpers.
+pub const CORSConfig = security.CORSConfig;

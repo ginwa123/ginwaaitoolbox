@@ -57,6 +57,44 @@ pub const RATE_LIMIT_WINDOW_SEC: i64 = 60;
 /// Maximum request body size accepted on state-changing endpoints.
 pub const MAX_BODY_BYTES: usize = 16 * 1024;
 
+/// CORS configuration used by `buildPreflightResponse` and
+/// `buildPreHandlerFailRedirect`. Mirrors the field-by-field shape on
+/// `GinwaServer.cors` so the framework can forward the config by value
+/// to these pure helpers (no GinwaServer pointer needed at the test
+/// site).
+pub const CORSConfig = struct {
+    enabled: bool = false,
+    allowed_origins: []const []const u8 = &.{},
+    allowed_methods: []const u8 = "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    allowed_headers: []const u8 = "Content-Type, X-CSRF-Token, X-Requested-With",
+    allow_credentials: bool = false,
+    max_age: u32 = 86400,
+};
+
+/// Error codes returned by the framework's pre-handler fail redirect.
+/// String constants match the `?error=<code>` query keys that
+/// `redirectTo*WithError` helpers in the ginwasaas handlers consume.
+pub const PreHandlerFailCode = enum {
+    cross_origin,
+    body_too_large,
+    server_error,
+
+    pub fn label(self: PreHandlerFailCode) []const u8 {
+        return switch (self) {
+            .cross_origin => "cross_origin",
+            .body_too_large => "body_too_large",
+            .server_error => "server_error",
+        };
+    }
+};
+
+/// (Removed in follow-up: `buildPreHandlerFailRedirect` is no longer used
+/// by GinwaServer since the per-route `on_pre_handler_fail` opt-in was
+/// dropped. The helpers `preHandlerCheck`, `checkOriginInList`,
+/// `applyCORSHeaders`, `buildPreflightResponse`, `applyCORSResponse`
+/// remain as usable primitives; handlers continue to call `checkOrigin`
+/// and `enforceBodySizeLimit` themselves.)
+
 /// Token bucket state for one `(ip, route)` pair.
 const BucketState = struct {
     /// Window start (unix seconds).
@@ -366,8 +404,9 @@ pub fn applySecurityHeaders(response: *HttpResponse) void {
 /// Extract the host (with optional port) from a URL like
 /// `http://example.com:8080/path` or `https://example.com/path`. Returns
 /// the slice up to the first `/` after the scheme, or the whole input if
-/// no path separator exists.
-fn extractHost(url: []const u8) []const u8 {
+/// no path separator exists. Public so callers (and tests) can use it
+/// for host extraction without re-implementing the slice arithmetic.
+pub fn extractHost(url: []const u8) []const u8 {
     // Skip "scheme://".
     const scheme_sep = std.mem.indexOf(u8, url, "://") orelse return url;
     var rest = url[scheme_sep + 3 ..];
@@ -415,4 +454,311 @@ pub fn checkOrigin(request: *const HttpRequest, expected_host: []const u8) !void
 /// Reject request bodies that exceed `max` bytes.
 pub fn enforceBodySizeLimit(body_len: usize, max: usize) !void {
     if (body_len > max) return error.PayloadTooLarge;
+}
+
+/// Check that the request's Origin OR Referer host matches any entry in
+/// `allowed_origins` (case-insensitive host extraction). Mirrors
+/// `checkOrigin` but accepts a whitelist instead of a single host.
+///
+/// Behaviour identical to `checkOrigin` when both Origin and Referer are
+/// absent: returns success (the CSRF cookie + SameSite=Strict handles
+/// the strict case). Returns `error.CrossOriginForbidden` when
+/// Origin/Referer is present but doesn't match any whitelisted host.
+///
+/// `allowed_origins` is a slice of host strings like `"localhost:4021"`
+/// or `"api.example.com"`. The comparison ignores scheme and path —
+/// `http://localhost:4021/foo` and `https://localhost:4021/bar` both
+/// match entry `"localhost:4021"`.
+pub fn checkOriginInList(
+    request: *const HttpRequest,
+    allowed_origins: []const []const u8,
+) !void {
+    // Allow empty whitelist when callers want to opt-out (matches the
+    // single-host checkOrigin contract: nothing to match against, pass).
+    if (allowed_origins.len == 0) return;
+
+    var it = request.headers.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "origin")) {
+            const origin_host = extractHost(entry.value_ptr.*);
+            for (allowed_origins) |allowed| {
+                if (std.ascii.eqlIgnoreCase(origin_host, allowed)) return;
+            }
+            return error.CrossOriginForbidden;
+        }
+    }
+
+    // No Origin — fall back to Referer.
+    it = request.headers.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "referer")) {
+            const ref_host = extractHost(entry.value_ptr.*);
+            for (allowed_origins) |allowed| {
+                if (std.ascii.eqlIgnoreCase(ref_host, allowed)) return;
+            }
+            return error.CrossOriginForbidden;
+        }
+    }
+
+    // Neither present — fail open (CSRF cookie is the primary defence).
+}
+
+/// Combined same-origin + body-size guard. Runs `checkOriginInList` then
+/// `enforceBodySizeLimit` and forwards whichever error fires first.
+/// Useful as a single helper call at the top of state-changing
+/// handlers — replaces the inline two-line repetition:
+
+///   gserverz.security.checkOrigin(&req, "localhost:4021") catch { ... };
+///   gserverz.security.enforceBodySizeLimit(...)         catch { ... };
+
+/// with:
+
+///   gserverz.security.preHandlerCheck(&req, cors_origins, MAX_BODY_BYTES)
+///       catch |err| switch (err) {
+///           error.CrossOriginForbidden => return redirect(...),
+///           error.PayloadTooLarge      => return redirect(...),
+///       };
+
+/// When the GinwaServer route is configured with
+/// `Route.on_pre_handler_fail`, this check runs automatically inside
+/// the dispatch loop and handlers don't need to call it at all.
+pub fn preHandlerCheck(
+    request: *const HttpRequest,
+    allowed_origins: []const []const u8,
+    max_body_bytes: usize,
+) !void {
+    try checkOriginInList(request, allowed_origins);
+    try enforceBodySizeLimit(request.body.len, max_body_bytes);
+}
+
+/// Build the canonical CORS response-headers for `origin` against
+/// `allowed_origins`. Returns an empty map when CORS is disabled or
+/// when the origin isn't whitelisted (caller should still send the
+/// origin through a separate validation step if it wants strict
+/// enforcement).
+///
+/// Headers attached when the origin is whitelisted:
+///   * Access-Control-Allow-Origin:  <origin>
+///   * Vary: Origin
+///
+/// Headers attached when `allowed_methods` is non-empty:
+///   * Access-Control-Allow-Methods:  <methods>
+///
+/// Headers attached when `allowed_headers` is non-empty:
+///   * Access-Control-Allow-Headers:  <headers>
+///
+/// `Access-Control-Allow-Credentials: true` is set when
+/// `allow_credentials` is true.
+///
+/// Mutates `headers` in place; values pointed at are caller-owned
+/// (string literals or heap slices).
+pub fn applyCORSHeaders(
+    headers: *std.StringHashMap([]const u8),
+    origin: []const u8,
+    allowed_origins: []const []const u8,
+    allowed_methods: []const u8,
+    allowed_headers: []const u8,
+    allow_credentials: bool,
+) !void {
+    if (allowed_origins.len == 0) return;
+
+    // Compare the extracted host (`localhost:4021`) against the whitelist,
+    // NOT the full Origin (`http://localhost:4021`). `extractHost` strips
+    // the scheme + path so scheme-agnostic / path-bearing entries work.
+    const origin_host = extractHost(origin);
+    var origin_allowed = false;
+    for (allowed_origins) |allowed| {
+        if (std.ascii.eqlIgnoreCase(origin_host, allowed)) {
+            origin_allowed = true;
+            break;
+        }
+    }
+    if (!origin_allowed) return;
+
+    try headers.put("Access-Control-Allow-Origin", origin);
+    try headers.put("Vary", "Origin");
+    if (allowed_methods.len > 0) {
+        try headers.put("Access-Control-Allow-Methods", allowed_methods);
+    }
+    if (allowed_headers.len > 0) {
+        try headers.put("Access-Control-Allow-Headers", allowed_headers);
+    }
+    if (allow_credentials) {
+        try headers.put("Access-Control-Allow-Credentials", "true");
+    }
+}
+
+/// Return true when `request` declares an Origin that matches one of the
+/// `allowed_origins` (or when no Origin is present and the whitelist is
+/// non-empty — we treat missing-Origin the same way `checkOriginInList`
+/// does: fail-open, return true; CSRF cookie + SameSite=Strict is the
+/// primary defence). When the whitelist is empty, returns true
+/// unconditionally (no CORS gate).
+pub fn originMatches(
+    request: *const HttpRequest,
+    allowed_origins: []const []const u8,
+) bool {
+    if (allowed_origins.len == 0) return true;
+
+    var it = request.headers.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "origin")) {
+            const origin_host = extractHost(entry.value_ptr.*);
+            for (allowed_origins) |allowed| {
+                if (std.ascii.eqlIgnoreCase(origin_host, allowed)) return true;
+            }
+            return false;
+        }
+    }
+
+    // No Origin — same behaviour as checkOriginInList: pass through.
+    return true;
+}
+
+/// Extract the Origin request header value if present. Returns null
+/// when missing. The returned slice is case-preserving — browsers
+/// always send `Origin` (not `origin`), but the lookup is
+/// case-insensitive to match the standard.
+pub fn getRequestOrigin(request: *const HttpRequest) ?[]const u8 {
+    var it = request.headers.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "origin")) {
+            return entry.value_ptr.*;
+        }
+    }
+    return null;
+}
+
+/// Build a `204 No Content` CORS preflight response for `request`.
+///
+/// Behaviour:
+///   * Status 204 always (mismatched origins still get a 204 with
+///     no CORS headers — the browser blocks the response from JS).
+///   * When Origin is present and allowed: sets Allow-Origin, Vary,
+///     Allow-Methods, Allow-Headers, Allow-Credentials (if enabled),
+///     and Max-Age.
+///   * Security headers always attached.
+///
+/// `config` may be `.{}` — in that case the response has no CORS
+/// headers but is still a well-formed 204 with security headers.
+/// `allocator` owns the response's headers map and any heap-allocated
+/// header values (Content-Length, Max-Age); the response itself is a
+/// stack value.
+pub fn buildPreflightResponse(
+    allocator: std.mem.Allocator,
+    request: *const HttpRequest,
+    config: CORSConfig,
+) !HttpResponse {
+    var preflight = HttpResponse{
+        .status_code = 204,
+        .status_text = "No Content",
+        .headers = std.StringHashMap([]const u8).init(allocator),
+        .body = "",
+        .allocator = allocator,
+    };
+    errdefer preflight.headers.deinit();
+
+    if (config.enabled) {
+        if (getRequestOrigin(request)) |origin| {
+            try applyCORSHeaders(
+                &preflight.headers,
+                origin,
+                config.allowed_origins,
+                config.allowed_methods,
+                config.allowed_headers,
+                config.allow_credentials,
+            );
+            const max_age_str = try std.fmt.allocPrint(allocator, "{d}", .{config.max_age});
+            try preflight.headers.put("Access-Control-Max-Age", max_age_str);
+        }
+    }
+    applySecurityHeaders(&preflight);
+    return preflight;
+}
+
+/// Run the framework's pre-handler security gate (origin +
+/// body-size) and, on failure, build a `302 Found` redirect response
+/// to `<fail_base><error_code>`. Returns `null` when the gate
+/// passes (the caller should proceed to the user handler).
+///
+/// The Location string is heap-allocated onto `allocator`. The
+/// response's headers map is also `allocator`-owned. CORS response
+/// headers are attached when `config.enabled` is true and the
+/// request's Origin matches `config.allowed_origins`.
+///
+/// (Currently unused: the per-route `on_pre_handler_fail` mechanism
+/// was dropped, so `GinwaServer.runPreHandlerFailRedirect` no longer
+/// calls this. Kept as an exportable helper for callers that want to
+/// wire the same redirect logic themselves, plus to keep the
+/// coverage tests passing.)
+pub fn buildPreHandlerFailRedirect(
+    allocator: std.mem.Allocator,
+    request: *const HttpRequest,
+    config: CORSConfig,
+    max_body_bytes: usize,
+    fail_base: []const u8,
+) !?HttpResponse {
+    const fail_code: ?PreHandlerFailCode = if (preHandlerCheck(
+        request,
+        config.allowed_origins,
+        max_body_bytes,
+    )) |_|
+        null // gate passed
+    else |err| blk: {
+        break :blk switch (err) {
+            error.CrossOriginForbidden => PreHandlerFailCode.cross_origin,
+            error.PayloadTooLarge => PreHandlerFailCode.body_too_large,
+        };
+    };
+
+    const code = fail_code orelse return null;
+
+    var fail_response = HttpResponse{
+        .status_code = 302,
+        .status_text = "Found",
+        .headers = std.StringHashMap([]const u8).init(allocator),
+        .body = "",
+        .allocator = allocator,
+    };
+    errdefer fail_response.headers.deinit();
+
+    const location = try std.fmt.allocPrint(allocator, "{s}{s}", .{ fail_base, code.label() });
+    try fail_response.headers.put("Location", location);
+    try fail_response.headers.put("Content-Type", "text/html; charset=utf-8");
+    try fail_response.headers.put("Content-Length", "0");
+    applySecurityHeaders(&fail_response);
+
+    if (config.enabled) {
+        if (getRequestOrigin(request)) |origin| {
+            try applyCORSHeaders(
+                &fail_response.headers,
+                origin,
+                config.allowed_origins,
+                config.allowed_methods,
+                config.allowed_headers,
+                config.allow_credentials,
+            );
+        }
+    }
+    return fail_response;
+}
+
+/// Apply CORS response headers to `response` (in place). Reads
+/// the request's Origin header and gates on `config.allowed_origins`.
+/// No-op when CORS is disabled.
+pub fn applyCORSResponse(
+    response: *HttpResponse,
+    request: *const HttpRequest,
+    config: CORSConfig,
+) !void {
+    if (!config.enabled) return;
+    const origin = getRequestOrigin(request) orelse return;
+    return applyCORSHeaders(
+        &response.headers,
+        origin,
+        config.allowed_origins,
+        config.allowed_methods,
+        config.allowed_headers,
+        config.allow_credentials,
+    );
 }

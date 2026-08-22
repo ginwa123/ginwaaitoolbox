@@ -758,17 +758,42 @@ test "address: maximum u16 port (65535) is accepted" {
     try expectEqual(@as(u16, 65535), addr.port);
 }
 
-test "address: SO_REUSEADDR is set (verifiable by rapid bind/restart)" {
+test "address: SO_REUSEADDR is set (verifiable by getsockopt)" {
     // SO_REUSEADDR allows a fresh socket to bind a port that was
-    // recently in TIME_WAIT. We can't directly query socket flags
-    // portably, but we can verify that two Addresses in sequence on
-    // the same port don't conflict.
-    const addr1 = try http_server.Address.init(45700);
-    defer _ = linux.close(addr1.sock_fd);
-    const addr2 = try http_server.Address.init(45700);
-    defer _ = linux.close(addr2.sock_fd);
-    try expect(addr1.sock_fd != addr2.sock_fd);
+    // recently in TIME_WAIT. macOS has stricter semantics than Linux
+    // for this option, so we don't try to actually rebind the same
+    // port (that fails on macOS regardless of SO_REUSEADDR for ~60s
+    // after the first close). Instead, we directly verify the option
+    // is set via getsockopt — that's the actual property being tested.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const addr = try http_server.Address.init(0);
+    defer _ = linux.close(addr.sock_fd);
+
+    // Read SO_REUSEADDR back and confirm it's set to a non-zero value.
+    var optval: c_int = 0;
+    var optlen: std.c.socklen_t = @sizeOf(c_int);
+    const rc = std.c.getsockopt(
+        addr.sock_fd,
+        @intCast(posix.SOL.SOCKET),
+        @intCast(posix.SO.REUSEADDR),
+        &optval,
+        &optlen,
+    );
+    try expectEqual(@as(c_int, 0), rc); // 0 = success
+    try expect(optval != 0);            // 1 = SO_REUSEADDR set
 }
+
+/// Read the ephemeral port the kernel assigned to `fd`. Used by the
+/// SO_REUSEADDR test above to pick a port that's free on this host.
+fn getsocknamePort(fd: i32) !u16 {
+    var sa: std.c.sockaddr.in = std.mem.zeroes(std.c.sockaddr.in);
+    var sa_len: std.c.socklen_t = @sizeOf(std.c.sockaddr.in);
+    if (std.c.getsockname(fd, @ptrCast(&sa), &sa_len) != 0) return error.GetSockNameFailed;
+    return std.mem.bigToNative(u16, sa.port);
+}
+
+const GetSockNameFailed = error{GetSockNameFailed};
 
 test "ginwa: destroy then re-init works (no global state leak)" {
     const a = allocator;
@@ -892,6 +917,18 @@ fn createSocketPair() ![2]i32 {
     var fds: [2]i32 = undefined;
     const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
     if (rc < 0) return error.SocketPairFailed;
+    // macOS (and BSD) defaults SO_SNDBUF to ~8 KB on AF_UNIX SOCK_STREAM
+    // pairs — far smaller than Linux (~208 KB). Tests that write 16 KB or
+    // more would block forever waiting for the reader to drain. Bump to
+    // 256 KB explicitly so SSE write-path tests stay portable.
+    var size: i32 = 256 * 1024;
+    _ = posix.system.setsockopt(
+        fds[0],
+        posix.SOL.SOCKET,
+        posix.SO.SNDBUF,
+        &size,
+        @sizeOf(@TypeOf(size)),
+    );
     return fds;
 }
 
