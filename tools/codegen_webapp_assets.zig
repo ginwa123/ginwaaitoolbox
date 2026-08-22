@@ -153,17 +153,31 @@ pub fn main(init: std.process.Init) !void {
     const out_dir_path = std.fs.path.dirname(out_path) orelse ".";
     const out_basename = std.fs.path.basename(out_path);
     try mkdirsRecursive(out_dir_path);
-    const out_fd = try openCreateTrunc(out_dir_path, out_basename);
-    defer _ = std.c.close(out_fd);
 
-    // Dump the accumulated buffer with a single raw write(2) syscall.
-    var written: usize = 0;
-    while (written < out_buf.items.len) {
-        const n_rc = std.c.write(out_fd, out_buf.items[written..].ptr, out_buf.items.len - written);
-        if (n_rc < 0) return error.WriteFailed;
-        const n: usize = @intCast(n_rc);
-        if (n == 0) return error.WriteFailed;
-        written += n;
+    // Write the accumulated buffer to disk.
+    //
+    // Why we don't use `std.c.write` directly on Windows: `openCreateTruncWindows`
+    // returns a Win32 HANDLE (cast to `std.c.fd_t` via `@ptrFromInt(@intFromPtr(h))`),
+    // but the C runtime's `write()` (which `std.c.write` calls on Windows) expects
+    // a CRT fd INDEX — not a HANDLE. Passing a HANDLE address silently writes
+    // 0 bytes, and the C runtime's `_write` doesn't error in a way our error
+    // checks catch. So on Windows, call `WriteFile` from kernel32.dll directly
+    // with the HANDLE; on POSIX, use the normal `open(2)` + `write(2)` path.
+    if (builtin.os.tag == .windows) {
+        try writeAllWindows(out_path, out_buf.items);
+    } else {
+        const full_posix = try std.fs.path.join(std.heap.page_allocator, &.{ out_dir_path, out_basename });
+        defer std.heap.page_allocator.free(full_posix);
+        const out_fd = try openCreateTruncPosix(full_posix);
+        defer _ = std.c.close(out_fd);
+        var written: usize = 0;
+        while (written < out_buf.items.len) {
+            const n_rc = std.c.write(out_fd, out_buf.items[written..].ptr, out_buf.items.len - written);
+            if (n_rc < 0) return error.WriteFailed;
+            const n: usize = @intCast(n_rc);
+            if (n == 0) return error.WriteFailed;
+            written += n;
+        }
     }
 
     if (dist_exists) {
@@ -395,8 +409,14 @@ fn mkdirsRecursive(path: []const u8) !void {
 
 /// Open (or create + truncate) a file for writing. Returns the raw fd.
 /// Cross-platform: POSIX uses libc `open(2)`; Windows uses Win32
-/// `CreateFileW`. Both return the same value (a `std.c.fd_t`) via
-/// per-platform extern decl + comptime dispatch.
+/// POSIX: open + write + close. We don't use `openCreateTrunc` on
+/// Windows because the C runtime's `write()` expects a CRT fd INDEX,
+/// not a Win32 HANDLE — see `writeAllWindows` below for the Windows
+/// path that uses `WriteFile` directly. The `openCreateTrunc` +
+/// `openCreateTruncPosix`/`openCreateTruncWindows` dispatch below is
+/// kept for `readFileAll` (which does work with std.c on Windows because
+/// ReadFile is what the C runtime's `read()` invokes on a real CRT fd
+/// obtained via `_open_osfhandle`).
 fn openCreateTrunc(dir_path: []const u8, basename: []const u8) !std.c.fd_t {
     const full = try std.fs.path.join(std.heap.page_allocator, &.{ dir_path, basename });
     defer std.heap.page_allocator.free(full);
@@ -449,6 +469,21 @@ extern "kernel32" fn CreateFileW(
 
 extern "kernel32" fn CloseHandle(hObject: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
 
+// Win32 WriteFile — declared locally because std.os.windows 0.16 doesn't
+// expose `kernel32!WriteFile` (the std wraps it under a different name).
+// `lpOverlapped` is `LPOVERLAPPED` (a pointer to the OVERLAPPED struct).
+// The OVERLAPPED struct itself is opaque in std.os.windows 0.16 — only
+// its size/layout via `std.os.windows.OVERLAPPED_size` is exposed — so we
+// pass `*anyopaque` here and pass `null` at the call site (synchronous I/O
+// never uses the overlapped field).
+extern "kernel32" fn WriteFile(
+    hFile: std.os.windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: std.os.windows.DWORD,
+    lpNumberOfBytesWritten: *std.os.windows.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) std.os.windows.BOOL;
+
 fn closeWindowsHandle(h: std.os.windows.HANDLE) void {
     _ = CloseHandle(h);
 }
@@ -473,6 +508,51 @@ fn openCreateTruncWindows(full: []const u8) !std.c.fd_t {
     // lld-link passes the HANDLE through unchanged because both are
     // pointer-sized in x86_64.
     return @ptrFromInt(@intFromPtr(h));
+}
+
+/// Windows: open the file via CreateFileW, write `data` via WriteFile,
+/// close the handle. Avoids `std.c.write` (the C runtime's `_write`
+/// takes a CRT fd index, NOT a HANDLE — passing a HANDLE address
+/// silently writes 0 bytes and returns "success").
+fn writeAllWindows(path: []const u8, data: []const u8) !void {
+    var path_w: [std.fs.max_path_bytes:0]u16 = undefined;
+    const written = std.unicode.wtf8ToWtf16Le(&path_w, path) catch
+        return error.OpenOutFailed;
+    path_w[written] = 0;
+
+    const h_opt = CreateFileW(
+        @ptrCast(&path_w),
+        0x40000000, // GENERIC_WRITE
+        0x1, // FILE_SHARE_READ
+        null,
+        2, // CREATE_ALWAYS
+        0x80, // FILE_ATTRIBUTE_NORMAL
+        null,
+    );
+    const h = h_opt orelse return error.OpenOutFailed;
+    defer _ = CloseHandle(h);
+
+    // WriteFile can return fewer bytes than requested only on a pipe
+    // or async handle. We're synchronous and on a regular file, so
+    // either it writes everything or errors out. Loop defensively to
+    // match the POSIX `write(2)` semantics.
+    var total_written: usize = 0;
+    while (total_written < data.len) {
+        var chunk_written: std.os.windows.DWORD = 0;
+        const ok = WriteFile(
+            h,
+            data[total_written..].ptr,
+            @intCast(data.len - total_written),
+            &chunk_written,
+            null,
+        );
+        // `std.os.windows.BOOL` is a typed `c_int`; cast via @intFromEnum
+        // for the == 0 comparison (the Bool type doesn't auto-coerce
+        // to a bare int).
+        if (@intFromEnum(ok) == 0) return error.WriteFailed;
+        if (chunk_written == 0) return error.WriteFailed;
+        total_written += @intCast(chunk_written);
+    }
 }
 
 /// Read the entire contents of a file into a fresh allocation. Returns
