@@ -1311,6 +1311,52 @@ pub fn build(b: *std.Build) void {
     const functional_test_step = b.step("functional-test", "Run functional tests against a real nalar with isolated tmpdir data");
     functional_test_step.dependOn(&run_functional.step);
 
+    // =====================================================================
+    // Functional UI tests (Python+Playwright) — see tests/functional_ui/README.md.
+    //
+    // Boots a real nalar backend + Vite dev server against isolated
+    // tempdirs, then drives the running web app with Playwright Python.
+    // Inherits isolation guarantees from the API-only functional suite
+    // (``is_safe_tmp``, captured ``temp_dir``, ``ORIG_HOME`` snapshot).
+    //
+    // Dependencies:
+    //   1. install:linux:system  — produces zig-out/bin/nalar
+    //   2. python3 venv at .venv-func — installs requirements.txt + playwright
+    //   3. playwright install chromium — one-time browser download (~150 MB)
+    //
+    // Skips silently if `python3` is missing on PATH. The chromium
+    // download is also a probe-based step: if it fails (e.g. no
+    // internet), the suite still tries to run and skips per-test on
+    // missing browser.
+    // =====================================================================
+    const install_ui_requirements = b.addSystemCommand(&.{
+        ".venv-func/bin/pip", "install", "-q", "-r", "tests/functional_ui/requirements.txt",
+    });
+    install_ui_requirements.setCwd(b.path(""));
+    install_ui_requirements.step.dependOn(&install_requirements.step);
+
+    // Install Playwright Chromium browser. ``playwright install chromium``
+    // is idempotent — re-running it is a no-op if the browser is already
+    // cached. We run it as a separate step so CI logs surface the
+    // ~150 MB download progress.
+    const install_playwright_browsers = b.addSystemCommand(&.{
+        ".venv-func/bin/python", "-m", "playwright", "install", "chromium",
+    });
+    install_playwright_browsers.setCwd(b.path(""));
+    install_playwright_browsers.step.dependOn(&install_ui_requirements.step);
+
+    const run_functional_ui = b.addSystemCommand(&.{
+        ".venv-func/bin/python", "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
+    });
+    run_functional_ui.setCwd(b.path(""));
+    run_functional_ui.step.dependOn(&install_playwright_browsers.step);
+    run_functional_ui.step.dependOn(&python_probe.step);
+    // Depend on the same binary install as the API suite.
+    run_functional_ui.step.dependOn(b.getInstallStep());
+
+    const functional_test_ui_step = b.step("functional-test-ui", "Run UI functional tests (Playwright Python) against nalar + Vite dev server");
+    functional_test_ui_step.dependOn(&run_functional_ui.step);
+
     // ============================================================
     // Custom HTTP Server (TCP) - build step
     // ============================================================

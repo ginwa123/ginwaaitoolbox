@@ -7,6 +7,13 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
+// Allow overriding the backend proxy target via VITE_API_PROXY_TARGET.
+// Default is the dev nalar on :8081 (for `pnpm dev` / `bun run dev`).
+// Tests set this to the harness's chosen port (e.g. 8080 or 8082) so the
+// dev server points at a fixture against an isolated tmpdir HOME.
+// See tests/functional_ui/README.md for the full test harness story.
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8081'
+
 export default defineConfig({
   plugins: [
     vue(),
@@ -24,7 +31,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8081', // Point to Zig backend
+        target: apiProxyTarget, // Override-able via VITE_API_PROXY_TARGET env var
         changeOrigin: true,
         // We take over writing the downstream response ourselves so
         // http-proxy does not buffer the upstream SSE body. The

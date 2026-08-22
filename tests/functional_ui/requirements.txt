@@ -1,0 +1,16 @@
+# Pinned to keep CI reproducible. Bump deliberately, not by drift.
+#
+# pytest:  test framework + fixtures + parametrize (reused from functional suite)
+# pytest-xdist:  optional parallel runner (matches sibling suite)
+# playwright:  browser automation — drives the running web app via Chromium
+#
+# NOTE: Playwright also requires the matching browser binaries. Install
+# them with `playwright install chromium` — this is a one-time setup that
+# downloads ~150 MB to ~/.cache/ms-playwright. The README documents this.
+#
+# The functional/ suite uses the same pytest version range, so we duplicate
+# pytest here rather than reaching across test boundaries from build.zig.
+
+pytest>=7.4,<9
+pytest-xdist>=3.3,<4
+playwright>=1.40,<2
