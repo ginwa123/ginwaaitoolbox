@@ -1155,6 +1155,49 @@ jobs:
           fi
           rm -f /tmp/functional-test-start.$$
 
+      - name: "UI tests: Playwright + DB-seeded chatview (functional-test-ui)"
+        # 30 Playwright tests exercising the running Vue webapp
+        # (nalar backend + Vite dev server) in headless Chromium.
+        # Boots a fresh backend + vite per test against an isolated
+        # tmpdir HOME; the chatview tests DB-seed `sessions` +
+        # `llm_history` rows so no real LLM is invoked.
+        #
+        # Three gates:
+        #   1. runner.os != 'Windows' — Playwright Chromium download
+        #      + Vite on the Windows self-hosted runner has unverified
+        #      edge cases. Same gate as functional-test.
+        #   2. matrix.target.step != '__SKIP__' — preserves the
+        #      existing cross-compile-cell guard.
+        #   3. Functional-test ran first — functional-test-ui inherits
+        #      the .venv-func that functional-test just created.
+        if: |
+          runner.os != 'Windows' &&
+          matrix.target.step != '__SKIP__'
+        shell: bash
+        run: |
+          set -u
+          echo "→ functional-test-ui: starting"
+          date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
+          # zig build functional-test-ui installs playwright into the
+          # existing .venv-func, downloads Chromium, and runs the
+          # 30 Playwright tests (10 chatview + 11 safety + 5 smoke
+          # + 4 kanban). Cold cache: ~5 min; warm cache: ~3 min.
+          zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
+          rc=${PIPESTATUS[0]}
+          echo "→ functional-test-ui: exit code $rc"
+          if [ "$rc" -ne 0 ]; then
+            echo "✗ functional-test-ui: failed (see /tmp/functional-test-ui.log)"
+            tail -n 100 /tmp/functional-test-ui.log
+            exit 1
+          fi
+          echo "✓ functional-test-ui: passed"
+          END=$(date +%s)
+          START=$(cat /tmp/functional-test-ui-start.$$ 2>/dev/null || echo 0)
+          if [ "$START" -gt 0 ]; then
+            echo "→ functional-test-ui: $((END - START))s elapsed"
+          fi
+          rm -f /tmp/functional-test-ui-start.$$
+
       - name: Upload nalar + nalar-desktop binaries
         # Both binaries need to ship to the user — install-nalar-desktop.sh
         # installs both. The `nalar` service binary is also useful as a
