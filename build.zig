@@ -97,6 +97,58 @@ fn pickFirstExisting(candidates: []const []const u8) ?[]const u8 {
     return null;
 }
 
+/// Locate MSVC's C++ standard-library headers (used by nalar-desktop's
+/// nalar_webview.cpp on Windows). The headers ship with Visual Studio's
+/// Build Tools — specifically the `INCLUDE` env var that `vcvars64.bat`
+/// sets (e.g. `C:\Program Files (x86)\Microsoft Visual Studio\2022\
+/// BuildTools\VC\Tools\MSVC\14.x\include`). Without them, the .cpp shim's
+/// `#include <wrl/client.h>` fails with "cstddef file not found" because
+/// WRL's first include is `<cstddef>` (a C++ stdlib header, not a C
+/// header). On dev boxes that haven't installed MSVC Build Tools, the
+/// .cpp can't compile — return `null` so we can gate the .cpp build on
+/// "do you have a C++ toolchain?".
+///
+/// We check the env var first (vcvars64.bat sets it), then fall back to
+/// probing the canonical MSVC install location. Returns `true` if any
+/// `cstddef` candidate resolves to an existing file.
+fn hasMsvcCppStllib(b: *std.Build, io: std.Io) bool {
+    if (b.graph.host.result.os.tag != .windows) return false;
+
+    // vcvars64.bat sets these. `INCLUDE` is the primary env var that
+    // lists C/C++ system header search paths.
+    if (b.graph.environ_map.get("INCLUDE")) |inc| {
+        // Quick check: does the INCLUDE list mention the MSVC `include/`
+        // directory? Even a partial match (any path under `VC\Tools\MSVC`)
+        // is good enough — we don't need to verify cstddef specifically.
+        if (std.mem.indexOf(u8, inc, "MSVC") != null) return true;
+    }
+
+    // Fallback: probe the canonical install path. This catches CI runners
+    // that sourced vcvars64.bat into a different env (some workflows
+    // import just INCLUDE; others also set VCToolsInstallDir).
+    const candidates = [_][]const u8{
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+    };
+    for (candidates) |root| {
+        // Any subdir under `MSVC/` (e.g. `14.44.35207/`) means MSVC is
+        // installed. Don't recurse — just check if the MSVC root dir
+        // contains at least one subdir.
+        const d = std.Io.Dir.cwd().openDir(io, root, .{}) catch continue;
+        defer d.close(io);
+        var it = d.iterate();
+        // `it.next` returns `Error!?Entry` (error union of optional).
+        // Return true if the read succeeded AND there's an entry. Any
+        // other outcome (error or end-of-stream) means "not installed".
+        if (it.next(io)) |maybe_entry| {
+            if (maybe_entry) |_| return true;
+        } else |_| {} // readdir error — assume not installed
+    }
+    return false;
+}
+
 /// Locate `bash.exe` on Windows hosts where Git for Windows is installed
 /// but its bin dir is not on PATH.
 ///
@@ -1020,7 +1072,18 @@ pub fn build(b: *std.Build) void {
             desktop_exe.root_module.linkFramework("WebKit", .{});
         },
         .windows => {
-            // Chunk 7: ole32, user32, WebView2Loader (via .cpp shim)
+            // Gate nalar-desktop's .cpp shim compile on having MSVC's C++
+            // standard-library headers. `wrl/client.h` (pulled in by the
+            // shim's `#include <wrl.h>`) starts with `#include <cstddef>`
+            // which is a C++ stdlib header — without MSVC's `include/`
+            // dir on the search path, the .cpp can't compile. On dev
+            // boxes without MSVC Build Tools installed, fall back to a
+            // minimal stub .cpp that exports the same 3 C ABI symbols
+            // (nalar_webview_create / _run / _destroy) as no-ops. This
+            // keeps `zig build nalar-desktop` working on a fresh Windows
+            // checkout that hasn't installed Visual Studio (CI installs
+            // MSVC via the bootstrapper; local dev boxes can skip it).
+            if (hasMsvcCppStllib(b, b.graph.io)) {
             //
             // The C++ shim at platform/windows/nalar_webview.cpp implements
             // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
@@ -1084,6 +1147,28 @@ pub fn build(b: *std.Build) void {
                 .cwd_relative = "src/apps/desktop_app/platform/windows",
             });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
+            } else {
+                // Dev-box fallback: no MSVC C++ stdlib available. Compile
+                // a minimal stub .cpp that exports the 3 C ABI symbols
+                // (nalar_webview_create / _run / _destroy) as no-ops.
+                // Without a real webview, nalar-desktop won't actually
+                // display anything on these dev boxes — but the binary
+                // builds + links + the CLI args parser + the asset
+                // extraction smoke test all still work. CI's runner
+                // installs MSVC and takes the real path above.
+                const stub_cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview_stub.cpp";
+                const stub_cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview_stub.obj";
+                const stub_compile = b.addSystemCommand(&.{
+                    b.graph.zig_exe, "cc",
+                    "-target", "x86_64-windows-gnu",
+                    "-c",
+                    "-o",  stub_cpp_obj,
+                    stub_cpp_src,
+                });
+                stub_compile.setCwd(b.path(""));
+                desktop_exe.step.dependOn(&stub_compile.step);
+                desktop_exe.root_module.addObjectFile(.{ .cwd_relative = stub_cpp_obj });
+            }
         },
         else => {},
     }

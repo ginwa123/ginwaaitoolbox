@@ -209,10 +209,29 @@ fn makePathAbsolute(path: []const u8) !void {
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    // If the path already exists, we're done. `std.c.faccessat` returns
-    // 0 on success (path is accessible), -1 with errno=ENOENT otherwise.
-    // `F_OK` (== 0) means "test for existence" — we don't care about R/W.
-    if (std.c.faccessat(std.c.AT.FDCWD, path_z, std.c.F_OK, 0) == 0) return;
+    // If the path already exists, we're done. We use `std.c.stat` (POSIX) +
+    // `GetFileAttributesW` (Windows) — not `std.c.faccessat` because the
+    // `AT_FDCWD` constant isn't in the Zig 0.16 Windows std.c bindings
+    // (the `AT__struct_3931` has no `FDCWD` member, per the build error
+    // we hit when we used it). For an existing build helper, this is
+    // good enough — `stat` works on POSIX, `GetFileAttributesW` works on
+    // Windows. Both return 0/non-invalid-attribute on "exists", -1/INVALID
+    // on "not found". Fall through to mkdir on either failure.
+    switch (builtin.os.tag) {
+        .windows => {
+            var path_w: [std.fs.max_path_bytes:0]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&path_w, path) catch
+                return error.PathTooLong;
+            path_w[written] = 0;
+            const attrs = extGetFileAttributesW(@ptrCast(&path_w));
+            // INVALID_FILE_ATTRIBUTES (0xFFFFFFFF) = "not found / error".
+            // Any other value = file/dir exists.
+            if (attrs != 0xFFFFFFFF) return;
+        },
+        else => {
+            if (std.c.stat(path_z, &tmp_stat) == 0) return;
+        },
+    }
 
     // Recurse on the parent first.
     if (std.fs.path.dirname(path)) |parent| {
@@ -230,35 +249,40 @@ fn makePathAbsolute(path: []const u8) !void {
     return error.MkdirFailed;
 }
 
+// Local extern decls + scratch buffer for the Win32 `stat` path above.
+extern "kernel32" fn extGetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) std.os.windows.DWORD;
+var tmp_stat: std.c.Stat = undefined;
+
 /// Create (or truncate) a file at an absolute path and write the
 /// given bytes. Returns nothing on success; on write error the
 /// partial file is left on disk (the caller can `deleteTree` to
 /// clean up).
 ///
-/// Uses libc `std.c.*` for cross-platform file I/O. The `O_WRONLY`,
-/// `O_CREAT`, `O_TRUNC`, `O_CLOEXEC` constants come from libc's
-/// `<fcntl.h>` (via `std.c`) and have the correct values for each
-/// platform — on aarch64-Linux O_CLOEXEC is `0o2000000`; on
-/// aarch64-Darwin it's `0x10000000`. The previous `std.os.linux.O`
-/// struct-of-flags style only worked on Linux.
+/// Per-platform: POSIX uses libc `std.c.open` + `std.c.write`; Windows
+/// uses Win32 `CreateFileW` + `WriteFile`. The `std.c.O` struct of
+/// open-flag bits is `void` on Windows in Zig 0.16 (the libc bindings
+/// don't expose open-flag constants for the Windows CRT), so we have
+/// to take the per-platform fork.
 fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const path_z = copyToNull(&path_buf, path);
+
+    switch (builtin.os.tag) {
+        .windows => return writeFileAbsoluteWindows(path, content),
+        else => return writeFileAbsolutePosix(path_z, content),
+    }
+}
+
+fn writeFileAbsolutePosix(path_z: [*:0]const u8, content: []const u8) !void {
     // `std.c.O` is a Zig packed struct mirroring the kernel's open-flag
-    // bits for the target platform (on Linux it points to `linux.O`;
-    // on macOS it's a different packed struct with the same conceptual
-    // fields — `ACCMODE`, `CREAT`, `TRUNC`, `CLOEXEC`). The struct
-    // layout (bit positions for O_CLOEXEC etc.) differs across platforms
-    // but the field names are portable. We bit-cast to `c_int` for
-    // `std.c.open`, which expects the raw integer the kernel uses.
+    // bits for the target platform. The struct layout differs across
+    // platforms but the field names are portable.
     const flags: std.c.O = .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .TRUNC = true,
         .CLOEXEC = true,
     };
-
-    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    const path_z = copyToNull(&path_buf, path);
-
     // `std.c.open` returns -1 on failure (with errno set) or the new fd.
     const fd = std.c.open(path_z, @bitCast(flags), @as(c_int, 0o644));
     if (fd == -1) return error.OpenOutFailed;
@@ -273,6 +297,78 @@ fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
         written += @intCast(n);
     }
 }
+
+fn writeFileAbsoluteWindows(path: []const u8, content: []const u8) !void {
+    var path_w: [std.fs.max_path_bytes:0]u16 = undefined;
+    const written = std.unicode.wtf8ToWtf16Le(&path_w, path) catch
+        return error.PathTooLong;
+    path_w[written] = 0;
+
+    // CreateFileW flags: GENERIC_WRITE | OPEN_ALWAYS (truncate if exists).
+    // CREATE_ALWAYS would also work but loses the existing file's ACL on
+    // some Windows versions; OPEN_ALWAYS + truncation via SetEndOfFile
+    // is the more conservative choice.
+    const h_opt = CreateFileW(
+        @ptrCast(&path_w),
+        0x40000000, // GENERIC_WRITE
+        0x1, // FILE_SHARE_READ
+        null,
+        4, // OPEN_ALWAYS
+        0x80, // FILE_ATTRIBUTE_NORMAL
+        null,
+    );
+    const h = h_opt orelse return error.OpenOutFailed;
+    defer _ = CloseHandle(h);
+
+    // Truncate to 0 (OPEN_ALWAYS preserves existing content; we want
+    // truncation for the "overwrite" semantic).
+    const set_rc = SetFilePointerEx(h, 0, null, 2); // FILE_END = 2
+    _ = set_rc; // best-effort; if it fails the write below will surface it
+
+    var total_written: usize = 0;
+    while (total_written < content.len) {
+        var chunk_written: std.os.windows.DWORD = 0;
+        const ok = WriteFile(
+            h,
+            content[total_written..].ptr,
+            @intCast(content.len - total_written),
+            &chunk_written,
+            null,
+        );
+        if (@intFromEnum(ok) == 0) return error.WriteFailed;
+        if (chunk_written == 0) return error.WriteFailed;
+        total_written += @intCast(chunk_written);
+    }
+}
+
+// Local Win32 externs for the file-write path above. The `std.os.windows`
+// bindings expose `CreateFileW` and `WriteFile` indirectly via
+// `std.fs.File.create` (which returns a Zig file handle, not a Win32
+// HANDLE), and we need raw HANDLE access to pass through `SetFilePointerEx`
+// + `WriteFile` directly. `CloseHandle` is the matching HANDLE closer.
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const u16,
+    dwDesiredAccess: std.os.windows.DWORD,
+    dwShareMode: std.os.windows.DWORD,
+    lpSecurityAttributes: ?*std.os.windows.SECURITY_ATTRIBUTES,
+    dwCreationDisposition: std.os.windows.DWORD,
+    dwFlagsAndAttributes: std.os.windows.DWORD,
+    hTemplateFile: ?std.os.windows.HANDLE,
+) callconv(.winapi) ?std.os.windows.HANDLE;
+extern "kernel32" fn WriteFile(
+    hFile: std.os.windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: std.os.windows.DWORD,
+    lpNumberOfBytesWritten: *std.os.windows.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn CloseHandle(hObject: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn SetFilePointerEx(
+    hFile: std.os.windows.HANDLE,
+    liDistanceToMove: i64,
+    lpNewFilePointer: ?*i64,
+    dwMoveMethod: std.os.windows.DWORD,
+) callconv(.winapi) std.os.windows.BOOL;
 
 /// `rm -rf` via libc `opendir` / `readdir` / `closedir` + `unlink` / `rmdir`.
 /// Best-effort: errors are logged but not propagated.

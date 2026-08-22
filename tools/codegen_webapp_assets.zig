@@ -239,7 +239,19 @@ fn walkDirPosix(
         if (name.len > 0 and !(name.len == 1 and name[0] == '.') and
             !(name.len == 2 and name[0] == '.' and name[1] == '.'))
         {
-            const rel = try std.fs.path.join(allocator, &.{ prefix, name });
+            // `std.fs.path.join` on Windows uses `\` as the separator,
+            // but the generated Zig string literal needs forward slashes
+            // (otherwise `"/assets\foo.js"` is an invalid escape sequence
+            // — `\f` is a form-feed in Zig string literals). Normalize
+            // the separator BEFORE emitting the string literal.
+            const rel_raw = try std.fs.path.join(allocator, &.{ prefix, name });
+            defer allocator.free(rel_raw);
+            // Manual replace: copy + swap `\` to `/`. (Zig 0.16 has
+            // no `dupeAndReplace` on Allocator, only on ArrayList.)
+            const rel = try allocator.alloc(u8, rel_raw.len);
+            for (rel_raw, 0..) |c, i| {
+                rel[i] = if (c == '\\') '/' else c;
+            }
 
             if (entry.type == comptime dtValue(.REG)) {
                 try out.append(allocator, rel);
@@ -340,10 +352,20 @@ fn walkDirWindows(
             defer allocator.free(name_buf);
             _ = std.unicode.wtf16LeToWtf8(name_buf, name_w);
 
-            const rel = try std.fs.path.join(
+            const rel_raw = try std.fs.path.join(
                 allocator,
                 &.{ prefix, name_buf },
             );
+            defer allocator.free(rel_raw);
+            // On Windows, `std.fs.path.join` produces backslash-separated
+            // paths. The generated Zig string literal needs forward
+            // slashes — otherwise `"/assets\foo.js"` is an invalid
+            // escape sequence (`\f` is form-feed in Zig). Normalize
+            // BEFORE emitting the string literal.
+            const rel = try allocator.alloc(u8, rel_raw.len);
+            for (rel_raw, 0..) |c, i| {
+                rel[i] = if (c == '\\') '/' else c;
+            }
 
             // `dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY` is the
             // MS-DOS-era filesystem directory bit — stable across
