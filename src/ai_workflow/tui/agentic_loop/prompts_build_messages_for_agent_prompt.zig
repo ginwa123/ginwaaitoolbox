@@ -313,6 +313,9 @@ pub const McpToolError = error{
     JsonParseError,
     InvalidResponse,
     OutOfMemory,
+    /// MCP server config declares more than 16 custom headers; we
+    /// stack-allocate the request header slice so there's a hard cap.
+    TooManyHeaders,
 };
 
 /// Header struct for MCP requests
@@ -418,7 +421,7 @@ fn fetchToolsFromServer(
     header_buf[header_count] = .{ .name = "Accept", .value = "application/json, text/event-stream" };
     header_count += 1;
     for (_headers) |h| {
-        if (header_count >= header_buf.len) return error.InvalidMCPHeaders;
+        if (header_count >= header_buf.len) return error.TooManyHeaders;
         header_buf[header_count] = .{ .name = h.key, .value = h.value };
         header_count += 1;
     }

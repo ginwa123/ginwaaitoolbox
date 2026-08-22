@@ -219,14 +219,12 @@ fn makePathAbsolute(path: []const u8) !void {
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    // If the path already exists, we're done. We use `std.c.stat` (POSIX) +
-    // `GetFileAttributesW` (Windows) — not `std.c.faccessat` because the
-    // `AT_FDCWD` constant isn't in the Zig 0.16 Windows std.c bindings
-    // (the `AT__struct_3931` has no `FDCWD` member, per the build error
-    // we hit when we used it). For an existing build helper, this is
-    // good enough — `stat` works on POSIX, `GetFileAttributesW` works on
-    // Windows. Both return 0/non-invalid-attribute on "exists", -1/INVALID
-    // on "not found". Fall through to mkdir on either failure.
+    // If the path already exists, we're done. Use `faccessat(AT_FDCWD)` on
+    // POSIX (works on Linux + macOS) and `GetFileAttributesW` on Windows
+    // (where the Zig 0.16 std.c `AT.FDCWD` constant isn't available, see
+    // path_resolve.zig:155). Both return 0 / non-INVALID-ATTRIBUTES on
+    // "exists" and -1 / INVALID_FILE_ATTRIBUTES on "not found". Fall
+    // through to mkdir on either failure.
     switch (builtin.os.tag) {
         .windows => {
             var path_w: [std.fs.max_path_bytes:0]u16 = undefined;
@@ -239,7 +237,11 @@ fn makePathAbsolute(path: []const u8) !void {
             if (attrs != 0xFFFFFFFF) return;
         },
         else => {
-            if (std.c.stat(path_z, &tmp_stat) == 0) return;
+            // `std.c.faccessat` + `AT.FDCWD` + `F_OK` is the cross-platform
+            // POSIX idiom for "does this absolute path exist?" — returns 0
+            // when accessible, -1 with errno=ENOENT otherwise. We don't
+            // care about R/W permissions, only existence.
+            if (std.c.faccessat(std.c.AT.FDCWD, path_z, std.c.F_OK, 0) == 0) return;
         },
     }
 
@@ -272,7 +274,6 @@ fn makePathAbsolute(path: []const u8) !void {
 // by the build's earlier `std.c.readdir` compile error on Windows
 // (which prevented the linker from ever running for this target).
 extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) std.os.windows.DWORD;
-var tmp_stat: std.c.Stat = undefined;
 
 /// Create (or truncate) a file at an absolute path and write the
 /// given bytes. Returns nothing on success; on write error the
