@@ -44,6 +44,17 @@ pub const AgentKnowledgeRow = struct {
     updated_at: []const u8,
 };
 
+/// Wire shape for a system-prompt row in the GET response (Migration 080).
+pub const AgentSystemPromptRow = struct {
+    id: []const u8,
+    agent_id: []const u8,
+    title: []const u8,
+    content: []const u8,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
 /// Wire shape for the agent row in the GET response.
 pub const AgentRow = struct {
     id: []const u8,
@@ -85,6 +96,9 @@ pub const AgentGetOutput = struct {
     agent: AgentRow,
     knowledge: []const AgentKnowledgeRow,
     tools: []const []const u8,
+    /// Per-agent named system-prompt blocks (Migration 080), ordered
+    /// position DESC — same ordering convention as knowledge.
+    system_prompts: []const AgentSystemPromptRow,
 };
 
 // =====================================================================
@@ -168,10 +182,41 @@ fn useCase(
     }
     const tools_owned = try tools.toOwnedSlice(allocator);
 
+    // Load system-prompt rows (Migration 080), position DESC.
+    var system_prompts = std.ArrayList(AgentSystemPromptRow).empty;
+    errdefer {
+        for (system_prompts.items) |p| freeSystemPromptRow(allocator, p);
+        system_prompts.deinit(allocator);
+    }
+    {
+        var qp = db.query(allocator,
+            \\SELECT id, agent_id, title, content, position,
+            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
+            \\FROM agent_system_prompt WHERE agent_id = ?
+            \\ORDER BY position DESC
+        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
+        defer qp.deinit();
+        while ((qp.next() catch null)) |r| {
+            defer r.deinit(allocator);
+            const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
+            try system_prompts.append(allocator, .{
+                .id = try allocator.dupe(u8, r.values[0]),
+                .agent_id = try allocator.dupe(u8, r.values[1]),
+                .title = try allocator.dupe(u8, r.values[2]),
+                .content = try allocator.dupe(u8, r.values[3]),
+                .position = position,
+                .created_at = try allocator.dupe(u8, r.values[5]),
+                .updated_at = try allocator.dupe(u8, r.values[6]),
+            });
+        }
+    }
+    const system_prompts_owned = try system_prompts.toOwnedSlice(allocator);
+
     return .{
         .agent = agent,
         .knowledge = knowledge_owned,
         .tools = tools_owned,
+        .system_prompts = system_prompts_owned,
     };
 }
 
@@ -208,6 +253,16 @@ fn freeKnowledgeRow(allocator: std.mem.Allocator, k: AgentKnowledgeRow) void {
     if (k.content.len > 0) allocator.free(k.content);
     if (k.created_at.len > 0) allocator.free(k.created_at);
     if (k.updated_at.len > 0) allocator.free(k.updated_at);
+}
+
+/// Free every slice field on a single system-prompt row.
+fn freeSystemPromptRow(allocator: std.mem.Allocator, p: AgentSystemPromptRow) void {
+    allocator.free(p.id);
+    allocator.free(p.agent_id);
+    if (p.title.len > 0) allocator.free(p.title);
+    if (p.content.len > 0) allocator.free(p.content);
+    if (p.created_at.len > 0) allocator.free(p.created_at);
+    if (p.updated_at.len > 0) allocator.free(p.updated_at);
 }
 
 // =====================================================================
@@ -258,6 +313,7 @@ pub fn agentsGetHandler(
         .agent = output.agent,
         .knowledge = output.knowledge,
         .tools = output.tools,
+        .system_prompts = output.system_prompts,
     }, .{});
     return res.jsonResponse(.{ .status_code = 200, .data = data });
 }
@@ -276,6 +332,7 @@ const sqlite = @import("nalarcore").sqlite;
 const testing = std.testing;
 const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
 const Migration079AddContentToAgentKnowledge = @import("../../../migrations/migration.zig").Migration079AddContentToAgentKnowledge;
+const Migration080AddAgentSystemPrompt = @import("../../../migrations/migration.zig").Migration080AddAgentSystemPrompt;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -300,6 +357,8 @@ fn setupDb() !TestCtx {
     // Production DBs run every migration in order — the harness must
     // mirror that, or the `content` column (Migration 079) is missing.
     try Migration079AddContentToAgentKnowledge.up(&db, testing.allocator);
+    // Same for the agent_system_prompt table (Migration 080).
+    try Migration080AddAgentSystemPrompt.up(&db, testing.allocator);
 
     // Seed: 1 agent + 2 knowledge rows + 2 enabled tools + 1 disabled tool.
     try db.exec(testing.allocator,
@@ -351,6 +410,8 @@ fn freeOutput(allocator: std.mem.Allocator, output: AgentGetOutput) void {
     allocator.free(output.knowledge);
     for (output.tools) |n| allocator.free(n);
     allocator.free(output.tools);
+    for (output.system_prompts) |p| freeSystemPromptRow(allocator, p);
+    allocator.free(output.system_prompts);
 }
 
 test "useCase: empty workspace_id returns IdsRequired" {
@@ -447,4 +508,30 @@ test "useCase: returns content field for knowledge rows" {
     // File-backed rows round-trip with empty content.
     try testing.expectEqualStrings("", output.knowledge[1].content);
     try testing.expectEqualStrings("", output.knowledge[2].content);
+}
+
+test "useCase: returns system_prompts ordered position DESC (Migration 080)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Seed two prompt rows: sp_low at position 0, sp_high at position 3.
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_system_prompt (id, agent_id, title, content, position) VALUES ('sp_low', 'ws_item_1', 'Low', 'low body', 0)",
+        &[_][]const u8{},
+    );
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_system_prompt (id, agent_id, title, content, position) VALUES ('sp_high', 'ws_item_1', 'High', 'high body', 3)",
+        &[_][]const u8{},
+    );
+
+    const output = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_1" });
+    defer freeOutput(alloc, output);
+
+    try testing.expectEqual(@as(usize, 2), output.system_prompts.len);
+    // position DESC: sp_high (3) first, sp_low (0) second.
+    try testing.expectEqualStrings("sp_high", output.system_prompts[0].id);
+    try testing.expectEqualStrings("high body", output.system_prompts[0].content);
+    try testing.expectEqualStrings("sp_low", output.system_prompts[1].id);
 }

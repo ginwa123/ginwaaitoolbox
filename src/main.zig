@@ -409,6 +409,14 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.patch("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeUpdateHandler);
     try gs.router.delete("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeDeleteHandler);
     try gs.router.patch("/api/agents/:agent_id/knowledge/reorder", ai_mod.http_handlers.agentKnowledgeReorderHandler);
+    // Agent system-prompt CRUD (Migration 080). NOTE: `reorder` literal
+    // MUST be registered BEFORE `:prompt_id` — the router walks routes in
+    // registration order and `:prompt_id` would otherwise capture the
+    // literal "reorder" segment (same shadowing trap as knowledge above).
+    try gs.router.post("/api/agents/:agent_id/system_prompt", ai_mod.http_handlers.agentSystemPromptCreateHandler);
+    try gs.router.patch("/api/agents/:agent_id/system_prompt/reorder", ai_mod.http_handlers.agentSystemPromptReorderHandler);
+    try gs.router.patch("/api/agents/:agent_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentSystemPromptUpdateHandler);
+    try gs.router.delete("/api/agents/:agent_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentSystemPromptDeleteHandler);
     try gs.router.get("/api/agent-tools/registry", ai_mod.http_handlers.agentToolsRegistryHandler);
     try gs.router.get("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsListHandler);
     try gs.router.post("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsCreateHandler);
