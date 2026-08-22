@@ -40,6 +40,25 @@ const std = @import("std");
 const builtin = @import("builtin");
 const helpers = @import("helpers");
 
+// Windows-only WinSock2 `socket` extern, declared at module scope so it
+// can be `@import`ed by the inline `if (builtin.os.tag == .windows)`
+// branch in `tryProbe`. On non-Windows targets this `extern` block is
+// compiled to an empty placeholder (matching the `if (builtin.os.tag ==
+// .windows)` guard below), so the linker never sees a missing-symbol
+// error for `socket` on Linux/macOS.
+//
+// Why not use `std.c.socket`? — Zig 0.16's `std.c.private.socket` is
+// declared as returning `c_int` on all platforms, but the actual MSVCRT/
+// UCRT `socket()` returns `SOCKET` (= `*anyopaque` = `std.c.fd_t` on
+// Windows). The 32-bit `c_int` binding truncates the high bits of the
+// handle on x64 — fine for typical user-mode handles, but the type
+// mismatch means the returned `c_int` can't be passed to `setsockopt`/
+// `connect`/`close` (all of which expect `fd_t`). Declaring our own
+// `socket` with the correct `fd_t` return type avoids the cast entirely.
+const win_socket_api = if (builtin.os.tag == .windows) struct {
+    extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) std.c.fd_t;
+} else struct {};
+
 /// Handle to a running nalar subprocess. Caller MUST call `terminate()`
 /// (or `kill` + `wait`) before discarding, otherwise nalar becomes a
 /// zombie until the OS reaps it.
@@ -133,8 +152,24 @@ fn tryProbe(port: u16) bool {
     // called `std.os.linux.socket` which compiles on macOS but invokes
     // the Linux syscall number — which doesn't exist on the Darwin
     // kernel, so the process gets killed with SIGSYS on the first probe.
-    const fd = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
-    if (fd == -1) return false;
+    //
+    // Windows note: Zig 0.16's `std.c.private.socket` declares its return
+    // type as `c_int`, but the actual MSVCRT/UCRT `socket()` returns
+    // `SOCKET` (= `*anyopaque` = `std.c.fd_t` on Windows). On x64 the
+    // 32-bit `c_int` binding truncates the high bits of the handle —
+    // fine for typical user-mode handles, but the type mismatch means
+    // we can't pass it to `setsockopt`/`connect`/`close` which all expect
+    // `fd_t`. We declare our own `ws2_32` `socket` extern so the return
+    // type matches `fd_t` directly, avoiding the truncation cast entirely.
+    // On POSIX, `fd_t` == `c_int` so `std.c.socket` works as-is.
+    const fd: std.c.fd_t = if (builtin.os.tag == .windows)
+        win_socket_api.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0)
+    else
+        std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    // INVALID_SOCKET on Windows is (SOCKET)(~0) == 0xFFFFFFFFFFFFFFFF;
+    // @intFromPtr extracts the underlying address as usize so we can do
+    // an idiomatic `-1` check.
+    if (@intFromPtr(fd) == std.math.maxInt(usize)) return false;
     defer _ = std.c.close(fd);
 
     // 1-second per-call recv() timeout. If the server hasn't responded
@@ -291,7 +326,17 @@ pub fn spawn(
     return .{
         .child = child,
         .port = port,
-        .pid = if (child.id) |pid| @intCast(pid) else 0,
+        // Windows note: `child.id` is `?HANDLE` (= `?*anyopaque`) on Windows,
+        // not a numeric PID. There is no real libc `pid_t` in the MSVCRT/
+        // UCRT, so we can't `@intCast` a HANDLE to `i32`. Per the doc comment
+        // on `pid`, the field is purely for logging/debugging and `terminate()`
+        // uses `child.id` directly — so 0 on Windows is a correct no-op
+        // (and matches the existing "or 0 if the platform doesn't expose a
+        // pid" semantic for sandboxed environments).
+        .pid = switch (builtin.os.tag) {
+            .windows => 0,
+            else => if (child.id) |pid| @intCast(pid) else 0,
+        },
     };
 }
 

@@ -1131,6 +1131,16 @@ pub fn build(b: *std.Build) void {
             desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
+            // Zig's MinGW (gnu) link line doesn't auto-pull kernel32.dll /
+            // ws2_32.dll for raw `extern "kernel32"` / `extern "ws2_32"`
+            // decls in Zig code (it does for `addCSourceFile`'d C/C++ —
+            // those get the MSVC-style default libs). Add them explicitly
+            // so the Win32 externs in extraction.zig / subprocess.zig
+            // resolve at link time. Without these, lld-link reports
+            // "undefined symbol" for functions like
+            // `extGetFileAttributesW` and `ws_socket`.
+            desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
+            desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
             // WebView2's static-link import library (`WebView2Loader.lib`) is
             // staged by the CI workflow at `src\apps\desktop_app\platform\windows\`
             // next to the .cpp — same directory as `#pragma comment(lib,
@@ -1168,6 +1178,13 @@ pub fn build(b: *std.Build) void {
                 stub_compile.setCwd(b.path(""));
                 desktop_exe.step.dependOn(&stub_compile.step);
                 desktop_exe.root_module.addObjectFile(.{ .cwd_relative = stub_cpp_obj });
+                // Dev-box fallback path also needs the raw Win32 / WinSock2
+                // externs declared in extraction.zig / subprocess.zig to
+                // resolve at link time (see the MSVC branch above for the
+                // full rationale on why Zig's MinGW link doesn't auto-pull
+                // these for `extern "kernel32"` / `extern "ws2_32"` decls).
+                desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
+                desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
             }
         },
         else => {},
