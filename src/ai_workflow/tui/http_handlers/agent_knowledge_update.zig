@@ -86,13 +86,22 @@ pub const KnowledgeUpdateOutput = struct {
 // =====================================================================
 
 /// Update an existing knowledge row. Validates that at least one of
-/// `file_path` / `label` is provided, that any provided
-/// `file_path` is absolute, then UPDATE-with-dynamic-SQL the
-/// requested fields and SELECT-refetch the row. The use-case is
+/// `file_path` / `label` / `content` is provided, that any provided
+/// NON-EMPTY `file_path` is absolute (empty string = clear the column,
+/// i.e. switch the row to content-backed), then UPDATE-with-dynamic-SQL
+/// the requested fields and SELECT-refetch the row. The use-case is
 /// transport-agnostic: it works for both the per-request arena
 /// (production HTTP handler) and `testing.allocator` (unit tests
 /// below) — all allocations go through the passed-in allocator.
-fn useCase(
+///
+/// Empty-string semantics (2026-08-22 fix, PR #291 follow-up):
+///   - `file_path = ""` → clears the path (row becomes inline-text).
+///     NOT a NotAbsolutePath error — the edit dialog's mode switch
+///     sends `{file_path: "", content: "..."}` atomically.
+///   - `content = ""`  → clears the text (row becomes file-backed).
+///     Bound via COALESCE(?, '') because SqliteBackend.exec binds
+///     empty slices as SQL NULL, which violates NOT NULL.
+pub fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
     input: KnowledgeUpdateInput,
@@ -104,18 +113,21 @@ fn useCase(
         return error.NothingToUpdate;
     }
     if (input.file_path) |fp| {
-        if (!std.fs.path.isAbsolute(fp)) return error.NotAbsolutePath;
+        // Empty string = clear the column (mode switch to text-backed).
+        // Only NON-empty paths must be absolute.
+        if (fp.len > 0 and !std.fs.path.isAbsolute(fp)) return error.NotAbsolutePath;
     }
 
     // Build dynamic UPDATE SQL. Zig 0.16 dropped
     // std.io.fixedBufferStream, so we use ArrayList.appendSlice for
-    // the static fragments.
+    // the static fragments. file_path/content use COALESCE(?, '') so
+    // an empty-slice bind lands as '' not NULL (NOT NULL columns).
     var sql_list: std.ArrayList(u8) = .empty;
     defer sql_list.deinit(allocator);
     try sql_list.appendSlice(allocator, "UPDATE agent_knowledge SET updated_at = datetime('now')");
-    if (input.file_path != null) try sql_list.appendSlice(allocator, ", file_path = ?");
+    if (input.file_path != null) try sql_list.appendSlice(allocator, ", file_path = COALESCE(?, '')");
     if (input.label != null) try sql_list.appendSlice(allocator, ", label = ?");
-    if (input.content != null) try sql_list.appendSlice(allocator, ", content = ?");
+    if (input.content != null) try sql_list.appendSlice(allocator, ", content = COALESCE(?, '')");
     try sql_list.appendSlice(allocator, " WHERE id = ? AND agent_id = ?");
 
     // Bind args. Max 5 slots: file_path, label, content, knowledge_id, agent_id.
@@ -440,4 +452,82 @@ test "useCase: PATCH can set content on an existing row" {
     // Content is set; file_path unchanged (row keeps its old path).
     try testing.expectEqualStrings("new inline text", output.knowledge.content);
     try testing.expectEqualStrings("/tmp/orig.md", output.knowledge.file_path);
+}
+
+// ─── Mode-switch tests (2026-08-22, PR #291 follow-up) ─────────────────
+//
+// The edit dialog's File↔Text mode switch sends BOTH source fields in
+// one PATCH — the inactive one as "". These tests lock in the
+// empty-string semantics: "" = clear this column (not an error).
+
+test "useCase: file_path='' clears path and sets content (file→text switch)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .agent_id = "ws_item_1",
+        .knowledge_id = "know_1",
+        // Exactly what the edit dialog sends for a text-mode save.
+        .file_path = "",
+        .label = "Switched",
+        .content = "inline body after switch",
+    });
+    defer {
+        alloc.free(output.knowledge.id);
+        alloc.free(output.knowledge.agent_id);
+        alloc.free(output.knowledge.label);
+        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
+        if (output.knowledge.file_path.len > 0) alloc.free(output.knowledge.file_path);
+    }
+    // Regression: this used to 400 with "file_path must be absolute"
+    // because isAbsolute("") is false.
+    try testing.expectEqualStrings("", output.knowledge.file_path);
+    try testing.expectEqualStrings("inline body after switch", output.knowledge.content);
+    try testing.expectEqualStrings("Switched", output.knowledge.label);
+}
+
+test "useCase: content='' clears text and sets path (text→file switch)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{
+        .agent_id = "ws_item_1",
+        .knowledge_id = "know_1",
+        // Exactly what the edit dialog sends for a file-mode save.
+        .file_path = "/tmp/switched.md",
+        .label = "Switched to file",
+        .content = "",
+    });
+    defer {
+        alloc.free(output.knowledge.id);
+        alloc.free(output.knowledge.agent_id);
+        alloc.free(output.knowledge.label);
+        alloc.free(output.knowledge.file_path);
+        if (output.knowledge.content.len > 0) alloc.free(output.knowledge.content);
+    }
+    // Regression: content="" used to 500 because SqliteBackend.exec
+    // binds empty slices as SQL NULL → NOT NULL constraint fail.
+    try testing.expectEqualStrings("", output.knowledge.content);
+    try testing.expectEqualStrings("/tmp/switched.md", output.knowledge.file_path);
+}
+
+test "useCase: relative non-empty file_path still returns NotAbsolutePath" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.NotAbsolutePath,
+        useCase(alloc, &ctx.db, .{
+            .agent_id = "ws_item_1",
+            .knowledge_id = "know_1",
+            .file_path = "relative/path.md",
+            .label = null,
+        }),
+    );
 }

@@ -406,9 +406,13 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsGetHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsUpdateHandler);
     try gs.router.post("/api/agents/:agent_id/knowledge", ai_mod.http_handlers.agentKnowledgeCreateHandler);
+    // ORDER MATTERS: the literal `/knowledge/reorder` route MUST be
+    // registered BEFORE `/knowledge/:knowledge_id` — matchRoute walks
+    // routes in registration order, so the param route would otherwise
+    // capture PATCH /knowledge/reorder with knowledge_id="reorder".
+    try gs.router.patch("/api/agents/:agent_id/knowledge/reorder", ai_mod.http_handlers.agentKnowledgeReorderHandler);
     try gs.router.patch("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeUpdateHandler);
     try gs.router.delete("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeDeleteHandler);
-    try gs.router.patch("/api/agents/:agent_id/knowledge/reorder", ai_mod.http_handlers.agentKnowledgeReorderHandler);
     try gs.router.get("/api/agent-tools/registry", ai_mod.http_handlers.agentToolsRegistryHandler);
     try gs.router.get("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsListHandler);
     try gs.router.post("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsCreateHandler);

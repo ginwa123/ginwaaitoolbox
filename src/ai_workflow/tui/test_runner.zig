@@ -81,6 +81,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/agents_update.zig"); // PATCH /items/:id/agent (Task 5)
     _ = @import("http_handlers/agent_knowledge_create.zig"); // POST /agents/:id/knowledge (Task 6)
     _ = @import("http_handlers/agent_knowledge_update.zig"); // PATCH /agents/:id/knowledge/:id (Task 6)
+    _ = @import("http_handlers/agent_knowledge_update_functional_test.zig"); // ISOLATED functional: File↔Text mode-switch payloads vs real SQLite (PR #291 lesson)
     _ = @import("http_handlers/agent_knowledge_delete.zig"); // DELETE /agents/:id/knowledge/:id (Task 6)
     _ = @import("http_handlers/agent_knowledge_reorder.zig"); // PATCH /agents/:id/knowledge/reorder (Task 6)
     _ = @import("http_handlers/agent_tools_registry.zig"); // GET /agent-tools/registry (Task 7)
