@@ -168,8 +168,14 @@ fn tryProbe(port: u16) bool {
         std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
     // INVALID_SOCKET on Windows is (SOCKET)(~0) == 0xFFFFFFFFFFFFFFFF;
     // @intFromPtr extracts the underlying address as usize so we can do
-    // an idiomatic `-1` check.
-    if (@intFromPtr(fd) == std.math.maxInt(usize)) return false;
+    // an idiomatic `-1` check. On POSIX, `fd_t == c_int`, so the
+    // standard `-1` check is used; on Windows, fd is a pointer and we
+    // use @intFromPtr. The branch must be COMPTIME-gated on the OS —
+    // @intFromPtr on a non-pointer c_int is a Zig 0.16 compile error.
+    if (switch (builtin.os.tag) {
+        .windows => @intFromPtr(fd) == std.math.maxInt(usize),
+        else => fd == -1,
+    }) return false;
     defer _ = std.c.close(fd);
 
     // 1-second per-call recv() timeout. If the server hasn't responded
