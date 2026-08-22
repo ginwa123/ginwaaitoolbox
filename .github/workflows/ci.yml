@@ -95,6 +95,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Node.js 24 + npm (functional-test-ui needs npm for Vite)
+        # The UIHarness spawns `npm run dev` to start the Vite dev server
+        # during Playwright tests. We use npm (not bun) because the
+        # harness's shutil.which('npm') / shutil.which('npm.cmd')
+        # resolution needs a literal `npm` on PATH — bun's node-compat
+        # mode does not register as `npm`. Same Node version as the
+        # frontend job for reproducibility.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Install Zig ${{ env.ZIG_VERSION }}
         uses: mlugg/setup-zig@v2
         with:
@@ -242,6 +253,17 @@ jobs:
         #                     Bun release archive on the runner. GitHub-
         #                     hosted Ubuntu runners ship unzip pre-installed,
         #                     but the self-hosted Arch runner image does not.
+        #   Playwright Chromium deps (functional-test-ui step needs these
+        #   for `playwright install chromium` + headless launch):
+        #     nss, nspr, libxkbcommon, libdrm, libxcomposite, libxdamage,
+        #     libxfixes, libxrandr, mesa, pango, cairo, alsa-lib,
+        #     at-spi2-core, at-spi2-atk, libcups
+        #   Arch package mapping: most are 1:1 with the upstream name
+        #   except `libdrm` (Debian) → `libdrm` (Arch), `nss` covers
+        #   libnss3/libnssutil3/libsmime3 (split on Debian), and
+        #   `cups` here is the libcups client library. `nspr` is its
+        #   own package on both Arch + Debian (provides libnspr4.so,
+        #   required by Chromium's network stack).
         run: |
           set -u
           # Refresh the package DB FIRST. The self-hosted runner's
@@ -253,7 +275,7 @@ jobs:
           # download a phantom package version.
           sudo -n pacman -Sy --noconfirm
           missing=()
-          for pkg in base-devel openssl curl sqlite postgresql-libs ripgrep pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip; do
+          for pkg in base-devel openssl curl sqlite postgresql-libs ripgrep pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip nss nspr libxkbcommon libdrm libxcomposite libxdamage libxfixes libxrandr mesa pango cairo alsa-lib at-spi2-core at-spi2-atk libcups; do
             if pacman -Q "$pkg" >/dev/null 2>&1; then
               echo "  ✓ $pkg"
             else
@@ -1154,6 +1176,88 @@ jobs:
             echo "→ functional-test: $((END - START))s elapsed"
           fi
           rm -f /tmp/functional-test-start.$$
+
+      - name: Install npm + webapp dependencies (UI tests need Vite)
+        # The Vite dev server is spawned by UIHarness during the
+        # functional-test-ui step via `npm run dev`. The webapp's
+        # node_modules is gitignored; cache it keyed by package-lock
+        # hash + restore + npm ci on cache miss. Without this step,
+        # vite isn't on PATH and the UI tests fail with
+        # `vite: command not found` (PR #293 feedback).
+        if: |
+          runner.os != 'Windows' &&
+          matrix.target.step != '__SKIP__'
+        shell: bash
+        run: |
+          set -u
+          # Install Node.js + npm via actions/setup-node (we rely on
+          # the action having run earlier in this job — see
+          # `setup-node` invocation near the top of backend).
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "✗ npm not on PATH — setup-node step must have failed"
+            exit 1
+          fi
+          # Restore node_modules from cache (if hit).
+          CACHE_DIR="$HOME/.cache/nalar-npm-node-modules"
+          mkdir -p "$CACHE_DIR"
+          HASH=$(sha256sum src/apps/desktop/package-lock.json 2>/dev/null \
+                   || sha256sum src/apps/desktop/bun.lock | cut -c1-16)
+          CACHE_TARBALL="$CACHE_DIR/node_modules-${HASH}.tar.gz"
+          if [[ -f "$CACHE_TARBALL" ]]; then
+            echo "→ cache HIT ($HASH); restoring node_modules"
+            tar -xzf "$CACHE_TARBALL" -C src/apps/desktop
+          else
+            echo "→ cache MISS ($HASH); running npm ci"
+            cd src/apps/desktop && npm ci --no-audit --no-fund && cd -
+            echo "→ saving node_modules to cache"
+            tar -czf "$CACHE_TARBALL.tmp" -C src/apps/desktop node_modules \
+              && mv "$CACHE_TARBALL.tmp" "$CACHE_TARBALL"
+          fi
+          echo "→ webapp deps ready"
+
+      - name: "UI tests: functional-test-ui (Playwright + DB-seeded)"
+        # 30 Playwright tests exercising the running Vue webapp
+        # (nalar backend + Vite dev server) in headless Chromium.
+        # Boots a fresh backend + vite per test against an isolated
+        # tmpdir HOME; the chatview tests DB-seed `sessions` +
+        # `llm_history` rows so no real LLM is invoked.
+        #
+        # Three gates:
+        #   1. runner.os != 'Windows' — Playwright Chromium download
+        #      + Vite on the Windows self-hosted runner has unverified
+        #      edge cases. Same gate as functional-test.
+        #   2. matrix.target.step != '__SKIP__' — preserves the
+        #      existing cross-compile-cell guard.
+        #   3. Functional-test ran first — functional-test-ui inherits
+        #      the .venv-func that functional-test just created.
+        if: |
+          runner.os != 'Windows' &&
+          matrix.target.step != '__SKIP__'
+        shell: bash
+        run: |
+          set -u
+          # npm is already on PATH from setup-node.
+          echo "→ functional-test-ui: starting"
+          date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
+          # zig build functional-test-ui installs playwright into the
+          # existing .venv-func, downloads Chromium, and runs the
+          # 30 Playwright tests (10 chatview + 11 safety + 5 smoke
+          # + 4 kanban). Cold cache: ~5 min; warm cache: ~3 min.
+          zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
+          rc=${PIPESTATUS[0]}
+          echo "→ functional-test-ui: exit code $rc"
+          if [ "$rc" -ne 0 ]; then
+            echo "✗ functional-test-ui: failed (see /tmp/functional-test-ui.log)"
+            tail -n 100 /tmp/functional-test-ui.log
+            exit 1
+          fi
+          echo "✓ functional-test-ui: passed"
+          END=$(date +%s)
+          START=$(cat /tmp/functional-test-ui-start.$$ 2>/dev/null || echo 0)
+          if [ "$START" -gt 0 ]; then
+            echo "→ functional-test-ui: $((END - START))s elapsed"
+          fi
+          rm -f /tmp/functional-test-ui-start.$$
 
       - name: Upload nalar + nalar-desktop binaries
         # Both binaries need to ship to the user — install-nalar-desktop.sh

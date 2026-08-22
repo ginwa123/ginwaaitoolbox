@@ -1,0 +1,4 @@
+# Per-test artifacts are debug aids (screenshots, downloaded files).
+# They survive the test run by design — but never belong in git.
+*
+!.gitignore
