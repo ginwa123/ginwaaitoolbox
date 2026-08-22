@@ -385,7 +385,7 @@ fn idForRow(allocator: std.mem.Allocator) ![]u8 {
 /// Negative values are clamped to 0 — we use this as a DB column
 /// value, never as an arithmetic input.
 fn microsecondsNow() i64 {
-    const ns = nalarcore.helpers.unixTimestampNanos();
+    const ns = @import("helpers").unixTimestampNanos();
     const us: i64 = @intCast(@divTrunc(ns, std.time.ns_per_us));
     return if (us < 0) 0 else us;
 }

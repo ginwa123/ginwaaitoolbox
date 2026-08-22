@@ -12,9 +12,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const nalarcore = @import("nalarcore");
-const process_status = nalarcore.helpers.process_status;
-const helpers = nalarcore.helpers;
+const process_status = @import("process_status.zig");
+const helpers = @import("mod.zig");
 
 test "getcwd: returns non-empty absolute path" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;

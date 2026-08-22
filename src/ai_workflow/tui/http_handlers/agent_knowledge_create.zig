@@ -17,7 +17,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 /// HTTP request body for knowledge-create. Decoupled from the
 /// `KnowledgeCreateInput` domain struct so the wire format can

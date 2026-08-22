@@ -18,7 +18,7 @@ const config_mod = nalarcore.config;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 const json = std.json;
 
@@ -574,7 +574,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const initial_config = nalarcore.getLlmConfig(di.di);
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, io, initial_config.mcpServers() orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, initial_config.mcpServers() orelse .null) catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};
@@ -2029,7 +2029,7 @@ fn maybeOverrideAllowedToolsForAgent(
 // http_handlers layer.
 // ════════════════════════════════════════════════════════════════════════════
 
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const workspaceItemsUpdateHandlerPath =
     "src/ai_workflow/tui/http_handlers/workspace_items_update.zig";

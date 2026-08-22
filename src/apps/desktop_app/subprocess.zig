@@ -38,6 +38,26 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const helpers = @import("helpers");
+
+// Windows-only WinSock2 `socket` extern, declared at module scope so it
+// can be `@import`ed by the inline `if (builtin.os.tag == .windows)`
+// branch in `tryProbe`. On non-Windows targets this `extern` block is
+// compiled to an empty placeholder (matching the `if (builtin.os.tag ==
+// .windows)` guard below), so the linker never sees a missing-symbol
+// error for `socket` on Linux/macOS.
+//
+// Why not use `std.c.socket`? — Zig 0.16's `std.c.private.socket` is
+// declared as returning `c_int` on all platforms, but the actual MSVCRT/
+// UCRT `socket()` returns `SOCKET` (= `*anyopaque` = `std.c.fd_t` on
+// Windows). The 32-bit `c_int` binding truncates the high bits of the
+// handle on x64 — fine for typical user-mode handles, but the type
+// mismatch means the returned `c_int` can't be passed to `setsockopt`/
+// `connect`/`close` (all of which expect `fd_t`). Declaring our own
+// `socket` with the correct `fd_t` return type avoids the cast entirely.
+const win_socket_api = if (builtin.os.tag == .windows) struct {
+    extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) std.c.fd_t;
+} else struct {};
 
 /// Handle to a running nalar subprocess. Caller MUST call `terminate()`
 /// (or `kill` + `wait`) before discarding, otherwise nalar becomes a
@@ -100,13 +120,23 @@ pub fn waitForHealth(
         // we cap the remaining deadline and pick the smaller of
         // (deadline - now) and poll_ns. For typical small poll_ms
         // values this is just poll_ns.
+        //
+        // Zig 0.16: `std.c.timespec` is `void` on Windows, so we
+        // route the nanosleep through `helpers` which exposes
+        // `PosixTimespec` + `nanosleep` (POSIX-only — but the
+        // process never reaches this branch on Windows because
+        // `ntdll.WaitForSingleObject` etc. instead pump the loop;
+        // see `tryProbe` which uses Win32 APIs on Windows hosts).
+        // The cross-platform `sleepMillis` helper would quantize
+        // to millisecond granularity — too coarse for the 50ms
+        // poll cadence — so we keep the ns-precision path here.
         const remaining = deadline_ns - now_ts;
         const sleep_ns: u64 = if (remaining < poll_ns) remaining else poll_ns;
-        const sleep_ts: std.c.timespec = .{
+        const sleep_ts: helpers.PosixTimespec = .{
             .sec = @intCast(@divFloor(sleep_ns, std.time.ns_per_s)),
             .nsec = @intCast(@mod(sleep_ns, std.time.ns_per_s)),
         };
-        _ = std.c.nanosleep(&sleep_ts, null);
+        _ = helpers.nanosleep(&sleep_ts, null);
     }
 }
 
@@ -122,8 +152,30 @@ fn tryProbe(port: u16) bool {
     // called `std.os.linux.socket` which compiles on macOS but invokes
     // the Linux syscall number — which doesn't exist on the Darwin
     // kernel, so the process gets killed with SIGSYS on the first probe.
-    const fd = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
-    if (fd == -1) return false;
+    //
+    // Windows note: Zig 0.16's `std.c.private.socket` declares its return
+    // type as `c_int`, but the actual MSVCRT/UCRT `socket()` returns
+    // `SOCKET` (= `*anyopaque` = `std.c.fd_t` on Windows). On x64 the
+    // 32-bit `c_int` binding truncates the high bits of the handle —
+    // fine for typical user-mode handles, but the type mismatch means
+    // we can't pass it to `setsockopt`/`connect`/`close` which all expect
+    // `fd_t`. We declare our own `ws2_32` `socket` extern so the return
+    // type matches `fd_t` directly, avoiding the truncation cast entirely.
+    // On POSIX, `fd_t` == `c_int` so `std.c.socket` works as-is.
+    const fd: std.c.fd_t = if (builtin.os.tag == .windows)
+        win_socket_api.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0)
+    else
+        std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    // INVALID_SOCKET on Windows is (SOCKET)(~0) == 0xFFFFFFFFFFFFFFFF;
+    // @intFromPtr extracts the underlying address as usize so we can do
+    // an idiomatic `-1` check. On POSIX, `fd_t == c_int`, so the
+    // standard `-1` check is used; on Windows, fd is a pointer and we
+    // use @intFromPtr. The branch must be COMPTIME-gated on the OS —
+    // @intFromPtr on a non-pointer c_int is a Zig 0.16 compile error.
+    if (switch (builtin.os.tag) {
+        .windows => @intFromPtr(fd) == std.math.maxInt(usize),
+        else => fd == -1,
+    }) return false;
     defer _ = std.c.close(fd);
 
     // 1-second per-call recv() timeout. If the server hasn't responded
@@ -195,12 +247,26 @@ fn tryProbe(port: u16) bool {
 }
 
 fn readMonotonicNs() u64 {
-    // Uses libc `std.c.clock_gettime` instead of `std.os.linux.clock_gettime`.
-    // The latter invokes the Linux syscall number directly, which doesn't
-    // exist on Darwin (SIGSYS = "Bad system call: 12"). `std.c.clock_gettime`
-    // goes through libc, which dispatches the correct syscall per platform.
-    var ts: std.c.timespec = undefined;
-    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+    // Uses libc `helpers.clock_gettime` (POSIX) instead of
+    // `std.os.linux.clock_gettime`. The latter invokes the Linux
+    // syscall number directly, which doesn't exist on Darwin
+    // (SIGSYS = "Bad system call: 12"). `helpers.clock_gettime` is
+    // declared as a plain `extern "c"` and routes through libc,
+    // which dispatches the correct syscall per platform. std.c's
+    // version requires `clockid_t` (a `void` param on Windows in
+    // Zig 0.16 — same Windows compile-error class as `std.c.timespec`),
+    // so we expose `PosixTimespec` + a clean extern decl in
+    // helpers/mod.zig. helpers.CLOCK_MONOTONIC is platform-correct
+    // (Linux 1 / Darwin 6).
+    var ts: helpers.PosixTimespec = undefined;
+    const rc = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
+    if (rc != 0) {
+        // Fall back to CLOCK_REALTIME rather than reading an undefined
+        // timespec (@intCast would panic on the garbage bytes in Debug).
+        var wall: helpers.PosixTimespec = undefined;
+        if (helpers.clock_gettime(helpers.CLOCK_REALTIME, &wall) != 0) return 0;
+        return @as(u64, @intCast(wall.sec)) * std.time.ns_per_s + @as(u64, @intCast(wall.nsec));
+    }
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
@@ -266,7 +332,17 @@ pub fn spawn(
     return .{
         .child = child,
         .port = port,
-        .pid = if (child.id) |pid| @intCast(pid) else 0,
+        // Windows note: `child.id` is `?HANDLE` (= `?*anyopaque`) on Windows,
+        // not a numeric PID. There is no real libc `pid_t` in the MSVCRT/
+        // UCRT, so we can't `@intCast` a HANDLE to `i32`. Per the doc comment
+        // on `pid`, the field is purely for logging/debugging and `terminate()`
+        // uses `child.id` directly — so 0 on Windows is a correct no-op
+        // (and matches the existing "or 0 if the platform doesn't expose a
+        // pid" semantic for sandboxed environments).
+        .pid = switch (builtin.os.tag) {
+            .windows => 0,
+            else => if (child.id) |pid| @intCast(pid) else 0,
+        },
     };
 }
 

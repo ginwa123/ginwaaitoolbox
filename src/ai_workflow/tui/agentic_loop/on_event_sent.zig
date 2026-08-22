@@ -6,7 +6,7 @@ const loggermod = @import("nalarcore").loggermod;
 const models = @import("models.zig");
 const gserverz = tree1_mod.gserverz;
 const llm_history = @import("llm_history.zig");
-const helpers = tree1_mod.helpers;
+const helpers = @import("helpers");
 
 // ============================================================================
 // Session-to-Client ID mapping for SSE event bus integration
@@ -694,7 +694,7 @@ pub fn sendStreamToolCallDelta(
 
 const testing_oes = std.testing;
 const nalarcore_oes = tree1_mod;
-const text_normalize = nalarcore_oes.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 const ON_EVENT_SENT_PATH = "src/ai_workflow/tui/agentic_loop/on_event_sent.zig";
 
 fn readSourceOES(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -752,7 +752,7 @@ test "sanitizeUtf8 fixes the exact bytes from the bug" {
 
     try testing_oes.expect(!std.unicode.utf8ValidateSlice(&corrupt_bytes));
 
-    const sanitize = nalarcore_oes.helpers.sanitize;
+    const sanitize = @import("helpers").sanitize;
     const sanitized = try sanitize.sanitizeUtf8(testing_oes.allocator, &corrupt_bytes);
     defer testing_oes.allocator.free(sanitized);
 

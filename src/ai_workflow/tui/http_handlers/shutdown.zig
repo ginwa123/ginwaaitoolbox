@@ -43,12 +43,17 @@ fn useCase() ShutdownError!ShutdownResponse {
     // server down", and the client doesn't need a 200 response if
     // we're going to immediately terminate anyway.
     //
-    // NOTE: std.Thread.sleep doesn't exist in Zig 0.16 (the codebase
-    // uses std.c.nanosleep inline — see agent_memories_test.zig:89).
+    // Zig 0.16 cross-platform sleep: `helpers.sleepMillis` uses
+    // libc nanosleep on Linux/macOS and Win32 Sleep on Windows. We
+    // previously inlined `std.c.timespec{...}` + `std.c.nanosleep(&ts,
+    // null)` here but `std.c.timespec` is exposed as `void` on
+    // Windows in 0.16 — see helpers/mod.zig:220 for the full
+    // rationale. `sleepMillis(50)` is the documented equivalent
+    // for our ~50 ms "let the response flush" delay.
+    const helpers = @import("helpers");
     const spawn_fn = struct {
         fn run() void {
-            var ts = std.c.timespec{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
-            _ = std.c.nanosleep(&ts, null);
+            helpers.sleepMillis(50);
             std.process.exit(0);
         }
     }.run;

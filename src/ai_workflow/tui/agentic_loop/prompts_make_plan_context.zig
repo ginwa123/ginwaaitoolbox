@@ -201,8 +201,12 @@ test "makePlanContext: plan survives DB read across calls (UPSERT consistency)" 
     // (SQLite CURRENT_TIMESTAMP has 1-sec resolution; sleep one
     // second so the floor advances).
     // std.c.nanosleep — std.Thread.sleep doesn't exist in Zig 0.16.
-    var ts = std.c.timespec{ .sec = 1, .nsec = 0 };
-    _ = std.c.nanosleep(&ts, null);
+    // Use the portable test_sleep helper — std.c.timespec is broken
+    // on Windows in Zig 0.16 (sec field is `void`), and std.c.nanosleep
+    // doesn't exist in msvcrt/ucrt either. The Win32 `Sleep` is the
+    // portable cross-platform alternative (see test_sleep.zig).
+    const test_sleep = @import("test_sleep.zig");
+    test_sleep.sleep(1, 0);
     {
         const xml2 = try update_plan_mod.executeUpdatePlan(allocator, &ctx.db, "s_upsert", .{
             .content = "v2 content longer and distinct",

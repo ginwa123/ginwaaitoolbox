@@ -571,7 +571,15 @@ jobs:
           # vcpkg exit code: 0 = all OK, 1 = build failure, 2 =
           # dependency resolution failure. We map any non-zero to
           # exit 1 so the step fails loudly.
-          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3:x64-windows"
+          # sqlite3 needs explicit `fts5` feature — the vcpkg default
+          # features don't include it. Without FTS5, Migration 058 +
+          # Migration 070 (which create messages_fts / agent_memories_fts
+          # FTS5 virtual tables) fail with `no such module: fts5` at
+          # migration.up() time (observed on CI run 32323478653 — 184
+          # tests fail with that error). Other tests (agent_memories,
+          # session_plan, prompts_make_plan_context) cascade because
+          # their setupDb() runs runMigrations() which trips on 058.
+          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3[fts5]:x64-windows"
           Write-Host ("Running: vcpkg install " + ($portList -join " "))
           & C:\vcpkg\vcpkg.exe install --recurse $portList
           if ($LASTEXITCODE -ne 0) {
@@ -887,20 +895,25 @@ jobs:
         run: zig build test --summary all
 
       - name: Run main test suite (Windows)
-        # Skipped on Windows — see long comment in the (now-deleted)
-        # placeholder before this PR. TL;DR: `zig build test` on
-        # Windows triggers `bash build-vendor-curl.sh`, which
-        # cross-compiles OpenSSL from source via Perl, but
-        # Strawberry Perl shipped with Git-for-Windows is missing
-        # `Locale::Maketext::Simple` and the Windows-specific
-        # Configure aborts. CI run 32173433019 reproduced this.
-        # Windows uses vcpkg-installed sqlite3 / openssl via
-        # `linkPlatformDeps` (build.zig line 488+), not the
-        # vendored amalgamation, so the vendor step is wasted work
-        # for the Windows matrix cell — anyway.
-        if: |
-          runner.os == 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        # After this PR's build.zig probes detect vcpkg-installed
+        # libs at `C:/vcpkg/installed/x64-windows/{include,lib}/`
+        # (sqlite3, openssl/ssl, openssl/crypto, libpq, curl) and the
+        # `fetch-vendor-{sqlite3,curl}` bash steps are skipped
+        # automatically, `zig build test` works on Windows without
+        # needing the broken Strawberry-Perl/python3 git-bash env.
+        # The CI installs the vcpkg ports (curl:openssl:libpq:sqlite3
+        # at the `Install vcpkg ports (Windows)` step), so the build
+        # probes always find them.
+        #
+        # The test binary links against libcurl/libssl/libcrypto/sqlite3
+        # via vcpkg's import libraries (.lib). The matching .dll files
+        # are at `C:\vcpkg\installed\x64-windows\bin\`. Without that
+        # directory on PATH, the test process crashes immediately at
+        # DLL load with STATUS_DLL_NOT_FOUND (exit code -1073741515 /
+        # 0xC0000135) — observed on runs 32318048142, 32320468254,
+        # 32321198438. Add vcpkg bin to PATH so the runtime linker
+        # can find them.
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $bash = 'C:\Program Files\Git\bin\bash.exe'
@@ -909,6 +922,10 @@ jobs:
             exit 1
           }
           $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
+          # vcpkg bin dir — libcurl.dll, libssl-3.dll, libcrypto-3.dll,
+          # sqlite3.dll live here and the test binary needs them at runtime.
+          $env:PATH = 'C:\vcpkg\installed\x64-windows\bin;' + $env:PATH
+          # Build the test binary (compile + run via --listen=-).
           & $bash -lc 'zig build test --summary all'
 
       - name: Build nalar + nalar-desktop binaries
@@ -923,17 +940,13 @@ jobs:
         run: zig build nalar-desktop --summary all
 
       - name: Build nalar + nalar-desktop binaries (Windows)
-        # Same gating as `Run main test suite (Windows)`: Windows
-        # targets are skipped because `zig build nalar-desktop`
-        # triggers the same vendor-{sqlite3,curl} steps, and the
-        # upstream Perl Configure is broken on git-bash's bundled
-        # Strawberry Perl. Windows binary builds are an
-        # `install:windows` step on the Linux host (a cross-compile
-        # path), NOT the native-Windows-cell build here. Re-enable
-        # when the openssl-on-Windows-gh fix lands.
-        if: |
-          runner.os == 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        # After build.zig probes detect vcpkg-installed libs and the
+        # bash vendor steps are skipped automatically, `zig build
+        # nalar-desktop` works on the Windows runner the same way it
+        # does on the Linux cross-compile cell. The two cells produce
+        # the same .exe — native Windows build now matches the
+        # `install:windows` cross-compile.
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
@@ -1037,18 +1050,10 @@ jobs:
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
       - name: "Smoke test: desktop binary (Windows)"
-        # Same matrix gate as Run main test suite (Windows) /
-        # Build nalar binaries (Windows): the Windows matrix cell
-        # is `__SKIP__` because the upstream vendor-{sqlite3,curl}
-        # Configure needs Perl modules git-bash doesn't ship.
-        # Without a Windows binary built by the (skipped) build step
-        # above, this smoke test would always fail with `binary
-        # missing`. The pwsh rewrite itself works — verified on the
-        # build that succeeds when nalar-desktop.exe exists; just
-        # keep this skip consistent with its upstream step.
-        if: |
-          runner.os == 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        # After build.zig probes + vcpkg detection make the upstream
+        # test + build steps work, nalar-desktop.exe is built natively
+        # on the Windows runner and this smoke test can run.
+        if: runner.os == 'Windows'
         # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
         # windows). This step is the desktop-binary smoke-test path:
         #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:'
@@ -1070,31 +1075,48 @@ jobs:
             Write-Error "smoke test: $DesktopBin missing"
             exit 1
           }
-          $LogPath = Join-Path $env:TEMP 'desktop-smoke.log'
-          if (Test-Path -LiteralPath $LogPath) {
-            Remove-Item -LiteralPath $LogPath -Force
+          # Start-Process REFUSES to redirect stdout+stderr into the SAME
+          # file ("This command cannot be run because RedirectStandardOutput
+          # and RedirectStandardError are same") — unlike the bash idiom
+          # `> log 2>&1` used by the non-Windows variant of this step.
+          # The 'smoke:' line comes from std.log.info -> STDERR, so both
+          # streams must be captured: use two files, merge on read.
+          $OutLog = Join-Path $env:TEMP 'desktop-smoke.out.log'
+          $ErrLog = Join-Path $env:TEMP 'desktop-smoke.err.log'
+          foreach ($LogCandidate in @($OutLog, $ErrLog)) {
+            if (Test-Path -LiteralPath $LogCandidate) {
+              Remove-Item -LiteralPath $LogCandidate -Force
+            }
           }
           $proc = Start-Process -FilePath $DesktopBin `
             -ArgumentList '--smoke-test' `
             -PassThru `
-            -RedirectStandardOutput $LogPath `
-            -RedirectStandardError $LogPath `
+            -RedirectStandardOutput $OutLog `
+            -RedirectStandardError $ErrLog `
             -NoNewWindow
+          # Cache the process handle BEFORE waiting. Without this,
+          # $proc.ExitCode reads back as $null (classic .NET Process
+          # gotcha: the full handle is only acquired lazily) and the
+          # ExitCode check below fires spuriously.
+          $null = $proc.Handle
           $completed = $proc.WaitForExit(10000)
           if (-not $completed) {
             try { $proc.Kill() } catch { }
             Write-Error "$DesktopBin --smoke-test exceeded 10s watchdog"
-            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
             exit 1
           }
           if ($proc.ExitCode -ne 0) {
             Write-Error "$DesktopBin --smoke-test exited $($proc.ExitCode)"
-            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
             exit $proc.ExitCode
           }
-          if (-not (Select-String -Path $LogPath -Pattern 'smoke:' -Quiet)) {
+          if (-not (Select-String -Path $OutLog,$ErrLog -Pattern 'smoke:' -Quiet -ErrorAction SilentlyContinue)) {
             Write-Error 'expected ''smoke:'' log line missing'
-            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
             exit 1
           }
           Write-Host '✓ nalar-desktop.exe --smoke-test passed'

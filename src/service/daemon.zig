@@ -348,7 +348,7 @@ const NALAR_DAEMON_CHILD: [:0]const u16 = std.unicode.utf8ToUtf16LeStringLiteral
 fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     // 1. If NALAR_DAEMON_CHILD is set, we ARE the spawned daemon. Just
     //    return; the caller is the daemon process.
-    const sentinel = getEnvVarW(NALAR_DAEMON_CHILD) catch null;
+    const sentinel = getEnvVarW(allocator, NALAR_DAEMON_CHILD) catch null;
     if (sentinel) |val| {
         defer allocator.free(val);
         if (val.len > 0) {
@@ -361,7 +361,7 @@ fn daemonizeWindows(allocator: std.mem.Allocator) DaemonError!void {
     // 2. Parent path: re-exec ourselves with the sentinel env var set,
     //    and DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP flags so the
     //    spawned child has no console and no parent terminal.
-    const app_path_w = getModuleFileNameW_alloc() catch return error.SpawnFailed;
+    const app_path_w = getModuleFileNameW_alloc(allocator) catch return error.SpawnFailed;
     defer allocator.free(app_path_w);
 
     // Build a command line: "<exe>" "<sentinel>=1". Quote minimal — the

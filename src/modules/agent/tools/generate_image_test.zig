@@ -17,9 +17,10 @@
 //! Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 const generate_image = @import("generate_image.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/generate_image.zig";
@@ -419,7 +420,11 @@ test "saveImageToDisk writes base64 bytes to <cwd>/generated_images/img_<ts>_<id
     defer alloc.free(path);
 
     try testing.expect(std.mem.endsWith(u8, path, ".png"));
-    try testing.expect(std.mem.indexOf(u8, path, "/generated_images/") != null);
+    // Path separator: `/` on POSIX, `\` on Windows. `std.fs.path.join`
+    // uses the host's separator, so accept either when checking the
+    // subdirectory in the returned path.
+    const sep_str: []const u8 = if (builtin.os.tag == .windows) "\\" else "/";
+    try testing.expect(std.mem.indexOf(u8, path, sep_str ++ "generated_images" ++ sep_str) != null);
     try testing.expect(std.mem.indexOf(u8, path, "img_") != null);
 
     // Verify the file exists and has the expected content

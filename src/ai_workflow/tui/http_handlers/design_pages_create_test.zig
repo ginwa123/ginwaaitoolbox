@@ -18,7 +18,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const design_model = nalarcore.ai_mod.design_model;
 const http_response = @import("http_response.zig");

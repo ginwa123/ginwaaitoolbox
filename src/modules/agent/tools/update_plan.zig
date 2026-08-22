@@ -45,7 +45,7 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const xmlEscape = helpers.xml_escape;
 
 // Import the storage layer directly (the `nalarcore.session_plan`

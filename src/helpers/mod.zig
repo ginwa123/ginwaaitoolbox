@@ -64,7 +64,12 @@ const PosixTimeval = extern struct {
 /// Windows 64-bit). Matches libc's `long` and `time_t` sizes on all
 /// supported platforms. We avoid `std.c.c_long` because it's not
 /// exposed in this Zig 0.16 stdlib version.
-const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
+///
+/// `pub` so callers (e.g. `subprocess.zig`'s `PosixTimespec` literal)
+/// can name this type explicitly when they need to `@intCast` values
+/// into the struct fields. Internal users reference fields without
+/// the explicit cast via field-type inference.
+pub const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
 
 /// `void GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime);` (Win32).
 extern "kernel32" fn GetSystemTimeAsFileTime(lp_system_time_as_file_time: *std.os.windows.FILETIME) callconv(.winapi) void;
@@ -261,8 +266,42 @@ fn unixTimestampNanosWindows() i128 {
     const ticks: u128 = (@as(u128, ft.dwHighDateTime) << 32) | @as(u128, ft.dwLowDateTime);
     const ns_since_1601: i128 = @intCast(ticks / 10);
     const ns_1601_to_1970: i128 = 11_644_473_600 * std.time.ns_per_s;
-    return ns_since_1601 - ns_1601_to_1970;
+    const base_ns = ns_since_1601 - ns_1601_to_1970;
+
+    // Ensure uniqueness across rapid back-to-back calls. `GetSystemTimeAsFileTime`
+    // has only 100-ns resolution, so two consecutive calls inside a single tick
+    // (e.g. a migration inserting N rows in a tight loop) return identical
+    // values — breaking callers that use the result as a unique-row-id suffix
+    // (`task_<nanos>` patterns in `migration.zig:2540` and `design_items_create.zig:100`).
+    // The thread-local counter starts at 1 (so the first call gets the raw
+    // FILETIME), and increments per call until the wall clock advances enough
+    // to absorb it — guaranteeing monotonic uniqueness for any caller that
+    // reads the value within a single tick. Counter value is added AFTER the
+    // raw FILETIME so callers that compare against a previous call see
+    // monotonically-increasing values across the in-tick window.
+    //
+    // threadlocal safety: each thread gets its own counter (Zig's
+    // `threadlocal var` is the right primitive). The counter resets to 0
+    // when the FILETIME advances by ≥ 1ns, so it doesn't accumulate forever.
+    const last_ns = unixNanosWindowsLastNs;
+    const counter = unixNanosWindowsCounter;
+    defer {
+        // Compare the raw FILETIME (not `base_ns` which has the offset
+        // subtracted) so we don't conflate absolute time with the counter.
+        const raw_ns = ns_since_1601;
+        unixNanosWindowsLastNs = raw_ns;
+    }
+    if (ns_since_1601 == last_ns) {
+        unixNanosWindowsCounter = counter + 1;
+        return base_ns + counter + 1;
+    } else {
+        unixNanosWindowsCounter = 0;
+        return base_ns;
+    }
 }
+
+threadlocal var unixNanosWindowsLastNs: i128 = 0;
+threadlocal var unixNanosWindowsCounter: u64 = 0;
 
 /// Cross-platform monotonic nanosecond timestamp.
 ///
@@ -308,7 +347,16 @@ pub fn monotonicTimestampNanos() u64 {
 
 fn monotonicTimestampNanosPosix() u64 {
     var ts: PosixTimespec = undefined;
-    _ = clock_gettime(CLOCK_MONOTONIC, &ts);
+    const rc = clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (rc != 0) {
+        // clock_gettime with a valid per-OS CLOCK_MONOTONIC should never
+        // fail; if it somehow does, fall back to CLOCK_REALTIME rather
+        // than reading an undefined timespec (@intCast would panic on
+        // the garbage bytes in Debug mode).
+        var wall: PosixTimespec = undefined;
+        if (clock_gettime(CLOCK_REALTIME, &wall) != 0) return 0;
+        return @as(u64, @intCast(wall.sec)) * std.time.ns_per_s + @as(u64, @intCast(wall.nsec));
+    }
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
@@ -320,8 +368,12 @@ fn monotonicTimestampNanosWindows() u64 {
     // Convert ticks to ns: ns = ticks * 1e9 / freq. Both inputs are
     // strictly positive after a successful RtlQuery call, so the unsigned
     // math is safe. Use u128 intermediate to dodge the i64 multiplication
-    // overflow at GHz-class TSC frequencies.
-    return @intCast(@divTrunc(@as(u128, @intCast(counter)) * 1_000_000_000, @as(u128, freq)));
+    // overflow at GHz-class TSC frequencies. `freq` is `i64` on
+    // Windows in Zig 0.16 (it's a Win32 LARGE_INTEGER typedef) — cast
+    // up to u128 the same way the counter is.
+    const ns_u128: u128 = @as(u128, @intCast(counter)) * 1_000_000_000;
+    const freq_u128: u128 = @as(u128, @intCast(freq));
+    return @intCast(@divTrunc(ns_u128, freq_u128));
 }
 
 /// Returns the current UTC time as an ISO-8601 string (`"2026-07-15 19:43:09"`).
@@ -431,16 +483,35 @@ pub const PosixTimespec = extern struct {
 pub extern "c" fn clock_gettime(clk_id: c_int, tp: *PosixTimespec) c_int;
 
 /// `int nanosleep(const struct timespec *req, struct timespec *rem);` (POSIX).
-extern "c" fn nanosleep(req: *const PosixTimespec, rem: ?*PosixTimespec) c_int;
+///
+/// `pub` so callers (e.g. `src/apps/desktop_app/subprocess.zig`,
+/// `src/.../shutdown.zig`) can drive the loop themselves on POSIX
+/// hosts without going through `sleepMillis` (which quantizes to
+/// 1 ms and is fine for ~50 ms shutdown delays but too coarse for
+/// the 50 ms poll cadence in `waitForHealth`). On Windows the
+/// `std.c.timespec` struct is exposed as `void` by Zig 0.16
+/// (`/lib/std/c.zig:10635`) — using `PosixTimespec` from this file
+/// sidesteps that compile error.
+pub extern "c" fn nanosleep(req: *const PosixTimespec, rem: ?*PosixTimespec) c_int;
 
 /// POSIX CLOCK_REALTIME. Linux glibc = 0; macOS = 0; matches across
 /// POSIX platforms. Declared as `c_int` literal because `std.c.CLOCK`
 /// is not exposed on all platforms.
-const CLOCK_REALTIME: c_int = 0;
+pub const CLOCK_REALTIME: c_int = 0;
 
 /// POSIX CLOCK_MONOTONIC. Linux glibc = 1; macOS = 1; matches across
-/// all the POSIX variants we target. Used by `monotonicTimestampNanosPosix`.
-const CLOCK_MONOTONIC: c_int = 1;
+/// all the POSIX variants we target. Used by `monotonicTimestampNanosPosix`
+/// and by `subprocess.zig`'s `readMonotonicNs` (which refuses to
+/// route through `std.c.clock_gettime` because `clockid_t` is `void`
+/// on Windows in Zig 0.16 — see `helpers/mod.zig:235`).
+///
+/// Platform-correct value: Linux glibc/musl define CLOCK_MONOTONIC = 1,
+/// but Darwin's <mach/time.h> defines it as 6 (CLOCK_MONOTONIC_RAW is 4,
+/// CLOCK_UPTIME_RAW is 8). Passing Linux's `1` on macOS hits a different
+/// clock id — observed on the macOS CI runner as clock_gettime failing
+/// (leaving the timespec undefined → @intCast panic downstream), so the
+/// constant must be selected per-OS at comptime.
+pub const CLOCK_MONOTONIC: c_int = if (builtin.os.tag.isDarwin()) 6 else 1;
 
 // === Tests ===
 

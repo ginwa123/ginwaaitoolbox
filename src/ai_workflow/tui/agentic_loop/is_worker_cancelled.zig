@@ -3,7 +3,7 @@ const nalarcore = @import("nalarcore");
 
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const testing = std.testing;
 
 pub const IsWorkerCancelledInput = struct {

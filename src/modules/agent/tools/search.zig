@@ -4,7 +4,7 @@ const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
-const sanitize = @import("../../../helpers/sanitize.zig");
+const sanitize = @import("helpers").sanitize;
 
 pub const SearchError = error{
     /// Pattern was an empty string — almost certainly a caller bug, not a

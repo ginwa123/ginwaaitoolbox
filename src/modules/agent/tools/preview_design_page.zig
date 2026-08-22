@@ -435,7 +435,7 @@ pub fn executePreviewDesignPageToString(
     // Sanitize the SVG HTML content (defensive — invalid UTF-8 would break
     // the iframe's parser). The preview's content_type is "html" so the
     // sandboxed iframe renders it directly.
-    const sanitized = try nalarcore.helpers.sanitize.sanitizeUtf8(allocator, svg_content);
+    const sanitized = try @import("helpers").sanitize.sanitizeUtf8(allocator, svg_content);
     defer allocator.free(sanitized);
 
     // Wrap in the same <show_preview> envelope shape that show_preview uses.

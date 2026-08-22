@@ -4,7 +4,7 @@ const agent = nalar_mod.agent;
 const logger_mod = nalar_mod.loggermod;
 const sqlite = nalar_mod.sqlite;
 const save_message = @import("llm_history.zig");
-const http_client = nalar_mod.http_client;
+const custom_http_client = @import("custom_http_client");
 const config_mod = nalar_mod.config;
 
 /// Strip SSE "data:" prefix from response body if present
@@ -29,7 +29,6 @@ fn stripSsePrefix(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
 /// nested arena issues that can cause @memcpy aliasing errors.
 pub fn handle_mcp_tool_run(
     parent_allocator: std.mem.Allocator,
-    io: std.Io,
     logger: *logger_mod.Logger,
     tool_call: agent.ToolCall,
     config: *const config_mod.LlmConfig,
@@ -124,14 +123,38 @@ pub fn handle_mcp_tool_run(
     }
 
     // Make HTTP request
-    var client = http_client.HttpClient.init(allocator, io);
+    var client = custom_http_client.Client.init(allocator);
     defer client.deinit();
 
-    const result = client.post(url, request_body, headers) catch |err| {
+    // custom_http_client.post() takes a `[]const Header` slice, not a
+    // StringHashMap. Flatten the hash map into a stack-allocated slice
+    // (MCP headers are a small bounded set; allocate an upper bound and
+    // slice down to the actual count).
+    var header_buf: [16]custom_http_client.Header = undefined;
+    var header_count: usize = 0;
+    var header_it = headers.iterator();
+    while (header_it.next()) |entry| {
+        if (header_count >= header_buf.len) return error.InvalidMCPServerHeadersConfig;
+        header_buf[header_count] = .{
+            .name = entry.key_ptr.*,
+            .value = entry.value_ptr.*,
+        };
+        header_count += 1;
+    }
+    const header_slice = header_buf[0..header_count];
+
+    const result = custom_http_client.post(
+        &client,
+        url,
+        request_body,
+        header_slice,
+        .{ .timeout_ms = 30_000 },
+    ) catch |err| {
         logger.errFmt("MCP HTTP error: {s}", .{@errorName(err)});
         allocator.free(request_body);
         return error.FailedToCallMCPServer;
     };
+    defer result.deinit(allocator);
 
     logger.debugFmt("MCP response status: {d}", .{result.status_code});
 
@@ -154,7 +177,6 @@ pub fn handle_mcp_tool_run(
         // Log error without raw body to prevent crashes from non-null-terminated data
         logger.errFmt("MCP JSON parse error: {s}, body length: {d}", .{ @errorName(err), clean_body.len });
         if (is_copy) allocator.free(clean_body);
-        allocator.free(result.body);
         allocator.free(request_body);
         return error.MCPJSONParseError;
     };
@@ -194,9 +216,10 @@ pub fn handle_mcp_tool_run(
     // Now safe to deinit the parse arena
     parsed.deinit();
 
-    // Free intermediate allocations before returning
+    // Free intermediate allocations before returning. Note: `result`'s
+    // body is freed by `result.deinit(allocator)` below — do NOT
+    // `allocator.free(result.body)` here (that would double-free).
     if (is_copy) allocator.free(clean_body);
-    allocator.free(result.body);
 
     // If we extracted a specific result, it was already duplicated
     // Otherwise, return a copy of clean_body

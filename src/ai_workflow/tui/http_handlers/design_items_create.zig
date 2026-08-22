@@ -25,7 +25,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 /// Request body for the design-item create endpoint.
 const CreateDesignBody = struct {

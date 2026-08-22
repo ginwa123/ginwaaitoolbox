@@ -57,7 +57,7 @@ const sqlite = nalarcore.sqlite;
 const agent_memories = nalarcore.agent_memories;
 const save_memory_mod = nalarcore.save_memory;
 
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const xmlEscape = helpers.xml_escape;
 
 /// Input for `load_memory`.

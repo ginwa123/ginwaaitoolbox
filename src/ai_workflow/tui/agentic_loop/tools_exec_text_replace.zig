@@ -9,6 +9,24 @@ const text_replace_mod = nalarcore.text_replace_tool;
 const wrapToolOutput = tools.wrapToolOutput;
 const testing = std.testing;
 
+/// Escape a string for inclusion as a JSON string literal value (between
+/// the quotes — caller supplies the surrounding `"..."` template).
+/// Escapes `\` → `\\` and `"` → `\"` (RFC 8259 §7). Other characters
+/// (including control codes / non-ASCII) are passed through verbatim;
+/// the test fixtures only contain ASCII so we don't bother with
+/// `\u00XX` sequences here. Caller must `deinit` the returned slice.
+fn jsonEscapeInto(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(u8) {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (input) |c| {
+        if (c == '\\' or c == '"') {
+            try out.append(allocator, '\\');
+        }
+        try out.append(allocator, c);
+    }
+    return out;
+}
+
 pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         text_replace_mod.TextReplaceInput,
@@ -115,32 +133,39 @@ test "execTextReplace: writes back the full modified file (truncates + overwrite
 
     // Build args: replace the marker with a SHORTER string. If createFile
     // appended instead of truncating, the trailing junk would still be
-    // visible AFTER the new short content.
-    const args = try std.fmt.allocPrint(
-        a,
-        "{{\"path\":\"{s}\",\"old_str\":\"<<<REPLACE_ME>>>\",\"new_str\":\"[OK]\"}}",
-        .{target_path},
-    );
-    const tc = agent.ToolCall{
-        .id = "call_tr_ow1",
-        .type = "function",
-        .function = .{ .name = "text_replace", .arguments = args },
-    };
+    // visible AFTER the new short content. Escape the path for JSON
+    // (Windows JSON-parse fix — `\` in `realPath()` would otherwise
+    // produce malformed `{"path":"C:\..."}` and reject by
+    // `std.json.parseFromSlice`).
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args = try std.fmt.allocPrint(
+            a,
+            "{{\"path\":\"{s}\",\"old_str\":\"<<<REPLACE_ME>>>\",\"new_str\":\"[OK]\"}}",
+            .{escaped.items},
+        );
+        const tc = agent.ToolCall{
+            .id = "call_tr_ow1",
+            .type = "function",
+            .function = .{ .name = "text_replace", .arguments = args },
+        };
 
-    const result = try execTextReplace(minimalCtxTr(a), tc);
-    defer if (result.output_allocated) a.free(result.output);
+        const result = try execTextReplace(minimalCtxTr(a), tc);
+        defer if (result.output_allocated) a.free(result.output);
 
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
 
-    // Read back — file must be EXACTLY "[OK] then keep this trailing junk
-    // after the marker to detect any append-mode corruption"
-    const expected = "[OK] then keep this trailing junk after the marker to detect any append-mode corruption";
-    const read = try readAllTr(a, target_path);
-    try testing.expectEqualStrings(expected, read);
-    // File size must match the new length (not original.len) — proves
-    // truncation happened, not append.
-    try testing.expectEqual(@as(usize, expected.len), read.len);
-    try testing.expect(read.len != original.len); // sanity: the two really differ
+        // Read back — file must be EXACTLY "[OK] then keep this trailing junk
+        // after the marker to detect any append-mode corruption"
+        const expected = "[OK] then keep this trailing junk after the marker to detect any append-mode corruption";
+        const read = try readAllTr(a, target_path);
+        try testing.expectEqualStrings(expected, read);
+        // File size must match the new length (not original.len) — proves
+        // truncation happened, not append.
+        try testing.expectEqual(@as(usize, expected.len), read.len);
+        try testing.expect(read.len != original.len); // sanity: the two really differ
+    }
 }
 
 // CONTRACT: execTextReplace must OVERWRITE, not fail or skip, when called
@@ -165,21 +190,26 @@ test "execTextReplace: existing file with matching content is modified in place"
         try std.Io.File.writeStreamingAll(f, testing.io, "Hello World\n");
     }
 
-    const args = try std.fmt.allocPrint(
-        a,
-        "{{\"path\":\"{s}\",\"old_str\":\"Hello\",\"new_str\":\"Goodbye\"}}",
-        .{target_path},
-    );
-    const tc = agent.ToolCall{
-        .id = "call_tr_match",
-        .type = "function",
-        .function = .{ .name = "text_replace", .arguments = args },
-    };
+    // Escape `\` and `"` in the path (Windows JSON-parse fix).
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args2 = try std.fmt.allocPrint(
+            a,
+            "{{\"path\":\"{s}\",\"old_str\":\"Hello\",\"new_str\":\"Goodbye\"}}",
+            .{escaped.items},
+        );
+        const tc = agent.ToolCall{
+            .id = "call_tr_match",
+            .type = "function",
+            .function = .{ .name = "text_replace", .arguments = args2 },
+        };
 
-    const result = try execTextReplace(minimalCtxTr(a), tc);
-    defer if (result.output_allocated) a.free(result.output);
+        const result = try execTextReplace(minimalCtxTr(a), tc);
+        defer if (result.output_allocated) a.free(result.output);
 
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    const read = try readAllTr(a, target_path);
-    try testing.expectEqualStrings("Goodbye World\n", read);
+        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        const read = try readAllTr(a, target_path);
+        try testing.expectEqualStrings("Goodbye World\n", read);
+    }
 }

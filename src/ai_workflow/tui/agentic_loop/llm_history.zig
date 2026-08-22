@@ -4,7 +4,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
 const logger_mod = nalarcore.loggermod;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const config_mod = nalarcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
@@ -6885,7 +6885,7 @@ test "buildSessionMessagesJson emits true/false values in both directions" {
 // Inlined from llm_history_description_test.zig
 // ════════════════════════════════════════════════════════════════════════════
 
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
 

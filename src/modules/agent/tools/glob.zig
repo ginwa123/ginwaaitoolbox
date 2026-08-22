@@ -2,7 +2,7 @@ const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 /// Cross-platform `/`-separator path concat. See memories.zig's
 /// `joinPath` for the rationale — `std.fs.path.join` produces

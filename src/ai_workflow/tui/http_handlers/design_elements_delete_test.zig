@@ -19,7 +19,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/design_elements_delete.zig";
 

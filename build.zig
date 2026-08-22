@@ -1,6 +1,378 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+// Win32 GetFileAttributesW — declared locally because std.os.windows
+// 0.16 doesn't expose it (std.os.windows.kernel32 only ships the
+// functions the std lib's own files need). Win32 kernel32.lib exports
+// it natively, so a single `extern` decl is enough — no libc linkage,
+// no `link_libc = true` on the build runner.
+extern "kernel32" fn GetFileAttributesW(lpPathName: [*:0]const u16) callconv(.winapi) u32;
+// NTSTATUS-like sentinel: when the path is missing/inaccessible,
+// GetFileAttributesW returns `INVALID_FILE_ATTRIBUTES` (0xFFFFFFFF).
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+// File-sys flag bit (0x10 = bit 4) indicating the path is a directory,
+// not a regular file. Probe mirrors `test -f <path>` semantics, so
+// directories count as NOT-a-file.
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+
+/// Cross-platform, pure-Zig "does this file exist" check.
+///
+/// Used by the system-deps probe (`dbs_uses_system`, `curl_uses_system`)
+/// below. Earlier revisions ran `sh -c "test -f ..."` here, which is
+/// unreliable on Windows dev boxes: Git for Windows ships git.exe +
+/// bash.exe but doesn't add `C:\Program Files\Git\bin` or
+/// `C:\Program Files\Git\usr\bin` to PATH automatically, so the probe
+/// silently fell through to "vendor fallback" even when vcpkg had the
+/// libraries installed. The pure-Zig version works on every host
+/// regardless of which shells (if any) are on PATH.
+///
+/// Implementation: host-OS-specific direct syscalls, not `std.c`,
+/// because build.zig itself doesn't link libc by default (Zig 0.16
+/// requires an explicit `link_libc = true` on the build runner's
+/// module for `std.c` to resolve `fopen` etc.).
+///
+///   - Linux:    `faccessat(AT_FDCWD, path, mode=0)` — direct POSIX
+///              syscall via `std.os.linux.faccessat`. Matches the
+///              inline node_modules probe at line ~700 below (same
+///              host syscall). Linux is the dev/CI primary; we
+///              don't pay a shell-out cost here.
+///   - macOS:    POSIX `faccessat` via `std.process.run` + `/bin/sh`
+///              shelling out to `test -f`. The `std.os.linux.*`
+///              wrappers are kernel-syscall-only — `.faccessat`'s
+///              Linux syscall number is meaningless on Darwin's BSD
+///              layer — so we shell-out instead. Darwin always has
+///              `/bin/sh` on PATH (POSIX-required), so this is safe.
+///   - Windows:  `GetFileAttributesW` returns INVALID_FILE_ATTRIBUTES
+///              on missing; existence = attrs != invalid AND attrs
+///              doesn't have the DIRECTORY bit set (mirror `test -f`).
+fn fileExists(absolute_path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (absolute_path.len >= buf.len) return false;
+    @memcpy(buf[0..absolute_path.len], absolute_path);
+    buf[absolute_path.len] = 0;
+    return switch (builtin.os.tag) {
+        .linux => blk: {
+            const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+            break :blk rc == 0;
+        },
+        // macOS: libc `access()` — same F_OK check as `test -f`.
+        // (The build runner links libc, so the extern is always
+        // resolvable; no shell-out needed. Zig 0.16 removed
+        // std.posix.access / made it Io-based, and the old shell-out
+        // used std.heap.GeneralPurposeAllocator + a pre-0.16
+        // std.process.run signature that no longer compile.)
+        .macos => blk: {
+            const rc = std.c.access(&buf, 0); // F_OK = 0
+            break :blk rc == 0;
+        },
+        .windows => blk: {
+            // WTF-8 (Zig's UTF-8 with surrogate-half support) → WTF-16
+            // little-endian (Win32's wide-char path) for the Win32 API
+            // call. `wtf8ToWtf16Le` writes the wide path into the
+            // saturated caller-provided buffer and RETURNS the count
+            // of u16 units written (`usize`), not a slice. We append
+            // a NUL because the Win32 API takes NUL-terminated wide
+            // strings.
+            var wide: [std.fs.max_path_bytes]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&wide, absolute_path) catch break :blk false;
+            if (written >= wide.len) break :blk false;
+            wide[written] = 0;
+            const attrs = GetFileAttributesW(@ptrCast(&wide));
+            if (attrs == INVALID_FILE_ATTRIBUTES) break :blk false;
+            if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) break :blk false;
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+/// Return the first entry of `candidates` that exists as a file, or null
+/// when none match. Used by the system-deps probe to handle Homebrew
+/// keg-only paths (`/opt/homebrew/opt/<name>/...`) AND fallback
+/// `/usr/include/...` paths in either order.
+fn pickFirstExisting(candidates: []const []const u8) ?[]const u8 {
+    for (candidates) |p| {
+        if (fileExists(p)) return p;
+    }
+    return null;
+}
+
+/// Locate MSVC's C++ standard-library headers (used by nalar-desktop's
+/// nalar_webview.cpp on Windows). The headers ship with Visual Studio's
+/// Build Tools — specifically the `INCLUDE` env var that `vcvars64.bat`
+/// sets (e.g. `C:\Program Files (x86)\Microsoft Visual Studio\2022\
+/// BuildTools\VC\Tools\MSVC\14.x\include`). Without them, the .cpp shim's
+/// `#include <wrl/client.h>` fails with "cstddef file not found" because
+/// WRL's first include is `<cstddef>` (a C++ stdlib header, not a C
+/// header). On dev boxes that haven't installed MSVC Build Tools, the
+/// .cpp can't compile — return `null` so we can gate the .cpp build on
+/// "do you have a C++ toolchain?".
+///
+/// We check the env var first (vcvars64.bat sets it), then fall back to
+/// probing the canonical MSVC install location. Returns `true` if any
+/// `cstddef` candidate resolves to an existing file.
+fn hasMsvcCppStllib(b: *std.Build, io: std.Io) bool {
+    if (b.graph.host.result.os.tag != .windows) return false;
+
+    // vcvars64.bat sets these. `INCLUDE` is the primary env var that
+    // lists C/C++ system header search paths.
+    if (b.graph.environ_map.get("INCLUDE")) |inc| {
+        // Quick check: does the INCLUDE list mention the MSVC `include/`
+        // directory? Even a partial match (any path under `VC\Tools\MSVC`)
+        // is good enough — we don't need to verify cstddef specifically.
+        if (std.mem.indexOf(u8, inc, "MSVC") != null) return true;
+    }
+
+    // Fallback: probe the canonical install path. This catches CI runners
+    // that sourced vcvars64.bat into a different env (some workflows
+    // import just INCLUDE; others also set VCToolsInstallDir).
+    const candidates = [_][]const u8{
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+    };
+    for (candidates) |root| {
+        // Any subdir under `MSVC/` (e.g. `14.44.35207/`) means MSVC is
+        // installed. Don't recurse — just check if the MSVC root dir
+        // contains at least one subdir.
+        const d = std.Io.Dir.cwd().openDir(io, root, .{}) catch continue;
+        defer d.close(io);
+        var it = d.iterate();
+        // `it.next` returns `Error!?Entry` (error union of optional).
+        // Return true if the read succeeded AND there's an entry. Any
+        // other outcome (error or end-of-stream) means "not installed".
+        if (it.next(io)) |maybe_entry| {
+            if (maybe_entry) |_| return true;
+        } else |_| {} // readdir error — assume not installed
+    }
+    return false;
+}
+
+/// Locate the MSVC include dirs needed by `zig cc` when compiling
+/// `platform/windows/nalar_webview.cpp`. The .cpp includes `<wrl.h>`,
+/// which transitively pulls in `<cstddef>` from the MSVC C++ stdlib;
+/// without `-isystem` flags pointing at the right places, `zig cc`
+/// fails with `fatal error: 'cstddef' file not found`.
+///
+/// Resolution order (matches `hasMsvcCppStllib`):
+///   1. `$VCToolsInstallDir` (set by `vcvars64.bat`) — most reliable
+///      on CI runners that sourced vcvars.
+///   2. The first canonical install path under `Microsoft Visual
+///      Studio/2022/{BuildTools,Community}/VC/Tools/MSVC/<version>/`
+///      — fallback for runners that only set INCLUDE (without
+///      VCToolsInstallDir).
+///
+/// Returns the `include/` subdir plus the Windows SDK include roots
+/// (`ucrt`, `um`, `shared`, `winrt`). On non-Windows hosts the helper
+/// returns empty strings — but `zig cc` is only invoked when
+/// `target.result.os.tag == .windows`, so the caller is responsible
+/// for that gate.
+const MsvcIncludePaths = struct {
+    c_stddef: []const u8,
+    msvc_include: []const u8,
+    ucrt_include: []const u8,
+    um_include: []const u8,
+    shared_include: []const u8,
+    winrt_include: []const u8,
+};
+
+fn findMsvcInclude(b: *std.Build) MsvcIncludePaths {
+    // Empty defaults — used if everything below fails so the caller
+    // still has well-typed string handles (even if empty).
+    const empty = &[_]u8{};
+    var result = MsvcIncludePaths{
+        .c_stddef = empty,
+        .msvc_include = empty,
+        .ucrt_include = empty,
+        .um_include = empty,
+        .shared_include = empty,
+        .winrt_include = empty,
+    };
+    if (b.graph.host.result.os.tag != .windows) return result;
+
+    // Find the MSVC root (the dir under `.../VC/Tools/MSVC/<version>/`).
+    // 1. Prefer `VCToolsInstallDir` env var (e.g.
+    //    `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207`).
+    const vc_root: []const u8 = if (b.graph.environ_map.get("VCToolsInstallDir")) |p|
+        p
+    else
+        // 2. Fallback: enumerate the canonical install locations and pick
+        // the first one with a `<ver>/include/` subdir. The version
+        // directory name is opaque (e.g. `14.44.35207`), so we don't
+        // hard-code it.
+        firstMsvcRoot(b) orelse &[_]u8{};
+
+    if (vc_root.len == 0) {
+        // No MSVC STL root resolved (e.g. standalone Windows SDK
+        // install without VS). The Windows SDK dirs are independent of
+        // VS — still resolve them instead of bailing with six empties.
+        fillWindowsSdkIncludes(b, &result);
+        return result;
+    }
+    result.c_stddef = b.fmt("{s}/include", .{vc_root});        // MSVC C++ stdlib (cstddef, etc.)
+    result.msvc_include = result.c_stddef;
+    fillWindowsSdkIncludes(b, &result);
+    return result;
+}
+
+/// Populate the four Windows SDK include subdirs in `result` (`ucrt`,
+/// `um`, `shared`, `winrt`). Resolution order:
+///   1. `$INCLUDE` entries (set by vcvars64.bat / VS dev shells) whose
+///      last path component is exactly one of the four leaf dirs.
+///   2. Canonical `Windows Kits/10/include/<version>/<leaf>` probe.
+///
+/// Fields that resolve to nothing stay empty — the caller must skip
+/// `-isystem` for empty values (a bare `-isystem ""` is at best a
+/// confusing no-op; it previously leaked into the CI compile line as
+/// `-isystem -isystem -isystem -isystem`).
+fn fillWindowsSdkIncludes(b: *std.Build, result: *MsvcIncludePaths) void {
+    if (b.graph.environ_map.get("INCLUDE")) |inc| {
+        var it = std.mem.splitScalar(u8, inc, ';');
+        while (it.next()) |entry_raw| {
+            const entry = std.mem.trim(u8, entry_raw, " \t\"");
+            if (entry.len == 0) continue;
+            const leaf = std.fs.path.basename(entry);
+            if (std.mem.eql(u8, leaf, "ucrt") and result.ucrt_include.len == 0) {
+                result.ucrt_include = entry;
+            } else if (std.mem.eql(u8, leaf, "um") and result.um_include.len == 0) {
+                result.um_include = entry;
+            } else if (std.mem.eql(u8, leaf, "shared") and result.shared_include.len == 0) {
+                result.shared_include = entry;
+            } else if (std.mem.eql(u8, leaf, "winrt") and result.winrt_include.len == 0) {
+                // Exact basename match — "cppwinrt" deliberately does NOT land here.
+                result.winrt_include = entry;
+            }
+        }
+    }
+
+    const kit_roots = [_][]const u8{
+        "C:/Program Files (x86)/Windows Kits/10/include",
+        "C:/Program Files/Windows Kits/10/include",
+    };
+    const leaves = [_]struct { leaf: []const u8, field: *[]const u8 }{
+        .{ .leaf = "ucrt", .field = &result.ucrt_include },
+        .{ .leaf = "um", .field = &result.um_include },
+        .{ .leaf = "shared", .field = &result.shared_include },
+        .{ .leaf = "winrt", .field = &result.winrt_include },
+    };
+    for (kit_roots) |root| {
+        const ver_root = firstSubdir(b, root) orelse continue;
+        for (leaves) |l| {
+            if (l.field.*.len != 0) continue;
+            const candidate = b.fmt("{s}/{s}", .{ ver_root, l.leaf });
+            if (dirExists(b, candidate)) l.field.* = candidate;
+        }
+    }
+}
+
+/// Return true when `abs_path` exists and is a directory. Mirrors the
+/// openDir probe pattern used by `hasMsvcCppStllib` (fileExists only
+/// matches files — it explicitly rejects FILE_ATTRIBUTE_DIRECTORY).
+fn dirExists(b: *std.Build, abs_path: []const u8) bool {
+    const d = std.Io.Dir.cwd().openDir(b.graph.io, abs_path, .{}) catch return false;
+    d.close(b.graph.io);
+    return true;
+}
+
+/// Walk the canonical VS install locations and return the first
+/// `<root>/VC/Tools/MSVC/<ver>` dir we find. Returns null on miss.
+/// Non-Windows always returns null.
+fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const roots = [_][]const u8{
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC",
+        "C:/Program Files (x86)/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+    };
+    for (roots) |msvc_root| {
+        // Open the MSVC root and pick the first subdir (the version
+        // dir like `14.44.35207`). Without that subdir, MSVC isn't
+        // installed at this root.
+        const d = std.Io.Dir.openDirAbsolute(b.graph.io, msvc_root, .{}) catch continue;
+        defer d.close(b.graph.io);
+        var it = d.iterate();
+        while (it.next(b.graph.io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            return b.fmt("{s}/{s}", .{ msvc_root, entry.name });
+        }
+    }
+    return null;
+}
+
+/// Return `<root>/<first-subdirectory>`, or null when `root` doesn't
+/// exist or contains no subdirectories. Used to resolve opaque version
+/// directories (`14.44.35207`, `10.0.22621.0`) without hard-coding them.
+fn firstSubdir(b: *std.Build, root: []const u8) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{}) catch return null;
+    defer d.close(b.graph.io);
+    var it = d.iterate();
+    while (it.next(b.graph.io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        return b.fmt("{s}/{s}", .{ root, entry.name });
+    }
+    return null;
+}
+
+/// Check that ALL WebView2 NuGet prerequisites sit next to
+/// nalar_webview.cpp. Returns null when complete; otherwise a
+/// human-readable name of the first missing file (for the
+/// stub-fallback warning).
+///
+/// Why EventToken.h is checked explicitly: Microsoft's WebView2.h does
+/// `#include "EventToken.h"` from its own directory, so a partial NuGet
+/// extraction that copies WebView2.h alone compiles fine right up until
+/// clang dies deep inside Microsoft's header with
+/// `fatal error: 'EventToken.h' file not found`
+/// (seen on the self-hosted Windows CI runner, 2026-08-22).
+fn webview2MissingPrereq(b: *std.Build) ?[]const u8 {
+    const prereqs = [_][]const u8{
+        "WebView2.h",
+        "EventToken.h",
+        "WebView2Loader.h",
+        "WebView2Loader.lib",
+    };
+    for (prereqs) |name| {
+        const full = b.fmt("src/apps/desktop_app/platform/windows/{s}", .{name});
+        if (!fileExists(full)) return name;
+    }
+    return null;
+}
+
+/// Locate `bash.exe` on Windows hosts where Git for Windows is installed
+/// but its bin dir is not on PATH.
+///
+/// Git for Windows ships git.exe + bash.exe at `C:\Program Files\Git\bin`
+/// and `C:\Program Files\Git\usr\bin`, but does NOT add either directory
+/// to the system PATH automatically — only git.exe's parent (e.g.
+/// `C:\Program Files\Git\cmd`) is wired in by the installer. Calling
+/// `b.addSystemCommand(.{ "bash", ... })` then fails at spawn with
+/// "FileNotFound" because Windows CreateProcess only searches PATH, not
+/// Git's hard-coded install dir.
+///
+/// Linux/macOS hosts always have bash on PATH (POSIX-required), so this
+/// helper is a Windows-only escape hatch. Returns the absolute path of
+/// the first `bash.exe` found among the known Git install locations, or
+/// null when none exist — the caller is expected to fall back to a
+/// clear error message in that case.
+///
+/// Checked in priority order (newest Git release convention first):
+///   - `C:\Program Files\Git\bin\bash.exe`     — Git for Windows default
+///   - `C:\Program Files\Git\usr\bin\bash.exe` — Git for Windows MSYS2 sysroot
+///   - `C:\Program Files (x86)\Git\bin\bash.exe` — 32-bit Git on 64-bit Windows (rare)
+///   - `C:\Program Files (x86)\Git\usr\bin\bash.exe` — 32-bit Git MSYS2 sysroot
+fn findBashOnWindows() ?[]const u8 {
+    const candidates = [_][]const u8{
+        "C:/Program Files/Git/bin/bash.exe",
+        "C:/Program Files/Git/usr/bin/bash.exe",
+        "C:/Program Files (x86)/Git/bin/bash.exe",
+        "C:/Program Files (x86)/Git/usr/bin/bash.exe",
+    };
+    return pickFirstExisting(&candidates);
+}
+
 /// Link platform-specific system libraries + include paths for a Compile
 /// step based on the COMPILE'S OWN target (NOT the global default target).
 /// Every caller that produces a binary linked against nalarcore MUST
@@ -95,6 +467,7 @@ fn getMacosSdkPath(b: *std.Build) []const u8 {
 fn createPlatformExe(
     b: *std.Build,
     mod: *std.Build.Module,
+    helpers_mod: *std.Build.Module,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     name: []const u8,
@@ -105,7 +478,10 @@ fn createPlatformExe(
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "nalarcore", .module = mod }},
+            .imports = &.{
+                .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
+            },
         }),
     });
     linkPlatformDeps(b, exe, target);
@@ -136,6 +512,40 @@ pub fn build(b: *std.Build) void {
             .abi = .gnu,
             .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
         },
+        .windows => blk: {
+            // === Why default to x86_64-windows-gnu on Windows ===
+            //
+            // The CI's self-hosted Windows runner installs all native deps
+            // (libcurl, libssl, libcrypto, libpq, sqlite3) via
+            //     vcpkg install --recurse ...:x64-windows
+            // (see .github/workflows/ci.yml:560). vcpkg emits artefacts as
+            // x64 — `libcurl.lib`/`libssl.lib`/etc. live at
+            // `C:\vcpkg\installed\x64-windows\...`. The custom_http_client
+            // and databases packages wire those exact paths into the link
+            // line.
+            //
+            // On ARM64 Windows (Snapdragon X dev machines) Zig's stock
+            // host-following default would produce target = aarch64-windows-
+            // gnu, which can't link x64 vcpkg artefacts — every Compile
+            // step would fail with "file not found" for the .lib files
+            // (and the vendored curl target_subdir is hardcoded
+            // "windows-amd64" anyway, so vendored archives don't exist for
+            // the aarch64 path either).
+            //
+            // Pinning Windows to x86_64-windows-gnu aligns dev boxes with
+            // the CI's binary layout, so `zig build` Just Works on both
+            // X64 and ARM64 Windows hosts when vcpkg x64 is present.
+            //
+            // To target aarch64-windows-gnu natively, install the matching
+            // vcpkg triplet first:
+            //     vcpkg install ... --triplet=arm64-windows
+            // then pass `-Dtarget=aarch64-windows-gnu`.
+            break :blk .{
+                .cpu_arch = .x86_64,
+                .os_tag = .windows,
+                .abi = .gnu,
+            };
+        },
         else => .{
             .cpu_arch = b.graph.host.result.cpu.arch,
             .os_tag = b.graph.host.result.os.tag,
@@ -143,6 +553,28 @@ pub fn build(b: *std.Build) void {
         },
     } });
     const optimize = b.standardOptimizeOption(.{});
+
+    // `helpers` package (`src/helpers/`): project-wide portable sleep /
+    // time / file-existence helpers. Created EARLY (before any
+    // `b.addExecutable(...)` or `b.createModule(...)` calls below) so
+    // every downstream Compile can include it in its `imports` list
+    // via `.module = helpers_mod`.
+    //
+    // We promote `helpers` to its own Zig package (declared in
+    // `build.zig.zon`) instead of creating a top-level `helpers`
+    // module from a plain `b.createModule` so multiple sub-packages
+    // (custom_http_client, databases, …) can all reach it through a
+    // single shared module instance. In Zig 0.16 every `.zig` file
+    // belongs to exactly one module, so duplicating the helpers
+    // module from each sub-build.zig would collide on the file
+    // ownership of `helpers/mod.zig`. Declaring it as a package via
+    // `b.dependency("helpers", ...)` gives it a single owner and
+    // lets every consumer reference it as `@import("helpers")`.
+    const helpers_dep = b.dependency("helpers", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const helpers_mod = helpers_dep.module("helpers");
 
     // Cross-platform Homebrew / vcpkg prefix options. Declared ONCE here
     // so `b.option()`'s anti-duplicate rule isn't violated when the same
@@ -165,6 +597,9 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("nalarcore", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .imports = &.{
+            .{ .name = "helpers", .module = helpers_mod },
+        },
     });
 
     mod.addImport("nalarcore", mod);
@@ -260,48 +695,56 @@ pub fn build(b: *std.Build) void {
     // the host's libs are Linux .so, can't link into a Mach-O binary.
     const dbs_uses_system = blk: {
         if (target.result.os.tag != b.graph.host.result.os.tag) break :blk false;
-        const probe_script = switch (b.graph.host.result.os.tag) {
-            .linux =>
-            \\{ \
-            \\  s=$(test -f /usr/include/sqlite3.h && echo 1 || echo 0); \
-            \\  q=$(test -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
-            \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$s$q$h"; \
-            \\}
-            ,
-            .macos =>
-            // Homebrew keg-only: every keg under /opt/homebrew/opt/<name>/
-            // has both include/ and lib/ subdirs (symlinked into the
-            // cellar). curl.h is bundled inside the curl keg at
-            // /opt/homebrew/opt/curl/include/curl/curl.h. libpq isn't
-            // usually installed via brew on a dev Mac (the project doesn't
-            // use it on macOS today), so we treat pq as optional on macos.
-            \\{ \
-            \\  s=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0); \
-            \\  q=$(test -f /opt/homebrew/opt/libpq/include/libpq-fe.h -o -f /usr/include/postgresql/libpq-fe.h -o -f /usr/include/libpq-fe.h && echo 1 || echo 0); \
-            \\  h=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$s$q$h"; \
-            \\}
-            ,
-            else =>
-            // Windows + any other host: fall back to vendored amalgamation.
-            \\{ echo "use_system=000"; \\}
-            ,
+        // Pure-Zig header probe (no shell, no `bash` dependency).
+        //
+        // Earlier revisions ran `sh -c "test -f ..."` here, which silently
+        // failed on Windows dev boxes without `bash` / `sh` on PATH
+        // (Git for Windows ships git.exe + bash.exe but doesn't add
+        // Git\bin or Git\usr\bin to PATH automatically). The probe then
+        // fell through to `use_system=false`, the build went on to look
+        // for the vendored libcurl archive, and `zig build` failed with
+        // "file not found" — even though vcpkg had the libs installed at
+        // `C:\vcpkg\installed\x64-windows\`. See commit history for the
+        // PR that switched to std.fs.cwd().openFile (build-script-safe
+        // across hosts).
+        //
+        // Probe checks: sqlite3.h AND libpq-fe.h AND openssl/ssl.h.
+        // Missing any one → vendor fallback. Lib presence is verified
+        // separately by the linker (a missing .lib gives a clear "file
+        // not found" diagnostic).
+        const sqlite_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/sqlite3.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/sqlite3/include/sqlite3.h",
+                "/usr/include/sqlite3.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/sqlite3.h",
+            else => break :blk false,
         };
-        const result = std.process.run(
-            b.allocator,
-            b.graph.io,
-            .{
-                .argv = &.{ "sh", "-c", probe_script },
-                .stdout_limit = .limited(256),
-                .stderr_limit = .limited(256),
-            },
-        ) catch break :blk false;
-        defer b.allocator.free(result.stdout);
-        defer b.allocator.free(result.stderr);
-        // All three: sqlite3 header (curl.h on macos), libpq header (any layout),
-        // openssl header. Library side is verified by the package's own probe.
-        break :blk std.mem.indexOf(u8, result.stdout, "use_system=111") != null;
+        const libpq_h = switch (b.graph.host.result.os.tag) {
+            .linux => pickFirstExisting(&.{
+                "/usr/include/postgresql/libpq-fe.h",
+                "/usr/include/libpq-fe.h",
+            }) orelse break :blk false,
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/libpq/include/libpq-fe.h",
+                "/usr/include/postgresql/libpq-fe.h",
+                "/usr/include/libpq-fe.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/libpq-fe.h",
+            else => break :blk false,
+        };
+        const openssl_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/openssl/ssl.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/openssl@3/include/openssl/ssl.h",
+                "/opt/homebrew/opt/openssl/include/openssl/ssl.h",
+                "/usr/include/openssl/ssl.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h",
+            else => break :blk false,
+        };
+        break :blk fileExists(sqlite_h) and fileExists(libpq_h) and fileExists(openssl_h);
     };
 
     // Probe host for system libcurl + openssl. Same probe layout as
@@ -311,57 +754,43 @@ pub fn build(b: *std.Build) void {
     // at consumer link time.
     const curl_uses_system = blk: {
         if (target.result.os.tag != b.graph.host.result.os.tag) break :blk false;
-        const probe_script = switch (b.graph.host.result.os.tag) {
-            .linux =>
-            \\{ \
-            \\  c=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0); \
-            \\  h=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$c$h"; \
-            \\}
-            ,
-            .macos =>
-            // Homebrew keg-only curl: /opt/homebrew/opt/curl/{include,lib}/.
-            // Also accept the LDFLAGS/CPPFLAGS env vars the CI yml sets
-            // (`brew install pkg-config openssl@3 coreutils` + export
-            // LDFLAGS/CPPFLAGS/PKG_CONFIG_PATH from `brew --prefix
-            // openssl@3`). The CI installs openssl@3 + coreutils but
-            // NOT curl by default — brew install openssl@3 alone doesn't
-            // pull in libcurl. So curl probe = curl.h present (any of the
-            // three locations) AND libcurl.dylib present. If brew install
-            // curl is added to CI later, the probe finds it; until then,
-            // the Mac runner needs `brew install curl` for system libcurl
-            // to be picked up here.
-            \\{ \
-            \\  HDR=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0); \
-            \\  LIB=$(test -f /opt/homebrew/opt/curl/lib/libcurl.dylib -o -f /usr/lib/libcurl.dylib && echo 1 || echo 0); \
-            \\  SSL=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0); \
-            \\  echo "use_system=$HDR$LIB$SSL"; \
-            \\}
-            ,
-            else =>
-            \\{ echo "use_system=000"; \\}
-            ,
+        // Pure-Zig probe mirroring the dbs_uses_system helper above.
+        // No shell, no bash dependency.
+        //
+        // On macOS we additionally verify a libcurl.dylib exists — having
+        // only the header (rare) would fail at consumer link time.
+        // The CI installs openssl@3 + coreutils via brew but NOT curl, so
+        // the Mac runner needs `brew install curl` for system libcurl to
+        // be picked up.
+        const curl_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/curl/curl.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/curl/include/curl/curl.h",
+                "/usr/include/curl/curl.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/curl/curl.h",
+            else => break :blk false,
         };
-        const result = std.process.run(
-            b.allocator,
-            b.graph.io,
-            .{
-                .argv = &.{ "sh", "-c", probe_script },
-                .stdout_limit = .limited(256),
-                .stderr_limit = .limited(256),
-            },
-        ) catch break :blk false;
-        defer b.allocator.free(result.stdout);
-        defer b.allocator.free(result.stderr);
-        // Both: curl.h + openssl/ssl.h. On macOS we also require
-        // libcurl.dylib (header+lib both present). libssl/libcrypto
-        // verification is done by the package's own probe.
-        break :blk std.mem.indexOf(u8, result.stdout, "use_system=") != null and
-            std.mem.indexOf(u8, result.stdout, "use_system=000") == null and
-            // linux shape: "use_system=11" (curl + openssl)
-            // macos shape: "use_system=111" (curl_hdr + libcurl.dylib + openssl)
-            (std.mem.indexOf(u8, result.stdout, "use_system=11") != null or
-            std.mem.indexOf(u8, result.stdout, "use_system=111") != null);
+        const openssl_h = switch (b.graph.host.result.os.tag) {
+            .linux => "/usr/include/openssl/ssl.h",
+            .macos => pickFirstExisting(&.{
+                "/opt/homebrew/opt/openssl@3/include/openssl/ssl.h",
+                "/opt/homebrew/opt/openssl/include/openssl/ssl.h",
+                "/usr/include/openssl/ssl.h",
+            }) orelse break :blk false,
+            .windows => "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h",
+            else => break :blk false,
+        };
+        if (!fileExists(curl_h) or !fileExists(openssl_h)) break :blk false;
+        // macOS extra check: libcurl.dylib present (header+lib pair).
+        if (b.graph.host.result.os.tag == .macos) {
+            const libcurl_dylib = pickFirstExisting(&.{
+                "/opt/homebrew/opt/curl/lib/libcurl.dylib",
+                "/usr/lib/libcurl.dylib",
+            }) orelse break :blk false;
+            _ = libcurl_dylib;
+        }
+        break :blk true;
     };
 
     std.debug.print(
@@ -394,19 +823,39 @@ pub fn build(b: *std.Build) void {
         "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout. SKIPPED when the host has system sqlite3 (see system-deps probe output).",
     );
     if (dbs_uses_system) {
-        // System sqlite3 present — replace the fetch with a no-op
-        // message so `zig build --verbose` shows WHY the step was
-        // skipped. The step still exists in --list-steps so any
-        // external automation that depends on it doesn't break.
-        const skip_msg = b.addSystemCommand(&.{
-            "sh", "-c",
-            \\echo "[fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected)."
-        ,
+        // System sqlite3 present — emit a step that runs the literal
+        // `echo` builtin via the host shell so `zig build --verbose`
+        // shows WHY the fetch was skipped. The step still exists in
+        // --list-steps so external automation depending on it doesn't
+        // break.
+        //
+        // Shell selection (cross-platform fix): the previous revision
+        // hardcoded `sh -c "echo ..."` which silently failed on Windows
+        // dev boxes without bash/sh on PATH. We pick the shell by host
+        // OS: `cmd.exe /c` on Windows (always present), `sh -c` on
+        // Linux/macOS.
+        const skip_msg = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+            .windows => &.{ "cmd.exe", "/c", "echo [fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected)." },
+            else => &.{ "sh", "-c", "echo '[fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected).'" },
         });
         vendor_sqlite3_step.dependOn(&skip_msg.step);
     } else {
+        // Windows: `bash` is not on PATH (Git for Windows ships it at
+        // `C:\Program Files\Git\bin\bash.exe` without adding that dir to
+        // PATH). `findBashOnWindows()` probes the canonical install
+        // locations and returns the absolute path; CreateProcess
+        // accepts absolute paths verbatim. Linux/macOS hosts keep the
+        // bare `"bash"` (always on PATH on POSIX). Falling through to
+        // the absolute path on Windows is required because
+        // `addSystemCommand(.{ "bash", ... })` would otherwise fail at
+        // spawn with "FileNotFound" — see the `findBashOnWindows` doc
+        // comment for the full rationale.
+        const bash_path: []const u8 = switch (b.graph.host.result.os.tag) {
+            .windows => findBashOnWindows() orelse "bash", // last-resort: PATH lookup
+            else => "bash",
+        };
         const vendor_sqlite3_fetch = b.addSystemCommand(&.{
-            "bash", "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
+            bash_path, "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
         });
         vendor_sqlite3_fetch.setCwd(b.path(""));
         vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
@@ -431,6 +880,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -462,15 +912,33 @@ pub fn build(b: *std.Build) void {
             "Auto-runs on `zig build` or any install:* target when the vendor dir is missing. SKIPPED when the host has system libcurl + ssl + crypto (see system-deps probe output).",
     );
     if (curl_uses_system) {
-        const skip_msg = b.addSystemCommand(&.{
-            "sh", "-c",
-            \\echo "[fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected)."
-        ,
+        // Shell selection (cross-platform fix): see the matching
+        // fetch-vendor-sqlite3 block above for the rationale.
+        const skip_msg = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+            .windows => &.{ "cmd.exe", "/c", "echo [fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected)." },
+            else => &.{ "sh", "-c", "echo '[fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected).'" },
         });
         fetch_vendor_curl_step.dependOn(&skip_msg.step);
     } else {
+        // Windows: `bash` is not on PATH (Git for Windows ships it at
+        // `C:\Program Files\Git\bin\bash.exe` without adding that dir to
+        // PATH). `findBashOnWindows()` probes the canonical install
+        // locations and returns the absolute path. Linux/macOS hosts
+        // keep the bare `"bash"` (always on PATH on POSIX).
+        //
+        // Even with bash found, building libcurl + OpenSSL from source
+        // on Windows requires gcc/make/perl + the Perl Locale/Maketext
+        // module that the OpenSSL Configure script pulls in. On a
+        // typical dev box those aren't installed. The script itself
+        // detects a Windows host via `uname -s == *MINGW* / MSYS*` and
+        // exits with a clear error so the user gets an actionable
+        // message instead of an opaque `process exited with error code 49`.
+        const bash_path: []const u8 = switch (b.graph.host.result.os.tag) {
+            .windows => findBashOnWindows() orelse "bash",
+            else => "bash",
+        };
         const fetch_vendor_curl_run = b.addSystemCommand(&.{
-            "bash", "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
+            bash_path, "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
         });
         fetch_vendor_curl_run.setCwd(b.path(""));
         fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
@@ -699,6 +1167,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -795,7 +1264,40 @@ pub fn build(b: *std.Build) void {
             desktop_exe.root_module.linkFramework("WebKit", .{});
         },
         .windows => {
-            // Chunk 7: ole32, user32, WebView2Loader (via .cpp shim)
+            // Gate nalar-desktop's .cpp shim compile on having MSVC's C++
+            // standard-library headers. `wrl/client.h` (pulled in by the
+            // shim's `#include <wrl.h>`) starts with `#include <cstddef>`
+            // which is a C++ stdlib header — without MSVC's `include/`
+            // dir on the search path, the .cpp can't compile. On dev
+            // boxes without MSVC Build Tools installed, fall back to a
+            // minimal stub .cpp that exports the same 3 C ABI symbols
+            // (nalar_webview_create / _run / _destroy) as no-ops. This
+            // keeps `zig build nalar-desktop` working on a fresh Windows
+            // checkout that hasn't installed Visual Studio (CI installs
+            // MSVC via the bootstrapper; local dev boxes can skip it).
+            // Two gates for the real WebView2 shim:
+            //   1. An MSVC C++ toolchain must be installed (WRL pulls in
+            //      MSVC STL headers like <cstddef>).
+            //   2. ALL WebView2 NuGet files must sit next to the .cpp.
+            //      A partial extraction (WebView2.h without its
+            //      EventToken.h sibling) previously poisoned the CI
+            //      runner: the compile died deep inside Microsoft's
+            //      header. Fall back to the stub instead of failing.
+            const use_real_webview = blk: {
+                if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
+                if (webview2MissingPrereq(b)) |missing| {
+                    std.log.warn(
+                        "nalar-desktop: MSVC C++ toolchain found, but WebView2 prerequisite {s} is missing under " ++
+                            "src/apps/desktop_app/platform/windows/ — using the no-op webview stub instead. " ++
+                            "Extract build/native/include/* + runtimes/win-x64/native/WebView2Loader.dll from the " ++
+                            "Microsoft.Web.WebView2 NuGet package there to enable the real webview.",
+                        .{missing},
+                    );
+                    break :blk false;
+                }
+                break :blk true;
+            };
+            if (use_real_webview) {
             //
             // The C++ shim at platform/windows/nalar_webview.cpp implements
             // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
@@ -815,14 +1317,132 @@ pub fn build(b: *std.Build) void {
             // methods on `root_module` (not on the Compile step like in
             // older versions) — see the Linux branch above for the matching
             // addCSourceFile pattern.
-            const cpp_file = b.path("src/apps/desktop_app/platform/windows/nalar_webview.cpp");
-            desktop_exe.root_module.addCSourceFile(.{
-                .file = cpp_file,
-                .flags = &.{ "/std:c++17", "/EHsc" },
-            });
+            // Compile nalar_webview.cpp manually with zig cc. We can't use
+            // `addCSourceFile` here because Zig 0.16's build-exe CLI
+            // doesn't accept multiple flags after `-cflags` (each flag has
+            // to be its own `-cflags <flag>`, and the second `-cflags`
+            // is rejected as "unknown argument"). The MSVC-style flags
+            // `/std:c++17` and `/EHsc` also don't work with `zig cc` (the
+            // leading `/` makes them look like file paths). Switch to the
+            // clang-style equivalents: `-std=c++17` and `-fcxx-exceptions`.
+            //
+            // The .cpp needs C++17 (for WRL templates) and exception
+            // handling (for WebView2 COM callbacks). Compile to a .obj,
+            // then addObjectFile so the desktop_exe links it.
+            //
+            // CRITICAL: `zig cc` on Windows does NOT auto-pick up the MSVC
+            // include path. `wrl/client.h` (transitively included via
+            // `wrl.h` in the .cpp) starts with `#include <cstddef>` —
+            // without `-I` pointing at the MSVC `VC/Tools/MSVC/<ver>/include/`
+            // dir, the compile dies with `fatal error: 'cstddef' file not
+            // found`. Re-derive the path from `VCToolsInstallDir` (set by
+            // `vcvars64.bat`) with a fallback to the canonical install
+            // locations — matching `hasMsvcCppStllib` above.
+            const cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview.cpp";
+            const cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview.obj";
+            const msvc_include = findMsvcInclude(b);
+            // Build the arg list dynamically: skip any include dir that
+            // failed to resolve. Emitting `-isystem ""` is a confusing
+            // no-op and previously leaked four bare `-isystem` flags
+            // into the CI compile command line.
+            const candidate_dirs = [_][]const u8{
+                msvc_include.c_stddef,
+                msvc_include.msvc_include,
+                msvc_include.ucrt_include,
+                msvc_include.um_include,
+                msvc_include.shared_include,
+                msvc_include.winrt_include,
+            };
+            var cpp_args: [24][]const u8 = undefined;
+            var n: usize = 0;
+            cpp_args[n] = b.graph.zig_exe;
+            n += 1;
+            cpp_args[n] = "cc";
+            n += 1;
+            cpp_args[n] = "-target";
+            n += 1;
+            cpp_args[n] = "x86_64-windows-gnu";
+            n += 1;
+            cpp_args[n] = "-c";
+            n += 1;
+            cpp_args[n] = "-std=c++17";
+            n += 1;
+            cpp_args[n] = "-fcxx-exceptions";
+            n += 1;
+            for (candidate_dirs) |dir| {
+                if (dir.len == 0) continue;
+                cpp_args[n] = "-isystem";
+                n += 1;
+                cpp_args[n] = dir;
+                n += 1;
+            }
+            cpp_args[n] = "-o";
+            n += 1;
+            cpp_args[n] = cpp_obj;
+            n += 1;
+            cpp_args[n] = cpp_src;
+            n += 1;
+            const cpp_compile = b.addSystemCommand(cpp_args[0..n]);
+            cpp_compile.setCwd(b.path(""));
+            desktop_exe.step.dependOn(&cpp_compile.step);
+            desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
+            // Zig's MinGW (gnu) link line doesn't auto-pull kernel32.dll /
+            // ws2_32.dll for raw `extern "kernel32"` / `extern "ws2_32"`
+            // decls in Zig code (it does for `addCSourceFile`'d C/C++ —
+            // those get the MSVC-style default libs). Add them explicitly
+            // so the Win32 externs in extraction.zig / subprocess.zig
+            // resolve at link time. Without these, lld-link reports
+            // "undefined symbol" for functions like
+            // `extGetFileAttributesW` and `ws_socket`.
+            desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
+            desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
+            // WebView2's static-link import library (`WebView2Loader.lib`) is
+            // staged by the CI workflow at `src\apps\desktop_app\platform\windows\`
+            // next to the .cpp — same directory as `#pragma comment(lib,
+            // "WebView2Loader.lib")` would resolve it on MSVC. Zig's LLD linker
+            // doesn't auto-search that directory; `linkSystemLibrary("WebView2Loader")`
+            // translates to `-lWebView2Loader` which searches LIB paths only
+            // (default Windows LIB = MSVC install dirs + a few system dirs —
+            // NOT the source tree). Add the WebView2 dir as a library search
+            // path so LLD finds `WebView2Loader.lib` next to the .cpp. The
+            // runtime DLL (`WebView2Loader.dll`) is shipped alongside the
+            // .exe by `install-nalar-desktop.sh` — see the runtime comment
+            // in `nalar_webview.cpp:51`.
+            desktop_exe.root_module.addLibraryPath(.{
+                .cwd_relative = "src/apps/desktop_app/platform/windows",
+            });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
+            } else {
+                // Dev-box fallback: no MSVC C++ stdlib available. Compile
+                // a minimal stub .cpp that exports the 3 C ABI symbols
+                // (nalar_webview_create / _run / _destroy) as no-ops.
+                // Without a real webview, nalar-desktop won't actually
+                // display anything on these dev boxes — but the binary
+                // builds + links + the CLI args parser + the asset
+                // extraction smoke test all still work. CI's runner
+                // installs MSVC and takes the real path above.
+                const stub_cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview_stub.cpp";
+                const stub_cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview_stub.obj";
+                const stub_compile = b.addSystemCommand(&.{
+                    b.graph.zig_exe, "cc",
+                    "-target", "x86_64-windows-gnu",
+                    "-c",
+                    "-o",  stub_cpp_obj,
+                    stub_cpp_src,
+                });
+                stub_compile.setCwd(b.path(""));
+                desktop_exe.step.dependOn(&stub_compile.step);
+                desktop_exe.root_module.addObjectFile(.{ .cwd_relative = stub_cpp_obj });
+                // Dev-box fallback path also needs the raw Win32 / WinSock2
+                // externs declared in extraction.zig / subprocess.zig to
+                // resolve at link time (see the MSVC branch above for the
+                // full rationale on why Zig's MinGW link doesn't auto-pull
+                // these for `extern "kernel32"` / `extern "ws2_32"` decls).
+                desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
+                desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
+            }
         },
         else => {},
     }
@@ -902,6 +1522,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "cli", .module = cli_module },
                 .{ .name = "custom_http_client", .module = custom_http_client_mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -1007,6 +1628,7 @@ pub fn build(b: *std.Build) void {
     });
     mod_tests_module.addImport("nalarcore", mod_tests_module);
     mod_tests_module.addImport("custom_http_client", custom_http_client_mod);
+    mod_tests_module.addImport("helpers", helpers_mod);
     // Same `databases` import as `mod` — tests that touch sqlite3 get
     // the package's deps (link_libc + sqlite3.c amalgamation + openssl +
     // libpq) via the module-graph dep propagation. No need to re-link
@@ -1097,7 +1719,7 @@ pub fn build(b: *std.Build) void {
         .abi = .gnu,
         .glibc_version = .{ .major = 2, .minor = 38, .patch = 0 },
     });
-    const linux_exe = createPlatformExe(b, mod, linux_target, optimize, "nalarcore-linux-x86_64");
+    const linux_exe = createPlatformExe(b, mod, helpers_mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via custom_http_client_mod's transitive deps
@@ -1125,7 +1747,7 @@ pub fn build(b: *std.Build) void {
     // auto-appends `.exe` on Windows targets, so passing a name with `.exe`
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
-    const windows_exe = createPlatformExe(b, mod, windows_target, optimize, "nalarcore-windows-x86_64");
+    const windows_exe = createPlatformExe(b, mod, helpers_mod, windows_target, optimize, "nalarcore-windows-x86_64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
     // NOTE: src/modules/custom_http_client/vendor/curl/windows-amd64/
     // is NOT built yet (MinGW setup pending — see the curl build
@@ -1166,7 +1788,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .x86_64,
         .os_tag = .macos,
     });
-    const macos_exe = createPlatformExe(b, mod, macos_target, optimize, "nalarcore-macos-x86_64");
+    const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "nalarcore-macos-x86_64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
     macos_step.dependOn(fetch_vendor_curl_step);
@@ -1189,7 +1811,7 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .aarch64,
         .os_tag = .macos,
     });
-    const macos_arm_exe = createPlatformExe(b, mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
+    const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
     // libcurl is linked via custom_http_client_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
     macos_arm_step.dependOn(fetch_vendor_curl_step);
@@ -1203,7 +1825,7 @@ pub fn build(b: *std.Build) void {
     _ = is_native_macos;
 
     const linux_system_step = b.step("install:linux:system", "Build for Linux x86_64 and install to system");
-    const linux_system_exe = createPlatformExe(b, mod, target, optimize, "nalar");
+    const linux_system_exe = createPlatformExe(b, mod, helpers_mod, target, optimize, "nalar");
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via custom_http_client_mod's transitive deps.
@@ -1236,6 +1858,7 @@ pub fn build(b: *std.Build) void {
             .optimize = dev_optimize,
             .imports = &.{
                 .{ .name = "nalarcore", .module = mod },
+                .{ .name = "helpers", .module = helpers_mod },
             },
         }),
     });
@@ -1366,6 +1989,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/modules/custom_http_server/src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "helpers", .module = helpers_mod },
+            },
         }),
     });
     tcp_exe.root_module.linkSystemLibrary("c", .{});
@@ -1439,37 +2065,89 @@ pub fn build(b: *std.Build) void {
     // use the runtime allocPrint + b.allocator. The script slice is
     // leaked (b.allocator is the build-graph arena; everything is freed
     // when the build runner exits).
-    const banner_script = std.fmt.allocPrint(
-        b.allocator,
-        \\
-        \\D=zig-out/bin
-        \\echo ""
-        \\echo "[zig build success]"
-        \\echo ""
-        \\echo "  nalar service binary  →  $D/{s}"
-        \\echo "  nalar desktop binary  →  $D/{s}"
-        \\echo "  nalarcli binary       →  $D/{s}"
-        \\echo ""
-        \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
-        \\echo "   to force a fresh install — the cache sometimes hides"
-        \\echo "   manual deletions.)"
-        \\echo ""
-        \\echo "  Run with:  $D/{s} service start --port 8080"
-        \\echo "             $D/{s} --devtools"
-        \\echo "             $D/{s} sessions list"
-        \\echo ""
-    ,
-        .{
-            host_binary_name,
-            desktop_binary_name,
-            cli_binary_name,
-            host_binary_name,
-            desktop_binary_name,
-            cli_binary_name,
-        },
-    ) catch @panic("OOM allocating build banner");
+    //
+    // Cross-platform shell: Linux/macOS use `/bin/sh -c` (POSIX echo,
+    // $D variable). Windows uses `cmd /c` with explicit `echo` lines
+    // (no $D-variable interpolation; each line spells the directory
+    // literally). Earlier revisions hardcoded `/bin/sh -c ...` which
+    // failed silently on Windows dev boxes where `/bin/sh` doesn't
+    // exist (Git for Windows ships bash at `C:\Program Files\Git\bin`
+    // but the canonical `/bin/sh` path is on Cygwin / MSYS only).
+    //
+    // WORKAROUND: Zig 0.16 compiler bug — capturing the result of
+    //   `const x = switch (rt) { .a => &.{...}, .b => &.{...} };`
+    //   where each arm is an anonymous tuple with heterogeneous string
+    //   lengths returns the FIRST arm's value regardless of which arm
+    //   matched. We sidestep it with `if/else` + an explicit slice type.
+    //   See plan `2026-08-22-fix-zig-0.16-switch-capture-bug.md` for the
+    //   8-line repro. DO NOT REVERT TO `switch` — re-introduces the
+    //   Windows `cmd.exe` spawn on Linux/macOS hosts.
+    var banner_args: []const []const u8 = &.{};
+    if (b.graph.host.result.os.tag == .windows) {
+        const script = std.fmt.allocPrint(
+            b.allocator,
+            \\
+            \\echo.
+            \\echo [zig build success]
+            \\echo.
+            \\echo   nalar service binary  ---^> zig-out\\bin\\{s}
+            \\echo   nalar desktop binary  ---^> zig-out\\bin\\{s}
+            \\echo   nalarcli binary       ---^> zig-out\\bin\\{s}
+            \\echo.
+            \\echo   (If a binary is missing, run "rmdir /s /q zig-out && zig build"
+            \\echo    to force a fresh install -- the cache sometimes hides
+            \\echo    manual deletions.)
+            \\echo.
+            \\echo   Run with:  zig-out\\bin\\{s} service start --port 8080
+            \\echo              zig-out\\bin\\{s} --devtools
+            \\echo              zig-out\\bin\\{s} sessions list
+            \\echo.
+            \\
+        ,
+            .{
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+            },
+        ) catch @panic("OOM allocating Windows build banner");
+        banner_args = &.{ "cmd.exe", "/c", script };
+    } else {
+        const script = std.fmt.allocPrint(
+            b.allocator,
+            \\
+            \\D=zig-out/bin
+            \\echo ""
+            \\echo "[zig build success]"
+            \\echo ""
+            \\echo "  nalar service binary  →  $D/{s}"
+            \\echo "  nalar desktop binary  →  $D/{s}"
+            \\echo "  nalarcli binary       →  $D/{s}"
+            \\echo ""
+            \\echo '  (If a binary is missing, run "rm -rf $D && zig build"'
+            \\echo "   to force a fresh install — the cache sometimes hides"
+            \\echo "   manual deletions.)"
+            \\echo ""
+            \\echo "  Run with:  $D/{s} service start --port 8080"
+            \\echo "             $D/{s} --devtools"
+            \\echo "             $D/{s} sessions list"
+            \\echo ""
+        ,
+            .{
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+                host_binary_name,
+                desktop_binary_name,
+                cli_binary_name,
+            },
+        ) catch @panic("OOM allocating POSIX build banner");
+        banner_args = &.{ "/bin/sh", "-c", script };
+    }
 
-    const build_banner = b.addSystemCommand(&.{ "/bin/sh", "-c", banner_script });
+    const build_banner = b.addSystemCommand(banner_args);
     const build_all_step = b.step("build:all", "Build nalar service + nalar-desktop, with end-of-build summary");
     // The binaries live on different top-level install steps:
     //   - host-specific nalarcore binary → install:<host> (Linux / macOS-arm / macOS / Windows)

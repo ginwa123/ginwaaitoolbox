@@ -204,7 +204,7 @@ pub fn onEventSendDesignPageDeleted(
 // emitter file. See the original test file's header for the spec rationale.
 
 const testing_oesd = std.testing;
-const text_normalize_oesd = nalarcore.helpers.text_normalize;
+const text_normalize_oesd = @import("helpers").text_normalize;
 const ON_EVENT_SENT_DESIGN_PATH = "src/ai_workflow/tui/agentic_loop/on_event_sent_design.zig";
 
 fn readSourceOESD(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

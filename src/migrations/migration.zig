@@ -2,7 +2,7 @@ const std = @import("std");
 const mod = @import("mod.zig");
 const nalarcore = mod.nalarcore;
 const sqlite_mod = nalarcore.sqlite;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 
 pub const SqliteBackend = sqlite_mod.SqliteBackend;
 
@@ -2516,6 +2516,12 @@ pub const Migration066AddDesignPageTaskFk = struct {
         , &[_][]const u8{});
         defer q.deinit();
 
+        // Last task id's nanosecond value — used to guarantee strictly
+        // increasing ids across the batch (Windows FILETIME granularity
+        // can repeat back-to-back ticks). Declared OUTSIDE the loop so
+        // it persists across iterations.
+        var last_task_ns: i128 = 0;
+
         while (try q.next()) |row| {
             defer row.deinit(allocator);
             const page_id = row.values[0];
@@ -2540,11 +2546,22 @@ pub const Migration066AddDesignPageTaskFk = struct {
             // collisions on a multi-page backfill are essentially
             // impossible (each call is a separate `std.c.clock_gettime`
             // syscall yielding a fresh value).
+            //
+            // Windows caveat: `GetSystemTimeAsFileTime` has a coarse
+            // effective granularity (0.5–15.6 ms depending on the
+            // timer coalescing), so back-to-back calls in this loop
+            // CAN return the same tick → duplicate PRIMARY KEY.
+            // Guard: if the fresh timestamp is <= the previous one,
+            // use prev + 1 so every id in the batch strictly
+            // increases and stays unique.
             var task_id_buf: [64]u8 = undefined;
+            const now_ns = helpers.unixTimestampNanos();
+            const unique_ns: i128 = if (now_ns <= last_task_ns) last_task_ns + 1 else now_ns;
+            last_task_ns = unique_ns;
             const task_id = std.fmt.bufPrint(
                 task_id_buf[0..],
                 "task_{d}",
-                .{helpers.unixTimestampNanos()},
+                .{unique_ns},
             ) catch return error.BufferTooSmall;
 
             // Dynamic INSERT + UPDATE per page. We split into TWO exec calls

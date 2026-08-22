@@ -37,7 +37,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const process_status = nalarcore.helpers.process_status;
+const process_status = @import("helpers").process_status;
 const logger_mod = nalarcore.loggermod;
 // `migration.zig` lives in `src/migrations/` — one `..` up from
 // `src/schedulers/`. Per project memory `project-test-use-migrations-module`:

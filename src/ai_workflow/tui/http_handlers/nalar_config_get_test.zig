@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const RESP_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 const GET_PATH = "src/ai_workflow/tui/http_handlers/nalar_config_get.zig";

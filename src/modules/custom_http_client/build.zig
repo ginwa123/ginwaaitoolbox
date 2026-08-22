@@ -42,6 +42,333 @@
 
 const std = @import("std");
 
+/// Cross-platform "does this file exist" check used by the system-deps
+/// probe below. Earlier revisions ran `sh -c "test -f ..."` here,
+/// which is unreliable on Windows dev boxes (Git for Windows ships
+/// git.exe + bash.exe but doesn't add `C:\Program Files\Git\bin` to
+/// PATH automatically). The probe then silently fell through to
+/// "vendor fallback" even when vcpkg had the libraries installed at
+/// `C:\vcpkg\installed\x64-windows\` — same failure mode the root
+/// build.zig hit (and fixed). Host-OS-specific direct syscalls via
+/// `std.os`, NOT `std.c` — build.zig doesn't link libc by default
+/// (Zig 0.16 requires an explicit `link_libc = true` on the build
+/// runner module for `std.c` to resolve `fopen`).
+///
+///   - Linux:   `faccessat(AT_FDCWD, path, mode=0)` returns 0 when
+///              the file exists.
+///   - macOS:   same `faccessat` (POSIX).
+///   - Windows: `GetFileAttributesW` returns INVALID_FILE_ATTRIBUTES
+///              on missing; existence = attrs != invalid AND attrs
+///              doesn't have the DIRECTORY bit set (mirror `test -f`).
+fn fileExists(absolute_path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (absolute_path.len >= buf.len) return false;
+    @memcpy(buf[0..absolute_path.len], absolute_path);
+    buf[absolute_path.len] = 0;
+    return switch (@import("builtin").os.tag) {
+        .linux => blk: {
+            const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
+            break :blk rc == 0;
+        },
+        // macOS: libc `access()` — same F_OK check as `test -f`.
+        // (The build runner links libc, so the extern is always
+        // resolvable; no shell-out needed. Zig 0.16 removed
+        // std.posix.access / made it Io-based, and the old shell-out
+        // used std.heap.GeneralPurposeAllocator + a pre-0.16
+        // std.process.run signature that no longer compile.)
+        .macos => blk: {
+            const rc = std.c.access(&buf, 0); // F_OK = 0
+            break :blk rc == 0;
+        },
+        .windows => blk: {
+            // Win32 GetFileAttributesW (kernel32.dll, always linked on
+            // Windows). UTF-8 path → WTF-16. Directory bit excluded
+            // so this matches `test -f` semantics.
+            var wide: [std.fs.max_path_bytes]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&wide, absolute_path) catch break :blk false;
+            if (written >= wide.len) break :blk false;
+            wide[written] = 0;
+            const attrs = GetFileAttributesW(@ptrCast(&wide));
+            if (attrs == INVALID_FILE_ATTRIBUTES) break :blk false;
+            if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) break :blk false;
+            break :blk true;
+        },
+        else => false,
+    };
+}
+
+// Win32 GetFileAttributesW (mirrors the root build.zig declarations —
+// declared locally because std.os.windows.kernel32 0.16 doesn't expose
+// it. Win32 kernel32.dll is always linked on Windows).
+extern "kernel32" fn GetFileAttributesW(lpPathName: [*:0]const u16) callconv(.winapi) u32;
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
+
+/// Windows-only stub-libcurl generator. Compiles
+/// `scripts/stub_libcurl.c` (a no-op implementation of the libcurl
+/// symbols `custom_http_client/src/curl.zig` references) and writes
+/// the resulting `.o` + `.a` + stub `curl/curl.h` header into the
+/// per-target vendor directory so the test compile's cimport + link
+/// line resolve cleanly on dev boxes that don't have vcpkg libcurl
+/// installed.
+///
+/// Runs at config time (synchronously, via `std.process.run`) rather
+/// than as a deferred `addSystemCommand` step, because:
+///   - The stub files only need to exist on disk BEFORE the test
+///     compile's link-line-construction phase — there's no reason to
+///     serialize them through the build runner's parallel-execution
+///     model.
+///   - A deferred step would require propagating the step handle
+///     through `custom_http_client_mod.user_data` so root build.zig's
+///     test compile could wire a `dependOn` — that's brittle and
+///     cross-module-coupled.
+///
+/// Why Windows-only: real libcurl is available via vcpkg on Windows
+/// (system probe above takes over) or via the vendored archive on
+/// Linux/macOS. The stub is a dev-box-only fallback for the case
+/// where neither is available.
+///
+/// The stub functions are empty no-ops — see scripts/stub_libcurl.c's
+/// top comment for the runtime behavior (curl_easy_init returns NULL,
+/// curl_easy_perform returns CURLE_FAILED_INIT, etc.).
+fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
+    const zig_exe = b.graph.zig_exe;
+    // Package directory: b.path("") resolves to <package_dir>.
+    // The cmd.exe invocations below all set cwd to this directory so
+    // that relative paths (target_dir = "vendor/curl/windows-amd64",
+    // stub_src_dir = "scripts") resolve against the package root,
+    // matching where b.path() places files for the consumer's link
+    // line.
+    const pkg_dir_bs = blk: {
+        // b.build_root.path is the absolute package directory for
+        // this dependency's build.zig. Strip leading "./" if present.
+        var path: []const u8 = b.build_root.path orelse ".";
+        if (std.mem.startsWith(u8, path, "./")) path = path[2..];
+        const buf = b.allocator.alloc(u8, path.len) catch @panic("OOM");
+        @memcpy(buf, path);
+        std.mem.replaceScalar(u8, buf, '/', '\\');
+        break :blk buf;
+    };
+    defer b.allocator.free(pkg_dir_bs);
+    // Path to the stub source files (relative to the package root).
+    const stub_src_dir = "scripts";
+
+    // === 1. ensure target_dir/lib + target_dir/include/curl/ exist ===
+    // Idempotent mkdir via cmd.exe. (Avoids the Zig 0.16 std.fs API
+    // churn — the simpler `mkdir -p` semantics via cmd's `if not exist`
+    // is portable across dev boxes without fighting the new Io-based
+    // filesystem API.)
+    {
+        var cmd_buf: [512]u8 = undefined;
+        // Normalize target_dir to all-backslashes (cmd.exe doesn't
+        // accept mixed `/` + `\` in `if not exist` paths — fails with
+        // "syntax incorrect").
+        const tgt_dir_bs = blk: {
+            const buf = b.allocator.alloc(u8, target_dir.len) catch @panic("OOM");
+            @memcpy(buf, target_dir);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(tgt_dir_bs);
+        const mkdir_cmd = std.fmt.bufPrint(
+            cmd_buf[0..],
+            "cd /D {s} & if not exist {s}\\lib mkdir {s}\\lib & if not exist {s}\\include\\curl mkdir {s}\\include\\curl",
+            .{ pkg_dir_bs, tgt_dir_bs, tgt_dir_bs, tgt_dir_bs, tgt_dir_bs },
+        ) catch @panic("OOM formatting mkdir cmd");
+        const argv = [_][]const u8{ "cmd.exe", "/c", mkdir_cmd };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl mkdir failed: {t} (fallback skipped)\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl mkdir exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+    }
+
+    // === 2. copy scripts/stub_libcurl.h → target_dir/include/curl/curl.h ===
+    {
+        var cmd_buf: [512]u8 = undefined;
+        // Normalize target_dir's forward slashes to backslashes —
+        // cmd.exe is happiest with all-backslash paths (mixed slashes
+        // intermittently fail with "The system cannot find the path
+        // specified" on Windows dev boxes).
+        const tgt_dir_bs = blk: {
+            const buf = b.allocator.alloc(u8, target_dir.len) catch @panic("OOM");
+            @memcpy(buf, target_dir);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(tgt_dir_bs);
+        const copy_cmd = std.fmt.bufPrint(
+            cmd_buf[0..],
+            "cd /D {s} & copy /Y {s}\\stub_libcurl.h {s}\\include\\curl\\curl.h 1>NUL",
+            .{ pkg_dir_bs, stub_src_dir, tgt_dir_bs },
+        ) catch @panic("OOM formatting copy cmd");
+        const argv = [_][]const u8{ "cmd.exe", "/c", copy_cmd };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl header copy failed: {t} (fallback skipped)\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] stub-libcurl header copy exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+        std.debug.print(
+            "[custom_http_client] wrote stub header: {s}\\include\\curl\\curl.h\n",
+            .{target_dir},
+        );
+    }
+
+    // === 3. compile scripts/stub_libcurl.c → target_dir/lib/stub_libcurl.o ===
+    // Use `zig cc` (the host's bundled clang) — no MinGW gcc dependency.
+    // The target x86_64-windows-gnu matches the dev box's default
+    // target. Cross-compile consumers would need a per-target stub —
+    // out of scope for the dev-box fallback.
+    const obj_path = b.fmt("{s}/lib/stub_libcurl.o", .{target_dir});
+    {
+        const obj_path_bs = blk: {
+            const buf = b.allocator.alloc(u8, obj_path.len) catch @panic("OOM");
+            @memcpy(buf, obj_path);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(obj_path_bs);
+        const argv = [_][]const u8{
+            zig_exe, "cc",
+            "-target", "x86_64-windows-gnu",
+            "-c",
+            "-I",  b.fmt("{s}/{s}", .{ pkg_dir_bs, stub_src_dir }),
+            "-o",  b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
+            b.fmt("{s}\\{s}\\stub_libcurl.c", .{ pkg_dir_bs, stub_src_dir }),
+        };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] zig cc (stub-libcurl compile) failed: {t}\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] zig cc (stub-libcurl compile) exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+        std.debug.print(
+            "[custom_http_client] compiled stub object: {s}\n",
+            .{obj_path},
+        );
+    }
+
+    // === 4. archive stub_libcurl.o → target_dir/lib/libcurl.a ===
+    {
+        const archive_path = b.fmt("{s}/lib/libcurl.a", .{target_dir});
+        const archive_path_bs = blk: {
+            const buf = b.allocator.alloc(u8, archive_path.len) catch @panic("OOM");
+            @memcpy(buf, archive_path);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(archive_path_bs);
+        const obj_path_bs = blk: {
+            const buf = b.allocator.alloc(u8, obj_path.len) catch @panic("OOM");
+            @memcpy(buf, obj_path);
+            std.mem.replaceScalar(u8, buf, '/', '\\');
+            break :blk buf;
+        };
+        defer b.allocator.free(obj_path_bs);
+        const argv = [_][]const u8{
+            zig_exe, "ar", "rcs",
+            b.fmt("{s}\\{s}", .{ pkg_dir_bs, archive_path_bs }),
+            b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
+        };
+        const result = std.process.run(
+            b.allocator,
+            b.graph.io,
+            .{ .argv = &argv },
+        ) catch |err| {
+            std.debug.print(
+                "[custom_http_client] zig ar (stub-libcurl archive) failed: {t}\n",
+                .{err},
+            );
+            return;
+        };
+        defer {
+            b.allocator.free(result.stdout);
+            b.allocator.free(result.stderr);
+        }
+        const bad_exit = switch (result.term) {
+            .exited => |code| code != 0,
+            .signal, .stopped, .unknown => true,
+        };
+        if (bad_exit) {
+            std.debug.print(
+                "[custom_http_client] zig ar (stub-libcurl archive) exited non-zero ({t})\n",
+                .{result.term},
+            );
+            std.debug.print("  stderr: {s}\n", .{result.stderr});
+            return;
+        }
+        std.debug.print(
+            "[custom_http_client] wrote stub archive: {s}\n",
+            .{archive_path},
+        );
+    }
+}
+
 /// Result of probing the host system for libcurl / libssl / libcrypto.
 ///
 /// SYSTEM-ONLY LINKS: when `use_system` is true, the package links against
@@ -114,111 +441,119 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
         };
     }
 
-    // Probe via a single shell command. Each line of output is
-    // `<key>=<0|1>` — the parser below reads 5 keys.
+    // Pure-Zig probe — no shell, no `bash` / `sh` dependency.
     //
-    // Linux: checks /usr/include + /usr/lib (Arch / Debian /
-    // Ubuntu / Fedora layouts). `ldconfig -p` matches both unversioned
-    // `libcurl.so` and versioned `libcurl.so.4`.
+    // Earlier revisions ran `sh -c "test -f ..."` here via
+    // `std.process.run`. Windows dev boxes without `bash` / `sh` on
+    // PATH (Git for Windows ships bash.exe at `C:\Program Files\Git\
+    // bin` but doesn't add it to PATH automatically) saw the probe
+    // spawn-fail, fall through to `use_system = false`, and end up
+    // looking for the vendored `vendor/curl/<target>/lib/libcurl.a`
+    // archive — which on Windows is hardcoded to `windows-amd64/` and
+    // doesn't exist for any host (the script
+    // `scripts/build-vendor-curl.sh` only cross-compiles Linux + macOS
+    // archives; Windows archives are intentionally NOT built).
     //
-    // macOS: Homebrew installs keg-only libs at
-    // `/opt/homebrew/opt/<name>/{include,lib}/`. There is no
-    // ldconfig equivalent on macOS — we test for the .dylib file
-    // directly at the canonical brew path. We also accept a system
-    // `/usr/include` install (rare, but documented for completeness).
-    const probe_script = switch (b.graph.host.result.os.tag) {
-        .linux =>
-        \\{ \
-        \\  echo "curl_hdr=$(test -f /usr/include/curl/curl.h && echo 1 || echo 0)"; \
-        \\  echo "curl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcurl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$(test -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
-        \\  echo "ssl_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libssl\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\  echo "crypto_lib=$(ldconfig -p 2>/dev/null | grep -qE 'libcrypto\.so(\.[0-9]+)*$' && echo 1 || echo 0)"; \
-        \\}
-        ,
-        .macos =>
-        // Accept either Homebrew's keg-only paths OR a system
-        // /usr/include install. CI runners need `brew install curl`
-        // (currently NOT in ci.yml — see fix-ci-mac plan) for the
-        // curl half to be picked up; openssl@3 is already installed.
-        \\{ \
-        \\  echo "curl_hdr=$(test -f /opt/homebrew/opt/curl/include/curl/curl.h -o -f /usr/include/curl/curl.h && echo 1 || echo 0)"; \
-        \\  echo "curl_lib=$(test -f /opt/homebrew/opt/curl/lib/libcurl.dylib -o -f /opt/homebrew/opt/curl/lib/libcurl.4.dylib -o -f /usr/lib/libcurl.dylib && echo 1 || echo 0)"; \
-        \\  echo "ssl_hdr=$(test -f /opt/homebrew/opt/openssl@3/include/openssl/ssl.h -o -f /opt/homebrew/opt/openssl/include/openssl/ssl.h -o -f /usr/include/openssl/ssl.h && echo 1 || echo 0)"; \
-        \\  echo "ssl_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libssl.dylib -o -f /opt/homebrew/opt/openssl/lib/libssl.dylib -o -f /usr/lib/libssl.dylib && echo 1 || echo 0)"; \
-        \\  echo "crypto_lib=$(test -f /opt/homebrew/opt/openssl@3/lib/libcrypto.dylib -o -f /opt/homebrew/opt/openssl/lib/libcrypto.dylib -o -f /usr/lib/libcrypto.dylib && echo 1 || echo 0)"; \
-        \\}
-        ,
-        else =>
-        // Windows + any other host: skip the probe (assume all 0).
-        \\{ \
-        \\  echo "curl_hdr=0"; \
-        \\  echo "curl_lib=0"; \
-        \\  echo "ssl_hdr=0"; \
-        \\  echo "ssl_lib=0"; \
-        \\  echo "crypto_lib=0"; \
-        \\}
-        ,
-    };
-
-    const result = std.process.run(
-        b.allocator,
-        b.graph.io,
-        .{
-            .argv = &.{ "sh", "-c", probe_script },
-            .stdout_limit = .limited(4096),
-            .stderr_limit = .limited(4096),
-        },
-    ) catch {
-        // Probe failed — fall back to vendor.
-        return .{
-            .use_system = false,
-            .found_curl = false,
-            .found_ssl = false,
-            .found_crypto = false,
-        };
-    };
-    defer b.allocator.free(result.stdout);
-    defer b.allocator.free(result.stderr);
-
+    // Pure-Zig fix: use the local `fileExists` helper (defined above)
+    // with host-OS-specific paths. Mirrors the equivalent change in
+    // the root build.zig's system-deps probe.
     var curl_hdr: bool = false;
-    var curl_lib: bool = false;
+    var found_curl_lib: bool = false;
     var ssl_hdr: bool = false;
-    var ssl_lib: bool = false;
-    var crypto_lib: bool = false;
-
-    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "curl_hdr=")) {
-            curl_hdr = std.mem.eql(u8, line["curl_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "curl_lib=")) {
-            curl_lib = std.mem.eql(u8, line["curl_lib=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "ssl_hdr=")) {
-            ssl_hdr = std.mem.eql(u8, line["ssl_hdr=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "ssl_lib=")) {
-            ssl_lib = std.mem.eql(u8, line["ssl_lib=".len..], "1");
-        } else if (std.mem.startsWith(u8, line, "crypto_lib=")) {
-            crypto_lib = std.mem.eql(u8, line["crypto_lib=".len..], "1");
-        }
+    var found_ssl_lib: bool = false;
+    var found_crypto_lib: bool = false;
+    switch (b.graph.host.result.os.tag) {
+        .linux => {
+            // Linux: checks /usr/include + /usr/lib (Arch / Debian /
+            // Ubuntu / Fedora layouts). Headers at the canonical
+            // paths; libs probed via direct .so path glob since
+            // `ldconfig -p` is shell-only.
+            //
+            // (We check the unversioned `libcurl.so` symlink AND the
+            // unversioned `libssl.so` / `libcrypto.so` — most distros
+            // keep these as symlinks to the versioned .so.N library.)
+            curl_hdr = fileExists("/usr/include/curl/curl.h");
+            found_curl_lib = fileExists("/usr/lib/libcurl.so");
+            ssl_hdr = fileExists("/usr/include/openssl/ssl.h");
+            found_ssl_lib = fileExists("/usr/lib/libssl.so");
+            found_crypto_lib = fileExists("/usr/lib/libcrypto.so");
+        },
+        .macos => {
+            // macOS: Homebrew installs keg-only libs at
+            // `/opt/homebrew/opt/<name>/{include,lib}/`. No ldconfig
+            // equivalent — we test for the .dylib file directly at the
+            // canonical brew path. We also accept a system
+            // `/usr/include` install (rare).
+            curl_hdr = fileExists("/opt/homebrew/opt/curl/include/curl/curl.h") or
+                fileExists("/usr/include/curl/curl.h");
+            found_curl_lib = fileExists("/opt/homebrew/opt/curl/lib/libcurl.dylib") or
+                fileExists("/usr/lib/libcurl.dylib");
+            ssl_hdr = fileExists("/opt/homebrew/opt/openssl@3/include/openssl/ssl.h") or
+                fileExists("/opt/homebrew/opt/openssl/include/openssl/ssl.h") or
+                fileExists("/usr/include/openssl/ssl.h");
+            found_ssl_lib = fileExists("/opt/homebrew/opt/openssl@3/lib/libssl.dylib") or
+                fileExists("/usr/lib/libssl.dylib");
+            found_crypto_lib = fileExists("/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib") or
+                fileExists("/usr/lib/libcrypto.dylib");
+        },
+        .windows => {
+            // Windows: vcpkg at `C:/vcpkg/installed/x64-windows/`.
+            // The CI installs curl + openssl via
+            // `vcpkg install --recurse <port>:x64-windows`. Header-only
+            // probe: vcpkg's `lib/` filenames differ between MSVC
+            // (`curl.lib`) and MinGW (`libcurl.lib`), and may also be
+            // hidden behind `.dll.lib` or vendor-specific names. Rather
+            // than enumerate every naming variant, we just check
+            // headers — `linkSystemLibrary` / `addObjectFile` will
+            // fail loudly with "file not found" if the lib is actually
+            // missing. Headers are stable across toolchain variants.
+            curl_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/curl/curl.h");
+            ssl_hdr = fileExists("C:/vcpkg/installed/x64-windows/include/openssl/ssl.h");
+        },
+        else => {
+            // Cross-compile to an unknown OS — bail.
+            curl_hdr = false;
+            found_curl_lib = false;
+            ssl_hdr = false;
+            found_ssl_lib = false;
+            found_crypto_lib = false;
+        },
     }
 
-    const found_curl = curl_hdr and curl_lib;
-    const found_ssl = ssl_hdr and ssl_lib;
-    const found_crypto = ssl_hdr and crypto_lib; // ssl_hdr shared — crypto's header is also in openssl/ssl.h
-    const use_system = found_curl and found_ssl and found_crypto;
+    // Two patterns of use_system:
+    //
+    //   - Linux/macOS: require header + matching .so/.dylib to be
+    //     present. We need both: header alone (libcurl dev package
+    //     installed without runtime) means consumer compile passes
+    //     but the linked .so is missing → runtime crash. The .so/.dylib
+    //     files live under the same brew keg / distro paths.
+    //   - Windows: header-only. The custom_http_client module uses
+    //     `addObjectFile` to wire the exact `.lib` path into the
+    //     link line; that fails loudly if the lib is actually
+    //     missing (Zig prints the missing path). So we don't need
+    //     a redundant lib check.
+    const use_system: bool = switch (b.graph.host.result.os.tag) {
+        .linux => curl_hdr and found_curl_lib and ssl_hdr and found_ssl_lib and found_crypto_lib,
+        .macos => curl_hdr and found_curl_lib and ssl_hdr and found_ssl_lib and found_crypto_lib,
+        .windows => curl_hdr and ssl_hdr,
+        else => false,
+    };
+    const found_curl = curl_hdr;
+    const found_ssl = ssl_hdr;
+    const found_crypto = ssl_hdr; // crypto lives under openssl/ssl.h — same header
 
     // Log the probe result so the operator sees which path was taken.
     // On a quiet build (no --verbose) zig's std.debug.print routes to
     // stderr — easy to spot in build output.
     if (use_system) {
         std.debug.print(
-            "[custom_http_client] using system libcurl + ssl + crypto (host has all 3 libs + headers)\n",
+            "[custom_http_client] using system libcurl + ssl + crypto (host has all 3 headers)\n",
             .{},
         );
     } else {
         std.debug.print(
-            "[custom_http_client] using vendored libcurl fat archive (host probe: curl_hdr={} curl_lib={} ssl_hdr={} ssl_lib={} crypto_lib={})\n",
-            .{ curl_hdr, curl_lib, ssl_hdr, ssl_lib, crypto_lib },
+            "[custom_http_client] using vendored libcurl fat archive (host probe: curl_hdr={} ssl_hdr={})\n",
+            .{ curl_hdr, ssl_hdr },
         );
     }
 
@@ -255,14 +590,23 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
 
     const mod = b.addModule("custom_http_client", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    .root_source_file = b.path("src/root.zig"),
+    .target = target,
+    .optimize = optimize,
+});
 
-    // Universal: libc is required by every libcurl binding + cimport.
-    mod.linkSystemLibrary("c", .{});
-    mod.link_libc = true;
+// Portable helpers (PosixTimespec / clock_gettime) — used by
+// cpu_usage_test.zig. Declared as a package dependency in this
+// build.zig.zon; mirrors how the root build.zig wires `helpers`.
+const helpers_dep = b.dependency("helpers", .{
+    .target = target,
+    .optimize = optimize,
+});
+mod.addImport("helpers", helpers_dep.module("helpers"));
+
+// Universal: libc is required by every libcurl binding + cimport.
+mod.linkSystemLibrary("c", .{});
+mod.link_libc = true;
 
     // Probe host system for libcurl + openssl. When the probe finds
     // usable system libs (typical Arch / Debian / Fedora dev hosts),
@@ -296,6 +640,18 @@ pub fn build(b: *std.Build) void {
         switch (target.result.os.tag) {
             .linux => {
                 mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+                // Library search path. Without this, Zig 0.16's
+                // `linkSystemLibrary("curl"/"ssl"/"crypto")` calls
+                // below fail with
+                //   "unable to find dynamic system library 'curl'
+                //    using strategy 'paths_first'.
+                //    searched paths: none"
+                // because the glibc 2.38+ default target's link search
+                // path doesn't include /usr/lib for some Compile steps
+                // (cli tests, package tests) — even though it works for
+                // the main exe via the root build.zig's
+                // `linkPlatformDeps`. Mirrors the macOS branch below.
+                mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             },
             .macos => {
                 // Probe uses an OR-of-paths predicate, but link only
@@ -312,13 +668,46 @@ pub fn build(b: *std.Build) void {
                 mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
                 mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             },
+            .windows => {
+                // vcpkg at `C:/vcpkg/installed/x64-windows/`. Both the
+                // include and lib subdirs are added explicitly because
+                // the cimport in src/curl.zig resolves <curl/curl.h>
+                // and the linker needs to find the .lib files at link
+                // time. The `\` → `/` translation is fine on Windows
+                // since the NTFS layer accepts both separators — Zig's
+                // path-handler routes them through the same kernel
+                // APIs.
+                //
+                // Use addObjectFile (not linkSystemLibrary) to bypass
+                // the GNU-vs-MSVC lib-name convention mismatch: the
+                // build target is `x86_64-windows-gnu` (GNU toolchain
+                // conventions — `libcurl.a`), but vcpkg ships
+                // `libcurl.lib` (MSVC-style extension, GCC-style name).
+                // Explicit object-file links work with either naming
+                // — the linker doesn't try to translate `-lcurl` →
+                // `libcurl.{a,lib}` it just adds the file the build.zig
+                // hands it.
+                mod.addIncludePath(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/include" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcurl.lib" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libssl.lib" });
+                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcrypto.lib" });
+            },
             else => {
                 mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
             },
         }
-        mod.linkSystemLibrary("curl", .{});
-        mod.linkSystemLibrary("ssl", .{});
-        mod.linkSystemLibrary("crypto", .{});
+        // addObjectFile above replaces these linkSystemLibrary calls
+        // on Windows (where the vcpkg lib-file naming doesn't match
+        // the GNU `libfoo.a` convention). On Linux + macOS the
+        // linkSystemLibrary calls below work because the system libs
+        // are at `/usr/lib/libfoo.so.<n>` / `/opt/homebrew/opt/...`/
+        // `libfoo.dylib`, which IS the convention `linkSystemLibrary`
+        // looks for on those platforms.
+        if (target.result.os.tag != .windows) {
+            mod.linkSystemLibrary("curl", .{});
+            mod.linkSystemLibrary("ssl", .{});
+            mod.linkSystemLibrary("crypto", .{});
+        }
     } else {
         // Vendored path. Add the per-target include path + embed the
         // prebuilt archive as an object file.
@@ -353,6 +742,51 @@ pub fn build(b: *std.Build) void {
         // merged in one .a (see scripts/build-vendor-curl.sh). So we
         // do NOT also link ssl/crypto — they're already in the archive.
         const libcurl_a = b.path(b.fmt("{s}/lib/libcurl.a", .{target_dir}));
+
+        // WINDOWS-DEV-BOX STUB PATH:
+        //
+        // `build-vendor-curl.sh` intentionally never builds a Windows
+        // archive (it only cross-compiles Linux + macOS targets; the
+        // Windows script section is a no-op with an informative message
+        // — see the script's `case "$(uname -s)"` Windows-host arm).
+        // On a Windows host without vcpkg libcurl + openssl installed,
+        // there's no `vendor/curl/windows-amd64/lib/libcurl.a` AND no
+        // header at `vendor/curl/windows-amd64/include/curl/curl.h`,
+        // which causes two failures during `zig build test`:
+        //
+        //   1. `src/modules/agent/Agent.zig` transitively pulls in
+        //      `custom_http_client` (via the test runner imports), so
+        //      the test compile includes custom_http_client's source.
+        //      `custom_http_client/src/curl.zig` does
+        //      `@cImport(@cInclude("curl/curl.h"))` — without the
+        //      header, the cimport fails with "file not found".
+        //   2. The test compile's link line references the missing
+        //      `libcurl.a` via `addObjectFile`, which fails with
+        //      "file not found" at link-line construction time.
+        //
+        // The fix: when the vendored archive is missing on Windows,
+        // generate a STUB archive + STUB header from the sources in
+        // `scripts/stub_libcurl.{h,c}`. The stub functions are empty
+        // no-ops (curl_easy_init returns NULL, curl_easy_perform
+        // returns CURLE_FAILED_INIT) — enough to satisfy the linker +
+        // cimport without providing real network capability. Tests that
+        // merely construct a custom_http_client.Client and never fire
+        // a request pass; tests that actually call .get/.post/.stream
+        // fail at runtime with a clear InitFailed error from the stub
+        // (visible in `zig build test` output).
+        //
+        // This stub path is Windows-only (Linux + macOS still require
+        // the real archive or system libcurl). To get a real libcurl
+        // on Windows: install vcpkg (`vcpkg install curl:x64-windows
+        // openssl:x64-windows`) — the system probe above takes over
+        // and the stub is bypassed entirely.
+        if (target.result.os.tag == .windows and !fileExists(b.fmt("{s}/lib/libcurl.a", .{target_dir}))) {
+            generateStubLibcurlWindows(b, target_dir);
+            // After the stub is generated, addObjectFile points at
+            // the now-existing file. (The compile step's file existence
+            // check is lazy — addObjectFile records the path; the actual
+            // check happens at link-line construction time.)
+        }
         mod.addObjectFile(libcurl_a);
     }
 

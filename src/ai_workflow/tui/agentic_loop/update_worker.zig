@@ -3,7 +3,7 @@ const nalarcore = @import("nalarcore");
 
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const onEventSendWorkers = @import("sse_send_event_worker.zig").onEventSendWorkers;
 const event_bus_mod = nalarcore.event_bus;
 const testing = std.testing;

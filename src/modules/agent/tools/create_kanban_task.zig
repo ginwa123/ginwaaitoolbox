@@ -561,7 +561,7 @@ pub fn executeCreateKanbanTaskToString(
     };
 
     // 7. Generate task id.
-    const timestamp_ns = nalarcore.helpers.unixTimestampNanos();
+    const timestamp_ns = @import("helpers").unixTimestampNanos();
     const task_id = std.fmt.allocPrint(allocator, "task_{d}", .{timestamp_ns}) catch {
         return errorXml(allocator, "Out of memory while generating task id");
     };

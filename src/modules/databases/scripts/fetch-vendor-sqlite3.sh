@@ -78,12 +78,26 @@ echo "Fetching SQLite ${SQLITE_VERSION} amalgamation from ${URL} ..."
 curl -fsSL --retry 3 --connect-timeout 30 "${URL}" -o "${TMP}/sqlite.zip"
 
 # Verify SHA3-256 if sha3sum OR python3 is available.
+#
+# `command -v python3` is unreliable on Windows: the Microsoft Store
+# ships a `python3.exe` *alias* that always exits non-zero (prints
+# "Python was not found…") when invoked, but the alias file exists in
+# the WindowsApps path so `command -v` returns 0. A naive `command -v
+# python3 && python3 -c "..."` then propagates the alias's non-zero
+# exit code through `set -e` and the whole script dies. Test python3
+# by actually running a minimal import-check before relying on it.
 verify_ok=0
+HAS_PYTHON3=0
+if command -v python3 >/dev/null 2>&1; then
+    if python3 -c "import sys, hashlib; sys.exit(0)" >/dev/null 2>&1; then
+        HAS_PYTHON3=1
+    fi
+fi
 if command -v sha3sum >/dev/null 2>&1; then
     if echo "${SQLITE_SHA3_256}  ${TMP}/sqlite.zip" | sha3sum -a 256 --check --strict >/dev/null 2>&1; then
         verify_ok=1
     fi
-elif command -v python3 >/dev/null 2>&1; then
+elif [ "${HAS_PYTHON3}" -eq 1 ]; then
     actual=$(python3 -c "import hashlib; print(hashlib.sha3_256(open('${TMP}/sqlite.zip','rb').read()).hexdigest())")
     if [[ "${actual}" == "${SQLITE_SHA3_256}" ]]; then
         verify_ok=1
@@ -94,14 +108,21 @@ elif command -v python3 >/dev/null 2>&1; then
         exit 1
     fi
 else
-    echo "warning: neither 'sha3sum' nor 'python3' available; skipping checksum verification." >&2
+    echo "warning: neither 'sha3sum' nor a working 'python3' available; skipping checksum verification." >&2
     echo "         (download is still subject to HTTPS + curl's TLS validation.)" >&2
 fi
 [[ "${verify_ok}" -eq 1 ]] && echo "  ✓ SHA3-256 verified"
 
 # Extract the 3 files into vendor/sqlite3/.
-# Prefer python3 (handles paths cleanly across zip versions); fall back to unzip.
-if command -v python3 >/dev/null 2>&1; then
+# Prefer unzip (universal: ships with Git for Windows, macOS, every
+# Linux distro). Fall back to python3 only when unzip isn't available
+# AND python3 actually works (the Windows Microsoft Store `python3.exe`
+# alias is a stub that returns non-zero, so we pre-test it via
+# HAS_PYTHON3 set above in the SHA3-256 verification block).
+if command -v unzip >/dev/null 2>&1; then
+    unzip -j -o "${TMP}/sqlite.zip" "*/sqlite3.c" "*/sqlite3.h" "*/sqlite3ext.h" -d "${DEST}" >/dev/null
+    echo "  wrote: sqlite3.c sqlite3.h sqlite3ext.h (via unzip)"
+elif [ "${HAS_PYTHON3}" -eq 1 ]; then
     python3 - "${TMP}/sqlite.zip" "${DEST}" <<'PY'
 import sys, os, zipfile
 src, dst = sys.argv[1], sys.argv[2]
@@ -121,11 +142,10 @@ with zipfile.ZipFile(src) as z:
             f.write(data)
     print(f"  wrote: {sorted(found.keys())}")
 PY
-elif command -v unzip >/dev/null 2>&1; then
-    unzip -j -o "${TMP}/sqlite.zip" "*/sqlite3.c" "*/sqlite3.h" "*/sqlite3ext.h" -d "${DEST}" >/dev/null
-    echo "  wrote: sqlite3.c sqlite3.h sqlite3ext.h"
 else
-    echo "error: need either 'python3' or 'unzip' to extract the amalgamation." >&2
+    echo "error: need either 'unzip' or a working 'python3' to extract the amalgamation." >&2
+    echo "       On Windows: Git for Windows ships unzip at C:\\Program Files\\Git\\usr\\bin\\unzip.exe" >&2
+    echo "       and Bash for Windows ships it at /usr/bin/unzip.exe." >&2
     exit 1
 fi
 

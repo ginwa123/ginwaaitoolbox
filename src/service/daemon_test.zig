@@ -38,7 +38,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
 // helpers/ lives at src/helpers/, one directory up from src/service/.
-const helpers = @import("../helpers/mod.zig");
+const helpers = @import("helpers");
 const daemon = @import("daemon.zig");
 
 test "isProcessRunning returns false for pid 0" {

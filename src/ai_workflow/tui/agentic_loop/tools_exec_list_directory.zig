@@ -87,10 +87,27 @@ test "execListDirectory: absolute path passes through and lists entries" {
         .is_thinking = &dummy_bool, .environment = null,
         .active_loops = undefined,
     };
-    // Build JSON with the absolute path embedded. std.fmt escapes
-    // any embedded quotes/backslashes for us (none expected for
-    // /tmp/... paths, but defensive).
-    const args_json = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"respect_ignore_files\":false}}", .{root_abs});
+    // Build JSON with the absolute path embedded. The previous
+    // `std.fmt.allocPrint` template did NOT escape backslashes, so on
+    // Windows hosts (where root_abs contains `\` chars) the resulting
+    // JSON was malformed (`{"path":"C:\Users\foo\bar"}` — `\U` and
+    // `\f` are invalid JSON escapes) and `execListDirectory`'s
+    // `std.json.parseFromSlice` rejected it, surfacing an error
+    // envelope instead of the directory listing. Escape `\` → `\\`
+    // (and `"` → `\"`) before splicing the path into the JSON template.
+    var escaped_path: std.ArrayList(u8) = .empty;
+    defer escaped_path.deinit(a);
+    for (root_abs) |c| {
+        if (c == '\\' or c == '"') {
+            try escaped_path.append(a, '\\');
+        }
+        try escaped_path.append(a, c);
+    }
+    const args_json = try std.fmt.allocPrint(
+        a,
+        "{{\"path\":\"{s}\",\"respect_ignore_files\":false}}",
+        .{escaped_path.items},
+    );
     const tc = agent.ToolCall{
         .id = "call_1", .type = "function",
         .function = .{ .name = "list_directory", .arguments = args_json },

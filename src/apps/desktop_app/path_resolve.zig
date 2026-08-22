@@ -152,6 +152,16 @@ fn fileExists(path: []const u8) bool {
     buf[path.len] = 0;
     // F_OK (== 0) means "file exists" — we don't care about read/write
     // permissions, just whether the path resolves to anything.
-    const rc = std.c.faccessat(std.c.AT.FDCWD, &buf, std.c.F_OK, 0);
+    //
+    // Windows note: `std.c.AT.FDCWD` doesn't exist in Zig 0.16's Windows
+    // libc bindings (the `std.c.AT` struct on Windows only exposes
+    // `REMOVEDIR`). The plain `std.c.access(path, F_OK)` syscall is
+    // available cross-platform via UCRT and behaves identically for
+    // absolute-path existence checks, so we use it on Windows and keep
+    // the `faccessat(AT_FDCWD, ...)` form on POSIX (Linux/macOS) untouched.
+    const rc = switch (builtin.os.tag) {
+        .windows => std.c.access(&buf, std.c.F_OK),
+        else => std.c.faccessat(std.c.AT.FDCWD, &buf, std.c.F_OK, 0),
+    };
     return rc == 0;
 }

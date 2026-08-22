@@ -28,8 +28,19 @@ pub fn writeFile(
 
     // If create_with_dir is true, proactively create parent directories with makePath
     if (input.create_with_dir) {
-        if (std.mem.lastIndexOf(u8, path, "/")) |idx| {
-            const dir_path = path[0..idx];
+        // Look for the LAST path separator to find the parent directory.
+        // On POSIX the separator is `/`; on Windows both `/` and `\` are
+        // accepted by the kernel (forward slashes get translated to
+        // backslashes inside the runtime), so we check for either to
+        // keep the test paths portable across `std.fs.path.join` output
+        // (which uses `\` on Windows hosts).
+        const last_sep_pos = blk: {
+            const last_fwd = std.mem.lastIndexOf(u8, path, "/");
+            const last_back = std.mem.lastIndexOf(u8, path, "\\");
+            break :blk @max(last_fwd orelse 0, last_back orelse 0);
+        };
+        if (last_sep_pos > 0) {
+            const dir_path = path[0..last_sep_pos];
             try std.Io.Dir.cwd().createDirPath(io, dir_path);
         }
     }
@@ -39,9 +50,16 @@ pub fn writeFile(
             var path_copy = try allocator.dupe(u8, path);
             defer allocator.free(path_copy);
 
-            const last_slash = std.mem.lastIndexOf(u8, path_copy, "/");
-            if (last_slash) |idx| {
-                const dir_path = path_copy[0..idx];
+            // Windows path: std.fs.path.join produces `\`-separated
+            // paths, so accept either separator when locating the
+            // parent directory.
+            const last_sep_pos = blk: {
+                const last_fwd = std.mem.lastIndexOf(u8, path_copy, "/");
+                const last_back = std.mem.lastIndexOf(u8, path_copy, "\\");
+                break :blk @max(last_fwd orelse 0, last_back orelse 0);
+            };
+            if (last_sep_pos > 0) {
+                const dir_path = path_copy[0..last_sep_pos];
                 try std.Io.Dir.cwd().createDirPath(io, dir_path);
                 const file = try std.Io.Dir.cwd().createFile(io, path, .{});
                 defer std.Io.File.close(file, io);

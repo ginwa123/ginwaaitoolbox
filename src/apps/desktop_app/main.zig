@@ -77,9 +77,12 @@ pub fn main(init: std.process.Init) !void {
 
     // 1. Parse CLI args. `init.minimal.args` is a `process.Args` iterator
     // in Zig 0.16 (not a slice), so we materialize it into an ArrayList.
+    // Use `initAllocator` (NOT `init`) — `Args.Iterator.init` raises a
+    // `@compileError` on Windows in Zig 0.16: "In Windows, use
+    // initAllocator instead." `initAllocator` works on every platform.
     var args_buf: std.ArrayList([]const u8) = .empty;
     defer args_buf.deinit(allocator);
-    var args_iter = std.process.Args.Iterator.init(init.minimal.args);
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     defer args_iter.deinit();
     while (args_iter.next()) |arg| {
         try args_buf.append(allocator, arg);

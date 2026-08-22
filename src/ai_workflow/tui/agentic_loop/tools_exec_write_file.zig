@@ -9,6 +9,24 @@ const write_file_mod = nalarcore.write_file;
 const wrapToolOutput = tools.wrapToolOutput;
 const testing = std.testing;
 
+/// Escape a string for inclusion as a JSON string literal value (between
+/// the quotes — caller supplies the surrounding `"..."` template).
+/// Escapes `\` → `\\` and `"` → `\"` (RFC 8259 §7). Other characters
+/// (including control codes / non-ASCII) are passed through verbatim;
+/// the test fixtures only contain ASCII so we don't bother with
+/// `\u00XX` sequences here. Caller must `deinit` the returned slice.
+fn jsonEscapeInto(allocator: std.mem.Allocator, input: []const u8) !std.ArrayList(u8) {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (input) |c| {
+        if (c == '\\' or c == '"') {
+            try out.append(allocator, '\\');
+        }
+        try out.append(allocator, c);
+    }
+    return out;
+}
+
 pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         write_file_mod.WriteFileInput,
@@ -117,19 +135,26 @@ test "execWriteFile: overwrites existing file (truncates to shorter content)" {
     }
     try testing.expectEqual(@as(u64, 100), fileSize(target_path));
 
-    // Call execWriteFile with a 5-byte payload
-    const args = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"BBBBB\"}}", .{target_path});
-    const tc = agent.ToolCall{
-        .id = "call_ow1",
-        .type = "function",
-        .function = .{ .name = "write_file", .arguments = args },
-    };
+    // Call execWriteFile with a 5-byte payload. Escape `\` and `"`
+    // in the path so the resulting JSON parses on Windows hosts (where
+    // `realPath()` returns backslash-separated paths). Otherwise
+    // `std.json.parseFromSlice` rejects the malformed `{"path":"C:\..."}`.
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"BBBBB\"}}", .{escaped.items});
+        const tc = agent.ToolCall{
+            .id = "call_ow1",
+            .type = "function",
+            .function = .{ .name = "write_file", .arguments = args },
+        };
 
-    const result = try execWriteFile(minimalCtx(a), tc);
-    defer if (result.output_allocated) a.free(result.output);
+        const result = try execWriteFile(minimalCtx(a), tc);
+        defer if (result.output_allocated) a.free(result.output);
 
-    // The wrapper must report success
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        // The wrapper must report success
+        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+    }
 
     // The file must be TRUNCATED to the new length, NOT appended/appended
     try testing.expectEqual(@as(u64, 5), fileSize(target_path));
@@ -163,23 +188,28 @@ test "execWriteFile: overwrites existing file (extends to longer content)" {
     try testing.expectEqual(@as(u64, 5), fileSize(target_path));
 
     const longer_payload = "this is a much longer string than before";
-    const args = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"{s}\"}}", .{ target_path, longer_payload });
-    const tc = agent.ToolCall{
-        .id = "call_ow2",
-        .type = "function",
-        .function = .{ .name = "write_file", .arguments = args },
-    };
+    // Escape `\` and `"` in the path (Windows JSON-parse fix).
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"{s}\"}}", .{ escaped.items, longer_payload });
+        const tc = agent.ToolCall{
+            .id = "call_ow2",
+            .type = "function",
+            .function = .{ .name = "write_file", .arguments = args },
+        };
 
-    const result = try execWriteFile(minimalCtx(a), tc);
-    defer if (result.output_allocated) a.free(result.output);
+        const result = try execWriteFile(minimalCtx(a), tc);
+        defer if (result.output_allocated) a.free(result.output);
 
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expectEqual(@as(u64, longer_payload.len), fileSize(target_path));
-    const read = try readAll(a, target_path);
-    try testing.expectEqualStrings(longer_payload, read);
-    // CRITICAL: no leftover 'X' bytes — would prove the file was APPENDED,
-    // not truncated-and-overwritten.
-    try testing.expect(std.mem.indexOf(u8, read, "X") == null);
+        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try testing.expectEqual(@as(u64, longer_payload.len), fileSize(target_path));
+        const read = try readAll(a, target_path);
+        try testing.expectEqualStrings(longer_payload, read);
+        // CRITICAL: no leftover 'X' bytes — would prove the file was APPENDED,
+        // not truncated-and-overwritten.
+        try testing.expect(std.mem.indexOf(u8, read, "X") == null);
+    }
 }
 
 // CONTRACT: execWriteFile must OVERWRITE, not append, when called twice in
@@ -199,27 +229,35 @@ test "execWriteFile: two consecutive calls — second content wins, no append" {
     const target_name = "consecutive.txt";
     const target_path = try std.fs.path.join(a, &.{ root_abs, target_name });
 
-    // First call: 13 bytes
-    const args1 = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"first version\"}}", .{target_path});
-    const tc1 = agent.ToolCall{
-        .id = "call_seq1",
-        .type = "function",
-        .function = .{ .name = "write_file", .arguments = args1 },
-    };
-    const r1 = try execWriteFile(minimalCtx(a), tc1);
-    defer if (r1.output_allocated) a.free(r1.output);
-    try testing.expect(std.mem.indexOf(u8, r1.output, "<success>true</success>") != null);
+    // First call: 13 bytes. Escape the path (Windows JSON-parse fix).
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args1 = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"first version\"}}", .{escaped.items});
+        const tc1 = agent.ToolCall{
+            .id = "call_seq1",
+            .type = "function",
+            .function = .{ .name = "write_file", .arguments = args1 },
+        };
+        const r1 = try execWriteFile(minimalCtx(a), tc1);
+        defer if (r1.output_allocated) a.free(r1.output);
+        try testing.expect(std.mem.indexOf(u8, r1.output, "<success>true</success>") != null);
+    }
 
-    // Second call: longer, DIFFERENT content
-    const args2 = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"second version wins\"}}", .{target_path});
-    const tc2 = agent.ToolCall{
-        .id = "call_seq2",
-        .type = "function",
-        .function = .{ .name = "write_file", .arguments = args2 },
-    };
-    const r2 = try execWriteFile(minimalCtx(a), tc2);
-    defer if (r2.output_allocated) a.free(r2.output);
-    try testing.expect(std.mem.indexOf(u8, r2.output, "<success>true</success>") != null);
+    // Second call: longer, DIFFERENT content.
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args2 = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"second version wins\"}}", .{escaped.items});
+        const tc2 = agent.ToolCall{
+            .id = "call_seq2",
+            .type = "function",
+            .function = .{ .name = "write_file", .arguments = args2 },
+        };
+        const r2 = try execWriteFile(minimalCtx(a), tc2);
+        defer if (r2.output_allocated) a.free(r2.output);
+        try testing.expect(std.mem.indexOf(u8, r2.output, "<success>true</success>") != null);
+    }
 
     // File must contain ONLY the second call's content — not "first version" + tail
     const read = try readAll(a, target_path);
@@ -252,16 +290,21 @@ test "execWriteFile: overwriting with empty content truncates to zero bytes" {
     }
     try testing.expectEqual(@as(u64, 26), fileSize(target_path));
 
-    const args = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"\"}}", .{target_path});
-    const tc = agent.ToolCall{
-        .id = "call_empty",
-        .type = "function",
-        .function = .{ .name = "write_file", .arguments = args },
-    };
+    // Escape `\` and `"` in the path (Windows JSON-parse fix).
+    {
+        var escaped = try jsonEscapeInto(a, target_path);
+        defer escaped.deinit(a);
+        const args2 = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\",\"content\":\"\"}}", .{escaped.items});
+        const tc = agent.ToolCall{
+            .id = "call_empty",
+            .type = "function",
+            .function = .{ .name = "write_file", .arguments = args2 },
+        };
 
-    const result = try execWriteFile(minimalCtx(a), tc);
-    defer if (result.output_allocated) a.free(result.output);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        const result = try execWriteFile(minimalCtx(a), tc);
+        defer if (result.output_allocated) a.free(result.output);
+        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
 
-    try testing.expectEqual(@as(u64, 0), fileSize(target_path));
+        try testing.expectEqual(@as(u64, 0), fileSize(target_path));
+    }
 }

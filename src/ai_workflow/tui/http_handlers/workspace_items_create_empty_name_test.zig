@@ -32,7 +32,7 @@
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
-const text_normalize = nalarcore.helpers.text_normalize;
+const text_normalize = @import("helpers").text_normalize;
 
 const FOLDER_HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_create.zig";
 const KANBAN_HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_create_kanban.zig";

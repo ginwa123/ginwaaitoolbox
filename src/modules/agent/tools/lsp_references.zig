@@ -1,6 +1,6 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const json = std.json;
 const schemas = @import("schemas.zig");
 const lsp_types = @import("lsp_types.zig");

@@ -17,7 +17,7 @@ const handle_mcp_tool = @import("handle_mcp_tool.zig");
 const ActiveLoops = @import("ActiveLoops.zig").ActiveLoops;
 const agentic_loop_mod = @import("workflow.zig");
 const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
-const xmlUnescape = nalar.helpers.xmlUnescape;
+const xmlUnescape = @import("helpers").xmlUnescape;
 const on_event_sent = @import("on_event_sent.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
@@ -240,7 +240,6 @@ fn isMCPTool(config: *const config_mod.LlmConfig, tool_name: []const u8) bool {
 fn dispatchMCP(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     const result = try handle_mcp_tool.handle_mcp_tool_run(
         ctx.allocator,
-        ctx.io,
         ctx.logger,
         tool_call,
         ctx.config,
@@ -578,7 +577,6 @@ pub fn handle_tool(
                 // Call MCP handler
                 tool_result = handle_mcp_tool.handle_mcp_tool_run(
                     allocator,
-                    io,
                     logger,
                     tool_call,
                     config,

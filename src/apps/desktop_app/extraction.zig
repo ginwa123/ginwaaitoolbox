@@ -82,10 +82,20 @@ pub fn extract(allocator: std.mem.Allocator, assets: anytype) ![]u8 {
     // the PID before our cleanup, the collision is benign (the new
     // process will fail its first write with EEXIST, which is
     // better than silently clobbering live files).
+    //
+    // Windows note: `std.c.getpid()` returns `windows.HANDLE` (= `*anyopaque`)
+    // because Windows libc has no real `pid_t`. We cast the handle pointer to
+    // `usize` to get a unique-enough integer for the subdir name (collisions
+    // are benign — see above). Real Windows PIDs would be cleaner, but they
+    // aren't reachable via `std.c.getpid()` in Zig 0.16.
+    const pid_for_subdir: u64 = switch (builtin.os.tag) {
+        .windows => @intFromPtr(std.c.getpid()),
+        else => @intCast(std.c.getpid()),
+    };
     const subdir = try std.fmt.allocPrint(
         allocator,
         "nalar-desktop-webapp-{d}",
-        .{std.c.getpid()},
+        .{pid_for_subdir},
     );
     defer allocator.free(subdir);
 
@@ -209,10 +219,31 @@ fn makePathAbsolute(path: []const u8) !void {
     var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     const path_z = copyToNull(&path_buf, path);
 
-    // If the path already exists, we're done. `std.c.faccessat` returns
-    // 0 on success (path is accessible), -1 with errno=ENOENT otherwise.
-    // `F_OK` (== 0) means "test for existence" — we don't care about R/W.
-    if (std.c.faccessat(std.c.AT.FDCWD, path_z, std.c.F_OK, 0) == 0) return;
+    // If the path already exists, we're done. Use `faccessat(AT_FDCWD)` on
+    // POSIX (works on Linux + macOS) and `GetFileAttributesW` on Windows
+    // (where the Zig 0.16 std.c `AT.FDCWD` constant isn't available, see
+    // path_resolve.zig:155). Both return 0 / non-INVALID-ATTRIBUTES on
+    // "exists" and -1 / INVALID_FILE_ATTRIBUTES on "not found". Fall
+    // through to mkdir on either failure.
+    switch (builtin.os.tag) {
+        .windows => {
+            var path_w: [std.fs.max_path_bytes:0]u16 = undefined;
+            const written = std.unicode.wtf8ToWtf16Le(&path_w, path) catch
+                return error.PathTooLong;
+            path_w[written] = 0;
+            const attrs = GetFileAttributesW(@ptrCast(&path_w));
+            // INVALID_FILE_ATTRIBUTES (0xFFFFFFFF) = "not found / error".
+            // Any other value = file/dir exists.
+            if (attrs != 0xFFFFFFFF) return;
+        },
+        else => {
+            // `std.c.faccessat` + `AT.FDCWD` + `F_OK` is the cross-platform
+            // POSIX idiom for "does this absolute path exist?" — returns 0
+            // when accessible, -1 with errno=ENOENT otherwise. We don't
+            // care about R/W permissions, only existence.
+            if (std.c.faccessat(std.c.AT.FDCWD, path_z, std.c.F_OK, 0) == 0) return;
+        },
+    }
 
     // Recurse on the parent first.
     if (std.fs.path.dirname(path)) |parent| {
@@ -230,35 +261,50 @@ fn makePathAbsolute(path: []const u8) !void {
     return error.MkdirFailed;
 }
 
+// Local extern decls + scratch buffer for the Win32 `stat` path above.
+//
+// Note: the Windows API function is `GetFileAttributesW` — the
+// `extGetFileAttributesW` prefix was a leftover from when this file
+// declared the extern in a "private" namespace inside a `struct` and
+// needed a unique symbol name to avoid colliding with the Win32
+// API. When the function was hoisted to module scope (during the Zig
+// 0.16 cross-platform port), the name should have been restored to
+// the canonical `GetFileAttributesW` so the linker can resolve it
+// against `kernel32.dll`'s import library. The wrong name was masked
+// by the build's earlier `std.c.readdir` compile error on Windows
+// (which prevented the linker from ever running for this target).
+extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) std.os.windows.DWORD;
+
 /// Create (or truncate) a file at an absolute path and write the
 /// given bytes. Returns nothing on success; on write error the
 /// partial file is left on disk (the caller can `deleteTree` to
 /// clean up).
 ///
-/// Uses libc `std.c.*` for cross-platform file I/O. The `O_WRONLY`,
-/// `O_CREAT`, `O_TRUNC`, `O_CLOEXEC` constants come from libc's
-/// `<fcntl.h>` (via `std.c`) and have the correct values for each
-/// platform — on aarch64-Linux O_CLOEXEC is `0o2000000`; on
-/// aarch64-Darwin it's `0x10000000`. The previous `std.os.linux.O`
-/// struct-of-flags style only worked on Linux.
+/// Per-platform: POSIX uses libc `std.c.open` + `std.c.write`; Windows
+/// uses Win32 `CreateFileW` + `WriteFile`. The `std.c.O` struct of
+/// open-flag bits is `void` on Windows in Zig 0.16 (the libc bindings
+/// don't expose open-flag constants for the Windows CRT), so we have
+/// to take the per-platform fork.
 fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const path_z = copyToNull(&path_buf, path);
+
+    switch (builtin.os.tag) {
+        .windows => return writeFileAbsoluteWindows(path, content),
+        else => return writeFileAbsolutePosix(path_z, content),
+    }
+}
+
+fn writeFileAbsolutePosix(path_z: [*:0]const u8, content: []const u8) !void {
     // `std.c.O` is a Zig packed struct mirroring the kernel's open-flag
-    // bits for the target platform (on Linux it points to `linux.O`;
-    // on macOS it's a different packed struct with the same conceptual
-    // fields — `ACCMODE`, `CREAT`, `TRUNC`, `CLOEXEC`). The struct
-    // layout (bit positions for O_CLOEXEC etc.) differs across platforms
-    // but the field names are portable. We bit-cast to `c_int` for
-    // `std.c.open`, which expects the raw integer the kernel uses.
+    // bits for the target platform. The struct layout differs across
+    // platforms but the field names are portable.
     const flags: std.c.O = .{
         .ACCMODE = .WRONLY,
         .CREAT = true,
         .TRUNC = true,
         .CLOEXEC = true,
     };
-
-    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    const path_z = copyToNull(&path_buf, path);
-
     // `std.c.open` returns -1 on failure (with errno set) or the new fd.
     const fd = std.c.open(path_z, @bitCast(flags), @as(c_int, 0o644));
     if (fd == -1) return error.OpenOutFailed;
@@ -274,6 +320,205 @@ fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
     }
 }
 
+fn writeFileAbsoluteWindows(path: []const u8, content: []const u8) !void {
+    var path_w: [std.fs.max_path_bytes:0]u16 = undefined;
+    const written = std.unicode.wtf8ToWtf16Le(&path_w, path) catch
+        return error.PathTooLong;
+    path_w[written] = 0;
+
+    // CreateFileW flags: GENERIC_WRITE | OPEN_ALWAYS (truncate if exists).
+    // CREATE_ALWAYS would also work but loses the existing file's ACL on
+    // some Windows versions; OPEN_ALWAYS + truncation via SetEndOfFile
+    // is the more conservative choice.
+    const h_opt = CreateFileW(
+        @ptrCast(&path_w),
+        0x40000000, // GENERIC_WRITE
+        0x1, // FILE_SHARE_READ
+        null,
+        4, // OPEN_ALWAYS
+        0x80, // FILE_ATTRIBUTE_NORMAL
+        null,
+    );
+    const h = h_opt orelse return error.OpenOutFailed;
+    defer _ = CloseHandle(h);
+
+    // Truncate to 0 (OPEN_ALWAYS preserves existing content; we want
+    // truncation for the "overwrite" semantic).
+    const set_rc = SetFilePointerEx(h, 0, null, 2); // FILE_END = 2
+    _ = set_rc; // best-effort; if it fails the write below will surface it
+
+    var total_written: usize = 0;
+    while (total_written < content.len) {
+        var chunk_written: std.os.windows.DWORD = 0;
+        const ok = WriteFile(
+            h,
+            content[total_written..].ptr,
+            @intCast(content.len - total_written),
+            &chunk_written,
+            null,
+        );
+        if (@intFromEnum(ok) == 0) return error.WriteFailed;
+        if (chunk_written == 0) return error.WriteFailed;
+        total_written += @intCast(chunk_written);
+    }
+}
+
+// Local Win32 externs for the file-write path above. The `std.os.windows`
+// bindings expose `CreateFileW` and `WriteFile` indirectly via
+// `std.fs.File.create` (which returns a Zig file handle, not a Win32
+// HANDLE), and we need raw HANDLE access to pass through `SetFilePointerEx`
+// + `WriteFile` directly. `CloseHandle` is the matching HANDLE closer.
+extern "kernel32" fn CreateFileW(
+    lpFileName: [*:0]const u16,
+    dwDesiredAccess: std.os.windows.DWORD,
+    dwShareMode: std.os.windows.DWORD,
+    lpSecurityAttributes: ?*std.os.windows.SECURITY_ATTRIBUTES,
+    dwCreationDisposition: std.os.windows.DWORD,
+    dwFlagsAndAttributes: std.os.windows.DWORD,
+    hTemplateFile: ?std.os.windows.HANDLE,
+) callconv(.winapi) ?std.os.windows.HANDLE;
+extern "kernel32" fn WriteFile(
+    hFile: std.os.windows.HANDLE,
+    lpBuffer: [*]const u8,
+    nNumberOfBytesToWrite: std.os.windows.DWORD,
+    lpNumberOfBytesWritten: *std.os.windows.DWORD,
+    lpOverlapped: ?*anyopaque,
+) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn CloseHandle(hObject: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn SetFilePointerEx(
+    hFile: std.os.windows.HANDLE,
+    liDistanceToMove: i64,
+    lpNewFilePointer: ?*i64,
+    dwMoveMethod: std.os.windows.DWORD,
+) callconv(.winapi) std.os.windows.BOOL;
+
+// Win32 FindFirstFileW / FindNextFileW bindings for the Windows-only
+// deleteTree path. `std.c.readdir` is declared as `{}` in Zig 0.16 for
+// Windows (no POSIX readdir in MSVCRT/UCRT), so we have to use the native
+// Win32 directory-enumeration API. Struct layout matches the Win32 SDK
+// `WIN32_FIND_DATAW` declaration exactly — any field reorder would break
+// the kernel's view of the struct.
+//
+// We only declare these externs when building for Windows so non-Windows
+// targets don't get a `kernel32` link-time dependency.
+const win32_dir_apis = if (builtin.os.tag == .windows) struct {
+    /// `WIN32_FIND_DATAW` per Win32 SDK. Layout MUST match the OS struct —
+    /// the kernel writes directly into this buffer via FindFirstFileW.
+    const WIN32_FIND_DATAW = extern struct {
+        dwFileAttributes: std.os.windows.DWORD,
+        ftCreationTime: std.os.windows.FILETIME,
+        ftLastAccessTime: std.os.windows.FILETIME,
+        ftLastWriteTime: std.os.windows.FILETIME,
+        nFileSizeHigh: std.os.windows.DWORD,
+        nFileSizeLow: std.os.windows.DWORD,
+        dwReserved0: std.os.windows.DWORD,
+        dwReserved1: std.os.windows.DWORD,
+        cFileName: [std.fs.max_path_bytes]u16,
+        cAlternateFileName: [14]u16,
+    };
+
+    const INVALID_HANDLE_VALUE: std.os.windows.HANDLE = @ptrFromInt(std.math.maxInt(usize));
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    const ERROR_FILE_NOT_FOUND: u32 = 2;
+    const ERROR_NO_MORE_FILES: u32 = 18;
+
+    extern "kernel32" fn FindFirstFileW(
+        lpFileName: [*:0]const u16,
+        lpFindFileData: *WIN32_FIND_DATAW,
+    ) callconv(.winapi) std.os.windows.HANDLE;
+
+    extern "kernel32" fn FindNextFileW(
+        hFindFile: std.os.windows.HANDLE,
+        lpFindFileData: *WIN32_FIND_DATAW,
+    ) callconv(.winapi) std.os.windows.BOOL;
+
+    extern "kernel32" fn FindClose(hFindFile: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+
+    extern "kernel32" fn DeleteFileW(lpFileName: [*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
+
+    extern "kernel32" fn RemoveDirectoryW(lpFileName: [*:0]const u16) callconv(.winapi) std.os.windows.BOOL;
+
+    extern "kernel32" fn GetLastError() callconv(.winapi) std.os.windows.DWORD;
+} else struct {};
+
+/// Windows-only recursive-delete implementation, mirrors the POSIX path's
+/// semantics (best-effort, errors swallowed at the top-level caller) but
+/// uses Win32 `FindFirstFileW` / `FindNextFileW` because `std.c.readdir`
+/// is `{}` on Windows in Zig 0.16. The directory walk is the same
+/// recursive pattern as `deleteTreeRecursive`: enumerate children, recurse
+/// into subdirs, then unlink/rmdir. Path separator is `\\` (Windows native,
+/// though most APIs accept `/` too — `\\` matches what `std.fs.path.join`
+/// produces).
+fn deleteTreeRecursiveWindows(path: []const u8) !void {
+    // Build "<path>\*" in a WTF-16 buffer. FindFirstFileW needs the wildcard
+    // suffix to enumerate children.
+    var pattern_buf: [std.fs.max_path_bytes:0]u16 = undefined;
+    if (path.len + 3 > std.fs.max_path_bytes) return error.NameTooLong;
+    const sep_index = std.unicode.wtf8ToWtf16Le(pattern_buf[0 .. pattern_buf.len - 1], path) catch
+        return error.PathTooLong;
+    pattern_buf[sep_index] = '\\';
+    pattern_buf[sep_index + 1] = '*';
+    pattern_buf[sep_index + 2] = 0;
+
+    var find_data: win32_dir_apis.WIN32_FIND_DATAW = undefined;
+    const find_handle = win32_dir_apis.FindFirstFileW(&pattern_buf, &find_data);
+    if (find_handle == win32_dir_apis.INVALID_HANDLE_VALUE) {
+        // ERROR_FILE_NOT_FOUND here just means the dir is empty — that's fine,
+        // we can still RemoveDirectoryW below.
+        const err = win32_dir_apis.GetLastError();
+        if (err != win32_dir_apis.ERROR_FILE_NOT_FOUND) return error.OpenDirFailed;
+    } else {
+        defer _ = win32_dir_apis.FindClose(find_handle);
+
+        // First entry was already returned by FindFirstFileW; process it, then
+        // loop over FindNextFileW until it returns 0 (no more entries).
+        var child_path_buf: [std.fs.max_path_bytes:0]u16 = undefined;
+        while (true) {
+            // Copy cFileName into a temp slice up to the first NUL.
+            const name_len = std.mem.indexOfScalar(u16, &find_data.cFileName, 0) orelse
+                find_data.cFileName.len;
+            const name_w = find_data.cFileName[0..name_len];
+
+            // Skip "." and ".." the same way the POSIX path does.
+            const is_dot = name_len == 1 and name_w[0] == '.';
+            const is_dotdot = name_len == 2 and name_w[0] == '.' and name_w[1] == '.';
+            if (!is_dot and !is_dotdot) {
+                // Build "<path>\\<name>" into the WTF-16 child buffer.
+                if (sep_index + 1 + name_len >= child_path_buf.len) return error.NameTooLong;
+                @memcpy(child_path_buf[0..sep_index], pattern_buf[0..sep_index]);
+                child_path_buf[sep_index] = '\\';
+                @memcpy(child_path_buf[sep_index + 1 ..][0..name_len], name_w);
+                child_path_buf[sep_index + 1 + name_len] = 0;
+
+                if ((find_data.dwFileAttributes & win32_dir_apis.FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                    // Convert the WTF-16 child path back to WTF-8 so we can
+                    // recurse — the helper functions take `[]const u8`.
+                    var child_utf8: [std.fs.max_path_bytes]u8 = undefined;
+                    const written = std.unicode.wtf16LeToWtf8(&child_utf8, child_path_buf[0 .. sep_index + 1 + name_len]);
+                    try deleteTreeRecursiveWindows(child_utf8[0..written]);
+                    _ = win32_dir_apis.RemoveDirectoryW(&child_path_buf);
+                } else {
+                    _ = win32_dir_apis.DeleteFileW(&child_path_buf);
+                }
+            }
+
+            // Advance to the next entry. FindNextFileW returns FALSE when
+            // there are no more entries (sets GetLastError to
+            // ERROR_NO_MORE_FILES). Win32's `BOOL` is a typed enum (not a
+            // raw integer) so we compare against `.FALSE` rather than `0`.
+            const more = win32_dir_apis.FindNextFileW(find_handle, &find_data);
+            if (more == .FALSE) break;
+        }
+    }
+
+    // Finally, remove the (now-empty) directory itself.
+    var path_w_buf: [std.fs.max_path_bytes:0]u16 = undefined;
+    const path_w_len = std.unicode.wtf8ToWtf16Le(path_w_buf[0 .. path_w_buf.len - 1], path) catch
+        return error.PathTooLong;
+    path_w_buf[path_w_len] = 0;
+    _ = win32_dir_apis.RemoveDirectoryW(&path_w_buf);
+}
+
 /// `rm -rf` via libc `opendir` / `readdir` / `closedir` + `unlink` / `rmdir`.
 /// Best-effort: errors are logged but not propagated.
 ///
@@ -281,10 +526,21 @@ fn writeFileAbsolute(path: []const u8, content: []const u8) !void {
 /// because the Linux raw syscalls compile fine on macOS but invoke Linux
 /// syscall numbers that don't exist on the Darwin kernel (SIGSYS on first
 /// call). The libc `readdir` is the cross-platform equivalent.
+///
+/// Windows note: `std.c.readdir` is declared as `{}` (no callable) in Zig
+/// 0.16 because Windows CRT has no POSIX `readdir`. We dispatch to a
+/// Win32 `FindFirstFileW`/`FindNextFileW` implementation via
+/// `deleteTreeRecursiveWindows` below — keeping the POSIX path untouched
+/// so Linux/macOS behavior is byte-for-byte identical.
 fn deleteTreeBestEffort(path: []const u8) void {
-    deleteTreeRecursive(path) catch |err| {
-        std.log.warn("Failed to clean up temp dir {s}: {s}", .{ path, @errorName(err) });
-    };
+    switch (builtin.os.tag) {
+        .windows => deleteTreeRecursiveWindows(path) catch |err| {
+            std.log.warn("Failed to clean up temp dir {s}: {s}", .{ path, @errorName(err) });
+        },
+        else => deleteTreeRecursive(path) catch |err| {
+            std.log.warn("Failed to clean up temp dir {s}: {s}", .{ path, @errorName(err) });
+        },
+    }
 }
 
 fn deleteTreeRecursive(path: []const u8) !void {

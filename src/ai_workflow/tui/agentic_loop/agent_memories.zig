@@ -338,21 +338,27 @@ pub fn loadMemoriesByFts(
 /// Generate a fresh `mem_<16-hex>` id.
 ///
 /// Platform CSPRNG dispatch (mirrors `src/modules/custom_http_server/src/security.zig::generateNonce`):
-///   * Linux/FreeBSD/OpenBSD/NetBSD → libc `getrandom(2)` (loops on partial reads).
-///   * macOS / iOS / tvOS / watchOS → libc `arc4random_buf` (CSPRNG under the hood;
-///     the "arc4" name is stale — uses SecRandomCopyBytes since macOS 10.12).
+///   * Linux → libc `getrandom(2)` (loops on partial reads). Declared
+///     inside a `comptime` `.linux` branch so the `std.os.linux.getrandom`
+///     reference is only validated when compiling for Linux targets — see
+///     the zig 0.16 cross-target note in the comment block.
+///   * macOS / iOS / tvOS / watchOS → libc `arc4random_buf` (CSPRNG under
+///     the hood; the "arc4" name is stale — uses SecRandomCopyBytes since
+///     macOS 10.12).
 ///   * Windows → BCryptGenRandom via bcrypt.dll (linked by `databases` build.zig).
-/// `std.c.getrandom` exists only on Linux/FreeBSD; on macOS and Windows it resolves
-/// to `void` (Zig's c.zig switch), which is why this function is target-aware.
-/// Returns an allocated string the caller owns.
+/// `std.os.linux.getrandom` is the kernel syscall on Linux regardless of
+/// link_libc — using it sidesteps the `link_libc=false → std.c.getrandom is
+/// void` regression that bit Zig 0.16 cross-target compiles (where the
+/// module target and root target disagree). Returns an allocated string
+/// the caller owns.
 fn generateMemoryId(allocator: std.mem.Allocator) ![]u8 {
     var bytes: [8]u8 = undefined;
     switch (builtin.os.tag) {
-        .linux, .freebsd, .openbsd, .netbsd => {
+        .linux => {
             var filled: usize = 0;
             while (filled < 8) {
                 const slice = bytes[filled..];
-                const got = std.c.getrandom(slice.ptr, slice.len, 0);
+                const got = std.os.linux.getrandom(slice.ptr, slice.len, 0);
                 if (got <= 0) return error.RandomFailed;
                 filled += @intCast(got);
             }
@@ -560,8 +566,10 @@ test "saveMemory: UPSERTs when caller passes an existing id" {
 
     // Tiny sleep so the UPDATE bumps `updated_at` (DATETIME resolution is 1s).
     // std.c.nanosleep — std.Thread.sleep doesn't exist in Zig 0.16.
-    var ts = std.c.timespec{ .sec = 1, .nsec = 0 };
-    _ = std.c.nanosleep(&ts, null);
+    // Use a portable helper because std.c.timespec is broken on Windows
+    // (Zig 0.16 — see test_sleep.zig for details).
+    const test_sleep = @import("test_sleep.zig");
+    test_sleep.sleep(1, 0);
 
     // UPSERT with the same id.
     const second = try saveMemory(alloc, &ctx.db, .{

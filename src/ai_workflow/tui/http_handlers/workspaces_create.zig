@@ -2,7 +2,7 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
-const process = nalarcore.helpers.process;
+const process = @import("helpers").process;
 const getCurrentProcessId = process.getCurrentProcessId;
 const sqlite = nalarcore.sqlite;
 

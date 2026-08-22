@@ -43,6 +43,7 @@ const testing = std.testing;
 const builtin = @import("builtin");
 const custom_http_client = @import("root.zig");
 const gserverz = @import("custom_http_server");
+const helpers = @import("helpers");
 
 const HttpContext = gserverz.HttpContext;
 const HttpRequest = gserverz.HttpRequest;
@@ -85,10 +86,10 @@ const ProcessCpuTime = struct {
     nsec: i64,
 
     fn now() ProcessCpuTime {
-        var ts: std.c.timespec = undefined;
+        var ts: helpers.PosixTimespec = undefined;
         // CLOCK_PROCESS_CPUTIME_ID = 12 on Linux x86_64.
         // Linux-only test (SkipZigTest gate below); no rusage fallback needed.
-        const rc = std.c.clock_gettime(.PROCESS_CPUTIME_ID, &ts);
+        const rc = helpers.clock_gettime(12, &ts);
         if (rc != 0) return .{ .sec = 0, .nsec = 0 };
         return .{ .sec = ts.sec, .nsec = ts.nsec };
     }

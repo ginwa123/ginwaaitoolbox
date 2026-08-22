@@ -89,7 +89,52 @@ OPENSSL_SRC_DIR="${TMP}/openssl-${OPENSSL_VERSION}"
 # Override with CURL_TARGETS="linux-x86_64 macos-arm64 macos-x86_64"
 # (or any subset) to build for non-host targets. Default: only the
 # targets that match the host OS.
+#
+# Windows hosts: bail out as a successful no-op before doing any work.
+# The script builds OpenSSL + curl from source and needs gcc/make/perl +
+# the Perl Locale::Maketext::Simple module (OpenSSL's Configure requires
+# it). Most Windows dev boxes don't ship those — and even with MinGW/
+# MSYS2 installed, the cross-build to a non-Linux target (e.g. building
+# linux-x86_64 from a Windows host) needs `zig cc -target …` plumbing
+# that isn't wired up here. So on a Windows host the vendored archive
+# can't be produced. Instead of failing halfway through with a
+# confusing `Can't locate Locale/Maketext/Simple.pm in @INC`, exit 0
+# early with a clear next-steps message.
+#
+# Why `exit 0` (not `exit 2`): Zig's `b.addSystemCommand` treats any
+# non-zero exit code as a step failure, which would cascade and fail the
+# whole `zig build test` even when the test compile itself doesn't need
+# the libcurl archive (no test code transitively imports
+# custom_http_client). Exiting 0 lets the build proceed; the explanatory
+# message still surfaces so the operator sees why the archive is empty.
 case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*|Windows*)
+        cat <<'EOF'
+[build-vendor-curl.sh] SKIPPED — Windows host.
+
+  This script cross-compiles libcurl + vendored OpenSSL from source,
+  which requires gcc, make, perl, and the Perl Locale::Maketext::Simple
+  module. None of those are available on a typical Windows dev box
+  (Git for Windows ships bash + perl but no gcc).
+
+  Two paths forward for Windows builds:
+
+    1. Install vcpkg and `vcpkg install curl:x64-windows openssl:x64-windows`.
+       The src/modules/custom_http_client/build.zig system-probe will
+       then pick up C:/vcpkg/installed/x64-windows/lib/{libcurl,libssl,
+       libcrypto}.lib and link those instead of the vendored archive.
+
+    2. Cross-compile the vendor archive from a Linux/macOS host:
+         git clone … && cd … && bash src/modules/custom_http_client/scripts/build-vendor-curl.sh
+       then copy src/modules/custom_http_client/vendor/curl/<target>/
+       to the Windows box.
+
+  (The custom_http_client package's vendored-path lookup hardcodes
+  `windows-amd64/` for Windows targets, but the script intentionally
+  never builds it — see the comment at "Windows archive" below.)
+EOF
+        exit 0
+        ;;
     Linux)   DEFAULT_TARGETS="linux-x86_64" ;;
     Darwin)  DEFAULT_TARGETS="macos-arm64 macos-x86_64" ;;
     *)       DEFAULT_TARGETS="linux-x86_64" ;;

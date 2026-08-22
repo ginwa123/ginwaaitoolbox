@@ -31,7 +31,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const design_io = @import("design_io.zig");
 const on_event_sent_design = @import("on_event_sent_design.zig");
 

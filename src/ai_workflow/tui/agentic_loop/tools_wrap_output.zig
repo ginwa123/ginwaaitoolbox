@@ -1,7 +1,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 
-const helpers = nalarcore.helpers;
+const helpers = @import("helpers");
 const xmlEscape = helpers.xml_escape;
 const testing = std.testing;
 
