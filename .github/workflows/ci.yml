@@ -95,6 +95,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Node.js 24 + npm (functional-test-ui needs npm for Vite)
+        # The UIHarness spawns `npm run dev` to start the Vite dev server
+        # during Playwright tests. We use npm (not bun) because the
+        # harness's shutil.which('npm') / shutil.which('npm.cmd')
+        # resolution needs a literal `npm` on PATH — bun's node-compat
+        # mode does not register as `npm`. Same Node version as the
+        # frontend job for reproducibility.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Install Zig ${{ env.ZIG_VERSION }}
         uses: mlugg/setup-zig@v2
         with:
@@ -244,13 +255,15 @@ jobs:
         #                     but the self-hosted Arch runner image does not.
         #   Playwright Chromium deps (functional-test-ui step needs these
         #   for `playwright install chromium` + headless launch):
-        #     nss, libxkbcommon, libdrm, libxcomposite, libxdamage,
+        #     nss, nspr, libxkbcommon, libdrm, libxcomposite, libxdamage,
         #     libxfixes, libxrandr, mesa, pango, cairo, alsa-lib,
         #     at-spi2-core, at-spi2-atk, libcups
         #   Arch package mapping: most are 1:1 with the upstream name
         #   except `libdrm` (Debian) → `libdrm` (Arch), `nss` covers
         #   libnss3/libnssutil3/libsmime3 (split on Debian), and
-        #   `cups` here is the libcups client library.
+        #   `cups` here is the libcups client library. `nspr` is its
+        #   own package on both Arch + Debian (provides libnspr4.so,
+        #   required by Chromium's network stack).
         run: |
           set -u
           # Refresh the package DB FIRST. The self-hosted runner's
@@ -262,7 +275,7 @@ jobs:
           # download a phantom package version.
           sudo -n pacman -Sy --noconfirm
           missing=()
-          for pkg in base-devel openssl curl sqlite postgresql-libs ripgrep pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip nss libxkbcommon libdrm libxcomposite libxdamage libxfixes libxrandr mesa pango cairo alsa-lib at-spi2-core at-spi2-atk libcups; do
+          for pkg in base-devel openssl curl sqlite postgresql-libs ripgrep pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip nss nspr libxkbcommon libdrm libxcomposite libxdamage libxfixes libxrandr mesa pango cairo alsa-lib at-spi2-core at-spi2-atk libcups; do
             if pacman -Q "$pkg" >/dev/null 2>&1; then
               echo "  ✓ $pkg"
             else
@@ -1164,34 +1177,38 @@ jobs:
           fi
           rm -f /tmp/functional-test-start.$$
 
-      - name: Install Bun + webapp dependencies (UI tests need Vite)
+      - name: Install npm + webapp dependencies (UI tests need Vite)
         # The Vite dev server is spawned by UIHarness during the
-        # functional-test-ui step. The webapp's node_modules is
-        # gitignored; cache it keyed by bun.lock + restore + bun
-        # install on cache miss (same pattern as the frontend job
-        # above). Without this step, vite isn't on PATH and the
-        # UI tests fail with `vite: command not found`.
+        # functional-test-ui step via `npm run dev`. The webapp's
+        # node_modules is gitignored; cache it keyed by package-lock
+        # hash + restore + npm ci on cache miss. Without this step,
+        # vite isn't on PATH and the UI tests fail with
+        # `vite: command not found` (PR #293 feedback).
         if: |
           runner.os != 'Windows' &&
           matrix.target.step != '__SKIP__'
         shell: bash
         run: |
           set -u
-          # Install Bun (cached by GitHub in ~/.bun; the setup-bun
-          # action is fast on cache hit).
-          curl -fsSL https://bun.sh/install | bash
-          export PATH="$HOME/.bun/bin:$PATH"
+          # Install Node.js + npm via actions/setup-node (we rely on
+          # the action having run earlier in this job — see
+          # `setup-node` invocation near the top of backend).
+          if ! command -v npm >/dev/null 2>&1; then
+            echo "✗ npm not on PATH — setup-node step must have failed"
+            exit 1
+          fi
           # Restore node_modules from cache (if hit).
-          CACHE_DIR="$HOME/.cache/nalar-bun-node-modules"
+          CACHE_DIR="$HOME/.cache/nalar-npm-node-modules"
           mkdir -p "$CACHE_DIR"
-          HASH=$(sha256sum src/apps/desktop/bun.lock | cut -c1-16)
+          HASH=$(sha256sum src/apps/desktop/package-lock.json 2>/dev/null \
+                   || sha256sum src/apps/desktop/bun.lock | cut -c1-16)
           CACHE_TARBALL="$CACHE_DIR/node_modules-${HASH}.tar.gz"
           if [[ -f "$CACHE_TARBALL" ]]; then
             echo "→ cache HIT ($HASH); restoring node_modules"
             tar -xzf "$CACHE_TARBALL" -C src/apps/desktop
           else
-            echo "→ cache MISS ($HASH); running bun install"
-            cd src/apps/desktop && bun install --frozen-lockfile && cd -
+            echo "→ cache MISS ($HASH); running npm ci"
+            cd src/apps/desktop && npm ci --no-audit --no-fund && cd -
             echo "→ saving node_modules to cache"
             tar -czf "$CACHE_TARBALL.tmp" -C src/apps/desktop node_modules \
               && mv "$CACHE_TARBALL.tmp" "$CACHE_TARBALL"
@@ -1219,8 +1236,7 @@ jobs:
         shell: bash
         run: |
           set -u
-          # Add Bun to PATH so the spawned npm process can find vite.
-          export PATH="$HOME/.bun/bin:$PATH"
+          # npm is already on PATH from setup-node.
           echo "→ functional-test-ui: starting"
           date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
           # zig build functional-test-ui installs playwright into the
