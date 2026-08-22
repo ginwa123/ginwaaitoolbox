@@ -3654,18 +3654,27 @@ export async function createAgent(
 }
 
 /**
- * Get agent + knowledge + tools for a workspace_item. Returns the
- * 3 sections AgentView needs in one round-trip.
+ * Get agent + knowledge + tools + system prompts for a workspace_item.
+ * Returns the 4 sections AgentView needs in one round-trip.
  *
  * GET /api/workspaces/:workspaceId/items/:itemId/agent
  */
 export async function getAgent(
   workspaceId: string,
   itemId: string,
-): Promise<{ agent: Agent; knowledge: AgentKnowledgeRow[]; tools: string[] }> {
-  return await apiFetch<{ agent: Agent; knowledge: AgentKnowledgeRow[]; tools: string[] }>(
-    `/workspaces/${workspaceId}/items/${itemId}/agent`,
-  )
+): Promise<{
+  agent: Agent
+  knowledge: AgentKnowledgeRow[]
+  tools: string[]
+  /** Migration 080 — per-agent named prompt blocks, position DESC. */
+  system_prompts: AgentSystemPromptRow[]
+}> {
+  return await apiFetch<{
+    agent: Agent
+    knowledge: AgentKnowledgeRow[]
+    tools: string[]
+    system_prompts: AgentSystemPromptRow[]
+  }>(`/workspaces/${workspaceId}/items/${itemId}/agent`)
 }
 
 /**
@@ -3744,29 +3753,6 @@ export interface AgentSystemPromptRow {
   position: number
   created_at: string
   updated_at: string
-}
-
-/**
- * Get agent + knowledge + tools + system prompts for a workspace_item.
- * Returns the 4 sections AgentView needs in one round-trip.
- *
- * GET /api/workspaces/:workspaceId/items/:itemId/agent
- */
-export async function getAgentWithSystemPrompts(
-  workspaceId: string,
-  itemId: string,
-): Promise<{
-  agent: Agent
-  knowledge: AgentKnowledgeRow[]
-  tools: string[]
-  system_prompts: AgentSystemPromptRow[]
-}> {
-  return await apiFetch<{
-    agent: Agent
-    knowledge: AgentKnowledgeRow[]
-    tools: string[]
-    system_prompts: AgentSystemPromptRow[]
-  }>(`/workspaces/${workspaceId}/items/${itemId}/agent`)
 }
 
 /**

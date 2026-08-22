@@ -146,6 +146,7 @@ describe('AppLayout — agent tools fetch on agent view mount (no chat task)', (
       agent: { id: AGENT_ITEM_ID, workspace_item_id: AGENT_ITEM_ID, description: '', created_at: '', updated_at: '' } as any,
       knowledge: [],
       tools: ['bash', 'read_file'],
+      system_prompts: [],
     })
 
     const wrapper = mountAgentView()
@@ -162,6 +163,7 @@ describe('AppLayout — agent tools fetch on agent view mount (no chat task)', (
       agent: { id: AGENT_ITEM_ID, workspace_item_id: AGENT_ITEM_ID, description: '', created_at: '', updated_at: '' } as any,
       knowledge: [],
       tools: ['bash', 'read_file'],
+      system_prompts: [],
     })
 
     // Stub AgentView so we can inspect the props it receives.
@@ -208,6 +210,7 @@ describe('AppLayout — agent tools fetch on agent view mount (no chat task)', (
       agent: { id: AGENT_ITEM_ID, workspace_item_id: AGENT_ITEM_ID, description: '', created_at: '', updated_at: '' } as any,
       knowledge: [],
       tools: ['bash'],
+      system_prompts: [],
     })
 
     const wrapper = mountAgentView()
