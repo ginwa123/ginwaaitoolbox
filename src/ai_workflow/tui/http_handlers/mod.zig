@@ -63,6 +63,11 @@ pub const agentToolsRegistryHandler = @import("agent_tools_registry.zig").agentT
 pub const agentToolsListHandler = @import("agent_tools_list.zig").agentToolsListHandler;
 pub const agentToolsCreateHandler = @import("agent_tools_create.zig").agentToolsCreateHandler;
 pub const agentToolsDeleteHandler = @import("agent_tools_delete.zig").agentToolsDeleteHandler;
+// Agent Mode system-prompt CRUD (Migration 080)
+pub const agentSystemPromptCreateHandler = @import("agent_system_prompt_create.zig").agentSystemPromptCreateHandler;
+pub const agentSystemPromptUpdateHandler = @import("agent_system_prompt_update.zig").agentSystemPromptUpdateHandler;
+pub const agentSystemPromptDeleteHandler = @import("agent_system_prompt_delete.zig").agentSystemPromptDeleteHandler;
+pub const agentSystemPromptReorderHandler = @import("agent_system_prompt_reorder.zig").agentSystemPromptReorderHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).

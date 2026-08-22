@@ -25,9 +25,10 @@ interface Props {
   itemId: string
   knowledge: api.AgentKnowledgeRow[]
   tools: string[]
+  systemPrompts?: api.AgentSystemPromptRow[]
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), { systemPrompts: () => [] })
 
 const emit = defineEmits<{
   addKnowledge: []
@@ -37,6 +38,9 @@ const emit = defineEmits<{
   toggleToolsBulk: [toolNames: string[], enabled: boolean]
   newChat: []
   selectTask: [taskId: string]
+  addSystemPrompt: []
+  editSystemPrompt: [row: api.AgentSystemPromptRow]
+  removeSystemPrompt: [promptId: string]
 }>()
 
 const agentToolsStore = useAgentToolsStore()
@@ -80,6 +84,24 @@ function toggleToolExpanded(name: string) {
   if (next.has(name)) next.delete(name)
   else next.add(name)
   expandedTools.value = next
+}
+
+// ─── System Prompt panel UI state (plan 2026-08-21-agent-system-prompt) ──
+//
+// `expandedPrompts` tracks which prompt rows show their full content —
+// same expand-chevron pattern as the Knowledge panel.
+const expandedPrompts = ref(new Set<string>())
+
+function togglePromptExpanded(id: string) {
+  const next = new Set(expandedPrompts.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedPrompts.value = next
+}
+
+function promptPreview(content: string): string {
+  const oneLine = content.replace(/\s+/g, ' ').trim()
+  return oneLine.length > 60 ? oneLine.slice(0, 60) + '…' : oneLine
 }
 
 // ─── Knowledge panel UI state ───────────────────────────────────────────
@@ -552,9 +574,99 @@ async function handleNewChat() {
           + New Chat
         </button>
       </div>
+
+      <!-- System Prompt section (plan 2026-08-21-agent-system-prompt):
+           list of named prompt blocks injected into every chat with this
+           agent, before its knowledge. Mirrors the Knowledge panel's row
+           pattern (expand chevron + ✎/✕). -->
+      <section data-testid="agent-system-prompt-panel" class="mb-6">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">System Prompt</h3>
+            <span
+              class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+              :style="{
+                backgroundColor: systemPrompts.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
+                color: systemPrompts.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
+                border: systemPrompts.length > 0 ? 'none' : '1px solid var(--color-border)',
+              }"
+            >{{ systemPrompts.length }}</span>
+          </div>
+          <button
+            type="button"
+            @click="emit('addSystemPrompt')"
+            data-testid="agent-add-system-prompt"
+            class="text-xs px-2 py-1 rounded font-medium hover:opacity-80"
+            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+          >
+            + Add
+          </button>
+        </div>
+
+        <p v-if="systemPrompts.length === 0" class="text-xs" style="color: var(--semantic-text-dim);">
+          No system prompts yet. Add one to give this Agent a persona or standing instructions.
+        </p>
+
+        <ul v-else class="space-y-1.5">
+          <li
+            v-for="p in systemPrompts"
+            :key="p.id"
+            data-testid="agent-system-prompt-item"
+            class="group p-2 rounded border"
+            style="background: var(--semantic-sidebar-bg); border-color: var(--color-border);"
+          >
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                @click="togglePromptExpanded(p.id)"
+                :data-testid="'agent-system-prompt-expand-' + p.id"
+                class="text-[10px] shrink-0"
+                style="color: var(--semantic-text-muted);"
+                :aria-label="expandedPrompts.has(p.id) ? 'Collapse prompt' : 'Expand prompt'"
+              >
+                {{ expandedPrompts.has(p.id) ? '▾' : '▸' }}
+              </button>
+              <div class="min-w-0 flex-1 cursor-pointer" @click="togglePromptExpanded(p.id)">
+                <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                  {{ p.title || 'Untitled prompt' }}
+                </div>
+                <div class="text-xs truncate" style="color: var(--semantic-text-dim);">
+                  {{ promptPreview(p.content) }}
+                </div>
+              </div>
+              <button
+                type="button"
+                @click.stop="emit('editSystemPrompt', p)"
+                data-testid="agent-edit-system-prompt"
+                class="opacity-0 group-hover:opacity-100 transition-opacity text-xs px-1 rounded hover:bg-white/10"
+                style="color: var(--semantic-text-muted);"
+                aria-label="Edit system prompt"
+                title="Edit"
+              >✎</button>
+              <button
+                type="button"
+                @click.stop="emit('removeSystemPrompt', p.id)"
+                data-testid="agent-remove-system-prompt"
+                class="opacity-0 group-hover:opacity-100 transition-opacity text-xs px-1 rounded hover:bg-white/10"
+                style="color: var(--color-red);"
+                aria-label="Remove system prompt"
+                title="Remove"
+              >✕</button>
+            </div>
+            <pre
+              v-if="expandedPrompts.has(p.id)"
+              :data-testid="'agent-system-prompt-detail-' + p.id"
+              class="mt-2 text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto rounded p-2"
+              style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-dim); font-family: inherit;"
+            >{{ p.content }}</pre>
+          </li>
+        </ul>
+      </section>
+
       <div class="text-xs" style="color: var(--semantic-text-dim);">
         Click <strong>+ New Chat</strong> to start a conversation with this Agent.
-        Knowledge files will be loaded into context, and only the tools you've enabled will be available.
+        The system prompt is injected first, then knowledge files are loaded into context,
+        and only the tools you've enabled will be available.
       </div>
     </div>
   </div>
