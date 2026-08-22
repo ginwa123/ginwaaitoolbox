@@ -3734,6 +3734,89 @@ export async function reorderAgentKnowledge(
   )
 }
 
+// ─── Agent System Prompt (Migration 080) ────────────────────────────────
+
+export interface AgentSystemPromptRow {
+  id: string
+  agent_id: string
+  title: string
+  content: string
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Get agent + knowledge + tools + system prompts for a workspace_item.
+ * Returns the 4 sections AgentView needs in one round-trip.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/agent
+ */
+export async function getAgentWithSystemPrompts(
+  workspaceId: string,
+  itemId: string,
+): Promise<{
+  agent: Agent
+  knowledge: AgentKnowledgeRow[]
+  tools: string[]
+  system_prompts: AgentSystemPromptRow[]
+}> {
+  return await apiFetch<{
+    agent: Agent
+    knowledge: AgentKnowledgeRow[]
+    tools: string[]
+    system_prompts: AgentSystemPromptRow[]
+  }>(`/workspaces/${workspaceId}/items/${itemId}/agent`)
+}
+
+/**
+ * Add a named system-prompt block to an agent. `content` is required
+ * (non-empty after trim); `title` optional ('' = untitled).
+ *
+ * POST /api/agents/:agentId/system_prompt
+ */
+export async function addAgentSystemPrompt(
+  agentId: string,
+  title: string,
+  content: string,
+): Promise<AgentSystemPromptRow> {
+  return await apiFetch<AgentSystemPromptRow>(
+    `/agents/${agentId}/system_prompt`,
+    { method: 'POST', body: { title, content } },
+  )
+}
+
+export async function updateAgentSystemPrompt(
+  agentId: string,
+  promptId: string,
+  updates: { title?: string; content?: string },
+): Promise<AgentSystemPromptRow> {
+  return await apiFetch<AgentSystemPromptRow>(
+    `/agents/${agentId}/system_prompt/${promptId}`,
+    { method: 'PATCH', body: updates },
+  )
+}
+
+export async function deleteAgentSystemPrompt(
+  agentId: string,
+  promptId: string,
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agents/${agentId}/system_prompt/${promptId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function reorderAgentSystemPrompts(
+  agentId: string,
+  orderedIds: string[],
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agents/${agentId}/system_prompt/reorder`,
+    { method: 'PATCH', body: { ordered_ids: orderedIds } },
+  )
+}
+
 /**
  * Get the canonical tool registry. The Tools panel renders
  * checkboxes from this list. Sourced from the runtime's

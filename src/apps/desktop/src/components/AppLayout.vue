@@ -18,6 +18,7 @@ import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
 import AgentChatDialog from './dialogs/AgentChatDialog.vue'
 import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
+import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
@@ -1039,6 +1040,9 @@ watch(
 const agentChatDialogOpen = ref(false)
 const agentKnowledge = ref<api.AgentKnowledgeRow[]>([])
 const agentTools = ref<string[]>([])
+// Agent system prompts (Migration 080) — same plain-ref pattern as
+// knowledge above; the GET /agent bundle carries them in one round-trip.
+const agentSystemPrompts = ref<api.AgentSystemPromptRow[]>([])
 
 // FIX (agent-tools-fetch-on-view): the previous code only fetched
 // `agentTools` inside the `activeTask` watcher. When the user landed
@@ -1060,6 +1064,9 @@ async function loadAgentData(agentItemId: string) {
     const data = await api.getAgent(wsId, agentItemId)
     agentKnowledge.value = data.knowledge
     agentTools.value = data.tools
+    // Migration 080: the bundle now carries system_prompts too. Guard
+    // for older binaries that don't include the field yet.
+    agentSystemPrompts.value = data.system_prompts ?? []
   } catch (e) {
     console.error('[AppLayout] failed to load agent:', e)
   }
@@ -1203,6 +1210,94 @@ async function handleAgentKnowledgeSave(
     agentKnowledgeDetailBusy.value = false
   }
 }
+// ─── Agent System Prompt dialog (Migration 080, plan 2026-08-21-agent-system-prompt) ──
+// Same open/busy/error pattern as the knowledge dialogs above. One
+// dialog serves add (row=null) and edit (row set).
+const agentSystemPromptDialogOpen = ref(false)
+const agentSystemPromptRow = ref<api.AgentSystemPromptRow | null>(null)
+const agentSystemPromptBusy = ref(false)
+const agentSystemPromptError = ref<string | null>(null)
+
+function handleAgentAddSystemPrompt() {
+  if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
+  agentSystemPromptRow.value = null
+  agentSystemPromptError.value = null
+  agentSystemPromptDialogOpen.value = true
+}
+
+function handleAgentEditSystemPrompt(row: api.AgentSystemPromptRow) {
+  if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
+  agentSystemPromptRow.value = row
+  agentSystemPromptError.value = null
+  agentSystemPromptDialogOpen.value = true
+}
+
+function closeAgentSystemPromptDialog() {
+  agentSystemPromptDialogOpen.value = false
+  agentSystemPromptError.value = null
+}
+
+async function handleAgentSystemPromptCreate(title: string, content: string) {
+  const itemId = activeWorkspaceItem.value?.id
+  if (!itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  agentSystemPromptBusy.value = true
+  agentSystemPromptError.value = null
+  try {
+    // agents.id == workspace_item_id (Migration 076 spec D3).
+    const newRow = await api.addAgentSystemPrompt(itemId, title, content)
+    // Optimistic append — same rationale as knowledge create.
+    agentSystemPrompts.value = [...agentSystemPrompts.value, newRow]
+    closeAgentSystemPromptDialog()
+  } catch (e) {
+    agentSystemPromptError.value =
+      e instanceof Error ? e.message : 'Failed to add system prompt'
+    // Keep the dialog open so the user can see + retry.
+  } finally {
+    agentSystemPromptBusy.value = false
+  }
+}
+
+async function handleAgentSystemPromptSave(
+  promptId: string,
+  updates: { title: string; content: string },
+) {
+  const itemId = activeWorkspaceItem.value?.id
+  if (!itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  agentSystemPromptBusy.value = true
+  agentSystemPromptError.value = null
+  try {
+    const updated = await api.updateAgentSystemPrompt(itemId, promptId, updates)
+    // Replace in place so list order is preserved.
+    agentSystemPrompts.value = agentSystemPrompts.value.map((p) =>
+      p.id === promptId ? updated : p,
+    )
+    closeAgentSystemPromptDialog()
+  } catch (e) {
+    agentSystemPromptError.value =
+      e instanceof Error ? e.message : 'Failed to update system prompt'
+  } finally {
+    agentSystemPromptBusy.value = false
+  }
+}
+
+async function handleAgentRemoveSystemPrompt(promptId: string) {
+  const itemId = activeWorkspaceItem.value?.id
+  if (!itemId || activeWorkspaceItem.value?.item_type !== 'agent') return
+
+  // Optimistic remove + restore on failure.
+  const previous = agentSystemPrompts.value
+  agentSystemPrompts.value = previous.filter((p) => p.id !== promptId)
+  try {
+    await api.deleteAgentSystemPrompt(itemId, promptId)
+  } catch (e) {
+    // Restore the row so the user can retry.
+    agentSystemPrompts.value = previous
+    console.error('[AppLayout] failed to remove system prompt:', e)
+  }
+}
+
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
   if (!activeWorkspaceItem.value) return
   const agentId = activeWorkspaceItem.value.id
@@ -2388,12 +2483,16 @@ defineExpose({
         :item-id="activeWorkspaceItem.id"
         :knowledge="agentKnowledge"
         :tools="agentTools"
+        :system-prompts="agentSystemPrompts"
         @add-knowledge="handleAgentAddKnowledge"
         @remove-knowledge="handleAgentRemoveKnowledge"
         @edit-knowledge="handleAgentEditKnowledge"
         @toggle-tool="handleAgentToggleTool"
         @toggle-tools-bulk="(names, enabled) => handleAgentToggleToolsBulk(names, enabled)"
         @new-chat="handleAgentNewChat"
+        @add-system-prompt="handleAgentAddSystemPrompt"
+        @edit-system-prompt="handleAgentEditSystemPrompt"
+        @remove-system-prompt="handleAgentRemoveSystemPrompt"
       />
       <AgentChatDialog
         v-if="
@@ -2439,6 +2538,21 @@ defineExpose({
         :error="agentKnowledgeDetailError"
         @close="closeAgentKnowledgeDetailDialog"
         @save="handleAgentKnowledgeSave"
+      />
+      <!--
+        Agent System Prompt dialog (Migration 080) — one dialog serves
+        add (row=null) and edit (row set). Same show/busy/error pattern
+        as the knowledge dialogs above.
+      -->
+      <AgentSystemPromptDialog
+        v-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'agent'"
+        :show="agentSystemPromptDialogOpen"
+        :row="agentSystemPromptRow"
+        :busy="agentSystemPromptBusy"
+        :error="agentSystemPromptError"
+        @close="closeAgentSystemPromptDialog"
+        @create="handleAgentSystemPromptCreate"
+        @save="handleAgentSystemPromptSave"
       />
       <!--
         Standard task chat (folder / memory / chat items — anything
