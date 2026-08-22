@@ -1196,11 +1196,29 @@ async function handleAgentKnowledgeSave(
     )
     closeAgentKnowledgeDetailDialog()
   } catch (e) {
+    // ApiError carries the backend's JSON body (e.g. {"error":"..."}).
+    // Surface the specific message, not the generic "HTTP 400 Bad
+    // Request" — the user needs to know WHAT was rejected.
     agentKnowledgeDetailError.value =
-      e instanceof Error ? e.message : 'Failed to update knowledge'
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to update knowledge'
     // Keep the dialog open so the user can see + retry.
   } finally {
     agentKnowledgeDetailBusy.value = false
+  }
+}
+
+/** Extract the `error` field from a JSON error body, if present. */
+function tryParseErrorBody(body: string): string | null {
+  try {
+    const obj = JSON.parse(body)
+    if (obj && typeof obj === 'object' && typeof obj.error === 'string') {
+      return obj.error
+    }
+    return null
+  } catch {
+    return null
   }
 }
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
