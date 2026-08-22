@@ -1053,31 +1053,48 @@ jobs:
             Write-Error "smoke test: $DesktopBin missing"
             exit 1
           }
-          $LogPath = Join-Path $env:TEMP 'desktop-smoke.log'
-          if (Test-Path -LiteralPath $LogPath) {
-            Remove-Item -LiteralPath $LogPath -Force
+          # Start-Process REFUSES to redirect stdout+stderr into the SAME
+          # file ("This command cannot be run because RedirectStandardOutput
+          # and RedirectStandardError are same") — unlike the bash idiom
+          # `> log 2>&1` used by the non-Windows variant of this step.
+          # The 'smoke:' line comes from std.log.info -> STDERR, so both
+          # streams must be captured: use two files, merge on read.
+          $OutLog = Join-Path $env:TEMP 'desktop-smoke.out.log'
+          $ErrLog = Join-Path $env:TEMP 'desktop-smoke.err.log'
+          foreach ($LogCandidate in @($OutLog, $ErrLog)) {
+            if (Test-Path -LiteralPath $LogCandidate) {
+              Remove-Item -LiteralPath $LogCandidate -Force
+            }
           }
           $proc = Start-Process -FilePath $DesktopBin `
             -ArgumentList '--smoke-test' `
             -PassThru `
-            -RedirectStandardOutput $LogPath `
-            -RedirectStandardError $LogPath `
+            -RedirectStandardOutput $OutLog `
+            -RedirectStandardError $ErrLog `
             -NoNewWindow
+          # Cache the process handle BEFORE waiting. Without this,
+          # $proc.ExitCode reads back as $null (classic .NET Process
+          # gotcha: the full handle is only acquired lazily) and the
+          # ExitCode check below fires spuriously.
+          $null = $proc.Handle
           $completed = $proc.WaitForExit(10000)
           if (-not $completed) {
             try { $proc.Kill() } catch { }
             Write-Error "$DesktopBin --smoke-test exceeded 10s watchdog"
-            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
             exit 1
           }
           if ($proc.ExitCode -ne 0) {
             Write-Error "$DesktopBin --smoke-test exited $($proc.ExitCode)"
-            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
             exit $proc.ExitCode
           }
-          if (-not (Select-String -Path $LogPath -Pattern 'smoke:' -Quiet)) {
+          if (-not (Select-String -Path $OutLog,$ErrLog -Pattern 'smoke:' -Quiet -ErrorAction SilentlyContinue)) {
             Write-Error 'expected ''smoke:'' log line missing'
-            Get-Content -LiteralPath $LogPath -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
+            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
             exit 1
           }
           Write-Host '✓ nalar-desktop.exe --smoke-test passed'
