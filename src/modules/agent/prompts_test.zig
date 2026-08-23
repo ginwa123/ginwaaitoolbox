@@ -1755,3 +1755,84 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
     try std.testing.expect(contains(prompt, "verbatim"));
 }
 
+// -------------------------------------------------------------------------
+// Regression: build_agent_prompt was moved from
+// src/modules/agent/prompts.zig into
+// src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig
+// on 2026-08-23 (plan:
+// docs/superpowers/plans/2026-08-23-move-build-agent-prompt-body.md).
+// This test pins the byte-level ordering of the rendered prompt so any
+// future re-ordering fails closed. Substrings are chosen to be stable
+// across rephrasings of section prose: we assert the HEADER for each
+// block is present and that the relative ordering matches the
+// `PROMPT_SECTIONS` declaration order + the post-loop block order.
+// -------------------------------------------------------------------------
+
+test "build_agent_prompt regression: section ordering matches PROMPT_SECTIONS after 2026-08-23 move" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // One tool so `## Available Tools` is rendered. No `list_skills` so
+    // the Skills listing is gated out (we don't want to depend on the
+    // host filesystem). Empty environment so no Global Knowledge.
+    const tools = [_]tool_models.AgentTool{
+        .{
+            .type = "function",
+            .function = .{
+                .name = "bash",
+                .description = "run shell command",
+                .parameters = .{
+                    .type = "object",
+                    .properties = &[_]tool_models.ToolProperty{},
+                    .required = &[_][]const u8{},
+                },
+            },
+        },
+    };
+
+    const prompt = try prompts_mod.build_agent_prompt(
+        alloc,
+        io,
+        "",
+        "",
+        "",
+        "",
+        // activeAgentContent
+        "marker-active-agent-section-content",
+        &tools,
+        "",
+        null,
+        "",
+        "",
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+
+    // Stable substring anchors, in order:
+    //   1. PROMPT_SECTIONS lead — universal rules
+    //   2. Tool listing (no skills listing, no global knowledge)
+    //   3. Active agent content
+    //   4. OS info (always last; cwd/workspace are skipped because empty)
+    const anchors = [_][]const u8{
+        // PROMPT_SECTIONS[0] = UniversalRules
+        "## Universal Rules",
+        // Tool listing
+        "## Available Tools",
+        // Active agent block
+        "## Your Active Agent Configuration",
+        // Active agent marker content
+        "marker-active-agent-section-content",
+        // OS info (always last)
+        "**Operating System:**",
+    };
+
+    var cursor: usize = 0;
+    for (anchors) |anchor| {
+        const idx = std.mem.indexOfPos(u8, prompt, cursor, anchor) orelse {
+            std.debug.print("\nmissing anchor after cursor={d}: {s}\nfull prompt:\n{s}\n", .{ cursor, anchor, prompt });
+            return error.MissingAnchor;
+        };
+        cursor = idx + anchor.len;
+    }
+}
