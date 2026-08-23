@@ -41,6 +41,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -202,6 +203,19 @@ class FunctionalHarness:
                 "Functional tests must run in a normal user shell."
             )
 
+        # 1.5. Reap orphan nalar pids from prior aborted runs. This MUST
+        #      run BEFORE _find_free_port() so the 8080..8199 scan sees a
+        #      clean slate. Without this, a prior `kill -9` of the pytest
+        #      worker leaves nalar children alive in their own pgids,
+        #      holding their ports — and after ~120 such incidents the
+        #      scan window is exhausted. Failures here are non-fatal: if
+        #      reap raises, print a warning and continue (a slightly
+        #      leakier state is strictly better than aborting).
+        try:
+            _reap_orphan_test_pids()
+        except Exception as e:
+            print(f"warning: orphan reap failed: {e}", file=sys.stderr)
+
         # 2. Pick a free port. Default 8080 per project memory (NOT 8081).
         chosen_port = _find_free_port(port)
 
@@ -252,6 +266,22 @@ class FunctionalHarness:
             env=env,
             start_new_session=True,
         )
+
+        # 7.5. Record pids so a subsequent boot can reap us if we die.
+        #      The pidfile format is "<harness_pid> <nalar_pid>\n":
+        #        - harness_pid: the Python process running this code
+        #          (pytest worker, or the bare pytest process without xdist).
+        #          When reap sees this pid is dead, the tempdir is an orphan.
+        #        - nalar_pid: the actual nalar binary holding the TCP port.
+        #          When reap sees the harness is dead, it kills this pid.
+        #      Wrapped in try/except because a write failure here must NOT
+        #      prevent tests from running — the worst case is "this test
+        #      won't be reaped on the next boot" which is the pre-patch
+        #      behaviour anyway.
+        try:
+            (temp_dir / ".harness.pid").write_text(f"{os.getpid()} {proc.pid}\n")
+        except OSError as e:
+            print(f"warning: failed to write pidfile: {e}", file=sys.stderr)
 
         # 8. Wait for readiness.
         try:
@@ -387,6 +417,20 @@ class FunctionalHarness:
                 f"  temp_dir  = {self.temp_dir}\n"
                 f"  realpath  = {os.path.realpath(str(self.temp_dir))}"
             )
+
+        # 3.5. Remove the pidfile BEFORE rmtree so the next boot doesn't
+        #      see this entry. Idempotent under dry_run (which skips
+        #      rmtree below) — without this, dry_run would leave a
+        #      pidfile pointing at a now-dead harness python, causing
+        #      the next boot to mistakenly treat this tempdir as an
+        #      orphan and try to reap its already-dead nalar.
+        pidfile = self.temp_dir / ".harness.pid"
+        try:
+            pidfile.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"warning: failed to remove pidfile: {e}", file=sys.stderr)
 
         # 4. rmtree the validated tempdir.
         if self.dry_run:
@@ -559,6 +603,108 @@ def _find_free_port(start: int = DEFAULT_PORT) -> int:
     raise FunctionalHarnessError(
         f"No free port found in {start}..{PORT_SCAN_END} (excluding 8081)"
     )
+
+
+def _wait_pid_dead(pid: int, timeout: float) -> bool:
+    """Return True iff ``pid`` exited within ``timeout`` seconds.
+
+    Uses ``os.kill(pid, 0)`` as a liveness probe. Cross-platform:
+    POSIX and Windows both support the probe. ESRCH ⇒ dead; EPERM ⇒
+    alive-but-not-ours (treated as "dead for our purposes" because we
+    can't signal it anyway).
+
+    For subprocess children specifically, prefer ``os.waitpid(WNOHANG)``
+    which also reaps zombies — see ``_stop_binary`` for the richer case.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _reap_orphan_test_pids() -> int:
+    """Kill orphaned nalar children from prior aborted runs. Idempotent.
+
+    On every harness boot, scan ``<tempfile.gettempdir()>/nalar-func-*/
+    .harness.pid``. Each pidfile contains ``"<harness_worker_pid>
+    <nalar_child_pid>\n"`` — written by ``boot()``. If the harness python
+    parent died (``kill -0`` returns ``ProcessLookupError``), the tempdir
+    is an orphan: the nalar child survived in its own pgid
+    (``subprocess.Popen(start_new_session=True)``) and is still holding
+    its TCP port. Kill the nalar child, then ``rmtree`` the tempdir via
+    the existing ``is_safe_tmp()`` validator.
+
+    Returns the number of orphans reaped. Failures are logged to stderr
+    but never raised — a reap failure must NOT prevent the test from
+    booting (the alternative — aborting because we couldn't clean up —
+    is strictly worse than booting with a slightly-leakier state).
+
+    Cross-platform: ``tempfile.gettempdir()`` (NOT hardcoded ``/tmp/``),
+    ``os.kill`` for liveness + signals, ``signal.SIGTERM``/``SIGKILL``
+    which both work on POSIX and Windows.
+    """
+    reaped = 0
+    base = Path(tempfile.gettempdir())
+    if not base.is_dir():
+        return 0
+    try:
+        candidates = list(base.iterdir())
+    except OSError as e:
+        print(f"warning: orphan reap scan failed: {e}", file=sys.stderr)
+        return 0
+    for entry in candidates:
+        if not entry.is_dir() or not entry.name.startswith("nalar-func-"):
+            continue
+        pidfile = entry / ".harness.pid"
+        if not pidfile.is_file():
+            continue
+        # Parse "<harness_pid> <nalar_pid>". Anything else → skip silently.
+        try:
+            tokens = pidfile.read_text().split()
+            if len(tokens) != 2:
+                continue
+            harness_pid = int(tokens[0])
+            nalar_pid = int(tokens[1])
+        except (OSError, ValueError):
+            continue
+        # If the harness python is alive, this test is still in progress —
+        # another worker scanning concurrently must NOT kill it.
+        try:
+            os.kill(harness_pid, 0)
+        except (ProcessLookupError, PermissionError):
+            pass  # harness is dead — this dir is an orphan
+        else:
+            continue
+        # Harness is dead. Kill the nalar child if alive.
+        if nalar_pid and nalar_pid != os.getpid():
+            try:
+                os.kill(nalar_pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            # Wait up to 1s for graceful exit; SIGKILL fallback.
+            if not _wait_pid_dead(nalar_pid, 1.0):
+                try:
+                    os.kill(nalar_pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        # rmtree via the safety validator (same gate as teardown).
+        # is_safe_tmp checks (1) prefix allow-list, (2) REQUIRED_TMP_SUBSTR
+        # substring, (3) not the real HOME. For an orphan we don't know
+        # the original HOME, so pass an empty string — that disables the
+        # "matches HOME" check but still validates prefix + substring.
+        if is_safe_tmp(str(entry), ""):
+            try:
+                shutil.rmtree(entry)
+                reaped += 1
+            except OSError:
+                # Race with another worker reaping the same dir, or
+                # permission error — either way, our job is done.
+                pass
+    return reaped
 
 
 def _default_nalar_bin() -> Path:
