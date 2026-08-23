@@ -154,13 +154,16 @@ function scroll(el: HTMLElement, top: number) {
 /**
  * Give the rendered children fake offsetHeights: `tallPx` for items
  * above `anchorIndex`, `estimatePx` for the rest. Returns the expected
- * compensation total for the above-anchor set.
+ * compensation total for the above-anchor set. Pass `onlyIndex` to
+ * make exactly ONE above-anchor item tall (the "single long message"
+ * case); the rest keep the estimate.
  */
 function mockChildHeights(
   el: HTMLElement,
   anchorIndex: number,
   tallPx: number,
   estimatePx: number,
+  onlyIndex?: number,
 ): number {
   const content = el.querySelector('.virtual-scroller-content')
   if (!content) throw new Error('.virtual-scroller-content not found')
@@ -168,9 +171,9 @@ function mockChildHeights(
   for (const child of Array.from(content.children)) {
     const idx = Number((child as HTMLElement).getAttribute('data-vs-index'))
     const isAbove = idx < anchorIndex
-    const h = isAbove ? tallPx : estimatePx
+    const h = isAbove && (onlyIndex === undefined || idx === onlyIndex) ? tallPx : estimatePx
     Object.defineProperty(child, 'offsetHeight', { value: h, configurable: true })
-    if (isAbove) expectedShift += tallPx - estimatePx
+    if (isAbove && h !== estimatePx) expectedShift += h - estimatePx
   }
   return expectedShift
 }
@@ -236,6 +239,46 @@ describe('VirtualScroller measurement anchor compensation', () => {
     // Heights were recorded (model updated) but scrollTop untouched —
     // endPreserve owns scroll restoration during prepends.
     expect(el.scrollTop).toBe(before)
+    wrapper.unmount()
+  })
+
+  it('corrects a tall item rendering above the viewport PRE-PAINT (no timer advance)', async () => {
+    // The residual jump (task_1787496087806_6 follow-up): when ONE long
+    // message scrolls into the top buffer, Vue renders it in one commit
+    // — topSpacer shrinks by the 64px estimate while ~3000px of real
+    // content takes its place → content under the viewport shifts
+    // immediately at RENDER time. The debounced measureItems only
+    // compensates ≤50ms LATER, so the user sees a down-up bounce.
+    //
+    // Fix contract: a watcher on rendered-range change must run
+    // measureItems inside nextTick (pre-paint), so render + compensation
+    // land in the SAME frame. This test asserts the correction WITHOUT
+    // advancing timers — if compensation needed the 50ms debounce, this
+    // fails.
+    const { wrapper, el } = mountScroller(255)
+    await nextTick()
+
+    scroll(el, 6400) // anchor = item 100
+    await nextTick()
+    vi.advanceTimersByTime(60) // flush initial measure pass
+
+    const before = el.scrollTop
+
+    // Simulate scrolling UP so a new tall item enters the TOP buffer:
+    // move the viewport up by exactly one estimate-slot (64px). The
+    // visibleRange recomputes; item 99 renders above the viewport with
+    // mocked offsetHeight=3000 (the "one long message"). All other
+    // buffer items keep the 64px estimate.
+    mockChildHeights(el, 100, 3000, 64, 99)
+    el.scrollTop = 6400 - 64
+    el.dispatchEvent(new Event('scroll'))
+    await nextTick() // Vue commits the new window incl. item 99
+
+    // NO vi.advanceTimersByTime here — the correction must already be
+    // applied synchronously within the pre-paint tick. Final position =
+    // user's own −64px scroll (preserved) + item 99's growth (+2936)
+    // (compensated) = 6336 + 2936.
+    expect(el.scrollTop).toBe(6400 - 64 + (3000 - 64))
     wrapper.unmount()
   })
 })
