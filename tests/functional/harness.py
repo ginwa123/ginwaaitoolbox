@@ -588,6 +588,16 @@ def _find_free_port(start: int = DEFAULT_PORT) -> int:
 
     Scans [start, PORT_SCAN_END]. Never returns 8081 (the always-running
     dev port per project memory). Raises if no port is free.
+
+    Uses ``SO_REUSEADDR`` so the scan can pick ports in TIME_WAIT state.
+    After the harness closes its probe socket, nalar (which also sets
+    ``SO_REUSEADDR`` on its listener — see
+    ``src/modules/custom_http_server/src/http_server.zig:201 setReuseAddr``)
+    can bind the same port despite lingering server-side TIME_WAITs from
+    previous test runs. Without ``SO_REUSEADDR``, rapid test runs would
+    saturate the 120-port scan window with TIME_WAIT entries and every
+    subsequent test would error with ``No free port found in
+    8080..8199 (excluding 8081)`` until the TIME_WAITs expire (~60s).
     """
     if start == 8081:
         start = 8082
@@ -595,6 +605,7 @@ def _find_free_port(start: int = DEFAULT_PORT) -> int:
         if port == 8081:
             continue
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("127.0.0.1", port))
                 return port

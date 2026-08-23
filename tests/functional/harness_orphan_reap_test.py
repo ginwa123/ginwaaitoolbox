@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -254,9 +255,10 @@ def test_reap_skips_empty_pidfile() -> None:
 def built_nalar(tmp_path: Path) -> Path:
     """Path to a fake-but-executable nalar binary that boots on the given port.
 
-    The fake binary binds the requested port, prints '{\"status\":\"ok\"}' on
-    /health, and sleeps forever — sufficient for the boot pidfile test which
-    only needs the harness to reach the post-Popen state.
+    The fake binary binds the requested port (with SO_REUSEADDR so it can
+    bind TIME_WAIT ports just like real nalar), prints '{"status":"ok"}'
+    on /health, and sleeps forever — sufficient for the boot pidfile test
+    which only needs the harness to reach the post-Popen state.
     """
     port_env_file = tmp_path / "port"
     fake = tmp_path / "fake-nalar"
@@ -275,7 +277,9 @@ def built_nalar(tmp_path: Path) -> Path:
         "        else:\n"
         "            self.send_response(404); self.end_headers()\n"
         "    def log_message(self, *a, **k): pass\n"
-        "with socketserver.TCPServer(('127.0.0.1', port), H) as srv:\n"
+        "class ReusableServer(socketserver.TCPServer):\n"
+        "    allow_reuse_address = True\n"
+        "with ReusableServer(('127.0.0.1', port), H) as srv:\n"
         "    srv.serve_forever()\n"
     )
     fake.chmod(0o755)
@@ -346,3 +350,74 @@ def test_teardown_dry_run_removes_pidfile(
     # Manual cleanup since dry_run skipped rmtree.
     import shutil
     shutil.rmtree(h.temp_dir)
+
+
+# ============================================================================
+# Task 4: TIME_WAIT saturation regression (find_free_port uses SO_REUSEADDR)
+# ============================================================================
+
+
+def test_find_free_port_picks_time_wait_port() -> None:
+    """_find_free_port uses SO_REUSEADDR so it can scan past TIME_WAIT.
+
+    Regression for the 2026-08-23 failure where rapid test runs saturated
+    the 8080..8199 scan window with server-side TIME_WAITs (last ~60s),
+    causing every subsequent test to error with 'No free port found'.
+    The harness's scan socket now sets SO_REUSEADDR — the same option
+    nalar's listener already uses — so the scan can pick ports in
+    TIME_WAIT state and nalar can subsequently bind them.
+    """
+    from harness import _find_free_port, DEFAULT_PORT, PORT_SCAN_END
+
+    # Find a port that's currently FREE on this host (avoid the dev's 8081
+    # and don't assume 8080 is free — earlier tests may have left it bound).
+    target_port = None
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        for p in range(DEFAULT_PORT, PORT_SCAN_END + 1):
+            if p == 8081:
+                continue
+            try:
+                probe.bind(("127.0.0.1", p))
+            except OSError:
+                continue
+            target_port = p
+            break
+    if target_port is None:
+        pytest.skip("no free port available to seed TIME_WAIT")
+
+    # Create a server-side TIME_WAIT on target_port: bind a listener,
+    # accept a connection, close from the server side (which puts the
+    # server's port into TIME_WAIT), then close everything else.
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", target_port))
+    srv.listen(1)
+    cli = socket.socket()
+    cli.connect(("127.0.0.1", target_port))
+    conn, _ = srv.accept()
+    conn.close()  # server-side close → server-side TIME_WAIT on target_port
+    srv.close()
+    cli.close()
+    time.sleep(0.1)  # let the kernel register the TIME_WAIT
+
+    # Sanity: without SO_REUSEADDR, bind() should now FAIL on target_port
+    # (proves we actually have a TIME_WAIT to test against).
+    sanity = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sanity.bind(("127.0.0.1", target_port))
+        sanity.close()
+        pytest.skip(
+            f"could not seed a TIME_WAIT on {target_port} "
+            f"(kernel bind succeeded → no TIME_WAIT)"
+        )
+    except OSError:
+        pass  # expected — TIME_WAIT blocks the bind
+
+    # _find_free_port must succeed despite the TIME_WAIT.
+    # Use target_port as the start so it's the first candidate.
+    found = _find_free_port(start=target_port)
+    assert found == target_port, (
+        f"scan must pick {target_port} despite its TIME_WAIT; "
+        f"got {found} (SO_REUSEADDR not set?)"
+    )
