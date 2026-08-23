@@ -124,6 +124,17 @@ pub const ResponseFormatting =
     \\```
     \\Example: Instead of plain text, use `<plain> Hello, world! </plain>`
     \\
+    \\**HTML Responses:** If you want to show the user a rich rendered
+    \\response, you can use HTML output wrapped inside custom XML tags:
+    \\```
+    \\ <html>
+    \\ [complete raw HTML document or fragment here]
+    \\ </html>
+    \\```
+    \\Example: `<html> <div>hello</div> </html>` renders as a live HTML
+    \\block in the chat. The UI renders this content directly — do NOT
+    \\escape or fence the markup, emit it verbatim.
+    \\
     \\**Thinking Process:** When showing your thought process or reasoning, encapsulate it inside XML thinking tags:
     \\```
     \\<think>
