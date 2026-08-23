@@ -2074,6 +2074,36 @@ const connectSse = () => {
         (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
         (event.tool_call_id ? 'tool' : 'assistant')
 
+      // 2026-08-23 TOOLS-pill-spam fix — the backend re-emits an SSE for
+      // EVERY tool completion via getLatestMessage(), which (backend bug
+      // B1, see handle_tool.zig) often returns the ASSISTANT tool_calls
+      // row instead of the completed tool placeholder. The frontend then
+      // receives several role=assistant events with tool_calls_json per
+      // turn; each became a new assistant group and groupToolNames
+      // rendered a "TOOLS" pill for each — pill spam between tool rows.
+      // Dedupe: skip any event that duplicates an existing message on
+      // role + content + tool_call_id. Genuine repeats from the server
+      // (same DB row re-emitted) collapse to one; distinct rows differ
+      // in tool_call_id and still render.
+      const dup = messages.value.find((m) => {
+        if (m.role !== role) return false
+        if ((m.tool_call_id ?? '') !== (event.tool_call_id ?? '')) return false
+        return m.content === (event.content || '')
+      })
+      if (
+        dup &&
+        // Never drop user echoes here — they're handled by the
+        // optimistic-bubble replacement below.
+        role !== 'user'
+      ) {
+        console.log('[SSE ChatView] duplicate full event skipped', {
+          role,
+          tool_call_id: event.tool_call_id,
+          content_len: (event.content || '').length,
+        })
+        return
+      }
+
       // 2026-08-23 hidden-messages fix — dedupe against the optimistic
       // user bubble pushed in handleFileInputSubmit. The server echo of
       // our own message carries a different id (DB nanos vs local
