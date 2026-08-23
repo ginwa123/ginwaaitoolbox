@@ -40,6 +40,10 @@ const adapted = computed<LlmConfigModalValue>(() => ({
     // used by MCP servers, but LlmConfig requires the fields.
     max_capacity_tokens: null,
     compaction_threshold_percent: null,
+    // Model-thinking knobs (plan 2026-08-23-model-thinking) — not
+    // used by MCP servers, but LlmConfig requires the fields.
+    thinking_budget_tokens: null,
+    reasoning_effort: null,
   },
 }))
 

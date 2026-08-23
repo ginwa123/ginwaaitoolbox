@@ -136,6 +136,12 @@ function syncFromConfig() {
     // next; per-profile wins over top-level.
     max_capacity_tokens: p.max_capacity_tokens ?? null,
     compaction_threshold_percent: p.compaction_threshold_percent ?? null,
+    // Model-thinking knobs (plan 2026-08-23-model-thinking).
+    // Anthropic budget + OpenAI effort. Both default to null when
+    // missing from the persisted profile, so the form can decide
+    // whether to render the row (it does for thinking !== "off").
+    thinking_budget_tokens: p.thinking_budget_tokens ?? null,
+    reasoning_effort: p.reasoning_effort ?? null,
   }))
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
@@ -261,7 +267,7 @@ const mcpServerErrors = ref<{ name?: string; url?: string }>({})
 function startAddProfile() {
   profileModal.value = {
     mode: 'add',
-    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
+    value: { name: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null, thinking_budget_tokens: null, reasoning_effort: null } },
   }
 }
 function startEditProfile(p: ProfileRow) {
@@ -276,6 +282,11 @@ function startEditProfile(p: ProfileRow) {
         // Compaction overrides — plan 2026-07-07-compaction-inline.
         max_capacity_tokens: p.max_capacity_tokens ?? null,
         compaction_threshold_percent: p.compaction_threshold_percent ?? null,
+        // Model-thinking knobs (plan 2026-08-23-model-thinking).
+        // Hydrate from the loaded profile so the form re-opens
+        // with the previously-saved budget / effort.
+        thinking_budget_tokens: p.thinking_budget_tokens ?? null,
+        reasoning_effort: p.reasoning_effort ?? null,
       },
     },
   }
@@ -311,7 +322,7 @@ function startAddSubAgent() {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'top' },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null, thinking_budget_tokens: null, reasoning_effort: null } },
   }
 }
 function startEditSubAgent(sa: SubAgent) {
@@ -330,6 +341,14 @@ function startEditSubAgent(sa: SubAgent) {
         // LlmConfig type.
         max_capacity_tokens: null,
         compaction_threshold_percent: null,
+        // Model-thinking knobs (plan 2026-08-23-model-thinking).
+        // These ARE editable in the LlmConfigForm when the user
+        // opens the sub-agent modal and switches Thinking on — the
+        // modal forwards them through the LlmConfigForm embedded
+        // here. We hydrate from the loaded SubAgent so an edit
+        // returns to the previously-saved values.
+        thinking_budget_tokens: sa.thinking_budget_tokens ?? null,
+        reasoning_effort: sa.reasoning_effort ?? null,
       },
     },
   }
@@ -338,7 +357,7 @@ function startAddSubAgentInProfile(profileName: string) {
   subAgentModal.value = {
     mode: 'add',
     scope: { kind: 'profile', profileName },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null } },
+    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null, thinking_budget_tokens: null, reasoning_effort: null } },
   }
 }
 function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
@@ -357,6 +376,11 @@ function startEditSubAgentInProfile(profileName: string, sa: SubAgent) {
         // currently cascade from the parent profile (Chunk 7).
         max_capacity_tokens: null,
         compaction_threshold_percent: null,
+        // Model-thinking knobs (plan 2026-08-23-model-thinking).
+        // Mirrors the top-level edit mapper above — hydrate from
+        // the loaded SubAgent's values.
+        thinking_budget_tokens: sa.thinking_budget_tokens ?? null,
+        reasoning_effort: sa.reasoning_effort ?? null,
       },
     },
   }

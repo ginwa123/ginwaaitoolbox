@@ -16,6 +16,16 @@ export interface LlmConfig {
    * `null` = no per-profile override (fall through to top-level defaults
    * → built-in 80). Added in plan 2026-07-07-compaction-inline. */
   compaction_threshold_percent: number | null
+  /** Anthropic-only override for `thinking.budget_tokens`. Range
+   * (0, 2_000_000]. `null` = use the 50%-of-max_tokens heuristic
+   * (or Anthropic `type: "adaptive"` when `thinking === "auto"`).
+   * Hidden when `thinking === "off"`. Plan 2026-08-23-model-thinking. */
+  thinking_budget_tokens: number | null
+  /** OpenAI-style reasoning effort (o1 / o3 / GPT-5 / DeepSeek-R1).
+   * `"low" | "medium" | "high" | "auto" | null`. `null` = omit from
+   * the request body (model-default reasoning). Anthropic-style
+   * URLs ignore this field. Plan 2026-08-23-model-thinking. */
+  reasoning_effort: 'low' | 'medium' | 'high' | 'auto' | null
 }
 
 const props = defineProps<{
@@ -160,6 +170,66 @@ function setThresholdOverride(on: boolean) {
         >
           <option value="openai">OpenAI</option>
           <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Thinking budget + Reasoning effort — plan 2026-08-23-model-thinking.
+         Hidden when thinking === "off" because the budget is irrelevant
+         and the effort dropdown is meaningless when extended reasoning
+         is disabled. -->
+    <div
+      v-if="modelValue.thinking !== 'off'"
+      class="grid grid-cols-2 gap-3"
+    >
+      <div>
+        <label :class="labelBase" :style="labelStyle">
+          Thinking budget tokens
+          <span class="block text-xs mt-0.5" :style="helperStyle">
+            Anthropic only. Min 1024. Null = heuristic / adaptive.
+          </span>
+        </label>
+        <input
+          :value="modelValue.thinking_budget_tokens ?? ''"
+          @input="(e) => {
+            const raw = (e.target as HTMLInputElement).value
+            if (raw === '') {
+              update('thinking_budget_tokens', null)
+            } else {
+              const parsed = parseInt(raw, 10)
+              update('thinking_budget_tokens', Number.isFinite(parsed) ? Math.max(1024, parsed) : null)
+            }
+          }"
+          type="number"
+          min="1024"
+          step="512"
+          placeholder="auto"
+          :class="inputBase"
+          :style="inputStyle()"
+          data-testid="thinking-budget-input"
+        />
+      </div>
+      <div>
+        <label :class="labelBase" :style="labelStyle">
+          Reasoning effort
+          <span class="block text-xs mt-0.5" :style="helperStyle">
+            OpenAI only (o1/o3/GPT-5/DeepSeek-R1).
+          </span>
+        </label>
+        <select
+          :value="modelValue.reasoning_effort ?? ''"
+          @change="(e) => {
+            const raw = (e.target as HTMLSelectElement).value
+            update('reasoning_effort', raw === '' ? null : raw as 'low' | 'medium' | 'high' | 'auto')
+          }"
+          :class="inputBase"
+          :style="inputStyle()"
+          data-testid="reasoning-effort-select"
+        >
+          <option value="">Auto</option>
+          <option value="low">Low</option>
+          <option value="medium">Medium</option>
+          <option value="high">High</option>
         </select>
       </div>
     </div>

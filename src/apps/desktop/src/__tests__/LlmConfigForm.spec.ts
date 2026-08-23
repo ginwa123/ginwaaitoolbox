@@ -13,6 +13,9 @@ const baseValue = {
   // Plan 2026-07-07-compaction-inline: per-profile compaction overrides.
   max_capacity_tokens: null as number | null,
   compaction_threshold_percent: null as number | null,
+  // Plan 2026-08-23-model-thinking: model-thinking knobs.
+  thinking_budget_tokens: null as number | null,
+  reasoning_effort: null as 'low' | 'medium' | 'high' | 'auto' | null,
 }
 
 describe('LlmConfigForm', () => {
@@ -21,7 +24,9 @@ describe('LlmConfigForm', () => {
     expect(wrapper.find('input[placeholder="MiniMax-M2.7"]').exists()).toBe(true)
     expect(wrapper.find('input[placeholder="https://api.minimax.io/v1"]').exists()).toBe(true)
     const selects = wrapper.findAll('select')
-    expect(selects.length).toBe(3) // thinking, temperature, url_style
+    // thinking, temperature, url_style, reasoning_effort — 4 selects.
+    // (plan 2026-08-23-model-thinking added reasoning_effort.)
+    expect(selects.length).toBe(4)
   })
 
   it('hides the API key by default (type=password)', () => {
