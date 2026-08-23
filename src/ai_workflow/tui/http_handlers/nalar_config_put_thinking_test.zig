@@ -42,9 +42,13 @@ test "PUT handler rejects thinking_budget_tokens=0 with InvalidThinkingBudgetTok
     defer allocator.free(source);
 
     // The handler must guard against t == 0 (which would violate
-    // the Anthropic 1024 floor — see plan 2026-08-23-model-thinking).
-    if (std.mem.indexOf(u8, source, "if (t == 0 or t > 2_000_000) return error.InvalidThinkingBudgetTokens;") == null) {
-        std.debug.print("!! PUT handler doesn't reject t == 0 !!\n", .{});
+    // the Anthropic 1024 floor). We assert the source contains the
+    // bounds check + the descriptive 400-body literal — the inline
+    // `res.jsonResponse(.status_code = 400, ...)` pattern was the
+    // better fit than `return error.InvalidThinkingBudgetTokens`
+    // (which the gserverz layer maps to a generic 500).
+    if (std.mem.indexOf(u8, source, "t == 0 or t > 2_000_000") == null) {
+        std.debug.print("!! PUT handler doesn't enforce 0 < budget <= 2_000_000 !!\n", .{});
         return error.ZeroBudgetValidationMissing;
     }
 }
@@ -57,6 +61,35 @@ test "PUT handler rejects thinking_budget_tokens > 2_000_000 with InvalidThinkin
     if (std.mem.indexOf(u8, source, "t > 2_000_000") == null) {
         std.debug.print("!! PUT handler doesn't enforce upper bound 2_000_000 !!\n", .{});
         return error.UpperBoundValidationMissing;
+    }
+}
+
+test "PUT handler returns 400 + descriptive body for InvalidThinkingBudgetTokens" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The handler must surface the error as a 400 with a body that
+    // mentions the bad field name. This is the user-facing wire
+    // contract — the frontend shows this string in a toast.
+    if (std.mem.indexOf(u8, source, "status_code = 400") == null) {
+        std.debug.print("!! PUT handler doesn't return 400 for bad budget !!\n", .{});
+        return error.BudgetFourHundredMissing;
+    }
+    if (std.mem.indexOf(u8, source, "InvalidThinkingBudgetTokens:") == null) {
+        std.debug.print("!! PUT handler doesn't include 'InvalidThinkingBudgetTokens:' in body !!\n", .{});
+        return error.BudgetBodyMissing;
+    }
+}
+
+test "PUT handler returns 400 + descriptive body for InvalidReasoningEffort" {
+    const allocator = std.testing.allocator;
+    const source = try readSource(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "InvalidReasoningEffort:") == null) {
+        std.debug.print("!! PUT handler doesn't include 'InvalidReasoningEffort:' in body !!\n", .{});
+        return error.EffortBodyMissing;
     }
 }
 
