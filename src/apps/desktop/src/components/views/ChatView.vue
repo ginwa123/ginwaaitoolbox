@@ -126,6 +126,14 @@ interface Message {
   parameters?: string,
   is_input?: boolean,
   is_output?: boolean,
+  /**
+   * 2026-08-23 hidden-messages fix — thinking models' chain-of-thought
+   * returned by the LLM and stored in `llm_history.reasoning_content`.
+   * Populated by loadChatHistory (REST) and the SSE `full` handler.
+   * Rendered as a collapsible section in the assistant bubble; also
+   * keeps reasoning-only turns alive in filteredMessages.
+   */
+  reasoning_content?: string,
 }
 
 // Escape HTML to prevent XSS
@@ -1131,11 +1139,42 @@ const stopGitStatusPoll = () => {
   }
 }
 
-// Filter out empty messages for display (check stripped content)
+// Filter out empty messages for display (check stripped content).
+//
+// 2026-08-23 hidden-messages fix — three exemptions ADDED to the
+// original "drop if stripThinkingTags(content) is empty" rule:
+//
+//   1. `image_urls` populated → KEEP. A user message with attached
+//      images but no text (content='') was permanently invisible:
+//      it was dropped HERE, before hasBubbleContent's image check
+//      (line ~1289) could ever see it. The images exist; show them.
+//
+//   2. `role === 'tool'` → KEEP. Tool result rows are rendered by
+//      structured components (ReadFile, Bash, ...) that parse their
+//      own envelope from content — several tools legitimately carry
+//      whitespace-only or empty raw content while still rendering a
+//      meaningful card. Dropping them here broke the tool sequence.
+//
+//   3. `reasoning_content` present → KEEP. Thinking models can emit
+//      reasoning with an empty final text body; the message is not
+//      empty, and the assistant bubble now renders a collapsible
+//      reasoning section for it (see template, assistant branch).
 const filteredMessages = computed(() =>
   messages.value.filter((m) => {
     // Always keep tool_calls messages even if content is only thinking tags
     if (m.finish_reason === 'tool_calls') return true
+    // 2026-08-23: image-only user messages must survive the filter —
+    // hasBubbleContent renders their images downstream.
+    if ((m.image_urls?.length ?? 0) > 0) return true
+    // 2026-08-23: tool results render via dedicated components; never
+    // drop them on empty stripped content.
+    if (m.role === 'tool') return true
+    // 2026-08-23: thinking-only assistant turns (reasoning_content set,
+    // final text empty) still have visible content once the reasoning
+    // section renders.
+    if (m.role === 'assistant' && m.reasoning_content && m.reasoning_content.trim() !== '') {
+      return true
+    }
     const stripped = stripThinkingTags(m.content)
     return stripped && stripped.trim() !== ''
   }),
@@ -1285,18 +1324,30 @@ const hasVisibleContent = (m: Message): boolean => {
 // Check if a message group has any visible content for its bubble.
 // Hides empty bubbles (e.g., a user message with no text and no images,
 // or an assistant message with no content and no tool-call header).
+//
+// 2026-08-23 hidden-messages fix — the user branch previously checked
+// ONLY group.messages[0]; with consecutive user messages (queue-drain
+// bursts) the 2nd+ messages were invisible even when non-empty. Now
+// ANY message in the group having images, visible text, or reasoning
+// keeps the bubble alive.
 const hasBubbleContent = (group: MessageGroup, groupIndex: number): boolean => {
   if (group.role === 'user') {
-    const first = group.messages[0]
-    const hasImages = (first?.image_urls?.length ?? 0) > 0
-    return hasImages || (first ? hasVisibleContent(first) : false)
+    return group.messages.some(
+      (m) =>
+        (m.image_urls?.length ?? 0) > 0 ||
+        hasVisibleContent(m) ||
+        !!(m.reasoning_content && m.reasoning_content.trim() !== ''),
+    )
   }
   if (group.role === 'tool') {
     return group.messages.length > 0
   }
   if (group.role === 'assistant') {
     const hasToolHeader = groupToolNames.value[groupIndex] !== null
-    return hasToolHeader || group.messages.some(hasVisibleContent)
+    const hasReasoning = group.messages.some(
+      (m) => m.reasoning_content && m.reasoning_content.trim() !== '',
+    )
+    return hasToolHeader || hasReasoning || group.messages.some(hasVisibleContent)
   }
   return true
 }
@@ -1363,7 +1414,11 @@ const loadChatHistory = async (loadMore = false) => {
       tool_calls_json: msg.tool_calls_json,
       tool_call_id: msg.tool_call_id,
       is_input: msg.is_input,
-      is_output: msg.is_output
+      is_output: msg.is_output,
+      // 2026-08-23 hidden-messages fix — carry the thinking model's
+      // reasoning through to the renderer. The backend REST endpoint
+      // already returns it (http_response.zig SessionMessage).
+      reasoning_content: msg.reasoning_content || undefined,
     }))
 
     if (loadMore) {
@@ -1986,17 +2041,51 @@ const connectSse = () => {
       return
     }
 
-    if (event.type === 'full' && event.finish_reason && event.content) {
+    // 2026-08-23 hidden-messages fix — the gate previously required
+    // `event.content` to be truthy, which silently DROPPED every `full`
+    // event whose content was empty: tool-result rows (role='tool',
+    // empty raw content — the card renders from tool_name + envelope),
+    // image-only user echoes, and thinking-only assistant turns. All
+    // of those are renderable now (filteredMessages exemptions +
+    // reasoning section), so accept any event that has a finish_reason
+    // and at least ONE renderable field.
+    const hasRenderableFullPayload =
+      !!(
+        event.content ||
+        event.reasoning_content ||
+        event.tool_call_id ||
+        event.tool_name ||
+        (event.image_url && event.image_url.length > 0)
+      )
+    if (event.type === 'full' && event.finish_reason && hasRenderableFullPayload) {
       messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
       const role =
         (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
         (event.tool_call_id ? 'tool' : 'assistant')
 
+      // 2026-08-23 hidden-messages fix — dedupe against the optimistic
+      // user bubble pushed in handleFileInputSubmit. The server echo of
+      // our own message carries a different id (DB nanos vs local
+      // `optimistic-user-*`), so match on role + content + first image.
+      // Replacing keeps one bubble and upgrades it to the canonical id.
+      if (role === 'user') {
+        const dupIdx = messages.value.findIndex(
+          (m) =>
+            m.id.startsWith('optimistic-user-') &&
+            m.content === (event.content || '') &&
+            (m.image_urls?.[0] ?? '') ===
+              ((event.image_url ? event.image_url.split('|')[0] : '') ?? ''),
+        )
+        if (dupIdx !== -1) {
+          messages.value.splice(dupIdx, 1)
+        }
+      }
+
       messages.value.push({
         id: event.id || `assistant-${Date.now()}`,
         role: role,
-        content: event.content,
+        content: event.content || '',
         timestamp: new Date(),
         tool_name: event.tool_name,
         diffview_before: event.diffview_before,
@@ -2009,7 +2098,10 @@ const connectSse = () => {
         finish_reason: event.finish_reason,
         tool_call_id: event.tool_call_id,
         is_input: event.is_input,
-        is_output: event.is_output
+        is_output: event.is_output,
+        // 2026-08-23 hidden-messages fix — carry reasoning through so
+        // thinking-only turns render their collapsible section.
+        reasoning_content: event.reasoning_content || undefined
       })
       streamingContent.value = ''
       isStreaming.value = false
@@ -2031,8 +2123,26 @@ const connectSse = () => {
       return
     }
 
+    // 2026-08-23 hidden-messages fix — reasoning chunks used to be
+    // console.log-only. Accumulate them onto the streaming assistant
+    // message so the collapsible reasoning section renders live while
+    // a thinking model works (before any final content arrives).
     if (event.reasoning_content && !event.content) {
       console.log('Reasoning:', event.reasoning_content)
+      const existingMsg = messages.value.find(
+        (m) => m.role === 'assistant' && m.id.startsWith('streaming-'),
+      )
+      if (existingMsg) {
+        existingMsg.reasoning_content = (existingMsg.reasoning_content || '') + event.reasoning_content
+      } else {
+        messages.value.push({
+          id: `streaming-${Date.now()}`,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date(),
+          reasoning_content: event.reasoning_content,
+        })
+      }
     }
   })
   offQueue = bus.on('queue', (event: api.QueueMessageEvent) => {
@@ -2238,6 +2348,25 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     imageUrls = await Promise.all(files.map((f) => fileToBase64(f)))
   }
 
+  // 2026-08-23 hidden-messages fix — optimistic push. The user's own
+  // message previously appeared only when the backend's queue-drain
+  // re-emitted it via SSE `full` (or a loadChatHistory refresh), which
+  // left a visible window where the sent message was nowhere in the
+  // chat. Push it immediately; the SSE echo / history refresh will
+  // carry the canonical DB id, and this placeholder is replaced by
+  // dedupe below (match on role+content+images rather than id, since
+  // ids differ between local and server).
+  const optimisticId = `optimistic-user-${Date.now()}`
+  messages.value.push({
+    id: optimisticId,
+    role: 'user',
+    content: userMessage,
+    timestamp: new Date(),
+    image_urls: imageUrls.length > 0 ? imageUrls : undefined,
+  })
+  scrollLogger.markProgrammatic()
+  nextTick(() => scrollToBottom(false, 'optimistic-user-push'))
+
   try {
     await api.sendChatMessage(
       currentSessionId,
@@ -2248,6 +2377,9 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     )
   } catch (err) {
     console.error('Failed to send message:', err)
+    // Roll back the optimistic bubble so the user isn't left looking
+    // at a message that never reached the server.
+    messages.value = messages.value.filter((m) => m.id !== optimisticId)
     messages.value.push({
       id: `error-${Date.now()}`,
       role: 'assistant',
@@ -2503,29 +2635,42 @@ const compactSession = async () => {
                         v-if="isCompactionMessage(group.messages[0])"
                         :content="group.messages[0]!.content"
                       />
+                      <!-- 2026-08-23 hidden-messages fix — v-for over ALL
+                           messages in the group. The old template rendered
+                           only group.messages[0], so consecutive user
+                           messages (queue-drain bursts, rapid sends) beyond
+                           the first were invisible: their text AND attached
+                           images never appeared. Each message renders its
+                           own images + text; empty-text messages with
+                           images render images only. -->
                       <template v-else>
-                        <div
-                          v-if="
-                            group.messages[0]?.image_urls && group.messages[0]!.image_urls!.length > 0
-                          "
-                          class="mb-2"
+                        <template
+                          v-for="(userMsg, userMsgIdx) in group.messages"
+                          :key="userMsg.id || `u-${userMsgIdx}`"
                         >
-                          <div class="flex flex-wrap gap-2">
-                            <div
-                              v-for="(imgUrl, imgIdx) in group.messages[0]!.image_urls"
-                              :key="imgIdx"
-                              class="chat-attached-image-thumb"
-                              @click="openImagePreview(imgUrl)"
-                            >
-                              <img
-                                :src="imgUrl"
-                                alt="Attached image"
-                                class="chat-attached-image-img"
-                              />
+                          <div
+                            v-if="
+                              userMsg.image_urls && userMsg.image_urls.length > 0
+                            "
+                            class="mb-2"
+                          >
+                            <div class="flex flex-wrap gap-2">
+                              <div
+                                v-for="(imgUrl, imgIdx) in userMsg.image_urls"
+                                :key="imgIdx"
+                                class="chat-attached-image-thumb"
+                                @click="openImagePreview(imgUrl)"
+                              >
+                                <img
+                                  :src="imgUrl"
+                                  alt="Attached image"
+                                  class="chat-attached-image-img"
+                                />
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        {{ group.messages[0]!.content }}
+                          <span v-if="userMsg.content">{{ userMsg.content }}</span>
+                        </template>
                       </template>
                     </template>
 
@@ -2836,6 +2981,37 @@ const compactSession = async () => {
                             "
                           ></span>
                         </div>
+                      </div>
+                      <!-- 2026-08-23 hidden-messages fix — collapsible
+                           reasoning section for thinking models. Previously
+                           reasoning_content was console.log-only, so a
+                           thinking-only turn (empty final text) looked like
+                           the agent said nothing. Default-collapsed so long
+                           chains-of-thought don't push content off-screen;
+                           click to expand. -->
+                      <div
+                        v-for="(msg, rIdx) in group.messages.filter(
+                          (m) => m.reasoning_content && m.reasoning_content.trim() !== '',
+                        )"
+                        :key="`reasoning-${rIdx}`"
+                        class="mt-2"
+                      >
+                        <details class="assistant-reasoning">
+                          <summary
+                            class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
+                            :style="{ color: 'var(--semantic-text-dim)' }"
+                          >
+                            💭 Reasoning
+                          </summary>
+                          <div
+                            class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"
+                            :style="{
+                              color: 'var(--semantic-text-dim)',
+                              'border-color': 'var(--color-border)',
+                            }"
+                            >{{ msg.reasoning_content }}</div
+                          >
+                        </details>
                       </div>
                     </template>
                   </div>
