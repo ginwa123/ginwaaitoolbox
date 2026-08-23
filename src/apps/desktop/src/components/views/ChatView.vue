@@ -1207,7 +1207,17 @@ const messageGroups = computed((): MessageGroup[] => {
     }
   }
 
-  return groups
+  // 2026-08-23 blank-block fix — drop groups with nothing renderable
+  // BEFORE the VirtualScroller ever sees them. The previous approach
+  // (v-if inside the slot) left empty groups in the items array, where
+  // their height stayed at the scroller's 200px ESTIMATE forever
+  // (measureItems only measures rendered children). The estimated total
+  // then far exceeded the real content height, and scrollToBottom —
+  // which trusts the estimate — landed the visible window PAST all real
+  // items: a fully blank chat. Filtering here keeps the scroller's item
+  // list in sync with what actually renders; hasBubbleContent in the
+  // template remains as defense-in-depth.
+  return groups.filter((g, i) => hasBubbleContent(g, i))
 })
 
 // Per-message envelope unwrap lookup. Keyed by message id; value is the
@@ -2606,19 +2616,7 @@ const compactSession = async () => {
           @scrollability-change="scrollerIsScrollable = $event"
         >
           <template #default="{ item: group, index: groupIndex }">
-            <!-- 2026-08-23 blank-block fix — groups with no renderable
-                 content (hasBubbleContent=false) previously still rendered
-                 their OUTER wrappers here: px-4 + pb-4 padding around an
-                 empty bubble div = a ~48px invisible block per empty
-                 group. With many tool-call turns the chat filled with
-                 these blank stripes ("blank component" in devtools).
-                 v-if at the TOP of the slot means an empty group renders
-                 NOTHING — no wrapper, no padding, no gap. -->
-            <div
-              v-if="hasBubbleContent(group, groupIndex)"
-              class="px-4 max-w-4xl mx-auto"
-              :class="groupIndex === 0 ? 'pt-6' : ''"
-            >
+            <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">
               <div
                 class="flex gap-3 pb-3"
                 :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
@@ -2630,12 +2628,20 @@ const compactSession = async () => {
                      border) ONLY for user groups; assistant + tool groups
                      render as transparent, borderless paragraphs that flow
                      with the page background — like a document, not a
-                     messenger. -->
+                     messenger.
+                     NOTE: empty groups are already filtered out of
+                     messageGroups (see the computed) — this v-if is only
+                     defense-in-depth. Do NOT move it to the slot root:
+                     an unrendered group keeps its 200px height ESTIMATE
+                     in the VirtualScroller forever, which desyncs the
+                     estimated scroll model from the real DOM and blanks
+                     the whole chat on scrollToBottom. -->
                 <div
                   class="min-w-0"
                   :class="group.role === 'user' ? 'max-w-[90%]' : 'max-w-full'"
                 >
                   <div
+                    v-if="hasBubbleContent(group, groupIndex)"
                     class="text-sm leading-relaxed"
                     role="button"
                     tabindex="0"
