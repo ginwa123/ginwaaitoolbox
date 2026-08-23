@@ -18,6 +18,14 @@ test {
 // temperature/thinking conflict, stream_options removal)
     _ = @import("anthropic_request_test.zig");
 
+    // Anthropic thinking_budget_tokens override + type:adaptive mode
+    // (plan 2026-08-23-model-thinking.md)
+    _ = @import("anthropic_adaptive_test.zig");
+
+    // OpenAI reasoning_effort field on the request body
+    // (plan 2026-08-23-model-thinking.md)
+    _ = @import("openai_reasoning_test.zig");
+
     // Prompt builder tests
     _ = @import("prompts_test.zig");
 

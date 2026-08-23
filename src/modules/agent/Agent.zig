@@ -232,6 +232,15 @@ const JsonRequest = struct {
     /// https://platform.openai.com/docs/api-reference/chat/create.
     user: ?[]const u8 = null,
 
+    /// OpenAI-style reasoning effort (o1 / o3 / GPT-5 / DeepSeek-R1).
+    /// One of "low" | "medium" | "high" | "auto". Mirrors the
+    /// `Agent.reasoningEffort` field directly. Empty string is
+    /// treated the same as null (field omitted from the wire).
+    /// Anthropic-style URLs ignore this — they're routed through
+    /// `buildJsonAnthropicRequest` which doesn't see this struct.
+    /// See https://platform.openai.com/docs/guides/reasoning.
+    reasoning_effort: ?[]const u8 = null,
+
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
         try stringify.objectField("model");
@@ -264,6 +273,16 @@ const JsonRequest = struct {
             if (u.len > 0) {
                 try stringify.objectField("user");
                 try stringify.write(u);
+            }
+        }
+        // reasoning_effort: only emitted when non-null AND non-empty.
+        // The Agent struct's reasoningEffort field is borrowed from
+        // the workflow's LlmConfig (process-lifetime singleton), so
+        // it's safe to write verbatim — no aliasing concerns.
+        if (self.reasoning_effort) |re| {
+            if (re.len > 0) {
+                try stringify.objectField("reasoning_effort");
+                try stringify.write(re);
             }
         }
         try stringify.endObject();
@@ -388,22 +407,28 @@ const AnthropicMessage = struct {
 };
 
 const AnthropicThinking = struct {
-    type: []const u8 = "enabled",
-    /// Required by Anthropic when `type == "enabled"`. Minimum value
-    /// is 1024 and it must be strictly less than `max_tokens` —
-    /// the call site in `buildJsonAnthropicRequest` derives this from
-    /// the resolved `max_tokens` and falls back to the 1024 floor when
-    /// `max_tokens` is large enough to accommodate it (and forces
-    /// thinking off when `max_tokens < 1025` so we never emit an
-    /// unsatisfiable budget).
-    budget_tokens: usize,
+    /// "enabled" (with budget_tokens) or "adaptive" (Anthropic picks
+    /// its own budget — recommended for Sonnet 4.5+). Never
+    /// "disabled" — when the agent wants thinking off, the entire
+    /// `thinking` block is omitted from the request body, not
+    /// serialized as `{type: "disabled"}`.
+    type: []const u8,
+    /// Required only when `type == "enabled"`. Minimum value is
+    /// 1024 and it must be strictly less than `max_tokens` — the
+    /// call site in `buildJsonAnthropicRequest` derives this from
+    /// `Agent.thinkingBudgetTokens` (or the 50%-of-max heuristic),
+    /// clamped to the [1024, max_tokens-1] range. Null when
+    /// `type == "adaptive"`.
+    budget_tokens: ?usize = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
         try stringify.objectField("type");
         try stringify.write(self.type);
-        try stringify.objectField("budget_tokens");
-        try stringify.write(self.budget_tokens);
+        if (self.budget_tokens) |bt| {
+            try stringify.objectField("budget_tokens");
+            try stringify.write(bt);
+        }
         try stringify.endObject();
     }
 };
@@ -1222,17 +1247,31 @@ pub const Agent = struct {
             break :blk true;
         };
 
-        const thinking_budget: usize = blk: {
-            if (!thinking_on) break :blk 0;
-            // 50% of max_tokens, with the 1024 floor and the
-            // (max_tokens - 1) ceiling. We use `-|` saturating
-            // subtraction: when max_tokens == 1025, the
-            // `max_tokens - 1` ceiling is 1024, and the floor is
-            // also 1024, so the result is exactly 1024 (which is
-            // valid: 1024 < 1025).
+        const thinking_budget: ?usize = blk: {
+            if (!thinking_on) break :blk null;
+            // Three sources, in priority order (plan 2026-08-23-model-thinking):
+            //   1. Explicit `Agent.thinkingBudgetTokens` override.
+            //      Wins always, but still clamped to the
+            //      [1024, max_tokens-1] range so the wire shape is
+            //      always valid.
+            //   2. `Agent.thinkingAdaptive = true` → null (let
+            //      Anthropic pick). Triggered by the workflow when
+            //      `profile.thinking == "auto"` and no explicit
+            //      budget was set.
+            //   3. 50%-of-max_tokens heuristic — the previous
+            //      default. Triggered when `thinkingAdaptive = false`
+            //      (i.e. user picked "on" without an explicit budget).
+            if (self.thinkingBudgetTokens) |explicit| {
+                const floor_constrained: usize = if (explicit < 1024) 1024 else explicit;
+                const ceiling: usize = resolved_max_tokens -| 1;
+                break :blk if (floor_constrained < ceiling) floor_constrained else ceiling;
+            }
+            if (self.thinkingAdaptive) {
+                break :blk null;
+            }
             const half = resolved_max_tokens / 2;
-            const floor_constrained = if (half < 1024) 1024 else half;
-            const ceiling = resolved_max_tokens -| 1;
+            const floor_constrained: usize = if (half < 1024) 1024 else half;
+            const ceiling: usize = resolved_max_tokens -| 1;
             break :blk if (floor_constrained < ceiling) floor_constrained else ceiling;
         };
 
@@ -1251,16 +1290,22 @@ pub const Agent = struct {
             }
         }
 
+        const thinking_value: ?AnthropicThinking = blk: {
+            if (!thinking_on) break :blk null;
+            if (thinking_budget) |bt| break :blk .{ .type = "enabled", .budget_tokens = bt };
+            // Adaptive mode — Anthropic picks the budget itself.
+            // Triggered by profile.thinking == "auto" with no
+            // explicit budget override.
+            break :blk .{ .type = "adaptive" };
+        };
+
         const json_request = AnthropicRequest{
             .model = self.model,
             .messages = json_messages[0..json_message_count],
             .max_tokens = resolved_max_tokens,
             .stream = stream,
             .tools = json_tools,
-            .thinking = if (thinking_on) .{
-                .type = "enabled",
-                .budget_tokens = thinking_budget,
-            } else null,
+            .thinking = thinking_value,
             .temperature = if (thinking_on) null else params.temperature,
             .system = if (system_text.items.len > 0) system_text.items else null,
             .metadata = if (self.userIdentifier.len > 0)
@@ -1379,6 +1424,12 @@ pub const Agent = struct {
             .tools = json_tools,
             .tool_choice = if (json_tools != null) "auto" else null,
             .user = if (self.userIdentifier.len > 0) self.userIdentifier else null,
+            // OpenAI reasoning effort (plan 2026-08-23-model-thinking).
+            // Borrowed from Agent.reasoningEffort (lifetime tied to
+            // the workflow's LlmConfig singleton). The jsonStringify
+            // skip-on-empty path means a misconfigured empty value
+            // doesn't pollute the wire.
+            .reasoning_effort = self.reasoningEffort,
         };
 
         var aw: std.Io.Writer.Allocating = .init(allocator);
