@@ -143,19 +143,50 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // _ = @import("session_table_test.zig"); // DISABLED - requires std.Io which needs Init
     _ = @import("http_handlers/session_messages_get_test.zig"); // 2026-08-07-profile-persist-read — getSessionMessagesSorted carries selected_profile_model
     // _ = @import("transform_llm_history_to_agent_messages_test.zig"); // DISABLED - pre-existing type mismatch (TUIHistory vs LLMHistory) on main
-    _ = @import("../../modules/agent/tools/show_preview_test.zig");
-    _ = @import("../../modules/agent/tools/move_element_to_page_test.zig");
     // save_memory + load_memory tools (Task 3 + 4 of
     // docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md).
-    _ = @import("../../modules/agent/tools/save_memory_test.zig");
-    _ = @import("../../modules/agent/tools/load_memory_test.zig");
     // update_plan agent tool (Task 2 of
     // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md).
-    _ = @import("../../modules/agent/tools/update_plan_test.zig");
     // get_plan agent tool (Task 3 of
     // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md).
-    _ = @import("../../modules/agent/tools/get_plan_test.zig");
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
     _ = @import("agentic_loop/test_runner.zig");
+    _ = @import("../../modules/agent/tools/create_kanban_task.zig");
+    _ = @import("../../modules/agent/tools/add_skill.zig");
+    _ = @import("../../modules/agent/tools/set_design_page.zig");
+    _ = @import("../../modules/agent/tools/update_plan.zig");
+    _ = @import("../../modules/agent/tools/search_history.zig");
+    _ = @import("../../modules/agent/tools/glob.zig");
+    _ = @import("../../modules/agent/tools/load_memory.zig");
+    _ = @import("../../modules/agent/tools/list_skills.zig");
+    _ = @import("../../modules/agent/tools/kanban_list.zig");
+    _ = @import("../../modules/agent/tools/get_skill.zig");
+    _ = @import("../../modules/agent/tools/update_activity.zig");
+    _ = @import("../../modules/agent/tools/remove_skill.zig");
+    _ = @import("../../modules/agent/tools/show_preview.zig");
+    _ = @import("../../modules/agent/tools/pwsh.zig");
+    _ = @import("../../modules/agent/tools/get_plan.zig");
+    _ = @import("../../modules/agent/tools/write_file.zig");
+    _ = @import("../../modules/agent/tools/move_element_to_page.zig");
+    _ = @import("../../modules/agent/tools/group_design_elements.zig");
+    _ = @import("../../modules/agent/tools/change_agent.zig");
+    _ = @import("../../modules/agent/tools/nalar_browser.zig");
+    _ = @import("../../modules/agent/tools/kanban_move_task.zig");
+    _ = @import("../../modules/agent/tools/list_directory.zig");
+    _ = @import("../../modules/agent/tools/generate_image.zig");
+    _ = @import("../../modules/agent/tools/edit_skill.zig");
+    _ = @import("../../modules/agent/tools/move_design_element.zig");
+    _ = @import("../../modules/agent/tools/shell.zig");
+    _ = @import("../../modules/agent/tools/text_replace.zig");
+    _ = @import("../../modules/agent/tools/diff.zig");
+    _ = @import("../../modules/agent/tools/list_memory.zig");
+    _ = @import("../../modules/agent/tools/add_design_element.zig");
+    _ = @import("../../modules/agent/tools/save_memory.zig");
+    _ = @import("../../modules/agent/tools/spawn_sub_agent.zig");
+    _ = @import("../../modules/agent/tools/view_skill.zig");
+    _ = @import("../../modules/agent/tools/update_design_element.zig");
+    _ = @import("../../modules/agent/tools/set_element_parent.zig");
+    _ = @import("../../modules/agent/tools/search.zig");
+    _ = @import("../../modules/agent/tools/memories.zig");
 }

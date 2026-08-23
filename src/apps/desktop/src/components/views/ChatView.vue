@@ -2760,7 +2760,7 @@ const compactSession = async () => {
           <template #default="{ item: group, index: groupIndex }">
             <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">
               <div
-                class="flex gap-3 pb-3"
+                class="flex"
                 :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
               >
                 <!-- Bubble / paragraph container.
