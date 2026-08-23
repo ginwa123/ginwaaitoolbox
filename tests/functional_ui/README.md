@@ -256,3 +256,20 @@ multiple messages and need them in `created_at_at_nano` order.
 8. Reasoning content (collapsible thinking trace)
 9. Code block copy button
 10. Compaction card (`<compact_messages>` envelope)
+
+### `<html>` wrapper-tag tests (`chatview_html_tag_ui_test.py`, 5 tests)
+
+The LLM can wrap raw HTML in `<html>...</html>`; the chatview renders
+each block as a live sandboxed iframe (`sandbox="allow-scripts"`,
+null origin). Plan:
+`docs/superpowers/plans/2026-08-23-html-tag-support.md`.
+
+1. html-only message → one `iframe.chat-html-frame`, sandbox attr
+   intact, payload NOT duplicated as markdown in the DOM
+2. inner HTML executes — real Chromium clicks the button inside the
+   srcdoc and verifies the onclick handler ran (jsdom can't do this)
+3. mixed message — surrounding text still renders via marked AND the
+   iframe srcdoc carries the inner payload
+4. legacy markdown messages render unchanged, zero iframes
+5. unclosed `<html>` (mid-stream shape) degrades safely: raw text
+   shows through the legacy path, no iframe, no page errors
