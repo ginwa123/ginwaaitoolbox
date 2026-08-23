@@ -210,3 +210,217 @@ fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
         "<update_plan><error>{s}</error></update_plan>",
         .{escaped});
 }
+
+const testing = std.testing;
+const migration = @import("../../../migrations/migration.zig");
+
+const update_plan_mod = @import("update_plan.zig");
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = migration.MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try migration.registerAllMigrations(&manager);
+    try manager.runMigrations();
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: success path returns the successXml envelope ──────────────────
+
+test "executeUpdatePlan: success returns successXml with session_id + updated_at + <plan> CDATA" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const session_id = "test_session_success";
+    const content = "# My Plan\n\n- [ ] step 1\n- [x] step 2\n";
+    const result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, session_id, .{
+        .content = content,
+    });
+    defer alloc.free(result);
+
+    // Envelope shape:
+    //   <update_plan>
+    //     <session_id>...</session_id>
+    //     <updated_at>...</updated_at>
+    //     <plan><![CDATA[ ...content... ]]></plan>
+    //   </update_plan>
+    try testing.expect(std.mem.indexOf(u8, result, "<update_plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</update_plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<session_id>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</session_id>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<updated_at>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</updated_at>") != null);
+    // <plan> CDATA block must be present — the frontend reads it
+    // back from here to render the checklist preview.
+    try testing.expect(std.mem.indexOf(u8, result, "<plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<![CDATA[") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "]]></plan>") != null);
+    // Content bytes land verbatim inside CDATA — no XML escaping.
+    try testing.expect(std.mem.indexOf(u8, result, content) != null);
+    // No <error> tag on success.
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") == null);
+    // session_id MUST be echoed (escaped form, but plain alphanumeric here).
+    try testing.expect(std.mem.indexOf(u8, result, session_id) != null);
+
+    // DB read-back — verify the row actually landed with the right content.
+    const stored = try session_plan.getPlan(alloc, &ctx.db, session_id);
+    defer alloc.free(stored);
+    try testing.expectEqualStrings(content, stored);
+}
+
+// ─── Test 1b: CDATA preserves raw special chars verbatim ───────────────────
+//
+// Mirrors `get_plan_test.zig` "CDATA preserves raw special chars verbatim".
+// The agent may write `<`, `>`, `&` in their plan markdown (e.g. for
+// comparison prose like `arr[i] > 0`). CDATA wrapping means these
+// land byte-for-byte in the envelope — no XML escape substitutions
+// that would complicate the LLM's regex/checklist matching.
+
+test "executeUpdatePlan: CDATA preserves raw <, >, & inside plan body" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const content = "## Notes\nIf arr[i] > 0 && x < 10, then... & done.";
+    const result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, "cd_session", .{
+        .content = content,
+    });
+    defer alloc.free(result);
+
+    // The raw bytes must appear verbatim — NOT escaped to &lt; / &gt; / &amp;.
+    try testing.expect(std.mem.indexOf(u8, result, "arr[i] > 0") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "x < 10") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "&& x") != null);
+    // None of the escape substitutions should appear.
+    try testing.expect(std.mem.indexOf(u8, result, "&lt;") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "&gt;") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "&amp;") == null);
+}
+
+// ─── Test 1c: literal "]]>" inside the body splits the CDATA section ──────
+//
+// Mirrors `get_plan_test.zig` "splits CDATA on `]]>` boundary inside plan
+// body". The literal `]]>` sequence would terminate the CDATA section
+// early and break the XML envelope — the successXml helper splits it
+// into `]]><![CDATA[>` so the `>` between them becomes plain content.
+
+test "executeUpdatePlan: splits CDATA on ]]> boundary inside plan body" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const content = "before ]]> middle ]]> after";
+    const result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, "cdata_split_session", .{
+        .content = content,
+    });
+    defer alloc.free(result);
+
+    // The split sequence `]]><![CDATA[>` must appear at least twice
+    // (once per `]]>` in the body) so the envelope stays well-formed.
+    var count: usize = 0;
+    var rest: []const u8 = result;
+    while (std.mem.indexOf(u8, rest, "]]><![CDATA[>")) |idx| {
+        count += 1;
+        rest = rest[idx + "]]><![CDATA[>".len ..];
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+
+    // The envelope MUST still be a single well-formed <plan> block
+    // (not two halves).
+    try testing.expect(std.mem.indexOf(u8, result, "<plan><![CDATA[") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "]]></plan>") != null);
+}
+
+// ─── Test 2: empty content is rejected with a "non-empty" error ────────────
+
+test "executeUpdatePlan: empty content returns errorXml mentioning 'non-empty'" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, "any_session", .{
+        .content = "",
+    });
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<update_plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</error>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "non-empty") != null);
+    // No <session_id> or <updated_at> on error.
+    try testing.expect(std.mem.indexOf(u8, result, "<updated_at>") == null);
+
+    // DB has no row for "any_session".
+    const stored = try session_plan.getPlan(alloc, &ctx.db, "any_session");
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("", stored);
+}
+
+// ─── Test 3: oversized content is rejected with a "256 KiB" error ──────────
+
+test "executeUpdatePlan: oversized content (> MAX_PLAN_BYTES) returns errorXml mentioning '256 KiB'" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Allocate MAX_PLAN_BYTES + 1 byte of garbage.
+    const big = try alloc.alloc(u8, update_plan_mod.MAX_PLAN_BYTES + 1);
+    defer alloc.free(big);
+    @memset(big, 'x');
+
+    const result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, "big_session", .{
+        .content = big,
+    });
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<update_plan>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</error>") != null);
+    // Exact phrasing is '256 KiB' (per the plan's error mapping).
+    try testing.expect(std.mem.indexOf(u8, result, "256 KiB") != null);
+}
+
+// ─── Test 4: JSON schema shape (name / required / properties) ──────────────
+
+test "update_plan_tool JSON schema: name='update_plan', required=['content'], properties=[content]" {
+    const tool = update_plan_mod.update_plan_tool;
+
+    // Top-level type must be 'function' (OpenAI conventions).
+    try testing.expectEqualStrings("function", tool.type);
+
+    // Function name.
+    try testing.expectEqualStrings("update_plan", tool.function.name);
+
+    // Description must mention both the tool name and the checklist pattern
+    // — the description is the agent's primary "when to call this" signal.
+    const description = tool.function.description;
+    try testing.expect(std.mem.indexOf(u8, description, "update_plan") != null);
+    try testing.expect(std.mem.indexOf(u8, description, "checklist") != null);
+
+    // Required: exactly ["content"] — session_id is implicit (D3).
+    try testing.expectEqual(@as(usize, 1), tool.function.parameters.required.len);
+    try testing.expectEqualStrings("content", tool.function.parameters.required[0]);
+
+    // Properties: exactly one (content) — no session_id parameter.
+    try testing.expectEqual(@as(usize, 1), tool.function.parameters.properties.len);
+    try testing.expectEqualStrings("content", tool.function.parameters.properties[0].name);
+    try testing.expectEqualStrings("string", tool.function.parameters.properties[0].type);
+}
