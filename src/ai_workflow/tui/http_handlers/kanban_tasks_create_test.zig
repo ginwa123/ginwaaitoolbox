@@ -628,3 +628,69 @@ test "kanban_tasks_create (mode=create_session) skips llm_history insert when de
     }
 }
 
+// Regression for task_1787494153778_2 ("wrong profile select").
+//
+// The dialog ALWAYS sends `is_auto_retry_until_stop` ('0' or '1' —
+// KanbanTaskDetailDialog.vue:800). Pre-fix, the handler forwarded the
+// flag into `task_create.useCase` for EVERY mode, and the useCase's
+// bare `INSERT OR IGNORE INTO sessions (id, name, status,
+// is_auto_retry_until_stop)` (task_create.zig:626-638 — no
+// `selected_profile_model` column) ran FIRST. This handler's later
+// profile-bearing `INSERT OR IGNORE INTO sessions` then hit the
+// existing PK and was silently ignored → sessions.selected_profile_model
+// stayed NULL → the chatview fell back to the default profile
+// ("alpha model") instead of the user's pick (e.g. "900ribu").
+//
+// Contract: the `std_req` construction must forward the flag into the
+// use-case ONLY for legacy mode='create' (where the bare INSERT is the
+// ONLY sessions write). For create_session / create_and_run, step 5's
+// full INSERT (profile + flag) is the authoritative row.
+test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=create" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // Isolate the `std_req = http_response.TaskCreateRequest{ ... };`
+    // block so we assert on the actual forwarding site, not on
+    // doc-comment prose elsewhere in the file.
+    const req_pos = std.mem.indexOf(u8, source, "TaskCreateRequest{") orelse {
+        std.debug.print(
+            "\n!! {s} has no TaskCreateRequest construction !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.TaskCreateRequestMissing;
+    };
+    const req_end = std.mem.indexOfPos(u8, source, req_pos, "};") orelse {
+        return error.TaskCreateRequestUnterminated;
+    };
+    const req_block = source[req_pos..req_end];
+
+    // The flag line must exist (the legacy create path still needs it)...
+    const flag_pos = std.mem.indexOf(u8, req_block, ".is_auto_retry_until_stop = ") orelse {
+        std.debug.print(
+            "\n!! {s} no longer forwards .is_auto_retry_until_stop in std_req !!\n" ++
+                "   Legacy mode='create' relies on the useCase's bare sessions\n" ++
+                "   INSERT to persist the flag — keep forwarding it there.\n",
+            .{HANDLER_PATH},
+        );
+        return error.UnattendedFlagNotForwarded;
+    };
+    // ...and must be gated on is_create_only (ternary/if-expression),
+    // so create_session / create_and_run pass null and the useCase
+    // skips its bare INSERT — leaving step 5's full INSERT (with
+    // selected_profile_model) as the authoritative row.
+    if (std.mem.indexOfPos(u8, req_block, flag_pos, "is_create_only") == null) {
+        std.debug.print(
+            "\n!! {s} forwards .is_auto_retry_until_stop to useCase UNGATED !!\n" ++
+                "   The useCase inserts a bare sessions row (no profile column)\n" ++
+                "   when the flag is present, and this handler's later\n" ++
+                "   INSERT OR IGNORE then no-ops on the PK conflict — silently\n" ++
+                "   dropping selected_profile_model (bug: wrong profile select).\n" ++
+                "   Gate the forwarding: `.is_auto_retry_until_stop = if (is_create_only)\n" ++
+                "   parsed.is_auto_retry_until_stop else null,`\n",
+            .{HANDLER_PATH},
+        );
+        return error.UnattendedFlagNotGatedOnCreateOnly;
+    }
+}
+

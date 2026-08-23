@@ -375,6 +375,180 @@ def test_create_session_with_image_urls_only_still_inserts_user_message(
     )
 
 
+# ─── Profile persistence (regression: task_1787494153778_2) ────────────────
+
+
+def _get_session_selected_profile(
+    harness: FunctionalHarness, session_id: str
+) -> str | None:
+    """GET /api/llm/session/:id/messages?limit=1 → selected_profile_model.
+
+    This is the exact endpoint the chatview reads on session open
+    (ChatView.vue loadChatHistory + api.getSession). The backend
+    COALESCEs NULL → '' so a lost profile surfaces as '' (or None if
+    the field is absent from the response entirely).
+
+    For create_and_run, the workflow runs in the background after the
+    create response returns; if the GET races ahead of the worker's
+    first loop iteration, the endpoint may return 0 messages (the
+    queued user message hasn't been drained yet) and
+    `selected_profile_model` is absent from the JSON. We retry a few
+    times with a short backoff to give the workflow a chance to drain
+    — exactly what the chatview does in production via Vue reactivity.
+    """
+    import time
+
+    for attempt in range(20):  # up to ~2s
+        r = harness.http(
+            "GET",
+            f"/api/llm/session/{session_id}/messages",
+            params={"limit": 1},
+            expect=200,
+        )
+        body = r.json()
+        if "selected_profile_model" in body:
+            return body["selected_profile_model"]
+        time.sleep(0.1)
+    return None  # surface as "field never appeared" — the bug
+
+
+def _get_session_flag_via_db(
+    harness: FunctionalHarness, session_id: str
+) -> str | None:
+    """Read sessions.is_auto_retry_until_stop straight from the DB.
+
+    Used to prove the unattended flag itself is NOT lost by the
+    gating fix (it must land on the step-5 full INSERT instead of the
+    useCase's bare INSERT).
+    """
+    import sqlite3
+
+    db_path = harness.temp_dir / ".config" / "nalar" / "agent.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def test_create_session_persists_selected_profile_model(
+    llm_harness: FunctionalHarness,
+) -> None:
+    """Regression for task_1787494153778_2 ("wrong profile select").
+
+    The dialog ALWAYS sends is_auto_retry_until_stop ('0' or '1').
+    Pre-fix, that flag made task_create.useCase insert a bare sessions
+    row (no selected_profile_model column) BEFORE the handler's
+    profile-bearing INSERT OR IGNORE — which then no-oped on the PK
+    conflict and the profile was silently dropped (GET returned '').
+
+    This test replays the EXACT wire the dialog sends with Unattended
+    ON + a profile picked: both fields present, mode='create_session'.
+    """
+    ws_id = _create_workspace(llm_harness)
+    kanban_id = _create_kanban(llm_harness, ws_id)
+
+    body: dict[str, Any] = {
+        "mode": "create_session",
+        "name": "Profile persistence check",
+        "description": "dialog wire with unattended on",
+        # The bug's trigger: the dialog ALWAYS includes this field.
+        "is_auto_retry_until_stop": "1",
+        # The harness's stub profile (see _write_stub_llm_profile in
+        # harness.py) — the only profile name that exists in the
+        # test HOME's config.json.
+        "selected_profile_model": "stub",
+    }
+    resp = llm_harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{kanban_id}/kanban/tasks",
+        json_body=body,
+        expect=201,
+    ).json()
+    task_id = resp["task"]["id"]
+
+    # The profile must survive the create → GET round-trip.
+    got = _get_session_selected_profile(llm_harness, task_id)
+    assert got == "stub", (
+        f"selected_profile_model lost on create_session wire! "
+        f"expected 'stub', got {got!r}. If '' or None: the bare "
+        f"useCase sessions INSERT won the PK race again (the bug)."
+    )
+
+    # And the unattended flag must NOT be lost by the gating — it now
+    # lands via the step-5 full INSERT instead of the useCase's bare one.
+    # SQLite stores is_auto_retry_until_stop as INTEGER (schema default 0),
+    # so we compare both '1' and 1 — Python's sqlite3 returns the raw
+    # column type, which the empty-string bound becomes NULL→0/1.
+    flag = _get_session_flag_via_db(llm_harness, task_id)
+    assert flag in ("1", 1), (
+        f"is_auto_retry_until_stop should be '1' (persisted by the "
+        f"step-5 full INSERT), got {flag!r}"
+    )
+
+
+def test_create_and_run_persists_selected_profile_model(
+    llm_harness: FunctionalHarness,
+) -> None:
+    """Same regression for the 'Create task & run agent' button
+    (mode='create_and_run') — same bare-INSERT PK race, same fix."""
+    ws_id = _create_workspace(llm_harness)
+    kanban_id = _create_kanban(llm_harness, ws_id)
+
+    body: dict[str, Any] = {
+        "mode": "create_and_run",
+        "name": "Profile persistence run",
+        "description": "dialog wire with unattended on",
+        "queue_message": "Profile persistence run\ndialog wire with unattended on",
+        "is_auto_retry_until_stop": "1",
+        "selected_profile_model": "stub",
+    }
+    resp = llm_harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{kanban_id}/kanban/tasks",
+        json_body=body,
+        expect=201,
+    ).json()
+    task_id = resp["task"]["id"]
+
+    got = _get_session_selected_profile(llm_harness, task_id)
+    assert got == "stub", (
+        f"selected_profile_model lost on create_and_run wire! "
+        f"expected 'stub', got {got!r}"
+    )
+
+
+def test_create_session_without_profile_stays_empty(
+    llm_harness: FunctionalHarness,
+) -> None:
+    """Control: no selected_profile_model on the wire → GET returns ''
+    (the COALESCE-on-NULL shape), NOT a stale value. Guards against a
+    regression where the fix accidentally leaks a default into the
+    column."""
+    ws_id = _create_workspace(llm_harness)
+    kanban_id = _create_kanban(llm_harness, ws_id)
+
+    resp = _create_task_via_kanban_endpoint(
+        llm_harness,
+        ws_id,
+        kanban_id,
+        name="No profile task",
+        description="",
+        mode="create_session",
+    )
+    task_id = resp["task"]["id"]
+
+    got = _get_session_selected_profile(llm_harness, task_id)
+    assert got in ("", None), (
+        f"no-profile create should leave selected_profile_model empty, "
+        f"got {got!r}"
+    )
+
+
 # ─── LLM stub fixture (mirror sessions_and_llm_test.py) ────────────────────
 
 

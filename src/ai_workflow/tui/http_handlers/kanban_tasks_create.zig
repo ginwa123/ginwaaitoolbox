@@ -166,7 +166,16 @@ pub fn kanbanTasksCreateHandler(
         .name = parsed.name,
         .description = parsed.description,
         .task_type = "standard",
-        .is_auto_retry_until_stop = parsed.is_auto_retry_until_stop,
+        // Only legacy mode='create' forwards the unattended flag into
+        // the use-case (its bare sessions INSERT is the ONLY sessions
+        // write on that path). For create_session / create_and_run,
+        // step 5 below inserts the FULL sessions row (profile + flag)
+        // — forwarding the flag here would make useCase insert a bare
+        // row first, and this handler's INSERT OR IGNORE would then
+        // no-op on the PK conflict, silently dropping
+        // selected_profile_model (bug: "wrong profile select",
+        // task_1787494153778_2).
+        .is_auto_retry_until_stop = if (is_create_only) parsed.is_auto_retry_until_stop else null,
         .tags = parsed.tags,
         .image_urls = parsed.image_urls,
         .cwd = parsed.cwd,
