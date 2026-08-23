@@ -217,7 +217,7 @@ pub fn main(init: std.process.Init) !void {
     // };
     //
 
-    const address = try gserverz.Address.init(port);
+    const address = try gserverz.Address.init("127.0.0.1", port);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 
