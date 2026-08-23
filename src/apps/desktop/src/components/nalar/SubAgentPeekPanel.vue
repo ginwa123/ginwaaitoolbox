@@ -594,6 +594,27 @@ watch(
    * the wrapper minimal.
    */
 }
+
+/* Mirror of ChatView.vue's :deep(.chat-tool-card) — the peek panel
+ * renders the same tool-output components (Glob, ShellTool, Search,
+ * …) whose root element carries the shared `.chat-tool-card` class.
+ * Without this deep rule the class is inert here and cards fall back
+ * to Tailwind defaults (transparent bg, no left rule). Keep in sync
+ * with ChatView.vue's definition. */
+:deep(.chat-tool-card) {
+  background-color: transparent;
+  border: none;
+  border-left: 2px solid var(--color-border);
+  border-radius: 0;
+  overflow: visible;
+  transition: background-color 0.15s ease, border-left-color 0.15s ease;
+}
+
+:deep(.chat-tool-card:hover) {
+  background-color: color-mix(in srgb, var(--color-violet) 4%, transparent);
+  border-left-color: var(--color-violet);
+}
+
 .peek-tool-fallback {
   background: rgba(63, 63, 70, 0.3);
   border: 1px solid var(--color-border);
