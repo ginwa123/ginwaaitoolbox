@@ -1359,7 +1359,7 @@ const hasBubbleContent = (group: MessageGroup, groupIndex: number): boolean => {
     )
     return hasToolHeader || hasReasoning || group.messages.some(hasVisibleContent)
   }
-  return true
+  return false
 }
 
 // ─── Chat History ────────────────────────────────────────────────────────────
@@ -2629,14 +2629,25 @@ const compactSession = async () => {
           </button>
         </div>
 
-        <!-- Virtualized Message List -->
+        <!-- Virtualized Message List.
+             2026-08-23 fast-scroll responsiveness tuning:
+             - default-item-height 200 -> 64: real rows are ~40-80px
+               (one-line tool cards, short paragraphs). The old 200px
+               estimate made top/bottom spacers 2.5-5x too tall, so a
+               fast fling landed the estimated visible window deep inside
+               spacer territory; content only appeared after measureItems
+               caught up (~3s of blank). A closer estimate keeps the
+               window near the real content from the first frame.
+             - buffer 20 -> 30: cheap insurance for fast scrolls — more
+               pre-rendered rows above/below means the viewport is
+               already populated when the fling stops. -->
         <VirtualScroller
           v-if="isLoading || messageGroups.length > 0"
           ref="virtualScrollerRef"
           :items="messageGroups"
           :total-count="0"
-          :buffer="20"
-          :default-item-height="200"
+          :buffer="30"
+          :default-item-height="64"
           :load-more-threshold="200"
           :load-more-threshold-ratio="0.5"
           :load-more-at-top="true"
