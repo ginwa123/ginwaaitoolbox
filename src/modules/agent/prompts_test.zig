@@ -1732,3 +1732,24 @@ test "CompactionAgent constant teaches save_memory + load_memory (cross-session 
         contains(prompt, "load_memory query=") or
         contains(prompt, "next agent"));
 }
+
+// -------------------------------------------------------------------------
+// ResponseFormatting — <html> wrapper tag (2026-08-23 html-tag-support)
+// -------------------------------------------------------------------------
+
+test "ResponseFormatting teaches the <html> wrapper tag" {
+    // The model must know it CAN wrap raw HTML in <html>...</html> so the
+    // chat UI renders it as a live sandboxed-iframe block. Capability
+    // phrasing ("you can use"), not mandate. See plan:
+    // docs/superpowers/plans/2026-08-23-html-tag-support.md
+    const prompt: []const u8 = prompts.ResponseFormatting;
+
+    // The tag pair is present.
+    try std.testing.expect(contains(prompt, "<html>"));
+    try std.testing.expect(contains(prompt, "</html>"));
+    // The capability phrasing the user asked for.
+    try std.testing.expect(contains(prompt, "HTML Responses"));
+    try std.testing.expect(contains(prompt, "you can use"));
+    // Verbatim-emission note (wire-format requirement).
+    try std.testing.expect(contains(prompt, "verbatim"));
+}

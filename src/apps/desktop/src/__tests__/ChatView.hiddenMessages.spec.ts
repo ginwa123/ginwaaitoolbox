@@ -175,3 +175,51 @@ describe('stripThinkingTags — filter interplay (unit)', () => {
     )
   })
 })
+
+// -------------------------------------------------------------------------
+// <html> wrapper tag rendering (2026-08-23 html-tag-support, Task 3)
+// -------------------------------------------------------------------------
+
+describe('HTML tag support — ChatView render branch (source contract)', () => {
+  it('imports the html helpers from @/helpers', async () => {
+    const source = await readChatViewSource()
+    expect(source).toMatch(
+      /import \{[^}]*isHtmlTags[^}]*\} from '@\/helpers'/,
+    )
+  })
+
+  it('branches the assistant template on msgHasHtml before the v-html path', async () => {
+    const source = await readChatViewSource()
+    // The template must check msgHasHtml(msg.content) and render the
+    // iframe branch INSTEAD of the legacy v-html span for that message.
+    expect(source).toMatch(/v-if="msg\.role === 'assistant' && msgHasHtml\(msg\.content\)"/)
+    // The legacy renderResponse call site survives (v-else path).
+    expect(source).toMatch(/renderResponse\(\s*\n\s*msg\.content,/)
+  })
+
+  it('renders html blocks in a sandboxed iframe (allow-scripts only)', async () => {
+    const source = await readChatViewSource()
+    // Security contract: sandbox WITHOUT allow-same-origin (null origin
+    // = the security boundary; inner scripts can't touch parent DOM).
+    expect(source).toMatch(/sandbox="allow-scripts"/)
+    expect(source).toMatch(/:srcdoc=/)
+    expect(source).not.toMatch(/sandbox="allow-scripts allow-same-origin"/)
+  })
+
+  it('extracts per-block segments via extractHtmlBlocks', async () => {
+    const source = await readChatViewSource()
+    expect(source).toMatch(/const extractHtmlBlocks/)
+    expect(source).toMatch(/extractHtmlBlocks\(msg\.content \|\| ''\)/)
+  })
+
+  it('wraps fragment blocks in a minimal srcdoc shell via buildHtmlSrcdoc', async () => {
+    const source = await readChatViewSource()
+    expect(source).toMatch(/const buildHtmlSrcdoc/)
+  })
+
+  it('styles the frame with the chat-html-frame class', async () => {
+    const source = await readChatViewSource()
+    expect(source).toMatch(/class="chat-html-frame"/)
+    expect(source).toMatch(/\.chat-html-frame \{/)
+  })
+})
