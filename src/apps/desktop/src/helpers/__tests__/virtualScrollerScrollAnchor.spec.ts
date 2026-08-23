@@ -262,8 +262,6 @@ describe('VirtualScroller measurement anchor compensation', () => {
     await nextTick()
     vi.advanceTimersByTime(60) // flush initial measure pass
 
-    const before = el.scrollTop
-
     // Simulate scrolling UP so a new tall item enters the TOP buffer:
     // move the viewport up by exactly one estimate-slot (64px). The
     // visibleRange recomputes; item 99 renders above the viewport with
