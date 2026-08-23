@@ -1,11 +1,24 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { SubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
+import type { SubAgentProgress } from '../../helpers/subagentProgress'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
   subAgentArgs?: SubAgentArgs[] | null
+  /**
+   * 2026-08-23 spawn-subagent-live-progress: live per-sub-agent
+   * progress fed from ChatView's per-tool_call_id map. When set
+   * AND `content` has no parsed <results> envelope, the component
+   * renders these rows directly (auto-expanded — no toggle needed).
+   *
+   * When `content` contains an envelope (after the tool result
+   * lands), the parsed-results view wins and this prop is ignored —
+   * the envelope is the source of truth on completion. The map is
+   * then deleted from ChatView via `clearProgressFor(tool_call_id)`.
+   */
+  progress?: SubAgentProgress[] | null
 }>()
 
 const emit = defineEmits<{
@@ -99,6 +112,8 @@ const toggleAgent = (idx: number) => {
 }
 
 const toggle = () => {
+  // In live-progress mode the body is already shown — toggle is a no-op.
+  if (inLiveMode.value) return
   if (agents.value.length > 0) {
     isExpanded.value = !isExpanded.value
   }
@@ -110,12 +125,53 @@ const copyResponse = async (e: Event, response: string) => {
   await navigator.clipboard.writeText(response)
 }
 
+// ─── Live-progress rendering (2026-08-23) ──────────────────────────────
+//
+// Source-of-truth precedence: parsed envelope (from content) > live
+// progress (from props). The parsed-envelope view never changes
+// post-completion, while progress is ephemeral. Live mode is "on"
+// whenever progress is non-empty AND no envelope has been parsed yet.
+//
+// Live rows render inside the same `<div v-if="isExpanded">` slot
+// (auto-shown) so the existing card chrome is reused: badge, peek
+// button, inherited-context chip, etc. Behavioural differences:
+//   - Header counts show running/done/failed instead of ✓N ✗N
+//   - Rows render even when expandedAgents is empty
+//   - The toggle caret becomes a no-op (replaces '+' with nothing)
+//   - Failed rows get the red error styling immediately
+
+const liveProgress = computed(() => props.progress ?? [])
+
+const inLiveMode = computed(
+  () => liveProgress.value.length > 0 && agents.value.length === 0,
+)
+
+const liveSummary = computed(() => {
+  const rows = liveProgress.value
+  return {
+    running: rows.filter(r => r.status === 'running').length,
+    done: rows.filter(r => r.status === 'done').length,
+    failed: rows.filter(r => r.status === 'failed').length,
+  }
+})
+
 /**
- * Emit a peek event for one sub-agent row. The parent ChatView
- * listens for this and opens SubAgentPeekPanel. No-op when the
- * agent has no session_id (i.e. the sub-agent failed before a
- * session was created — nothing to peek into).
+ * Emit a peek event for one sub-agent row. In live-progress mode,
+ * rows carry `sessionId` (set by `applyProgressEvent` once the
+ * `launched` event arrives with `subagent_session_id`). Same payload
+ * shape as the parsed-envelope peek so ChatView's
+ * <SubAgentPeekPanel> doesn't need to branch.
  */
+function peekLiveAgent(idx: number, row: SubAgentProgress) {
+  if (!row.sessionId) return
+  const instruction = props.subAgentArgs?.[idx]?.instruction ?? ''
+  emit('peek', {
+    sessionId: row.sessionId,
+    agentName: row.name,
+    instruction,
+  })
+}
+
 function peekAgent(idx: number, agent: { sessionId: string | null; name: string }) {
   if (!agent.sessionId) return
   const instruction = props.subAgentArgs?.[idx]?.instruction ?? ''
@@ -145,12 +201,24 @@ function describeInheritedContext(mode: string): string {
   if (m) return `last ${m[1]} parent messages (default 10 if unspecified)`
   return mode
 }
+
+// Format elapsed_ms as a short chip (e.g. "12s", "1m 03s"). Defensive
+// against negative / NaN values from clock skew between thread entry
+// and the backend emit.
+function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  const totalSec = Math.floor(ms / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return `${m}m ${s.toString().padStart(2, '0')}s`
+}
 </script>
 
 <template>
   <div 
     class="chat-tool-card font-mono text-xs"
-    :class="{ 'border-red-500/50 opacity-80': failedCount > 0 }"
+    :class="{ 'border-red-500/50 opacity-80': failedCount > 0 || liveSummary.failed > 0 }"
   >
     <!-- Header -->
     <div 
@@ -160,8 +228,13 @@ function describeInheritedContext(mode: string): string {
       tabindex="0"
     >
       <span class="text-[var(--color-violet)] font-semibold text-xs">spawn_sub_agent</span>
-      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="agentCount + ' sub-agent(s)'">
-        {{ agentCount }} sub-agent{{ agentCount !== 1 ? 's' : '' }}
+      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="(inLiveMode ? liveProgress.length : agentCount) + ' sub-agent(s)'">
+        <template v-if="inLiveMode">
+          {{ liveProgress.length }} sub-agent{{ liveProgress.length !== 1 ? 's' : '' }}
+        </template>
+        <template v-else>
+          {{ agentCount }} sub-agent{{ agentCount !== 1 ? 's' : '' }}
+        </template>
       </span>
       <span
         v-if="hasInheritedContext"
@@ -170,8 +243,20 @@ function describeInheritedContext(mode: string): string {
       >
         ↻ with parent history
       </span>
-      <!-- Summary badges -->
-      <span v-if="summary" class="flex items-center gap-1.5">
+      <!-- Live-progress summary (2026-08-23) -->
+      <span v-if="inLiveMode" class="flex items-center gap-1.5">
+        <span v-if="liveSummary.running > 0" class="text-[var(--semantic-text-muted)] font-semibold" data-testid="running-count">
+          {{ liveSummary.running }} running
+        </span>
+        <span v-if="liveSummary.done > 0" class="text-green-500 font-semibold" data-testid="done-count">
+          ✓ {{ liveSummary.done }}
+        </span>
+        <span v-if="liveSummary.failed > 0" class="text-red-500 font-semibold" data-testid="failed-count">
+          ✗ {{ liveSummary.failed }}
+        </span>
+      </span>
+      <!-- Final-envelope summary -->
+      <span v-else-if="summary" class="flex items-center gap-1.5">
         <span v-if="summary.succeeded > 0" class="text-green-500 font-semibold">
           ✓ {{ summary.succeeded }}
         </span>
@@ -179,17 +264,100 @@ function describeInheritedContext(mode: string): string {
           ✗ {{ summary.failed }}
         </span>
       </span>
-      <span v-if="agentCount > 0 || agents.length > 0" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <!-- Toggle caret: hidden in live mode (body is always shown). -->
+      <span v-if="!inLiveMode && (agentCount > 0 || agents.length > 0)" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
 
     <!-- Expanded content -->
-    <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
+    <div v-if="isExpanded || inLiveMode" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <div class="divide-y divide-[var(--color-border)]">
+        <!-- LIVE PROGRESS rows (2026-08-23) — shown until the
+             <results> envelope replaces props.content. Mirrors the
+             shape of the parsed-envelope rows below for visual
+             consistency. -->
+        <template v-if="inLiveMode">
+          <div
+            v-for="(row, idx) in liveProgress"
+            :key="`live-${idx}`"
+            class="overflow-hidden"
+          >
+            <div
+              class="group flex items-center gap-1 px-2 py-1.5 select-none hover:bg-violet-500/5"
+              :class="{ 'bg-red-500/5': row.status === 'failed' }"
+            >
+              <span
+                class="w-2 h-2 rounded-full shrink-0"
+                :class="
+                  row.status === 'done'
+                    ? 'bg-green-500'
+                    : row.status === 'failed'
+                    ? 'bg-red-500'
+                    : 'bg-yellow-500 animate-pulse'
+                "
+                :data-testid="`live-dot-${idx}`"
+              ></span>
+              <span class="text-[var(--semantic-text)] font-medium text-xs">{{ row.name || `agent_${idx}` }}</span>
+              <span
+                v-if="subAgentArgs?.[idx]?.inherited_context && subAgentArgs[idx].inherited_context !== 'none'"
+                class="text-[10px] px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
+                style="background-color: var(--color-violet); color: white; opacity: 0.85;"
+                :title="`Parent history: ${describeInheritedContext(subAgentArgs[idx].inherited_context!)}`"
+              >
+                parent: {{ subAgentArgs[idx].inherited_context }}
+              </span>
+              <span
+                v-if="row.sessionId"
+                class="text-[var(--semantic-text-muted)] text-xs font-mono truncate max-w-[120px]"
+                :title="row.sessionId"
+              >
+                {{ row.sessionId }}
+              </span>
+              <span
+                v-if="formatElapsed(row.elapsedMs)"
+                class="text-[10px] text-[var(--semantic-text-muted)] whitespace-nowrap"
+              >
+                {{ formatElapsed(row.elapsedMs) }}
+              </span>
+              <button
+                v-if="row.sessionId"
+                class="text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] px-1 rounded text-xs leading-none"
+                data-testid="peek-button"
+                :title="`Peek into ${row.name}'s progress`"
+                @click.stop="peekLiveAgent(idx, row)"
+              >
+                👁
+              </button>
+              <span class="flex-1"></span>
+              <span
+                v-if="row.status === 'done'"
+                class="text-xs text-green-500"
+              >
+                done
+              </span>
+              <span
+                v-else-if="row.status === 'failed'"
+                class="text-xs text-red-500"
+              >
+                failed
+              </span>
+              <span
+                v-else
+                class="text-xs text-[var(--semantic-text-muted)]"
+                data-testid="running-badge"
+              >
+                running
+              </span>
+            </div>
+          </div>
+        </template>
+        <!-- PARSED <results> rows (pre-existing) — shown when an
+             envelope is present in props.content. Takes precedence
+             over live-progress once the tool completes. -->
         <div 
           v-for="(agent, idx) in agents" 
-          :key="idx"
+          :key="`env-${idx}`"
           class="overflow-hidden"
         >
           <!-- Agent header -->
