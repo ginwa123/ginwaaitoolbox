@@ -1118,6 +1118,21 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     );
                     continue;
                 }
+                // In-stream final marker (llm_chunk / type="chunk_final"):
+                // tells the frontend the token stream is over + carries
+                // usage BEFORE the canonical llm_full row lands. The full
+                // row (insertLLMHistories below with is_emit_sse=true)
+                // remains the source of truth for rendering — this only
+                // ends the typing indicator early.
+                on_event_sent.sendStreamChunkFinal(allocator, copy_session_id, .{
+                    .index = 0,
+                    .usage = .{
+                        .prompt_tokens = @intCast(res_dynamic_agent.usage.prompt_tokens),
+                        .completion_tokens = @intCast(res_dynamic_agent.usage.completion_tokens),
+                        .total_tokens = @intCast(res_dynamic_agent.usage.total_tokens),
+                    },
+                    .session_id = copy_session_id,
+                });
                 _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
@@ -1537,6 +1552,7 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
             const content_chunk = on_event_sent.ContentChunk{
                 .index = stream_ctx.chunk_index,
                 .content = content,
+                .session_id = session_id,
             };
             on_event_sent.sendStreamChunkContent(allocator, session_id, content_chunk);
         }
@@ -1548,6 +1564,7 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
             const reasoning_chunk = on_event_sent.ReasoningChunk{
                 .index = stream_ctx.chunk_index,
                 .reasoning = reasoning,
+                .session_id = session_id,
             };
             on_event_sent.sendStreamChunkReasoning(allocator, session_id, reasoning_chunk);
         }
@@ -1559,6 +1576,7 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
             const delta_chunk = on_event_sent.ToolCallDeltaChunk{
                 .index = stream_ctx.chunk_index,
                 .deltas = deltas,
+                .session_id = session_id,
             };
             on_event_sent.sendStreamToolCallDelta(allocator, session_id, delta_chunk);
         }

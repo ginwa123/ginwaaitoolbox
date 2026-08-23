@@ -434,12 +434,19 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
 pub const ContentChunk = struct {
     index: usize,
     content: []const u8,
+    /// Session this chunk belongs to. Serialized into the llm_chunk
+    /// payload so the frontend's per-session filter
+    /// (`event.session_id !== sid`) can pass chunk events through —
+    /// without it every chunk is dropped at the ChatView gate.
+    session_id: []const u8 = "",
 };
 
 /// Structured representation of a reasoning chunk
 pub const ReasoningChunk = struct {
     index: usize,
     reasoning: []const u8,
+    /// See ContentChunk.session_id — required for the frontend gate.
+    session_id: []const u8 = "",
 };
 
 /// Structured representation of usage information
@@ -453,12 +460,16 @@ pub const ChunkUsage = struct {
 pub const FinalChunk = struct {
     index: usize,
     usage: ?ChunkUsage,
+    /// See ContentChunk.session_id — required for the frontend gate.
+    session_id: []const u8 = "",
 };
 
 /// Structured representation of a tool call delta
 pub const ToolCallDeltaChunk = struct {
     index: usize,
     deltas: []const agent.ToolCallDelta,
+    /// See ContentChunk.session_id — required for the frontend gate.
+    session_id: []const u8 = "",
 };
 
 // ============================================================================
@@ -470,6 +481,7 @@ const ContentChunkJson = struct {
     index: usize,
     content: []const u8,
     type: []const u8 = "chunk",
+    session_id: []const u8 = "",
 };
 
 /// JSON structure for reasoning chunk
@@ -477,6 +489,7 @@ const ReasoningChunkJson = struct {
     index: usize,
     reasoning_content: []const u8,
     type: []const u8 = "chunk",
+    session_id: []const u8 = "",
 };
 
 /// JSON structure for final chunk with usage
@@ -485,6 +498,7 @@ const FinalChunkJson = struct {
     type: []const u8 = "chunk_final",
     finish_reason: []const u8 = "stop",
     usage: ?ChunkUsage = null,
+    session_id: []const u8 = "",
 };
 
 /// JSON structure for tool call delta chunk
@@ -492,6 +506,7 @@ const ToolCallDeltaChunkJson = struct {
     index: usize,
     type: []const u8 = "tool_call_delta",
     deltas: []const agent.ToolCallDelta,
+    session_id: []const u8 = "",
 };
 
 /// Serialize a content chunk to JSON format
@@ -502,6 +517,7 @@ pub fn serializeContentChunk(allocator: std.mem.Allocator, chunk: ContentChunk) 
     const json_chunk = ContentChunkJson{
         .index = chunk.index,
         .content = chunk.content,
+        .session_id = chunk.session_id,
     };
 
     try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
@@ -519,6 +535,7 @@ pub fn serializeReasoningChunk(allocator: std.mem.Allocator, chunk: ReasoningChu
     const json_chunk = ReasoningChunkJson{
         .index = chunk.index,
         .reasoning_content = chunk.reasoning,
+        .session_id = chunk.session_id,
     };
 
     try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
@@ -536,9 +553,10 @@ pub fn serializeFinalChunk(allocator: std.mem.Allocator, chunk: FinalChunk) ![]u
     const json_chunk = FinalChunkJson{
         .index = chunk.index,
         .usage = chunk.usage,
+        .session_id = chunk.session_id,
     };
 
-    try buf.writer(allocator).print("{}", .{std.json.fmt(json_chunk, .{
+    try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
         .whitespace = .indent_4,
     })});
 
@@ -553,6 +571,7 @@ pub fn serializeToolCallDeltas(allocator: std.mem.Allocator, chunk: ToolCallDelt
     const json_chunk = ToolCallDeltaChunkJson{
         .index = chunk.index,
         .deltas = chunk.deltas,
+        .session_id = chunk.session_id,
     };
 
     try buf.print(allocator, "{f}", .{std.json.fmt(json_chunk, .{
@@ -831,4 +850,76 @@ test "SseEventLLMHistory emits is_input/is_output as JSON booleans" {
     try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_output\":\"false\"") == null);
     try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_input\": 1") == null);
     try testing_oes.expect(std.mem.indexOf(u8, json, "\"is_output\": 0") == null);
+}
+
+// ============================================================================
+// llm_chunk payload tests (2026-08-23 llm-chunk-streaming)
+//
+// The frontend's ChatView gate (`event.session_id !== sid`) drops every
+// chunk event whose JSON payload lacks a session_id field. These tests
+// lock in that field on all four chunk payload shapes.
+// ============================================================================
+
+test "serializeContentChunk includes session_id + type chunk" {
+    const data = try serializeContentChunk(testing_oes.allocator, .{
+        .index = 3,
+        .content = "Hel",
+        .session_id = "sess-abc",
+    });
+    defer testing_oes.allocator.free(data);
+
+    // indent_4 whitespace puts `"key": value` on its own line — match
+    // on the key only (the SseEventLLMHistory tests above use minified,
+    // where `"key":"value"` works; here it would false-negative).
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"session_id\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"sess-abc\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"type\": \"chunk\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"content\": \"Hel\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"index\": 3") != null);
+}
+
+test "serializeReasoningChunk includes session_id" {
+    const data = try serializeReasoningChunk(testing_oes.allocator, .{
+        .index = 1,
+        .reasoning = "thinking...",
+        .session_id = "sess-abc",
+    });
+    defer testing_oes.allocator.free(data);
+
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"session_id\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"sess-abc\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"reasoning_content\": \"thinking...\"") != null);
+}
+
+test "serializeFinalChunk includes session_id + type chunk_final + usage" {
+    const data = try serializeFinalChunk(testing_oes.allocator, .{
+        .index = 0,
+        .usage = .{ .prompt_tokens = 10, .completion_tokens = 20, .total_tokens = 30 },
+        .session_id = "sess-abc",
+    });
+    defer testing_oes.allocator.free(data);
+
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"session_id\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"sess-abc\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"type\": \"chunk_final\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"total_tokens\": 30") != null);
+}
+
+test "serializeToolCallDeltas includes session_id" {
+    const deltas = [_]agent.ToolCallDelta{.{
+        .index = 0,
+        .id = "call_1",
+        .function_name = "bash",
+        .function_arguments = "{\"cmd\"",
+    }};
+    const data = try serializeToolCallDeltas(testing_oes.allocator, .{
+        .index = 2,
+        .deltas = &deltas,
+        .session_id = "sess-abc",
+    });
+    defer testing_oes.allocator.free(data);
+
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"session_id\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"sess-abc\"") != null);
+    try testing_oes.expect(std.mem.indexOf(u8, data, "\"type\": \"tool_call_delta\"") != null);
 }
