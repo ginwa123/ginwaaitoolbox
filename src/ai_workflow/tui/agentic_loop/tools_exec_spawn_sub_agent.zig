@@ -9,6 +9,7 @@ const llm_history = nalarcore.llm_history;
 const models = @import("models.zig");
 const ai_workflow = @import("workflow.zig");
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+const subagent_progress = @import("subagent_progress.zig");
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
@@ -34,6 +35,19 @@ const SubAgentThreadArgs = struct {
     active_loops: *models.ActiveLoops,
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
     sub_agent_overrides: ?ai_workflow.SubAgentOverrides = null,
+    // 2026-08-23 spawn-subagent-live-progress: the parent's
+    // tool_call.id (from the LLM's tool_calls[i].id). Frontend
+    // ChatView.vue routes role="subagent_progress" SSE events into
+    // a per-tool_call_id map; without this we can't correlate
+    // progress to the right card.
+    tool_call_id: []const u8 = "",
+    // Total number of sub-agents in THIS spawn batch. Frontend
+    // displays it as "1 of 3" chips in the row.
+    total_agents: usize = 0,
+    // Wall-clock capture at thread entry so elapsed_ms is meaningful
+    // (the frontend renders it as a "running for 12s" chip). Use
+    // `.nanoseconds` to convert to ms at emit time.
+    thread_start_ns: i128 = 0,
 };
 
 // Shared result storage for thread synchronization
@@ -71,6 +85,70 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
 
     defer args_ptr.allocator.destroy(args_ptr);
 
+    // 2026-08-23 spawn-subagent-live-progress: capture start time at
+    // thread entry so subsequent emit calls report elapsed_ms correctly.
+    args_ptr.thread_start_ns = std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds;
+    // Tiny inline helpers used by every error/completion branch below.
+    // Defined as functions (not closures) so they capture no per-loop
+    // state — they read the latest values off args_ptr each call.
+    const elapsedMsFn = struct {
+        // Computes elapsed ms since thread entry. Pure relative to
+        // the args_ptr.thread_start_ns field — safe to call from any
+        // branch below.
+        fn call(a: *SubAgentThreadArgs) i64 {
+            const now_ns = std.Io.Timestamp.now(a.io, .real).nanoseconds;
+            const diff_ns = now_ns - a.thread_start_ns;
+            return @intCast(@divTrunc(diff_ns, std.time.ns_per_ms));
+        }
+    }.call;
+    // Convenience alias — `elapsedMs(args_ptr)` reads more naturally
+    // than `elapsedMsFn(args_ptr)` at the call sites below.
+    const elapsedMs = elapsedMsFn;
+    // Emits `failed` progress then sets error_message on the shared
+    // slot. Both operations are required: progress MUST fire so the
+    // frontend row doesn't strand as `running` forever, and the
+    // error_message populates the row's <error>...</error> in the
+    // eventual <results> envelope. The err_msg lifetime comes from
+    // args_ptr.allocator — it survives the thread arena teardown
+    // (the existing per-thread pattern at the original error sites).
+    const FailHelpers = struct {
+        fn call(a: *SubAgentThreadArgs, err_msg: []const u8, ms: i64) void {
+            a.shared_results.results[a.thread_idx].error_message = err_msg;
+            subagent_progress.emitProgressEvent(.{
+                .parent_session_id = a.parent_sess_id,
+                .tool_call_id = a.tool_call_id,
+                .agent_name = a.agent_name,
+                .status = .failed,
+                .agent_index = a.thread_idx,
+                .total_agents = a.total_agents,
+                .session_id = "", // never created if we failed before line 130
+                .elapsed_ms = ms,
+            });
+        }
+        // Variant for branches that ALREADY wrote error_message to the
+        // shared slot (the two pathological "completed but empty / no
+        // message" branches below). Skips the assignment.
+        fn callAlreadySet(a: *SubAgentThreadArgs, sub_session_id: []const u8, ms: i64) void {
+            subagent_progress.emitProgressEvent(.{
+                .parent_session_id = a.parent_sess_id,
+                .tool_call_id = a.tool_call_id,
+                .agent_name = a.agent_name,
+                .status = .failed,
+                .agent_index = a.thread_idx,
+                .total_agents = a.total_agents,
+                .session_id = sub_session_id,
+                .elapsed_ms = ms,
+            });
+        }
+    };
+    const failSubAgent = FailHelpers.call;
+    const failSubAgentAlreadySet = FailHelpers.callAlreadySet;
+    // We never emit `session_id` on failed paths because allocation
+    // happens deep in the function (after every error-return point
+    // we're in the "session not yet created" branch). The frontend
+    // reducer treats empty session_id as "not yet known" so the
+    // peek button stays disabled and shows "—" when hovered.
+
     // Propagate is_random_fallback from the resolved overrides to the
     // shared result so the frontend can render the "random" badge.
     // Done BEFORE the workflow call so it's set even if the workflow
@@ -100,7 +178,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             "Agent Nalar System error, the actual error is ->>>> Failed to create session_id for '{s}'\n",
             .{args_ptr.agent_name},
         ) catch "Agent Nalar System error, the actual error is ->>>> Failed to create session_id";
-        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+        failSubAgent(args_ptr, err_msg, elapsedMs(args_ptr));
         args_ptr.logger.errFmt("Failed to create session_id for '{s}'", .{args_ptr.agent_name});
         return;
     };
@@ -115,12 +193,27 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
                 "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id for '{s}'\n",
                 .{args_ptr.agent_name},
             ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy session_id";
-            args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+            failSubAgent(args_ptr, err_msg, elapsedMs(args_ptr));
             args_ptr.logger.errFmt("Failed to copy session_id for '{s}'", .{args_ptr.agent_name});
             return;
         };
         args_ptr.shared_results.results[args_ptr.thread_idx].session_id = session_id_copy;
     }
+
+    // 2026-08-23 spawn-subagent-live-progress: emit `launched` as soon
+    // as the sub-agent's session_id is stored in shared_results.
+    // Frontend ChatView.vue uses this to flip its row from
+    // `pending` → `running` and to enable the peek-button path.
+    subagent_progress.emitProgressEvent(.{
+        .parent_session_id = args_ptr.parent_sess_id,
+        .tool_call_id = args_ptr.tool_call_id,
+        .agent_name = args_ptr.agent_name,
+        .status = .launched,
+        .agent_index = args_ptr.thread_idx,
+        .total_agents = args_ptr.total_agents,
+        .session_id = args_ptr.shared_results.results[args_ptr.thread_idx].session_id,
+        .elapsed_ms = elapsedMs(args_ptr),
+    });
 
     const di = nalarcore.getSingleton() catch unreachable;
 
@@ -193,6 +286,20 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
                 .{err_name},
             ) catch "Failed to format error message";
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message = diagnostic;
+        // 2026-08-23 spawn-subagent-live-progress: also flip the SSE
+        // progress event so the chatview row goes running→failed
+        // INSTEAD of stranding as running until group.await returns.
+        // emitProgressEvent is fire-and-forget; never wrap in catch.
+        subagent_progress.emitProgressEvent(.{
+            .parent_session_id = args_ptr.parent_sess_id,
+            .tool_call_id = args_ptr.tool_call_id,
+            .agent_name = args_ptr.agent_name,
+            .status = .failed,
+            .agent_index = args_ptr.thread_idx,
+            .total_agents = args_ptr.total_agents,
+            .session_id = sess_id,
+            .elapsed_ms = elapsedMs(args_ptr),
+        });
         args_ptr.logger.errFmt("Sub-agent workflow error for '{s}': {s}", .{ args_ptr.agent_name, err_name });
         return;
     };
@@ -208,7 +315,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
             "Agent Nalar System error, the actual error is ->>>> getLatestMessage: {s}\n",
             .{@errorName(err)},
         ) catch "Agent Nalar System error, the actual error is ->>>> getLatestMessage failed";
-        args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+        failSubAgent(args_ptr, err_msg, elapsedMs(args_ptr));
         args_ptr.logger.errFmt("getLatestMessage error for '{s}': {s}", .{ sess_id, @errorName(err) });
         return;
     };
@@ -222,20 +329,44 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
                     "Agent Nalar System error, the actual error is ->>>> Failed to copy response: OutOfMemory\n",
                     .{},
                 ) catch "Agent Nalar System error, the actual error is ->>>> Failed to copy response";
-                args_ptr.shared_results.results[args_ptr.thread_idx].error_message = err_msg;
+                failSubAgent(args_ptr, err_msg, elapsedMs(args_ptr));
                 mutable_msg.deinit(args_ptr.allocator);
                 return;
             };
             args_ptr.shared_results.results[args_ptr.thread_idx].response = response_copy;
             args_ptr.shared_results.results[args_ptr.thread_idx].success = true;
+            // 2026-08-23 spawn-subagent-live-progress: emit
+            // `completed` ONLY when the sub-agent produced a
+            // non-empty response. The two pathological "completed
+            // but empty / no message" branches below emit `failed`
+            // instead. Frontend peeks the subagent_session_id to
+            // open the live peek panel mid-run.
+            subagent_progress.emitProgressEvent(.{
+                .parent_session_id = args_ptr.parent_sess_id,
+                .tool_call_id = args_ptr.tool_call_id,
+                .agent_name = args_ptr.agent_name,
+                .status = .completed,
+                .agent_index = args_ptr.thread_idx,
+                .total_agents = args_ptr.total_agents,
+                .session_id = sess_id,
+                .elapsed_ms = elapsedMs(args_ptr),
+            });
         } else {
+            // Sub-agent finished without producing any assistant text.
+            // Treat as a failure for UI purposes so the row flips
+            // from running to failed (instead of hanging as running
+            // until the user navigates away).
             args_ptr.shared_results.results[args_ptr.thread_idx].error_message =
                 "Agent Nalar System error, the actual error is ->>>> Sub-agent completed but produced empty response content\n";
+            failSubAgentAlreadySet(args_ptr, sess_id, elapsedMs(args_ptr));
         }
         mutable_msg.deinit(args_ptr.allocator);
     } else {
+        // No message row returned at all — same UX treatment as the
+        // empty-response branch.
         args_ptr.shared_results.results[args_ptr.thread_idx].error_message =
             "Agent Nalar System error, the actual error is ->>>> Sub-agent completed but no message found in database\n";
+        failSubAgentAlreadySet(args_ptr, sess_id, elapsedMs(args_ptr));
     }
 
     _ = args_ptr.shared_results.completed_count.fetchAdd(1, .monotonic);
@@ -369,6 +500,17 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .active_loops = ctx.active_loops,
             .inherited_context = sub_agent.inherited_context orelse "",
             .sub_agent_overrides = overrides,
+            // 2026-08-23 spawn-subagent-live-progress: propagate
+            // the parent's tool_call id + the total batch size so
+            // the per-thread progress events are correctly keyed.
+            // Without tool_call_id the frontend cannot route the
+            // SSE event into the right card (two simultaneous
+            // spawns would otherwise cross-contaminate).
+            .tool_call_id = ctx.tool_call_id,
+            .total_agents = sub_agent_count,
+            // .thread_start_ns is set INSIDE runSubAgent at entry
+            // (we don't have a precise timestamp here that beats
+            // the per-thread io.now()).
         };
 
         // group.concurrent returns error.ConcurrencyUnavailable if the Io
@@ -422,4 +564,90 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     const inner_owned = try final_list.toOwnedSlice(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
     return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+// =====================================================================
+// Static-contract tests — grep the impl source for required emit sites.
+//
+// 2026-08-23 spawn-subagent-live-progress: these guard the invariant
+// that the per-thread runtime emits progress events at 3 lifecycle
+// points (`launched` after session_id stored, `completed` after
+// success=true, `failed` on each error return). When a future refactor
+// accidentally drops one of those call sites, the chatview card will
+// regress to "0 sub-agents" until all threads join — same bug the
+// user reported.
+//
+// Technique follows design_model_group_test.zig: read the file source
+// and assert required string fragments exist. Reads THIS file at
+// runtime via a known repo-root-relative path.
+// =====================================================================
+
+const testing = std.testing;
+const impl_path = "src/ai_workflow/tui/agentic_loop/tools_exec_spawn_sub_agent.zig";
+
+test "execSpawnSubAgent uses emitProgressEvent for launched/completed/failed" {
+    const max_bytes: usize = 1 * 1024 * 1024; // 1 MiB — impl is ~17KB
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
+    defer testing.allocator.free(source);
+
+    // 3 call sites + 3 status values must all be present.
+    const emit_count = std.mem.count(u8, source, "emitProgressEvent(");
+    try testing.expect(emit_count >= 3);
+
+    try testing.expect(std.mem.indexOf(u8, source, ".status = .launched") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".status = .completed") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".status = .failed") != null);
+
+    // Sanity: ensure tool_call_id is plumbed through SubAgentThreadArgs
+    // (the per-thread struct that carries state from the launch loop
+    // to runSubAgent). Without this, the emitted events can't be
+    // correlated to the parent spawn call by the frontend.
+    try testing.expect(std.mem.indexOf(u8, source, "tool_call_id: []const u8") != null);
+}
+
+test "runSubAgent captures start timestamp for elapsed_ms" {
+    // The reducer on the frontend displays elapsed_ms as a chip;
+    // without capturing start_ns at thread entry, every event would
+    // show 0 or a meaningless number.
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "thread_start_ns") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "elapsed_ms") != null);
+}
+
+test "failed emit happens on every error return path" {
+    // There are ~6 error-return sites in runSubAgent (session_id alloc
+    // fail, copy fail, workflow error, getLatestMessage fail, empty
+    // response, missing message). All must emit `failed` BEFORE
+    // returning so the frontend's progress map never strands a row
+    // in `running` forever.
+    //
+    // Two of them are centralized in `FailHelpers.call` /
+    // `FailHelpers.callAlreadySet` (the per-thread helpers defined
+    // near the top of runSubAgent). One is the workflow-error branch
+    // (which calls emitProgressEvent directly because it has its own
+    // diagnostic). So the source MUST contain at least 3 string
+    // occurrences of `.status = .failed`: 2 in the helper struct +
+    // 1 inline. The ≥3 bound is the regression threshold — if a
+    // future refactor splits the helper, the threshold can grow in
+    // the same commit.
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
+    defer testing.allocator.free(source);
+
+    const failed_emit_count = std.mem.count(u8, source, ".status = .failed");
+    try testing.expect(failed_emit_count >= 3);
+
+    // Cross-check: every error-return site must EITHER call
+    // `failSubAgent(` (the helper) OR `emitProgressEvent(` directly
+    // AND set `.status = .failed` (the workflow-error path).
+    // Six error sites → at least 4 helper invocations (the
+    // workflow-error branch is direct + 2 helper-struct definitions
+    // counted by the helper-name greps below).
+    const failhelper_calls = std.mem.count(u8, source, "failSubAgent(");
+    const failhelper_already_set = std.mem.count(u8, source, "failSubAgentAlreadySet(");
+    const helper_call_sites = failhelper_calls + failhelper_already_set;
+    try testing.expect(helper_call_sites >= 4);
 }

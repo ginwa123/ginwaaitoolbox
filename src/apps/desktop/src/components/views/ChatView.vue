@@ -18,6 +18,12 @@ import FileInput from '../file/FileInput.vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
+import {
+  applyProgressEvent,
+  clearProgressFor,
+  type SubAgentProgressEvent,
+  type SubAgentProgressMap,
+} from '../../helpers/subagentProgress'
 import DiffView from '../tool_outputs/_shared/DiffView.vue'
 import ReadFile from '../tool_outputs/ReadFile.vue'
 import WriteFile from '../tool_outputs/WriteFile.vue'
@@ -1067,6 +1073,13 @@ const showSkillsPopup = ref(false)
 // Track which tool items are expanded (by index)
 const expandedToolIds = ref<Set<string>>(new Set())
 
+// 2026-08-23 spawn-subagent-live-progress: per-tool_call_id map of
+// sub-agent progress rows. Fed by role="subagent_progress" SSE events
+// on the existing `llm` bus channel (no new event_type). The map
+// entry is cleared once the parent's final <results> tool result
+// arrives so the parsed-envelope view takes over rendering.
+const subAgentProgressMap = ref<SubAgentProgressMap>({})
+
 // Image preview state
 const previewImageUrl = ref<string | null>(null)
 
@@ -2035,6 +2048,20 @@ const connectSse = () => {
 
     console.log('[SSE ChatView] Received event:', event)
 
+    // 2026-08-23 spawn-subagent-live-progress: route sub-agent
+    // progress events into the per-tool_call_id map and STOP here.
+    // Touching `messages.value` would pollute the chat transcript
+    // (these rows are ephemeral, NOT persisted) and would also
+    // toggle the dedupe gate above. The progress map is the
+    // SINGLE consumer for role="subagent_progress".
+    if ((event as SubAgentProgressEvent).role === 'subagent_progress') {
+      subAgentProgressMap.value = applyProgressEvent(
+        subAgentProgressMap.value,
+        event as SubAgentProgressEvent,
+      )
+      return
+    }
+
     if (event.type === 'connected' && event.session_id) {
       console.log('SSE connected, session:', event.session_id)
       return
@@ -2155,6 +2182,26 @@ const connectSse = () => {
       lastAutoStickAt.value = Date.now()
       nextTick(() => scrollToBottom(false, 'sse-message-complete'))
       setupCodeBlockCopyButtons()
+
+      // 2026-08-23 spawn-subagent-live-progress: when the FINAL
+      // spawn_sub_agent tool result row lands, drop the
+      // corresponding live-progress entry so the parsed-envelope
+      // view (which lives in `content`) takes over rendering
+      // immediately. Without this, the map's running rows would
+      // sit invisibly under the now-populated <results> envelope
+      // (the component precedence logic hides them, but the map
+      // memory leaks across renders).
+      if (
+        role === 'tool' &&
+        event.tool_name === 'spawn_sub_agent' &&
+        event.tool_call_id &&
+        subAgentProgressMap.value[event.tool_call_id]
+      ) {
+        subAgentProgressMap.value = clearProgressFor(
+          subAgentProgressMap.value,
+          event.tool_call_id,
+        )
+      }
 
       if (event.total_tokens) {
         maxTotalTokens.value = event.total_tokens
@@ -2841,6 +2888,7 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
                             :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
+                            :progress="msg.tool_call_id ? subAgentProgressMap[msg.tool_call_id] : null"
                             @peek="nav.openPeek($event)"
                           />
                           <NalarBrowser
