@@ -2215,8 +2215,23 @@ const connectSse = () => {
 
 
     if (event.type === 'chunk' && event.content) {
-      streamingContent.value = event.content
+      // 2026-08-23 llm-chunk-streaming: the backend sends RAW DELTAS
+      // (choices[0].delta.content per provider SSE), so APPEND here —
+      // the old `=` replace left only the last fragment visible.
+      streamingContent.value += event.content
       updateStreamingMessage()
+      return
+    }
+
+    // 2026-08-23 llm-chunk-streaming: in-stream final marker emitted by
+    // workflow.zig right before the canonical llm_full row. Carries
+    // usage + signals "token stream over" so the typing indicator can
+    // stop early. Do NOT push a message here — the full event that
+    // follows replaces the streaming-* row with the canonical DB row.
+    if (event.type === 'chunk_final') {
+      if (event.total_tokens) {
+        maxTotalTokens.value = event.total_tokens
+      }
       return
     }
 
