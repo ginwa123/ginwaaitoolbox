@@ -4,6 +4,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
+const parse_thinking_mod = nalarcore.parse_thinking;
 const LlmConfig = config.LlmConfig;
 
 /// Parse the PUT body into a `ConfigInput`.
@@ -218,6 +219,22 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                                 if (tp > 100) return error.InvalidThresholdPercent;
                                 try profile_obj.put(allocator, "compaction_threshold_percent", json.Value{ .integer = tp });
                             }
+                            // === Model-thinking knobs (plan 2026-08-23-model-thinking) ===
+                            // Validate at the apply site (NOT at JSON-parse
+                            // time) so a single error path serves both the
+                            // granular change-list shape (handled here) and
+                            // the on-disk object-map shape (handled by the
+                            // validation pass below). The HTTP layer
+                            // surfaces the error as a 400 with a
+                            // structured body.
+                            if (profile_change.thinking_budget_tokens) |t| {
+                                if (t == 0 or t > 2_000_000) return error.InvalidThinkingBudgetTokens;
+                                try profile_obj.put(allocator, "thinking_budget_tokens", json.Value{ .integer = t });
+                            }
+                            if (profile_change.reasoning_effort) |re| {
+                                _ = parse_thinking_mod.parseReasoningEffort(re) catch return error.InvalidReasoningEffort;
+                                try profile_obj.put(allocator, "reasoning_effort", json.Value{ .string = try allocator.dupe(u8, re) });
+                            }
                             const profile_value_obj = json.Value{ .object = profile_obj };
                             try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value_obj);
                         }
@@ -229,6 +246,12 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             // the borrowed slice from the parsed request stays valid
             // across the `parsed.deinit()` at scope exit.
             .object => |obj| {
+                // Validate model-thinking fields before copying (the
+                // copy is cheap but the validation must reject bad
+                // values BEFORE we write anything to disk). Plan
+                // 2026-08-23-model-thinking.
+                validateModelThinkingOnDiskProfileMap(obj) catch |err| return err;
+
                 var iter = obj.iterator();
                 while (iter.next()) |entry| {
                     const key = try allocator.dupe(u8, entry.key_ptr.*);
@@ -282,6 +305,20 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // duped onto the allocator so the new array is independent of the
     // parsed input slice (which goes out of scope after this function).
     if (input.sub_agents) |sas| {
+        // === Model-thinking validation (plan 2026-08-23-model-thinking) ===
+        // Validate each sub-agent's `thinking_budget_tokens` and
+        // `reasoning_effort` BEFORE any dup'ing so a bad value is
+        // rejected at the HTTP layer rather than silently written
+        // to disk. The `LlmConfig.SubAgentJson` type already parsed
+        // these from the request body — we just enforce the bounds.
+        for (sas) |sa| {
+            if (sa.thinking_budget_tokens) |t| {
+                if (t == 0 or t > 2_000_000) return error.InvalidThinkingBudgetTokens;
+            }
+            if (sa.reasoning_effort) |re| {
+                _ = parse_thinking_mod.parseReasoningEffort(re) catch return error.InvalidReasoningEffort;
+            }
+        }
         const owned = try allocator.alloc(LlmConfig.SubAgentJson, sas.len);
         errdefer allocator.free(owned);
         for (sas, 0..) |sa, i| {
@@ -294,6 +331,10 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                 .url_style = try allocator.dupe(u8, sa.url_style),
                 .api_key = try allocator.dupe(u8, sa.api_key),
                 .system_prompt = try allocator.dupe(u8, sa.system_prompt),
+                // Model-thinking knobs (plan 2026-08-23-model-thinking).
+                // Already range-validated above; thread through as-is.
+                .thinking_budget_tokens = sa.thinking_budget_tokens,
+                .reasoning_effort = if (sa.reasoning_effort) |re| try allocator.dupe(u8, re) else null,
             };
         }
         config_json.sub_agents = owned;
@@ -452,6 +493,17 @@ const ProfileChange = struct {
     /// block above (per-profile validation is layered on top of the
     /// top-level model_compaction_size_kb check).
     compaction_threshold_percent: ?u8 = null,
+    /// Anthropic-only override for `thinking.budget_tokens`. Plan
+    /// 2026-08-23-model-thinking. Must be in (0, 2_000_000] when
+    /// present — values outside that range are rejected with
+    /// `error.InvalidThinkingBudgetTokens`.
+    thinking_budget_tokens: ?u32 = null,
+    /// OpenAI-style reasoning effort (o1/o3/GPT-5/DeepSeek-R1).
+    /// One of "low" | "medium" | "high" | "auto". Invalid values
+    /// are rejected with `error.InvalidReasoningEffort` via the
+    /// parse_thinking helper (so the validation logic lives in
+    /// exactly one place — see parse_thinking.zig).
+    reasoning_effort: ?[]const u8 = null,
 };
 
 const ConfigJson = struct {
@@ -517,5 +569,46 @@ fn deepCopyJsonValue(allocator: std.mem.Allocator, value: json.Value) error{OutO
             }
             return json.Value{ .object = new_obj };
         },
+    }
+}
+
+/// Validate every profile in the on-disk object-map shape for the
+/// model-thinking fields (`thinking_budget_tokens`,
+/// `reasoning_effort`). The granular change-list shape (array of
+/// `ProfileChange`) is validated inline at its apply block above;
+/// this helper covers the on-disk shape because that path deep-
+/// copies the raw `json.Value` directly to disk without parsing
+/// through `ProfileChange`.
+///
+/// Returns `error.InvalidThinkingBudgetTokens` /
+/// `error.InvalidReasoningEffort` for any bad value, mirroring the
+/// change-list validation's error contract.
+fn validateModelThinkingOnDiskProfileMap(obj: json.ObjectMap) !void {
+    var iter = obj.iterator();
+    while (iter.next()) |entry| {
+        const profile_value = entry.value_ptr.*;
+        if (profile_value != .object) continue; // malformed entry, but the parser will catch it
+        const profile_obj = profile_value.object;
+
+        // thinking_budget_tokens: must be a positive integer in
+        // (0, 2_000_000]. Type-check the raw JSON value because the
+        // on-disk shape bypasses the `ProfileChange` parse struct.
+        if (profile_obj.get("thinking_budget_tokens")) |tbt| {
+            switch (tbt) {
+                .integer => |i| {
+                    if (i <= 0 or i > 2_000_000) return error.InvalidThinkingBudgetTokens;
+                },
+                else => return error.InvalidThinkingBudgetTokens,
+            }
+        }
+
+        // reasoning_effort: must be one of low / medium / high / auto.
+        if (profile_obj.get("reasoning_effort")) |re| {
+            const re_str: []const u8 = switch (re) {
+                .string => |s| s,
+                else => return error.InvalidReasoningEffort,
+            };
+            _ = parse_thinking_mod.parseReasoningEffort(re_str) catch return error.InvalidReasoningEffort;
+        }
     }
 }

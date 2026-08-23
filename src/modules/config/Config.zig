@@ -82,6 +82,17 @@ pub const LlmConfig = struct {
         /// (validates both `LlmProfile.compaction_threshold_percent`
         /// and `SubAgentConfig.compaction_threshold_percent`).
         InvalidThresholdPercent,
+        /// `thinking_budget_tokens` outside the (0, 2_000_000] range.
+        /// Surfaced by the HTTP PUT handler (plan 2026-08-23-model-thinking).
+        /// The Anthropic API rejects budgets that violate the 1024 floor
+        /// and the strict-less-than-max_tokens ceiling; we pre-clamp at the
+        /// request-build site, so the only way a bad value reaches here is
+        /// a hand-edited config or a malformed PUT body.
+        InvalidThinkingBudgetTokens,
+        /// `reasoning_effort` outside the {low, medium, high, auto} set.
+        /// Surfaced by the HTTP PUT handler via the `parse_thinking`
+        /// helper.
+        InvalidReasoningEffort,
     };
 
     /// Individual profile settings.
