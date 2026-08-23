@@ -13,6 +13,8 @@
  */
 import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { defineComponent, h, provide } from 'vue'
 
 import Glob from '../Glob.vue'
@@ -87,12 +89,7 @@ describe('Glob.vue — de-bubble contract (renders like bash/ShellTool)', () => 
     // Read the component source and assert the old frame block is gone.
     // This is the static half of the contract — the DOM assertions above
     // are the rendered half.
-    const fs = require('node:fs')
-    const path = require('node:path')
-    const src = fs.readFileSync(
-      path.resolve(__dirname, '../Glob.vue'),
-      'utf8',
-    )
+    const src = readFileSync(resolve(__dirname, '../Glob.vue'), 'utf8')
     expect(src).toContain('.chat-tool-card')
     expect(src).not.toContain('border-radius: 6px')
     expect(src).not.toContain('background: var(--semantic-card-bg)')

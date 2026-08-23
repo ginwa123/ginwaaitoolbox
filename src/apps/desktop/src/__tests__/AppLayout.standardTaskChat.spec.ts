@@ -193,7 +193,6 @@ describe('AppLayout — standard task chat (folder / memory / chat items)', () =
       {
         id: WS_ID,
         name: 'WS',
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         items: [makeFolderItem([{ id: TASK_ID, name: 'New Chat', task_type: 'standard' } as Task])],
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any,
