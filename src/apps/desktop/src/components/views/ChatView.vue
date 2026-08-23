@@ -1341,6 +1341,7 @@ const groupToolNames = computed((): (string | null)[] => {
             // If EVERY tool call in this group already has a rendered
             // tool row somewhere in the transcript, the structured cards
             // are the source of truth — suppress the pill entirely.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; tool_calls_json shape is intentionally opaque.
             const allRendered = parsed.every((tc: any) => {
               const id = tc?.id
               return typeof id === 'string' && renderedToolCallIds.has(id)
@@ -1364,7 +1365,7 @@ const groupToolNames = computed((): (string | null)[] => {
         // tool call was rendered → no pill.
         let hasLaterTool = false
         for (let j = i + 1; j < messageGroups.value.length; j++) {
-          if (messageGroups.value[j].role === 'tool') {
+          if (messageGroups.value[j]?.role === 'tool') {
             hasLaterTool = true
             break
           }
