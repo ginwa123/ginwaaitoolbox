@@ -149,7 +149,7 @@ function describeInheritedContext(mode: string): string {
 
 <template>
   <div 
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    class="chat-tool-card font-mono text-xs"
     :class="{ 'border-red-500/50 opacity-80': failedCount > 0 }"
   >
     <!-- Header -->

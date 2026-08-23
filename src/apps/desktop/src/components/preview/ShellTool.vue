@@ -78,7 +78,7 @@ const copyStderr = async (e: Event) => {
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    class="chat-tool-card font-mono text-xs"
     :class="{ 'border-orange-500/50 opacity-85': hasWarning && !hasError, 'border-red-500/50 opacity-85': hasError }"
   >
     <!-- Header -->

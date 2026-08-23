@@ -2276,6 +2276,109 @@ pub fn getLatestMessage(
     return null;
 }
 
+/// Fetch ONE llm_history row by its exact id (scoped to session_id).
+///
+/// 2026-08-23 B1 fix — handle_tool.zig used to emit tool-result SSE via
+/// `getLatestMessage` (ORDER BY created_at_nano DESC LIMIT 1), which
+/// returns the LAST-CREATED row in the session regardless of which tool
+/// just completed. With N parallel tool calls, completions 1..N-1 all
+/// emitted the same (wrong) row: empty content + the wrong tool_call_id.
+/// The frontend then showed stale "loading" cards and TOOLS-pill spam.
+///
+/// This lookup selects by the placeholder row's KNOWN id instead, so
+/// each completion emits ITS OWN row. Scoped by session_id because ids
+/// are nanosecond timestamps — the guard makes cross-session collisions
+/// impossible even if two sessions insert in the same nanosecond.
+pub fn getMessageById(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    id: []const u8,
+) !?TUIHistory {
+    const sql =
+        \\SELECT
+        \\    h.id, h.session_id, h.model, h.created_at_nano AS created_at,
+        \\    h.response_content, h.finish_reason,
+        \\    COALESCE(h.role, 'assistant'),
+        \\    COALESCE(h.tool_calls_json, ''),
+        \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.agent, 'Agent'),
+        \\    COALESCE(s.name, ''),
+        \\    COALESCE(h.loop_index, 0),
+        \\    COALESCE(h.tool_name, ''),
+        \\    COALESCE(h.parent_session_id, ''),
+        \\    COALESCE(h.temperature, 0.2),
+        \\    COALESCE(h.is_thinking, 0),
+        \\    COALESCE(h.prompt_tokens, 0),
+        \\    COALESCE(h.completion_tokens, 0),
+        \\    COALESCE(h.total_tokens, 0),
+        \\    COALESCE(h.is_input, 0),
+        \\    COALESCE(h.is_output, 0),
+        \\    COALESCE(h.diffview_before, ''),
+        \\    COALESCE(h.diffview_after, ''),
+        \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.tool_call_id, '')
+        \\FROM llm_history h
+        \\LEFT JOIN sessions s ON h.session_id = s.id
+        \\WHERE h.id = ? AND h.session_id = ?
+        \\LIMIT 1
+    ;
+
+    var rows = try db.query(allocator, sql, &.{ id, session_id });
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const parent_session_id_str = row.values[13];
+        const diffview_before_str = row.values[21];
+        const diffview_after_str = row.values[22];
+        const image_url_str = row.values[23];
+        const history = TUIHistory{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .model = try allocator.dupe(u8, row.values[2]),
+            .created_at = try allocator.dupe(u8, row.values[3]),
+            .response_content = try allocator.dupe(u8, row.values[4]),
+            .finish_reason = try allocator.dupe(u8, row.values[5]),
+            .role = try allocator.dupe(u8, row.values[6]),
+            .tools = try allocator.dupe(u8, row.values[7]),
+            .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
+            .agent = try allocator.dupe(u8, row.values[9]),
+            .session_name = try allocator.dupe(u8, row.values[10]),
+            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
+            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .is_input = parseRowBool(row.values[19]),
+            .is_output = parseRowBool(row.values[20]),
+            .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
+            .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
+            .image_urls = if (image_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, image_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
+            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+        };
+        row.deinit(allocator);
+        return history;
+    }
+
+    return null;
+}
+
 // =============================================================================
 // Get Sessions By Directory Functions
 // =============================================================================

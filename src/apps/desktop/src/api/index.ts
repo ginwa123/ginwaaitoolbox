@@ -1107,7 +1107,14 @@ export interface Message {
   tool_calls_json?: any
   finish_reason?: string,
   is_input?: boolean,
-  is_output?: boolean
+  is_output?: boolean,
+  /**
+   * 2026-08-23 hidden-messages fix — thinking models' chain-of-thought.
+   * Already returned by the backend REST endpoint (http_response.zig
+   * SessionMessage.reasoning_content) and the SSE payload; previously
+   * unmapped so ChatView never saw it.
+   */
+  reasoning_content?: string
 }
 
 export interface SkillInfo {
@@ -1179,6 +1186,7 @@ export async function getChatHistory(
           image_url?: string
           // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
           tool_calls_json?: any
+          reasoning_content?: string
         }) => ({
           ...msg,
           content: msg.content,
@@ -1188,6 +1196,9 @@ export async function getChatHistory(
           diffview_after: msg.diffview_after,
           image_url: msg.image_url,
           tool_calls_json: msg.tool_calls_json,
+          // 2026-08-23 hidden-messages fix — pass the thinking model's
+          // reasoning through to ChatView (backend already returns it).
+          reasoning_content: msg.reasoning_content || undefined,
         }),
       ),
       has_more: data.has_more,
