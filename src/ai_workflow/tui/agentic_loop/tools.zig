@@ -104,6 +104,12 @@ pub const ToolExecContext = struct {
     /// param). Default empty so existing call sites continue to
     /// compile.
     active_page_id: []const u8 = "",
+    /// The parent's tool_call id for THIS dispatch. 2026-08-23 spawn-
+    /// subagent-live-progress: `execSpawnSubAgent` needs this to key
+    /// its per-tool progress events (ChatView.vue's frontend reducer
+    /// routes by it). Empty string default so every existing call
+    /// site that doesn't care about this field continues to compile.
+    tool_call_id: []const u8 = "",
 };
 
 pub const ToolExecResult = struct {

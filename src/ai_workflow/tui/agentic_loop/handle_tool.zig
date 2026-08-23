@@ -204,6 +204,11 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tools
         .environment = ctx.environment,
         .active_loops = ctx.active_loops,
         .selected_profile_model = ctx.selected_profile_model,
+        // 2026-08-23 spawn-subagent-live-progress: thread the
+        // parent's tool_call.id through ToolExecContext so
+        // execSpawnSubAgent can emit progress events keyed by it
+        // (ChatView.vue's reducer filters on this exact value).
+        .tool_call_id = tool_call.id,
     };
     const exec_result = try exec(ctx_local, tool_call);
 
@@ -299,6 +304,13 @@ fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !Tool
         .environment = ctx.environment,
         .active_loops = ctx.active_loops,
         .selected_profile_model = ctx.selected_profile_model,
+        // 2026-08-23 spawn-subagent-live-progress: see comment at
+        // dispatchFromRegistry. set_agent_properties doesn't spawn
+        // sub-agents itself, but for consistency / future-proofing
+        // every ToolExecContext construction site must thread the
+        // same id so any tool can read it without a struct-version
+        // check.
+        .tool_call_id = tool_call.id,
     };
     const result = try agentic_loop_mod.tools.execSetAgentProperties(ctx_exec, tool_call);
 
