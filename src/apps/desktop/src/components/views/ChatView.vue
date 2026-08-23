@@ -3,7 +3,7 @@ import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Re
 import { marked } from 'marked'
 import * as api from '../../api'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
-import { getThinkingTags, isThinkingTags, stripThinkingTags, VirtualScroller } from '@/helpers'
+import { getThinkingTags, isThinkingTags, stripThinkingTags, isHtmlTags, VirtualScroller } from '@/helpers'
 import {
   buildScrollContext,
   createScrollLogger,
@@ -462,6 +462,74 @@ const renderResponse = (
   } catch {
     return escapeHtml(content)
   }
+}
+
+// ─── <html> wrapper-tag rendering (2026-08-23 html-tag-support) ────────────
+// When the LLM wraps raw HTML in <html>...</html>, the chat UI renders
+// each block as a live sandboxed iframe (null origin — the security
+// boundary; inner scripts can't touch parent DOM/cookies). Mirrors the
+// proven PreviewContentRenderer.vue pattern (sandbox="allow-scripts").
+
+interface HtmlSegment {
+  /** Text before this html block (markdown-rendered inline). */
+  before: string
+  /** Inner payload of the <html>...</html> block (goes into srcdoc). */
+  html: string
+}
+
+/** True when the message contains at least one closed <html> block. */
+const msgHasHtml = (content: string | undefined): boolean => {
+  if (!content) return false
+  return isHtmlTags(content) || /<html>[\s\S]*?<\/html>/i.test(content)
+}
+
+/**
+ * Split a message into segments: for each closed <html>...</html> block,
+ * one segment carrying (a) the markdown text preceding it and (b) the
+ * block's inner HTML. Trailing text after the last block is attached to
+ * a final segment with html=''. Unclosed tags mid-stream match nothing
+ * and fall through to the legacy v-html path (raw text until close).
+ */
+const extractHtmlBlocks = (content: string): HtmlSegment[] => {
+  const segments: HtmlSegment[] = []
+  const regex = /<html>([\s\S]*?)<\/html>/gi
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(content)) !== null) {
+    const before = content.slice(lastIndex, match.index)
+    const inner = match[1] ?? ''
+    if (before.trim() || segments.length === 0) {
+      segments.push({ before: before.trim(), html: inner })
+    } else {
+      // Consecutive blocks: attach empty `before` to keep pairing.
+      segments.push({ before: '', html: inner })
+    }
+    lastIndex = regex.lastIndex
+  }
+  const tail = content.slice(lastIndex).trim()
+  if (tail || segments.length === 0) {
+    segments.push({ before: tail, html: '' })
+  }
+  return segments
+}
+
+/**
+ * Build the srcdoc document for an html block. Full documents pass
+ * through verbatim; fragments get wrapped in a minimal shell with sane
+ * defaults (margin, system font, white background).
+ */
+const buildHtmlSrcdoc = (block: string): string => {
+  const trimmed = block.trim()
+  if (/<!doctype html|<html[\s>]/i.test(trimmed)) {
+    return trimmed
+  }
+  return (
+    '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    '<style>body{margin:8px;font-family:system-ui,sans-serif;background:#fff;color:#111}</style>' +
+    '</head><body>' +
+    trimmed +
+    '</body></html>'
+  )
 }
 
 // Detect a compaction summary message — a user-role message whose
@@ -3138,8 +3206,27 @@ const compactSession = async () => {
                            padded area below it. -->
                       <div v-if="group.messages.some(hasVisibleContent)" class="assistant-messages">
                         <div v-for="(msg, idx) in group.messages" :key="idx" class="assistant-item">
-                          <!-- eslint-disable-next-line vue/no-v-html -->
+                          <!-- <html> blocks render as live sandboxed iframes
+                               (null origin = security boundary); any text
+                               outside the tags still renders as markdown.
+                               Legacy messages take the v-else path unchanged. -->
+                          <template v-if="msg.role === 'assistant' && msgHasHtml(msg.content)">
+                            <template v-for="(seg, sIdx) in extractHtmlBlocks(msg.content || '')" :key="sIdx">
+                              <!-- eslint-disable-next-line vue/no-v-html -->
+                              <span
+                                v-if="seg.before"
+                                v-html="marked.parse(seg.before, { async: false })"
+                              ></span>
+                              <iframe
+                                v-if="seg.html"
+                                class="chat-html-frame"
+                                sandbox="allow-scripts"
+                                :srcdoc="buildHtmlSrcdoc(seg.html)"
+                              ></iframe>
+                            </template>
+                          </template>
                           <span
+                            v-else
                             v-html="
                               renderResponse(
                                 msg.content,
@@ -3762,6 +3849,19 @@ const compactSession = async () => {
 
 .assistant-item + .assistant-item {
   margin-top: 0.625rem;
+}
+
+/* ─── <html> wrapper-tag sandboxed iframe (2026-08-23 html-tag-support) ──
+   Live HTML blocks from the LLM render inside a null-origin iframe
+   (sandbox="allow-scripts", no allow-same-origin). White background so
+   arbitrary LLM pages read as "a page", rounded to match chat cards. */
+.chat-html-frame {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  border: 1px solid var(--color-border, #ddd);
+  border-radius: 8px;
+  background: #fff;
 }
 
 /* ─── Tool-output cards, de-bubbled (2026-08-23) ────────────────────────
