@@ -220,19 +220,37 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                                 try profile_obj.put(allocator, "compaction_threshold_percent", json.Value{ .integer = tp });
                             }
                             // === Model-thinking knobs (plan 2026-08-23-model-thinking) ===
-                            // Validate at the apply site (NOT at JSON-parse
-                            // time) so a single error path serves both the
-                            // granular change-list shape (handled here) and
-                            // the on-disk object-map shape (handled by the
-                            // validation pass below). The HTTP layer
-                            // surfaces the error as a 400 with a
-                            // structured body.
+                            // Validate inline (NOT at JSON-parse time) so a
+                            // single error path serves both the granular
+                            // change-list shape (this branch) and the
+                            // on-disk object-map shape (validated via
+                            // validateModelThinkingOnDiskProfileMap
+                            // below). We return early with a 400 + a
+                            // structured body so the caller sees a
+                            // descriptive message (the gserverz error
+                            // path returns a generic "Handler error" 500).
                             if (profile_change.thinking_budget_tokens) |t| {
-                                if (t == 0 or t > 2_000_000) return error.InvalidThinkingBudgetTokens;
+                                if (t == 0 or t > 2_000_000) {
+                                    return res.jsonResponse(.{
+                                        .status_code = 400,
+                                        .data = try http_response.makeErrorResponse(
+                                            allocator,
+                                            .{ .@"error" = "InvalidThinkingBudgetTokens: thinking_budget_tokens must be in (0, 2_000_000]" },
+                                        ),
+                                    });
+                                }
                                 try profile_obj.put(allocator, "thinking_budget_tokens", json.Value{ .integer = t });
                             }
                             if (profile_change.reasoning_effort) |re| {
-                                _ = parse_thinking_mod.parseReasoningEffort(re) catch return error.InvalidReasoningEffort;
+                                _ = parse_thinking_mod.parseReasoningEffort(re) catch {
+                                    return res.jsonResponse(.{
+                                        .status_code = 400,
+                                        .data = try http_response.makeErrorResponse(
+                                            allocator,
+                                            .{ .@"error" = "InvalidReasoningEffort: reasoning_effort must be one of low/medium/high/auto" },
+                                        ),
+                                    });
+                                };
                                 try profile_obj.put(allocator, "reasoning_effort", json.Value{ .string = try allocator.dupe(u8, re) });
                             }
                             const profile_value_obj = json.Value{ .object = profile_obj };
@@ -246,11 +264,33 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             // the borrowed slice from the parsed request stays valid
             // across the `parsed.deinit()` at scope exit.
             .object => |obj| {
-                // Validate model-thinking fields before copying (the
-                // copy is cheap but the validation must reject bad
-                // values BEFORE we write anything to disk). Plan
-                // 2026-08-23-model-thinking.
-                validateModelThinkingOnDiskProfileMap(obj) catch |err| return err;
+                // Validate model-thinking fields before copying. The
+                // validation must reject bad values BEFORE we write
+                // anything to disk. Plan 2026-08-23-model-thinking.
+                // We translate the error variant into a 400 + a
+                // structured body inline so the caller sees a
+                // descriptive message (the gserverz error path returns
+                // a generic "Handler error" 500).
+                validateModelThinkingOnDiskProfileMap(obj) catch |err| switch (err) {
+                    error.InvalidThinkingBudgetTokens => {
+                        return res.jsonResponse(.{
+                            .status_code = 400,
+                            .data = try http_response.makeErrorResponse(
+                                allocator,
+                                .{ .@"error" = "InvalidThinkingBudgetTokens: thinking_budget_tokens must be in (0, 2_000_000]" },
+                            ),
+                        });
+                    },
+                    error.InvalidReasoningEffort => {
+                        return res.jsonResponse(.{
+                            .status_code = 400,
+                            .data = try http_response.makeErrorResponse(
+                                allocator,
+                                .{ .@"error" = "InvalidReasoningEffort: reasoning_effort must be one of low/medium/high/auto" },
+                            ),
+                        });
+                    },
+                };
 
                 var iter = obj.iterator();
                 while (iter.next()) |entry| {
@@ -309,14 +349,30 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         // Validate each sub-agent's `thinking_budget_tokens` and
         // `reasoning_effort` BEFORE any dup'ing so a bad value is
         // rejected at the HTTP layer rather than silently written
-        // to disk. The `LlmConfig.SubAgentJson` type already parsed
-        // these from the request body — we just enforce the bounds.
+        // to disk. Translate the error into a 400 + structured body
+        // inline so the caller sees a descriptive message.
         for (sas) |sa| {
             if (sa.thinking_budget_tokens) |t| {
-                if (t == 0 or t > 2_000_000) return error.InvalidThinkingBudgetTokens;
+                if (t == 0 or t > 2_000_000) {
+                    return res.jsonResponse(.{
+                        .status_code = 400,
+                        .data = try http_response.makeErrorResponse(
+                            allocator,
+                            .{ .@"error" = "InvalidThinkingBudgetTokens: thinking_budget_tokens must be in (0, 2_000_000]" },
+                        ),
+                    });
+                }
             }
             if (sa.reasoning_effort) |re| {
-                _ = parse_thinking_mod.parseReasoningEffort(re) catch return error.InvalidReasoningEffort;
+                _ = parse_thinking_mod.parseReasoningEffort(re) catch {
+                    return res.jsonResponse(.{
+                        .status_code = 400,
+                        .data = try http_response.makeErrorResponse(
+                            allocator,
+                            .{ .@"error" = "InvalidReasoningEffort: reasoning_effort must be one of low/medium/high/auto" },
+                        ),
+                    });
+                };
             }
         }
         const owned = try allocator.alloc(LlmConfig.SubAgentJson, sas.len);
