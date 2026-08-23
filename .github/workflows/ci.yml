@@ -1300,9 +1300,38 @@ jobs:
         #   nalar-x86_64-windows-gnu.exe, nalar-desktop-x86_64-windows-gnu.exe
         # The triple suffix keeps the 3 cells from colliding when they all
         # publish to the SAME shared release (see the next step).
-        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
-        # windows); the pwsh bootstrap step earlier in this job installs
-        # pwsh on the Windows runner.
+        #
+        # `shell: bash` per the project rule (bash = mac/linux, pwsh =
+        # windows). The Windows twin lives in its own step below — the
+        # macOS + Linux self-hosted runners have NO pwsh installed
+        # ("pwsh: command not found", first run of PR #303), and the
+        # `shell:` key can't take ${{ }} matrix expressions anyway.
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="bin-stage-${{ matrix.target.zig }}"
+          mkdir -p "$stage"
+          staged=0
+          for bin in nalar nalar-desktop; do
+            for candidate in "$bin" "$bin.exe"; do
+              if [ -f "zig-out/bin/$candidate" ]; then
+                cp "zig-out/bin/$candidate" "$stage/$candidate"
+                echo "→ staged $stage/$candidate"
+                staged=1
+              fi
+            done
+          done
+          if [ "$staged" -eq 0 ]; then
+            echo "✗ no binaries found in zig-out/bin — build step failed?" >&2
+            exit 1
+          fi
+
+      - name: Stage binaries with target-triple names (Windows)
+        # Windows twin of the staging step above. Same layout, pwsh per
+        # the project rule; the pwsh bootstrap step earlier in this job
+        # installs pwsh on the Windows runner.
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
