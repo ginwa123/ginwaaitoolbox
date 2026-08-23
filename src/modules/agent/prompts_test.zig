@@ -1,5 +1,6 @@
 const std = @import("std");
 const prompts = @import("prompts.zig");
+const prompts_mod = @import("../../ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig");
 const tool_models = @import("nalarcore").tool_models;
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -61,7 +62,7 @@ test "build_agent_prompt loads memory files into Global Knowledge section" {
         makeTool("read_file", "Read a file"),
         makeTool("list_memory", "List memory files"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -150,7 +151,7 @@ test "build_agent_prompt lists global and local skills in Available Skills secti
         makeTool("read_file", "Read a file"),
         makeTool("list_skills", "List available skills"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -236,7 +237,7 @@ test "build_agent_prompt Available Skills section includes absolute file path an
         makeTool("read_file", "Read a file"),
         makeTool("list_skills", "List available skills"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -310,7 +311,7 @@ test "build_agent_prompt omits Available Skills section when list_skills tool is
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -339,7 +340,7 @@ test "build_agent_prompt silently skips Available Skills when env is null" {
         makeTool("read_file", "Read a file"),
         makeTool("list_skills", "List available skills"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -389,7 +390,7 @@ test "build_agent_prompt injects Local Knowledge section from <cwd>/.nalar/memor
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -459,7 +460,7 @@ test "build_agent_prompt Global Knowledge section emits each memory's absolute p
     const tools = [_]AgentTool{
         makeTool("list_memory", "List memory files"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -503,7 +504,7 @@ test "build_agent_prompt Local Knowledge section emits each memory's absolute pa
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -571,7 +572,7 @@ test "build_agent_prompt renders Local and Global Knowledge together when both e
         makeTool("read_file", "Read a file"),
         makeTool("list_memory", "List memory files"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -617,7 +618,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories does n
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -644,7 +645,7 @@ test "build_agent_prompt omits Local Knowledge when cwd is empty" {
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "", // ← cwd is empty
@@ -693,7 +694,7 @@ test "build_agent_prompt omits Local Knowledge when <cwd>/.nalar/memories has no
     const tools = [_]AgentTool{
         makeTool("read_file", "Read a file"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         tmp_cwd,
@@ -828,7 +829,7 @@ test "build_agent_prompt with sub_agents_listing: section is rendered when non-e
         \\- **code-reviewer** (model: `gpt-4o`)
         \\
     ;
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -853,7 +854,7 @@ test "build_agent_prompt with sub_agents_listing: section is omitted when empty"
     const io = std.testing.io;
 
     const tools = [_]AgentTool{};
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -911,7 +912,7 @@ test "build_agent_prompt renders Kanban Status Tracking when section is non-empt
         \\- **complete** — move to `done` before your final reply
         \\- **blocked** — do NOT move
     ;
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -941,7 +942,7 @@ test "build_agent_prompt omits Kanban Status Tracking when section is empty" {
     const io = std.testing.io;
 
     const tools = [_]AgentTool{};
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1484,7 +1485,7 @@ test "build_agent_prompt renders Workspace Context when section is non-empty" {
         \\  - task: `API` (type: standard, session: `sess_backend`)
         \\
     ;
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1536,7 +1537,7 @@ test "build_agent_prompt omits Workspace Context when section is empty" {
     const tools = [_]AgentTool{};
     // workspaceContext is "" — mirrors the production behavior when
     // the session is not bound to any workspace_item_task.
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1574,7 +1575,7 @@ test "build_agent_prompt always renders Search Tool Preference (unconditional)" 
 
     // Empty tool list — proves the section has no `requires_tool` gate.
     const tools = [_]AgentTool{};
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1620,7 +1621,7 @@ test "build_agent_prompt Search Tool Preference appears even with non-empty tool
         makeTool("bash", "Run a bash command"),
         makeTool("search", "Search tool"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1655,7 +1656,7 @@ test "build_agent_prompt renders Memory Tools section when load_memory is in too
         makeTool("read_file", "Read a file"),
         makeTool("load_memory", "Search saved notes (FTS5)"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1693,7 +1694,7 @@ test "build_agent_prompt omits Memory Tools section when load_memory is absent" 
         makeTool("read_file", "Read a file"),
         makeTool("bash", "Run shell"),
     };
-    const prompt = try prompts.build_agent_prompt(
+    const prompt = try prompts_mod.build_agent_prompt(
         alloc,
         io,
         "/tmp",
@@ -1753,3 +1754,4 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
     // Verbatim-emission note (wire-format requirement).
     try std.testing.expect(contains(prompt, "verbatim"));
 }
+
