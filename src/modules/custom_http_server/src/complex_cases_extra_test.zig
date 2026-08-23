@@ -694,7 +694,7 @@ test "stress: 500 sequential Address.init/destroy cycles" {
     var i: usize = 0;
     while (i < 500) : (i += 1) {
         const port: u16 = 46000 + @as(u16, @intCast(i % 500));
-        const addr = try http_server.Address.init(port);
+        const addr = try http_server.Address.init("127.0.0.1", port);
         _ = linux.close(addr.sock_fd);
     }
 }
@@ -758,7 +758,7 @@ test "contract: HttpResponse.init produces a valid empty response" {
 
 test "contract: GinwaServer.init preserves the address" {
     const a = allocator;
-    const addr = try http_server.Address.init(45900);
+    const addr = try http_server.Address.init("127.0.0.1", 45900);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(a, undefined, addr);

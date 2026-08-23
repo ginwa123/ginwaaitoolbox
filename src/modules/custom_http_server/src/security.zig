@@ -381,7 +381,25 @@ pub fn rateLimitResetForTesting() void {
 }
 
 /// Security response headers applied to every response.
-const SEC_CSP = "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'";
+/// Security response headers applied to every response. The defaults are
+/// a strict, dependency-free baseline (`'self'` + inline styles/scripts).
+/// Apps that load third-party assets (CDN scripts, analytics beacons)
+/// should override via `GinwaServer.security_headers` — the library
+/// itself stays agnostic of any specific origin.
+pub const SecurityHeaders = struct {
+    content_security_policy: []const u8 = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'self'",
+    x_content_type_options: []const u8 = "nosniff",
+    x_frame_options: []const u8 = "DENY",
+    referrer_policy: []const u8 = "strict-origin-when-cross-origin",
+    permissions_policy: []const u8 = "camera=(), microphone=(), geolocation=()",
+    cross_origin_opener_policy: []const u8 = "same-origin",
+    cross_origin_resource_policy: []const u8 = "same-origin",
+};
+
+/// Back-compat default instance (used by `applySecurityHeaders(response)`
+/// and `HttpResponse.withSecurityHeaders()`).
+pub const default_security_headers: SecurityHeaders = .{};
+
 const SEC_NOSNIFF = "nosniff";
 const SEC_FRAME = "DENY";
 const SEC_REFERRER = "strict-origin-when-cross-origin";
@@ -389,16 +407,22 @@ const SEC_PERMISSIONS = "camera=(), microphone=(), geolocation=()";
 const SEC_COOP = "same-origin";
 const SEC_CORP = "same-origin";
 
-/// Apply the seven standard security response headers in-place. All
-/// values are string literals (no allocation).
+/// Apply the seven standard security response headers in-place, using the
+/// provided configuration (or the library default when omitted).
+pub fn applySecurityHeadersWith(response: *HttpResponse, cfg: SecurityHeaders) void {
+    response.headers.put("Content-Security-Policy", cfg.content_security_policy) catch @panic("OOM");
+    response.headers.put("X-Content-Type-Options", cfg.x_content_type_options) catch @panic("OOM");
+    response.headers.put("X-Frame-Options", cfg.x_frame_options) catch @panic("OOM");
+    response.headers.put("Referrer-Policy", cfg.referrer_policy) catch @panic("OOM");
+    response.headers.put("Permissions-Policy", cfg.permissions_policy) catch @panic("OOM");
+    response.headers.put("Cross-Origin-Opener-Policy", cfg.cross_origin_opener_policy) catch @panic("OOM");
+    response.headers.put("Cross-Origin-Resource-Policy", cfg.cross_origin_resource_policy) catch @panic("OOM");
+}
+
+/// Apply the seven standard security response headers in-place with the
+/// library-default policy. All values are string literals (no allocation).
 pub fn applySecurityHeaders(response: *HttpResponse) void {
-    response.headers.put("Content-Security-Policy", SEC_CSP) catch @panic("OOM");
-    response.headers.put("X-Content-Type-Options", SEC_NOSNIFF) catch @panic("OOM");
-    response.headers.put("X-Frame-Options", SEC_FRAME) catch @panic("OOM");
-    response.headers.put("Referrer-Policy", SEC_REFERRER) catch @panic("OOM");
-    response.headers.put("Permissions-Policy", SEC_PERMISSIONS) catch @panic("OOM");
-    response.headers.put("Cross-Origin-Opener-Policy", SEC_COOP) catch @panic("OOM");
-    response.headers.put("Cross-Origin-Resource-Policy", SEC_CORP) catch @panic("OOM");
+    applySecurityHeadersWith(response, default_security_headers);
 }
 
 /// Extract the host (with optional port) from a URL like
@@ -741,6 +765,149 @@ pub fn buildPreHandlerFailRedirect(
         }
     }
     return fail_response;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  Engine auto-gate (zero-config). When `server.cors.enabled`, the engine
+//  itself blocks state-changing requests from non-whitelisted origins —
+//  no per-route / per-group declarations anywhere in app code.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Verdict of `preGateCheck`.
+pub const PreGateResult = enum {
+    /// Proceed to routing/handler.
+    pass,
+    /// State-changing request from a non-whitelisted Origin → 403 page.
+    block_cors,
+    /// Body exceeds the configured cap → 413 page.
+    block_body_too_large,
+};
+
+/// Methods that can change server state and are therefore auto-gated.
+/// GET/HEAD/OPTIONS are never gated (safe / preflight methods).
+pub fn isStateChanging(method: []const u8) bool {
+    return std.mem.eql(u8, method, "POST") or
+        std.mem.eql(u8, method, "PUT") or
+        std.mem.eql(u8, method, "PATCH") or
+        std.mem.eql(u8, method, "DELETE");
+}
+
+/// Engine-level gate. Runs BEFORE route matching on every request:
+///
+///   * Method not state-changing (GET/HEAD/OPTIONS) → `.pass`.
+///   * Body over `max_body_bytes` → `.block_body_too_large` — ALWAYS
+///     enforced, independent of `config.enabled` (body-size protection
+///     is not a CORS feature).
+///   * CORS disabled → `.pass` for the origin stage (back-compat:
+///     servers that never enable CORS see no origin gating).
+///   * No Origin header → `.pass` (curl / server-to-server clients don't
+///     send one; the CSRF cookie remains the primary defence for forms).
+///   * Origin present but not in `config.allowed_origins` → `.block_cors`.
+pub fn preGateCheck(
+    request: *const HttpRequest,
+    config: CORSConfig,
+    max_body_bytes: usize,
+) !PreGateResult {
+    if (!isStateChanging(request.method)) return .pass;
+
+    // Body-size cap: ALWAYS on, independent of CORS.
+    enforceBodySizeLimit(request.body.len, max_body_bytes) catch {
+        return .block_body_too_large;
+    };
+
+    if (!config.enabled) return .pass;
+
+    // Origin check (cheapest signal of a cross-site request).
+    var it = request.headers.iterator();
+    while (it.next()) |entry| {
+        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "origin")) {
+            const origin_host = extractHost(entry.value_ptr.*);
+            var allowed = false;
+            for (config.allowed_origins) |candidate| {
+                if (std.ascii.eqlIgnoreCase(origin_host, candidate)) {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (!allowed) return .block_cors;
+            break;
+        }
+    }
+
+    return .pass;
+}
+
+/// Build the engine's built-in explanation page for an auto-gated
+/// request. This is a DEVELOPER-facing diagnostic: it names the blocked
+/// origin and shows exactly which config line fixes it. Attach security
+/// headers + CORS headers at the call site (the engine knows both).
+pub fn buildEngineBlockPage(
+    allocator: std.mem.Allocator,
+    result: PreGateResult,
+    origin: ?[]const u8,
+    host: []const u8,
+) !HttpResponse {
+    const status: u16 = switch (result) {
+        .block_cors => 403,
+        .block_body_too_large => 413,
+        .pass => unreachable,
+    };
+    const status_text = switch (result) {
+        .block_cors => "Forbidden",
+        .block_body_too_large => "Payload Too Large",
+        .pass => unreachable,
+    };
+
+    const title = switch (result) {
+        .block_cors => "403 — Cross-origin request blocked",
+        .block_body_too_large => "413 — Request body too large",
+        .pass => unreachable,
+    };
+    const detail = switch (result) {
+        .block_cors => if (origin) |o|
+            try std.fmt.allocPrint(allocator, "Origin <code>{s}</code> is not in <code>server.cors.allowed_origins</code>.", .{o})
+        else
+            try std.fmt.allocPrint(allocator, "Request origin is not allowed.", .{}),
+        .block_body_too_large => try std.fmt.allocPrint(allocator, "Request body exceeds the server's size cap.", .{}),
+        .pass => unreachable,
+    };
+    const hint = switch (result) {
+        .block_cors => try std.fmt.allocPrint(
+            allocator,
+            "Fix: add <code>\"{s}\"</code> to <code>server.cors.allowed_origins</code> in your server setup.",
+            .{host},
+        ),
+        .block_body_too_large => try std.fmt.allocPrint(
+            allocator,
+            "Fix: raise the body-size limit in the server's security configuration.",
+            .{},
+        ),
+        .pass => unreachable,
+    };
+
+    const body = try std.fmt.allocPrint(allocator,
+        \\<!DOCTYPE html>
+        \\<html><head><meta charset="utf-8"><title>{s}</title></head>
+        \\<body style="font-family: ui-monospace, monospace; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.6;">
+        \\<h1>{s}</h1>
+        \\<p>{s}</p>
+        \\<p>{s}</p>
+        \\<hr><small>ginwa http server - engine pre-handler gate</small>
+        \\</body></html>
+    , .{ title, title, detail, hint });
+
+    var resp = HttpResponse{
+        .status_code = status,
+        .status_text = status_text,
+        .headers = std.StringHashMap([]const u8).init(allocator),
+        .body = body,
+        .allocator = allocator,
+    };
+    errdefer resp.headers.deinit();
+    try resp.headers.put("Content-Type", "text/html; charset=utf-8");
+    const len_str = try std.fmt.allocPrint(allocator, "{d}", .{body.len});
+    try resp.headers.put("Content-Length", len_str);
+    return resp;
 }
 
 /// Apply CORS response headers to `response` (in place). Reads

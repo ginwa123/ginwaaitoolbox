@@ -9,6 +9,11 @@ pub const HttpContext = struct {
     io: std.Io,
     /// Optional client ID for SSE connections (set after registerClient)
     client_id: ?[16]u8 = null,
+    /// Server-configured CORS origins, injected by the dispatch loop from
+    /// `GinwaServer.cors.allowed_origins`. Handlers use this for the
+    /// origin/CSRF defence-in-depth gate instead of hardcoding a host —
+    /// the server config is the single source of truth.
+    allowed_origins: []const []const u8 = &.{},
 };
 
 /// Monotonic counter for the `ctx=<id>` cookie value. Each call returns

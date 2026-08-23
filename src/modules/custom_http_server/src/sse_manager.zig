@@ -355,13 +355,7 @@ pub const SseManager = struct {
 
     /// Each loop handles clients at indices where client_index % LOOP_COUNT == loop_id
     fn runEventLoop(self: *SseManager, heartbeat_secs: u32, loop_id: usize) void {
-        // Convert seconds -> ns ONCE, widening BEFORE the multiply.
-        // `heartbeat_secs * std.time.ns_per_s` in raw u32 arithmetic
-        // overflows for any heartbeat >= 5s (5e9 > maxInt(u32)) and
-        // panics every event-loop thread at startup. i96 is wide enough
-        // for any u32 second count and matches Duration.nanoseconds.
-        const heartbeat_ns: i96 = @as(i96, heartbeat_secs) * std.time.ns_per_s;
-        const heartbeat_ms: i32 = @intCast(@as(i64, heartbeat_secs) * 1000);
+        const heartbeat_ms: i32 = @intCast(heartbeat_secs * 1000);
         var last_hb: i64 = @intCast(timestamp(self.io));
 
         while (self.running) {
@@ -393,9 +387,14 @@ pub const SseManager = struct {
                     _ = socket.nanosleep(&ts, null);
                 } else {
                     // Zig 0.16 removed `.{ .seconds = N }` from std.Io.Duration —
-                    // only `.{ .nanoseconds = N }` is available. heartbeat_ns was
-                    // widened at the top of this function, so this cannot overflow.
-                    std.Io.sleep(self.io, .{ .nanoseconds = heartbeat_ns }, .real) catch {};
+                    // only `.{ .nanoseconds = N }` is available. Convert the
+                    // wall-clock heartbeat interval (heartbeat_secs, a u64) to
+                    // nanoseconds via std.time.ns_per_s. The cast to i96 is
+                    // safe: heartbeat_secs fits in i64 (the underlying type of
+                    // `nanoseconds` minus its 32 sign bits is huge), and the
+                    // @as(i96, ...) widening is always lossless for non-negative
+                    // u64 values.
+                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
                 }
                 continue;
             }
@@ -413,7 +412,7 @@ pub const SseManager = struct {
             // support requires porting the poll-based loop to WSAPoll,
             // which is out of scope for the fix-windows-ci task.
             if (is_windows) {
-                std.Io.sleep(self.io, .{ .nanoseconds = heartbeat_ns }, .real) catch {};
+                std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
                 continue;
             }
 
@@ -425,7 +424,7 @@ pub const SseManager = struct {
                     };
                     _ = socket.nanosleep(&ts, null);
                 } else {
-                    std.Io.sleep(self.io, .{ .nanoseconds = heartbeat_ns }, .real) catch {};
+                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
                 }
                 continue;
             };

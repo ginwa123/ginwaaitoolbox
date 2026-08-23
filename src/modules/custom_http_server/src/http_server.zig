@@ -144,12 +144,40 @@ pub const Address = struct {
     sock_fd: SocketFd,
     port: u16,
 
-    pub fn init(port: u16) !Address {
+    /// Parse a dotted-quad IPv4 string ("127.0.0.1", "0.0.0.0", …) into
+    /// the little-endian u32 layout `sockaddr.in.addr` expects on LE
+    /// machines (first octet in the most significant byte:
+    /// "127.0.0.1" → 0x0100007f). Returns error.InvalidHost for anything
+    /// that isn't exactly 4 decimal octets 0-255.
+    pub fn parseHostLe(host: []const u8) !u32 {
+        var octets: [4]u16 = .{ 0, 0, 0, 0 };
+        var idx: usize = 0;
+        var it = std.mem.splitScalar(u8, host, '.');
+        while (it.next()) |part| {
+            if (idx >= 4) return error.InvalidHost;
+            if (part.len == 0 or part.len > 3) return error.InvalidHost;
+            octets[idx] = std.fmt.parseInt(u16, part, 10) catch return error.InvalidHost;
+            if (octets[idx] > 255) return error.InvalidHost;
+            idx += 1;
+        }
+        if (idx != 4) return error.InvalidHost;
+        // Little-endian layout: first octet in the LOW byte.
+        // "127.0.0.1" → 0x0100007f (matches the historical hardcoded value).
+        return @as(u32, octets[0]) | (@as(u32, octets[1]) << 8) |
+            (@as(u32, octets[2]) << 16) | (@as(u32, octets[3]) << 24);
+    }
+
+    /// Bind to `host` (dotted-quad IPv4 string) on `port`.
+    ///   init("127.0.0.1", 4021) — loopback only (dev default)
+    ///   init("0.0.0.0", 4021)   — all interfaces (required in containers,
+    ///                             where the runtime's port-forward proxy
+    ///                             connects via the container's VM IP)
+    pub fn init(host: []const u8, port: u16) !Address {
         const socket_fd = try createSocket();
         errdefer closeFd(socket_fd);
 
         try setReuseAddr(socket_fd);
-        try bindPort(port, socket_fd);
+        try bindPort(try parseHostLe(host), port, socket_fd);
 
         return .{
             .sock_fd = socket_fd,
@@ -198,13 +226,13 @@ pub const Address = struct {
         }
     }
 
-    fn bindPort(port: u16, sock_fd: SocketFd) !void {
+    fn bindPort(host_le: u32, port: u16, sock_fd: SocketFd) !void {
         // Create sockaddr_in structure manually for portability
         // port must be in network byte order (big-endian)
         var sockaddr: socket.sockaddr.in = .{
             .family = 2, // AF_INET
             .port = @byteSwap(port), // Convert to network byte order
-            .addr = @bitCast(@as(u32, 0x0100007f)), // 127.0.0.1 in little-endian
+            .addr = @bitCast(host_le), // e.g. parseHostLe("127.0.0.1") = 0x0100007f
             .zero = undefined,
         };
 
@@ -252,6 +280,20 @@ pub const GinwaServer = struct {
     ///   server.cors = .{ .enabled = true, .allowed_origins = &.{"..."} };
     /// See `CORSConfig` for the full surface.
     cors: CORSConfig = .{},
+
+    /// Engine-level request-body cap in bytes. ALWAYS enforced by the
+    /// dispatch loop (independent of `cors`) — oversized bodies get a
+    /// 413 engine page + console log before any handler runs. Handlers
+    /// must not re-check body size.
+    max_body_bytes: usize = 16 * 1024,
+
+    /// Server-wide security response headers (CSP etc.). Defaults to a
+    /// strict `'self'`-only baseline. Apps loading third-party assets
+    /// (CDN scripts, analytics beacons) override after init:
+    ///   server.security_headers.content_security_policy = "...";
+    /// Handlers that call `.withSecurityHeaders()` pick this up via the
+    /// per-request `HttpContext` — no per-handler config needed.
+    security_headers: security.SecurityHeaders = .{},
 
     /// Optional fallback handler invoked when no route matches. It is
     /// expected to write a complete HTTP response directly to `fd` (status
@@ -415,6 +457,9 @@ pub const GinwaServer = struct {
                         const http_ctx = http_parser.HttpContext{
                             .allocator = allocator,
                             .io = server.io,
+                            // Handlers read the server's CORS allowlist from
+                            // here — no hardcoded hosts in handler code.
+                            .allowed_origins = server.cors.allowed_origins,
                         };
                         // Build the Session right after parsing. `incoming`
                         // is populated from the Cookie header via
@@ -439,6 +484,57 @@ pub const GinwaServer = struct {
                         // call `req.session.set / getString` directly. The
                         // pointer outlives the listen loop's handle scope.
                         req.session = &session;
+
+                        // ─── Engine auto-gate (zero-config) ─────────────
+                        // Two engine-owned protections, both before route
+                        // matching:
+                        //   1. Body-size cap (ALWAYS on; server.max_body_bytes)
+                        //   2. Origin allowlist (when server.cors.enabled)
+                        // Failure → built-in 403/413 explanation page +
+                        // console log so the developer sees the issue.
+                        {
+                            const gate = security.preGateCheck(&req, server.cors, server.max_body_bytes) catch .pass;
+                            if (gate != .pass) {
+                                const origin = blk: {
+                                    var oit = req.headers.iterator();
+                                    while (oit.next()) |entry| {
+                                        if (std.ascii.eqlIgnoreCase(entry.key_ptr.*, "origin")) {
+                                            break :blk entry.value_ptr.*;
+                                        }
+                                    }
+                                    break :blk null;
+                                };
+                                std.debug.print(
+                                    "HTTP_SERVER [pre-gate]: {s} {s} blocked ({s}) origin={s} — add it to server.cors.allowed_origins\n",
+                                    .{ req.method, req.path, @tagName(gate), origin orelse "-" },
+                                );
+                                const host = if (server.cors.allowed_origins.len > 0) server.cors.allowed_origins[0] else "your-domain";
+                                var block_page = security.buildEngineBlockPage(allocator, gate, origin, host) catch {
+                                    _ = closeFd(fd);
+                                    return;
+                                };
+                                defer block_page.headers.deinit();
+                                server.applySecurityHeadersTo(&block_page);
+                                if (origin) |o| {
+                                    security.applyCORSHeaders(
+                                        &block_page.headers,
+                                        o,
+                                        server.cors.allowed_origins,
+                                        server.cors.allowed_methods,
+                                        server.cors.allowed_headers,
+                                        server.cors.allow_credentials,
+                                    ) catch {};
+                                }
+                                const page_bytes = block_page.toBytes() catch {
+                                    _ = closeFd(fd);
+                                    return;
+                                };
+                                defer allocator.free(page_bytes);
+                                _ = server.sendToClient(fd, page_bytes) catch {};
+                                _ = closeFd(fd);
+                                return;
+                            }
+                        }
 
                         // CORS preflight: when CORS is enabled and the
                         // request is OPTIONS, reply with the configured
@@ -468,6 +564,43 @@ pub const GinwaServer = struct {
                         if (server.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
                                 .handler => |h| {
+                                    // ─── Framework pre-handler security gate ───
+                                    // When the route opted in via
+                                    // `on_pre_handler_fail`, run origin +
+                                    // body-size checks from server.cors BEFORE
+                                    // any middleware/handler. On failure return
+                                    // 302 → <fail_base><code> and never invoke
+                                    // the handler. This is THE enforcement
+                                    // point — handlers must not re-check.
+                                    if (h.chain.on_pre_handler_fail) |fail_base| {
+                                        const maybe_fail: ?security.HttpResponse = security.buildPreHandlerFailRedirect(
+                                            allocator,
+                                            &h.req,
+                                            server.cors,
+                                            security.MAX_BODY_BYTES,
+                                            fail_base,
+                                        ) catch |err| blk: {
+                                            std.debug.print("pre-handler gate failed: {s}\n", .{@errorName(err)});
+                                            break :blk null;
+                                        };
+                                        if (maybe_fail) |fail_resp| {
+                                            var gated = fail_resp;
+                                            server.applyCORSResponse(&h.req, &gated) catch @panic("OOM");
+                                            server.applySecurityHeadersTo(&gated);
+                                            const fail_bytes = gated.toBytes() catch {
+                                                std.debug.print("Failed to build pre-handler fail response\n", .{});
+                                                _ = closeFd(fd);
+                                                return;
+                                            };
+                                            defer gated.allocator.free(fail_bytes);
+                                            _ = server.sendToClient(fd, fail_bytes) catch {
+                                                std.debug.print("Failed to send pre-handler fail response\n", .{});
+                                            };
+                                            _ = closeFd(fd);
+                                            return;
+                                        }
+                                    }
+
                                     // Run the per-request middleware chain. When the
                                     // route has no middleware the chain dispatches
                                     // straight to the final handler — same behavior
@@ -482,6 +615,11 @@ pub const GinwaServer = struct {
                                     // enabled and the request carried an Origin
                                     // that matches `cors.allowed_origins`.
                                     server.applyCORSResponse(&h.req, &final_res) catch @panic("OOM");
+
+                                    // Server-level security headers (CSP etc.)
+                                    // — the app's config wins over any handler
+                                    // default so policy lives in ONE place.
+                                    server.applySecurityHeadersTo(&final_res);
 
                                     const res_bytes = final_res.toBytes() catch {
                                         std.debug.print("Failed to build response\n", .{});
@@ -764,21 +902,16 @@ pub const GinwaServer = struct {
             _ = winsock.setsockopt(fd, 6, 16, &keepcnt, @sizeOf(c_int));
         } else {
             posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
-            // TCP keepalive tuning. KEEPIDLE / KEEPINTVL / KEEPCNT are
-            // Linux-only — macOS doesn't have them (it uses
-            // SO_KEEPALIVE's default 2h idle, which works fine in
-            // practice). Zig 0.16's cross-target module compile
-            // (mod=x86_64-linux-gnu inside exe=aarch64-macos) checks
-            // the struct membership against the ROOT target, so even
-            // an unreachable reference is a compile error on macOS.
-            // The `if (comptime builtin.os.tag == .linux)` block
-            // scopes the std.os.linux.TCP_* references inside it; the
-            // else branch (macOS / BSD) skips them entirely.
-            if (comptime builtin.os.tag == .linux) {
-                posix.setsockopt(fd, posix.IPPROTO.TCP, @as(i32, @intCast(std.os.linux.TCP.KEEPIDLE)), std.mem.asBytes(&keepidle)) catch {};
-                posix.setsockopt(fd, posix.IPPROTO.TCP, @as(i32, @intCast(std.os.linux.TCP.KEEPINTVL)), std.mem.asBytes(&keepintvl)) catch {};
-                posix.setsockopt(fd, posix.IPPROTO.TCP, @as(i32, @intCast(std.os.linux.TCP.KEEPCNT)), std.mem.asBytes(&keepcnt)) catch {};
+            // `TCP.KEEPIDLE` is Linux-only; on macOS the equivalent is
+            // the KEEPALIVE TCP option (which doubles as the idle
+            // timer on Darwin). Skip on macOS — the default ~2h idle
+            // combined with 5s probe + 3 probes still detects dead
+            // connections quickly via SO_KEEPALIVE alone.
+            if (builtin.os.tag == .linux) {
+                posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
             }
+            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
+            posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
         }
 
         return fd;
@@ -870,6 +1003,15 @@ pub const GinwaServer = struct {
     /// `security.applyCORSResponse`.
     fn applyCORSResponse(self: *GinwaServer, request: *const HttpRequest, resp: *HttpResponse) !void {
         return security.applyCORSResponse(resp, request, self.cors);
+    }
+
+    /// Apply this server's `security_headers` config to a response in
+    /// place. Called by the dispatch loop on every routed response so the
+    /// app-level policy (set once after init) governs all handlers —
+    /// handlers that also call `.withSecurityHeaders()` simply get their
+    /// values overwritten here (put replaces).
+    pub fn applySecurityHeadersTo(self: *GinwaServer, resp: *HttpResponse) void {
+        security.applySecurityHeadersWith(resp, self.security_headers);
     }
 
     /// Build a `204 No Content` CORS preflight response. Thin shim

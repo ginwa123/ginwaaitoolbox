@@ -9,7 +9,7 @@ const linux = std.posix.system;
 
 test "Address.init creates socket and binds" {
     // Use a high port number to avoid permission issues
-    const addr = try http_server.Address.init(45678);
+    const addr = try http_server.Address.init("127.0.0.1", 45678);
     defer _ = linux.close(addr.sock_fd);
 
     try std.testing.expect(addr.sock_fd >= 0);
@@ -17,17 +17,17 @@ test "Address.init creates socket and binds" {
 }
 
 test "Address.init with different port" {
-    const addr = try http_server.Address.init(45679);
+    const addr = try http_server.Address.init("127.0.0.1", 45679);
     defer _ = linux.close(addr.sock_fd);
 
     try std.testing.expectEqual(@as(u16, 45679), addr.port);
 }
 
 test "Address.init multiple instances on different ports" {
-    const addr1 = try http_server.Address.init(45680);
+    const addr1 = try http_server.Address.init("127.0.0.1", 45680);
     defer _ = linux.close(addr1.sock_fd);
 
-    const addr2 = try http_server.Address.init(45681);
+    const addr2 = try http_server.Address.init("127.0.0.1", 45681);
     defer _ = linux.close(addr2.sock_fd);
 
     try std.testing.expect(addr1.sock_fd >= 0);
@@ -44,7 +44,7 @@ test "GinwaServer.init creates server instance" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45682);
+    const addr = try http_server.Address.init("127.0.0.1", 45682);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -59,7 +59,7 @@ test "GinwaServer.init router is initialized" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45683);
+    const addr = try http_server.Address.init("127.0.0.1", 45683);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -79,7 +79,7 @@ test "GinwaServer with registered route" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45684);
+    const addr = try http_server.Address.init("127.0.0.1", 45684);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -96,6 +96,103 @@ test "GinwaServer with registered route" {
 }
 
 // ============================================================================
+// Server-level SecurityHeaders config (app-agnostic library)
+// ============================================================================
+
+test "GinwaServer.security_headers defaults to library baseline" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const addr = try http_server.Address.init("127.0.0.1", 45686);
+    defer _ = linux.close(addr.sock_fd);
+
+    var server = try http_server.GinwaServer.init(allocator, undefined, addr);
+    defer server.destroy(allocator);
+
+    // Default CSP must NOT contain app-specific hosts.
+    const csp = server.security_headers.content_security_policy;
+    try std.testing.expect(std.mem.indexOf(u8, csp, "cdn.tailwindcss.com") == null);
+    try std.testing.expect(std.mem.indexOf(u8, csp, "cloudflareinsights") == null);
+}
+
+test "GinwaServer.applySecurityHeadersTo uses server-level CSP override" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const addr = try http_server.Address.init("127.0.0.1", 45687);
+    defer _ = linux.close(addr.sock_fd);
+
+    var server = try http_server.GinwaServer.init(allocator, undefined, addr);
+    defer server.destroy(allocator);
+
+    // App opts in to its own CSP (tailwind CDN + CF analytics beacon).
+    server.security_headers.content_security_policy =
+        "default-src 'self'; script-src 'self' https://cdn.tailwindcss.com https://static.cloudflareinsights.com 'unsafe-inline'";
+
+    var res = http_parser.HttpResponse.init(200, "OK", allocator);
+    defer res.deinit();
+
+    server.applySecurityHeadersTo(&res);
+
+    const csp = res.headers.get("Content-Security-Policy") orelse
+        return error.ContentSecurityPolicyHeaderMissing;
+    try std.testing.expect(std.mem.indexOf(u8, csp, "cdn.tailwindcss.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, csp, "static.cloudflareinsights.com") != null);
+    // Non-overridden headers keep library defaults.
+    try std.testing.expectEqualStrings("nosniff", res.headers.get("X-Content-Type-Options").?);
+}
+
+// ============================================================================
+// HttpContext.allowed_origins — handlers must read the SERVER's CORS
+// config instead of hardcoding "localhost:4021" (broke ginwa.site).
+// ============================================================================
+
+test "HttpContext.allowed_origins defaults to empty slice" {
+    const ctx = http_parser.HttpContext{
+        .allocator = std.testing.allocator,
+        .io = undefined,
+    };
+    try std.testing.expectEqual(@as(usize, 0), ctx.allowed_origins.len);
+}
+
+test "handler origin gate: checkOriginInList with ctx origins accepts whitelisted host" {
+    // Documents the wiring contract handlers rely on: the dispatch loop
+    // fills ctx.allowed_origins from server.cors; handlers pass that
+    // slice to security.checkOriginInList.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const security = @import("security.zig");
+    const origins = [_][]const u8{ "localhost:4021", "ginwa.site" };
+    const ctx = http_parser.HttpContext{
+        .allocator = arena.allocator(),
+        .io = undefined,
+        .allowed_origins = &origins,
+    };
+
+    var req = security.HttpRequest{
+        .method = "POST",
+        .path = "/admin/signin",
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(arena.allocator()),
+        .body = "",
+        .raw = "",
+        .params = std.StringHashMap([]const u8).init(arena.allocator()),
+        .query = std.StringHashMap([]const u8).init(arena.allocator()),
+        ._client_fd = -1,
+    };
+    defer req.headers.deinit();
+    defer req.params.deinit();
+    defer req.query.deinit();
+    try req.headers.put("Origin", "https://ginwa.site");
+
+    // Must NOT throw — ginwa.site is in the server-configured list.
+    try security.checkOriginInList(&req, ctx.allowed_origins);
+}
+
+// ============================================================================
 // Error Handling Tests
 // ============================================================================
 
@@ -103,7 +200,7 @@ test "Address.init fails on invalid port (0 is technically valid, use reserved)"
     // Test that we can detect port already in use by creating two addresses
     // on the same port (note: SO_REUSEADDR may allow this on some systems,
     // so this test may need adjustment based on platform behavior)
-    const addr1 = try http_server.Address.init(45685);
+    const addr1 = try http_server.Address.init("127.0.0.1", 45685);
     defer _ = linux.close(addr1.sock_fd);
 
     // On Linux with SO_REUSEADDR, this should succeed. On other platforms
@@ -117,7 +214,7 @@ test "Address.init fails on invalid port (0 is technically valid, use reserved)"
 
 test "Address port is correctly stored" {
     const test_port: u16 = 45686;
-    const addr = try http_server.Address.init(test_port);
+    const addr = try http_server.Address.init("127.0.0.1", test_port);
     defer _ = linux.close(addr.sock_fd);
 
     try std.testing.expectEqual(test_port, addr.port);
@@ -125,7 +222,7 @@ test "Address port is correctly stored" {
 }
 
 test "Address sock_fd is valid file descriptor" {
-    const addr = try http_server.Address.init(45687);
+    const addr = try http_server.Address.init("127.0.0.1", 45687);
     defer _ = linux.close(addr.sock_fd);
 
     // On Linux, valid file descriptors are non-negative
@@ -141,7 +238,7 @@ test "GinwaServer.getClientPort returns 0 for invalid fd" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45688);
+    const addr = try http_server.Address.init("127.0.0.1", 45688);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -161,7 +258,7 @@ test "GinwaServer.recvFromClient fails on invalid fd" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45689);
+    const addr = try http_server.Address.init("127.0.0.1", 45689);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -177,7 +274,7 @@ test "GinwaServer.sendToClient fails on invalid fd" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45690);
+    const addr = try http_server.Address.init("127.0.0.1", 45690);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -196,7 +293,7 @@ test "Server accepts client connection" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const addr = try http_server.Address.init(45691);
+    const addr = try http_server.Address.init("127.0.0.1", 45691);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
@@ -208,7 +305,7 @@ test "Server accepts client connection" {
     defer _ = linux.close(client_fd);
 
     // Connect to server
-    const addr2 = try http_server.Address.init(45692);
+    const addr2 = try http_server.Address.init("127.0.0.1", 45692);
     defer _ = linux.close(addr2.sock_fd);
 
     // Socket creation verified - full integration test would require actual server listening

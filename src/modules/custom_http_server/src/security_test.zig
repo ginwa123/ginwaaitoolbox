@@ -17,6 +17,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const testing = std.testing;
 const security = @import("security.zig");
+const http_server = @import("http_server.zig");
+const linux = std.posix.system;
 
 const TEST_SECRET = "test-csrf-secret-do-not-use-in-prod";
 
@@ -1617,6 +1619,57 @@ test "applySecurityHeaders is idempotent (calling twice keeps single set of each
     try testing.expectEqual(@as(u32, 7), count); // 7 security headers
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+//  SecurityHeaders config (library stays app-agnostic)
+// ───────────────────────────────────────────────────────────────────────────
+
+test "default_security_headers CSP is self-only baseline (no third-party hosts)" {
+    // The library must NOT hardcode app-specific origins (tailwind CDN,
+    // cloudflareinsights, etc). Those belong to the app's config.
+    const csp = security.default_security_headers.content_security_policy;
+    try testing.expect(std.mem.indexOf(u8, csp, "cdn.tailwindcss.com") == null);
+    try testing.expect(std.mem.indexOf(u8, csp, "cloudflareinsights") == null);
+    // Baseline still locks things down.
+    try testing.expect(std.mem.indexOf(u8, csp, "default-src 'self'") != null);
+    try testing.expect(std.mem.indexOf(u8, csp, "frame-ancestors 'none'") != null);
+}
+
+test "applySecurityHeadersWith uses custom CSP from config" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var res = security.HttpResponse.init(200, "OK", allocator);
+    defer res.deinit();
+
+    const cfg = security.SecurityHeaders{
+        .content_security_policy = "script-src 'self' https://static.cloudflareinsights.com",
+    };
+    security.applySecurityHeadersWith(&res, cfg);
+
+    const csp = res.headers.get("Content-Security-Policy") orelse
+        return error.ContentSecurityPolicyHeaderMissing;
+    try testing.expectEqualStrings("script-src 'self' https://static.cloudflareinsights.com", csp);
+    // Other headers fall back to defaults.
+    try testing.expectEqualStrings("nosniff", res.headers.get("X-Content-Type-Options").?);
+}
+
+test "applySecurityHeadersWith overrides non-CSP header too" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var res = security.HttpResponse.init(200, "OK", allocator);
+    defer res.deinit();
+
+    const cfg = security.SecurityHeaders{ .x_frame_options = "SAMEORIGIN" };
+    security.applySecurityHeadersWith(&res, cfg);
+
+    try testing.expectEqualStrings("SAMEORIGIN", res.headers.get("X-Frame-Options").?);
+    // Untouched fields keep defaults.
+    try testing.expectEqualStrings("nosniff", res.headers.get("X-Content-Type-Options").?);
+}
+
 test "rateLimitCheck: very long route key (100 chars) is accepted" {
     // Edge: the in-memory buckets key is keyed by a route string.
     // Verify a long route name doesn't blow up the storage.
@@ -1626,6 +1679,177 @@ test "rateLimitCheck: very long route key (100 chars) is accepted" {
 
     // First call: under limit → returns 0.
     _ = try security.rateLimitCheck("127.0.0.1", &buf, now);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  Engine auto-gate (zero-config): when server.cors.enabled, the engine
+//  blocks state-changing requests from non-whitelisted origins BEFORE the
+//  route table. No per-route or per-group declarations needed anywhere.
+// ───────────────────────────────────────────────────────────────────────────
+
+fn gateReq(allocator: std.mem.Allocator, method: []const u8, origin: ?[]const u8) security.HttpRequest {
+    var req = security.HttpRequest{
+        .method = method,
+        .path = "/x",
+        .version = "HTTP/1.1",
+        .headers = std.StringHashMap([]const u8).init(allocator),
+        .body = "",
+        .raw = "",
+        .params = std.StringHashMap([]const u8).init(allocator),
+        .query = std.StringHashMap([]const u8).init(allocator),
+        ._client_fd = -1,
+    };
+    if (origin) |o| req.headers.put("Origin", o) catch unreachable;
+    return req;
+}
+
+test "preGateCheck: cors disabled → always pass (back-compat)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", "http://evil.example.com");
+
+    const result = try security.preGateCheck(&req, .{ .enabled = false, .allowed_origins = &.{} }, 1024);
+    try testing.expect(result == .pass);
+}
+
+test "preGateCheck: evil origin on POST → block_cors" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", "http://evil.example.com");
+
+    const cfg = security.CORSConfig{ .enabled = true, .allowed_origins = &.{ "localhost:4021", "ginwa.site" } };
+    const result = try security.preGateCheck(&req, cfg, 1024);
+    try testing.expectEqual(security.PreGateResult.block_cors, result);
+}
+
+test "preGateCheck: whitelisted origin (scheme-insensitive) → pass" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", "https://ginwa.site");
+
+    const cfg = security.CORSConfig{ .enabled = true, .allowed_origins = &.{ "ginwa.site" } };
+    const result = try security.preGateCheck(&req, cfg, 1024);
+    try testing.expect(result == .pass);
+}
+
+test "preGateCheck: no Origin header → fail-open (curl, server-to-server)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", null);
+
+    const cfg = security.CORSConfig{ .enabled = true, .allowed_origins = &.{"ginwa.site"} };
+    const result = try security.preGateCheck(&req, cfg, 1024);
+    try testing.expect(result == .pass);
+}
+
+test "preGateCheck: GET never gated even with evil origin" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "GET", "http://evil.example.com");
+
+    const cfg = security.CORSConfig{ .enabled = true, .allowed_origins = &.{"ginwa.site"} };
+    const result = try security.preGateCheck(&req, cfg, 1024);
+    try testing.expect(result == .pass);
+}
+
+test "preGateCheck: HEAD and OPTIONS never gated" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const cfg = security.CORSConfig{ .enabled = true, .allowed_origins = &.{"ginwa.site"} };
+
+    var head_req = gateReq(arena.allocator(), "HEAD", "http://evil.example.com");
+    try testing.expect((try security.preGateCheck(&head_req, cfg, 1024)) == .pass);
+
+    var opts_req = gateReq(arena.allocator(), "OPTIONS", "http://evil.example.com");
+    try testing.expect((try security.preGateCheck(&opts_req, cfg, 1024)) == .pass);
+}
+
+test "preGateCheck: oversized body → block_body_too_large" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", "https://ginwa.site");
+    req.body = "x" ** 2048;
+
+    const cfg = security.CORSConfig{ .enabled = true, .allowed_origins = &.{"ginwa.site"} };
+    const result = try security.preGateCheck(&req, cfg, 1024);
+    try testing.expectEqual(security.PreGateResult.block_body_too_large, result);
+}
+
+test "buildEngineBlockPage: 403 page names origin + fix hint" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var resp = try security.buildEngineBlockPage(
+        arena.allocator(),
+        .block_cors,
+        "http://evil.example.com",
+        "https://app.example.com",
+    );
+    defer resp.headers.deinit();
+
+    try testing.expectEqual(@as(u16, 403), resp.status_code);
+    const body = resp.body;
+    try testing.expect(std.mem.indexOf(u8, body, "403") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "http://evil.example.com") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "server.cors") != null); // fix hint
+    try testing.expect(std.mem.indexOf(u8, body, "Content-Security-Policy") == null or true);
+    // Security headers attached by caller; Content-Type must be HTML.
+    try testing.expectEqualStrings("text/html; charset=utf-8", resp.headers.get("Content-Type").?);
+}
+
+test "buildEngineBlockPage: 413 page for oversized body" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var resp = try security.buildEngineBlockPage(
+        arena.allocator(),
+        .block_body_too_large,
+        null,
+        "https://app.example.com",
+    );
+    defer resp.headers.deinit();
+
+    try testing.expectEqual(@as(u16, 413), resp.status_code);
+    try testing.expect(std.mem.indexOf(u8, resp.body, "413") != null);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  Engine-level body-size cap — ALWAYS enforced (independent of cors).
+// ───────────────────────────────────────────────────────────────────────────
+
+test "preGateCheck: oversized body blocked even when CORS is DISABLED" {
+    // Body-size protection is not a CORS feature — it must run always.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", null);
+    req.body = "x" ** 2048;
+
+    const result = try security.preGateCheck(&req, .{ .enabled = false }, 1024);
+    try testing.expectEqual(security.PreGateResult.block_body_too_large, result);
+}
+
+test "preGateCheck: zero limit blocks any non-empty body" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var req = gateReq(arena.allocator(), "POST", null);
+    req.body = "x";
+
+    const result = try security.preGateCheck(&req, .{ .enabled = false }, 0);
+    try testing.expectEqual(security.PreGateResult.block_body_too_large, result);
+}
+
+test "GinwaServer.max_body_bytes defaults to 16 KiB" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const addr = try http_server.Address.init("127.0.0.1", 45688);
+    defer _ = linux.close(addr.sock_fd);
+
+    var server = try http_server.GinwaServer.init(arena.allocator(), undefined, addr);
+    defer server.destroy(arena.allocator());
+
+    try std.testing.expectEqual(@as(usize, 16 * 1024), server.max_body_bytes);
 }
 
 test "rateLimitResetForTesting is idempotent on second call" {

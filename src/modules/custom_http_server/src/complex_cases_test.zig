@@ -745,7 +745,7 @@ test "response: multiple headers preserved through toBytes" {
 test "address: invalid port (0) is accepted by kernel (port 0 = ephemeral)" {
     // Port 0 is valid — it asks the kernel to pick an ephemeral port.
     // The Address struct must accept it without error.
-    const addr = try http_server.Address.init(0);
+    const addr = try http_server.Address.init("127.0.0.1", 0);
     defer _ = linux.close(addr.sock_fd);
     try expect(addr.sock_fd >= 0);
     try expectEqual(@as(u16, 0), addr.port);
@@ -753,7 +753,7 @@ test "address: invalid port (0) is accepted by kernel (port 0 = ephemeral)" {
 
 test "address: maximum u16 port (65535) is accepted" {
     // Port 65535 is the top of the u16 range — must not overflow.
-    const addr = try http_server.Address.init(65535);
+    const addr = try http_server.Address.init("127.0.0.1", 65535);
     defer _ = linux.close(addr.sock_fd);
     try expectEqual(@as(u16, 65535), addr.port);
 }
@@ -767,7 +767,7 @@ test "address: SO_REUSEADDR is set (verifiable by getsockopt)" {
     // is set via getsockopt — that's the actual property being tested.
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
-    const addr = try http_server.Address.init(0);
+    const addr = try http_server.Address.init("127.0.0.1", 0);
     defer _ = linux.close(addr.sock_fd);
 
     // Read SO_REUSEADDR back and confirm it's set to a non-zero value.
@@ -797,13 +797,13 @@ const GetSockNameFailed = error{GetSockNameFailed};
 
 test "ginwa: destroy then re-init works (no global state leak)" {
     const a = allocator;
-    const addr1 = try http_server.Address.init(45710);
+    const addr1 = try http_server.Address.init("127.0.0.1", 45710);
     defer _ = linux.close(addr1.sock_fd);
 
     var server1 = try http_server.GinwaServer.init(a, undefined, addr1);
     defer server1.destroy(a);
 
-    const addr2 = try http_server.Address.init(45711);
+    const addr2 = try http_server.Address.init("127.0.0.1", 45711);
     defer _ = linux.close(addr2.sock_fd);
 
     var server2 = try http_server.GinwaServer.init(a, undefined, addr2);
@@ -818,7 +818,7 @@ test "ginwa: destroy releases router routes (no leak via destroy alone)" {
     // didn't free the router's ArrayList. Now destroy() calls deinit()
     // first, so a single destroy() should clean up everything.
     const a = allocator;
-    const addr = try http_server.Address.init(45712);
+    const addr = try http_server.Address.init("127.0.0.1", 45712);
     defer _ = linux.close(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(a, undefined, addr);
@@ -844,7 +844,7 @@ test "ginwa: destroy releases router routes (no leak via destroy alone)" {
 }
 
 test "address: closeFd on Address fd closes it (kernel returns EBADF on next op)" {
-    const addr = try http_server.Address.init(45713);
+    const addr = try http_server.Address.init("127.0.0.1", 45713);
     const fd = addr.sock_fd;
 
     _ = linux.close(fd);
@@ -1147,7 +1147,7 @@ test "stress: 50 sequential server init/destroy cycles" {
     var i: usize = 0;
     while (i < 50) : (i += 1) {
         const port: u16 = 45800 + @as(u16, @intCast(i % 50)); // stay within test range
-        const addr = try http_server.Address.init(port);
+        const addr = try http_server.Address.init("127.0.0.1", port);
         const _close_fd = linux.close(addr.sock_fd);
         _ = _close_fd;
 

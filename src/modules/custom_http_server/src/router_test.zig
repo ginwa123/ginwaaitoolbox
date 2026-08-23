@@ -77,6 +77,147 @@ test "Router.post registers POST route" {
     try std.testing.expectEqualStrings("POST", r.routes.items[0].method);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+//  RouteOptions + on_pre_handler_fail — framework-level origin gate.
+//  server.cors is the single source of truth for WHICH origins are allowed;
+//  each state-changing route declares only WHERE to redirect on failure.
+// ───────────────────────────────────────────────────────────────────────────
+
+fn noopHandler(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+    return res.withBody("");
+}
+
+test "Route.on_pre_handler_fail defaults to null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    try r.post("/x", noopHandler);
+    try std.testing.expectEqual(@as(?[]const u8, null), r.routes.items[0].on_pre_handler_fail);
+}
+
+test "postWithOpts stores on_pre_handler_fail base" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    try r.postWithOpts("/admin/signin", noopHandler, .{
+        .on_pre_handler_fail = "/admin/signin?error=",
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), r.routes.items.len);
+    try std.testing.expectEqualStrings("POST", r.routes.items[0].method);
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/admin/signin?error=", base);
+}
+
+test "getWithOpts stores on_pre_handler_fail base (GET routes can opt in too)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+
+    try r.getWithOpts("/page", noopHandler, .{
+        .on_pre_handler_fail = "/?error=",
+    });
+
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/?error=", base);
+}
+
+test "group.postWithOpts combines prefix and stores fail base" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+
+    try g.postWithOpts("/users", noopHandler, .{ .on_pre_handler_fail = "/signup?error=" });
+
+    try std.testing.expectEqualStrings("/users", r.routes.items[0].path);
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/signup?error=", base);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  Group-level fail base — set ONCE per group, inherited by its routes
+//  (state-changing methods only). Kills per-route boilerplate.
+// ───────────────────────────────────────────────────────────────────────────
+
+test "group.preHandlerFailBase applies to POST routes registered after it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+    try g.preHandlerFailBase("/?error=");
+
+    try g.post("/x", noopHandler);
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/?error=", base);
+}
+
+test "group.preHandlerFailBase does NOT gate GET routes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+    try g.preHandlerFailBase("/?error=");
+
+    try g.get("/x", noopHandler);
+    try std.testing.expectEqual(@as(?[]const u8, null), r.routes.items[0].on_pre_handler_fail);
+}
+
+test "route opts override group base" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+    try g.preHandlerFailBase("/?error=");
+
+    try g.postWithOpts("/special", noopHandler, .{ .on_pre_handler_fail = "/special-fail?error=" });
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/special-fail?error=", base);
+}
+
+test "nested group inherits parent fail base" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var rootg = r.group("");
+    try rootg.preHandlerFailBase("/?error=");
+    var adm = try rootg.group("/admin");
+
+    try adm.post("/x", noopHandler);
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/?error=", base);
+}
+
+test "no group base + no route opts = gate disabled (back-compat)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+
+    try g.post("/x", noopHandler);
+    try std.testing.expectEqual(@as(?[]const u8, null), r.routes.items[0].on_pre_handler_fail);
+}
+
 test "Router.put registers PUT route" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

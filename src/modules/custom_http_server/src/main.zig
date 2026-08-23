@@ -635,7 +635,7 @@ pub fn run(init: std.process.Init) !void {
     allocator.free(test_alloc);
     std.debug.print("DEBUG: 1MB alloc succeeded\n", .{});
 
-    const address = try gserverz.Address.init(29590);
+    const address = try gserverz.Address.init("127.0.0.1", 29590);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
 

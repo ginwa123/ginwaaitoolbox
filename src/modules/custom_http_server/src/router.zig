@@ -89,6 +89,10 @@ pub const MiddlewareFn = *const fn (
 pub const MiddlewareChain = struct {
     middlewares: []const MiddlewareFn,
     final_handler: HandlerFn,
+    /// Fail-redirect base for the framework pre-handler security gate
+    /// (origin vs server.cors + body-size). Null = gate disabled for
+    /// this route. Copied from the matched Route by `matchRoute`.
+    on_pre_handler_fail: ?[]const u8 = null,
     /// Index of the next middleware to invoke. Invariant:
     /// 0 <= index <= middlewares.len.
     index: usize = 0,
@@ -150,6 +154,24 @@ pub const Route = struct {
     /// the route has no middleware. Lives on the Router arena; the
     /// per-request `MiddlewareChain` borrows this slice.
     middlewares: []const MiddlewareFn = &.{},
+    /// Framework-level pre-handler security gate. When non-null, the
+    /// dispatch loop runs `security.preHandlerCheck` (origin vs
+    /// `server.cors.allowed_origins` + body-size cap) BEFORE the handler
+    /// and, on failure, returns `302 → <on_pre_handler_fail><code>`
+    /// without invoking the handler. Null = no gate (safe for GETs and
+    /// non-browser endpoints). See `RouteOptions`.
+    on_pre_handler_fail: ?[]const u8 = null,
+};
+
+/// Options for the `*WithOpts` route-registration variants. Mirrors the
+/// optional Route fields an app may want to set at registration time.
+pub const RouteOptions = struct {
+    /// Fail-redirect base for the framework pre-handler gate (origin +
+    /// body size). The error code label is appended, e.g.
+    /// `.on_pre_handler_fail = "/signup?error="` produces
+    /// `/signup?error=cross_origin`. Null disables the gate for this
+    /// route (the default — GETs don't need it).
+    on_pre_handler_fail: ?[]const u8 = null,
 };
 
 pub fn defaultHandler(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
@@ -193,6 +215,20 @@ pub const Group = struct {
     /// Middleware list — cloned from parent group at creation time, then
     /// mutated by `use`. Stored on the Router arena.
     middlewares: std.ArrayListUnmanaged(MiddlewareFn),
+    /// Group-level fail-redirect base for the framework pre-handler
+    /// security gate. Set ONCE via `preHandlerFailBase`; every state-
+    /// changing route (POST/PUT/PATCH/DELETE) registered on this group
+    /// AFTER the call inherits it. GET/SSE/WS routes are never gated.
+    /// A route's `RouteOptions.on_pre_handler_fail` overrides this.
+    /// Null = routes get no gate unless they opt in individually.
+    pre_handler_fail_base: ?[]const u8 = null,
+
+    /// Set the group-wide fail-redirect base (e.g. `"/admin/users?error="`).
+    /// Applies to state-changing routes registered after this call;
+    /// nested groups created after this call inherit it.
+    pub fn preHandlerFailBase(self: *Group, base: []const u8) !void {
+        self.pre_handler_fail_base = try self.router.arena.dupe(u8, base);
+    }
 
     /// Add a middleware to this group. Runs for every route registered
     /// on this group AFTER this call. Multiple middlewares run in
@@ -227,6 +263,33 @@ pub const Group = struct {
         try self.appendRoute("PATCH", combined, handler, .regular, null, null);
     }
 
+    // ─── *WithOpts variants — enable the framework pre-handler gate ────
+
+    pub fn getWithOpts(self: *Group, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+        const combined = try combinePrefix(self.router.arena, self.prefix, path);
+        try self.appendRouteWithOpts("GET", combined, handler, .regular, null, null, opts);
+    }
+
+    pub fn postWithOpts(self: *Group, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+        const combined = try combinePrefix(self.router.arena, self.prefix, path);
+        try self.appendRouteWithOpts("POST", combined, handler, .regular, null, null, opts);
+    }
+
+    pub fn putWithOpts(self: *Group, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+        const combined = try combinePrefix(self.router.arena, self.prefix, path);
+        try self.appendRouteWithOpts("PUT", combined, handler, .regular, null, null, opts);
+    }
+
+    pub fn deleteWithOpts(self: *Group, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+        const combined = try combinePrefix(self.router.arena, self.prefix, path);
+        try self.appendRouteWithOpts("DELETE", combined, handler, .regular, null, null, opts);
+    }
+
+    pub fn patchWithOpts(self: *Group, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+        const combined = try combinePrefix(self.router.arena, self.prefix, path);
+        try self.appendRouteWithOpts("PATCH", combined, handler, .regular, null, null, opts);
+    }
+
     /// SSE route on the group. Always GET (per SSE spec).
     /// Note: SSE routes do NOT currently run middleware; only `.regular`
     /// routes do. If a middleware needs to gate an SSE endpoint, register
@@ -259,6 +322,9 @@ pub const Group = struct {
             .router = self.router,
             .prefix = combined,
             .middlewares = mws,
+            // Nested groups inherit the parent's fail base at creation
+            // time (same snapshot semantics as middlewares).
+            .pre_handler_fail_base = self.pre_handler_fail_base,
         };
     }
 
@@ -273,7 +339,31 @@ pub const Group = struct {
         sse_handler: ?SseHandlerFn,
         ws_handler: ?WsHandlerFn,
     ) !void {
+        return self.appendRouteWithOpts(method, path, handler, route_type, sse_handler, ws_handler, .{});
+    }
+
+    /// Internal — `appendRoute` with options (fail-redirect base etc.).
+    fn appendRouteWithOpts(
+        self: *Group,
+        method: []const u8,
+        path: []const u8,
+        handler: anytype,
+        route_type: RouteType,
+        sse_handler: ?SseHandlerFn,
+        ws_handler: ?WsHandlerFn,
+        opts: RouteOptions,
+    ) !void {
         const mws = try self.router.arena.dupe(MiddlewareFn, self.middlewares.items);
+        // Fail-base resolution: explicit route opts win; otherwise state-
+        // changing methods inherit the group's preHandlerFailBase. GET /
+        // SSE / WS are never gated.
+        const is_state_changing = std.mem.eql(u8, method, "POST") or
+            std.mem.eql(u8, method, "PUT") or
+            std.mem.eql(u8, method, "PATCH") or
+            std.mem.eql(u8, method, "DELETE");
+        const fail_base: ?[]const u8 = if (opts.on_pre_handler_fail) |b|
+            try self.router.arena.dupe(u8, b)
+        else if (is_state_changing) self.pre_handler_fail_base else null;
         try self.router.routes.append(self.router.arena, Route{
             .method = method,
             .path = path,
@@ -282,6 +372,7 @@ pub const Group = struct {
             .sse_handler = sse_handler,
             .ws_handler = ws_handler,
             .middlewares = mws,
+            .on_pre_handler_fail = fail_base,
         });
     }
 };
@@ -379,6 +470,28 @@ pub fn patch(self: *Self, path: []const u8, handler: anytype) !void {
     return self.addRouteInternal("PATCH", path, handler);
 }
 
+// ─── *WithOpts variants — enable the framework pre-handler gate ────────
+
+pub fn getWithOpts(self: *Self, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+    return self.addRouteInternalWithOpts("GET", path, handler, opts);
+}
+
+pub fn postWithOpts(self: *Self, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+    return self.addRouteInternalWithOpts("POST", path, handler, opts);
+}
+
+pub fn putWithOpts(self: *Self, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+    return self.addRouteInternalWithOpts("PUT", path, handler, opts);
+}
+
+pub fn deleteWithOpts(self: *Self, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+    return self.addRouteInternalWithOpts("DELETE", path, handler, opts);
+}
+
+pub fn patchWithOpts(self: *Self, path: []const u8, handler: anytype, opts: RouteOptions) !void {
+    return self.addRouteInternalWithOpts("PATCH", path, handler, opts);
+}
+
 /// Add an SSE streaming route
 pub fn sse(self: *Self, path: []const u8, handler: anytype) !void {
     try self.routes.append(self.arena, Route{
@@ -403,11 +516,20 @@ pub fn ws(self: *Self, path: []const u8, handler: anytype) !void {
 
 /// Generic internal route adder — no middleware (use group for that).
 fn addRouteInternal(self: *Self, method: []const u8, path: []const u8, handler: anytype) !void {
+    return self.addRouteInternalWithOpts(method, path, handler, .{});
+}
+
+/// Generic internal route adder with options (fail-redirect base etc.).
+fn addRouteInternalWithOpts(self: *Self, method: []const u8, path: []const u8, handler: anytype, opts: RouteOptions) !void {
     try self.routes.append(self.arena, Route{
         .method = method,
         .path = path,
         .handler = handler,
         .route_type = .regular,
+        .on_pre_handler_fail = if (opts.on_pre_handler_fail) |b|
+            try self.arena.dupe(u8, b)
+        else
+            null,
     });
 }
 
@@ -470,6 +592,7 @@ pub fn matchRoute(
             chain.* = .{
                 .middlewares = route.middlewares,
                 .final_handler = route.handler,
+                .on_pre_handler_fail = route.on_pre_handler_fail,
             };
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
             return .{ .handler = .{ .chain = chain, .ctx = ctx, .req = req.*, .res = res } };
@@ -487,6 +610,7 @@ pub fn matchRoute(
             chain.* = .{
                 .middlewares = route.middlewares,
                 .final_handler = route.handler,
+                .on_pre_handler_fail = route.on_pre_handler_fail,
             };
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
             return .{ .handler = .{ .chain = chain, .ctx = ctx, .req = req.*, .res = res } };
