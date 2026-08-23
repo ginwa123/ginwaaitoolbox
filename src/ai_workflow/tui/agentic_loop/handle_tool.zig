@@ -695,10 +695,97 @@ fn updateAndSendToolResult(
     if (diffview_before) |before| allocator.free(before);
     if (diffview_after) |after| allocator.free(after);
 
-    // SSE: the latest message is now the UPDATED placeholder row.
-    // We send the SSE with the tool_call_id (NOT the row's id) so
-    // the frontend can match the SSE to the tool_calls it received.
-    try sendSSEForLatestMessage(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true, null);
+    // 2026-08-23 B1 fix — emit the SSE for THIS tool's row by its known
+    // id. The old code called sendSSEForLatestMessage here, which reads
+    // getLatestMessage (last-created row in the session). With N
+    // parallel tool calls, completions 1..N-1 all emitted the LAST
+    // placeholder's data: empty content + wrong tool_call_id — the
+    // frontend showed stale loading cards and TOOLS-pill spam. The row
+    // id has been in hand all along (this function's `id` parameter);
+    // selecting by it emits each completion's OWN row.
+    try sendSSEForMessageById(allocator, db, session_id, cwd, agent_name, parent_session_id, temperature, is_thinking, false, true, id);
+}
+
+/// 2026-08-23 B1 fix — emit the SSE for ONE specific llm_history row,
+/// selected by its exact id. This is the tool-result path: each
+/// placeholder row's id is known (list_id_that_was_loaded), so there is
+/// no reason to guess via getLatestMessage — which returns the
+/// last-created row in the session and, for multi-tool turns, emitted
+/// the WRONG row (empty content + wrong tool_call_id) for every
+/// completion except the newest.
+fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, cwd: []const u8, agent_name: []const u8, parent_session_id: []const u8, temperature: f32, is_thinking: bool, is_input: bool, is_output: bool, id: []const u8) !void {
+    const msgOpt = llm_history.getMessageById(allocator, db, session_id, id) catch |err| {
+        std.debug.print("SSE_DEBUG: getMessageById failed for session {s} id {s}: {s}\n", .{ session_id, id, @errorName(err) });
+        return;
+    };
+    const msg = msgOpt orelse {
+        std.debug.print("SSE_DEBUG: no message found for session {s} id {s}\n", .{ session_id, id });
+        return;
+    };
+    defer {
+        allocator.free(msg.id);
+        allocator.free(msg.session_id);
+        allocator.free(msg.model);
+        allocator.free(msg.created_at);
+        allocator.free(msg.response_content);
+        allocator.free(msg.finish_reason);
+        allocator.free(msg.role);
+        allocator.free(msg.tools);
+        if (msg.reasoning_content) |r| allocator.free(r);
+        allocator.free(msg.agent);
+        allocator.free(msg.session_name);
+        allocator.free(msg.tool_name);
+        if (msg.parent_session_id) |p| allocator.free(p);
+        if (msg.diffview_before) |d| allocator.free(d);
+        if (msg.diffview_after) |d| allocator.free(d);
+        if (msg.image_urls) |urls| {
+            for (urls) |u| allocator.free(u);
+            allocator.free(urls);
+        }
+        if (msg.tool_call_id) |t| allocator.free(t);
+    }
+
+    std.debug.print("SSE_DEBUG: sending SSE by id for session {s}, id={s}, content='{s}'\n", .{ session_id, msg.id, if (msg.response_content.len > 50) msg.response_content[0..50] else msg.response_content });
+
+    const session_skills_tool = llm_history.getSessionSkills(allocator, db, session_id) catch null;
+    defer if (session_skills_tool) |s| for (s) |*skill| {
+        allocator.free(skill.skill_name);
+        allocator.free(skill.content);
+    };
+
+    onEventSendLLMHistory(allocator, .{
+        .session_id = msg.session_id,
+        .model = msg.model,
+        .cwd = cwd,
+        .content = msg.response_content,
+        .reasoning_content = msg.reasoning_content,
+        .role = msg.role,
+        .finish_reason = msg.finish_reason,
+        // Tool-result rows carry NO tool_calls array — that field is the
+        // assistant message's wire format. The old code passed null here
+        // too (via sendSSEForLatestMessage's `null` argument).
+        .tool_calls_json = null,
+        // NOTE: tool_call_id on the wire is the ROW ID (matches the
+        // previous behaviour in sendSSEForLatestMessage), NOT the
+        // column value. The frontend keys expand-state and dedupe off it.
+        .tool_call_id = msg.id,
+        .tool_name = msg.tool_name,
+        .agent_name = agent_name,
+        .loop_index = msg.loop_index,
+        .temperature = temperature,
+        .is_thinking = is_thinking,
+        .is_input = is_input,
+        .is_output = is_output,
+        .parent_session_id = parent_session_id,
+        .parent_id = session_id,
+        .diffview_before = msg.diffview_before,
+        .diffview_after = msg.diffview_after,
+        .total_tokens = msg.total_tokens,
+        .image_url = null,
+        .session_skills = session_skills_tool,
+    }) catch |err| {
+        std.debug.print("SSE_DEBUG: on_event_send_new failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
+    };
 }
 
 fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, cwd: []const u8, agent_name: []const u8, parent_session_id: []const u8, temperature: f32, is_thinking: bool, is_input: bool, is_output: bool, tool_calls_json: ?[]agent.ToolCall) !void {
