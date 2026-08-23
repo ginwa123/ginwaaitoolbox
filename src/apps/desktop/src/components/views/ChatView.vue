@@ -1070,7 +1070,19 @@ const refreshScrollLogger = () => {
 const sessionSkills = ref<api.SkillInfo[]>([])
 const showSkillsPopup = ref(false)
 
-// Track which tool items are expanded (by index)
+// Track which tool items are expanded.
+//
+// 2026-08-23 auto-collapse fix — keys are STABLE per-message ids, NOT
+// positional `${groupIndex}-${idx}` pairs. Positional keys broke the
+// moment any SSE event mutated `messages`: messageGroups recomputes,
+// group/message indices shift (a new assistant row inserts a group
+// before the tool rows; dedupe/hidden-row filtering changes counts),
+// and every stored key silently started pointing at a DIFFERENT card.
+// The user's manually-expanded card lost its key → collapsed itself;
+// worse, an unrelated card could render pre-expanded. Message ids are
+// stable across re-computation (DB nanos from REST history, or the
+// synthetic-but-consistent ids minted by the SSE handler), so
+// expansion survives any number of live updates.
 const expandedToolIds = ref<Set<string>>(new Set())
 
 // 2026-08-23 spawn-subagent-live-progress: per-tool_call_id map of
@@ -1091,16 +1103,26 @@ const closeImagePreview = () => {
   previewImageUrl.value = null
 }
 
-// Toggle expanded state for a tool item
-const toggleToolExpanded = (groupIndex: number, msgIndex: number) => {
-  const key = `${groupIndex}-${msgIndex}`
+// Toggle expanded state for a tool item. Keyed by the message's stable
+// id (see expandedToolIds above) — never by position, which shifts on
+// every SSE-driven recompute of messageGroups.
+const toggleToolExpanded = (msgId: string) => {
   const newSet = new Set(expandedToolIds.value)
-  if (newSet.has(key)) {
-    newSet.delete(key)
+  if (newSet.has(msgId)) {
+    newSet.delete(msgId)
   } else {
-    newSet.add(key)
+    newSet.add(msgId)
   }
   expandedToolIds.value = newSet
+}
+
+// Stable expand-state key for a tool message. Falls back through:
+//   1. msg.id (DB nanos id or SSE-minted synthetic id — always present)
+//   2. tool_call_id (stable across the whole turn)
+//   3. positional `${groupIndex}-${idx}` — last resort for legacy rows
+//      with no id at all; better than nothing, same behaviour as before.
+const toolExpandKey = (msg: Message, groupIndex: number, idx: number): string => {
+  return msg.id || msg.tool_call_id || `pos-${groupIndex}-${idx}`
 }
 
 // Code-editor wiring for the fallback `<DiffView>` rendered for tools that
@@ -1269,20 +1291,44 @@ const getParametersForMessage = (m: Message): string => {
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
 // For each group index, returns the tool names string if the group is an
-// assistant turn that triggered tool calls BUT the tool outputs are NOT shown.
-// When tool outputs ARE shown (next group is tool), we return null.
+// assistant turn that triggered tool calls BUT the tool outputs are NOT shown
+// anywhere in the transcript. When tool outputs ARE shown (same group is tool,
+// next group is tool, OR a later non-adjacent tool row carries a matching
+// tool_call_id) we return null — the structured tool card already conveys
+// what was called.
+//
+// 2026-08-23 stray-TOOLS-pill fix — the previous adjacency check
+// (`messageGroups[i+1]?.role === 'tool'`) flashed a pill during the
+// live-SSE window between the assistant tool_calls row arriving and
+// the tool result row arriving. Worse, it could persist wrongly if
+// the tool group was later collapsed / dropped / merged by
+// filteredMessages or hasBubbleContent. Now we walk the WHOLE
+// transcript for matching tool_call_ids — robust against ordering,
+// merging, and live SSE interleaving.
 const groupToolNames = computed((): (string | null)[] => {
+  // Pre-collect every tool_call_id that has a matching tool row in the
+  // transcript. The id set is the single source of truth for "is this
+  // tool call already represented by a structured card?".
+  const renderedToolCallIds = new Set<string>()
+  for (const g of messageGroups.value) {
+    if (g.role !== 'tool') continue
+    for (const m of g.messages) {
+      if (m.tool_call_id) renderedToolCallIds.add(m.tool_call_id)
+    }
+  }
+
   return messageGroups.value.map((group, i) => {
     if (group.role !== 'assistant') return null
 
-    // If next group is a tool group, tool outputs ARE shown → don't show header
+    // Same-group tool rows (rare but possible when an assistant message
+    // carries tool_calls_json AND a tool result) → no pill needed.
     const nextGroup = messageGroups.value[i + 1]
     if (nextGroup?.role === 'tool') {
       return null
     }
 
-    // No next tool group — check if this assistant message triggered tools
-    // Fallback: parse tool_calls_json from any message in this group
+    // Look for any message in this assistant group whose tool_calls_json
+    // either already has a matching tool row OR yields parseable names.
     for (const msg of group.messages) {
       if (msg.tool_calls_json?.trim()) {
         try {
@@ -1290,13 +1336,41 @@ const groupToolNames = computed((): (string | null)[] => {
           // tool_calls_json IS the array directly: [{id, type, function: {name}}]
           if (Array.isArray(parsed) && parsed.length > 0) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-            return parsed.map((tc: any) => tc.function?.name || tc.name || 'unknown').join(', ')
+            const names = parsed.map((tc: any) => tc.function?.name || tc.name || 'unknown')
+
+            // If EVERY tool call in this group already has a rendered
+            // tool row somewhere in the transcript, the structured cards
+            // are the source of truth — suppress the pill entirely.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; tool_calls_json shape is intentionally opaque.
+            const allRendered = parsed.every((tc: any) => {
+              const id = tc?.id
+              return typeof id === 'string' && renderedToolCallIds.has(id)
+            })
+            if (allRendered) return null
+
+            return names.join(', ')
           }
         } catch {}
       }
 
-      // finish_reason set but tool_calls_json missing/unparseable
+      // finish_reason set but tool_calls_json missing/unparseable.
+      // Only show the "..." pill when the tool call is NOT yet
+      // represented by a rendered tool row (otherwise the live SSE
+      // window between tool_calls and tool_result would flash a stray
+      // pill that immediately gets replaced by a structured card).
       if (msg.finish_reason === 'tool_calls') {
+        // We can't match by id here (tool_calls_json is missing), so
+        // fall back to the adjacency heuristic: if a tool group
+        // appears ANYWHERE in the transcript after this group, the
+        // tool call was rendered → no pill.
+        let hasLaterTool = false
+        for (let j = i + 1; j < messageGroups.value.length; j++) {
+          if (messageGroups.value[j]?.role === 'tool') {
+            hasLaterTool = true
+            break
+          }
+        }
+        if (hasLaterTool) return null
         return '...'
       }
     }
@@ -2119,8 +2193,11 @@ const connectSse = () => {
       })
       if (
         dup &&
-        // Never drop user echoes here — they're handled by the
-        // optimistic-bubble replacement below.
+        // 2026-08-23: the optimistic-user dedupe that lived here is
+        // gone — handleFileInputSubmit no longer pushes a local
+        // placeholder. User echoes arrive fresh with a stable DB id;
+        // a same-content repeat (server re-emit) collapses to one
+        // message via the dedupe above.
         role !== 'user'
       ) {
         console.log('[SSE ChatView] duplicate full event skipped', {
@@ -2129,24 +2206,6 @@ const connectSse = () => {
           content_len: (event.content || '').length,
         })
         return
-      }
-
-      // 2026-08-23 hidden-messages fix — dedupe against the optimistic
-      // user bubble pushed in handleFileInputSubmit. The server echo of
-      // our own message carries a different id (DB nanos vs local
-      // `optimistic-user-*`), so match on role + content + first image.
-      // Replacing keeps one bubble and upgrades it to the canonical id.
-      if (role === 'user') {
-        const dupIdx = messages.value.findIndex(
-          (m) =>
-            m.id.startsWith('optimistic-user-') &&
-            m.content === (event.content || '') &&
-            (m.image_urls?.[0] ?? '') ===
-              ((event.image_url ? event.image_url.split('|')[0] : '') ?? ''),
-        )
-        if (dupIdx !== -1) {
-          messages.value.splice(dupIdx, 1)
-        }
       }
 
       messages.value.push({
@@ -2435,24 +2494,20 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     imageUrls = await Promise.all(files.map((f) => fileToBase64(f)))
   }
 
-  // 2026-08-23 hidden-messages fix — optimistic push. The user's own
-  // message previously appeared only when the backend's queue-drain
-  // re-emitted it via SSE `full` (or a loadChatHistory refresh), which
-  // left a visible window where the sent message was nowhere in the
-  // chat. Push it immediately; the SSE echo / history refresh will
-  // carry the canonical DB id, and this placeholder is replaced by
-  // dedupe below (match on role+content+images rather than id, since
-  // ids differ between local and server).
-  const optimisticId = `optimistic-user-${Date.now()}`
-  messages.value.push({
-    id: optimisticId,
-    role: 'user',
-    content: userMessage,
-    timestamp: new Date(),
-    image_urls: imageUrls.length > 0 ? imageUrls : undefined,
-  })
-  scrollLogger.markProgrammatic()
-  nextTick(() => scrollToBottom(false, 'optimistic-user-push'))
+  // 2026-08-23 auto-collapse fix — NO optimistic local push.
+  // Previously the user's own message was pushed to `messages` with a
+  // synthetic `optimistic-user-*` id, then replaced when the backend's
+  // queue-drain re-emitted it via SSE `full`. Two problems:
+  //   (a) the local push sat at the END of the array, while the
+  //       server's canonical row carried the correct DB id and
+  //       chronological position — the optimistic was visible only
+  //       briefly before the dedupe swapped them;
+  //   (b) every push shifted `messageGroups`, which — combined with
+  //       positional expand keys — silently re-keyed tool cards the
+  //       user had just expanded (see expandedToolIds comment).
+  // Now we let the SSE echo deliver the canonical row. The user sees
+  // a brief gap (server round-trip) but the rendered card carries the
+  // real DB id from the start, with stable expansion semantics.
 
   try {
     await api.sendChatMessage(
@@ -2464,13 +2519,12 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     )
   } catch (err) {
     console.error('Failed to send message:', err)
-    // Roll back the optimistic bubble so the user isn't left looking
-    // at a message that never reached the server.
-    messages.value = messages.value.filter((m) => m.id !== optimisticId)
+    // No local bubble to roll back — just surface an inline error so
+    // the user knows the send failed. The server log has the truth.
     messages.value.push({
       id: `error-${Date.now()}`,
       role: 'assistant',
-      content: 'Sorry, I encountered an error. Please try again.',
+      content: 'Sorry, I encountered an error sending your message. Please try again.',
       timestamp: new Date(),
     })
   }
@@ -2796,37 +2850,37 @@ const compactSession = async () => {
                       <div class="tool-sequence">
                         <div
                           v-for="(msg, idx) in group.messages"
-                          :key="idx"
+                          :key="msg.id || msg.tool_call_id || `t-${groupIndex}-${idx}`"
                           class="tool-item"
                           :class="idx < group.messages.length - 1 ? 'tool-item-border' : ''"
                         >
                           <ReadFile
                             v-if="msg.tool_name === 'read_file'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
                           />
                           <WriteFile
                             v-else-if="msg.tool_name === 'write_file'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
                           />
                           <UpdateActivity
                             v-else-if="msg.tool_name === 'update_activity'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <Search
                             v-else-if="msg.tool_name === 'search'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
                           />
                           <SearchHistory
                             v-else-if="msg.tool_name === 'search_history'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
@@ -2836,7 +2890,7 @@ const compactSession = async () => {
                           <TextReplace
                             v-else-if="msg.tool_name === 'text_replace'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :diffview-before="msg.diffview_before"
                             :diffview-after="msg.diffview_after"
                             :cwd="sessionCwd"
@@ -2845,48 +2899,48 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command'"
                             :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : 'bash'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <GetSkill
                             v-else-if="msg.tool_name === 'get_skill'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <ViewSkill
                             v-else-if="msg.tool_name === 'view_skill'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <ListSkills
                             v-else-if="msg.tool_name === 'list_skills'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <AddSkill
                             v-else-if="msg.tool_name === 'add_skill'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <EditSkill
                             v-else-if="msg.tool_name === 'edit_skill'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <RemoveSkill
                             v-else-if="msg.tool_name === 'remove_skill'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <RemoveFile
                             v-else-if="msg.tool_name === 'remove_file'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
                           />
                           <SpawnSubAgent
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
                             :progress="msg.tool_call_id ? subAgentProgressMap[msg.tool_call_id] : null"
                             @peek="nav.openPeek($event)"
@@ -2895,43 +2949,43 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'nalar_browser'"
                             :content="innerToolData(msg)"
                             :parameters="getParametersForMessage(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <SetGitWorktree
                             v-else-if="msg.tool_name === 'set_git_worktree'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <ReadCompactedMessages
                             v-else-if="msg.tool_name === 'read_compacted_messages'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <KanbanMove
                             v-else-if="msg.tool_name === 'kanban_move_task'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <KanbanList
                             v-else-if="msg.tool_name === 'kanban_list'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <ListDirectory
                             v-else-if="msg.tool_name === 'list_directory'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
                           />
                           <SaveMemory
                             v-else-if="msg.tool_name === 'save_memory'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <LoadMemory
                             v-else-if="msg.tool_name === 'load_memory'"
                             :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <!--
                             `update_plan` + `get_plan` (Task 8 — optional UI).
@@ -2991,15 +3045,15 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'generate_image'"
                             :content="innerToolData(msg)"
                             :parameters="getParametersForMessage(msg)"
-                            :expanded="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <div v-else class="tool-expandable">
                             <button
                               class="tool-summary"
-                              @click="toggleToolExpanded(groupIndex, idx)"
+                              @click="toggleToolExpanded(toolExpandKey(msg, groupIndex, idx))"
                               :style="[
                                 'cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background-color 0.15s; text-align: left; width: 100%; border: none; background: transparent; font: inherit; color: inherit;',
-                                expandedToolIds.has(`${groupIndex}-${idx}`)
+                                expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))
                                   ? 'border-bottom: 1px dashed var(--color-border);'
                                   : '',
                               ]"
@@ -3019,7 +3073,7 @@ const compactSession = async () => {
                               ></span>
                             </button>
                             <div
-                              v-if="expandedToolIds.has(`${groupIndex}-${idx}`)"
+                              v-if="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                               class="tool-full-content"
                             >
                               <!--

@@ -85,21 +85,38 @@ describe('F2 — user group renders ALL messages (source contract)', () => {
   })
 })
 
-describe('F3 — optimistic user message push (source contract)', () => {
-  it('pushes an optimistic user bubble in handleFileInputSubmit', async () => {
+describe('F3 — NO optimistic user message push (source contract)', () => {
+  // 2026-08-23 auto-collapse fix — the optimistic local push that
+  // lived in handleFileInputSubmit was removed. Two reasons:
+  //   (a) the optimistic id (`optimistic-user-*`) was always going
+  //       to be swapped for the server's canonical DB id milliseconds
+  //       later — a visible flicker with zero benefit;
+  //   (b) every push mutated `messages`, which recomputed
+  //       `messageGroups`, which (with positional expand keys) silently
+  //       re-keyed every tool card the user had expanded.
+  // The user's message now appears via the SSE `full` echo with a
+  // stable DB id from the start. These tests lock that contract in.
+  it('does NOT push a local optimistic user bubble in handleFileInputSubmit', async () => {
     const source = await readChatViewSource()
-    expect(source).toMatch(/optimistic-user-/)
-    expect(source).toMatch(/role: 'user',\s*\n\s*content: userMessage/)
+    // The optimistic push has been removed; the send-error path now
+    // just surfaces a single assistant error bubble.
+    expect(source).not.toMatch(/id: `optimistic-user-\$\{Date\.now\(\)\}`/)
+    expect(source).not.toMatch(/role: 'user',\s*\n\s*content: userMessage,\s*\n\s*timestamp: new Date\(\),\s*\n\s*image_urls: imageUrls\.length > 0 \? imageUrls : undefined/)
   })
 
-  it('rolls back the optimistic bubble when send fails', async () => {
+  it('does NOT dedupe the SSE echo against a synthetic optimistic id', async () => {
     const source = await readChatViewSource()
-    expect(source).toMatch(/messages\.value\.filter\(\(m\) => m\.id !== optimisticId\)/)
+    // The full-handler no longer searches for `optimistic-user-*`
+    // placeholders to splice out; user echoes arrive fresh.
+    expect(source).not.toMatch(/m\.id\.startsWith\('optimistic-user-'\)/)
   })
 
-  it('dedupes the SSE echo against the optimistic bubble', async () => {
+  it('handleFileInputSubmit only fires api.sendChatMessage + error fallback', async () => {
     const source = await readChatViewSource()
-    expect(source).toMatch(/m\.id\.startsWith\('optimistic-user-'\)/)
+    // The send-error branch now appends a single error assistant bubble
+    // instead of rolling back a local placeholder that no longer exists.
+    expect(source).toMatch(/await api\.sendChatMessage\(/)
+    expect(source).toMatch(/Sorry, I encountered an error sending your message\. Please try again\./)
   })
 })
 
