@@ -4,6 +4,7 @@ const json = std.json;
 const Io = std.Io;
 const LLMModels = @import("../agent/LLMModels.zig");
 const helpers = @import("helpers");
+const parse_thinking = @import("parse_thinking.zig");
 
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
@@ -1243,14 +1244,14 @@ pub const LlmConfig = struct {
         requested_name: []const u8,
         source: []const u8,
     ) ResolvedSubAgent {
-        // thinking: "auto" → null (inherit). "true" → true. "false" → false.
-        // Any other value → null (treat as auto).
-        const resolved_thinking: ?bool = blk: {
-            if (std.mem.eql(u8, sa.thinking, "auto")) break :blk null;
-            if (std.mem.eql(u8, sa.thinking, "true")) break :blk true;
-            if (std.mem.eql(u8, sa.thinking, "false")) break :blk false;
-            break :blk null;
-        };
+        // thinking: route through the pure parse_thinking helper. The
+        // helper accepts "auto" / "on" / "off" / "true" / "false" /
+        // "" and surfaces `error.InvalidThinkingMode` on garbage.
+        // Unparseable values fall through to `null` (= auto / inherit)
+        // so a typo in a sub-agent's `thinking` field doesn't break
+        // the whole spawn path — same fallback semantics as the
+        // previous inline parser at this site.
+        const resolved_thinking: ?bool = parse_thinking.parseThinkingString(sa.thinking) catch null;
 
         // temperature: "auto" → null. Numeric → parseFloat. Anything
         // else → null.
@@ -1487,4 +1488,5 @@ pub fn loadDefault(allocator: std.mem.Allocator, environment: *std.process.Envir
 
 test {
     _ = @import("config_test.zig");
+    _ = @import("parse_thinking_test.zig");
 }
