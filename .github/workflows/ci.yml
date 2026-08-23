@@ -32,6 +32,12 @@ jobs:
     # set the runner itself is registered with, not a display string.
     name: backend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
     runs-on: ${{ matrix.os }}
+    # The publish step (softprops/action-gh-release@v2) creates/updates the
+    # rolling `ci-latest` release, which needs write access to contents.
+    # Workflow default is `contents: read`; this job-level block overrides
+    # it for this job only.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -1281,25 +1287,70 @@ jobs:
           fi
           rm -f /tmp/functional-test-ui-start.$$
 
-      - name: Upload nalar + nalar-desktop binaries
-        # Both binaries need to ship to the user — install-nalar-desktop.sh
-        # installs both. The `nalar` service binary is also useful as a
-        # standalone (for users who only want the REST API + Vue webapp
-        # served by nalar itself, no GTK).
-        # The artifact name uses matrix.target.zig so each cell produces
-        # a distinct artifact name. All 3 cell artifacts are visible on
-        # the same commit. Path glob catches both `nalar` (Linux/macOS)
-        # and `nalar.exe` (Windows) plus `nalar-desktop` / `nalar-desktop.exe`.
-        # retention=14d matches the PR #71 baseline.
-        uses: actions/upload-artifact@v4
+      - name: Stage binaries with target-triple names
+        # Replaces the old actions/upload-artifact@v4 step. Artifacts are
+        # QUOTA-METERED Actions storage and the repo hit the cap
+        # ("Artifact storage quota has been hit", run of 2026-08-23), so
+        # binaries no longer go through artifact storage at all.
+        #
+        # Instead each matrix cell renames its two binaries to carry the
+        # zig target triple into a per-run staging dir:
+        #   nalar-x86_64-linux-gnu, nalar-desktop-x86_64-linux-gnu,
+        #   nalar-aarch64-macos,    nalar-desktop-aarch64-macos,
+        #   nalar-x86_64-windows-gnu.exe, nalar-desktop-x86_64-windows-gnu.exe
+        # The triple suffix keeps the 3 cells from colliding when they all
+        # publish to the SAME shared release (see the next step).
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows); the pwsh bootstrap step earlier in this job installs
+        # pwsh on the Windows runner.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = "bin-stage-${{ matrix.target.zig }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          foreach ($bin in @('nalar', 'nalar-desktop')) {
+            foreach ($candidate in @($bin, "$bin.exe")) {
+              if (Test-Path "zig-out/bin/$candidate") {
+                Copy-Item "zig-out/bin/$candidate" "$stage/$candidate"
+                Write-Host "→ staged $stage/$candidate"
+              }
+            }
+          }
+          if (-not (Get-ChildItem $stage)) {
+            Write-Error "no binaries found in zig-out/bin — build step failed?"
+            exit 1
+          }
+
+      - name: Publish binaries to rolling ci-latest release
+        # Merges to main + manual dispatch publish the staged binaries as
+        # assets on a single ROLLING GitHub Release tagged `ci-latest`.
+        # Releases do NOT count against the Actions artifact-storage quota,
+        # which is why this replaces upload-artifact entirely.
+        #
+        # PR builds only stage (previous step) and skip this publish —
+        # zero quota usage on any event.
+        #
+        # The release is marked prerelease + make_latest=false so it never
+        # shadows real versioned releases; softprops/action-gh-release@v2
+        # updates the tag + replaces same-named assets in place, so
+        # `ci-latest` always tracks the newest green main build.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
         with:
-          name: nalar-${{ matrix.target.zig }}-${{ github.sha }}
-          path: |
-            zig-out/bin/nalar
-            zig-out/bin/nalar.exe
-            zig-out/bin/nalar-desktop
-            zig-out/bin/nalar-desktop.exe
-          retention-days: 14
+          tag_name: ci-latest
+          name: CI binaries (latest main)
+          body: |
+            Rolling release — binaries from the latest green `main` build.
+
+            - Commit: ${{ github.sha }}
+            - Built: ${{ github.run_id }}
+
+            Assets carry the zig target triple:
+            `nalar[-desktop]-<target>[.exe]`. Install both binaries with
+            `sudo scripts/install-nalar-desktop.sh` after downloading.
+          prerelease: true
+          make_latest: false
+          files: bin-stage-${{ matrix.target.zig }}/*
 
   frontend:
     name: frontend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
