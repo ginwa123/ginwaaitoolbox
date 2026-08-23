@@ -49,10 +49,10 @@ each produces the artifact native to its host platform:
      isolated `mktemp` HOME; the Python harness enforces
      `is_safe_tmp()` so the real `$HOME` is never touched. See
      `tests/functional/README.md` for details.
-9. Artifacts upload — `nalar-${matrix.target.zig}-<sha>` per cell, each
-   containing both `nalar` and `nalar-desktop` (14-day retention). On a
-   single commit you'll see e.g. `nalar-x86_64-linux-gnu-<sha>` AND
-   `nalar-aarch64-macos-<sha>` listed on the run page.
+9. Binary publish — each cell stages its binaries under target-triple
+   names (`nalar-<target>`, `nalar-desktop-<target>`). On merges to main
+   (+ manual dispatch) they're published as assets on the rolling
+   `ci-latest` GitHub Release. PR builds stage only — nothing is stored.
 
 ## Functional tests
 
@@ -96,16 +96,29 @@ negative tests in `harness_safety_test.py` guard the invariants.
   remaining work to add Windows is runner-registration + `vcpkg` sysroot
   wiring in `build.zig` (separate task).
 
-## Downloading artifacts
+## Downloading binaries
 
-After CI completes on a commit, the binaries land at:
-  https://github.com/ginwa123/ginwaaitoolbox/actions/runs/<run-id>/artifacts/<artifact-name>
+Binaries are NOT uploaded as Actions artifacts anymore — artifact storage
+is quota-metered and the repo hit the cap ("Artifact storage quota has
+been hit", 2026-08-23). Releases don't count against that quota, so every
+green `main` build publishes to the rolling release instead:
 
-Or via `gh run download <run-id> --name nalar-<target>-<sha>` if `gh` CLI
-is configured.
+  https://github.com/ginwa123/ginwaaitoolbox/releases/tag/ci-latest
 
-The artifact for either cell contains both `nalar` and `nalar-desktop`.
-Install with `sudo scripts/install-nalar-desktop.sh` after unzipping
+Assets (names carry the zig target triple):
+  nalar-x86_64-linux-gnu          + nalar-desktop-x86_64-linux-gnu
+  nalar-aarch64-macos             + nalar-desktop-aarch64-macos
+  nalar-x86_64-windows-gnu.exe    + nalar-desktop-x86_64-windows-gnu.exe
+
+Or via the `gh` CLI:
+  gh release download ci-latest --repo ginwa123/ginwaaitoolbox \
+    --pattern 'nalar-desktop-x86_64-linux-gnu'
+
+The release is marked prerelease + not-latest so it never shadows real
+versioned releases; each main merge replaces the assets in place, so
+`ci-latest` always tracks the newest green build. PR builds never publish.
+
+Install with `sudo scripts/install-nalar-desktop.sh` after downloading
 (the script handles `chmod +x` + copying to `/usr/local/bin/`).
 
 ## Adding Windows
