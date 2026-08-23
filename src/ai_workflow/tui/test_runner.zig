@@ -12,6 +12,10 @@ test {
 _ = @import("http_handlers/design_elements_reorder_test.zig"); // Chunk 5 — POST /reorder handler
 _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup handler
     _ = @import("http_handlers/nalar_config_put_parse_test.zig");
+    // Static-contract tests for the model-thinking PUT validation
+    // (plan 2026-08-23-model-thinking). Source-grep pattern locks
+    // in the new validation paths + LoadError variants.
+    _ = @import("http_handlers/nalar_config_put_thinking_test.zig");
     _ = @import("http_handlers/nalar_config_get_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");

@@ -595,6 +595,85 @@ test "sub_agents: hasSubAgent / getSubAgent accessors" {
     try std.testing.expect(cfg.getSubAgent("nope") == null);
 }
 
+test "model-thinking knobs: profile thinking_budget_tokens + reasoning_effort round-trip" {
+    // Verify the new per-profile fields round-trip through the JSON
+    // parser without being silently dropped. The HTTP layer is
+    // responsible for range validation (0 < budget <= 2_000_000,
+    // effort in the 4-value set); this test only asserts the storage
+    // path.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": {
+        \\    "alpha": {
+        \\      "model": "m", "base_url": "https://a", "api_key": "k",
+        \\      "thinking": "on", "temperature": "auto", "url_style": "anthropic",
+        \\      "thinking_budget_tokens": 4096,
+        \\      "reasoning_effort": "high"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const p = cfg.getProfile("alpha").?;
+    try std.testing.expectEqual(@as(?u32, 4096), p.thinking_budget_tokens);
+    try std.testing.expectEqualStrings("high", p.reasoning_effort.?);
+}
+
+test "model-thinking knobs: profile fields default to null when omitted" {
+    // Backward compatibility — old config.json files without the new
+    // fields must parse cleanly with the new fields as null.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": {
+        \\    "alpha": {
+        \\      "model": "m", "base_url": "https://a", "api_key": "k",
+        \\      "thinking": "auto", "temperature": "auto", "url_style": "openai"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const p = cfg.getProfile("alpha").?;
+    try std.testing.expectEqual(@as(?u32, null), p.thinking_budget_tokens);
+    try std.testing.expectEqual(@as(?[]const u8, null), p.reasoning_effort);
+}
+
+test "model-thinking knobs: sub_agent thinking_budget_tokens + reasoning_effort round-trip" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "sub_agents": [
+        \\    { "name": "alpha", "model": "M1", "base_url": "https://a",
+        \\      "thinking": "on", "temperature": "0.5", "url_style": "anthropic",
+        \\      "api_key": "ak1", "system_prompt": "sp",
+        \\      "thinking_budget_tokens": 8192,
+        \\      "reasoning_effort": "medium" }
+        \\  ]
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const sa = cfg.getSubAgent("alpha").?;
+    try std.testing.expectEqual(@as(?u32, 8192), sa.thinking_budget_tokens);
+    try std.testing.expectEqualStrings("medium", sa.reasoning_effort.?);
+}
+
 test "sub_agents: clone produces independent deep copy" {
     const allocator = std.testing.allocator;
 

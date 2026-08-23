@@ -4,6 +4,7 @@ const json = std.json;
 const Io = std.Io;
 const LLMModels = @import("../agent/LLMModels.zig");
 const helpers = @import("helpers");
+const parse_thinking = @import("parse_thinking.zig");
 
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
@@ -81,6 +82,17 @@ pub const LlmConfig = struct {
         /// (validates both `LlmProfile.compaction_threshold_percent`
         /// and `SubAgentConfig.compaction_threshold_percent`).
         InvalidThresholdPercent,
+        /// `thinking_budget_tokens` outside the (0, 2_000_000] range.
+        /// Surfaced by the HTTP PUT handler (plan 2026-08-23-model-thinking).
+        /// The Anthropic API rejects budgets that violate the 1024 floor
+        /// and the strict-less-than-max_tokens ceiling; we pre-clamp at the
+        /// request-build site, so the only way a bad value reaches here is
+        /// a hand-edited config or a malformed PUT body.
+        InvalidThinkingBudgetTokens,
+        /// `reasoning_effort` outside the {low, medium, high, auto} set.
+        /// Surfaced by the HTTP PUT handler via the `parse_thinking`
+        /// helper.
+        InvalidReasoningEffort,
     };
 
     /// Individual profile settings.
@@ -110,6 +122,21 @@ pub const LlmConfig = struct {
         /// context window. `null` = use the built-in 80. Values > 100
         /// are rejected by the HTTP layer with `error.InvalidThresholdPercent`.
         compaction_threshold_percent: ?u8 = null,
+        /// Anthropic-only: override for `thinking.budget_tokens`. When
+        /// set, used directly by `buildJsonAnthropicRequest` (clamped
+        /// to >=1024 and <max_tokens). When null AND `thinking == "on"`,
+        /// the agent falls back to the 50%-of-max heuristic; when
+        /// `thinking == "auto"`, the agent emits Anthropic's
+        /// `type: "adaptive"` mode and lets the model pick its own
+        /// budget (Sonnet 4.5+ recommendation). OpenAI-style URLs
+        /// ignore this field — they use `reasoning_effort` instead.
+        thinking_budget_tokens: ?u32 = null,
+        /// OpenAI-style reasoning effort (o1 / o3 / GPT-5 / DeepSeek-R1).
+        /// One of "low" | "medium" | "high" | "auto". Validated by
+        /// `parse_thinking.parseReasoningEffort`. `null` = omit from
+        /// the request body (model-default reasoning). Anthropic-style
+        /// URLs ignore this field entirely.
+        reasoning_effort: ?[]const u8 = null,
     };
 
     /// Typed configuration for a single sub-agent. Mirrors `LlmProfile`
@@ -133,6 +160,14 @@ pub const LlmConfig = struct {
         /// Compaction threshold percentage (0-100) for this sub-agent.
         /// `null` = inherit from the parent profile (or 80 if no profile).
         compaction_threshold_percent: ?u8 = null,
+        /// Anthropic-only override for `thinking.budget_tokens`. See
+        /// `LlmProfile.thinking_budget_tokens` for full semantics.
+        /// `null` = inherit from the parent profile.
+        thinking_budget_tokens: ?u32 = null,
+        /// OpenAI-style reasoning effort (o1 / o3 / GPT-5 / DeepSeek-R1).
+        /// See `LlmProfile.reasoning_effort` for full semantics.
+        /// `null` = inherit from the parent profile.
+        reasoning_effort: ?[]const u8 = null,
     };
 
     /// Owned slice of `SubAgentConfig` entries. The slice itself (when non-empty)
@@ -186,6 +221,16 @@ pub const LlmConfig = struct {
         /// from parent's value at run time.
         temperature: ?f32,
 
+        /// Resolved Anthropic `thinking.budget_tokens` override. `null`
+        /// = inherit from the parent profile. Range-validated upstream
+        /// (HTTP layer rejects 0 or > 2_000_000).
+        thinking_budget_tokens: ?u32,
+
+        /// Resolved OpenAI `reasoning_effort` value (already validated
+        /// to one of "low" | "medium" | "high" | "auto"). `null` =
+        /// inherit from the parent profile.
+        reasoning_effort: ?[]const u8,
+
         /// System prompt to inject as the sub-agent's
         /// `## Your Active Agent Configuration`. Empty for the
         /// random-fallback case.
@@ -217,6 +262,13 @@ pub const LlmConfig = struct {
         /// percentage (0-100). Null = use built-in 80. Range-validated
         /// at the HTTP layer.
         compaction_threshold_percent: ?u8 = null,
+        /// Anthropic-only override for `thinking.budget_tokens`. Range-
+        /// validated upstream (HTTP layer rejects 0 or > 2_000_000).
+        thinking_budget_tokens: ?u32 = null,
+        /// OpenAI-style reasoning effort (o1 / o3 / GPT-5 / DeepSeek-R1).
+        /// Parsed via `parse_thinking.parseReasoningEffort`; a bad
+        /// value here surfaces at HTTP layer as `InvalidReasoningEffort`.
+        reasoning_effort: ?[]const u8 = null,
     };
 
     const LlmConfigJson = struct {
@@ -280,6 +332,11 @@ pub const LlmConfig = struct {
         /// Optional per-sub-agent override for the compaction threshold
         /// percentage (0-100).
         compaction_threshold_percent: ?u8 = null,
+        /// Anthropic-only override for `thinking.budget_tokens`. See
+        /// `LlmProfile.thinking_budget_tokens`.
+        thinking_budget_tokens: ?u32 = null,
+        /// OpenAI-style `reasoning_effort`. See `LlmProfile.reasoning_effort`.
+        reasoning_effort: ?[]const u8 = null,
     };
 
     /// Profiles storage after parsing from JSON
@@ -541,6 +598,7 @@ pub const LlmConfig = struct {
             allocator.free(entry.value_ptr.temperature);
             allocator.free(entry.value_ptr.api_key);
             allocator.free(entry.value_ptr.url_style);
+            if (entry.value_ptr.reasoning_effort) |re| allocator.free(re);
             freeSubAgentsList(entry.value_ptr.sub_agents, allocator);
         }
         map.deinit();
@@ -585,6 +643,9 @@ pub const LlmConfig = struct {
             // Per-profile compaction overrides — optional, parsed from JSON.
             .max_capacity_tokens = profile.max_capacity_tokens,
             .compaction_threshold_percent = profile.compaction_threshold_percent,
+            // Model-thinking knobs — Anthropic budget + OpenAI effort.
+            .thinking_budget_tokens = profile.thinking_budget_tokens,
+            .reasoning_effort = if (profile.reasoning_effort) |re| try alloc.dupe(u8, re) else null,
         });
     }
 
@@ -600,6 +661,7 @@ pub const LlmConfig = struct {
             allocator.free(sa.url_style);
             allocator.free(sa.api_key);
             allocator.free(sa.system_prompt);
+            if (sa.reasoning_effort) |re| allocator.free(re);
         }
         if (slice.len > 0) allocator.free(slice);
     }
@@ -662,6 +724,9 @@ pub const LlmConfig = struct {
                 // Per-sub-agent compaction overrides — optional, parsed from JSON.
                 .max_capacity_tokens = j.max_capacity_tokens,
                 .compaction_threshold_percent = j.compaction_threshold_percent,
+                // Model-thinking knobs — Anthropic budget + OpenAI effort.
+                .thinking_budget_tokens = j.thinking_budget_tokens,
+                .reasoning_effort = if (j.reasoning_effort) |re| try allocator.dupe(u8, re) else null,
             });
         }
 
@@ -690,6 +755,7 @@ pub const LlmConfig = struct {
                 allocator.free(sa.url_style);
                 allocator.free(sa.api_key);
                 allocator.free(sa.system_prompt);
+                if (sa.reasoning_effort) |re| allocator.free(re);
             }
             list.deinit(allocator);
         }
@@ -742,6 +808,11 @@ pub const LlmConfig = struct {
                 .url_style = url_style,
                 .api_key = api_key,
                 .system_prompt = system_prompt,
+                // Model-thinking knobs — Anthropic budget + OpenAI effort.
+                // Range validation is the HTTP layer's job; this site
+                // just threads the JSON-parsed values through.
+                .thinking_budget_tokens = j.thinking_budget_tokens,
+                .reasoning_effort = if (j.reasoning_effort) |re| try allocator.dupe(u8, re) else null,
             });
         }
 
@@ -1228,6 +1299,8 @@ pub const LlmConfig = struct {
             .url_style = self.url_style,
             .is_thinking = null,
             .temperature = null,
+            .thinking_budget_tokens = null,
+            .reasoning_effort = null,
             .system_prompt = "",
             .source = "",
         };
@@ -1243,20 +1316,39 @@ pub const LlmConfig = struct {
         requested_name: []const u8,
         source: []const u8,
     ) ResolvedSubAgent {
-        // thinking: "auto" → null (inherit). "true" → true. "false" → false.
-        // Any other value → null (treat as auto).
-        const resolved_thinking: ?bool = blk: {
-            if (std.mem.eql(u8, sa.thinking, "auto")) break :blk null;
-            if (std.mem.eql(u8, sa.thinking, "true")) break :blk true;
-            if (std.mem.eql(u8, sa.thinking, "false")) break :blk false;
-            break :blk null;
-        };
+        // thinking: route through the pure parse_thinking helper. The
+        // helper accepts "auto" / "on" / "off" / "true" / "false" /
+        // "" and surfaces `error.InvalidThinkingMode` on garbage.
+        // Unparseable values fall through to `null` (= auto / inherit)
+        // so a typo in a sub-agent's `thinking` field doesn't break
+        // the whole spawn path — same fallback semantics as the
+        // previous inline parser at this site.
+        const resolved_thinking: ?bool = parse_thinking.parseThinkingString(sa.thinking) catch null;
 
         // temperature: "auto" → null. Numeric → parseFloat. Anything
         // else → null.
         const resolved_temperature: ?f32 = blk: {
             if (std.mem.eql(u8, sa.temperature, "auto")) break :blk null;
             break :blk std.fmt.parseFloat(f32, sa.temperature) catch null;
+        };
+
+        // thinking_budget_tokens: pass through. HTTP layer enforces
+        // the (0, 2_000_000] range, so by the time we see this
+        // value it's guaranteed non-zero. Empty/null on the sub-agent
+        // means "inherit from parent profile" — the workflow's
+        // resolver will fall through to the parent profile's value.
+        const resolved_budget: ?u32 = sa.thinking_budget_tokens;
+
+        // reasoning_effort: pass through. The HTTP layer validates
+        // the 4-value set via `parse_thinking.parseReasoningEffort`,
+        // so by the time we see this value it's either null or one
+        // of "low" | "medium" | "high" | "auto". Empty string here
+        // (which the form sends for "auto") is normalized to null
+        // by the HTTP layer before reaching this site.
+        const resolved_effort: ?[]const u8 = blk: {
+            const e = sa.reasoning_effort orelse break :blk null;
+            if (e.len == 0) break :blk null;
+            break :blk e;
         };
 
         return ResolvedSubAgent{
@@ -1270,6 +1362,8 @@ pub const LlmConfig = struct {
             .url_style = if (sa.url_style.len > 0) sa.url_style else self.url_style,
             .is_thinking = resolved_thinking,
             .temperature = resolved_temperature,
+            .thinking_budget_tokens = resolved_budget,
+            .reasoning_effort = resolved_effort,
             .system_prompt = sa.system_prompt,
             .source = source,
         };
@@ -1487,4 +1581,5 @@ pub fn loadDefault(allocator: std.mem.Allocator, environment: *std.process.Envir
 
 test {
     _ = @import("config_test.zig");
+    _ = @import("parse_thinking_test.zig");
 }

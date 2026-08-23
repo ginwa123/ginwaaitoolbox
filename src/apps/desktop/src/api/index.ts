@@ -3373,6 +3373,22 @@ export interface NalarProfile {
    * Mirrors the backend's `LlmProfile.compaction_threshold_percent`.
    */
   compaction_threshold_percent?: number | null
+  /**
+   * Anthropic-only override for `thinking.budget_tokens`. Plan
+   * 2026-08-23-model-thinking. Mirrors `LlmProfile.thinking_budget_tokens`.
+   * Hidden when `thinking === "off"`. Range (0, 2_000_000] enforced
+   * server-side. When null/omitted, the backend uses the 50%-of-max
+   * heuristic (or Anthropic `type: "adaptive"` when
+   * `thinking === "auto"`).
+   */
+  thinking_budget_tokens?: number | null
+  /**
+   * OpenAI-style reasoning effort (o1/o3/GPT-5/DeepSeek-R1). Plan
+   * 2026-08-23-model-thinking. Mirrors `LlmProfile.reasoning_effort`.
+   * Hidden when `thinking === "off"`. Server-side validation via
+   * `parse_thinking.parseReasoningEffort` (low|medium|high|auto).
+   */
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'auto' | null
 }
 
 export interface SubAgent {
@@ -3384,6 +3400,14 @@ export interface SubAgent {
   url_style: string
   api_key: string
   system_prompt: string
+  /** Anthropic-only override for `thinking.budget_tokens`. Plan
+   * 2026-08-23-model-thinking. Mirrors `LlmProfile.thinking_budget_tokens`.
+   * Optional in the wire shape — old configs without this field
+   * hydrate as undefined and are coerced to null in the form. */
+  thinking_budget_tokens?: number | null
+  /** OpenAI-style reasoning effort (o1/o3/GPT-5/DeepSeek-R1).
+   * Mirrors `LlmProfile.reasoning_effort`. Optional. */
+  reasoning_effort?: 'low' | 'medium' | 'high' | 'auto' | null
 }
 
 export interface McpHeader {

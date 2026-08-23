@@ -527,6 +527,7 @@ pub const get_design_context = @import("modules/agent/tools/get_design_context.z
 pub const preview_design_page = @import("modules/agent/tools/preview_design_page.zig");
 
 pub const config = @import("modules/config/Config.zig");
+pub const parse_thinking = @import("modules/config/parse_thinking.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
