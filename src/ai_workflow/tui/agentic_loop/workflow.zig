@@ -979,6 +979,17 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 effective_is_thinking = t;
             }
             if (ov.temperature) |t| agent_temperature = t;
+            // Model-thinking overrides (plan 2026-08-23-model-thinking).
+            // Non-null budget_tokens wins over the profile's value.
+            // Non-null reasoning_effort wins over the profile's value.
+            // Null/empty means "inherit from parent profile" — the
+            // effective_* vars keep their per-iteration resolved
+            // values. The empty-string guard on reasoning_effort
+            // matches the form's "auto" representation.
+            if (ov.thinking_budget_tokens) |t| effective_thinking_budget_tokens = t;
+            if (ov.reasoning_effort) |re| {
+                if (re.len > 0) effective_reasoning_effort = re;
+            }
             sub_agent_session_name = ov.resolved_name;
         }
         // For sub-agent flow: replace `current_agent` (the session's
@@ -1843,6 +1854,19 @@ pub const SubAgentOverrides = struct {
     url_style: []const u8 = "",
     is_thinking: ?bool = null,
     temperature: ?f32 = null,
+    /// Anthropic-only override for `thinking.budget_tokens`. When
+    /// set, the spawned sub-agent's `Agent.thinkingBudgetTokens` is
+    /// this value (not the parent profile's). When null, the
+    /// workflow falls through to the parent profile's value via
+    /// the same per-iteration resolution. See
+    /// `ResolvedSubAgent.thinking_budget_tokens`.
+    thinking_budget_tokens: ?u32 = null,
+    /// OpenAI-style reasoning effort (o1/o3/GPT-5/DeepSeek-R1).
+    /// When set, the spawned sub-agent's `Agent.reasoningEffort` is
+    /// this value. Empty string is normalized to null at the
+    /// sub-agent resolution site so the field is omitted from
+    /// the wire. See `ResolvedSubAgent.reasoning_effort`.
+    reasoning_effort: ?[]const u8 = null,
     system_prompt: []const u8 = "",
 };
 

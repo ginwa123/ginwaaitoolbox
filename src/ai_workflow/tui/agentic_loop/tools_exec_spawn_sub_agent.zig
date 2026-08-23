@@ -477,6 +477,13 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
                 .url_style = resolved.url_style,
                 .is_thinking = resolved.is_thinking,
                 .temperature = resolved.temperature,
+                // Model-thinking knobs (plan 2026-08-23-model-thinking).
+                // Threaded from ResolvedSubAgent so the spawned
+                // sub-agent can override its parent profile's
+                // thinking budget / reasoning effort without
+                // touching the global config.
+                .thinking_budget_tokens = resolved.thinking_budget_tokens,
+                .reasoning_effort = resolved.reasoning_effort,
                 .system_prompt = resolved.system_prompt,
             };
         };
