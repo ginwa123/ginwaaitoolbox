@@ -10,16 +10,17 @@ export function stripThinkingTags(content: string | undefined): string {
   const hasThink = /<think>[\s\S]*?<\/think>/i.test(str)
   const hasPlain = /<plain>/i.test(str)
   const hasMarkdown = /<markdown>/i.test(str)
+  const hasHtml = /<html>/i.test(str)
 
   // Only <think> exists, keep original content
-  if (hasThink && !hasPlain && !hasMarkdown) {
+  if (hasThink && !hasPlain && !hasMarkdown && !hasHtml) {
     return str
   }
 
   let result = str
 
   // Remove think block only when another content tag exists
-  if (hasThink && (hasPlain || hasMarkdown)) {
+  if (hasThink && (hasPlain || hasMarkdown || hasHtml)) {
     result = result.replace(/<think>[\s\S]*?<\/think>/gi, '')
   }
 
@@ -28,6 +29,10 @@ export function stripThinkingTags(content: string | undefined): string {
 
   // Unwrap markdown tags
   result = result.replace(/<markdown>\s*/gi, '').replace(/\s*<\/markdown>/gi, '')
+
+  // Unwrap html tags (inner content is rendered as a live sandboxed
+  // iframe block by ChatView — see getHtmlTags/isHtmlTags below).
+  result = result.replace(/<html>\s*/gi, '').replace(/\s*<\/html>/gi, '')
 
   return result.trim()
 }
@@ -59,4 +64,39 @@ export function isThinkingTags(content: string): boolean {
   // If removing thinking blocks leaves nothing meaningful, it's thinking-only
   // Whitespace or empty string after stripping means content was only thinking tags
   return withoutThinking === ''
+}
+
+/**
+ * Extract the inner payload(s) of `<html>...</html>` blocks.
+ *
+ * The chat UI renders each payload as a live sandboxed-iframe block
+ * (see ChatView.vue). Multiple blocks are joined with a blank line,
+ * mirroring getThinkingTags. Returns '' when no block is present.
+ */
+export function getHtmlTags(content: string): string {
+  if (!content) return ''
+
+  const matches = content.match(/<html>([\s\S]*?)<\/html>/gi)
+  if (!matches) return ''
+
+  return matches
+    .map((match) => match.replace(/<\/?html>/gi, '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+}
+
+/**
+ * True when the content's only visible payload is `<html>` block(s)
+ * (plus optional `<think>` reasoning, which is not visible content).
+ */
+export function isHtmlTags(content: string): boolean {
+  if (!content) return false
+  const trimmed = content.trim()
+
+  const withoutHtml = trimmed.replace(/<html>[\s\S]*?<\/html>/gi, '').trim()
+  if (withoutHtml === trimmed) return false // no <html> block at all
+
+  // Remaining text must be think-blocks/whitespace only.
+  const withoutThink = withoutHtml.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  return withoutThink === ''
 }
