@@ -72,12 +72,14 @@ test {
     // 2026-08-23 spawn-subagent-live-progress — `subagent_progress.zig`
     // builds the wire payload that rides the EXISTING `llm_full` SSE
     // channel with a NEW `role="subagent_progress"` value. Frontend
-    // ChatView.vue:2033 routes by role; tests guard the JSON shape.
-    _ = @import("subagent_progress_test.zig");
-    // Static-contract tests for tools_exec_spawn_sub_agent.zig:
-    // assert the 3 lifecycle emission points exist (launched /
-    // completed / failed) and that tool_call_id is threaded through
-    // the per-thread struct. Drops of these regress user-visible
+    // ChatView.vue routes by role; inline tests at the bottom of the
+    // impl file guard the JSON shape.
+    _ = @import("subagent_progress.zig");
+    // Static-contract tests live inline at the bottom of
+    // `tools_exec_spawn_sub_agent.zig` — they grep the impl source
+    // for the 3 lifecycle emission points (launched / completed /
+    // failed) and that `tool_call_id` is threaded through the
+    // per-thread struct. Drops of these regress user-visible
     // progress to "0 sub-agents".
-    _ = @import("tools_exec_spawn_sub_agent_test.zig");
+    _ = @import("tools_exec_spawn_sub_agent.zig");
 }
