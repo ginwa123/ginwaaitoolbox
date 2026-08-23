@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 
 import { computeLoadMoreThreshold } from './virtualScrollerThreshold'
+import { computeAnchorCompensation, type AnchorMeasurement } from './virtualScrollerScrollAnchor'
 
 const props = withDefaults(
   defineProps<{
@@ -415,6 +416,21 @@ const measureItems = () => {
   const content = containerRef.value.querySelector('.virtual-scroller-content')
   if (!content) return
   let changed = false
+  // ── Scroll-anchor compensation (2026-08-23, chatview-scroll-jump-fix) ──
+  //
+  // Writing real heights over estimates for items ABOVE the viewport
+  // mutates the spacers without moving scrollTop — content under the
+  // viewport teleports by Σ(real − estimate). That is the "long chats
+  // jump while scrolling" bug (task_1787496087806_6; log evidence:
+  // adjacent samples sh=31443 → sh=36416 with top advancing only half
+  // as much). Capture the pre-measure anchor + scrollTop so the writes
+  // below can be compensated after `updateAccumulatedHeights()`.
+  //
+  // The anchor is the first VISIBLE index (not a DOM node): stable even
+  // if the anchor item unmounts between frames, and jsdom-testable.
+  const anchorIndex = findStartIndex()
+  const prevScrollTop = containerRef.value.scrollTop
+  const pendingMeasurements: AnchorMeasurement[] = []
   const children = content.children
   for (let i = 0; i < children.length; i++) {
     const el = children[i] as HTMLElement
@@ -429,12 +445,37 @@ const measureItems = () => {
       // scroll/resize debounce cycle, which is the ratcheting
       // symptom in docs/plans/2026-06-10-scroll-ratcheting-fix.md.
       if (prev === undefined || Math.abs(h - prev) > HYSTERESIS_PX) {
+        pendingMeasurements.push({ index: realIndex, newHeight: h, oldHeight: prev })
         itemHeights.value.set(realIndex, h)
         changed = true
       }
     }
   }
-  if (changed) updateAccumulatedHeights()
+  if (!changed) return
+  updateAccumulatedHeights()
+
+  // ── Apply the anchor compensation ────────────────────────────────────
+  //
+  // Only writes for indices strictly ABOVE the anchor shift content
+  // under the viewport (the anchor item's own top edge sits at the
+  // topSpacer boundary — its height change moves its bottom edge, not
+  // its top). Visible-window growth is real content (streaming text,
+  // image load) and must flow through uncompensated.
+  //
+  // Skipped while `isPreservingScroll`: `endPreserve` owns scroll
+  // restoration during prepends and sets scrollTop from its own anchor
+  // element; compensating here would double-adjust.
+  const result = computeAnchorCompensation({
+    anchorIndex,
+    prevScrollTop,
+    defaultItemHeight: props.defaultItemHeight,
+    measurements: pendingMeasurements,
+  })
+  if (result.shiftPx !== 0 && !isPreservingScroll.value) {
+    containerRef.value.scrollTop = result.newScrollTop
+    scrollTop.value = result.newScrollTop
+    lastScrollTop.value = result.newScrollTop
+  }
 }
 
 let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null
