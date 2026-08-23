@@ -1405,12 +1405,6 @@ async function handleAgentToggleToolsBulk(toolNames: string[], enabled: boolean)
     console.error('[AppLayout] bulk toggle failed:', e)
   }
 }
-function handleAgentNewChat() {
-  // TODO (v1.1): open a chat dialog. The current iteration ships
-  // the AgentView + dialog shells; the New Chat button's wired
-  // behaviour is a follow-up commit.
-  console.warn('[AppLayout] handleAgentNewChat: not yet wired (v1.1)')
-}
 
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
@@ -2513,7 +2507,6 @@ defineExpose({
         @edit-knowledge="handleAgentEditKnowledge"
         @toggle-tool="handleAgentToggleTool"
         @toggle-tools-bulk="(names, enabled) => handleAgentToggleToolsBulk(names, enabled)"
-        @new-chat="handleAgentNewChat"
         @add-system-prompt="handleAgentAddSystemPrompt"
         @edit-system-prompt="handleAgentEditSystemPrompt"
         @remove-system-prompt="handleAgentRemoveSystemPrompt"

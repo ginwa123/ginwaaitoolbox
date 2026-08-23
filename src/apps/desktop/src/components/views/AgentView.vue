@@ -36,7 +36,6 @@ const emit = defineEmits<{
   editKnowledge: [row: api.AgentKnowledgeRow]
   toggleTool: [toolName: string, enabled: boolean]
   toggleToolsBulk: [toolNames: string[], enabled: boolean]
-  newChat: []
   selectTask: [taskId: string]
   addSystemPrompt: []
   editSystemPrompt: [row: api.AgentSystemPromptRow]
@@ -192,9 +191,6 @@ function handleClearAllVisible() {
   if (toDisable.length > 0) emit('toggleToolsBulk', toDisable, false)
 }
 
-async function handleNewChat() {
-  emit('newChat')
-}
 </script>
 
 <template>
@@ -558,21 +554,12 @@ async function handleNewChat() {
       </section>
     </div>
 
-    <!-- Right column: Chat list + New Chat button -->
+    <!-- Right column: Agent name + System Prompt panel -->
     <div class="flex-1 flex flex-col p-4">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
           {{ props.item.name || 'Agent' }}
         </h2>
-        <button
-          type="button"
-          @click="handleNewChat"
-          data-testid="agent-new-chat"
-          class="text-sm px-3 py-1.5 rounded"
-          style="background: var(--color-violet); color: var(--color-bg);"
-        >
-          + New Chat
-        </button>
       </div>
 
       <!-- System Prompt section (plan 2026-08-21-agent-system-prompt):
@@ -664,7 +651,7 @@ async function handleNewChat() {
       </section>
 
       <div class="text-xs" style="color: var(--semantic-text-dim);">
-        Click <strong>+ New Chat</strong> to start a conversation with this Agent.
+        Start a conversation with this Agent from the sidebar.
         The system prompt is injected first, then knowledge files are loaded into context,
         and only the tools you've enabled will be available.
       </div>

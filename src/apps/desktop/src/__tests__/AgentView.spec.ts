@@ -295,11 +295,11 @@ describe('AgentView', () => {
     })
   })
 
-  it('emits newChat when New Chat button clicked', async () => {
+  it('does not render a New Chat button (removed 2026-08-23)', async () => {
     const wrapper = mount(AgentView, { props: baseProps() })
     await nextTick()
-    await wrapper.find('[data-testid="agent-new-chat"]').trigger('click')
-    expect(wrapper.emitted('newChat')).toBeTruthy()
+    expect(wrapper.find('[data-testid="agent-new-chat"]').exists()).toBe(false)
+    expect(wrapper.emitted('newChat')).toBeFalsy()
   })
 
   // ─── Feature B1: description clamp + expander (2026-08-22) ──────────
