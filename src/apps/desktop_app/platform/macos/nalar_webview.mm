@@ -32,10 +32,11 @@
 //   `@property(copy)` for NSString* that the property should logically
 //   own. The `dealloc` method explicitly releases owned properties.
 //
-//   IMPORTANT: the navigation delegate pattern creates a retain cycle —
-//   webView retains delegate (via setNavigationDelegate:), delegate
-//   retains webView (via _webView property). We break it in `dealloc` by
-//   calling `setNavigationDelegate:nil` BEFORE releasing the webView.
+//   IMPORTANT: the delegate patterns create retain cycles — webView
+//   retains BOTH delegates (navigation + UI) via their setters, and the
+//   delegate retains webView (via _webView property). We break them in
+//   `dealloc` by calling `setNavigationDelegate:nil` AND
+//   `setUIDelegate:nil` BEFORE releasing the webView.
 //
 // Why Objective-C++ and not pure C
 // --------------------------------
@@ -55,7 +56,7 @@
 
 #pragma mark - Delegate
 
-@interface NalarAppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate>
+@interface NalarAppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
 
 // Borrowed by-value copy of the C config struct. The caller (Zig) keeps
 // the original cfg alive for the webview's lifetime per the C ABI
@@ -119,6 +120,83 @@
 @synthesize window = _window;
 @synthesize webView = _webView;
 
+- (void)applicationWillFinishLaunching:(NSNotification*)notification {
+    (void)notification;
+
+    // ---- Application menu bar ----
+    // A programmatically-created NSApplication has NO main menu. Without
+    // an Edit menu, AppKit's key-equivalent dispatch finds no `paste:` /
+    // `copy:` / `cut:` / `selectAll:` / `undo:` / `redo:` targets for
+    // Cmd+V/C/X/A/Z — the keystrokes are silently swallowed BEFORE they
+    // reach the WKWebView, so the DOM never sees a paste event (chat
+    // text AND image paste both dead). Building a standard menu with
+    // items targeting NSApp itself routes those shortcuts through the
+    // responder chain into WebKit's editing machinery.
+    //
+    // MUST run in applicationWillFinishLaunching: (not DidFinish) — the
+    // menu bar is built from the main menu when the app finishes
+    // launching; setting it later leaves the default empty menu visible.
+    NSMenu* menubar = [[NSMenu alloc] init];
+
+    // -- App menu (first item = application name submenu; required for
+    //    Quit/Cmd+Q and standard About/Hide plumbing).
+    NSMenuItem* appMenuItem = [[NSMenuItem alloc] init];
+    [menubar addItem:appMenuItem];
+    NSMenu* appMenu = [[NSMenu alloc] init];
+    [appMenuItem setSubmenu:appMenu];
+    [appMenu addItemWithTitle:@"About Nalar"
+                       action:@selector(orderFrontStandardAboutPanel:)
+                keyEquivalent:@""];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    // addItemWithTitle:action:keyEquivalent: defaults to the Command
+    // modifier, so Hide = Cmd+H out of the box.
+    [appMenu addItemWithTitle:@"Hide Nalar"
+                       action:@selector(hide:)
+                keyEquivalent:@"h"];
+    [appMenu addItem:[NSMenuItem separatorItem]];
+    [appMenu addItemWithTitle:@"Quit Nalar"
+                       action:@selector(terminate:)
+                keyEquivalent:@"q"];
+
+    // -- Edit menu: THE fix for Cmd+C/V/X/A/Z in the webview.
+    NSMenuItem* editMenuItem = [[NSMenuItem alloc] init];
+    [menubar addItem:editMenuItem];
+    NSMenu* editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+    [editMenuItem setSubmenu:editMenu];
+    [editMenu addItemWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+    [editMenu addItemWithTitle:@"Redo"
+                        action:@selector(redo:)
+                 keyEquivalent:@"Z"]; // Shift+Cmd+Z via uppercase + default cmd modifier
+    [editMenu addItem:[NSMenuItem separatorItem]];
+    [editMenu addItemWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+    [editMenu addItemWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+    [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+    [editMenu addItemWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+
+    // -- Window menu (standard Minimize/Zoom plumbing).
+    NSMenuItem* windowMenuItem = [[NSMenuItem alloc] init];
+    [menubar addItem:windowMenuItem];
+    NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+    [windowMenuItem setSubmenu:windowMenu];
+    [windowMenu addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    [windowMenu addItemWithTitle:@"Close" action:@selector(performClose:) keyEquivalent:@"w"];
+
+    [NSApp setMainMenu:menubar];
+    // NSApp retains the main menu; balance our alloc immediately.
+    [menubar release];
+
+    // Ownership: NSApp retains its main menu; each NSMenu retains its
+    // parent item's submenu once attached. The bare container items
+    // (appMenuItem/editMenuItem/windowMenuItem) were added to their
+    // parent menus (which retain them), so we balance our allocs here.
+    [appMenuItem release];
+    [appMenu release];
+    [editMenuItem release];
+    [editMenu release];
+    [windowMenuItem release];
+    [windowMenu release];
+}
+
 - (void)applicationDidFinishLaunching:(NSNotification*)notification {
     (void)notification;
 
@@ -175,6 +253,12 @@
 
     _webView = [[NalarWebView alloc] initWithFrame:frame configuration:wkconfig];
     [_webView setNavigationDelegate:self];
+    // WKUIDelegate is REQUIRED for <input type="file"> to work: clicking
+    // such an input makes WebKit ask its UI delegate to show a picker via
+    // runOpenPanelWithParameters:. With no delegate (or no implementation)
+    // WebKit completes the picker with an empty result — the file dialog
+    // never opens and nothing is attached, silently.
+    [_webView setUIDelegate:self];
 
     // The WKWebView IS the window's content view. This is the
     // simplest layout (no NSScrollView wrapper needed — the webview
@@ -279,14 +363,46 @@
     decisionHandler(WKNavigationActionPolicyCancel);
 }
 
+#pragma mark - WKUIDelegate
+
+// Fires when the page clicks an <input type="file"> (the chat composer's
+// paperclip button). Present a native NSOpenPanel and hand the chosen
+// URLs back through the completion handler. MUST call the completion
+// handler exactly once in every path — WebKit hangs the input otherwise.
+- (void)webView:(WKWebView*)webView runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters initiatedByFrame:(WKFrameInfo*)frame completionHandler:(void (^)(NSArray<NSURL*>* URLs))completionHandler {
+    (void)webView;
+    (void)frame;
+
+    NSOpenPanel* panel = [NSOpenPanel openPanel];
+    [panel setCanChooseFiles:YES];
+    [panel setCanChooseDirectories:NO];
+    // The frontend's hidden <input type="file"> has no `multiple`
+    // attribute, but honoring the web's request keeps us future-proof —
+    // WKOpenPanelParameters.allowsMultipleSelection reflects it.
+    [panel setAllowsMultipleSelection:[parameters allowsMultipleSelection]];
+
+    // Modal from the app window; completion handler runs on the panel's
+    // close. Passing nil URLs on cancel = "no files chosen".
+    [panel beginSheetModalForWindow:_window
+                  completionHandler:^(NSInteger result) {
+        if (result == NSModalResponseOK) {
+            completionHandler(panel.URLs);
+        } else {
+            completionHandler(nil);
+        }
+    }];
+}
+
 #pragma mark - Cleanup
 
 - (void)dealloc {
-    // Break the navigation-delegate retain cycle BEFORE releasing the
-    // webView. Without this, the delegate would be retained by the
-    // webView, the webView would be retained by us, and `release` in
-    // nalar_webview_destroy would never reach zero.
+    // Break BOTH delegate retain cycles BEFORE releasing the webView.
+    // Without this, the delegate would be retained by the webView (via
+    // navigation + UI delegate properties), the webView would be
+    // retained by us, and `release` in nalar_webview_destroy would never
+    // reach zero.
     [_webView setNavigationDelegate:nil];
+    [_webView setUIDelegate:nil];
     [_webView release];
     _webView = nil;
 
