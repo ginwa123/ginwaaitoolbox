@@ -114,7 +114,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 
 <template>
   <div 
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    class="chat-tool-card font-mono text-xs"
     :class="{ 'border-orange-500/50 opacity-85': hasWarning, 'border-red-500/50 opacity-85': hasError }"
   >
     <!-- Header -->

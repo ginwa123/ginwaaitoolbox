@@ -170,7 +170,7 @@ const toggle = () => {
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    class="chat-tool-card font-mono text-xs"
   >
     <div
       data-testid="nalar-browser-header"

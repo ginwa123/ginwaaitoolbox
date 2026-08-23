@@ -108,7 +108,7 @@ const copyId = async (e: Event) => {
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    class="chat-tool-card font-mono text-xs"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
     data-testid="save-memory"
   >

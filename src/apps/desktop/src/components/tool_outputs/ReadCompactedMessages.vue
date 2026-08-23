@@ -165,7 +165,7 @@ const toggleContent = (id: string): void => {
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)]"
+    class="chat-tool-card font-mono text-xs"
     :class="isError ? 'border-red-500/50 opacity-90' : ''"
     data-testid="read-compacted-messages"
   >

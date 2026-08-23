@@ -2606,9 +2606,21 @@ const compactSession = async () => {
           @scrollability-change="scrollerIsScrollable = $event"
         >
           <template #default="{ item: group, index: groupIndex }">
-            <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">
+            <!-- 2026-08-23 blank-block fix — groups with no renderable
+                 content (hasBubbleContent=false) previously still rendered
+                 their OUTER wrappers here: px-4 + pb-4 padding around an
+                 empty bubble div = a ~48px invisible block per empty
+                 group. With many tool-call turns the chat filled with
+                 these blank stripes ("blank component" in devtools).
+                 v-if at the TOP of the slot means an empty group renders
+                 NOTHING — no wrapper, no padding, no gap. -->
+            <div
+              v-if="hasBubbleContent(group, groupIndex)"
+              class="px-4 max-w-4xl mx-auto"
+              :class="groupIndex === 0 ? 'pt-6' : ''"
+            >
               <div
-                class="flex gap-3 pb-4"
+                class="flex gap-3 pb-3"
                 :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
               >
                 <!-- Bubble / paragraph container.
@@ -2624,7 +2636,6 @@ const compactSession = async () => {
                   :class="group.role === 'user' ? 'max-w-[90%]' : 'max-w-full'"
                 >
                   <div
-                    v-if="hasBubbleContent(group, groupIndex)"
                     class="text-sm leading-relaxed"
                     role="button"
                     tabindex="0"
@@ -3006,7 +3017,7 @@ const compactSession = async () => {
                           (m) => m.reasoning_content && m.reasoning_content.trim() !== '',
                         )"
                         :key="`reasoning-${rIdx}`"
-                        class="mt-2"
+                        class="mt-3"
                       >
                         <details class="assistant-reasoning">
                           <summary
@@ -3483,21 +3494,34 @@ const compactSession = async () => {
 :deep(.tool-sequence) {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  /* 2026-08-23 paragraph-mode margin pass — the old 0.25rem gap was
+     sized for boxed cards that carried their own visual separation.
+     De-bubbled rows are flat, so they need explicit rhythm to read as
+     distinct steps instead of one dense wall. */
+  gap: 0.625rem;
 }
 
 :deep(.tool-item) {
-  padding: 0.25rem 0;
+  padding: 0.125rem 0;
 }
 
 :deep(.tool-item-border) {
-  border-bottom: 1px dashed var(--color-border);
-  padding-bottom: 0.5rem;
+  border-bottom: none;
+  padding-bottom: 0;
 }
 
 :deep(.tool-item-border:last-child) {
   border-bottom: none;
   padding-bottom: 0;
+}
+
+/* 2026-08-23 paragraph-mode margin pass — spacing AROUND the tool
+   sequence so it breathes against surrounding prose:
+   - gap above the first tool row (was flush against the assistant text)
+   - gap below the last tool row (was flush against the next group) */
+:deep(.tool-sequence) {
+  margin-top: 0.375rem;
+  margin-bottom: 0.375rem;
 }
 
 /* Tool calls summary - shown only when tool outputs are NOT displayed */
@@ -3580,13 +3604,42 @@ const compactSession = async () => {
    - .assistant-messages: vertical spacing between consecutive assistant
      groups (the old bubble's py-2.5 padding provided this separation).
    - .assistant-item + .assistant-item + .assistant-item: a small gap
-     between adjacent messages inside one group. */
+     between adjacent messages inside one group.
+   2026-08-23 margin pass: bumped both up — flat paragraphs need more
+   explicit rhythm than boxed bubbles did. */
 .assistant-messages {
-  margin-bottom: 0.25rem;
+  margin-bottom: 0.375rem;
 }
 
 .assistant-item + .assistant-item {
-  margin-top: 0.5rem;
+  margin-top: 0.625rem;
+}
+
+/* ─── Tool-output cards, de-bubbled (2026-08-23) ────────────────────────
+   All 24 tool_output components used to carry an identical Tailwind card
+   frame (`rounded-md border border-[--color-border] bg-[--semantic-card-bg]`)
+   — a boxed bubble per tool row. In paragraph mode that reads as heavy
+   chrome stacked under un-bubbled prose. The frame is now ONE shared
+   class, `.chat-tool-card`, defined here once:
+     - transparent background (page shows through)
+     - no full box border; a subtle 2px left rule marks the row instead
+     - gentle hover tint so rows stay discoverable as expandable
+   Error/warning variants still work: components bind
+   `border-red-500/50` / `border-orange-500/50` via :class, which now
+   recolors the left rule (border-left-color) instead of drawing a box.
+   Scoped deep selector: the components are children of ChatView's tree. */
+:deep(.chat-tool-card) {
+  background-color: transparent;
+  border: none;
+  border-left: 2px solid var(--color-border);
+  border-radius: 0;
+  overflow: visible;
+  transition: background-color 0.15s ease, border-left-color 0.15s ease;
+}
+
+:deep(.chat-tool-card:hover) {
+  background-color: color-mix(in srgb, var(--color-violet) 4%, transparent);
+  border-left-color: var(--color-violet);
 }
 
 /* Attached image thumbnail — small fixed-size preview matching

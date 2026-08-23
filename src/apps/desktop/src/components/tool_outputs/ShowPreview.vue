@@ -261,7 +261,7 @@ const copyPreviewId = async (e: Event) => {
 
 <template>
   <div
-    class="font-mono text-xs rounded-md overflow-hidden border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:border-violet-500/40 transition-colors"
+    class="chat-tool-card font-mono text-xs hover:border-violet-500/40 transition-colors"
     :class="[
       !isInline ? 'cursor-pointer' : '',
       { 'border-red-500/50 opacity-90': !isSuccess },
