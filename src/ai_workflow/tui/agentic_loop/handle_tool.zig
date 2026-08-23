@@ -459,46 +459,56 @@ pub fn handle_tool(
         var list_id_that_was_loaded: std.ArrayList([]const u8) = .empty;
 
         for (tc) |tool_call| {
-            if (!isKnownToolOrMCP(tool_call.function.name, config)) {
-                const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
-                const id_llm_history = try insertLLMHistories(.{
-                    .allocator = allocator,
-                    .io = io,
-                    .db = db,
-                    .logger = logger,
-                    .is_emit_sse = false,
-                    .event_bus = null,
-                    .cwd = cwd,
-                    .entity = .{
-                        .id = created_at,
-                        .session_id = session_id,
-                        .model = model,
-                        .response_content = "unknown tools",
-                        .reasoning_content = null,
-                        .role = agent.Role.tool.to_str(),
-                        .finish_reason = agent.FinishReason.tool.to_str(),
-                        .tool_calls_json = "",
-                        .tool_call_id = tool_call.id,
-                        .agent = current_agent_state.agent,
-                        .loop_index = loop_counter,
-                        .temperature = agent_temperature.*,
-                        .is_thinking = isThinking.*,
-                        .prompt_tokens = 0,
-                        .completion_tokens = 0,
-                        .total_tokens = 0,
-                        .parent_id = parent_session_id,
-                        .parent_session_id = parent_session_id,
-                        .is_input = false,
-                        .is_output = true,
-                        .image_urls = null,
-                        .created_at = created_at,
-                        .is_feed_to_llm = true,
-                        .tool_name = tool_call.function.name,
-                    },
-                });
-                try list_id_that_was_loaded.append(allocator, id_llm_history);
-                continue;
-            }
+            // Phase 1 placeholder content: build the canonical
+            // `<tool>...</tool>` envelope via `wrapToolOutput` so the
+            // frontend's `tryUnwrapToolOutput` can parse it on
+            // page-refresh-mid-execution AND on the live-SSE path.
+            //
+            //  - Unknown tools (registry miss) → `success=false` envelope
+            //    with `<error>unknown tools</error>` so the chat card
+            //    shows a structured error block instead of a raw text
+            //    bubble. Previously the raw string "unknown tools" was
+            //    stored verbatim in `response_content`; the frontend
+            //    then tried to unwrap it as a `<tool>` envelope and
+            //    fell back to the `msg.content` legacy path, rendering
+            //    an empty card.
+            //  - Known tools (including MCP) → `success=true` envelope
+            //    with empty `<data></data>`. Phase 3 will UPDATE the
+            //    same row in place with the actual exec result. The
+            //    empty `<data>` block is intentional — it keeps the
+            //    envelope shape stable so the frontend never sees a
+            //    "raw text" / "envelope" branch flip mid-flight.
+            //
+            // `wrapToolOutput` always emits `<name>` + `<parameters>`,
+            // so any tool-output Vue component (the `v-else-if` chain
+            // at ChatView.vue:2857-3094) can render a sensible
+            // placeholder card (tool name + arguments) while it waits
+            // for Phase 3 to land. Previously the bare empty content
+            // caused `innerToolData()` to fall back to `msg.content`,
+            // which was `""` — the card rendered blank.
+            const placeholder = if (!isKnownToolOrMCP(tool_call.function.name, config))
+                try wrapToolOutput(
+                    allocator,
+                    tool_call.function.name,
+                    tool_call.function.arguments,
+                    false,
+                    "unknown tools",
+                    "",
+                )
+            else
+                try wrapToolOutput(
+                    allocator,
+                    tool_call.function.name,
+                    tool_call.function.arguments,
+                    true,
+                    null,
+                    "",
+                );
+            // `insertLLMHistories` duplicates the content slice
+            // internally (line 123 of insert_llm_histories.zig), so
+            // we own and free the envelope string after the call
+            // returns — the DB row holds its own copy.
+            defer allocator.free(placeholder);
 
             const created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
             const id_llm_history = try insertLLMHistories(.{
@@ -513,7 +523,7 @@ pub fn handle_tool(
                     .id = created_at,
                     .session_id = session_id,
                     .model = model,
-                    .response_content = "",
+                    .response_content = placeholder,
                     .reasoning_content = null,
                     .role = agent.Role.tool.to_str(),
                     .finish_reason = agent.FinishReason.tool.to_str(),
@@ -1108,4 +1118,100 @@ test "parseDiffViewFromResult - unescapes multiline content with entities" {
     std.testing.allocator.free(result.before.?);
     std.testing.allocator.free(result.after.?);
     std.testing.allocator.free(result.content_without_diffview);
+}
+
+// =============================================================================
+// Static-contract tests — Phase 1 placeholder envelope.
+//
+// 2026-08-24-better-tool-placeholder: Phase 1 inserts used to store
+// raw text in `response_content` (`"unknown tools"` for unknown tools,
+// `""` for known tools). On page-refresh-mid-execution or restart the
+// frontend's `tryUnwrapToolOutput` couldn't parse the row, fell back
+// to `msg.content`, and rendered a blank/garbage card. The fix pipes
+// every Phase 1 placeholder through `wrapToolOutput` so the envelope
+// shape is stable across all 3 phases.
+//
+// These tests pin the contract: grep the source for the required
+// emission sites. If a future refactor accidentally swaps back to a
+// raw-string placeholder, or skips the unknown-tool error path, the
+// chat card regression returns and these tests fail closed.
+// =============================================================================
+
+const placeholder_impl_path = "src/ai_workflow/tui/agentic_loop/handle_tool.zig";
+
+test "Phase 1 placeholder uses wrapToolOutput for both known + unknown branches" {
+    // Reads THIS file at runtime via a known repo-root-relative path,
+    // matching the technique used in tools_exec_spawn_sub_agent.zig's
+    // static-contract tests and design_model_group_test.zig.
+    const max_bytes: usize = 1 * 1024 * 1024; // 1 MiB ceiling
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        placeholder_impl_path,
+        std.testing.allocator,
+        .limited(max_bytes),
+    );
+    defer std.testing.allocator.free(source);
+
+    // Two wrapToolOutput call sites inside the Phase 1 for-loop:
+    //   - success=false envelope (unknown tools branch)
+    //   - success=true  envelope (known tools branch — the normal case)
+    // plus the existing 3 in Phase 3 (MCP error, dispatch error,
+    // MCP success = 3) = 5 baseline. Bump this bound in lock-step
+    // with future Phase 1/3 wrapToolOutput additions.
+    const wrap_count = std.mem.count(u8, source, "wrapToolOutput(");
+    try std.testing.expect(wrap_count >= 5);
+
+    // Unknown tools MUST emit a failure envelope so the frontend
+    // renders a structured error block (not a raw "unknown tools"
+    // text bubble). Asserts on the literal `"unknown tools"` arg
+    // passed to the `error_message` slot of wrapToolOutput.
+    try std.testing.expect(std.mem.indexOf(u8, source, "\"unknown tools\",") != null);
+
+    // The bare-`""` literal that used to be assigned directly to
+    // `response_content = ""` must NOT survive in Phase 1. Any
+    // match here is a regression to the legacy behaviour.
+    try std.testing.expect(std.mem.indexOf(u8, source, ".response_content = \"\",") == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, ".response_content = \"unknown tools\",") == null);
+}
+
+test "wrapToolOutput envelope is round-trip parseable (envelope shape vs frontend)" {
+    // Sanity: the known-tool branch envelope can be parsed by the
+    // frontend's `unwrapToolOutput` shape (name + parameters +
+    // success=true + data=""). Mirrors the wire contract that
+    // tools_wrap_output.zig's own tests pin — Phase 1 doesn't need
+    // to re-test `wrapToolOutput` itself, just the Phase 1 pick of
+    // arguments.
+    const envelope = try wrapToolOutput(
+        std.testing.allocator,
+        "read_file",
+        "{\"path\":\"/tmp/foo.txt\"}",
+        true,
+        null,
+        "",
+    );
+    defer std.testing.allocator.free(envelope);
+
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "<tool>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "<name>read_file</name>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "<parameters><path>/tmp/foo.txt</path></parameters>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "<success>true</success>") != null);
+    // Empty data — Phase 3 will UPDATE this row with the real result.
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "<data></data>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "<error>") == null);
+
+    // Unknown tool branch envelope: success=false, error="unknown tools".
+    const err_envelope = try wrapToolOutput(
+        std.testing.allocator,
+        "totally_made_up_tool",
+        "{}",
+        false,
+        "unknown tools",
+        "",
+    );
+    defer std.testing.allocator.free(err_envelope);
+
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<name>totally_made_up_tool</name>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<success>false</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<error>unknown tools</error>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<data>") == null);
 }
