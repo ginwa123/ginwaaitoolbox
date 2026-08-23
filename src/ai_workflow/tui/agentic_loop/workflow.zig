@@ -15,6 +15,7 @@ const sqlite = nalarcore.sqlite;
 const migration_mod = nalarcore.migrations_mod.migration;
 const migration = migration_mod;
 const config_mod = nalarcore.config;
+const parse_thinking_mod = nalarcore.parse_thinking;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
@@ -432,9 +433,91 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var effective_base_url = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
     var effective_url_style = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
 
+    // === Model-thinking (plan 2026-08-23-model-thinking) =============
+    // Resolve the per-profile `thinking` / `thinking_budget_tokens` /
+    // `reasoning_effort` into typed effective-* vars the rest of the
+    // workflow can use without re-parsing. This is the MAIN-AGENT
+    // wire that was previously missing — the UI's Thinking selector
+    // (Auto / On / Off) was purely cosmetic for main-agent sessions
+    // because `get_current_agent_by_session_id` defaults
+    // `is_thinking = true` via `COALESCE(is_thinking, 1)`. The
+    // profile's `thinking` string is parsed into a typed `?bool`
+    // (auto → null, on → true, off → false) and then persisted onto
+    // the session's initial `llm_history.is_thinking` value below
+    // via the initial-agent-state INSERT.
+    //
+    // For sub-agents, `params.sub_agent_overrides` (built from
+    // `ResolvedSubAgent`) carries the same fields and overrides the
+    // profile resolution at the per-iteration override site (see
+    // block at lines ~805-810).
+    var effective_thinking_str: []const u8 = blk: {
+        if (params.selected_profile_model.len > 0) {
+            if (config.getProfile(params.selected_profile_model)) |profile| {
+                if (profile.thinking.len > 0) break :blk profile.thinking;
+            }
+        }
+        if (config.active_profile) |ap| {
+            if (ap.len > 0) {
+                if (config.getProfile(ap)) |profile| {
+                    if (profile.thinking.len > 0) break :blk profile.thinking;
+                }
+            }
+        }
+        break :blk "auto";
+    };
+    // Parse the resolved string. Garbage falls through to null
+    // (= auto) — same defensive pattern as the sub-agent path
+    // (buildResolvedFromConfig catches and ignores bad values).
+    var effective_is_thinking: ?bool = parse_thinking_mod.parseThinkingString(effective_thinking_str) catch null;
+    // `thinkingAdaptive` is true when the user picked "auto" — that
+    // branch maps to Anthropic's `type: "adaptive"` mode in
+    // buildJsonAnthropicRequest, letting the model pick its own
+    // budget. When user picked "on", we use the explicit
+    // budget_tokens override (or the 50%-of-max heuristic when null).
+    var effective_thinking_adaptive: bool = std.mem.eql(u8, effective_thinking_str, "auto");
+    // Budget override for Anthropic extended thinking. Cascade
+    // exactly like resolveProfileField (per-session → active → null).
+    var effective_thinking_budget_tokens: ?u32 = null;
+    if (params.selected_profile_model.len > 0) {
+        if (config.getProfile(params.selected_profile_model)) |profile| {
+            if (profile.thinking_budget_tokens) |t| effective_thinking_budget_tokens = t;
+        }
+    }
+    if (effective_thinking_budget_tokens == null) {
+        if (config.active_profile) |ap| {
+            if (ap.len > 0) {
+                if (config.getProfile(ap)) |profile| {
+                    if (profile.thinking_budget_tokens) |t| effective_thinking_budget_tokens = t;
+                }
+            }
+        }
+    }
+    // Reasoning effort (OpenAI o1/o3/GPT-5/DeepSeek-R1). Same
+    // cascade. Empty string is normalized to null upstream by the
+    // HTTP layer; we still defensively skip it here.
+    var effective_reasoning_effort: ?[]const u8 = null;
+    if (params.selected_profile_model.len > 0) {
+        if (config.getProfile(params.selected_profile_model)) |profile| {
+            if (profile.reasoning_effort) |re| {
+                if (re.len > 0) effective_reasoning_effort = re;
+            }
+        }
+    }
+    if (effective_reasoning_effort == null) {
+        if (config.active_profile) |ap| {
+            if (ap.len > 0) {
+                if (config.getProfile(ap)) |profile| {
+                    if (profile.reasoning_effort) |re| {
+                        if (re.len > 0) effective_reasoning_effort = re;
+                    }
+                }
+            }
+        }
+    }
+
     logger.infoFmt(
-        "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s}",
-        .{ params.selected_profile_model, effective_model, effective_base_url, effective_url_style },
+        "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s} effective_thinking_str={s} effective_thinking_budget_tokens={?d} effective_reasoning_effort={?s}",
+        .{ params.selected_profile_model, effective_model, effective_base_url, effective_url_style, effective_thinking_str, effective_thinking_budget_tokens, effective_reasoning_effort },
     );
 
     const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);
@@ -662,6 +745,72 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         effective_base_url = resolveProfileField("base_url", config, live_selected_profile_model, config.active_profile, config.base_url);
         effective_url_style = resolveProfileField("url_style", config, live_selected_profile_model, config.active_profile, config.url_style);
 
+        // === Per-iteration model-thinking re-resolution =====================
+        // Mirrors the resolveProfileField cascade for the new thinking /
+        // budget / effort fields so user-initiated profile changes via
+        // NalarSettings take effect on the NEXT LLM call without waiting
+        // for the workflow run to end. Same live-re-read pattern as the
+        // effective_* fields above.
+        const iter_thinking_str: []const u8 = blk: {
+            if (live_selected_profile_model.len > 0) {
+                if (config.getProfile(live_selected_profile_model)) |p| {
+                    if (p.thinking.len > 0) break :blk p.thinking;
+                }
+            }
+            if (config.active_profile) |ap| {
+                if (ap.len > 0) {
+                    if (config.getProfile(ap)) |p| {
+                        if (p.thinking.len > 0) break :blk p.thinking;
+                    }
+                }
+            }
+            break :blk "auto";
+        };
+        const iter_is_thinking: ?bool = parse_thinking_mod.parseThinkingString(iter_thinking_str) catch null;
+        const iter_thinking_adaptive: bool = std.mem.eql(u8, iter_thinking_str, "auto");
+        var iter_thinking_budget_tokens: ?u32 = null;
+        if (live_selected_profile_model.len > 0) {
+            if (config.getProfile(live_selected_profile_model)) |p| {
+                if (p.thinking_budget_tokens) |t| iter_thinking_budget_tokens = t;
+            }
+        }
+        if (iter_thinking_budget_tokens == null) {
+            if (config.active_profile) |ap| {
+                if (ap.len > 0) {
+                    if (config.getProfile(ap)) |p| {
+                        if (p.thinking_budget_tokens) |t| iter_thinking_budget_tokens = t;
+                    }
+                }
+            }
+        }
+        var iter_reasoning_effort: ?[]const u8 = null;
+        if (live_selected_profile_model.len > 0) {
+            if (config.getProfile(live_selected_profile_model)) |p| {
+                if (p.reasoning_effort) |re| {
+                    if (re.len > 0) iter_reasoning_effort = re;
+                }
+            }
+        }
+        if (iter_reasoning_effort == null) {
+            if (config.active_profile) |ap| {
+                if (ap.len > 0) {
+                    if (config.getProfile(ap)) |p| {
+                        if (p.reasoning_effort) |re| {
+                            if (re.len > 0) iter_reasoning_effort = re;
+                        }
+                    }
+                }
+            }
+        }
+        // Promote the per-iteration resolution back into the
+        // `effective_*` variables so the rest of the loop body uses
+        // the live values without renaming every call site.
+        effective_thinking_str = iter_thinking_str;
+        effective_is_thinking = iter_is_thinking;
+        effective_thinking_adaptive = iter_thinking_adaptive;
+        effective_thinking_budget_tokens = iter_thinking_budget_tokens;
+        effective_reasoning_effort = iter_reasoning_effort;
+
         // 2026-08-21-fix-ui-context-window — resolve the session's
         // selected profile once per iteration so the compaction threshold
         // decision (maybeCompactMessagesNew → shouldCompactDefault) honors
@@ -745,7 +894,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .agent = initial_agent,
                     .loop_index = 0,
                     .temperature = initial_agent_state.temperature,
-                    .is_thinking = initial_agent_state.is_thinking,
+                    // === Model-thinking (plan 2026-08-23-model-thinking) ===
+                    // Override the prior session state's `is_thinking` with
+                    // the profile-resolved value. The previous behavior of
+                    // carrying the last assistant turn's value forward
+                    // meant a user who toggled Thinking Off mid-session
+                    // would still see the next turn forced on (because the
+                    // `COALESCE(is_thinking, 1)` in
+                    // `get_current_agent_by_session_id` defaults to 1 for
+                    // a brand-new session, and that value would echo
+                    // forward forever). The profile is now the source of
+                    // truth — sub-agent overrides (when present, see the
+                    // `if (ov.is_thinking) |t| isThinking = t;` block
+                    // below) win over the profile, and the session's own
+                    // mid-conversation `set_agent_properties` tool call
+                    // wins over both via its own `ov.is_thinking` path.
+                    .is_thinking = effective_is_thinking orelse initial_agent_state.is_thinking,
                     .prompt_tokens = 0,
                     .completion_tokens = 0,
                     .total_tokens = 0,
@@ -802,7 +966,18 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             if (ov.base_url.len > 0) effective_base_url = ov.base_url;
             if (ov.api_key.len > 0) effective_api_key = ov.api_key;
             if (ov.url_style.len > 0) effective_url_style = ov.url_style;
-            if (ov.is_thinking) |t| isThinking = t;
+            if (ov.is_thinking) |t| {
+                isThinking = t;
+                // Mirror the override onto the session-state carrier
+                // so the user-message INSERT below carries the
+                // sub-agent's resolved `is_thinking`, not the
+                // profile's. Without this, the inserted user row
+                // would record `effective_is_thinking` (from the
+                // profile), and the assistant response would echo it
+                // even though the sub-agent actually uses `isThinking`
+                // for its LLM call.
+                effective_is_thinking = t;
+            }
             if (ov.temperature) |t| agent_temperature = t;
             sub_agent_session_name = ov.resolved_name;
         }
@@ -1008,7 +1183,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         );
 
         var last_dynamic_agent_error_message: ?[]const u8 = null;
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_thinking_budget_tokens, effective_thinking_adaptive, effective_reasoning_effort, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -1440,6 +1615,24 @@ fn callDynamicAgentNew(
     agent_temperature: f32,
     current_max_tokens: usize,
     isThinking: bool,
+    /// Anthropic-only override for `thinking.budget_tokens`. When set,
+    /// `buildJsonAnthropicRequest` uses it directly (clamped to
+    /// >=1024 and <max_tokens). When null AND `thinkingAdaptive` is
+    /// true (user picked "auto"), emits Anthropic's
+    /// `type: "adaptive"` mode and lets the model pick its own
+    /// budget. When null AND `thinkingAdaptive` is false, falls
+    /// back to the 50%-of-max heuristic. OpenAI-style URLs ignore
+    /// this field. See plan 2026-08-23-model-thinking.md.
+    thinking_budget_tokens: ?u32,
+    /// Anthropic-only. When true AND `thinking_budget_tokens` is null,
+    /// `buildJsonAnthropicRequest` emits `thinking: {type: "adaptive"}`
+    /// (Anthropic picks its own budget — recommended for Sonnet 4.5+).
+    /// The workflow sets this from `profile.thinking == "auto"`.
+    thinking_adaptive: bool,
+    /// OpenAI-style reasoning effort (o1/o3/GPT-5/DeepSeek-R1). When
+    /// set, `buildJsonOpenAIRequest` emits `reasoning_effort` verbatim.
+    /// Anthropic-style URLs ignore this field.
+    reasoning_effort: ?[]const u8,
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
@@ -1470,6 +1663,14 @@ fn callDynamicAgentNew(
     const messages_for_agent: []const agent.AgentMessage = messages_list.items;
     const dynamic_agent_call_params = agent.AgentCall{ .tools = equip_tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens };
     dynamic_agent.thinkingEnabled = isThinking;
+    // === Model-thinking (plan 2026-08-23-model-thinking) =============
+    // The new fields are no-ops when the URL style isn't a match:
+    // buildJsonAnthropicRequest ignores `reasoningEffort`; OpenAI
+    // buildJsonOpenAIRequest ignores `thinkingBudgetTokens` /
+    // `thinkingAdaptive`. Setting them unconditionally is safe.
+    dynamic_agent.thinkingBudgetTokens = thinking_budget_tokens;
+    dynamic_agent.thinkingAdaptive = thinking_adaptive;
+    dynamic_agent.reasoningEffort = reasoning_effort;
     dynamic_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
     var stream_ctx = StreamingContext{

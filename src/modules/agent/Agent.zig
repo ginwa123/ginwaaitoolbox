@@ -870,6 +870,31 @@ pub const Agent = struct {
     client: custom_http_client.Client,
     io: std.Io,
     thinkingEnabled: bool = true,
+    /// Anthropic-only: override for `thinking.budget_tokens`. When set,
+    /// `buildJsonAnthropicRequest` uses it directly (clamped to >=1024
+    /// and <max_tokens). When null AND `thinkingAdaptive` is true
+    /// (user picked "auto"), the request emits Anthropic's
+    /// `type: "adaptive"` mode and lets the model pick its own budget
+    /// (Sonnet 4.5+ recommendation). When null AND `thinkingAdaptive`
+    /// is false, the request falls back to the 50%-of-max_tokens
+    /// heuristic. OpenAI-style URLs ignore this field — they use
+    /// `reasoningEffort` instead. Plan 2026-08-23-model-thinking.
+    thinkingBudgetTokens: ?u32 = null,
+    /// Anthropic-only: when true AND `thinkingBudgetTokens` is null,
+    /// `buildJsonAnthropicRequest` emits `thinking: {type: "adaptive"}`
+    /// instead of the 50%-of-max heuristic. The workflow sets this
+    /// from `profile.thinking == "auto"`. OpenAI-style URLs ignore
+    /// this field.
+    thinkingAdaptive: bool = false,
+    /// OpenAI-style reasoning effort knob (o1 / o3 / GPT-5 /
+    /// DeepSeek-R1). One of "low" | "medium" | "high" | "auto".
+    /// Emitted verbatim into the request body's `reasoning_effort`
+    /// field by `buildJsonOpenAIRequest`. When null, the field is
+    /// omitted (model-default reasoning). Anthropic-style URLs
+    /// ignore this field entirely. The slice BORROWS from the
+    /// workflow's `LlmConfig` singleton — safe for the duration of
+    /// one LLM call (the per-iteration arena doesn't own it).
+    reasoningEffort: ?[]const u8 = null,
     allocator: std.mem.Allocator,
     httpOptions: HttpOptions = .{},
     UrlStyle: []const u8 = "openai",
