@@ -2611,20 +2611,32 @@ const compactSession = async () => {
                 class="flex gap-3 pb-4"
                 :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
               >
-                <!-- Bubble -->
-                <div class="max-w-[90%] min-w-0">
+                <!-- Bubble / paragraph container.
+                     2026-08-23 paragraph-mode: the AI (assistant) side no
+                     longer renders as a chat bubble. The container keeps
+                     the bubble chrome (padding, rounded corners, card bg,
+                     border) ONLY for user groups; assistant + tool groups
+                     render as transparent, borderless paragraphs that flow
+                     with the page background — like a document, not a
+                     messenger. -->
+                <div
+                  class="min-w-0"
+                  :class="group.role === 'user' ? 'max-w-[90%]' : 'max-w-full'"
+                >
                   <div
                     v-if="hasBubbleContent(group, groupIndex)"
-                    class="px-4 py-2.5 rounded-2xl text-sm leading-relaxed"
+                    class="text-sm leading-relaxed"
                     role="button"
                     tabindex="0"
                     :class="
-                      group.role === 'user' ? 'whitespace-pre-wrap break-words' : 'markdown-content'
+                      group.role === 'user'
+                        ? 'px-4 py-2.5 rounded-2xl whitespace-pre-wrap break-words'
+                        : 'markdown-content'
                     "
                     :style="
                       group.role === 'user'
                         ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
-                        : 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border-bottom-left-radius: 6px; border: 1px solid var(--color-border);'
+                        : 'color: var(--semantic-text);'
                     "
                   >
                     <!-- ── User ── -->
@@ -3559,6 +3571,22 @@ const compactSession = async () => {
 
 :deep(.markdown-content pre:hover .code-copy-btn) {
   opacity: 1;
+}
+
+/* ─── Assistant paragraph mode (2026-08-23) ──────────────────────────────
+   The AI side no longer renders as a chat bubble — assistant groups are
+   transparent, borderless paragraphs that flow with the page background.
+   These rules give the un-bubbled content document-like rhythm:
+   - .assistant-messages: vertical spacing between consecutive assistant
+     groups (the old bubble's py-2.5 padding provided this separation).
+   - .assistant-item + .assistant-item + .assistant-item: a small gap
+     between adjacent messages inside one group. */
+.assistant-messages {
+  margin-bottom: 0.25rem;
+}
+
+.assistant-item + .assistant-item {
+  margin-top: 0.5rem;
 }
 
 /* Attached image thumbnail — small fixed-size preview matching
