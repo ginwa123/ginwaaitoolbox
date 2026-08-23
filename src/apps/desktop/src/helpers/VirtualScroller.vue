@@ -478,6 +478,47 @@ const measureItems = () => {
   }
 }
 
+// ── Pre-paint measurement on rendered-range change ───────────────────────────
+//
+// The debounced measureItems (50ms) compensates at MEASUREMENT time, but
+// the jump for a tall item happens at RENDER time: when a new item enters
+// the top buffer, Vue renders it in one commit — the topSpacer shrinks by
+// its 64px estimate while its real height (e.g. a 3000px long message)
+// takes its place — shifting content under the viewport IMMEDIATELY. The
+// debounced correction arrives ≤50ms later: a visible down-up bounce.
+//
+// Fix: re-measure inside `nextTick` whenever the rendered window changes.
+// nextTick callbacks drain BEFORE the browser paints, so render +
+// measure + compensation collapse into ONE frame — no intermediate paint
+// with wrong spacers, nothing to see.
+//
+// `_inPrePaintMeasure` guards re-entrancy: measureItems mutates
+// scrollTop, which fires another scroll event → visibleRange recomputes
+// → this watcher would re-run. The guard breaks that cycle; the trailing
+// debounce below still catches any range change caused by the correction
+// itself (rare — compensation preserves the anchor's screen position).
+let _inPrePaintMeasure = false
+let _prePaintTrailing: ReturnType<typeof setTimeout> | null = null
+
+watch(effectiveRange, () => {
+  if (_inPrePaintMeasure || isPreservingScroll.value) return
+  nextTick(() => {
+    if (_inPrePaintMeasure || isPreservingScroll.value) return
+    _inPrePaintMeasure = true
+    try {
+      measureItems()
+    } finally {
+      _inPrePaintMeasure = false
+    }
+    // Trailing sweep: if the compensation shifted the window again,
+    // one more pass settles it (debounced, off the critical path).
+    if (_prePaintTrailing) clearTimeout(_prePaintTrailing)
+    _prePaintTrailing = setTimeout(() => {
+      if (!_inPrePaintMeasure && !isPreservingScroll.value) measureItems()
+    }, 50)
+  })
+})
+
 let loadMoreDebounce: ReturnType<typeof setTimeout> | null = null
 let measureDebounce: ReturnType<typeof setTimeout> | null = null
 
@@ -668,6 +709,7 @@ onUnmounted(() => {
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   if (measureDebounce) clearTimeout(measureDebounce)
   if (heightDebounce) clearTimeout(heightDebounce)
+  if (_prePaintTrailing) clearTimeout(_prePaintTrailing)
 })
 
 defineExpose({
