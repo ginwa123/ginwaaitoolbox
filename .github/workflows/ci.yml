@@ -1304,11 +1304,17 @@ jobs:
   frontend:
     name: frontend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
     runs-on: ${{ matrix.os }}
-    # Same matrix shape as the backend job (self-hosted Linux X64 +
-    # macOS ARM64). Windows excluded for the first cut — Bun on the
-    # Windows self-hosted runner has unverified edge cases. See
-    # docs/superpowers/plans/2026-07-04-nalar-desktop-ci-cd.md for the
-    # original analysis. Revisit if a Windows run is needed.
+    # Same matrix shape as the backend job minus Windows: self-hosted
+    # Linux X64 + macOS ARM64. The Windows cell lives in its own
+    # `frontend-windows` job BELOW (not in this matrix) because the
+    # `shell:` step key accepts NO ${{ }} expression contexts — GitHub
+    # rejects the whole workflow file at parse time with
+    # "Unrecognized named-value: 'matrix'" (observed on CI run
+    # 32588301656: 0-second failure, zero jobs created). A matrix-aware
+    # `shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}`
+    # therefore cannot work; a separate job with a literal
+    # `shell: powershell` is the workaround. See `frontend-windows`
+    # for the full rationale.
     strategy:
       fail-fast: false
       matrix:
@@ -1389,4 +1395,80 @@ jobs:
         # the real Node.js binary installed by the `Install Node.js
         # 24` step earlier in this job.
         working-directory: src/apps/desktop
+        run: npm run build
+
+  # Windows frontend cell — a SEPARATE job rather than a third matrix
+  # entry in `frontend` because the `shell:` step key accepts NO ${{ }}
+  # expression contexts (GitHub rejects the whole workflow file at parse
+  # time with "Unrecognized named-value: 'matrix'" — observed on CI run
+  # 32588301656: 0-second failure, zero jobs created, no logs). A
+  # matrix-aware
+  #   shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}
+  # therefore cannot work. Splitting the OS into its own job lets every
+  # step use a LITERAL shell name.
+  #
+  # Why `shell: powershell` (5.1) and not pwsh/bash: WIN-53JVAKR3O5B
+  # ships only Windows PowerShell 5.1 — no pwsh (the backend job installs
+  # pwsh itself in a dedicated bootstrap step; this job deliberately
+  # doesn't, to stay lightweight) — and the runner service account's PATH
+  # has no Git-bash either (the backend job's Windows steps manually
+  # prepend 'C:\Program Files\Git\bin' for the same reason).
+  # powershell.exe is always on PATH for the runner service user.
+  #
+  # PS 5.1 parses these one-liner steps fine — the historical
+  # MissingEndCurlyBrace parser bugs only bit long multi-branch scripts
+  # (see the backend job's comments). The `&&` inside the lint:check
+  # script and npm-run-all2's run-p chaining execute under npm's cmd.exe
+  # script runner on Windows, never under PS 5.1 itself.
+  frontend-windows:
+    name: frontend (Windows X64)
+    runs-on: [self-hosted, Windows, X64]
+    strategy:
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js 24
+        # Same rationale as the `frontend` job: setup-node puts a real
+        # node + npm on PATH BEFORE setup-bun, so the package.json
+        # scripts that invoke `node` resolve to real Node.js, not Bun's
+        # runtime shim.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Bun ${{ env.BUN_VERSION }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache bun node_modules
+        # Same cache key family as the other jobs — runner.os isolates
+        # the Windows entry automatically.
+        uses: actions/cache@v4
+        with:
+          path: src/apps/desktop/node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('src/apps/desktop/bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install dependencies (cache miss only)
+        working-directory: src/apps/desktop
+        shell: powershell
+        run: bun install --frozen-lockfile
+
+      - name: Lint (oxlint + eslint, fail-on-issue mode)
+        working-directory: src/apps/desktop
+        shell: powershell
+        run: npm run lint:check
+
+      - name: Test (vitest, non-watch)
+        working-directory: src/apps/desktop
+        shell: powershell
+        run: npm run test
+
+      - name: Build (vue-tsc + vite)
+        working-directory: src/apps/desktop
+        shell: powershell
         run: npm run build
