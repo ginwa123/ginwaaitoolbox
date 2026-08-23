@@ -81,11 +81,15 @@ const handleOpenInEditor = (e: Event, path: string) => {
 </script>
 
 <template>
-  <div class="gl" :class="{ 'gl--warning': warningMessage }">
+  <div
+    class="chat-tool-card font-mono text-xs"
+    :class="{ 'border-orange-500/50 opacity-85': warningMessage }"
+  >
     <!-- Header -->
-    <div 
+    <div
     role="button" tabindex="0"
-    class="gl-header" @click="toggle">
+    class="group flex items-center flex-wrap gap-1.5 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
+    @click="toggle">
       <span class="gl-title">glob</span>
       <span class="gl-pattern" :title="globPattern || ''">
         "{{ globPattern || 'unknown' }}"
@@ -136,38 +140,15 @@ const handleOpenInEditor = (e: Event, path: string) => {
 </template>
 
 <style scoped>
-.gl {
-  font-family: monospace;
-  font-size: 0.75rem;
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--semantic-card-bg);
-  border: 1px solid var(--color-border);
-}
-
-.gl--warning {
-  border-color: var(--color-orange);
-  opacity: 0.85;
-}
-
-.gl-header {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.35rem 0.5rem;
-  cursor: pointer;
-  user-select: none;
-}
-
+/* Root frame comes from the shared `.chat-tool-card` class defined in
+ * ChatView.vue (:deep) and mirrored in SubAgentPeekPanel.vue (:deep).
+ * Only content-level styles remain here. The warning variant binds
+ * `border-orange-500/50` via :class which recolors the card's left rule,
+ * matching how ShellTool recolors on error/warning. */
 .gl-title {
   color: var(--color-violet);
   font-weight: 600;
   font-size: 0.75rem;
-}
-
-.gl-header:hover {
-  background: rgba(139, 92, 246, 0.04);
 }
 
 .gl-pattern {
@@ -199,10 +180,6 @@ const handleOpenInEditor = (e: Event, path: string) => {
   color: var(--color-orange);
 }
 
-.gl--warning .gl-warning-text {
-  color: var(--color-orange);
-}
-
 .gl-toggle {
   color: var(--semantic-text-muted);
   font-size: 0.8rem;
@@ -212,7 +189,6 @@ const handleOpenInEditor = (e: Event, path: string) => {
 
 .gl-content {
   border-top: 1px solid var(--color-border);
-  background: rgba(0, 0, 0, 0.02);
 }
 
 .gl-file {
