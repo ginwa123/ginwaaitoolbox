@@ -46,6 +46,7 @@ import KanbanMove from '../tool_outputs/KanbanMove.vue'
 import KanbanList from '../tool_outputs/KanbanList.vue'
 import SaveMemory from '../tool_outputs/SaveMemory.vue'
 import LoadMemory from '../tool_outputs/LoadMemory.vue'
+import DeleteMemory from '../tool_outputs/DeleteMemory.vue'
 
 type PeekStatus = 'idle' | 'loading' | 'streaming' | 'complete' | 'error'
 
@@ -356,6 +357,10 @@ watch(
               />
               <LoadMemory
                 v-else-if="msg.tool_name === 'load_memory'"
+                :content="innerToolData(msg) ?? msg.content"
+              />
+              <DeleteMemory
+                v-else-if="msg.tool_name === 'delete_memory'"
                 :content="innerToolData(msg) ?? msg.content"
               />
               <!-- Fallback: unknown tool name — generic <pre> bubble. -->
