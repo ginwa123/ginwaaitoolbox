@@ -281,6 +281,45 @@ describe('useKanbanSseStore (bus-backed)', () => {
     expect(fetchTasksSpy).not.toHaveBeenCalled()
   })
 
+  it('human_touched: NO refetch — patches needs_human_review in place (chatview-open api-spam fix)', async () => {
+    // REGRESSION (2026-08-24): opening a task's chatview fires
+    // PUT .../tasks/:id/touched → backend emits kanban_task SSE
+    // action=human_touched with new_column_id=null. Pre-fix, that
+    // fell into the unassign branch and fired fetchKanbanTasksForAllColumns
+    // → one tasks?limit=100 per column (7 calls, ~5 MB on a 270-task
+    // board) EVERY time the user opened a chat. The wire payload
+    // already carries the after-state (needs_human_review: false),
+    // so the handler must patch locally and fetch NOTHING.
+    const ws = useWorkspacesStore()
+    const fetchAllColumnsSpy = vi
+      .spyOn(ws, 'fetchKanbanTasksForAllColumns')
+      .mockResolvedValue()
+    const fetchTasksSpy = vi.spyOn(ws, 'fetchKanbanTasks').mockResolvedValue()
+    const fetchColumnsSpy = vi.spyOn(ws, 'fetchKanbanColumns').mockResolvedValue()
+    const applyTouchedSpy = vi.spyOn(ws, 'applyHumanTouched')
+
+    const store = useKanbanSseStore()
+    await store.initKanbanSse('ws_1')
+
+    const event: KanbanTaskEvent = {
+      action: 'human_touched',
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      task_id: 'task_1',
+      new_column_id: null,
+      new_position: null,
+      needs_human_review: false,
+    }
+    dispatch(event)
+
+    expect(fetchAllColumnsSpy).not.toHaveBeenCalled()
+    expect(fetchTasksSpy).not.toHaveBeenCalled()
+    expect(fetchColumnsSpy).not.toHaveBeenCalled()
+    expect(applyTouchedSpy).toHaveBeenCalledWith(
+      'ws_1', 'item_1', 'task_1', false,
+    )
+  })
+
   it('forwards the active q to fetchKanbanTasks on kanban_task events (Chunk 7)', async () => {
     // CONTRACT (kanban task search, plan
     // docs/superpowers/plans/2026-07-30-kanban-task-search.md Chunk 7):
