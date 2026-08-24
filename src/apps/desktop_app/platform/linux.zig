@@ -247,10 +247,72 @@ const NalarWebview = struct {
 /// other files in the module — see the force-link pub consts at the end
 /// of the file. Without those, the Zig linker would dead-code-eliminate
 /// the implementation and drop the GTK/WebKit system library dependencies.
+/// Graphics environment presets for WebKitGTK, applied BEFORE gtk_init.
+///
+/// WebKitGTK reads its renderer-selection env vars during GLib/WebKit
+/// initialization. When they are unset (the previous state of this file —
+/// zero env configuration), many Linux drivers silently fall back to
+/// software rendering: every scroll frame is CPU-painted instead of
+/// GPU-composited. That is the main reason the desktop app "feels slower
+/// than Chrome" on Linux.
+///
+/// Presets (mirrors webview.GfxPreset):
+///   .auto   — pin acceleration-friendly defaults; any var already present
+///             in the process environ wins (user override respected)
+///   .compat — force-disable the DMABUF renderer; escape hatch for
+///             machines that render black/glitched windows with DMABUF
+///             (older NVIDIA, some virtualized GPUs)
+///   .debug  — auto behavior plus WEBKIT_DEBUG=Compositing on stderr
+fn applyLinuxGfxEnv(preset: webview.GfxPreset) void {
+    // setenv(3)/getenv(3) via libc. overwrite=true is safe because we only
+    // reach each setenv call after confirming the var is absent from
+    // environ (std.c.getenv). Zig 0.16 removed std.posix.getenv.
+    const c = struct {
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    };
+
+    switch (preset) {
+        .auto, .debug => {
+            // Acceleration-friendly defaults. WEBKIT_DISABLE_DMABUF_RENDERER=1
+            // sounds backwards but is the community-verified fix for janky
+            // scrolling on NVIDIA + mixed-GPU setups (the DMABUF path has
+            // had long-standing frame-pacing bugs there); FORCE_COMPOSITING
+            // keeps WebKit on the accelerated compositor instead of the
+            // legacy non-composited blit path.
+            if (std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") == null) {
+                _ = c.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
+            }
+            if (std.c.getenv("WEBKIT_FORCE_COMPOSITING_MODE") == null) {
+                _ = c.setenv("WEBKIT_FORCE_COMPOSITING_MODE", "1", 1);
+            }
+        },
+        .compat => {
+            // Conservative path: no DMABUF at all, compositing still forced
+            // so resize/scroll go through the compositor rather than blits.
+            if (std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") == null) {
+                _ = c.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
+            }
+            if (std.c.getenv("WEBKIT_FORCE_COMPOSITING_MODE") == null) {
+                _ = c.setenv("WEBKIT_FORCE_COMPOSITING_MODE", "1", 1);
+            }
+        },
+    }
+
+    if (preset == .debug) {
+        if (std.c.getenv("WEBKIT_DEBUG") == null) {
+            _ = c.setenv("WEBKIT_DEBUG", "Compositing", 1);
+        }
+    }
+}
+
 pub export fn nalar_webview_create(
     cfg: *const webview.Config,
     url: [*:0]const u8,
 ) ?*webview.Webview {
+    // Pin the WebKitGTK gfx env BEFORE gtk_init — GLib/GDK and WebKit read
+    // these vars during init; setting them afterwards has no effect.
+    applyLinuxGfxEnv(cfg.gfx_preset);
+
     // gtk_init — null/null is fine; we don't have a CLI to parse.
     gtk_init(null, null);
 

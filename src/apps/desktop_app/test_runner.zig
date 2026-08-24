@@ -16,5 +16,6 @@ test {
     _ = @import("subprocess_test.zig");
     _ = @import("extraction_test.zig");
     _ = @import("platform/linux_test.zig");
+    _ = @import("platform/linux_gfx_test.zig");
     _ = @import("attach_test.zig");
 }
