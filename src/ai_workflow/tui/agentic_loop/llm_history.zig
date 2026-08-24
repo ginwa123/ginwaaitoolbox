@@ -4843,6 +4843,78 @@ fn escapeLikePattern(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 /// user typing `%` would match every row. Pagination advances through
 /// the filtered set, not the unfiltered set. Null / empty `q` → no
 /// filter (the original efficient WHERE on `workspace_item_id` only).
+pub fn getWorkspaceItemTaskById(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    task_id: []const u8,
+) !?WorkspaceItemTaskInfo {
+    // SQL + row mapping mirror listWorkspaceItemTasksWithCursor (same
+    // 25-column contract, indices 0-24) minus cursor/sort/pagination —
+    // replaced by `WHERE t.id = ? ... LIMIT 1`. Scoped by BOTH the
+    // parent item id and the task id so a task under a different item
+    // is never readable through this endpoint (404 at the handler).
+    const sql =
+        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
+    ;
+
+    var rows = try db.query(allocator, sql, &.{ workspace_item_id, task_id });
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        // Row indices are identical to the lister (see its mapping
+        // block): 0-10 task/kanban fields, 11-17 routine fields,
+        // 18-20 session-joined fields, 21 tags, 22 worktree cwd,
+        // 23 per-task cwd, 24 image_urls.
+        const task_type = if (row.values[6].len > 0)
+            try allocator.dupe(u8, row.values[6])
+        else
+            try allocator.dupe(u8, "standard");
+        const is_pinned_int = row.values[7];
+        const pinned_position_str = row.values[8];
+        const has_routine = row.values[11].len > 0;
+        const routine_meta: ?RoutineMeta = if (has_routine) blk: {
+            const v = row.values[16];
+            const last_status: routines_model.RoutineRunStatus =
+                if (v.len == 0) .idle else if (std.mem.eql(u8, v, "success")) .success else if (std.mem.eql(u8, v, "failed")) .failed else if (std.mem.eql(u8, v, "running")) .running else .idle;
+            break :blk RoutineMeta{
+                .schedule = try allocator.dupe(u8, row.values[11]),
+                .initial_prompt = try allocator.dupe(u8, row.values[12]),
+                .enabled = std.mem.eql(u8, row.values[13], "1"),
+                .last_run_at = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
+                .next_run_at = try allocator.dupe(u8, row.values[15]),
+                .last_status = last_status,
+                .last_error = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
+            };
+        } else null;
+
+        const task = WorkspaceItemTaskInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .workspace_item_id = try allocator.dupe(u8, row.values[2]),
+            .description = try allocator.dupe(u8, row.values[3]),
+            .created_at = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
+            .updated_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
+            .task_type = task_type,
+            .is_pinned = std.mem.eql(u8, is_pinned_int, "1"),
+            .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
+            .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
+            .routine = routine_meta,
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[18]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[19]),
+            .needs_human_review = std.mem.eql(u8, row.values[20], "1"),
+            .tags = try allocator.dupe(u8, row.values[21]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[22]),
+            .cwd = try allocator.dupe(u8, row.values[23]),
+            .image_urls = try allocator.dupe(u8, row.values[24]),
+        };
+        row.deinit(allocator);
+        return task;
+    }
+    return null;
+}
+
 pub fn listWorkspaceItemTasksWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -6412,6 +6484,117 @@ test "listWorkspaceItemTasksWithCursor column_id includes NULL-column legacy tas
     try testing.expect(!found_task_b);
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// getWorkspaceItemTaskById — single-task fetch for the kanban Task
+// details dialog (plan:
+// docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md).
+// Replaces the frontend's list-refetch (limit=100) with one row.
+// ════════════════════════════════════════════════════════════════════════════
+
+test "getWorkspaceItemTaskById returns the matching task" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try insertTask(&ctx, alloc, "task_1", "alpha", "first task", "[\"bug\"]");
+    try insertTask(&ctx, alloc, "task_2", "beta", "second task", "[]");
+    try insertTask(&ctx, alloc, "task_3", "gamma", "third task", "[]");
+
+    const opt = try getWorkspaceItemTaskById(alloc, &ctx.db, "wi_1", "task_2");
+    try testing.expect(opt != null);
+    var task = opt.?;
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("task_2", task.id);
+    try testing.expectEqualStrings("beta", task.name);
+    try testing.expectEqualStrings("second task", task.description);
+    try testing.expectEqualStrings("wi_1", task.workspace_item_id);
+    try testing.expectEqualStrings("standard", task.task_type);
+    try testing.expectEqualStrings("[]", task.tags);
+}
+
+test "getWorkspaceItemTaskById returns null for unknown task id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try insertTask(&ctx, alloc, "task_1", "alpha", "", "[]");
+
+    const opt = try getWorkspaceItemTaskById(alloc, &ctx.db, "wi_1", "no_such_task");
+    try testing.expect(opt == null);
+}
+
+test "getWorkspaceItemTaskById is scoped to the parent workspace item" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // task_other lives under a DIFFERENT item (wi_2). Fetching it
+    // through wi_1 must return null — the item scoping prevents
+    // cross-item task reads.
+    try ctx.db.exec(alloc, "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_2', 'ws_1', 'kanban')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, description, updated_at, task_type, tags) VALUES ('task_other', 'elsewhere', 'wi_2', '', datetime('now'), 'standard', '[]')", &.{});
+
+    const opt = try getWorkspaceItemTaskById(alloc, &ctx.db, "wi_1", "task_other");
+    try testing.expect(opt == null);
+
+    // Sanity: fetching through the CORRECT item finds it.
+    const opt2 = try getWorkspaceItemTaskById(alloc, &ctx.db, "wi_2", "task_other");
+    try testing.expect(opt2 != null);
+    var task = opt2.?;
+    defer task.deinit(alloc);
+    try testing.expectEqualStrings("elsewhere", task.name);
+}
+
+test "getWorkspaceItemTaskById joins sessions for unattended flag + worktree cwd" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try insertTask(&ctx, alloc, "task_s", "with session", "", "[]");
+    // Session row sharing the task id (project convention task.id ==
+    // session.id): unattended ON, AI finished, worktree bound.
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, is_auto_retry_until_stop, last_finish_reason, updated_at, git_worktree_cwd) " ++
+        "VALUES ('task_s', '1', 'stop', datetime('now'), '/tmp/worktree-x')",
+        &.{});
+
+    const opt = try getWorkspaceItemTaskById(alloc, &ctx.db, "wi_1", "task_s");
+    try testing.expect(opt != null);
+    var task = opt.?;
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("1", task.is_auto_retry_until_stop);
+    try testing.expectEqualStrings("stop", task.last_finish_reason);
+    try testing.expectEqualStrings("/tmp/worktree-x", task.git_worktree_cwd);
+    // AI finished ('stop') and no human touch → awaiting review.
+    try testing.expect(task.needs_human_review);
+}
+
+test "getWorkspaceItemTaskById returns image_urls and cwd passthrough" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try insertTask(&ctx, alloc, "task_img", "with images", "", "[]");
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_item_tasks SET image_urls = 'data:image/png;base64,AAA||data:image/png;base64,BBB', cwd = '/tmp/proj' " ++
+        "WHERE id = 'task_img'",
+        &.{});
+
+    const opt = try getWorkspaceItemTaskById(alloc, &ctx.db, "wi_1", "task_img");
+    try testing.expect(opt != null);
+    var task = opt.?;
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("data:image/png;base64,AAA||data:image/png;base64,BBB", task.image_urls);
+    try testing.expectEqualStrings("/tmp/proj", task.cwd);
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // Inlined from session_update_test.zig
