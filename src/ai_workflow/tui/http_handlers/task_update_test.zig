@@ -228,3 +228,62 @@ test "task_update guards description branch on body.description != null" {
         return error.DescriptionBranchUnguarded;
     }
 }
+
+// =====================================================================
+// Migration 069 read-path follow-up (plan:
+// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+// Task 3): the PUT handler parses TaskUpdateRequest.image_urls but had
+// NO useCase branch — image edits were silently dropped. Two contracts:
+// the branch must exist + validate via image_urls_validation, and the
+// handler must map the validation errors to 400/413.
+// =====================================================================
+
+test "task_update useCase persists image_urls edits" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The useCase must import + use image_urls_validation.
+    if (std.mem.indexOf(u8, source, "image_urls_validation") == null) {
+        std.debug.print(
+            "\n!! {s} does not import/use image_urls_validation !!\n" ++
+                "   The PUT handler parses TaskUpdateRequest.image_urls but\n" ++
+                "   never persists it — image edits are silently dropped.\n" ++
+                "   Add an image_urls branch mirroring the tags branch\n" ++
+                "   (validate via image_urls_validation.validateImageUrls,\n" ++
+                "   dynamic SQL builder, SQL '' literal for the empty case).\n",
+            .{HANDLER_PATH},
+        );
+        return error.ImageUrlsValidationMissing;
+    }
+
+    // The useCase must read input.body.image_urls.
+    if (std.mem.indexOf(u8, source, "input.body.image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} useCase does not read input.body.image_urls !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.ImageUrlsBranchMissing;
+    }
+}
+
+test "task_update maps image_urls validation errors to 400/413" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "error.InvalidImageUrls => 400") == null) {
+        std.debug.print(
+            "\n!! {s} handler does not map error.InvalidImageUrls to 400 !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.InvalidImageUrlsStatusMissing;
+    }
+    if (std.mem.indexOf(u8, source, "error.ImageUrlsTooLarge => 413") == null) {
+        std.debug.print(
+            "\n!! {s} handler does not map error.ImageUrlsTooLarge to 413 !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.ImageUrlsTooLargeStatusMissing;
+    }
+}

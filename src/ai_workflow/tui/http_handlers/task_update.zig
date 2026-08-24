@@ -7,6 +7,7 @@ const llm_history = nalarcore.llm_history;
 const cron = @import("../routines/cron.zig");
 const fire = @import("../routines/fire.zig");
 const tags_validation = @import("tags_validation.zig");
+const image_urls_validation = @import("image_urls_validation.zig");
 
 /// PUT /api/workspaces/tasks/:task_id - Update task by ID only (no workspace/item needed).
 ///
@@ -56,6 +57,12 @@ pub const TaskUpdateError = error{
     CwdTooLong,
     CwdNotAbsolute,
     CwdContainsControlChar,
+    /// Image urls validation (Migration 069 — kanban image urls
+    /// column). Mirrors the create handler's errors — malformed
+    /// data URL prefix (400) or the 10 MB total cap (413).
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    InvalidImageUrls,
+    ImageUrlsTooLarge,
 };
 
 /// Slice of optional fields the client may send. Mirrors
@@ -119,6 +126,8 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.BadCron => 400,
             error.InvalidJson => 400,
             error.InvalidTags => 400,
+            error.InvalidImageUrls => 400,
+            error.ImageUrlsTooLarge => 413,
             error.CwdTooLong,
             error.CwdNotAbsolute,
             error.CwdContainsControlChar => 400,
@@ -135,6 +144,8 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
             error.FailedToUpdateRoutine => "Failed to update routine",
             error.FailedToUpdateTask => "Failed to update task",
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
+            error.InvalidImageUrls => "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs",
+            error.ImageUrlsTooLarge => "image_urls payload too large (max 10 MB)",
             error.CwdTooLong => "cwd path too long (max 4 KiB)",
             error.CwdNotAbsolute => "cwd must be an absolute path",
             error.CwdContainsControlChar => "cwd contains a control character",
@@ -253,6 +264,48 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         } else {
             try sql_buf.appendSlice(allocator, "?");
             try bind_values.append(allocator, validated_tags);
+        }
+        try sql_buf.appendSlice(allocator, " WHERE id = ?");
+        try bind_values.append(allocator, task_id);
+
+        input.db.exec(allocator, sql_buf.items, bind_values.items) catch return error.FailedToUpdateTask;
+    }
+
+    // Image urls branch (Migration 069 — kanban image urls column).
+    // Same shape as description + tags: present (non-null) means
+    // overwrite; empty string is the canonical "no images" sentinel
+    // and IS persisted (user actively removed the images); null
+    // means "leave unchanged".
+    //
+    // The dynamic SQL builder pattern matches description + tags
+    // above — the empty-string case uses a SQL '' literal to avoid
+    // the empty-slice-binds-as-NULL footgun. See memory
+    // `sqlite-backend-empty-slice-binds-as-null`.
+    // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    if (input.body.image_urls) |raw_urls| {
+        // Validate. Returns the already-joined `||`-delimited string
+        // (borrowed from the per-request arena; arena reaps it on
+        // request teardown). Mirrors the create handler's mapping
+        // (task_create.zig) so a value accepted at create time is
+        // also accepted at update time.
+        const validated_urls = image_urls_validation.validateImageUrls(raw_urls) catch |err| return switch (err) {
+            error.ImageUrlsTooLarge => error.ImageUrlsTooLarge,
+            error.InvalidImageUrl => error.InvalidImageUrls,
+        };
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try sql_buf.appendSlice(allocator,
+            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, ", image_urls = ");
+        if (validated_urls.len == 0) {
+            try sql_buf.appendSlice(allocator, "''");
+        } else {
+            try sql_buf.appendSlice(allocator, "?");
+            try bind_values.append(allocator, validated_urls);
         }
         try sql_buf.appendSlice(allocator, " WHERE id = ?");
         try bind_values.append(allocator, task_id);
