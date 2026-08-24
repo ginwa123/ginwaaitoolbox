@@ -54,10 +54,112 @@
 #import <string.h>
 #import "webview_c.h"
 
+#pragma mark - App scheme handler
+
+/// WKURLSchemeHandler for `app://` URLs (desktop scroll-perf plan, Task 3).
+///
+/// Replaces the old navigation-delegate interception: a real scheme
+/// handler lets WebKit pipeline asset loads on its own loader threads
+/// instead of serializing every sub-resource through the main-thread
+/// nav-policy callback. Asset lookup is an NSDictionary hash hit instead
+/// of a strcmp loop.
+///
+/// Memory model (MRR): the handler is retained by the WKWebViewConfiguration
+/// passed at init; we release our alloc in nalar_webview_destroy via the
+/// delegate's schemeHandler property teardown. Keys/values in the index
+/// dictionary are non-owning wrappers over the C asset table (borrowed,
+/// caller-owned per the C ABI contract) — hence NSMapTable-free plain
+/// NSDictionary with [NSValue valueWithPointer:] payloads and copy-style
+/// NSString keys built from static C strings.
+@interface NalarAppSchemeHandler : NSObject <WKURLSchemeHandler>
+@property(nonatomic, assign) const nalar_webview_asset* assets;
+@property(nonatomic, assign) size_t asset_count;
+// path string -> NSValue-wrapped index into the assets table. Built once
+// from applicationDidFinishLaunching after the config is attached.
+@property(nonatomic, retain) NSDictionary<NSString*, NSNumber*>* assetIndex;
+- (instancetype)initWithAssets:(const nalar_webview_asset*)assets count:(size_t)count;
+@end
+
+@implementation NalarAppSchemeHandler
+
+- (instancetype)initWithAssets:(const nalar_webview_asset*)assets count:(size_t)count {
+    self = [super init];
+    if (self) {
+        _assets = assets;
+        _asset_count = count;
+    }
+    return self;
+}
+
+/// Build the O(1) lookup dictionary. First occurrence wins on duplicate
+/// paths (same semantics as the old linear scan).
+- (void)buildIndex {
+    NSMutableDictionary<NSString*, NSNumber*>* idx = [NSMutableDictionary dictionaryWithCapacity:_asset_count];
+    for (size_t i = 0; i < _asset_count; i++) {
+        const nalar_webview_asset* asset = &_assets[i];
+        if (asset->path == NULL) continue;
+        NSString* key = [NSString stringWithUTF8String:asset->path];
+        if (key == nil) continue;
+        if (idx[key] == nil) {
+            idx[key] = @(i);
+        }
+    }
+    _assetIndex = idx;
+}
+
+- (void)webView:(WKWebView*)webView startURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
+    NSURL* url = urlSchemeTask.request.URL;
+    NSString* path = url.path;
+    if (path == nil || path.length == 0) path = @"/";
+
+    NSNumber* hit = _assetIndex[path];
+    if (hit != nil) {
+        const nalar_webview_asset* asset = &_assets[hit.unsignedIntegerValue];
+        NSData* data = [NSData dataWithBytesNoCopy:(void*)asset->content
+                                            length:asset->content_len
+                                      freeWhenDone:NO];
+        NSString* mime = (asset->mime != NULL)
+            ? [NSString stringWithUTF8String:asset->mime]
+            : @"application/octet-stream";
+        NSURLResponse* response = [[NSURLResponse alloc]
+            initWithURL:url
+               MIMEType:mime
+      expectedContentLength:(NSInteger)asset->content_len
+           textEncodingName:@"utf-8"];
+        [urlSchemeTask didReceiveResponse:response];
+        [urlSchemeTask didReceiveData:data];
+        [urlSchemeTask didFinishLoading];
+        [response release];
+        return;
+    }
+
+    // Not found — mirror Linux's "empty 200 text/plain" strategy so the
+    // webview falls through to its own 404 handling without crashing on
+    // stray requests (favicon.ico etc.).
+    NSData* notFound = [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding];
+    NSURLResponse* response = [[NSURLResponse alloc]
+        initWithURL:url
+           MIMEType:@"text/plain"
+  expectedContentLength:(NSInteger)notFound.length
+       textEncodingName:@"utf-8"];
+    [urlSchemeTask didReceiveResponse:response];
+    [urlSchemeTask didReceiveData:notFound];
+    [urlSchemeTask didFinishLoading];
+    [response release];
+}
+
+- (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)urlSchemeTask {
+    // All responses above are single-shot synchronous — there is no
+    // in-flight async work to cancel. Required by protocol; intentionally
+    // empty.
+    (void)urlSchemeTask;
+}
+
+@end
+
 #pragma mark - Delegate
 
 @interface NalarAppDelegate : NSObject <NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate>
-
 // Borrowed by-value copy of the C config struct. The caller (Zig) keeps
 // the original cfg alive for the webview's lifetime per the C ABI
 // contract (defer nalar_webview_destroy). No retain/release needed.
@@ -233,23 +335,38 @@
     // configuration internally, so we don't need to store it.
     WKWebViewConfiguration* wkconfig = [[[WKWebViewConfiguration alloc] init] autorelease];
 
-    // Allow the webapp's JS `paste` event handler to read image bytes
-    // from the system clipboard. WKWebView's default on macOS has been
-    // tightening over recent releases — explicitly opting in matches
-    // Chrome's permissive behavior so the same webapp code works
-    // without #ifdef'ing the frontend. The webapp here is the user's
-    // own embedded assets, not arbitrary third-party content, so this
-    // is a safe enable.
-    // javaScriptCanAccessClipboard was deprecated in macOS 14 (Sonoma)
-    // and removed in macOS 15 (Sequoia). The replacement is to use the
-    // WKWebViewConfiguration-defaults plus an info.plist entry
-    // (NSPrincipalClass = NSApplication), which is what every other
-    // Chromium / Electron-based desktop webview does today. For the
-    // nalar-desktop app the permission is moot — there's no user
-    // clipboard interaction in the embedded webapp — so we just drop
-    // the call. The webapp itself uses web Clipboard API for paste.
-    // (Keeping this commented to document the API history.)
-    // wkconfig.preferences.javaScriptCanAccessClipboard = YES;
+    // app:// assets via a real WKURLSchemeHandler (scroll-perf Task 3):
+    // parallel loader-thread asset fetches + O(1) NSDictionary lookup,
+    // replacing the old main-thread nav-delegate strcmp scan.
+    NalarAppSchemeHandler* schemeHandler =
+        [[NalarAppSchemeHandler alloc] initWithAssets:_assets count:_asset_count];
+    [schemeHandler buildIndex];
+    [wkconfig setURLSchemeHandler:schemeHandler forURLScheme:@"app"];
+    [schemeHandler release]; // wkconfig retains it
+
+    // Kill the white first-paint flash: WKWebView defaults to an opaque
+    // white background before the first CSS paint. The webapp is
+    // dark-themed; a non-drawing webview lets the window's own (dark)
+    // background show through instead.
+    [_webView setValue:@NO forKey:@"drawsBackground"];
+
+    // --devtools parity: Linux wires enable_developer_extras into WebKit's
+    // inspector; macOS needs the developerExtrasEnabled KVC on WKPreferences
+    // (public API) plus the WebKitDeveloperExtras default so the inspect
+    // menu item appears.
+    if (_config.enable_developer_extras) {
+        [wkconfig.preferences setValue:@YES forKey:@"developerExtrasEnabled"];
+        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"WebKitDeveloperExtras"];
+    }
+
+    // user_agent parity: Linux/Windows apply cfg.user_agent; macOS ignored
+    // it until now. applicationNameForUserAgent APPENDS to the stock Safari
+    // UA rather than replacing it — good enough for UA-gated CDNs without
+    // breaking WebKit feature detection that depends on the real UA.
+    if (_config.user_agent != NULL) {
+        wkconfig.applicationNameForUserAgent =
+            [NSString stringWithUTF8String:_config.user_agent];
+    }
 
     _webView = [[NalarWebView alloc] initWithFrame:frame configuration:wkconfig];
     [_webView setNavigationDelegate:self];
@@ -288,79 +405,18 @@
 
 #pragma mark - WKNavigationDelegate
 
-// Fires for every navigation (initial load, link click, asset fetch,
-// redirect, etc.). We cancel the decision for `app://` URLs and serve
-// the matching asset from the in-memory table; everything else is
-// allowed through.
+// app:// asset serving moved to NalarAppSchemeHandler (WKURLSchemeHandler)
+// in the scroll-perf Task 3 rewrite — a real scheme handler lets WebKit
+// pipeline sub-resource loads on its loader threads instead of serializing
+// them through this main-thread policy callback. The delegate conformance
+// stays for future navigation policies (external-link handling etc.);
+// today we simply allow everything through.
 - (void)webView:(WKWebView*)webView
     decidePolicyForNavigationAction:(WKNavigationAction*)navigationAction
     decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
-
-    NSURL* requestURL = navigationAction.request.URL;
-    NSString* urlString = [requestURL absoluteString];
-
-    // Defensive: if URL is nil for any reason, just allow it.
-    if (urlString == nil) {
-        decisionHandler(WKNavigationActionPolicyAllow);
-        return;
-    }
-
-    if (![urlString hasPrefix:@"app://"]) {
-        decisionHandler(WKNavigationActionPolicyAllow);
-        return;
-    }
-
-    // ---- Asset lookup ----
-    // Strip "app://" prefix.
-    NSString* afterScheme = [urlString substringFromIndex:[@"app://" length]];
-
-    // Skip the host: find the first "/" after the scheme. If there's no
-    // "/" (e.g. "app://localhost"), default to "/".
-    NSString* path;
-    NSRange firstSlash = [afterScheme rangeOfString:@"/"];
-    if (firstSlash.location != NSNotFound) {
-        path = [afterScheme substringFromIndex:firstSlash.location];
-    } else {
-        path = @"/";
-    }
-
-    const char* pathUTF8 = [path UTF8String];
-    if (pathUTF8 != NULL) {
-        for (size_t i = 0; i < _asset_count; i++) {
-            const nalar_webview_asset* asset = &_assets[i];
-            if (asset->path != NULL && strcmp(asset->path, pathUTF8) == 0) {
-                // Asset hit. Load it inline via loadData: which gives us
-                // full control over content + MIME (loadHTMLString:
-                // would re-parse, but loadData: is a single-shot serve
-                // that matches WebKitGTK's webkit_uri_scheme_request_finish
-                // semantics).
-                NSData* data = [NSData dataWithBytes:asset->content
-                                              length:asset->content_len];
-                NSString* mime = [NSString stringWithUTF8String:asset->mime];
-                NSURL* baseURL = [NSURL URLWithString:@"app://localhost/"];
-
-                [webView loadData:data
-                          MIMEType:mime
-            characterEncodingName:@"utf-8"
-                          baseURL:baseURL];
-                decisionHandler(WKNavigationActionPolicyCancel);
-                return;
-            }
-        }
-    }
-
-    // ---- 404 ----
-    // Asset not found. Return a plain-text "Not Found" body and cancel
-    // the original navigation. This mirrors the Linux implementation's
-    // "empty 200 with text/plain" strategy in spirit (don't propagate a
-    // platform-specific error to the webview).
-    NSData* notFound = [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding];
-    NSURL* baseURL = [NSURL URLWithString:@"app://localhost/"];
-    [webView loadData:notFound
-              MIMEType:@"text/plain"
-  characterEncodingName:@"utf-8"
-              baseURL:baseURL];
-    decisionHandler(WKNavigationActionPolicyCancel);
+    (void)webView;
+    (void)navigationAction;
+    decisionHandler(WKNavigationActionPolicyAllow);
 }
 
 #pragma mark - WKUIDelegate
