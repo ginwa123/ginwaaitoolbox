@@ -32,7 +32,7 @@
 
 #include <stddef.h>
 
-#include "../shared/webview_c.h"
+#include "shared/webview_c.h"
 
 // `Config` and `Asset` are forward-declared structurally in webview_c.h
 // as opaque pointers to keep this stub free of <wrl.h> / <webview2.h>.

@@ -67,7 +67,7 @@
 #include <string.h>
 #include <wchar.h>     // _wcsdup, wcslen, wcsncmp, wcschr, wcsncpy_s, swprintf_s
 #include "WebView2.h"
-#include "../shared/webview_c.h"
+#include "shared/webview_c.h"
 
 // Linker hints. The Zig build.zig also calls linkSystemLibrary for these,
 // but #pragma comment is the canonical C++ way and helps IDEs that don't

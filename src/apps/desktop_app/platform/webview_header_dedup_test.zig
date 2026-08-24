@@ -44,19 +44,26 @@ test "exactly one webview_c.h exists under desktop_app" {
 }
 
 fn assertIncludesSharedPath(source: []const u8, label: []const u8) !void {
-    if (std.mem.indexOf(u8, source, "#include \"../shared/webview_c.h\"") == null and
-        std.mem.indexOf(u8, source, "#import \"../shared/webview_c.h\"") == null)
+    // The include resolves via `-I src/apps/desktop_app` on the shim
+    // compile (see build.zig) — quoted form, path relative to that root.
+    if (std.mem.indexOf(u8, source, "#include \"shared/webview_c.h\"") == null and
+        std.mem.indexOf(u8, source, "#import \"shared/webview_c.h\"") == null)
     {
-        std.debug.print("!! {s} does not include ../shared/webview_c.h !!\n", .{label});
+        std.debug.print("!! {s} does not include shared/webview_c.h !!\n", .{label});
         return error.IncludePathMissing;
     }
-    // And no local-quote include of the bare name (that would resolve to
-    // a local copy — the thing we just deleted).
-    if (std.mem.indexOf(u8, source, "#include \"webview_c.h\"") != null or
-        std.mem.indexOf(u8, source, "#import \"webview_c.h\"") != null)
-    {
-        std.debug.print("!! {s} still uses a bare local include of webview_c.h !!\n", .{label});
-        return error.BareIncludeRemains;
+    // And no local-quote include of the bare name or the old ../shared
+    // form (both would break or shadow the single-copy contract).
+    inline for (.{
+        "#include \"webview_c.h\"",
+        "#import \"webview_c.h\"",
+        "#include \"../shared/webview_c.h\"",
+        "#import \"../shared/webview_c.h\"",
+    }) |bad| {
+        if (std.mem.indexOf(u8, source, bad) != null) {
+            std.debug.print("!! {s} still uses outdated include form: {s} !!\n", .{ label, bad });
+            return error.BareIncludeRemains;
+        }
     }
 }
 

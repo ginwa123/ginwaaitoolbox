@@ -52,7 +52,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <string.h>
-#import "../shared/webview_c.h"
+#import "shared/webview_c.h"
 
 #pragma mark - App scheme handler
 
