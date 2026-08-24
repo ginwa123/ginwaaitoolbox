@@ -254,6 +254,25 @@ const extraTagsCount = computed<number>(() => {
   return Math.max(0, tags.length - VISIBLE_TAGS_MAX)
 })
 
+// Image thumbnail (Migration 069 read-path fix, plan:
+// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+// Task 4). The card renders the FIRST image as a 48px-tall
+// thumbnail + a `+N` badge when more images exist. Clicking the
+// thumb opens the detail dialog (viewTaskDetail) — same affordance
+// as the `+N more` tags link. `task.imageUrls` is `string[]` (the
+// store's normalizeTaskImageUrlsInPlace splits the ||-joined wire
+// string at every fetch site); undefined for legacy task literals.
+const firstImage = computed<string | null>(() => {
+  const urls = props.task.imageUrls
+  if (!urls || urls.length === 0) return null
+  return urls[0] ?? null
+})
+const extraImagesCount = computed<number>(() => {
+  const urls = props.task.imageUrls
+  if (!urls) return 0
+  return Math.max(0, urls.length - 1)
+})
+
 // The user-facing task-type label shown in the meta row. Returns
 // 'routine' for routine tasks, 'memory' for memory tasks, or null
 // for plain standard tasks (no badge — the type is implied by the
@@ -557,6 +576,30 @@ const gitBranchBadge = computed<string | null>(() => {
         max-height="3rem"
         :test-id="`task-description-rendered`"
       />
+    </div>
+    <!-- Image thumbnail (Migration 069 read-path fix). First image
+         as a 48px-tall cover-cropped thumb + a `+N` badge when more
+         images exist. Click opens the detail dialog (same affordance
+         as the `+N more` tags link). Plan:
+         docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md -->
+    <div
+      v-if="firstImage"
+      class="relative w-full rounded overflow-hidden shrink-0"
+      data-testid="task-image-thumb-wrap"
+    >
+      <img
+        :src="firstImage"
+        alt=""
+        class="w-full h-12 object-cover rounded cursor-pointer"
+        data-testid="task-image-thumb"
+        @click.stop="emit('viewTaskDetail', task.id)"
+      />
+      <span
+        v-if="extraImagesCount > 0"
+        class="absolute bottom-1 right-1 text-[10px] px-1.5 py-0.5 rounded font-medium"
+        style="background: rgba(0,0,0,0.6); color: #fff;"
+        data-testid="task-image-more"
+      >+{{ extraImagesCount }}</span>
     </div>
     <!-- Tags row (Migration 067 — kanban task tags feature).
          Up to 3 chips visible; "+N more" link if more (opens the
