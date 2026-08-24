@@ -83,6 +83,7 @@ test {
     _ = @import("tools/list_memory.zig");
     _ = @import("tools/add_design_element.zig");
     _ = @import("tools/save_memory.zig");
+    _ = @import("tools/delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool
     _ = @import("tools/spawn_sub_agent.zig");
     _ = @import("tools/view_skill.zig");
     _ = @import("tools/update_design_element.zig");
