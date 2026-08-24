@@ -1924,13 +1924,23 @@ pub fn build(b: *std.Build) void {
     // `pip install pytest` as the manual fallback).
     // =====================================================================
     const python_exe = b.option([]const u8, "python", "Path to python3 binary (default: 'python3')") orelse "python3";
+    // Venv location override (2026-08-25): CI relocates the venv OUTSIDE
+    // the workspace via NALAR_FUNC_VENV_DIR because self-hosted runners
+    // `git clean` the workspace between runs — a workspace-relative
+    // .venv-func is recreated + pip-installed from scratch on every run.
+    // Pointing it at ~/.cache/nalar-ci-venv lets actions/cache persist it.
+    // Unset (the default) keeps the historical `.venv-func` behavior for
+    // local developers. NOTE: this must be read at CONFIG time so the
+    // literal path can be baked into the addSystemCommand argv below.
+    const venv_dir = b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
+    const venv_bin = std.fmt.allocPrint(b.allocator, "{s}/bin", .{venv_dir}) catch unreachable;
     const install_venv = b.addSystemCommand(&.{
-        python_exe, "-m", "venv", ".venv-func",
+        python_exe, "-m", "venv", venv_dir,
     });
     install_venv.setCwd(b.path(""));
 
     const install_requirements = b.addSystemCommand(&.{
-        ".venv-func/bin/pip", "install", "-q", "-r", "tests/functional/requirements.txt",
+        b.fmt("{s}/pip", .{venv_bin}), "install", "-q", "-r", "tests/functional/requirements.txt",
     });
     install_requirements.setCwd(b.path(""));
     install_requirements.step.dependOn(&install_venv.step);
@@ -1946,7 +1956,7 @@ pub fn build(b: *std.Build) void {
     python_probe.setCwd(b.path(""));
 
     const run_functional = b.addSystemCommand(&.{
-        ".venv-func/bin/python", "-m", "pytest", "tests/functional/", "-v", "--tb=short",
+        b.fmt("{s}/python", .{venv_bin}), "-m", "pytest", "tests/functional/", "-v", "--tb=short",
     });
     run_functional.setCwd(b.path(""));
     run_functional.step.dependOn(&install_requirements.step);
@@ -1979,7 +1989,7 @@ pub fn build(b: *std.Build) void {
     // missing browser.
     // =====================================================================
     const install_ui_requirements = b.addSystemCommand(&.{
-        ".venv-func/bin/pip", "install", "-q", "-r", "tests/functional_ui/requirements.txt",
+        b.fmt("{s}/pip", .{venv_bin}), "install", "-q", "-r", "tests/functional_ui/requirements.txt",
     });
     install_ui_requirements.setCwd(b.path(""));
     install_ui_requirements.step.dependOn(&install_requirements.step);
@@ -1989,13 +1999,13 @@ pub fn build(b: *std.Build) void {
     // cached. We run it as a separate step so CI logs surface the
     // ~150 MB download progress.
     const install_playwright_browsers = b.addSystemCommand(&.{
-        ".venv-func/bin/python", "-m", "playwright", "install", "chromium",
+        b.fmt("{s}/python", .{venv_bin}), "-m", "playwright", "install", "chromium",
     });
     install_playwright_browsers.setCwd(b.path(""));
     install_playwright_browsers.step.dependOn(&install_ui_requirements.step);
 
     const run_functional_ui = b.addSystemCommand(&.{
-        ".venv-func/bin/python", "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
+        b.fmt("{s}/python", .{venv_bin}), "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
     });
     run_functional_ui.setCwd(b.path(""));
     run_functional_ui.step.dependOn(&install_playwright_browsers.step);

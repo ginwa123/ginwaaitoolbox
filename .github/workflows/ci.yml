@@ -1157,6 +1157,29 @@ jobs:
             || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
           echo "✓ nalar-desktop --smoke-test passed"
 
+      - name: Cache python venv + playwright chromium
+        # PERF (2026-08-25): the pytest venv + Playwright Chromium
+        # (~150 MB browser download) used to be recreated on EVERY run
+        # because they lived inside the workspace, which self-hosted
+        # runners `git clean` between runs. Both now live OUTSIDE the
+        # workspace:
+        #   - venv at ${{ runner.temp }}/nalar-ci-venv (via the
+        #     NALAR_FUNC_VENV_DIR env var that build.zig reads)
+        #   - chromium at ~/.cache/ms-playwright (playwright's default)
+        # and this cache step persists them across runs. Keyed by both
+        # requirements.txt files so a dep bump invalidates cleanly.
+        if: |
+          runner.os != 'Windows' &&
+          matrix.target.step != '__SKIP__'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ${{ runner.temp }}/nalar-ci-venv
+          key: v1-py-${{ runner.os }}-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          restore-keys: |
+            v1-py-${{ runner.os }}-
+
       - name: "Functional tests: real-data isolation suites"
         # 8 functional test suites exercising the real nalar HTTP API
         # against non-trivial data shapes. Each test boots a fresh
@@ -1182,14 +1205,19 @@ jobs:
           runner.os != 'Windows' &&
           matrix.target.step != '__SKIP__'
         shell: bash
+        env:
+          # Relocate the pytest venv OUTSIDE the workspace (which is
+          # `git clean`ed between runs on self-hosted runners) so the
+          # "Cache python venv + playwright chromium" step above can
+          # persist it. build.zig reads this at config time.
+          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
         run: |
           set -u
           echo "→ functional-test: starting"
           date +%s > /tmp/functional-test-start.$$ 2>/dev/null || true
-          # zig build functional-test creates a venv at .venv-func,
-          # installs requirements, and runs the suite. The venv
-          # cleanup is handled by `zig build` itself (the venv dir
-          # is gitignored).
+          # zig build functional-test creates the venv at
+          # $NALAR_FUNC_VENV_DIR (see the env block above), installs
+          # requirements, and runs the suite.
           zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
           rc=${PIPESTATUS[0]}
           echo "→ functional-test: exit code $rc"
@@ -1265,15 +1293,20 @@ jobs:
           runner.os != 'Windows' &&
           matrix.target.step != '__SKIP__'
         shell: bash
+        env:
+          # Same venv relocation as the functional-test step — the UI
+          # suite installs playwright + chromium into THIS venv.
+          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
         run: |
           set -u
           # npm is already on PATH from setup-node.
           echo "→ functional-test-ui: starting"
           date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
           # zig build functional-test-ui installs playwright into the
-          # existing .venv-func, downloads Chromium, and runs the
-          # 30 Playwright tests (10 chatview + 11 safety + 5 smoke
-          # + 4 kanban). Cold cache: ~5 min; warm cache: ~3 min.
+          # existing venv at $NALAR_FUNC_VENV_DIR, downloads Chromium,
+          # and runs the 30 Playwright tests (10 chatview + 11 safety
+          # + 5 smoke + 4 kanban). Cold cache: ~5 min; warm cache:
+          # ~3 min.
           zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
           rc=${PIPESTATUS[0]}
           echo "→ functional-test-ui: exit code $rc"
