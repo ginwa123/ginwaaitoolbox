@@ -854,19 +854,18 @@ pub fn resolveMaxCapacityTotalTokens(
 /// so a Default chat with active_profile=alpha showed 500k in the
 /// footer while the workflow compacted against alpha's 950k. This
 /// helper makes every consumer agree.
+///
+/// 2026-08-24 refactor: the cascade body moved to
+/// `LlmConfig.resolveSessionProfileCompat` (plan
+/// 2026-08-23-refactor-profile-resolution) so Config owns the whole
+/// cascade family. This wrapper keeps the 3 existing call sites
+/// (session_compact.zig, session_messages_get.zig, workflow.zig)
+/// stable.
 pub fn resolveSessionProfile(
     cfg: *const config_mod.LlmConfig,
     selected_profile_model: []const u8,
 ) ?config_mod.LlmConfig.LlmProfile {
-    if (selected_profile_model.len > 0) {
-        if (cfg.getProfile(selected_profile_model)) |p| return p;
-    }
-    if (cfg.active_profile) |ap| {
-        if (ap.len > 0) {
-            if (cfg.getProfile(ap)) |p| return p;
-        }
-    }
-    return null;
+    return cfg.resolveSessionProfileCompat(selected_profile_model);
 }
 
 /// Get the total count of messages for a session
