@@ -452,3 +452,116 @@ describe('KanbanView.handleCreateTaskSave — create_session (plain Create task 
     )
   })
 })
+
+// =====================================================================
+// Double-click re-entry guard (plan:
+// 2026-08-24-kanban-create-run-disable-double-click.md)
+//
+// createBusy is flipped synchronously at the top of
+// handleCreateTaskSave; the guard makes a second call in the same
+// tick (double-click faster than Vue's re-render) a no-op. The
+// dialog's disabled buttons cover the normal case; this covers the
+// same-tick race + any future caller that bypasses the dialog.
+// =====================================================================
+
+describe('KanbanView.handleCreateTaskSave — double-click re-entry guard', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+  })
+
+  async function mountView() {
+    wrapper = mount(KanbanView, {
+      props: {
+        item: structuredClone(ITEM),
+        workspaceId: 'ws_1',
+        itemId: 'item_1',
+      },
+    })
+    await flushPromises()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(wrapper!.vm as any).activeCreateColumnId = 'col_todo'
+    return wrapper!
+  }
+
+  it('second same-tick call is a no-op (addKanbanTask called once)', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
+    const store = useWorkspacesStore()
+    // Never-resolving promise = request stays in flight, exactly the
+    // window a double-click lands in.
+    let resolveCreate!: (v: unknown) => void
+    const addKanbanSpy = vi
+      .spyOn(store, 'addKanbanTask')
+      .mockImplementation(
+        () => new Promise((resolve) => { resolveCreate = resolve }),
+      )
+
+    const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vm: any = view.vm
+    const payload = {
+      mode: 'create_and_run' as const,
+      name: 'My task',
+      description: 'd',
+      is_auto_retry_until_stop: '0' as const,
+      tags: [] as string[],
+    }
+    // Two invocations with NO await between them — the same-tick
+    // double-click race.
+    const p1 = vm.handleCreateTaskSave(payload)
+    const p2 = vm.handleCreateTaskSave({ ...payload })
+    await flushPromises()
+    resolveCreate({ task: fakeTask, session: fakeSession })
+    await Promise.all([p1, p2])
+    await flushPromises()
+
+    expect(addKanbanSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('createBusy resets to false after a failed create (retry re-enabled)', async () => {
+    const store = useWorkspacesStore()
+    vi.spyOn(store, 'addKanbanTask').mockRejectedValue(new Error('boom'))
+
+    const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vm: any = view.vm
+    await vm.handleCreateTaskSave({
+      mode: 'create_and_run',
+      name: 'My task',
+      description: 'd',
+      is_auto_retry_until_stop: '0',
+      tags: [],
+    })
+    await flushPromises()
+
+    expect(vm.createBusy).toBe(false)
+    // Error surfaced to the dialog's errorMessage prop binding.
+    expect(vm.createError).toBe('boom')
+
+    // Retry after failure goes through (guard cleared).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fakeTask = { id: 'task_new', name: 'My task', task_type: 'standard' } as any
+    vi.spyOn(store, 'addKanbanTask').mockResolvedValue({
+      task: fakeTask,
+      session: { id: 'task_new', name: 'My task', status: 'send' },
+    })
+    await vm.handleCreateTaskSave({
+      mode: 'create_and_run',
+      name: 'My task',
+      description: 'd',
+      is_auto_retry_until_stop: '0',
+      tags: [],
+    })
+    await flushPromises()
+    expect(store.addKanbanTask).toHaveBeenCalledTimes(2)
+  })
+})

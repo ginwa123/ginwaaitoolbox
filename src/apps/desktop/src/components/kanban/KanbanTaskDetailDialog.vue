@@ -114,6 +114,15 @@ const props = withDefaults(
     // empty. The host (KanbanView) passes `sortedColumns` from the
     // active kanban.
     availableColumns?: KanbanColumn[]
+    // NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
+    // True while the host's create request is in flight. Disables
+    // BOTH create-mode commit buttons ("Create task" and
+    // "▶ Create task & run agent") and swaps their labels to
+    // "Creating…" so a double-click can't emit `create` /
+    // `create-and-run` twice and spawn duplicate tasks/agents.
+    // Edit mode ignores it (the host only binds it on the
+    // create-mode mount).
+    creating?: boolean
   }>(),
   {
     mode: 'edit',
@@ -122,6 +131,7 @@ const props = withDefaults(
     cwd: '',
     workspaceId: '',
     availableColumns: (): KanbanColumn[] => [],
+    creating: false,
   },
 )
 
@@ -671,6 +681,19 @@ const canSave = computed<boolean>(() => isDirty.value && isValid.value)
 // just the title). The unattended toggle flows through separately.
 const canRunAgent = computed<boolean>(() => isValid.value)
 
+// NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
+// In-flight gate for the create-mode commit buttons. While the
+// host's create request is in flight (`creating` prop true), BOTH
+// buttons are disabled and their labels read "Creating…". The
+// handlers also early-return as belt-and-suspenders (a disabled
+// button drops clicks at the browser level, but the guard makes
+// the emit impossible even if a click slips through — e.g. the
+// mousedown-commits-draft path re-enabling the button mid-click).
+const isCreating = computed<boolean>(() => props.creating === true)
+const canCommitCreate = computed<boolean>(
+  () => !isCreating.value && isValid.value,
+)
+
 // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Inject the
 // processingState map (provided by App.vue; populated via SSE worker
 // events). The Start agent button is `:disabled` when a worker is
@@ -706,6 +729,12 @@ const handleStartAgent = () => {
 
 const handleSave = () => {
   if (!canSave.value) return
+  // NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
+  // In-flight guard: while the host's create request is in flight,
+  // drop further Save clicks so a double-click can't emit `create`
+  // twice (duplicate tasks). Edit mode is unaffected — the host
+  // only binds `creating` on the create-mode mount.
+  if (isCreateMode.value && isCreating.value) return
   // Belt + suspenders: if the user typed a tag and clicked Save
   // without pressing Enter/comma, the KanbanTagsInput still holds the
   // draft in its local `draftInput` ref. The mousedown handler
@@ -791,6 +820,11 @@ const handleClose = () => {
 // discriminator) so the host's single handler can switch on mode.
 const handleRunAgent = () => {
   if (!canRunAgent.value) return
+  // NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
+  // In-flight guard: while the host's create request is in flight,
+  // drop further clicks so a double-click can't emit
+  // `create-and-run` twice (duplicate tasks + duplicate agents).
+  if (isCreating.value) return
   tagsInputRef.value?.commitDraft()
   if (!canRunAgent.value) return
   emit('create-and-run', {
@@ -1553,7 +1587,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               type="button"
               @mousedown="commitTagsDraftOnSaveMouseDown"
               @click="handleSave"
-              :disabled="!canSave"
+              :disabled="isCreateMode ? !canCommitCreate : !canSave"
               data-testid="kanban-task-detail-save"
               class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
@@ -1561,7 +1595,11 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 color: var(--color-bg);
               "
             >
-              {{ isCreateMode ? 'Create task' : 'Save' }}
+              <!-- NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
+                   While the create request is in flight the label reads
+                   "Creating…" so the user sees the click registered and
+                   has no reason to click again. -->
+              {{ isCreateMode ? (isCreating ? 'Creating…' : 'Create task') : 'Save' }}
             </button>
             <!-- NEW (plan: 2026-08-06-kanban-create-task-run-agent).
                  Outlined secondary button only in create mode. Sibling
@@ -1575,7 +1613,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               v-if="isCreateMode"
               type="button"
               @click="handleRunAgent"
-              :disabled="!canRunAgent"
+              :disabled="!canCommitCreate"
               data-testid="kanban-task-detail-create-and-run"
               class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
@@ -1586,7 +1624,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
               title="Create the task and start the agent. The title + description becomes the first user message."
             >
               <span aria-hidden="true">▶</span>
-              <span class="ml-1">Create task &amp; run agent</span>
+              <span class="ml-1">{{ isCreating ? 'Creating…' : 'Create task & run agent' }}</span>
             </button>
             <!-- NEW (plan: 2026-08-18-kanban-task-detail-start-agent).
                  Outlined secondary button only in edit mode. Sibling
