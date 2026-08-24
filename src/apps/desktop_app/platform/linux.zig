@@ -222,7 +222,30 @@ extern "c" fn webkit_uri_scheme_request_finish(
 const SchemeContext = struct {
     assets: [*]const webview.CAsset,
     count: usize,
+    /// O(1) path -> asset-index lookup, built once in
+    /// nalar_webview_create (see buildAssetIndex). Replaces the old
+    /// per-request linear scan over `assets` — the callback runs on the
+    /// GTK main thread, so every saved cycle is a saved scroll frame.
+    asset_index: std.StringHashMapUnmanaged(u32) = .empty,
 };
+
+/// Build the path -> index map for the scheme callback. Keys point into
+/// the C asset table's path strings (static lifetime per the C ABI
+/// contract), so no key duplication is needed.
+fn buildAssetIndex(
+    allocator: std.mem.Allocator,
+    ctx: *SchemeContext,
+) !void {
+    try ctx.asset_index.ensureTotalCapacity(allocator, @intCast(ctx.count));
+    for (ctx.assets[0..ctx.count], 0..) |asset, i| {
+        const asset_path = std.mem.span(asset.path);
+        // First occurrence wins on duplicate paths (same semantics as
+        // the old linear scan, which returned the first match).
+        if (!ctx.asset_index.contains(asset_path)) {
+            try ctx.asset_index.put(allocator, asset_path, @intCast(i));
+        }
+    }
+}
 
 /// Opaque handle returned by nalar_webview_create. Mirrors the
 /// nalar_webview (C side) / Webview (Zig side) opaque type — the
@@ -336,6 +359,15 @@ pub export fn nalar_webview_create(
     scheme_ctx.* = .{
         .assets = cfg.assets,
         .count = cfg.asset_count,
+    };
+
+    // O(1) asset lookup: build the path -> index map once, here, so the
+    // per-request callback never linear-scans the table on the GTK main
+    // thread. On failure we fall back to count=0 (all requests 404)
+    // rather than aborting window creation.
+    buildAssetIndex(std.heap.page_allocator, scheme_ctx) catch |err| {
+        std.log.warn("linux.zig: asset index build failed ({any}); app:// lookups disabled", .{err});
+        scheme_ctx.count = 0;
     };
 
     webkit_web_context_register_uri_scheme(
@@ -564,15 +596,12 @@ fn uriSchemeCallback(
     const path_z: [*:0]const u8 = webkit_uri_scheme_request_get_path(request);
     const path = std.mem.span(path_z);
 
-    // Linear search through the asset table. For a few hundred entries
-    // (typical webapp size after bundling), this is fine — a hash table
-    // would only matter for thousands of assets.
-    for (ctx.assets[0..ctx.count]) |asset| {
-        const asset_path = std.mem.span(asset.path);
-        if (std.mem.eql(u8, asset_path, path)) {
-            serveAsset(request, asset);
-            return;
-        }
+    // O(1) lookup through the prebuilt index (see buildAssetIndex).
+    // Falls back to the empty-serve path when the map has no entry —
+    // same not-found semantics as the old linear scan.
+    if (ctx.asset_index.get(path)) |asset_idx| {
+        serveAsset(request, ctx.assets[asset_idx]);
+        return;
     }
 
     // Asset not found — return an empty body with a plain MIME type. We
