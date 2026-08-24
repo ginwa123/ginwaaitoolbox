@@ -15,7 +15,6 @@ const sqlite = nalarcore.sqlite;
 const migration_mod = nalarcore.migrations_mod.migration;
 const migration = migration_mod;
 const config_mod = nalarcore.config;
-const parse_thinking_mod = nalarcore.parse_thinking;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
