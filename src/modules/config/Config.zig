@@ -1176,6 +1176,151 @@ pub const LlmConfig = struct {
         return false;
     }
 
+    /// Fully-resolved effective settings for one LLM call, produced by
+    /// walking the canonical profile cascade (see
+    /// `resolveEffectiveProfile`). All strings BORROW from the
+    /// `LlmConfig` singleton — never free them, never let them outlive
+    /// the config. The derived fields (`is_thinking`,
+    /// `thinking_adaptive`) are computed ONCE from the final
+    /// `thinking_str`, matching the pre-refactor semantics at
+    /// workflow.zig:471/477 exactly.
+    ///
+    /// Plan: docs/superpowers/plans/2026-08-23-refactor-profile-resolution.md
+    pub const EffectiveProfile = struct {
+        model: []const u8,
+        base_url: []const u8,
+        api_key: []const u8,
+        url_style: []const u8,
+        /// Raw resolved `thinking` string ("auto" when nothing set).
+        thinking_str: []const u8,
+        /// Derived: parseThinkingString(thinking_str) catch null.
+        /// "auto"/"" → null, "on"/"true" → true, "off"/"false" → false.
+        is_thinking: ?bool,
+        /// Derived: std.mem.eql(u8, thinking_str, "auto").
+        thinking_adaptive: bool,
+        /// Anthropic extended-thinking budget override (null = heuristic/adaptive).
+        thinking_budget_tokens: ?u32,
+        /// OpenAI reasoning effort ("low"/"medium"/"high"/"auto"; null = omit).
+        reasoning_effort: ?[]const u8,
+    };
+
+    /// Internal: getProfile that treats an empty name as a miss so the
+    /// cascade can pass `active_profile orelse ""` without branching.
+    fn getProfileIfSet(self: *const LlmConfig, name: []const u8) ?LlmProfile {
+        if (name.len == 0) return null;
+        return self.getProfile(name);
+    }
+
+    /// THE canonical profile cascade — ONE implementation for the whole
+    /// codebase. Walks:
+    ///
+    ///   1. `selected_profile_model` (non-empty AND profile exists AND
+    ///      field non-empty/non-null)
+    ///   2. `active_profile`          (same guards)
+    ///   3. top-level defaults (`self.model` / `"auto"` / null)
+    ///
+    /// Per-field fall-through: a profile that EXISTS but has an empty
+    /// string or null optional falls through to the next step FOR THAT
+    /// FIELD ONLY (partial profiles are allowed). This matches the old
+    /// hand-rolled blocks in workflow.zig byte-for-byte.
+    ///
+    /// Consumers: workflow entry + per-iteration re-read (workflow.zig),
+    /// llm_history.resolveSessionProfile (HTTP read paths), and any new
+    /// code that needs effective LLM settings. Do NOT hand-roll this
+    /// cascade again.
+    pub fn resolveEffectiveProfile(
+        self: *const LlmConfig,
+        selected_profile_model: []const u8,
+    ) EffectiveProfile {
+        const sel = self.getProfileIfSet(selected_profile_model);
+        const act = if (sel == null)
+            self.getProfileIfSet(self.active_profile orelse "")
+        else
+            null;
+
+        // String fields: first non-empty value down the cascade.
+        const model: []const u8 = blk: {
+            if (sel) |p| if (p.model.len > 0) break :blk p.model;
+            if (act) |p| if (p.model.len > 0) break :blk p.model;
+            break :blk self.model;
+        };
+        const base_url: []const u8 = blk: {
+            if (sel) |p| if (p.base_url.len > 0) break :blk p.base_url;
+            if (act) |p| if (p.base_url.len > 0) break :blk p.base_url;
+            break :blk self.base_url;
+        };
+        const api_key: []const u8 = blk: {
+            if (sel) |p| if (p.api_key.len > 0) break :blk p.api_key;
+            if (act) |p| if (p.api_key.len > 0) break :blk p.api_key;
+            break :blk self.api_key;
+        };
+        const url_style: []const u8 = blk: {
+            if (sel) |p| if (p.url_style.len > 0) break :blk p.url_style;
+            if (act) |p| if (p.url_style.len > 0) break :blk p.url_style;
+            break :blk self.url_style;
+        };
+        // thinking: empty on a profile → default "auto" (NOT top-level
+        // self.thinking — the top-level LlmConfig has no `thinking`
+        // field; workflow.zig's old block defaulted to "auto").
+        const thinking_str: []const u8 = blk: {
+            if (sel) |p| if (p.thinking.len > 0) break :blk p.thinking;
+            if (act) |p| if (p.thinking.len > 0) break :blk p.thinking;
+            break :blk "auto";
+        };
+        const thinking_budget_tokens: ?u32 = blk: {
+            if (sel) |p| if (p.thinking_budget_tokens) |t| break :blk t;
+            if (act) |p| if (p.thinking_budget_tokens) |t| break :blk t;
+            break :blk null;
+        };
+        const reasoning_effort: ?[]const u8 = blk: {
+            if (sel) |p| {
+                if (p.reasoning_effort) |re| {
+                    if (re.len > 0) break :blk re;
+                }
+            }
+            if (act) |p| {
+                if (p.reasoning_effort) |re| {
+                    if (re.len > 0) break :blk re;
+                }
+            }
+            break :blk null;
+        };
+
+        // Derived ONCE from the final string (pre-refactor:
+        // workflow.zig:471 parseThinkingString catch null; :477 eql "auto").
+        return .{
+            .model = model,
+            .base_url = base_url,
+            .api_key = api_key,
+            .url_style = url_style,
+            .thinking_str = thinking_str,
+            .is_thinking = parse_thinking.parseThinkingString(thinking_str) catch null,
+            .thinking_adaptive = std.mem.eql(u8, thinking_str, "auto"),
+            .thinking_budget_tokens = thinking_budget_tokens,
+            .reasoning_effort = reasoning_effort,
+        };
+    }
+
+    /// Whole-profile variant of the cascade: returns the winning
+    /// `LlmProfile` (selected → active → null), NOT per-field merged.
+    /// Used by consumers that need profile-level overrides like
+    /// `max_capacity_tokens` / `compaction_threshold_percent` (compaction
+    /// decision, HTTP footer computation). This is the body of the old
+    /// `llm_history.resolveSessionProfile`, moved here so Config owns
+    /// the entire cascade family.
+    pub fn resolveSessionProfileCompat(
+        self: *const LlmConfig,
+        selected_profile_model: []const u8,
+    ) ?LlmProfile {
+        if (self.getProfileIfSet(selected_profile_model)) |p| return p;
+        if (self.active_profile) |ap| {
+            if (ap.len > 0) {
+                if (self.getProfile(ap)) |p| return p;
+            }
+        }
+        return null;
+    }
+
     /// Look up a top-level sub-agent by name. Returns null when not configured.
     /// The returned `SubAgentConfig` borrows from `self` — its lifetime is
     /// tied to this `LlmConfig` (do not outlive the config).
