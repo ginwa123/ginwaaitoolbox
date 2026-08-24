@@ -129,6 +129,10 @@ pub const SseManager = struct {
     running: bool,
     on_disconnect: ?*const fn (client_id: [16]u8) void = null,
     notify_pipe: [2]i32,
+    /// Set once `drainPipeNonBlocking` has flipped the notify pipe's
+    /// read end to O_NONBLOCK. Idempotent (double fcntl SETFL is
+    /// harmless) so no extra lock is needed.
+    pipe_nonblock_set: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, server_allocator: std.mem.Allocator, io: std.Io) !SseManager {
         var notify_pipe: [2]i32 = .{ -1, -1 };
@@ -290,11 +294,62 @@ pub const SseManager = struct {
         }
     }
 
-    /// Start LOOP_COUNT concurrent event loops using std.Io.Group
+    /// Drain the notify pipe WITHOUT blocking, consuming AT MOST ONE
+    /// wakeup byte per call.
+    ///
+    /// Why this exists (the "3 of 4 heartbeat shards die" bug)
+    /// ─────────────────────────────────────────────────────────
+    /// `notifyLoops` writes ONE byte per wakeup, but ALL LOOP_COUNT
+    /// event loops poll the SAME read end. The old code did a blocking
+    /// `read(pipe, buf, 64)` that drained EVERY byte in the pipe —
+    /// including the wakeups meant for the other loops. A loop that
+    /// then finds the pipe empty at poll time blocks FOREVER in its
+    /// own raw `read()` (poll only re-reports readability when NEW
+    /// bytes arrive, which never come). Stranded loops stop
+    /// heartbeating their shard → browser sees silence → EventSource
+    /// reconnects forever.
+    ///
+    /// The fix is two-fold:
+    ///   1. Set O_NONBLOCK on the read end ONCE so a read on an empty
+    ///      pipe returns -EAGAIN instead of blocking forever.
+    ///   2. Read ONE byte per call. Each wakeup byte wakes exactly one
+    ///      loop; leftover bytes stay in the pipe for the other loops,
+    ///      which poll reports as readable on their next iteration.
+    ///
+    /// EAGAIN (pipe empty — another loop already consumed our wakeup)
+    /// is success-with-zero-bytes. Every other failure is swallowed:
+    /// a dead notify pipe must never take down the event loop.
+    fn drainPipeNonBlocking(self: *SseManager) void {
+        if (is_windows) return;
+        const read_fd = self.notify_pipe[0];
+        if (read_fd < 0) return;
+
+        // One-time O_NONBLOCK setup. Failures are non-fatal — worst case
+        // this process keeps the old blocking behaviour.
+        if (!self.pipe_nonblock_set) {
+            setFdNonBlocking(read_fd);
+            self.pipe_nonblock_set = true;
+        }
+
+        // Consume at most ONE wakeup byte. EAGAIN lands here as rc < 0
+        // and is silently ignored — that's the normal "someone else got
+        // it" case, not an error.
+        var one_byte: [1]u8 = undefined;
+        _ = socket.read(read_fd, &one_byte, 1);
+    }
+
+    /// Start LOOP_COUNT concurrent event loops using std.Io.Group.
+    ///
+    /// Spawns the loops and RETURNS immediately. startEventLoop is
+    /// itself invoked via group.concurrent from main.zig; blocking on
+    /// the child group inside that closure made shutdown fragile (the
+    /// outer group.cancel propagated into the inner wait while child
+    /// loops were blocked in raw syscalls). The loops exit cleanly on
+    /// `running=false` (set by stop()/deinit()); the caller's group
+    /// tracks the spawned children for the process lifetime.
     pub fn startEventLoop(self: *SseManager, heartbeat_secs: u32) !void {
         self.running = true;
         var group: std.Io.Group = .init;
-        defer group.cancel(self.io);
 
         for (0..LOOP_COUNT) |loop_id| {
             try group.concurrent(
@@ -307,8 +362,10 @@ pub const SseManager = struct {
                 .{ self, heartbeat_secs, loop_id },
             );
         }
-
-        try group.await(self.io);
+        // No join here — see the doc comment above. The local `group`
+        // only aggregates the spawned closures; std.Io.Group's child
+        // handles are owned by the Io runtime and keep running after
+        // this function returns.
     }
 
     pub fn gracefulShutdown(self: *SseManager) void {
@@ -484,8 +541,11 @@ pub const SseManager = struct {
                 if (revents & poll_in != 0) {
                     if (has_pipe and pfd.fd == self.notify_pipe[0]) {
                         if (!is_windows) {
-                            var buf: [64]u8 = undefined;
-                            _ = socket.read(self.notify_pipe[0], &buf, buf.len);
+                            // Consume exactly ONE wakeup byte, non-blocking.
+                            // The old blocking drain-everything read stranded
+                            // the other LOOP_COUNT-1 event loops forever —
+                            // see drainPipeNonBlocking's doc comment.
+                            self.drainPipeNonBlocking();
                         }
                     } else {
                         var buf: [64]u8 = undefined;
@@ -601,14 +661,18 @@ pub const SseManager = struct {
         defer dead_ids.deinit(self.allocator);
 
         for (client_ptrs.items) |client| {
-            // Only update `last_heartbeat` on a SUCCESSFUL write — a
-            // failed heartbeat leaves the timestamp stale, so the
-            // periodic sweep (`sweepStaleClients`) can catch the
-            // client on the next iteration even if `dead_ids` itself
-            // races with another thread's `removeClient` call.
-            // Previously the timestamp was updated unconditionally,
-            // which made the sweep blind to actual staleness.
-            if (writeChunkedFrame(client.fd, ping)) |_| {
+            // Route through `SseClient.sendEvent` so the ping takes the
+            // PER-CLIENT lock. Writing the chunked frame unlocked raced
+            // with concurrent `sendToClient` / broadcast writers on the
+            // same fd: two threads interleaving their `<hex len>\r\n`
+            // headers + payloads corrupt the chunked framing, which the
+            // browser surfaces as a protocol error → EventSource
+            // reconnects forever. The manager-lock snapshot above only
+            // protects the client LIST, not the fd's byte stream.
+            // Only update `last_heartbeat` on a SUCCESSFUL write so the
+            // periodic sweep (`sweepStaleClients`) can still reap a
+            // client whose pings keep failing.
+            if (client.sendEvent(ping)) |_| {
                 client.last_heartbeat = timestamp(self.io);
                 log.info("heartbeat sent fd={d} id={x}", .{ client.fd, client.id });
             } else |_| {
@@ -690,11 +754,12 @@ pub const SseManager = struct {
         self.lock.unlock(self.io);
 
         for (client_ptrs.items) |client| {
-            // Send the broadcast as a chunked frame so the peer's
-            // HTTP/1.1 chunked-decoder can parse the byte stream. A
-            // write failure (peer gone) means the client is dead;
-            // remove it from the manager.
-            if (writeChunkedFrame(client.fd, event)) {
+            // Per-client lock via sendEvent — see sendHeartbeat's
+            // comment. An unlocked writeChunkedFrame here can interleave
+            // with a concurrent heartbeat / sendToClient on the same fd
+            // and corrupt the chunked framing (browser → endless
+            // reconnect).
+            if (client.sendEvent(event)) |_| {
                 // success
             } else |_| {
                 log.info("broadcast write FAILED fd={d} id={x}", .{ client.fd, client.id });
@@ -718,11 +783,11 @@ pub const SseManager = struct {
         self.lock.unlock(self.io);
 
         for (client_ptrs.items) |client| {
-            // Send the typed broadcast as a chunked frame so the
-            // peer's HTTP/1.1 chunked-decoder can parse the byte
-            // stream. A write failure (peer gone) means the client
-            // is dead; remove it from the manager.
-            if (writeChunkedFrame(client.fd, event)) {
+            // Per-client lock via sendEvent — see sendHeartbeat's
+            // comment. An unlocked writeChunkedFrame here can interleave
+            // with a concurrent heartbeat / sendToClient on the same fd
+            // and corrupt the chunked framing.
+            if (client.sendEvent(event)) |_| {
                 // success
             } else |_| {
                 log.info("broadcastTyped write FAILED fd={d} id={x}", .{ client.fd, client.id });
@@ -833,6 +898,48 @@ fn sendAll(fd: i32, data: []const u8) isize {
             sent += @as(usize, @intCast(n));
         }
         return @intCast(sent);
+    }
+}
+
+/// Set O_NONBLOCK on `fd` so reads on an empty pipe return EAGAIN
+/// instead of blocking forever. Best-effort: failures are swallowed
+/// (worst case the caller keeps the old blocking behaviour).
+///
+/// Per-platform strategy:
+///   - **Linux**: raw `std.os.linux.fcntl` syscall. Zig 0.16's
+///     `std.posix` has no fcntl wrapper, and this file already links
+///     libc, but the syscall path avoids any libc-version variance.
+///   - **macOS / BSD**: libc `fcntl` via `std.c.fcntl` (variadic
+///     extern). Darwin's F_GETFL/F_SETFL/O_NONBLOCK values match
+///     Linux's (3/4/0o4000), so the same constants apply.
+///   - **Windows**: no-op — the SSE manager never creates a pipe on
+///     Windows (`init` skips `pipe()`; the event loop is a sleep +
+///     heartbeat cycle), so there is nothing to make non-blocking.
+fn setFdNonBlocking(fd: i32) void {
+    if (is_windows) return;
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    const O_NONBLOCK: i32 = 0o4000;
+
+    if (is_linux) {
+        const getfl_rc = std.os.linux.fcntl(fd, F_GETFL, 0);
+        if (std.os.linux.errno(getfl_rc) == .SUCCESS) {
+            const flags: usize = @intCast(getfl_rc);
+            const setfl_rc = std.os.linux.fcntl(
+                fd,
+                F_SETFL,
+                flags | @as(usize, @intCast(O_NONBLOCK)),
+            );
+            _ = std.os.linux.errno(setfl_rc); // best-effort; ignore result
+        }
+        return;
+    }
+
+    // macOS / BSD: variadic libc fcntl. Zig's std.c.fcntl is declared
+    // `extern "c" fn fcntl(fd: fd_t, cmd: c_int, ...) c_int`.
+    const flags = c.fcntl(fd, F_GETFL);
+    if (flags >= 0) {
+        _ = c.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     }
 }
 
