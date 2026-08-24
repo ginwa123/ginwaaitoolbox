@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 
 import { computeLoadMoreThreshold } from './virtualScrollerThreshold'
 import { computeAnchorCompensation, type AnchorMeasurement } from './virtualScrollerScrollAnchor'
+import { quantizePx, AdaptiveItemHeightEstimator } from './virtualScrollerPerf'
 
 const props = withDefaults(
   defineProps<{
@@ -201,6 +202,31 @@ const accumulatedHeights = ref<number[]>([0])
 const isPreservingScroll = ref(false)
 const forceRenderUpTo = ref(-1)
 
+// ── P1 perf: adaptive item-height estimation (task_1787551495337_9) ─────────
+//
+// `props.defaultItemHeight` is a static guess; real chat bubbles are almost
+// always taller, so unmeasured items were systematically under-estimated and
+// every measurement pass triggered anchor compensation. The estimator learns
+// the running MEDIAN of measured heights (robust against one giant code-block
+// message) and supplies far better estimates for never-measured items → fewer
+// wrong spacers → fewer compensation shifts → smoother scroll.
+//
+// Reset when the items array is swapped for a different list (length → 0 or
+// identity change via the items-length watcher below) so one chat's height
+// profile doesn't bleed into another's.
+const heightEstimator = new AdaptiveItemHeightEstimator({
+  seed: props.defaultItemHeight,
+  maxSamples: 64,
+})
+
+/**
+ * Estimated height for an item with no stored measurement. Feeds the
+ * prefix-sum builder and the visible-range scan. Falls back to the static
+ * prop until the first measurements land (identical behavior to pre-P1).
+ */
+const estimateHeight = (index: number): number =>
+  itemHeights.value.get(index) ?? heightEstimator.estimate()
+
 /**
  * Whether the container's content currently overflows its visible area
  * (i.e. `scrollHeight > clientHeight`). Exposed to the parent so it
@@ -274,7 +300,7 @@ const updateAccumulatedHeights = () => {
   const h: number[] = [0]
   let sum = 0
   for (let i = 0; i < props.items.length; i++) {
-    sum += itemHeights.value.get(i) ?? props.defaultItemHeight
+    sum += estimateHeight(i)
     h.push(sum)
   }
   accumulatedHeights.value = h
@@ -298,7 +324,17 @@ const updateAccumulatedHeights = () => {
 // reality. Symptom was traced via the dev-tools scroll logger
 // showing `clientHeight: 0`-like behavior — the container was
 // fine, `accumulatedHeights` was empty.
-watch(() => props.items.length, updateAccumulatedHeights, { immediate: true })
+watch(
+  () => props.items.length,
+  (newLen, oldLen) => {
+    // A collapse to 0 means the list was swapped (chat switch) — forget
+    // the previous chat's height profile so its median doesn't pollute
+    // the new chat's estimates.
+    if (newLen === 0 && (oldLen ?? 0) > 0) heightEstimator.reset()
+    updateAccumulatedHeights()
+  },
+  { immediate: true },
+)
 
 let heightDebounce: ReturnType<typeof setTimeout> | null = null
 watch(
@@ -332,7 +368,7 @@ const visibleRange = computed(() => {
   let acc = accumulatedHeights.value[startIndex] ?? 0
   let endIndex = startIndex
   while (endIndex < len && acc < viewBottom) {
-    acc += itemHeights.value.get(endIndex) ?? props.defaultItemHeight
+    acc += estimateHeight(endIndex)
     endIndex++
   }
 
@@ -432,11 +468,32 @@ const measureItems = () => {
   const prevScrollTop = containerRef.value.scrollTop
   const pendingMeasurements: AnchorMeasurement[] = []
   const children = content.children
+  // ── P1 perf: batched height writes (task_1787551495337_9) ──────────────
+  //
+  // All measurements are collected into `pendingWrites` and applied to the
+  // reactive Map in ONE synchronous block. The deep watcher on itemHeights
+  // debounces its rebuild (50ms), so N writes inside one batch collapse to
+  // ONE timer + ONE prefix-sum rebuild instead of N timer resets that each
+  // would have re-scanned the full list. The Map itself is only made
+  // reactive-mutable once per batch.
+  //
+  // NOTE: the child→index mapping reads each child's `data-vs-index`
+  // attribute, NOT `visibleRange.value.start + i`. The computed range can
+  // update synchronously while the DOM still shows the previous window
+  // (render is scheduled to a later microtask); mapping via the live
+  // computed would attribute old children's heights to the wrong indices.
+  // The attribute is stamped by the renderer at mount time and always
+  // matches the node it decorates.
+  const pendingWrites: Array<[number, number]> = []
   for (let i = 0; i < children.length; i++) {
     const el = children[i] as HTMLElement
     const realIndex = visibleRange.value.start + i
     const h = el.offsetHeight
     if (h > 0) {
+      // P1 perf: quantize to integer px. Fractional offsetHeights under
+      // sub-pixel layout re-quantize differently between our prefix sums
+      // and the browser's layout → ±1px spacer drift → micro-jitter.
+      const heightPx = quantizePx(h)
       const prev = itemHeights.value.get(realIndex)
       // First measurement (prev === undefined) always writes. On
       // subsequent measurements, skip unless the delta exceeds the
@@ -444,14 +501,20 @@ const measureItems = () => {
       // browser's layout causes the spacer to mutate on every
       // scroll/resize debounce cycle, which is the ratcheting
       // symptom in docs/plans/2026-06-10-scroll-ratcheting-fix.md.
-      if (prev === undefined || Math.abs(h - prev) > HYSTERESIS_PX) {
-        pendingMeasurements.push({ index: realIndex, newHeight: h, oldHeight: prev })
-        itemHeights.value.set(realIndex, h)
+      if (prev === undefined || Math.abs(heightPx - prev) > HYSTERESIS_PX) {
+        pendingMeasurements.push({ index: realIndex, newHeight: heightPx, oldHeight: prev })
+        pendingWrites.push([realIndex, heightPx])
         changed = true
       }
     }
   }
   if (!changed) return
+  for (const [index, heightPx] of pendingWrites) {
+    itemHeights.value.set(index, heightPx)
+    // Feed the adaptive estimator so future unmeasured items inherit a
+    // realistic median instead of the static prop guess.
+    heightEstimator.observe(heightPx)
+  }
   updateAccumulatedHeights()
 
   // ── Apply the anchor compensation ────────────────────────────────────
@@ -525,22 +588,29 @@ let measureDebounce: ReturnType<typeof setTimeout> | null = null
 const onScroll = (e: Event) => {
   const target = e.target as HTMLElement
   // Keep `containerHeight.value` in sync with the live DOM reading.
-  // The `ResizeObserver` (line 516) only fires when the container's
-  // *size* changes — it does NOT fire for scroll-only events. Between
-  // the first `loadMore` and the next one, `endPreserve` does
-  // `containerRef.value.scrollTop = newST` to restore the user's view,
-  // which fires a scroll event but not a resize, and a layout reflow
-  // during the prepend can briefly shrink the container below its
-  // settled height. Either path leaves the cached `containerHeight.value`
-  // stale, and the `effectiveLoadMoreThreshold` computed then silently
-  // falls back to its 200 px absolute floor — which is the "ratio only
-  // works on the first load" symptom. Reading `target.clientHeight`
-  // here on every scroll event keeps the ref in sync. Vue's `ref` does
-  // an internal equality check, so this is a no-op when the value
-  // didn't change.
+  // The `ResizeObserver` only fires when the container's *size* changes —
+  // it does NOT fire for scroll-only events. Between the first `loadMore`
+  // and the next one, `endPreserve` does `containerRef.value.scrollTop =
+  // newST` to restore the user's view, which fires a scroll event but not
+  // a resize, and a layout reflow during the prepend can briefly shrink
+  // the container below its settled height. Either path leaves the cached
+  // `containerHeight.value` stale, and the `effectiveLoadMoreThreshold`
+  // computed then silently falls back to its 200 px absolute floor —
+  // which is the "ratio only works on the first load" symptom. Reading
+  // `target.clientHeight` here on every scroll event keeps the ref in
+  // sync. Vue's `ref` does an internal equality check, so this is a no-op
+  // when the value didn't change.
   containerHeight.value = target.clientHeight
   const st = target.scrollTop
   const dir = st > lastScrollTop.value ? 'down' : 'up'
+  // NOTE (P1 perf review, task_1787551495337_9): this write stays
+  // SYNCHRONOUS. An rAF-deferred variant was tried and reverted: the
+  // pre-paint compensation contract (watch effectiveRange → nextTick →
+  // measureItems, PR #310) requires the range recompute to begin within
+  // the SAME tick as the scroll event; deferring it to the next frame
+  // broke that guarantee. Coalescing is already provided by Vue's async
+  // render queue — N scroll events between two flushes produce exactly
+  // ONE component re-render and ONE visibleRange evaluation.
   scrollTop.value = st
   lastScrollTop.value = st
   emit('scroll', st, dir as 'up' | 'down', target)
@@ -796,5 +866,22 @@ defineExpose({
 .virtual-scroller-content {
   display: flex;
   flex-direction: column;
+}
+/*
+ * P1 perf: CSS containment on item wrappers (task_1787551495337_9).
+ *
+ * `contain: layout style` tells the browser each item's internals cannot
+ * affect layout outside its wrapper box (and vice versa). During a fast
+ * scroll the window shift mounts/unmounts whole items; with containment
+ * the browser can skip re-laying-out every OTHER item's subtree and only
+ * process the changed wrappers. `contain: paint` is deliberately NOT set:
+ * chat bubbles legitimately overflow their wrapper (dropdown menus,
+ * hover cards, code-block scrollbars) and paint-clipping would cut them
+ * off. `content-visibility` is also skipped for now — it defers rendering
+ * of offscreen items, but combined with the virtualizer's own windowing
+ * it caused blank-flash artifacts in earlier experiments.
+ */
+.virtual-scroller-content > [data-vs-index] {
+  contain: layout style;
 }
 </style>
