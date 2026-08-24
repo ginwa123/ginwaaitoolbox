@@ -1501,6 +1501,17 @@ pub const LlmConfig = struct {
             .is_random_fallback = false,
             .requested_name = requested_name,
             // Overlay: empty field in SubAgentConfig → orchestrator default.
+            //
+            // NOTE (plan 2026-08-23-refactor-profile-resolution): this
+            // is deliberately NOT `resolveEffectiveProfile`. The overlay
+            // base here is the ORCHESTRATOR's top-level values
+            // (`self.model` etc.) — a sub-agent with an empty field
+            // inherits the top-level Defaults tab, never the user's
+            // active profile. Routing this through the cascade would
+            // silently change behavior whenever active_profile is set.
+            // The full cascade applies to MAIN-agent sessions only;
+            // per-profile sub_agents are already scoped by their parent
+            // profile via resolveSubAgent's lookup order.
             .model = if (sa.model.len > 0) sa.model else self.model,
             .base_url = if (sa.base_url.len > 0) sa.base_url else self.base_url,
             .api_key = if (sa.api_key.len > 0) sa.api_key else self.api_key,
