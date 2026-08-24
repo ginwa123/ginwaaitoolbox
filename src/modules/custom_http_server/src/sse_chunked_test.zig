@@ -597,3 +597,203 @@ test "SseManager: sendToClient returns ClientNotFound for an unknown id (behavio
     const result = mgr.sendToClient(bogus, "data: hello\n\n");
     try std.testing.expectError(error.ClientNotFound, result);
 }
+
+// ============================================================================
+// Task 6 (2026-08-24, "SSE always reconnecting" fix #1): the notify-pipe
+// read in `runEventLoop` must be NON-BLOCKING and consume AT MOST ONE
+// byte per wakeup.
+//
+// Bug history (verified live on the dev nalar, 2026-08-24): all
+// LOOP_COUNT event loops poll the SAME pipe read-end. The old code did a
+// BLOCKING `read(pipe, buf, 64)` that drained EVERY byte in the pipe.
+// With one wakeup byte per registerClient, loop A consumed loops B/C/D's
+// wakeups; those loops then called read() again and blocked FOREVER on
+// an empty pipe (poll only re-reports readability when NEW bytes arrive,
+// which never come because nobody writes more wakeups). Stranded loops
+// stop heartbeating their shard → browser sees silence → EventSource
+// reconnects forever. Live proof: 3 of 4 poll threads of the running
+// nalar were GONE (`/proc/<pid>/task` had exactly one thread sitting in
+// poll_schedule_timeout).
+//
+// This is a static source-check (house pattern — see the Task 4 test
+// above) asserting:
+//   1. The pipe-POLL.IN branch calls `drainPipeNonBlocking` (the new
+//      helper) instead of a raw blocking `socket.read`.
+//   2. `drainPipeNonBlocking` sets O_NONBLOCK via fcntl before reading.
+// ============================================================================
+
+test "SseManager: notify pipe drained non-blocking, one byte per wakeup" {
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    // Locate runEventLoop's body window.
+    const decl = std.mem.indexOf(u8, source, "fn runEventLoop(") orelse {
+        std.debug.print("\n!! sse_manager.zig missing `fn runEventLoop` !!\n", .{});
+        return error.RunEventLoopMissing;
+    };
+    const window_end = @min(decl + 16384, source.len);
+    const body = source[decl..window_end];
+
+    // 1. The pipe branch must route through the non-blocking drainer.
+    if (std.mem.indexOf(u8, body, "self.drainPipeNonBlocking()") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: runEventLoop does not call self.drainPipeNonBlocking() !!\n" ++
+                "   A blocking drain-everything read strands the other LOOP_COUNT-1 event\n" ++
+                "   loops forever (they block in read() on an empty pipe with no future\n" ++
+                "   wakeup) — their shards stop heartbeating and browsers reconnect forever.\n",
+            .{},
+        );
+        return error.PipeDrainNonBlockingMissing;
+    }
+
+    // 2. The drainer must exist and delegate the O_NONBLOCK setup to
+    //    setFdNonBlocking (which itself must do fcntl SETFL).
+    const drain_decl = std.mem.indexOf(u8, source, "fn drainPipeNonBlocking(") orelse {
+        std.debug.print("\n!! sse_manager.zig missing `fn drainPipeNonBlocking` !!\n", .{});
+        return error.DrainPipeHelperMissing;
+    };
+    const drain_end = @min(drain_decl + 4096, source.len);
+    const drain_body = source[drain_decl..drain_end];
+    if (std.mem.indexOf(u8, drain_body, "setFdNonBlocking(") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: drainPipeNonBlocking does not call setFdNonBlocking !!\n" ++
+                "   Without O_NONBLOCK a read on the empty pipe blocks forever once another\n" ++
+                "   loop consumed this loop's wakeup byte.\n",
+            .{},
+        );
+        return error.PipeO_NONBLOCKMissing;
+    }
+
+    // 2b. The helper itself must perform the fcntl SETFL dance — and it
+    //     must cover BOTH POSIX platforms (Linux raw syscall + macOS/BSD
+    //     libc fcntl). Windows is a documented no-op (no pipe there).
+    const helper_decl = std.mem.indexOf(u8, source, "fn setFdNonBlocking(") orelse {
+        std.debug.print("\n!! sse_manager.zig missing `fn setFdNonBlocking` !!\n", .{});
+        return error.SetFdNonBlockingMissing;
+    };
+    const helper_end = @min(helper_decl + 4096, source.len);
+    const helper_body = source[helper_decl..helper_end];
+    if (std.mem.indexOf(u8, helper_body, "F_SETFL") == null or
+        std.mem.indexOf(u8, helper_body, "O_NONBLOCK") == null)
+    {
+        std.debug.print(
+            "\n!! sse_manager.zig: setFdNonBlocking does not set O_NONBLOCK via F_SETFL !!\n",
+            .{},
+        );
+        return error.PipeO_NONBLOCKMissing;
+    }
+    // Cross-platform guard: the Linux branch AND the macOS/BSD libc
+    // branch must both be present. A future edit that drops either one
+    // silently breaks SSE heartbeats on that platform.
+    if (std.mem.indexOf(u8, helper_body, "is_linux") == null or
+        std.mem.indexOf(u8, helper_body, "c.fcntl") == null)
+    {
+        std.debug.print(
+            "\n!! sse_manager.zig: setFdNonBlocking lost a platform branch !!\n" ++
+                "   Must handle BOTH `is_linux` (raw syscall) and macOS/BSD (`c.fcntl`).\n" ++
+                "   Windows is allowed to no-op (no notify pipe exists there).\n",
+            .{},
+        );
+        return error.SetFdNonBlockingPlatformBranchMissing;
+    }
+}
+
+// ============================================================================
+// Task 7 (2026-08-24, "SSE always reconnecting" fix #2): heartbeat /
+// broadcast / broadcastTyped writes MUST take the PER-CLIENT lock by
+// routing through `SseClient.sendEvent`.
+//
+// Bug history (observed live 2026-08-24): `data: ping` arrived BEFORE
+// the `event: connected` handshake on a brand-new connection. Root
+// cause: sendHeartbeat wrote its chunked frame WITHOUT the per-client
+// lock while unified_events_sse's handshake `sendToClient` held it (or
+// vice versa). Two threads interleaving `<hex len>\r\n` + payload +
+// `\r\n` on the same fd corrupt the chunked framing; the browser's
+// EventSource treats the mangled stream as a protocol failure and
+// reconnects forever. The manager-lock snapshot protects the client
+// LIST, not the fd's BYTE STREAM — only the per-client lock serializes
+// writers to one socket.
+// ============================================================================
+
+test "SseManager: sendHeartbeat routes through SseClient.sendEvent (per-client lock)" {
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    const decl = std.mem.indexOf(u8, source, "fn sendHeartbeat(") orelse {
+        std.debug.print("\n!! sse_manager.zig missing `fn sendHeartbeat` !!\n", .{});
+        return error.SendHeartbeatMissing;
+    };
+    const window_end = @min(decl + 8192, source.len);
+    const body = source[decl..window_end];
+
+    if (std.mem.indexOf(u8, body, "client.sendEvent(ping)") == null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: sendHeartbeat writes pings without the per-client lock !!\n" ++
+                "   Route through `client.sendEvent(ping)` so the ping cannot interleave with\n" ++
+                "   a concurrent sendToClient/broadcast on the same fd (corrupts chunked\n" ++
+                "   framing → browser reconnects forever).\n",
+            .{},
+        );
+        return error.SendHeartbeatPerClientLockMissing;
+    }
+}
+
+test "SseManager: broadcast + broadcastTyped route through SseClient.sendEvent (per-client lock)" {
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    inline for (.{ "pub fn broadcast(", "pub fn broadcastTyped(" }) |decl_marker| {
+        const decl = std.mem.indexOf(u8, source, decl_marker) orelse {
+            std.debug.print("\n!! sse_manager.zig missing `{s}` !!\n", .{decl_marker});
+            return error.BroadcastMissing;
+        };
+        const window_end = @min(decl + 4096, source.len);
+        const body = source[decl..window_end];
+
+        if (std.mem.indexOf(u8, body, "client.sendEvent(event)") == null) {
+            std.debug.print(
+                "\n!! sse_manager.zig: {s} writes without the per-client lock !!\n" ++
+                    "   Route through `client.sendEvent(event)` — see sendHeartbeat.\n",
+                .{decl_marker},
+            );
+            return error.BroadcastPerClientLockMissing;
+        }
+    }
+}
+
+// ============================================================================
+// Task 8 (2026-08-24, "SSE always reconnecting" fix #3): startEventLoop
+// must NOT call group.await inside its own spawned closure chain.
+//
+// Bug history: startEventLoop is itself invoked via group.concurrent
+// from main.zig. Calling `group.await` inside that nested context made
+// shutdown fragile: when main's outer group.cancel fired, the cancel
+// propagated into the inner await while child loops were blocked in
+// raw syscalls (the stranded pipe reads above), tearing down threads
+// mid-syscall. After Fix 1 the loops exit cleanly on `running=false`,
+// so startEventLoop can simply spawn and RETURN — the caller's group
+// already tracks the children.
+// ============================================================================
+
+test "SseManager: startEventLoop spawns loops and returns (no nested group.await)" {
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    const decl = std.mem.indexOf(u8, source, "pub fn startEventLoop(") orelse {
+        std.debug.print("\n!! sse_manager.zig missing `pub fn startEventLoop` !!\n", .{});
+        return error.StartEventLoopMissing;
+    };
+    const window_end = @min(decl + 4096, source.len);
+    const body = source[decl..window_end];
+
+    if (std.mem.indexOf(u8, body, "group.await") != null) {
+        std.debug.print(
+            "\n!! sse_manager.zig: startEventLoop still calls group.await !!\n" ++
+                "   startEventLoop is itself spawned via group.concurrent from main.zig;\n" ++
+                "   nesting group.await inside that closure makes shutdown fragile. Spawn\n" ++
+                "   the LOOP_COUNT loops and return — the caller's group tracks them.\n",
+            .{},
+        );
+        return error.StartEventLoopNestedAwait;
+    }
+}
