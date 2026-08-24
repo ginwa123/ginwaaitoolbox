@@ -191,6 +191,21 @@ const emit = defineEmits<{
    * a plain `ref<boolean>` that the template can react to.
    */
   scrollabilityChange: [scrollable: boolean]
+  /**
+   * Fired whenever the scroller's content positioning values change —
+   * i.e. when `topSpacer`, `bottomSpacer`, or the total content height
+   * changes as a result of scrolling, measurement, or item-list updates.
+   *
+   * P2 (task_1787551495337_9): with transform-based positioning there
+   * are no spacer DIVs whose `style.height` mutations a parent
+   * MutationObserver could watch (ChatView's previous stick-to-bottom
+   * signal). This event is the explicit replacement: parents that need
+   * to react to "the virtual layout moved" (re-stick to bottom after
+   * measurement drift, etc.) listen here instead.
+   *
+   * Payload: `{ topSpacer, bottomSpacer, total }` in px.
+   */
+  contentShift: [shift: { topSpacer: number; bottomSpacer: number; total: number }]
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
@@ -432,6 +447,29 @@ const scrollInfo = computed(() => ({
   totalItems: props.items.length,
   direction: scrollTop.value > lastScrollTop.value ? ('down' as const) : ('up' as const),
 }))
+
+// ── P2: contentShift emit (task_1787551495337_9) ─────────────────────────────
+//
+// Transform-based positioning has no spacer DIVs whose style mutations a
+// parent MutationObserver could watch. This watcher is the explicit
+// replacement signal: it fires whenever the virtual layout's geometry
+// changes (scroll-driven window shift, measurement update, item-list
+// change). ChatView listens to re-stick to bottom after measurement drift.
+watch(
+  () => ({
+    topSpacer: visibleRange.value.topSpacer,
+    bottomSpacer: visibleRange.value.bottomSpacer,
+    total: accumulatedHeights.value[props.items.length] ?? 0,
+  }),
+  (shift) => {
+    emit('contentShift', shift)
+  },
+  // immediate: the parent gets the initial geometry on mount — same
+  // convention as the scrollabilityChange watcher above. Without it a
+  // never-scrolled list would never emit, and ChatView's re-stick logic
+  // would miss the initial measurement drift.
+  { immediate: true },
+)
 
 // Hysteresis dead-band for `measureItems()`: only update a stored
 // height when the new measurement differs by more than this many
@@ -803,13 +841,30 @@ defineExpose({
 
 <template>
   <div ref="containerRef" class="virtual-scroller" @scroll="onScroll">
-    <div class="virtual-scroller-spacer" :style="{ height: visibleRange.topSpacer + 'px' }" />
-    <div class="virtual-scroller-content">
-      <div v-for="{ item, index } in visibleItems" :key="index" :data-vs-index="index">
-        <slot :item="item" :index="index" />
+    <!--
+      P2 (task_1787551495337_9): the two spacer DIVs are replaced by ONE
+      sizer sized to the total content height, with the rendered window
+      absolutely positioned inside it and moved via `translate3d`.
+
+      Why: mutating a spacer's `height` style invalidates layout for the
+      whole scroller on every window shift. A transform is a composited
+      change — no layout, no paint of the shifted content — so window
+      moves cost a GPU composite instead of a full relayout.
+
+      The sizer keeps `scrollHeight` correct (the browser needs the total
+      height to draw a scrollbar and clamp scrollTop); the transform puts
+      the visible window at its exact offset within that height.
+    -->
+    <div class="virtual-scroller-sizer" :style="{ height: (accumulatedHeights[items.length] ?? 0) + 'px' }">
+      <div
+        class="virtual-scroller-content"
+        :style="{ transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)` }"
+      >
+        <div v-for="{ item, index } in visibleItems" :key="index" :data-vs-index="index">
+          <slot :item="item" :index="index" />
+        </div>
       </div>
     </div>
-    <div class="virtual-scroller-spacer" :style="{ height: visibleRange.bottomSpacer + 'px' }" />
   </div>
 </template>
 
@@ -866,6 +921,21 @@ defineExpose({
 .virtual-scroller-content {
   display: flex;
   flex-direction: column;
+  /*
+   * P2: the content window is absolutely positioned inside the sizer and
+   * moved with translate3d (see template comment). `will-change: transform`
+   * promotes it to its own compositor layer so window shifts are a GPU
+   * composite instead of a layout+paint. The absolute positioning takes
+   * the content out of flow — the SIZER is what holds scrollHeight up.
+   */
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  will-change: transform;
+}
+.virtual-scroller-sizer {
+  position: relative;
 }
 /*
  * P1 perf: CSS containment on item wrappers (task_1787551495337_9).
