@@ -878,7 +878,6 @@ jobs:
         with:
           path: |
             .zig-cache
-            zig-out
             # Module-owned vendor dirs (each module carries its own; the
             # root-level `vendor/` was removed in PR #211's
             # self-contained-package refactor). Both `src/modules/...`
@@ -886,15 +885,22 @@ jobs:
             # `addIncludePath` calls read from.
             src/modules/databases/vendor
             src/modules/custom_http_client/vendor
-            src/apps/desktop_app/embedded
+          # PERF (2026-08-25): `zig-out` (~90 MB nalar + ~34 MB
+          # nalar-desktop per cell) and
+          # `src/apps/desktop_app/embedded/webapp_assets.zig` were
+          # dropped from this cache. zig-out is pure build OUTPUT — the
+          # merged test+build step regenerates it from .zig-cache in
+          # seconds; caching it cost ~124 MB of archive I/O (upload AND
+          # download) on every run. webapp_assets.zig is regenerated on
+          # EVERY build by design (fresh-assets policy, see build.zig's
+          # webapp-rebuild workflow) so caching it was dead weight.
+          #
           # Cache key includes `build.zig` so a build.zig change invalidates
-          # the cache. `scripts/fetch-vendor-sqlite3.sh` is no longer at
-          # the repo root — moved to `src/modules/databases/scripts/` —
-          # but we keep hashing it via its new path for forward-compat
-          # with future cache-invalidation needs.
-          key: v2-zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/apps/desktop_app/main.zig', 'src/apps/desktop/bun.lock', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}
+          # the cache. Key bumped v2→v3 to avoid collisions with stale
+          # v2 entries that still contain zig-out.
+          key: v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}
           restore-keys: |
-            v2-zig-${{ runner.os }}-${{ matrix.target.zig }}-
+            v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-
 
       - name: Test + build (single zig invocation)
         if: runner.os != 'Windows'
