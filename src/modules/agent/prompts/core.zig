@@ -65,7 +65,7 @@ pub const SearchHistoryToolRule =
 ;
 
 pub const MemoryToolRule =
-    \\## Memory Tools — save_memory + load_memory (FTS5, cross-session) — MANDATORY USE
+    \\## Memory Tools — save_memory + load_memory + delete_memory (FTS5, cross-session) — MANDATORY USE
     \\
     \\**These tools are NOT optional.** Persisting and recalling facts across sessions is a core part of doing this job well. Failing to call `load_memory` when prior context exists, or failing to call `save_memory` when a fact should persist, is a task failure — treat it with the same seriousness as skipping a required build step.
     \\
@@ -73,14 +73,15 @@ pub const MemoryToolRule =
     \\
     \\These are **AGENT-MANAGED notes** (auto-inserted into a SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected into your prompt as `## Global Knowledge` at runtime). Use `save_memory` for short, structured facts you'd otherwise re-ask the user; use the `.md` surface for hand-curated insights (architecture notes, project conventions, "Zig 0.16 removed `std.posix.*`" facts).
     \\
-    \\**TWO TOOLS — UPSERT + FTS SEARCH:**
+    \\**THREE TOOLS — UPSERT + FTS SEARCH + PERMANENT DELETE:**
     \\- `save_memory({ content, tags?, id? })` — UPSERT by `id`. Omit `id` (or pass `""`) to auto-generate `mem_<16-hex>`. Pass a stable caller-provided `id` slug to UPDATE an existing row (e.g. `id="user-pref-theme"`). `content` must be 1 KiB – 1 MiB; empty or oversized is rejected (no silent truncation).
     \\- `load_memory({ query, tags?, limit?, offset?, with_content? })` — FTS5 phrase search over `content` AND `tags`. Returns ranked hits with a `<snippet>` (10-token window with `[match]` markers). `with_content=true` opt-in to fetch the full body (capped at 2 KiB per row — anti-bloat default). `limit` default 10, hard cap 50. Use `<total_count>` + `offset` to paginate.
+    \\- `delete_memory({ id })` — PERMANENTLY removes one row by exact `id` (no undo, no soft-delete). Pass the id returned by a prior `save_memory`/`load_memory`. Unknown id → `<deleted>false</deleted>` (not an error). Empty id → `<error>`. Use this when a note is genuinely obsolete (user asked to forget, or a correction invalidates it); when in doubt, prefer overwriting via `save_memory` over deleting — and NEVER delete a user-preference memory unless the user explicitly asks.
     \\
     \\**WIRE FORMAT — three contracts stay in sync:**
     \\- `tags` is **a single string** (e.g. `"dark-mode||preferences"`), NOT a JSON array. The schema, parser, and storage all read it as `[]const u8`; storage splits into `[]const []const u8` at the boundary. The `||` separator is preferred; `|`, `,`, and space are accepted for robustness.
     \\- `id` format is `mem_<16-hex>` (auto-generated) OR a caller-provided slug for UPSERT. Treat the format as opaque — never parse it.
-    \\- Storage is **permanent** — there is no `delete_memory` tool by design. To "forget" something, `save_memory` a new entry that supersedes it.
+    \\- Storage is durable but not sacred — `save_memory` UPSERTs supersede old content, and `delete_memory({ id })` permanently removes a row when it's genuinely obsolete (e.g. user asks to forget, or a correction invalidates the old note entirely). When in doubt, prefer overwriting via `save_memory` over deleting.
     \\
     \\**FTS5 query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool strips FTS5 operators and joins multi-word queries with `OR` so `handle_tool.zig` and `preferred model` tokenize the same way the indexer did. Don't pre-escape; just write the natural query.
     \\

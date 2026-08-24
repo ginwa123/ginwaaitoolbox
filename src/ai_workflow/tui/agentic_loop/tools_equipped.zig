@@ -15,6 +15,7 @@ const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
 const save_memory_mod = nalarcore.save_memory;
 const load_memory_mod = nalarcore.load_memory;
+const delete_memory_mod = nalarcore.delete_memory; // 2026-08-24-delete-memory-agent-tool
 const search_history_mod = nalarcore.search_history_tool;
 const get_skill_mod = nalarcore.get_skill_tool;
 const view_skill_mod = nalarcore.view_skill_tool;
@@ -79,6 +80,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // list_memory_mod.list_memory_tool,
         save_memory_mod.save_memory_tool,
         load_memory_mod.load_memory_tool,
+        delete_memory_mod.delete_memory_tool, // 2026-08-24-delete-memory-agent-tool
         search_history_mod.search_history_tool,
         view_skill_mod.view_skill_tool,
         get_skill_mod.get_skill_tool,
@@ -162,6 +164,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // .{ .name = "list_memory", .exec = tools.execListMemory, .tool_def = list_memory_mod.list_memory_tool },
         .{ .name = "save_memory", .exec = tools.execSaveMemory, .tool_def = save_memory_mod.save_memory_tool },
         .{ .name = "load_memory", .exec = tools.execLoadMemory, .tool_def = load_memory_mod.load_memory_tool },
+        .{ .name = "delete_memory", .exec = tools.execDeleteMemory, .tool_def = delete_memory_mod.delete_memory_tool }, // 2026-08-24-delete-memory-agent-tool
         .{ .name = "search_history", .exec = tools.execSearchHistory, .tool_def = search_history_mod.search_history_tool },
 
         // === FILE OPERATIONS ===

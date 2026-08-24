@@ -40,6 +40,7 @@ test {
     _ = @import("prompts_make_plan_context.zig"); // inlined 3 live-DB tests from prompts_make_plan_context_test.zig
     _ = @import("tools_exec_get_plan.zig"); // inlined 2 tests from tools_exec_get_plan_test.zig
     _ = @import("tools_exec_update_plan.zig"); // inlined 3 tests from tools_exec_update_plan_test.zig
+    _ = @import("tools_exec_delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool — inlined 2 tests
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
