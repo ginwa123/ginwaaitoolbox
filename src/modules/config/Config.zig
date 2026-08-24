@@ -472,8 +472,8 @@ pub const LlmConfig = struct {
                 break :blk try allocator.dupe(u8, raw);
             },
             .mcpServers_parsed = null,
-            .mcp_servers = McpServersMap.init(allocator),
-            .profiles_models = ProfilesMap.init(allocator),
+            .mcp_servers = LlmConfig.McpServersMap.init(allocator),
+            .profiles_models = LlmConfig.ProfilesMap.init(allocator),
             .sub_agents = &.{},
         };
         errdefer {
@@ -1733,6 +1733,207 @@ pub fn getDefaultConfigPath(allocator: std.mem.Allocator, environment: *std.proc
 
 pub fn loadDefault(allocator: std.mem.Allocator, environment: *std.process.Environ.Map) LlmConfig.LoadError!LlmConfig {
     return LlmConfig.init(allocator, null, environment);
+}
+
+// ---------------------------------------------------------------------------
+// resolveEffectiveProfile — THE canonical profile cascade (plan
+// 2026-08-23-refactor-profile-resolution). One implementation; every
+// consumer (workflow entry, per-iteration re-read, llm_history HTTP
+// paths) must go through here.
+//
+// Cascade: selected_profile_model → active_profile → top-level defaults.
+// Per-field fall-through: a profile that EXISTS but has an empty/null
+// field falls through for THAT field only (partial profiles allowed).
+// ---------------------------------------------------------------------------
+
+/// Shared fixture: top-level defaults + two profiles ("alpha" fully
+/// populated, "partial" with only model set). Built directly (no disk
+/// round-trip). All strings are duped on the testing allocator because
+/// `deinit`/`freeProfilesMap` free every field — assigning literals
+/// here would panic "Invalid free".
+fn cascadeFixture(allocator: std.mem.Allocator) !LlmConfig {
+    var cfg: LlmConfig = .{
+        .allocator = allocator,
+        .api_key = try allocator.dupe(u8, "top-key"),
+        .model = try allocator.dupe(u8, "top-model"),
+        .base_url = try allocator.dupe(u8, "https://top"),
+        .url_style = try allocator.dupe(u8, "openai"),
+        .model_compaction_size_kb = 100,
+        .retry_delay_ms = 0,
+        .max_capacity_token_model = null,
+        .compaction_threshold_percent = null,
+        .active_profile = null,
+        .mcpServers_parsed = null,
+        .mcp_servers = LlmConfig.McpServersMap.init(allocator),
+        .profiles_models = LlmConfig.ProfilesMap.init(allocator),
+        .sub_agents = &.{},
+        .random_names = &.{},
+    };
+    errdefer cfg.deinit();
+    try cfg.profiles_models.put(try allocator.dupe(u8, "alpha"), .{
+        .model = try allocator.dupe(u8, "alpha-model"),
+        .base_url = try allocator.dupe(u8, "https://alpha"),
+        .thinking = try allocator.dupe(u8, "on"),
+        .temperature = try allocator.dupe(u8, "auto"),
+        .api_key = try allocator.dupe(u8, "alpha-key"),
+        .url_style = try allocator.dupe(u8, "anthropic"),
+        .sub_agents = &.{},
+        .max_capacity_tokens = null,
+        .compaction_threshold_percent = null,
+        .thinking_budget_tokens = 4096,
+        .reasoning_effort = try allocator.dupe(u8, "high"),
+    });
+    try cfg.profiles_models.put(try allocator.dupe(u8, "partial"), .{
+        .model = try allocator.dupe(u8, "partial-model"),
+        .base_url = try allocator.dupe(u8, ""),
+        .thinking = try allocator.dupe(u8, ""),
+        .temperature = try allocator.dupe(u8, "auto"),
+        .api_key = try allocator.dupe(u8, ""),
+        .url_style = try allocator.dupe(u8, ""),
+        .sub_agents = &.{},
+        .max_capacity_tokens = null,
+        .compaction_threshold_percent = null,
+        .thinking_budget_tokens = null,
+        .reasoning_effort = null,
+    });
+    return cfg;
+}
+
+test "resolveEffectiveProfile: selected profile wins over top-level for every field" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+
+    const e = cfg.resolveEffectiveProfile("alpha");
+    try std.testing.expectEqualStrings("alpha-model", e.model);
+    try std.testing.expectEqualStrings("https://alpha", e.base_url);
+    try std.testing.expectEqualStrings("alpha-key", e.api_key);
+    try std.testing.expectEqualStrings("anthropic", e.url_style);
+    try std.testing.expectEqualStrings("on", e.thinking_str);
+    // Derived from thinking_str="on":
+    try std.testing.expect(e.is_thinking == true);
+    try std.testing.expectEqual(false, e.thinking_adaptive);
+    try std.testing.expectEqual(@as(?u32, 4096), e.thinking_budget_tokens);
+    try std.testing.expectEqualStrings("high", e.reasoning_effort.?);
+}
+
+test "resolveEffectiveProfile: no selection + no active → pure top-level defaults" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+
+    const e = cfg.resolveEffectiveProfile("");
+    try std.testing.expectEqualStrings("top-model", e.model);
+    try std.testing.expectEqualStrings("https://top", e.base_url);
+    try std.testing.expectEqualStrings("top-key", e.api_key);
+    try std.testing.expectEqualStrings("openai", e.url_style);
+    try std.testing.expectEqualStrings("auto", e.thinking_str);
+    // Derived from thinking_str="auto":
+    try std.testing.expect(e.is_thinking == null);
+    try std.testing.expectEqual(true, e.thinking_adaptive);
+    try std.testing.expectEqual(@as(?u32, null), e.thinking_budget_tokens);
+    try std.testing.expectEqual(@as(?[]const u8, null), e.reasoning_effort);
+}
+
+test "resolveEffectiveProfile: missing selected name falls through to top-level" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+
+    const e = cfg.resolveEffectiveProfile("does_not_exist");
+    try std.testing.expectEqualStrings("top-model", e.model);
+}
+
+test "resolveEffectiveProfile: partial profile falls through for THAT field only" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+
+    const e = cfg.resolveEffectiveProfile("partial");
+    // Set on the profile:
+    try std.testing.expectEqualStrings("partial-model", e.model);
+    // Empty on the profile → top-level fallback:
+    try std.testing.expectEqualStrings("https://top", e.base_url);
+    try std.testing.expectEqualStrings("top-key", e.api_key);
+    try std.testing.expectEqualStrings("openai", e.url_style);
+    // Empty thinking on the profile → default "auto".
+    try std.testing.expectEqualStrings("auto", e.thinking_str);
+}
+
+test "resolveEffectiveProfile: active_profile wins when selection empty" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+    cfg.active_profile = try std.testing.allocator.dupe(u8, "alpha");
+
+    const e = cfg.resolveEffectiveProfile("");
+    try std.testing.expectEqualStrings("alpha-model", e.model);
+    try std.testing.expectEqualStrings("anthropic", e.url_style);
+    try std.testing.expectEqual(@as(?u32, 4096), e.thinking_budget_tokens);
+}
+
+test "resolveEffectiveProfile: selected wins over active_profile" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+    cfg.active_profile = try std.testing.allocator.dupe(u8, "partial");
+
+    const e = cfg.resolveEffectiveProfile("alpha");
+    try std.testing.expectEqualStrings("alpha-model", e.model);
+    try std.testing.expectEqualStrings("alpha-key", e.api_key);
+}
+
+test "resolveEffectiveProfile: missing selected falls to active_profile" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+    cfg.active_profile = try std.testing.allocator.dupe(u8, "alpha");
+
+    const e = cfg.resolveEffectiveProfile("does_not_exist");
+    try std.testing.expectEqualStrings("alpha-model", e.model);
+}
+
+test "resolveEffectiveProfile: derived fields for off / garbage thinking strings" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+    cfg.active_profile = try std.testing.allocator.dupe(u8, "partial");
+    // Mutate the stored profile's thinking directly. The map owns its
+    // strings (freeProfilesMap frees `thinking`), so free the old
+    // slice and install a fresh owned copy — assigning a literal
+    // would make deinit() free a non-heap pointer.
+    const pptr = cfg.profiles_models.getPtr("partial").?;
+    cfg.allocator.free(pptr.thinking);
+    pptr.thinking = try cfg.allocator.dupe(u8, "off");
+
+    const e_off = cfg.resolveEffectiveProfile("");
+    try std.testing.expect(e_off.is_thinking == false);
+    try std.testing.expectEqual(false, e_off.thinking_adaptive);
+
+    cfg.allocator.free(pptr.thinking);
+    pptr.thinking = try cfg.allocator.dupe(u8, "total-garbage");
+    const e_bad = cfg.resolveEffectiveProfile("");
+    // Garbage ≠ "auto" → adaptive=false; parse fails → is_thinking=null.
+    try std.testing.expect(e_bad.is_thinking == null);
+    try std.testing.expectEqual(false, e_bad.thinking_adaptive);
+}
+
+test "resolveSessionProfileCompat: mirrors old resolveSessionProfile semantics" {
+    const allocator = std.testing.allocator;
+    var cfg = try cascadeFixture(allocator);
+    defer cfg.deinit();
+
+    // Selected hit.
+    try std.testing.expect(cfg.resolveSessionProfileCompat("alpha") != null);
+    try std.testing.expectEqualStrings("alpha-model", cfg.resolveSessionProfileCompat("alpha").?.model);
+    // Miss → null (no active set in fixture).
+    try std.testing.expect(cfg.resolveSessionProfileCompat("") == null);
+    try std.testing.expect(cfg.resolveSessionProfileCompat("nope") == null);
+
+    // Active hit.
+    cfg.active_profile = try std.testing.allocator.dupe(u8, "alpha");
+    const p = cfg.resolveSessionProfileCompat("").?;
+    try std.testing.expectEqualStrings("alpha-model", p.model);
 }
 
 test {
