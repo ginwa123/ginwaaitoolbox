@@ -18,6 +18,7 @@ pub const execListSkills = @import("tools_exec_list_skills.zig").execListSkills;
 pub const execListMemory = @import("tools_exec_list_memory.zig").execListMemory;
 pub const execSaveMemory = @import("tools_exec_save_memory.zig").execSaveMemory;
 pub const execLoadMemory = @import("tools_exec_load_memory.zig").execLoadMemory;
+pub const execDeleteMemory = @import("tools_exec_delete_memory.zig").execDeleteMemory; // 2026-08-24-delete-memory-agent-tool
 pub const execSearchHistory = @import("tools_exec_search_history.zig").execSearchHistory;
 pub const execGetSkill = @import("tools_exec_get_skill.zig").execGetSkill;
 pub const execViewSkill = @import("tools_exec_view_skill.zig").execViewSkill;
