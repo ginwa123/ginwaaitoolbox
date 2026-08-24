@@ -964,28 +964,30 @@ pub fn build(b: *std.Build) void {
     // the auto-fetch step so a fresh checkout Just Works.
     if (target.result.os.tag == .windows) {
     }
-    // === Build the Vue webapp (bun) ===
+    // === Build the Vue webapp (npm) ===
     // Chunk 3: this step is a dependency of the desktop_exe build so the
     // embedded webapp_assets.zig is regenerated on every build. The step
-    // itself runs `bun run build` in src/apps/desktop, which is the
+    // itself runs `npm run build` in src/apps/desktop, which is the
     // project's standard webapp build (vue-tsc + vite in parallel — see
-    // src/apps/desktop/package.json).
-    const build_webapp_step = b.step("build:webapp", "Build the Vue webapp with bun");
+    // src/apps/desktop/package.json). npm-everywhere (2026-08-25): the
+    // chain previously used bun; package-lock.json is now the canonical
+    // lockfile.
+    const build_webapp_step = b.step("build:webapp", "Build the Vue webapp with npm");
 
     const webapp_dir = "src/apps/desktop";
 
-    // === Pre-flight: vue-tsc needs Node, not just bun ===
+    // === Pre-flight: vue-tsc needs real Node ===
     //
-    // `bun run build` invokes `vue-tsc --build` (via the type-check npm
+    // `npm run build` invokes `vue-tsc --build` (via the type-check
     // script) + `vite build` in parallel. vue-tsc 3.x relies on
     // @volar/typescript monkey-patching `fs.readFileSync` to register
     // `.vue` as a TypeScript source-file extension and inject the Vue
-    // language plugin. **Bun's native CJS loader bypasses `fs.readFileSync`
-    // silently** — the patch is a no-op, no `.vue` extension gets
-    // registered, and `vue-tsc --build` exits with hundreds of
-    // `TS2307: Cannot find module '.../*.vue'` errors that vite never sees.
-    // The bundling step succeeds, but `run-p` propagates the type-check
-    // exit code and the whole `bun run build` fails.
+    // language plugin. A JS-runtime shim whose native CJS loader bypasses
+    // `fs.readFileSync` silently defeats that patch — no `.vue` extension
+    // gets registered, and `vue-tsc --build` exits with hundreds of
+    // `TS2307: Cannot find module '.../*.vue'` errors that vite never
+    // sees. (This bit us under bun; npm always uses real Node so it
+    // cannot recur.)
     //
     // node + npm must be on PATH so the developer (or CI) can invoke
     // vue-tsc via Node's real CJS loader. We fail fast with a clear
@@ -997,11 +999,11 @@ pub fn build(b: *std.Build) void {
         \\    command -v "$tool" >/dev/null 2>&1 || {
         \\        echo "" >&2
         \\        echo "ERROR: '$tool' was not found on PATH." >&2
-        \\        echo "  vue-tsc (which runs inside 'bun run build' via the type-check" >&2
-        \\        echo "  npm script) patches tsc's source via fs.readFileSync to" >&2
-        \\        echo "  register .vue as a TypeScript source extension. Bun's native" >&2
-        \\        echo "  CJS loader bypasses that patching silently, so" >&2
-        \\        echo "  'bun run type-check' fails with hundreds of TS2307 errors." >&2
+        \\        echo "  vue-tsc (which runs inside 'npm run build' via the type-check" >&2
+        \\        echo "  script) patches tsc's source via fs.readFileSync to register" >&2
+        \\        echo "  .vue as a TypeScript source extension; a JS-runtime shim whose" >&2
+        \\        echo "  loader bypasses fs.readFileSync breaks that patching and" >&2
+        \\        echo "  fails with hundreds of TS2307 errors." >&2
         \\        echo "" >&2
         \\        echo "  Install nodejs + npm for your platform:" >&2
         \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs npm" >&2
@@ -1014,7 +1016,7 @@ pub fn build(b: *std.Build) void {
         \\done
     });
 
-    // Check if node_modules exists — if so, skip `bun install` (saves 1-2s
+    // Check if node_modules exists — if so, skip `npm ci` (saves seconds
     // per build). Uses platform-specific syscalls: faccessat(2) on Linux,
     // std.fs.cwd().openDir on other platforms (the build runner doesn't
     // have libc linked, so std.fs.cwd() only works via the Io runtime
@@ -1029,11 +1031,11 @@ pub fn build(b: *std.Build) void {
             const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
             break :blk rc == 0;
         },
-        else => false, // On non-Linux, always run `bun install` (safe no-op)
+        else => false, // On non-Linux, always run `npm ci` (safe no-op)
     };
 
     if (!node_modules_exists) {
-        const install_cmd = b.addSystemCommand(&.{ "bun", "install" });
+        const install_cmd = b.addSystemCommand(&.{ "npm", "ci", "--no-audit", "--no-fund" });
         install_cmd.setCwd(b.path(webapp_dir));
         build_webapp_step.dependOn(&install_cmd.step);
     }
@@ -1042,7 +1044,7 @@ pub fn build(b: *std.Build) void {
     // checkout → `zig build nalar-desktop` needs node_modules too).
     // Declared unconditionally; the dependency edge is attached further
     // down, after webapp_rebuild_bun exists.
-    const rebuild_install_cmd = b.addSystemCommand(&.{ "bun", "install" });
+    const rebuild_install_cmd = b.addSystemCommand(&.{ "npm", "ci", "--no-audit", "--no-fund" });
     rebuild_install_cmd.setCwd(b.path(webapp_dir));
     if (node_modules_exists) {
         // Mirror the cached path's skip: node_modules already present,
@@ -1051,7 +1053,7 @@ pub fn build(b: *std.Build) void {
         _ = &rebuild_install_cmd;
     }
 
-    const bun_build = b.addSystemCommand(&.{ "bun", "run", "build" });
+    const bun_build = b.addSystemCommand(&.{ "npm", "run", "build" });
     bun_build.setCwd(b.path(webapp_dir));
     bun_build.step.dependOn(&check_webapp_node.step);
     build_webapp_step.dependOn(&bun_build.step);
@@ -1066,30 +1068,31 @@ pub fn build(b: *std.Build) void {
     // An earlier attempt used `addDirectoryWatchInput` on src/, but that
     // caused cache invalidation on EVERY noop build — Vite's output isn't
     // byte-stable across runs (sourcemap/manifest drift), so the directory
-    // hash drifted and triggered spurious bun runs.
+    // hash drifted and triggered spurious webapp rebuilds.
     //
     // The workflow is now FRESH ASSETS BY DEFAULT:
     //
     //     `zig build nalar-desktop` always runs
-    //       clean → `bun run build` → codegen → compile + link,
-    //     so the embedded webapp matches the current .vue sources every
-    //     time. Cost: every nalar-desktop build pays the vite build
-    //     (~10 s+) plus an exe relink (the generated webapp_assets.zig is
-    //     not byte-stable across vite runs). This is intentional — the
-    //     user asked for fresh assets over cache-friendliness.
+    //       clean → `npm run build` → codegen → compile + link,
+    //
+    // so the embedded webapp matches the current .vue sources every
+    // time. Cost: every nalar-desktop build pays the vite build
+    // (~10 s+) plus an exe relink (the generated webapp_assets.zig is
+    // not byte-stable across vite runs). This is intentional — the
+    // user asked for fresh assets over cache-friendliness.
     //
     // `zig build webapp-rebuild` remains as a standalone alias for the
     // same chain (useful when you want to rebuild ONLY the webapp assets
     // without also compiling the desktop binary).
     //
     // Implementation: webapp_rebuild_step has its OWN copy of
-    // `bun run build` (not the cached one used by the standalone
+    // `npm run build` (not the cached one used by the standalone
     // codegen path), chained after a clean step. The clean step deletes
-    // the embedded file + dist/, so the rebuild's bun_build sees an
+    // the embedded file + dist/, so the rebuild's npm_build sees an
     // empty dist/, has actual work to do, and produces fresh output.
     const webapp_rebuild_step = b.step(
         "webapp-rebuild",
-        "Nuke stale webapp_assets.zig + dist/ and rebuild via bun run build + codegen",
+        "Nuke stale webapp_assets.zig + dist/ and rebuild via npm run build + codegen",
     );
 
     // Clean step — a small Zig CLI instead of `sh -c 'rm -rf ...'` so it
@@ -1106,18 +1109,18 @@ pub fn build(b: *std.Build) void {
         }),
     }));
 
-    // Separate bun_build step for the rebuild path. Has the SAME
+    // Separate npm_build step for the rebuild path. Has the SAME
     // command + cwd as the cached one, but chained AFTER the clean
     // step, so the cache can't serve a stale result.
-    const webapp_rebuild_bun = b.addSystemCommand(&.{ "bun", "run", "build" });
+    const webapp_rebuild_bun = b.addSystemCommand(&.{ "npm", "run", "build" });
     webapp_rebuild_bun.setCwd(b.path(webapp_dir));
     webapp_rebuild_bun.step.dependOn(&webapp_rebuild_clean.step);
     webapp_rebuild_bun.step.dependOn(&check_webapp_node.step);
-    // Fresh-checkout fix: the cached path gets a conditional `bun install`
+    // Fresh-checkout fix: the cached path gets a conditional `npm ci`
     // via the node_modules_exists probe above, but that only attaches to
     // build_webapp_step. Attach the same install here so a fresh checkout
     // running straight into `zig build nalar-desktop` doesn't fail with
-    // "vite: not found" inside the rebuild's bun run build. (The
+    // "vite: not found" inside the rebuild's npm run build. (The
     // rebuild_install_cmd step is declared next to install_cmd above.)
     if (!node_modules_exists) {
         webapp_rebuild_bun.step.dependOn(&rebuild_install_cmd.step);
@@ -1126,7 +1129,7 @@ pub fn build(b: *std.Build) void {
 
     // The codegen step is shared with the cached path — its output
     // (webapp_assets.zig) was just deleted by the clean step, so
-    // it'll re-run to regenerate. Depend on the rebuild's bun_build
+    // it'll re-run to regenerate. Depend on the rebuild's npm_build
     // specifically (not the cached one).
     const webapp_rebuild_codegen = b.addRunArtifact(b.addExecutable(.{
         .name = "codegen_webapp_assets",
