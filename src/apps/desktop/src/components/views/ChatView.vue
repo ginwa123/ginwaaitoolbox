@@ -2922,6 +2922,8 @@ const compactSession = async () => {
                                 <img
                                   :src="imgUrl"
                                   alt="Attached image"
+                                  width="80"
+                                  height="80"
                                   class="chat-attached-image-img"
                                 />
                               </div>
