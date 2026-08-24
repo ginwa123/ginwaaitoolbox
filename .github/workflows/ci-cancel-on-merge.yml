@@ -1,0 +1,57 @@
+# Cancel the PR's own ci pipeline when the PR is merged to main.
+
+# WHY THIS FILE EXISTS
+# --------------------
+# ci.yml cancels superseded runs via:
+#   concurrency:
+#     group: ${{ github.workflow }}-${{ github.ref }}
+#     cancel-in-progress: true
+#
+# That group is PER-REF. A pull_request run executes on the merge ref
+# `refs/pull/<N>/merge`, while the post-merge push run executes on
+# `refs/heads/main` — two DIFFERENT groups, so cancel-in-progress can
+# never link them. Consequence: merging a PR leaves its still-running
+# (now pointless) PR pipeline burning self-hosted runner minutes until
+# it finishes on its own.
+#
+# THE TRICK USED HERE (zero API calls, no token scopes)
+# -----------------------------------------------------
+# A `pull_request: closed` event ALSO runs against the same merge ref
+# `refs/pull/<N>/merge`. If this workflow declares the SAME concurrency
+# group as ci.yml does for that ref and sets cancel-in-progress: true,
+# GitHub evicts every queued/running run in that group — i.e. exactly
+# the PR's in-flight ci runs — the moment this workflow starts.
+# The push-to-main run lives in group `ci-refs/heads/main`, which is a
+# DIFFERENT group, so it is never touched (it must survive: that is the
+# run that publishes the platform-named binaries).
+#
+# KEEP IN SYNC: if ci.yml renames its workflow (`name:`) or changes the
+# concurrency group template, mirror the change in `group:` below.
+name: ci-cancel-on-merge
+
+on:
+  pull_request:
+    types: [closed]
+
+# Join the exact group ci.yml uses for this PR's merge ref:
+#   "${{ github.workflow }}-${{ github.ref }}" → "ci-refs/pull/<N>/merge"
+# github.workflow here is "ci-cancel-on-merge", so spell out "ci" literally.
+concurrency:
+  group: ci-refs/pull/${{ github.event.pull_request.number }}/merge
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  noop:
+    # Only actual merges cancel; a plain close-without-merge keeps its
+    # pipeline running (the author may still want the signal).
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancelled sibling ci runs of this merged PR
+        run: |
+          echo "PR #${{ github.event.pull_request.number }} was merged."
+          echo "Joining concurrency group above already cancelled its"
+          echo "queued/running ci runs on refs/pull/${{ github.event.pull_request.number }}/merge."
