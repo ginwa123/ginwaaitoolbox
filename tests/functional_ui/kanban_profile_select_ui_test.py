@@ -22,7 +22,10 @@ Post-fix: the unattended flag is forwarded into useCase ONLY for legacy
 full INSERT (profile + flag) is authoritative.
 
 These tests drive the actual UI via Playwright + a seeded stub config
-(`$HOME/.config/nalar/config.json` post-boot):
+at the OS-correct path (`$HOME/.config/nalar/config.json` on Linux,
+`$HOME/Library/Application Support/nalar/config.json` on macOS — see
+`_seed_profiles` and `src/modules/config/Config.zig:1550` for the
+backend's per-OS lookup):
 
   test_dialog_create_task_persists_picked_profile_in_db
     Drive the "Create task" button with profile=900ribu + Unattended=ON.
@@ -47,6 +50,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -88,7 +92,21 @@ def _seed_profiles(h: UIHarness) -> None:
     to the active profile instead of the user's pick) is immediately
     visible on screen.
     """
-    config_dir = h.temp_dir / ".config" / "nalar"
+    # The backend reads config.json from `getDefaultConfigDir`
+    # (src/modules/config/Config.zig:1538), which is OS-dependent:
+    #   Linux   → $HOME/.config/nalar
+    #   macOS   → $HOME/Library/Application Support/nalar
+    #   Windows → %APPDATA%/nalar
+    # Mirror the backend's lookup — otherwise the seeded profiles
+    # never load and the dialog's profile picker is empty (the bug
+    # we hit on the macOS CI runner: 0 rows for ":has-text('900ribu')").
+    # Same pattern as tests/functional/model_thinking_test.py:43-44.
+    if sys.platform == "darwin":
+        config_dir = h.temp_dir / "Library" / "Application Support" / "nalar"
+    elif sys.platform == "win32":
+        config_dir = h.temp_dir / "AppData" / "Roaming" / "nalar"
+    else:
+        config_dir = h.temp_dir / ".config" / "nalar"
     config_dir.mkdir(parents=True, exist_ok=True)
     profile = {
         "api_endpoint": "",
