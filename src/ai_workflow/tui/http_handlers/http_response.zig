@@ -210,6 +210,15 @@ pub const TaskUpdateRequest = struct {
     /// and dedupes case-insensitively. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: ?[]const u8 = null,
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Semantics mirror tags:
+    ///   - null/undefined  → don't change existing images (no-op).
+    ///   - `""` (empty string) → clear all images (sets `image_urls = ''`).
+    ///   - `'data:image/png;base64,...||data:image/jpeg;base64,...'`
+    ///     → replace existing images with this list (after validation
+    ///     via image_urls_validation.zig — data URL prefix + 10 MB cap).
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: ?[]const u8 = null,
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Semantics:
     ///   - null/undefined  → don't change existing cwd (no-op).
