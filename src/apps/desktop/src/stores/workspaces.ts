@@ -2929,7 +2929,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             }
 
     try {
-      return await api.createKanbanTask(workspaceId, itemId, wirePayload)
+      const res = await api.createKanbanTask(workspaceId, itemId, wirePayload)
+      // Migration 069 read-path fix (plan:
+      // docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md).
+      // The create response echoes image_urls as the ||-joined wire
+      // string. Normalize in place so the optimistic task object the
+      // caller receives already has imageUrls: string[] (matches
+      // every other task shape in the store — the detail dialog's
+      // gallery reads task.imageUrls directly). normalizeTaskTags
+      // also normalizes tags + dates, which is harmless here (the
+      // create response carries them as wire strings too).
+      if (res.task) normalizeTaskTags(res.task)
+      return res
     } catch (err) {
       if (mode === 'create_and_run') {
         // Partial-success path: the backend's task INSERT may have

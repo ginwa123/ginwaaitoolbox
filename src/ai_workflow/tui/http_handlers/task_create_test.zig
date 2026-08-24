@@ -90,3 +90,89 @@ test "createStandardTask binds sessions.name = task.name (not task.id)" {
         return error.SessionNameBindBug;
     }
 }
+// =====================================================================
+// Migration 069 read-path follow-up (plan:
+// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+// Task 2): the create response must ECHO image_urls so the frontend's
+// optimistic task object carries the images immediately (no refetch
+// needed for the detail dialog gallery to show them).
+// =====================================================================
+
+test "StandardResponse declares image_urls and standard branch echoes it" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // Scope 1: the StandardResponse struct must declare the field.
+    const struct_marker = "const StandardResponse = struct";
+    const struct_idx = std.mem.indexOf(u8, source, struct_marker) orelse {
+        std.debug.print("\n!! {s} does not define StandardResponse !!\n", .{HANDLER_PATH});
+        return error.StandardResponseMissing;
+    };
+    const struct_window = source[struct_idx..];
+    const struct_end = std.mem.indexOf(u8, struct_window, "\n};") orelse struct_window.len;
+    const struct_body = struct_window[0..struct_end];
+
+    if (std.mem.indexOf(u8, struct_body, "image_urls: []const u8 = \"\"") == null) {
+        std.debug.print(
+            "\n!! {s} StandardResponse does not declare image_urls !!\n" ++
+                "   Add: image_urls: []const u8 = \"\",\n",
+            .{HANDLER_PATH},
+        );
+        return error.StandardResponseImageUrlsMissing;
+    }
+
+    // Scope 2: the .standard response branch must echo r.image_urls.
+    const branch_marker = ".standard => |r| res.jsonResponse(.{";
+    const branch_idx = std.mem.indexOf(u8, source, branch_marker) orelse {
+        std.debug.print("\n!! {s} does not have a .standard response branch !!\n", .{HANDLER_PATH});
+        return error.StandardBranchMissing;
+    };
+    const branch_window = source[branch_idx..];
+    const branch_end = std.mem.indexOf(u8, branch_window, "}),") orelse branch_window.len;
+    const branch_body = branch_window[0..branch_end];
+
+    if (std.mem.indexOf(u8, branch_body, ".image_urls = r.image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} .standard response branch does not echo image_urls !!\n" ++
+                "   Add: .image_urls = r.image_urls,\n",
+            .{HANDLER_PATH},
+        );
+        return error.StandardBranchImageUrlsMissing;
+    }
+}
+
+test "StandardResult carries image_urls from createStandardTask" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // StandardResult must have the field...
+    const result_marker = "const StandardResult = struct";
+    const result_idx = std.mem.indexOf(u8, source, result_marker) orelse {
+        std.debug.print("\n!! {s} does not define StandardResult !!\n", .{HANDLER_PATH});
+        return error.StandardResultMissing;
+    };
+    const result_window = source[result_idx..];
+    const result_end = std.mem.indexOf(u8, result_window, "\n};") orelse result_window.len;
+    const result_body = result_window[0..result_end];
+
+    if (std.mem.indexOf(u8, result_body, "image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} StandardResult does not carry image_urls !!\n" ++
+                "   Add: image_urls: []const u8 = \"\",\n",
+            .{HANDLER_PATH},
+        );
+        return error.StandardResultImageUrlsMissing;
+    }
+
+    // ...and createStandardTask's return must populate it from the
+    // validated value.
+    if (std.mem.indexOf(u8, source, ".image_urls = validated_image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} createStandardTask return does not set .image_urls = validated_image_urls !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.StandardResultNotPopulated;
+    }
+}

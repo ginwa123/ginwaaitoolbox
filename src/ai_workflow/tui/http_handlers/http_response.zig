@@ -96,7 +96,17 @@ pub const HealthResponse = struct { status: []const u8, timestamp: i64 };
 
 pub const TaskDeleteResponse = struct { id: []const u8, success: bool = true };
 
-pub const TaskCreateResponse = struct { id: []const u8, name: []const u8, description: ?[]const u8, completed: bool };
+pub const TaskCreateResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    description: ?[]const u8,
+    completed: bool,
+    /// `||`-delimited base64 data URLs (Migration 069). Echoed from
+    /// the INSERTed column so the optimistic task carries images.
+    /// '' = no images.
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: []const u8 = "",
+};
 
 // Request types
 pub const TaskCreateRequest = struct {

@@ -166,6 +166,15 @@ pub const StandardResult = struct {
     /// kanban path → sandbox). Empty string is the canonical
     /// "no per-task cwd" sentinel.
     cwd: []const u8 = "",
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Borrowed from the per-request arena
+    /// (validated above). Mirrors what we just INSERTed into the
+    /// `image_urls` column so the create response can echo it back
+    /// (the frontend's optimistic task object then carries the
+    /// images immediately, no refetch needed). Empty string is the
+    /// canonical "no images" sentinel.
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: []const u8 = "",
 };
 
 // Typed response structs. Serialized via std.json.Stringify.valueAlloc
@@ -221,6 +230,12 @@ const StandardResponse = struct {
     /// path + sandbox). Plan: docs/superpowers/plans/2026-08-06-
     /// kanban-cwd-session-optional.md
     cwd: []const u8 = "",
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Empty string means the task has no
+    /// images. Echoed from what was just INSERTed so the frontend's
+    /// optimistic task object carries the images immediately.
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: []const u8 = "",
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null,
 };
@@ -652,6 +667,12 @@ fn createStandardTask(
         // per-request arena (validated above). Mirrors what we just
         // INSERTed into the `cwd` column.
         .cwd = validated_cwd,
+        // Migration 069 — kanban image urls. Borrowed from the
+        // per-request arena (validated above). Mirrors what we just
+        // INSERTed into the `image_urls` column so the create
+        // response echoes it back (optimistic gallery).
+        // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+        .image_urls = validated_image_urls,
     };
 }
 
@@ -838,6 +859,12 @@ pub fn tasksCreateHandler(
                     // valueAlloc copies it into the response JSON,
                     // so no use-after-free).
                     .cwd = r.cwd,
+                    // Migration 069 — kanban image urls. Same
+                    // borrowed-slice lifetime as `r.tags` / `r.cwd`
+                    // (per-request arena, reaped on request teardown;
+                    // valueAlloc copies it into the response JSON).
+                    // Echoed so the optimistic task carries images.
+                    .image_urls = r.image_urls,
                 },
                 .{},
             ),
