@@ -166,6 +166,26 @@ pub fn getMemoryById(
     };
 }
 
+/// Delete a memory by id. Returns `true` when a row was removed,
+/// `false` when no row matched (idempotent — callers treat both as
+/// success). The `agent_memories_ad` AFTER DELETE trigger (Migration
+/// 070) removes the matching FTS5 index entry automatically.
+///
+/// Errors:
+///   - `error.InvalidId` — id is empty
+///   - DB errors propagate verbatim
+pub fn deleteMemory(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !bool {
+    if (id.len == 0) return error.InvalidId;
+
+    const sql = "DELETE FROM agent_memories WHERE id = ?";
+    try db.exec(allocator, sql, &.{id});
+    return db.changes() > 0;
+}
+
 /// Free a single MemoryRow's owned strings.
 pub fn freeMemoryRow(allocator: std.mem.Allocator, row: MemoryRow) void {
     allocator.free(row.id);
@@ -854,4 +874,96 @@ test "getMemoryById: returns the row when id exists, null otherwise" {
     // Missing id → returns null (not error).
     const missing = try getMemoryById(alloc, &ctx.db, "no-such-id");
     try testing.expect(missing == null);
+}
+
+// ─── deleteMemory tests (2026-08-24-delete-memory-agent-tool) ────────────
+
+test "deleteMemory: removes an existing row and returns true" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const row = try saveMemory(alloc, &ctx.db, .{
+        .content = "obsolete note that must be deletable",
+        .tags = &.{"cleanup"},
+        .id = "del-me",
+    });
+    defer freeMemoryRow(alloc, row);
+
+    const deleted = try deleteMemory(alloc, &ctx.db, "del-me");
+    try testing.expect(deleted);
+
+    // The row is gone from the table.
+    const gone = try getMemoryById(alloc, &ctx.db, "del-me");
+    try testing.expect(gone == null);
+}
+
+test "deleteMemory: returns false for unknown id (idempotent)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // No error raised — callers treat false as "nothing to delete".
+    const deleted = try deleteMemory(alloc, &ctx.db, "never-existed");
+    try testing.expect(!deleted);
+}
+
+test "deleteMemory: empty id returns InvalidId" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(error.InvalidId, deleteMemory(alloc, &ctx.db, ""));
+}
+
+test "deleteMemory: FTS5 index no longer finds deleted content" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const row = try saveMemory(alloc, &ctx.db, .{
+        .content = "unique-delete-marker-xyz searchable phrase",
+        .tags = &.{"fts"},
+        .id = "fts-victim",
+    });
+    defer freeMemoryRow(alloc, row);
+
+    // Sanity: 1 hit before the delete.
+    const before = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "unique-delete-marker-xyz",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+    });
+    defer {
+        for (before) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(before);
+    }
+    try testing.expectEqual(@as(usize, 1), before.len);
+
+    _ = try deleteMemory(alloc, &ctx.db, "fts-victim");
+
+    // After the delete the FTS5 index must return 0 hits — this proves
+    // Migration 070's `agent_memories_ad` AFTER DELETE trigger fired.
+    const after = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "unique-delete-marker-xyz",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+    });
+    defer {
+        for (after) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(after);
+    }
+    try testing.expectEqual(@as(usize, 0), after.len);
 }
