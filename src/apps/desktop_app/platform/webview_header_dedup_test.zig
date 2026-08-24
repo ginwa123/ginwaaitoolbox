@@ -1,0 +1,97 @@
+// src/apps/desktop_app/platform/webview_header_dedup_test.zig
+//
+// Static-contract test: the webview C ABI header must exist in exactly
+// ONE place (shared/webview_c.h). The per-platform copies were a
+// sync hazard — adding a field to nalar_webview_config required editing
+// 3 files in lockstep, and nothing failed loudly if you missed one.
+//
+// Contract:
+//   1. Exactly one webview_c.h exists under src/apps/desktop_app.
+//   2. The macOS shim includes it via the relative shared path.
+//   3. The Windows shim includes it via the relative shared path.
+//   4. The stub shim includes it via the relative shared path.
+
+const std = @import("std");
+const testing = std.testing;
+
+const APP_DIR = "src/apps/desktop_app";
+
+test "exactly one webview_c.h exists under desktop_app" {
+    var count: usize = 0;
+    var found_shared = false;
+
+    var dir = try std.Io.Dir.cwd().openDir(std.testing.io, APP_DIR, .{ .iterate = true });
+    defer dir.close(std.testing.io);
+    var walker = try dir.walk(std.testing.allocator);
+    defer walker.deinit();
+
+    while (try walker.next(std.testing.io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.eql(u8, entry.basename, "webview_c.h")) {
+            count += 1;
+            if (std.mem.indexOf(u8, entry.path, "shared") != null) found_shared = true;
+        }
+    }
+
+    if (count != 1) {
+        std.debug.print("!! expected exactly 1 webview_c.h, found {d} — per-platform copies are a sync hazard !!\n", .{count});
+        return error.DuplicateHeaderCopies;
+    }
+    if (!found_shared) {
+        std.debug.print("!! the single webview_c.h must live under shared/ !!\n", .{});
+        return error.HeaderNotInShared;
+    }
+}
+
+fn assertIncludesSharedPath(source: []const u8, label: []const u8) !void {
+    if (std.mem.indexOf(u8, source, "#include \"../shared/webview_c.h\"") == null and
+        std.mem.indexOf(u8, source, "#import \"../shared/webview_c.h\"") == null)
+    {
+        std.debug.print("!! {s} does not include ../shared/webview_c.h !!\n", .{label});
+        return error.IncludePathMissing;
+    }
+    // And no local-quote include of the bare name (that would resolve to
+    // a local copy — the thing we just deleted).
+    if (std.mem.indexOf(u8, source, "#include \"webview_c.h\"") != null or
+        std.mem.indexOf(u8, source, "#import \"webview_c.h\"") != null)
+    {
+        std.debug.print("!! {s} still uses a bare local include of webview_c.h !!\n", .{label});
+        return error.BareIncludeRemains;
+    }
+}
+
+test "macos shim includes the shared header via relative path" {
+    const allocator = testing.allocator;
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        APP_DIR ++ "/platform/macos/nalar_webview.mm",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(raw);
+    try assertIncludesSharedPath(raw, "nalar_webview.mm");
+}
+
+test "windows shim includes the shared header via relative path" {
+    const allocator = testing.allocator;
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        APP_DIR ++ "/platform/windows/nalar_webview.cpp",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(raw);
+    try assertIncludesSharedPath(raw, "nalar_webview.cpp");
+}
+
+test "windows stub shim includes the shared header via relative path" {
+    const allocator = testing.allocator;
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        APP_DIR ++ "/platform/windows/nalar_webview_stub.cpp",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(raw);
+    try assertIncludesSharedPath(raw, "nalar_webview_stub.cpp");
+}

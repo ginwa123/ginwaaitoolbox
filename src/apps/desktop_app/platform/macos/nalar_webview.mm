@@ -45,14 +45,14 @@
 //   block at the bottom of this file bridges the two worlds — the C ABI
 //   callers (Zig) get plain C symbols, the implementation is Objective-C.
 //
-// The same header is copied to this directory (webview_c.h) so the .mm
-// can `#include "webview_c.h"` without any -I search-path gymnastics —
-// both files live in the same directory at compile time.
+// The single shared header lives at ../shared/webview_c.h — included via
+// a relative path so there is exactly ONE copy of the C ABI in the repo
+// (the per-platform copies were a 3-file sync hazard).
 
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 #import <string.h>
-#import "webview_c.h"
+#import "../shared/webview_c.h"
 
 #pragma mark - App scheme handler
 
