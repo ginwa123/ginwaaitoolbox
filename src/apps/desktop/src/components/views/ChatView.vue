@@ -2732,7 +2732,7 @@ const compactSession = async () => {
         and the last bubbles overlap the FileInput below. This is the
         "no scroll, bubbles overlap input" bug.
       -->
-      <div ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col">
+      <div ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
         <!-- Loading More indicator (floats above the scroller during pagination) -->
         <!-- temporary disable -->
         <!-- <div -->
