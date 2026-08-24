@@ -46,6 +46,7 @@ test {
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
     _ = @import("workflow_commpact_message.zig"); // inlined url_style regression + envelope tests (was workflow_compact_call_agent_test.zig + workflow_compaction_envelope_test.zig)
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
+    _ = @import("tool_calls_json_wire_shape_test.zig"); // task_1787590621966_10 — SSE tool_calls_json must be a JSON STRING (frontend .trim() crash regression lock)
     _ = @import("tools_wrap_output.zig");
     _ = @import("workflow_commpact_message.zig");
     _ = @import("workflow_compact_message.zig"); // 2026-08-14-consolidate-compaction-message — buildCompactMessagePrompt (8) + compaction_context helpers (22) = 30 inline tests

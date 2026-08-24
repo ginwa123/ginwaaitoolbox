@@ -77,7 +77,7 @@ pub const SseEventLLMHistory = struct {
     reasoning_content: ?[]const u8 = null,
     role: []const u8 = "assistant",
     finish_reason: ?[]const u8 = null,
-    tool_calls_json: ?[]const ToolCallJson = null,
+    tool_calls_json: ?[]const u8 = null,
     tool_call_id: ?[]const u8 = null,
     tool_name: ?[]const u8 = null,
     agent_name: ?[]const u8 = null,
@@ -103,6 +103,11 @@ pub const SkillInfo = struct {
 };
 
 /// JSON representation of a tool call
+///
+/// 2026-08-24 wire-shape fix: no longer used by the SSE payload
+/// (tool_calls_json is now serialized to a string via
+/// llm_history.serializeToolCalls before std.json.fmt). Kept because
+/// `ToolCallJson` is a public export other modules may reference.
 pub const ToolCallJson = struct {
     id: []const u8,
     name: []const u8,
@@ -268,21 +273,22 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     };
     defer if (sanitized_reasoning) |s| allocator.free(s);
 
-    // Build tool_calls JSON array if present
-    var tool_calls_json: ?[]const ToolCallJson = null;
-    var tool_calls_owned: std.ArrayList(ToolCallJson) = .empty;
-    defer if (tool_calls_json == null) tool_calls_owned.deinit(allocator);
-
-    if (input.tool_calls_json) |calls| {
-        for (calls) |call| {
-            try tool_calls_owned.append(allocator, .{
-                .id = call.id,
-                .name = call.function.name,
-                .arguments = call.function.arguments,
-            });
-        }
-        tool_calls_json = try tool_calls_owned.toOwnedSlice(allocator);
-    }
+    // 2026-08-24 wire-shape fix (task_1787590621966_10): tool_calls_json
+    // MUST be a JSON STRING on the wire, not an array. The frontend's
+    // ChatView.vue:1390 calls `msg.tool_calls_json?.trim()` — optional
+    // chaining guards null/undefined but NOT arrays, so the old array
+    // shape crashed every live-SSE assistant row that carried tool calls
+    // ("msg.tool_calls_json?.trim is not a function"). The REST path
+    // (session_messages_get.zig) and the insert path
+    // (sse_on_event_send_llm_history.zig) already emit a string — this
+    // emitter was the only array-shaped outlier. Serialize ONCE here via
+    // llm_history.serializeToolCalls (same helper saveMessage uses for
+    // the DB TEXT column) so SSE and REST agree byte-for-byte.
+    const serialized_tool_calls_json: ?[]u8 = blk: {
+        const calls = input.tool_calls_json orelse break :blk null;
+        break :blk try llm_history.serializeToolCalls(allocator, calls);
+    };
+    defer if (serialized_tool_calls_json) |s| allocator.free(s);
 
     // Convert llm_history.SkillInfo to local SkillInfo for SSE payload
     var session_skills_json: ?[]const SkillInfo = null;
@@ -309,7 +315,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
         .reasoning_content = if (sanitized_reasoning) |s| s else input.reasoning_content,
         .role = input.role orelse "assistant",
         .finish_reason = input.finish_reason,
-        .tool_calls_json = tool_calls_json,
+        .tool_calls_json = serialized_tool_calls_json,
         .tool_call_id = input.tool_call_id,
         .tool_name = input.tool_name,
         .agent_name = input.agent_name,
