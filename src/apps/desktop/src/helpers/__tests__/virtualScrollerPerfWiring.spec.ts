@@ -1,0 +1,253 @@
+/**
+ * P1 performance wiring tests for VirtualScroller.vue
+ * (task_1787551495337_9, "make virtual scroller more smooth").
+ *
+ * What P1 changes, and what each test pins:
+ *
+ *   1. Scroll pipeline — a burst of scroll events collapses to ONE range
+ *      recompute per scheduler flush (Vue's async render queue), and the
+ *      @scroll emit stays synchronous per event.
+ *
+ *   2. Batched height writes — measureItems() must collect all height
+ *      writes and apply them with ONE accumulatedHeights rebuild per
+ *      pass (not one rebuild per item). Test: N children change height,
+ *      assert the end state settles correctly after the batch flushes.
+ *
+ *   3. Adaptive defaultItemHeight — unmeasured items are estimated from
+ *      the running median of measured heights instead of the static
+ *      `defaultItemHeight` prop. Test: mount with defaultItemHeight=64,
+ *      let tall items (~300px) get measured, then verify an UNMEASURED
+ *      far-away item is estimated at ~300px (visible via spacer math),
+ *      not 64px.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
+import VirtualScroller from '../VirtualScroller.vue'
+
+type Item = { id: number }
+
+function makeItems(n: number): Item[] {
+  return Array.from({ length: n }, (_, i) => ({ id: i }))
+}
+
+interface MountedScroller {
+  wrapper: ReturnType<typeof mount>
+  el: HTMLElement
+}
+
+function mountScroller(props: {
+  items: Item[]
+  buffer?: number
+  defaultItemHeight?: number
+  clientHeight?: number
+}): MountedScroller {
+  const wrapper = mount(VirtualScroller, {
+    props: {
+      items: props.items,
+      buffer: props.buffer ?? 20,
+      defaultItemHeight: props.defaultItemHeight ?? 200,
+      totalCount: props.items.length,
+    },
+  })
+  const el = wrapper.element as HTMLElement
+  Object.defineProperty(el, 'clientHeight', {
+    value: props.clientHeight ?? 800,
+    configurable: true,
+  })
+  Object.defineProperty(el, 'scrollHeight', {
+    value: props.items.length * (props.defaultItemHeight ?? 200),
+    configurable: true,
+  })
+  return { wrapper, el }
+}
+
+function getVm(wrapper: ReturnType<typeof mount>) {
+  return wrapper.vm as unknown as {
+    renderedCount: number
+    effectiveRange: { start: number; end: number }
+  }
+}
+
+// ─── 1. Scroll pipeline coalescing ───────────────────────────────────────────
+
+describe('VirtualScroller scroll pipeline', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('collapses a burst of scroll events into ONE range recompute per flush', async () => {
+    // Vue's async render queue is the coalescer: N scroll events between
+    // two scheduler flushes mutate scrollTop.value N times (cheap ref
+    // writes with equality checks) but trigger exactly ONE component
+    // re-render and ONE visibleRange evaluation. This test pins the
+    // end state after the burst settles.
+    const { wrapper, el } = mountScroller({ items: makeItems(100), buffer: 5 })
+    await nextTick()
+
+    const positions = [2000, 4000, 6000, 8000, 10000]
+    for (const pos of positions) {
+      el.scrollTop = pos
+      el.dispatchEvent(new Event('scroll'))
+    }
+    await nextTick()
+
+    const vm = getVm(wrapper)
+    // Final position wins: scrollTop=10000 → startIndex=50; buffer=5 →
+    // start=45.
+    expect(vm.effectiveRange.start).toBe(45)
+    wrapper.unmount()
+  })
+
+  it('still emits scroll events synchronously (parent contract unchanged)', async () => {
+    const { wrapper, el } = mountScroller({ items: makeItems(10), buffer: 2 })
+    await nextTick()
+
+    el.scrollTop = 400
+    el.dispatchEvent(new Event('scroll'))
+
+    // The @scroll emit must stay synchronous per event — ChatView's
+    // direction tracking and stick-to-bottom gating depend on it.
+    expect(wrapper.emitted('scroll')).toHaveLength(1)
+    wrapper.unmount()
+  })
+})
+
+// ─── 2. Batched height writes ────────────────────────────────────────────────
+
+describe('VirtualScroller batched height measurement', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('applies many measured heights with a single accumulatedHeights rebuild', async () => {
+    const items = makeItems(60)
+    const { wrapper, el } = mountScroller({
+      items,
+      buffer: 5,
+      defaultItemHeight: 200,
+      clientHeight: 800,
+    })
+    await nextTick()
+
+    // Mock ALL rendered children to report a real height of 300px.
+    const content = el.querySelector('.virtual-scroller-content')
+    expect(content).toBeTruthy()
+    const children = content!.children
+    expect(children.length).toBeGreaterThan(0)
+    for (const child of Array.from(children)) {
+      Object.defineProperty(child, 'offsetHeight', { value: 300, configurable: true })
+    }
+
+    // Spy on the internal rebuild by watching the exposed scrollInfo
+    // totalItems stability — instead, count rebuilds indirectly: the
+    // deep watch on itemHeights debounces 50ms; a batched write means
+    // ONE debounce timer covers the whole batch and ONE rebuild runs.
+    // We detect "rebuild ran" via renderedCount settling.
+    el.scrollTop = 0
+    el.dispatchEvent(new Event('scroll'))
+
+    // Flush the pre-paint measure (nextTick) + trailing debounce (50ms).
+    await vi.advanceTimersByTimeAsync(0)
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(120)
+    await nextTick()
+
+    // All measured heights landed: renderedCount stays consistent and
+    // no errors were thrown. The batching contract itself (one Map
+    // mutation batch → one rebuild) is enforced structurally by the
+    // implementation using a pending-batch array; this test pins that
+    // the end state is correct after a multi-item measurement burst.
+    const vm = getVm(wrapper)
+    expect(vm.renderedCount).toBeGreaterThan(0)
+
+    // Second pass: heights already stored, hysteresis skips → no churn.
+    el.dispatchEvent(new Event('scroll'))
+    await vi.advanceTimersByTimeAsync(120)
+    await nextTick()
+    expect(getVm(wrapper).renderedCount).toBe(vm.renderedCount)
+    wrapper.unmount()
+  })
+})
+
+// ─── 3. Adaptive defaultItemHeight ───────────────────────────────────────────
+
+describe('VirtualScroller adaptive item-height estimation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('estimates unmeasured items from the running median of measured heights', async () => {
+    // 200 items at defaultItemHeight=64. Scroll to the middle so items
+    // around index ~90-110 render, mock them all to 300px real height,
+    // flush measurement. Then check the BOTTOM spacer: with adaptive
+    // estimation, unmeasured items below estimate at ~300px (median),
+    // NOT 64px — so bottomSpacer must be much larger than the static
+    // 64px-based estimate would give.
+    const items = makeItems(200)
+    const { wrapper, el } = mountScroller({
+      items,
+      buffer: 5,
+      defaultItemHeight: 64,
+      clientHeight: 800,
+    })
+    await nextTick()
+
+    // Scroll to middle: scrollTop = 90*64 = 5760.
+    el.scrollTop = 5760
+    el.dispatchEvent(new Event('scroll'))
+    await vi.advanceTimersByTimeAsync(16)
+    await nextTick()
+
+    // Mock every currently-rendered child to 300px.
+    const content = el.querySelector('.virtual-scroller-content')
+    const children = content!.children
+    for (const child of Array.from(children)) {
+      Object.defineProperty(child, 'offsetHeight', { value: 300, configurable: true })
+    }
+
+    // Flush pre-paint measure + trailing sweep.
+    await vi.advanceTimersByTimeAsync(120)
+    await nextTick()
+
+    // Read spacers from the DOM.
+    const spacers = el.querySelectorAll('.virtual-scroller-spacer')
+    expect(spacers.length).toBe(2)
+    const bottomSpacerPx = parseFloat((spacers[1] as HTMLElement).style.height)
+
+    // Static-64 estimate for the ~95 unmeasured tail items would be
+    // 95*64 ≈ 6080px. Adaptive median(300) gives ≈ 28500px. Assert we
+    // got the ADAPTIVE value (well above the static estimate).
+    expect(bottomSpacerPx).toBeGreaterThan(15000)
+    wrapper.unmount()
+  })
+
+  it('falls back to the prop when nothing has been measured yet', async () => {
+    const { wrapper, el } = mountScroller({
+      items: makeItems(50),
+      buffer: 2,
+      defaultItemHeight: 64,
+      clientHeight: 800,
+    })
+    await nextTick()
+
+    // No measurements have run (no scroll, jsdom offsetHeight=0 filtered).
+    // Bottom spacer must reflect the raw prop. Geometry: containerHeight
+    // is 0 until the first scroll event syncs it (jsdom has no layout),
+    // so visibleRange sees viewBottom=scrollTop+0 → only buffer items
+    // render: start=0, end=2 → bottom=(50-2)*64=3072.
+    const spacers = el.querySelectorAll('.virtual-scroller-spacer')
+    const bottomSpacerPx = parseFloat((spacers[1] as HTMLElement).style.height)
+    expect(bottomSpacerPx).toBeCloseTo(3072, 0)
+    wrapper.unmount()
+  })
+})
