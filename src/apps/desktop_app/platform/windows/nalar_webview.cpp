@@ -100,6 +100,11 @@ struct NalarWebview {
     const nalar_webview_asset* assets;
     size_t asset_count;
     bool closed;
+    /// Non-zero while a resize-coalescing timer is pending (scroll-perf
+    /// Task 4). Windows fires WM_SIZE in bursts during drag-resize; each
+    /// put_Bounds forces the WebView2 surface to re-layout, so we apply
+    /// only the final size one frame (16 ms) after the burst stops.
+    UINT_PTR resize_timer_id;
 };
 
 // =============================================================================
@@ -139,14 +144,36 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             PostQuitMessage(0);
             return 0;
         case WM_SIZE: {
-            // Window resized — keep the WebView2 controller's bounds in sync
-            // with the client area or the page won't reflow.
+            // Window resized — keep the WebView2 controller's bounds in
+            // sync with the client area or the page won't reflow.
+            //
+            // scroll-perf Task 4: coalesce instead of applying every
+            // message. Drag-resize fires WM_SIZE in bursts (dozens per
+            // gesture); each put_Bounds forces a WebView2 surface
+            // re-layout. Restart a 16 ms timer on every burst member and
+            // apply only the final bounds on WM_TIMER — visually identical
+            // (the last size always lands within one frame of release)
+            // but without N re-layouts per drag.
             if (wv->controller) {
-                RECT rc;
-                GetClientRect(hwnd, &rc);
-                wv->controller->put_Bounds(rc);
+                if (wv->resize_timer_id == 0) {
+                    wv->resize_timer_id = 1;
+                    SetTimer(hwnd, wv->resize_timer_id, 16, NULL);
+                }
             }
             return 0;
+        }
+        case WM_TIMER: {
+            if (wp == wv->resize_timer_id) {
+                KillTimer(hwnd, wv->resize_timer_id);
+                wv->resize_timer_id = 0;
+                if (wv->controller) {
+                    RECT rc;
+                    GetClientRect(hwnd, &rc);
+                    wv->controller->put_Bounds(rc);
+                }
+                return 0;
+            }
+            break;
         }
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -392,6 +419,7 @@ extern "C" nalar_webview* nalar_webview_create(
     wv->assets = cfg->assets;
     wv->asset_count = cfg->asset_count;
     wv->closed = false;
+    wv->resize_timer_id = 0;
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)wv);
 
     // 8. Async: create the WebView2 environment. The callback chain is:
@@ -414,10 +442,38 @@ extern "C" nalar_webview* nalar_webview_create(
     NalarWebview* wv_for_callback = wv;
     const nalar_webview_config* cfg_for_callback = cfg;
 
+    // scroll-perf Task 4: pass a real environment options object so we
+    // can tune the embedded Edge browser process. Conservative arg set —
+    // aggressive flag lists rot as Edge updates:
+    //   --disable-features=msSmartScreenProtection  SmartScreen phones
+    //     home per navigation; irrelevant for app:// assets we serve
+    //     ourselves, and one less synchronous check on the network thread.
+    // GPU compositing is deliberately NOT disabled — hardware
+    // acceleration is what makes scrolling smooth (the whole point of
+    // this plan).
+    ComPtr<ICoreWebView2EnvironmentOptions> env_options;
+    hr = CoCreateInstance(
+        __uuidof(CoreWebView2EnvironmentOptions),
+        NULL,
+        CLSCTX_ALL,
+        IID_PPV_ARGS(&env_options));
+    if (FAILED(hr)) {
+        free(url_w);
+        fwprintf(stderr, L"nalar_webview: CoCreateInstance(EnvironmentOptions) failed (0x%08X)\n", hr);
+        return NULL;
+    }
+    HRESULT hr_args = env_options->put_AdditionalBrowserArguments(
+        L"--disable-features=msSmartScreenProtection");
+    if (FAILED(hr_args)) {
+        fwprintf(stderr, L"nalar_webview: put_AdditionalBrowserArguments failed (0x%08X)\n", hr_args);
+        // Non-fatal: proceed with default options rather than failing init.
+        env_options = NULL;
+    }
+
     hr = CreateCoreWebView2EnvironmentWithOptions(
         NULL,
         NULL,
-        NULL,
+        env_options.Get(),
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [wv_for_callback, cfg_for_callback, url_w_shared](
                 HRESULT result, ICoreWebView2Environment* env) -> HRESULT
@@ -452,6 +508,27 @@ extern "C" nalar_webview* nalar_webview_create(
                             GetClientRect(wv_for_callback->hwnd, &bounds);
                             wv_for_callback->controller->put_Bounds(bounds);
                             wv_for_callback->controller->put_IsVisible(TRUE);
+
+                            // scroll-perf Task 4: dark default background.
+                            // WebView2 paints opaque white until the first
+                            // CSS paint; the webapp is dark-themed, so set
+                            // the controller's background to match and kill
+                            // the cold-start flash. ICoreWebView2Controller2
+                            // is the interface that carries the property.
+                            {
+                                ComPtr<ICoreWebView2Controller2> controller2;
+                                if (SUCCEEDED(wv_for_callback->controller.As(&controller2))
+                                    && controller2 != NULL) {
+                                    COREWEBVIEW2_COLOR bg;
+                                    bg.A = 255;
+                                    bg.R = 24;
+                                    bg.G = 22;
+                                    bg.B = 22;  // #181616 — app dark background
+                                    controller2->put_DefaultBackgroundColor(bg);
+                                }
+                                // Controller2 unavailable (older runtime):
+                                // fall back to stock white flash, non-fatal.
+                            }
 
                             // Apply user-agent override (if set). Settings
                             // is owned by the webview; ComPtr scope cleans
