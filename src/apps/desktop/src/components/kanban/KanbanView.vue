@@ -825,9 +825,12 @@ const handleUpdateCwd = async (payload: { cwd: string }) => {
 // State:
 //   - `activeCreateColumnId` — column the user clicked "+ Add" on.
 //   - `showCreateDialog` — drives the dialog's open/closed state.
-//   - `createBusy` — disables the Save button while the create +
-//     move are in flight (the dialog itself doesn't have a busy
-//     state; we surface in-flight via the Save button text).
+//   - `createBusy` — in-flight flag for the create + move round-
+//     trip. Passed to the dialog as the `creating` prop (disables
+//     BOTH create-mode commit buttons + swaps labels to
+//     "Creating…") AND guards handleCreateTaskSave against
+//     re-entry (same-tick double-click). Cleared in the finally
+//     block so a failed create re-enables the buttons.
 //   - `createError` — bound to the dialog's `errorMessage` prop;
 //     non-null on save failure so the dialog shows the red banner.
 const activeCreateColumnId = ref<string | null>(null)
@@ -907,6 +910,14 @@ const handleCreateTaskSave = async (payload: {
   cwdSession?: string
 }) => {
   if (!activeCreateColumnId.value) return
+  // NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
+  // Re-entry guard: createBusy is flipped synchronously below, but
+  // two clicks in the SAME tick (double-click faster than Vue's
+  // re-render) would both pass the dialog's disabled-button check
+  // before the prop propagates. This guard makes the second call a
+  // no-op regardless of timing. Cleared in the finally block, so a
+  // failed create re-enables the buttons for retry.
+  if (createBusy.value) return
   createBusy.value = true
   createError.value = null
   const wsId = props.workspaceId
@@ -1247,6 +1258,7 @@ const handleCreateTaskSave = async (payload: {
     :cwd="item.path || ''"
     :workspace-id="workspaceId"
     :error-message="createError"
+    :creating="createBusy"
     @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
     @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
     @column-change="(columnId) => activeCreateColumnId = columnId"
