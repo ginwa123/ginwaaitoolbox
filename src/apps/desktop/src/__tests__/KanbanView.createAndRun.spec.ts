@@ -19,6 +19,7 @@ import { setActivePinia, createPinia } from 'pinia'
 
 import KanbanView from '@/components/kanban/KanbanView.vue'
 import * as api from '@/api'
+import type { KanbanCreateResponse } from '@/api'
 import { useWorkspacesStore } from '@/stores/workspaces'
 
 // Stub the heavy children — we only test the host's handleCreateTaskSave.
@@ -497,12 +498,17 @@ describe('KanbanView.handleCreateTaskSave — double-click re-entry guard', () =
     const fakeSession = { id: 'task_new', name: 'My task', status: 'send' }
     const store = useWorkspacesStore()
     // Never-resolving promise = request stays in flight, exactly the
-    // window a double-click lands in.
-    let resolveCreate!: (v: unknown) => void
+    // window a double-click lands in. resolveCreate is typed to match
+    // the store action's resolved shape (KanbanCreateResponse) so the
+    // Promise executor's inferred `resolve` assigns cleanly.
+    let resolveCreate!: (v: KanbanCreateResponse) => void
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
       .mockImplementation(
-        () => new Promise((resolve) => { resolveCreate = resolve }),
+        () =>
+          new Promise<KanbanCreateResponse>((resolve) => {
+            resolveCreate = resolve
+          }),
       )
 
     const view = await mountView()
