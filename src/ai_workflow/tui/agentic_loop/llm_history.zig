@@ -4999,7 +4999,16 @@ pub fn listWorkspaceItemTasksWithCursor(
         // passthrough column at index 21:
         //   21: t.tags — JSON-encode array string ('' when no tags).
         //       NOT NULL DEFAULT '' so always present.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        //
+        // Migration 069 read-path fix (plan:
+        // docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md):
+        // appends a single passthrough column at index 24:
+        //   24: t.image_urls — ||-delimited base64 data URL string
+        //       ('' when no images). NOT NULL DEFAULT '' so always
+        //       present. The frontend splits on '|' via
+        //       normalizeTaskImageUrlsInPlace to render the detail
+        //       dialog gallery + board card thumbnails.
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5038,7 +5047,8 @@ pub fn listWorkspaceItemTasksWithCursor(
         // post-Migration-065-notification-icon JOIN,
         // post-Migration-067-tags,
         // post-kanban-task-git-branch plan 2026-08-06,
-        // post-Migration-070-cwd):
+        // post-Migration-070-cwd,
+        // post-2026-08-24-kanban-task-image-urls-read-path):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
@@ -5052,6 +5062,9 @@ pub fn listWorkspaceItemTasksWithCursor(
         //   23: cwd (Migration 070 — per-task cwd override). NOT NULL
         //       DEFAULT '' so always present; empty string is the
         //       "no per-task cwd" sentinel.
+        //   24: image_urls (Migration 069 — ||-delimited base64 data
+        //       URLs). NOT NULL DEFAULT '' so always present; empty
+        //       string is the "no images" sentinel.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -5109,6 +5122,14 @@ pub fn listWorkspaceItemTasksWithCursor(
             // "no per-task cwd" sentinel that the session_create
             // handler reads as "fall back to kanban-level path".
             .cwd = try allocator.dupe(u8, row.values[23]),
+            // Image urls (Migration 069 read-path fix): index 24.
+            // NOT NULL DEFAULT '' so always present; empty string is
+            // the "no images" sentinel. The frontend splits the
+            // ||-joined string into string[] via
+            // normalizeTaskImageUrlsInPlace (workspaces.ts) to render
+            // the detail dialog gallery + board card thumbnails.
+            // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+            .image_urls = try allocator.dupe(u8, row.values[24]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -5539,7 +5560,8 @@ fn setupDb() !TestCtx {
         \\    -- (they now live in the `kanban` join table below)
         \\    last_human_touched_at_nano INTEGER,
         \\    tags TEXT NOT NULL DEFAULT '',
-        \\    cwd TEXT NOT NULL DEFAULT ''
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    image_urls TEXT NOT NULL DEFAULT ''
         \\)
     , &.{});
     try db.exec(alloc,

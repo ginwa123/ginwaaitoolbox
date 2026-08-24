@@ -96,7 +96,17 @@ pub const HealthResponse = struct { status: []const u8, timestamp: i64 };
 
 pub const TaskDeleteResponse = struct { id: []const u8, success: bool = true };
 
-pub const TaskCreateResponse = struct { id: []const u8, name: []const u8, description: ?[]const u8, completed: bool };
+pub const TaskCreateResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    description: ?[]const u8,
+    completed: bool,
+    /// `||`-delimited base64 data URLs (Migration 069). Echoed from
+    /// the INSERTed column so the optimistic task carries images.
+    /// '' = no images.
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: []const u8 = "",
+};
 
 // Request types
 pub const TaskCreateRequest = struct {
@@ -200,6 +210,15 @@ pub const TaskUpdateRequest = struct {
     /// and dedupes case-insensitively. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: ?[]const u8 = null,
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Semantics mirror tags:
+    ///   - null/undefined  → don't change existing images (no-op).
+    ///   - `""` (empty string) → clear all images (sets `image_urls = ''`).
+    ///   - `'data:image/png;base64,...||data:image/jpeg;base64,...'`
+    ///     → replace existing images with this list (after validation
+    ///     via image_urls_validation.zig — data URL prefix + 10 MB cap).
+    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: ?[]const u8 = null,
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Semantics:
     ///   - null/undefined  → don't change existing cwd (no-op).
@@ -517,6 +536,16 @@ pub const WorkspaceItemTaskResponse = struct {
     /// JSON.parse. Plan:
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: []const u8 = "",
+
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Empty string is the canonical "no
+    /// images" sentinel (NOT NULL DEFAULT ''). Mirrors
+    /// `WorkspaceItemTaskInfo.image_urls`. The frontend splits on
+    /// `|` via normalizeTaskImageUrlsInPlace (workspaces.ts) to
+    /// render the detail dialog gallery + board card thumbnails.
+    /// Plan:
+    /// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: []const u8 = "",
 
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Empty string is the canonical

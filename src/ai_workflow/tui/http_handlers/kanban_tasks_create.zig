@@ -397,6 +397,13 @@ pub fn kanbanTasksCreateHandler(
         .name = standard_result.name,
         .description = parsed.description,
         .completed = false,
+        // Migration 069 — echo the persisted image_urls so the
+        // frontend's optimistic task object carries the images
+        // immediately (no refetch needed for the detail dialog
+        // gallery). Borrowed from the arena-owned standard_result —
+        // valueAlloc copies it into the response JSON.
+        // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+        .image_urls = standard_result.image_urls,
     };
 
     var response_body: ResponseEnvelope = .{ .task = task_resp };

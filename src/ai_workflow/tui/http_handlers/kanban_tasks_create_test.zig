@@ -694,3 +694,37 @@ test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=crea
     }
 }
 
+
+// =====================================================================
+// Migration 069 read-path follow-up (plan:
+// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+// Task 2): the kanban create envelope's `task` object must echo
+// image_urls so the frontend's optimistic task carries the images.
+// =====================================================================
+
+test "kanban create response task echoes image_urls" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The TaskCreateResponse construction must populate image_urls
+    // from the standard_result (arena-owned, borrowed per the
+    // existing comment on the envelope).
+    const marker = "const task_resp = http_response.TaskCreateResponse{";
+    const idx = std.mem.indexOf(u8, source, marker) orelse {
+        std.debug.print("\n!! {s} does not construct TaskCreateResponse !!\n", .{HANDLER_PATH});
+        return error.TaskRespMissing;
+    };
+    const window = source[idx..];
+    const window_end = std.mem.indexOf(u8, window, "};") orelse window.len;
+    const body = window[0..window_end];
+
+    if (std.mem.indexOf(u8, body, ".image_urls = standard_result.image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} kanban create response task does not echo image_urls !!\n" ++
+                "   Add: .image_urls = standard_result.image_urls,\n",
+            .{HANDLER_PATH},
+        );
+        return error.KanbanCreateRespImageUrlsMissing;
+    }
+}
