@@ -75,6 +75,21 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Database query failed" }) });
     };
 
+    // 2026-08-24-fix-flaky-create-and-run-profile-test — when the
+    // session has ZERO llm_history rows (fresh create_and_run session:
+    // the worker drains the queued user message asynchronously), the
+    // LEFT JOIN in getSessionMessagesSorted yields no rows and
+    // msg_response.selected_profile_model stays null even though the
+    // sessions row already carries the profile. Fall back to the
+    // direct sessions-table read (already fetched above for the
+    // capacity cascade) so the chatview's profile chip is correct from
+    // the very first GET — no race with the worker.
+    const selected_profile_model_final: ?[]const u8 = blk: {
+        if (msg_response.selected_profile_model) |spm| break :blk spm;
+        if (profile_name.len > 0) break :blk profile_name;
+        break :blk null;
+    };
+
     // Convert llm_history.SessionMessageResponse to http_response.SessionMessagesResponse
     var messages: []http_response.SessionMessage = try allocator.alloc(http_response.SessionMessage, msg_response.messages.len);
     for (msg_response.messages, 0..) |msg, idx| {
@@ -120,7 +135,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         // survives a page refresh. Without this the chip resets to
         // "Default" because the read endpoint never returned the field
         // that PUT /api/llm/session/:id persists.
-        .selected_profile_model = msg_response.selected_profile_model,
+        .selected_profile_model = selected_profile_model_final,
         .skills = msg_response.skills,
         .max_total_tokens = msg_response.max_total_tokens,
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,

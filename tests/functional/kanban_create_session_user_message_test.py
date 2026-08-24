@@ -389,16 +389,24 @@ def _get_session_selected_profile(
     the field is absent from the response entirely).
 
     For create_and_run, the workflow runs in the background after the
-    create response returns; if the GET races ahead of the worker's
-    first loop iteration, the endpoint may return 0 messages (the
-    queued user message hasn't been drained yet) and
-    `selected_profile_model` is absent from the JSON. We retry a few
-    times with a short backoff to give the workflow a chance to drain
-    — exactly what the chatview does in production via Vue reactivity.
+    create response returns; the queued user message is drained
+    asynchronously (~0.2-0.4s later). Until it lands, the session has
+    0 llm_history rows and — pre-fallback-fix — the endpoint returned
+    `selected_profile_model: null` (the value is extracted from the
+    first JOINed row in getSessionMessagesSorted).
+
+    IMPORTANT (the flake this helper once had): the JSON response
+    ALWAYS contains the `selected_profile_model` key — std.json
+    serializes optional fields as explicit null, never omits them.
+    So a key-presence guard (`if "selected_profile_model" in body`)
+    short-circuits on attempt 0 with None and never retries. Poll on
+    the VALUE instead: retry until non-None, then return whatever we
+    got ('' included — that's the no-profile sentinel the control
+    test asserts on).
     """
     import time
 
-    for attempt in range(20):  # up to ~2s
+    for attempt in range(30):  # up to ~3s
         r = harness.http(
             "GET",
             f"/api/llm/session/{session_id}/messages",
@@ -406,10 +414,11 @@ def _get_session_selected_profile(
             expect=200,
         )
         body = r.json()
-        if "selected_profile_model" in body:
-            return body["selected_profile_model"]
+        got = body.get("selected_profile_model")
+        if got is not None:
+            return got
         time.sleep(0.1)
-    return None  # surface as "field never appeared" — the bug
+    return None  # surface as "value never became non-null" — the bug
 
 
 def _get_session_flag_via_db(

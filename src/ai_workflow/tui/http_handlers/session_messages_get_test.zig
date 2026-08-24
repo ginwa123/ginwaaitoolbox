@@ -366,3 +366,50 @@ test "getSessionMessagesSorted: SessionMessagesResponse wire shape includes sele
     // emit the key, and the assertion fails.
     try testing.expect(std.mem.indexOf(u8, json, "\"selected_profile_model\":\"900ribu\"") != null);
 }
+
+// ─── 2026-08-24-fix-flaky-create-and-run-profile-test ──────────────────────
+//
+// A fresh create_and_run session has ZERO llm_history rows until the
+// worker drains the queued user message (asynchronous). The LEFT JOIN
+// in getSessionMessagesSorted yields no rows → selected_profile_model
+// stays null even though the sessions row already carries the profile.
+// The handler now falls back to the direct sessions-table read
+// (getSessionProfileName, already fetched for the capacity cascade).
+// These tests pin the data-layer contract that makes the fallback
+// correct: null ⇔ zero messages, and getSessionProfileName still sees
+// the profile on a message-less session.
+
+test "getSessionMessagesSorted: selected_profile_model is NULL when session has zero messages (fallback precondition)" {
+    const alloc = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var ctx = try setupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Session row WITH a profile but NO messages — the exact state a
+    // fresh create_and_run session is in before the worker drains.
+    try seedSession(&ctx, arena_alloc, "s_fresh", "stub");
+
+    const resp = try llm_history.getSessionMessagesSorted(
+        arena_alloc,
+        &ctx.db,
+        "s_fresh",
+        50,
+        null,
+        .{ .created_at_asc = {} },
+        null,
+    );
+
+    // Data-layer contract: no JOINed rows → null. This is WHY the
+    // handler needs the sessions-table fallback — assert it so a
+    // future change to the JOIN semantics fails loudly here first.
+    try testing.expectEqual(@as(usize, 0), resp.messages.len);
+    try testing.expect(resp.selected_profile_model == null);
+
+    // And the fallback source still sees the profile directly.
+    const name = try llm_history.getSessionProfileName(arena_alloc, &ctx.db, "s_fresh");
+    try testing.expectEqualStrings("stub", name);
+}
