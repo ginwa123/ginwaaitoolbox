@@ -1337,6 +1337,17 @@ export interface SseEvent {
   reasoning_content?: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   tool_calls?: any
+  // 2026-08-24 (task_1787545088500_6, bug A) — backend
+  // SseEventLLMHistory (sse_on_event_send_llm_history.zig:150) sends
+  // the assistant row's serialized tool_calls array on the wire as
+  // `tool_calls_json`. ChatView.vue:groupToolNames walks
+  // `parsed[i].id` against the renderedToolCallIds set to suppress
+  // the redundant "tools" pill when every tool_call has a matching
+  // tool row. Without this field, the SSE-pushed message has
+  // tool_calls_json=undefined, the suppression check is bypassed,
+  // and the pill flashes between every tool card. Frontend parse is
+  // mirrored on the REST path at getChatHistory (~line 1198).
+  tool_calls_json?: string
   tool_call_id?: string
   tool_name?: string
   agent_name?: string

@@ -92,3 +92,65 @@ describe('stripThinkingTags — <html> interplay', () => {
     )
   })
 })
+
+// 2026-08-24 — bug-trace task_1787545088500_6: when the LLM wraps a final
+// answer in ```html / ``` / ```markdown fences around <markdown>...</markdown>
+// (or even with no wrapper at all), the fence survives stripThinkingTags and
+// marked.parse renders the ENTIRE message as a literal <pre> code block —
+// the user sees raw `##`/`**`/`[link](url)` as text instead of formatted
+// markdown. stripThinkingTags MUST strip these outer fences so the wrapped
+// markdown reaches marked.parse cleanly.
+describe('stripThinkingTags — fenced markdown wrappers', () => {
+  it('strips ```html fence around <markdown> (real DB row shape)', () => {
+    // Bytes-verbatim copy of row 1787545407823788849 from
+    // task_1787540075329_3 in ~/.config/nalar/agent.db (truncated).
+    const fenced =
+      '```html\n<markdown>\n## Done — tests now inline\n\n**What changed:**\n- item one\n</markdown>\n```'
+    const stripped = stripThinkingTags(fenced)
+    // Inner <markdown> wrapper is unwrapped and the fence is gone.
+    expect(stripped).not.toContain('```')
+    expect(stripped).toContain('## Done')
+    expect(stripped).toContain('**What changed:**')
+    expect(stripped).not.toContain('<markdown>')
+  })
+
+  it('strips ``` fence around <markdown> (no language tag)', () => {
+    const fenced =
+      '```\n<markdown>\n## Heading\n\n- item\n</markdown>\n```'
+    const stripped = stripThinkingTags(fenced)
+    expect(stripped).not.toContain('```')
+    expect(stripped).toContain('## Heading')
+  })
+
+  it('strips ```markdown fence around <markdown>', () => {
+    const fenced =
+      '```markdown\n<markdown>\n# Title\n</markdown>\n```'
+    const stripped = stripThinkingTags(fenced)
+    expect(stripped).not.toContain('```')
+    expect(stripped).toContain('# Title')
+  })
+
+  it('leaves inline code spans (single backticks) untouched', () => {
+    // Must NOT match single-backtick inline code spans like `foo`.
+    const inline = 'Use `npm test` to run the tests.'
+    expect(stripThinkingTags(inline)).toBe(inline)
+  })
+
+  it('does not strip fence markers that are not at line boundaries', () => {
+    // Mid-line ``` is not a fence.
+    const midLine = 'a ``` b ``` c\n<markdown>\nx\n</markdown>'
+    const stripped = stripThinkingTags(midLine)
+    // The ```-surrounded <markdown> still unwraps; the mid-line triple
+    // backticks are preserved verbatim because they are inside prose.
+    expect(stripped).not.toContain('<markdown>')
+    expect(stripped).toContain('x')
+  })
+
+  it('preserves lone-think passthrough when fences wrap a <think> block', () => {
+    // Defensive: the fence stripper must not regress the lone-think
+    // contract. Existing passthrough behavior is the source of truth.
+    expect(stripThinkingTags('<think>reasoning only</think>')).toBe(
+      '<think>reasoning only</think>',
+    )
+  })
+})

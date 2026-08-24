@@ -2313,6 +2313,14 @@ const connectSse = () => {
         image_urls: event.image_url ? event.image_url.split('|') : undefined,
         finish_reason: event.finish_reason,
         tool_call_id: event.tool_call_id,
+        // 2026-08-24 (task_1787545088500_6, bug A) — carry the wire
+        // field through the SSE full-event push. Without this, the
+        // SSE path arrived at groupToolNames with tool_calls_json
+        // undefined → JSON.parse never ran → suppression was bypassed
+        // → "tools" pill flashed between every card. The REST path
+        // (loadChatHistory ~line 1579) already had this — keep both
+        // sites in sync.
+        tool_calls_json: event.tool_calls_json,
         is_input: event.is_input,
         is_output: event.is_output,
         // 2026-08-23 hidden-messages fix — carry reasoning through so
@@ -3854,6 +3862,19 @@ const compactSession = async () => {
 
 :deep(.markdown-content pre) {
   overflow-x: auto;
+}
+
+/* 2026-08-24 (task_1787545088500_6, bug C) — long unbroken URLs in
+   assistant prose overflow the chat bubble. The pre block above
+   already scrolls horizontally, but inline links + prose do not.
+   `overflow-wrap: anywhere` lets the browser break inside a long
+   word/URL at any character so the bubble stays within its parent;
+   `word-break: break-word` is the older alias kept for browsers
+   that don't recognise the new property name. Surgical, scoped
+   to .markdown-content only. */
+.markdown-content {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 :deep(.markdown-content pre:hover .code-copy-btn) {
