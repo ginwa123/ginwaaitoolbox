@@ -647,6 +647,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var retry_count: u32 = 0;
     var last_retry_error: anyerror = error.Unknown;
     var last_retry_source: []const u8 = "unknown";
+    // Most recent server-side reason string (HTTP status+body, scanner
+    // error, raw SSE sample) captured from `last_dynamic_agent_error_message`
+    // at each retry. Arena-owned (duped inside callDynamicAgentNew into the
+    // per-iteration arena, which outlives both bail sites in the same
+    // iteration) — never freed manually. Reset alongside `last_retry_error`
+    // everywhere that resets those.
+    var last_retry_server_detail: ?[]const u8 = null;
     var current_max_tokens: usize = 20000;
     var loop_counter: u32 = 0;
     var last_iter_start_ns: i128 = 0;
@@ -1039,8 +1046,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 );
                 const soft_diagnostic = std.fmt.allocPrint(allocator,
                     \\[Agent Nalar System info] unattended-mode soft-bail after {} consecutive retries.
-                    \\Reason for last retry: {s} (source: {s}). The session keeps running.
-                , .{ retry_count, reason_error, reason_source }) catch "unattended soft-bail snapshot";
+                    \\Reason for last retry: {s} (source: {s}).
+                    \\Server said: {s}
+                    \\The session keeps running.
+                , .{ retry_count, reason_error, reason_source, clampDetail(last_retry_server_detail orelse "(no server detail)", 500) }) catch "unattended soft-bail snapshot";
                 _ = try insertLLMHistories(.{
                     .allocator = allocator,
                     .io = io,
@@ -1075,6 +1084,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 retry_count = 0;
                 last_retry_error = error.Unknown;
                 last_retry_source = "unknown";
+                last_retry_server_detail = null;
                 continue;
             }
 
@@ -1082,9 +1092,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             const diagnostic = std.fmt.allocPrint(allocator,
                 \\[Agent Nalar System error] workflow halted after {} consecutive retries.
                 \\Reason for last retry: {s} (source: {s}).
-            , .{ retry_count, reason_error, reason_source }) catch "workflow halted after too many retries";
+                \\Server said: {s}
+            , .{ retry_count, reason_error, reason_source, clampDetail(last_retry_server_detail orelse "(no server detail)", 500) }) catch "workflow halted after too many retries";
 
-            logger.errFmt("TooManyRetries exhausted: {} consecutive failures for session_id={s} — last_error={s} source={s}", .{ retry_count, copy_session_id, reason_error, reason_source });
+            logger.errFmt("TooManyRetries exhausted: {} consecutive failures for session_id={s} — last_error={s} source={s} — server: {s}", .{ retry_count, copy_session_id, reason_error, reason_source, clampDetail(last_retry_server_detail orelse "(no server detail)", 500) });
 
             // Save the diagnostic as a user message so the AI agent sees it on
             // its next turn. Mirror the pattern the outer catch uses for generic
@@ -1207,19 +1218,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // reflects — not the first failure of this session.
             last_retry_error = err;
             last_retry_source = "callDynamicAgentNew";
+            // Capture the server-side reason for the eventual bail
+            // diagnostics. Arena-owned (see decl comment) — no free.
+            last_retry_server_detail = last_dynamic_agent_error_message;
             // The agent populated `last_dynamic_agent_error_message` with
             // the actual server / transport reason (e.g. "HTTP 429: rate
             // limit exceeded", "scanner.next failed after 12 chunk(s):
             // ConnectionResetByPeer"). Falls back to "(no server detail)"
             // for error variants the agent doesn't synthesize a message
             // for (Cancelled, AllocFailed, OutOfMemory, BuildRequestFailed).
-            const server_detail = last_dynamic_agent_error_message orelse "(no server detail)";
+            const server_detail = clampDetail(last_dynamic_agent_error_message orelse "(no server detail)", 500);
             logger.errFmt("Error calling dynamic agent: {s} now retrying after {d}ms delay — server: {s}", .{ @errorName(err), config.retry_delay_ms, server_detail });
             // Save a per-retry diagnostic to chat history so the user sees
             // each attempt live AND the AI has the full retry progression
             // in context for its next turn (instead of only learning about
             // retries after the budget is exhausted).
-            try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), config.retry_delay_ms);
+            try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), server_detail, config.retry_delay_ms);
             // Sleep before the next attempt so the upstream can recover (or
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
@@ -1276,6 +1290,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         retry_count = 0;
         last_retry_error = error.Unknown;
         last_retry_source = "unknown";
+        last_retry_server_detail = null;
         // Migration 063 — persist the most recent `finish_reason` so the
         // next workflow invocation (e.g., after a server restart) can
         // start from the right state without re-querying llm_history.
@@ -1412,10 +1427,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // clears this for the next iteration.
                 last_retry_error = error.UnexpectedFinishReason;
                 last_retry_source = "finish_reason else";
+                // No transport error on this path — the LLM responded but
+                // with an unusable finish_reason, so there is no server
+                // detail to surface.
+                last_retry_server_detail = null;
                 // Save a per-retry diagnostic (no `err` here — unexpected
                 // finish_reason has no underlying error name, so use the
                 // source label as the diagnostic).
-                try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "finish_reason else", "unexpected finish_reason", config.retry_delay_ms);
+                try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "finish_reason else", "unexpected finish_reason", "(no server detail — LLM responded with an unexpected finish_reason)", config.retry_delay_ms);
                 // Same delay policy as the callDynamicAgentNew catch —
                 // sleep before the loop restarts so we don't hammer the
                 // upstream when it returns an unexpected finish_reason
@@ -1442,6 +1461,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             retry_count = 0;
             last_retry_error = error.Unknown;
             last_retry_source = "unknown";
+            last_retry_server_detail = null;
         }
 
         // Log if finish_reason is null
@@ -1563,6 +1583,15 @@ fn generateSessionNameNew(
 ///
 /// `attempt` is 1-based (after the increment). `max_attempts` is the
 /// retry budget (currently 10, matching the `retry_count > 10` bail).
+/// Clamp a server-detail string for user-visible diagnostics. The raw
+/// detail can be up to 2 KiB (raw SSE sample cap in Agent.callStreaming);
+/// 10 retries × 2 KiB would flood the chat, so user-visible messages get
+/// at most `max_len` bytes. Returns a slice of the input — no allocation.
+fn clampDetail(detail: []const u8, max_len: usize) []const u8 {
+    if (detail.len <= max_len) return detail;
+    return detail[0..max_len];
+}
+
 fn saveRetryAttemptMessage(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -1581,6 +1610,11 @@ fn saveRetryAttemptMessage(
     max_attempts: u32,
     source: []const u8,
     error_name: []const u8,
+    /// Actual server-side reason (HTTP status+body, scanner error, raw
+    /// SSE sample) — already clamped by the caller via `clampDetail`.
+    /// Falls back to "(no server detail)" when the transport produced
+    /// no message for this error variant.
+    server_detail: []const u8,
     delay_ms: u32,
 ) !void {
     // Track ownership explicitly. On allocPrint failure (e.g. OOM) we
@@ -1589,7 +1623,8 @@ fn saveRetryAttemptMessage(
     // is `null` in the fallback case and the `errdefer` skips the free.
     const formatted = std.fmt.allocPrint(allocator,
         \\[Retry {d}/{d}] {s} ({s}). Retrying in {d}ms.
-    , .{ attempt, max_attempts, error_name, source, delay_ms }) catch |err| blk: {
+        \\Server said: {s}
+    , .{ attempt, max_attempts, error_name, source, delay_ms, server_detail }) catch |err| blk: {
         logger.errFmt("Failed to format retry diagnostic: {s}", .{@errorName(err)});
         break :blk null;
     };
