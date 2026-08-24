@@ -27,7 +27,14 @@ const scrollToBottom = async (force = false) => {
   await nextTick()
   if (messagesContainer.value) {
     if (force || isAtBottom.value) {
-      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight
+      // Explicit bottom computation — see ChatView.vue onContentShift
+      // for the rationale (avoid relying on the browser's implicit
+      // scrollTop clamp, which is timing-fragile when the DOM hasn't
+      // finished flushing).
+      messagesContainer.value.scrollTop = Math.max(
+        0,
+        messagesContainer.value.scrollHeight - messagesContainer.value.clientHeight,
+      )
     }
   }
 }
