@@ -76,7 +76,7 @@ pub const save_memory_tool = AgentTool{
             \\Constraints:
             \\- `content` must be 1 KiB – 1 MiB. Empty content is rejected; oversized is rejected (no silent truncation).
             \\- `tags` are joined with `||` in storage and split on `|` at read time.
-            \\- There is NO delete_memory tool — memory is permanent (by your design). To "forget" something, save a new memory that supersedes it.
+            \\- To remove an entry entirely (e.g. it is genuinely obsolete or the user asked to forget it), use `delete_memory({ id })` — but default to UPSERT-with-superseding-content unless the user explicitly asks to delete.
             \\- Global scope: memories are visible across all workspaces and sessions. There is no per-workspace filter.
         ,
         .parameters = .{
