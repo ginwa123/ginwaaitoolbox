@@ -130,7 +130,7 @@ describe('ChatView llm_chunk streaming append', () => {
     }
     const streamingRows = h.messages.value.filter((m) => m.id.startsWith('streaming-'))
     expect(streamingRows).toHaveLength(1)
-    expect(streamingRows[0].content).toBe('abcde')
+    expect(streamingRows[0]?.content).toBe('abcde')
   })
 
   it('drops chunks for a different session (payload must carry session_id)', () => {

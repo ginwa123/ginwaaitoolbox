@@ -2209,7 +2209,13 @@ const connectSse = () => {
       return
     }
 
-    if (event.type !== 'chunk' && event.type !== 'full') {
+    // 2026-08-23 llm-chunk-streaming: gate on the three event types
+    // ChatView actually handles — `chunk` (append delta), `chunk_final`
+    // (token-stream-end marker that updates maxTotalTokens), and `full`
+    // (replace streaming-* row with canonical DB row). Other types
+    // (`reasoning_chunk`, `tool_call_delta`, `connected`) are handled
+    // by their own dedicated branches above.
+    if (event.type !== 'chunk' && event.type !== 'chunk_final' && event.type !== 'full') {
       return
     }
 
