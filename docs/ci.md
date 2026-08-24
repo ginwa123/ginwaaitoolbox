@@ -3,6 +3,12 @@
 The pipeline lives at `.github/workflows/ci.yml` and runs on GitHub Actions
 self-hosted runners.
 
+**Toolchain policy (2026-08-25): npm-everywhere.** Bun is no longer used
+anywhere in CI or in `build.zig`'s webapp chain — `package-lock.json` is
+the canonical lockfile, Node 24 + npm come from `actions/setup-node@v4`,
+and the webapp build is `npm ci` + `npm run build`. The stale `bun.lock`
+was deleted.
+
 ## What runs
 
 A 2-cell matrix on self-hosted runners (`[self-hosted, Linux, X64]` and
@@ -11,28 +17,34 @@ each produces the artifact native to its host platform:
 
 1. `mlugg/setup-zig@v2` — installs Zig 0.16.0
 2. Per-cell system deps:
-   - **Linux (Arch)**: `pacman -S --needed` installs `webkit2gtk-4.1`,
-     `gtk3`, `libsoup3` (the WebKitGTK runtime stack the desktop links
-     against), plus `openssl`, `sqlite`, `pkgconf`, `base-devel`.
+   - **Linux (Arch)**: package-presence check first (`pacman -Q`); the
+     DB refresh (`pacman -Sy`) only fires when something is actually
+     missing — steady-state runs make zero network calls here.
    - **macOS (Homebrew)**: `brew install pkg-config openssl@3` with
      `HOMEBREW_NO_AUTO_UPDATE=1` (no `brew update` to save ~30 MB of
      formula DB refresh per run; pkg-config is for the diagnostic step;
      openssl@3 is keg-only so env vars are exported for the linker).
-3. **`oven-sh/setup-bun@v2`** — installs Bun 1.3.11 on both cells
-   (needed for the embedded Vue webapp build that `zig build nalar-desktop`
-   triggers via the codegen dependency chain)
-4. Caches (Bun `node_modules`, Zig build artifacts incl. the generated
-   `webapp_assets.zig`); per-cell isolation via `${{ runner.os }}` and
-   `${{ matrix.target.zig }}` keys
-5. `zig build test` — full backend test suite
-6. `zig build nalar-desktop --summary all` — produces `zig-out/bin/nalar`
+3. **`actions/setup-node@v4`** — installs Node 24 + npm (needed for the
+   embedded Vue webapp build that `zig build nalar-desktop` triggers via
+   the codegen dependency chain)
+4. Caches:
+   - **Zig**: `.zig-cache` + module vendor dirs, keyed `v3-zig-<os>-<target>-
+     <hash(build.zig, build.zig.zon, fetch-vendor-sqlite3.sh)>`. `zig-out`
+     binaries are deliberately NOT cached (~124 MB of archive I/O saved
+     per run; they're regenerated from `.zig-cache` in seconds).
+   - **npm node_modules**: backend uses a tarball cache keyed by the
+     `package-lock.json` sha; frontend jobs use `actions/cache` keyed
+     `npm-<os>-<hash(package-lock.json)>`.
+   - **Python venv + Playwright Chromium**: functional/UI test steps set
+     `NALAR_FUNC_VENV_DIR=$runner.temp/nalar-ci-venv` (build.zig reads it
+     at config time) and cache that venv + `~/.cache/ms-playwright`,
+     keyed by both `requirements.txt` files.
+5. `zig build test nalar-desktop --summary all` — ONE invocation compiles
+   AND runs the full backend test suite AND produces `zig-out/bin/nalar`
    (~58 MB on Linux; varies on macOS) and `zig-out/bin/nalar-desktop`
-   (~34 MB on Linux). The `step: install:linux:system` /
-   `step: install:macos-arm` matrix entry is the cross-target build used
-   by the smoke test path; the deliverable artifacts come from the
-   `install` step that `build_nalar_desktop.dependOn(getInstallStep())`
-   wires up at `build.zig:280`.
-7. Per-platform binary verification:
+   (~34 MB on Linux). Merging the old two-step sequence removes a
+   duplicate dependency-graph walk.
+6. Per-platform binary verification:
    - **Linux**: `file ELF 64-bit LSB executable, x86-64`, `ldd | grep
      webkit2gtk-4.1`, sane binary size (~30-60 MB).
    - **macOS**: `file Mach-O 64-bit executable arm64`,
@@ -84,9 +96,9 @@ negative tests in `harness_safety_test.py` guard the invariants.
 ## What does NOT run
 
 - **No frontend job.** The Vue webapp is bundled into nalar-desktop via
-  `zig build codegen:webapp-assets` → `bun run build` →
+  `zig build codegen:webapp-assets` → `npm run build` →
   `src/apps/desktop/dist/` → generated `webapp_assets.zig` → embedded bytes.
-  vue-tsc runs as part of `bun run build` (project convention: build is the
+  vue-tsc runs as part of `npm run build` (project convention: build is the
   type-check). The 8 pre-existing vitest failures across 4 files are not
   gating.
 - **No Windows cell.** PR #70's smoke-test cleanup kept the option, but no
@@ -132,8 +144,10 @@ link time by missing `sqlite3` / `ssl` / `crypto` system libraries — needs
 ## Running the same checks locally
 
 ```bash
-zig build test              # equivalent to step 5
-zig build nalar-desktop     # equivalent to step 6
+zig build test nalar-desktop --summary all  # equivalent to step 5 (one invocation)
 ./zig-out/bin/nalar-desktop --smoke-test   # equivalent to step 8
 ./scripts/ci-smoke-test.sh  # boots nalar service end-to-end
 ```
+
+Local webapp deps: `cd src/apps/desktop && npm ci` (or let `zig build`
+run the conditional `npm ci` when node_modules is missing).
