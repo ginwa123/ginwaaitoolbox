@@ -54,6 +54,14 @@ const sidebarStore = useSidebarStore()
 // Ref to Sidebar component
 const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
 
+// Dev-only FPS overlay (desktop scroll-perf plan, Task 5): lets us
+// measure platform rendering fixes (Linux gfx pinning, macOS scheme
+// handler, Windows resize coalescing) in the running app. mount() is a
+// no-op in prod builds; unmount on teardown keeps HMR clean.
+import { mount as mountFpsOverlay, unmount as unmountFpsOverlay } from '../helpers/fpsOverlay'
+onMounted(() => { mountFpsOverlay() })
+onUnmounted(() => { unmountFpsOverlay() })
+
 // Settings overlay state (now driven by route)
 
 onMounted(() => {
