@@ -518,6 +518,16 @@ pub const WorkspaceItemTaskResponse = struct {
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: []const u8 = "",
 
+    /// `||`-delimited base64 data URLs (Migration 069 — kanban
+    /// image urls column). Empty string is the canonical "no
+    /// images" sentinel (NOT NULL DEFAULT ''). Mirrors
+    /// `WorkspaceItemTaskInfo.image_urls`. The frontend splits on
+    /// `|` via normalizeTaskImageUrlsInPlace (workspaces.ts) to
+    /// render the detail dialog gallery + board card thumbnails.
+    /// Plan:
+    /// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+    image_urls: []const u8 = "",
+
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Empty string is the canonical
     /// "no per-task cwd" sentinel (NOT NULL DEFAULT ''). Mirrors

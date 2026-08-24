@@ -237,6 +237,13 @@ fn useCase(
             // string borrowed from WorkspaceItemTaskInfo.tags (the
             // per-request arena reaps it on request teardown).
             .tags = task.tags,
+            // Migration 069 — kanban image urls. `||`-delimited base64
+            // data URL string borrowed from WorkspaceItemTaskInfo
+            // .image_urls (the per-request arena reaps it on request
+            // teardown). The frontend splits on '|' to render the
+            // detail dialog gallery + board card thumbnails.
+            // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+            .image_urls = task.image_urls,
             // Kanban-task-git-branch: computed on-demand per task
             // from the task's cwd (worktree or item path). The
             // borrowed slice is owned by the per-request arena (the

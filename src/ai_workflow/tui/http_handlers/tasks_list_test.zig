@@ -471,3 +471,124 @@ test "tasks_list llm_history ORDER BY puts pinned rows first" {
         return error.OrderByIsPinnedMissing;
     }
 }
+
+// ─── Contract 16: image_urls read path (Migration 069) ────────────────────
+//
+// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
+// The persist path INSERTs `workspace_item_tasks.image_urls` (the
+// ||-delimited base64 data URL string) but the paginated lister never
+// SELECTed it — so the frontend's task detail dialog gallery and the
+// kanban card thumbnails always saw an empty array. Three contracts
+// lock the full read path: SELECT column → struct field → wire field.
+
+test "tasks_list llm_history SELECT includes t.image_urls" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    // Scope the check to the cursor lister's function body (the only
+    // live read path — tasks_list.zig:137 calls it). The legacy
+    // non-cursor `listWorkspaceItemTasks` has no production callers
+    // and is intentionally left untouched.
+    const fn_start = std.mem.indexOf(u8, source, "pub fn listWorkspaceItemTasksWithCursor(") orelse {
+        std.debug.print(
+            "\n!! {s} does not define listWorkspaceItemTasksWithCursor !!\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.CursorListerMissing;
+    };
+    const body = source[fn_start..];
+    const body_end = std.mem.indexOf(u8, body, "\npub fn ") orelse body.len;
+    const fn_body = body[0..body_end];
+
+    if (std.mem.indexOf(u8, fn_body, "t.image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} listWorkspaceItemTasksWithCursor SELECT does not include t.image_urls !!\n" ++
+                "   The kanban task detail dialog gallery + board card\n" ++
+                "   thumbnails read this column — without it the images\n" ++
+                "   attached at create time are invisible after refresh.\n" ++
+                "   Add `, t.image_urls` to the SELECT (append AFTER t.cwd\n" ++
+                "   at index 24 — appending keeps every existing index stable).\n" ++
+                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.ImageUrlsColumnNotInSelect;
+    }
+}
+
+test "tasks_list llm_history struct literal sets image_urls from row" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+
+    const fn_start = std.mem.indexOf(u8, source, "pub fn listWorkspaceItemTasksWithCursor(") orelse {
+        std.debug.print(
+            "\n!! {s} does not define listWorkspaceItemTasksWithCursor !!\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.CursorListerMissing;
+    };
+    const body = source[fn_start..];
+    const body_end = std.mem.indexOf(u8, body, "\npub fn ") orelse body.len;
+    const fn_body = body[0..body_end];
+
+    // The struct literal must populate .image_urls from the new SELECT
+    // column (index 24). Without this the field stays the default
+    // empty slice even when the DB row has images.
+    if (std.mem.indexOf(u8, fn_body, ".image_urls = try allocator.dupe(u8, row.values[24])") == null) {
+        std.debug.print(
+            "\n!! {s} listWorkspaceItemTasksWithCursor does not set .image_urls from row.values[24] !!\n" ++
+                "   Add to the WorkspaceItemTaskInfo literal:\n" ++
+                "     .image_urls = try allocator.dupe(u8, row.values[24]),\n" ++
+                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.ImageUrlsFieldNotPopulated;
+    }
+}
+
+test "tasks_list response forwards image_urls" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, ".image_urls = task.image_urls") == null) {
+        std.debug.print(
+            "\n!! {s} does not forward .image_urls into the response !!\n" ++
+                "   Add next to the .tags forwarding:\n" ++
+                "     .image_urls = task.image_urls,\n" ++
+                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+            .{HANDLER_PATH},
+        );
+        return error.ImageUrlsNotForwarded;
+    }
+}
+
+test "WorkspaceItemTaskResponse declares image_urls" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HTTP_RESPONSE_PATH);
+    defer allocator.free(source);
+
+    // Scope to the WorkspaceItemTaskResponse struct window.
+    const struct_start = std.mem.indexOf(u8, source, "pub const WorkspaceItemTaskResponse = struct") orelse {
+        std.debug.print(
+            "\n!! {s} does not define WorkspaceItemTaskResponse !!\n",
+            .{HTTP_RESPONSE_PATH},
+        );
+        return error.ResponseStructMissing;
+    };
+    const window = source[struct_start..];
+    const window_end = std.mem.indexOf(u8, window, "\npub const ") orelse window.len;
+    const struct_body = window[0..window_end];
+
+    if (std.mem.indexOf(u8, struct_body, "image_urls: []const u8 = \"\"") == null) {
+        std.debug.print(
+            "\n!! {s} WorkspaceItemTaskResponse does not declare image_urls !!\n" ++
+                "   Add: image_urls: []const u8 = \"\",\n" ++
+                "   (pipe-pipe-delimited base64 data URLs; empty = no images sentinel)\n" ++
+                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+            .{HTTP_RESPONSE_PATH},
+        );
+        return error.ImageUrlsFieldMissing;
+    }
+}
