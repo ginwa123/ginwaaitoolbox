@@ -86,6 +86,9 @@ pub const kanbanColumnsDeleteHandler = @import("kanban_columns_delete.zig").kanb
 pub const kanbanCopySpecHandler = @import("kanban_copy_spec.zig").kanbanCopySpecHandler;
 pub const tasksMoveHandler = @import("tasks_move.zig").tasksMoveHandler;
 pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
+// Single-task GET endpoint (plan:
+// docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md).
+pub const tasksGetHandler = @import("tasks_get.zig").tasksGetHandler;
 // Kanban tag autocomplete endpoint (Chunk 1 of plan
 // docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
 // Stub-only in this commit — Task 1.4 implements the useCase body.

@@ -439,6 +439,11 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/copy_spec_from/:source_item_id", ai_mod.http_handlers.kanbanCopySpecHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move", ai_mod.http_handlers.tasksMoveHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
+    // Single-task GET for the kanban Task details dialog (plan:
+    // docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md).
+    // Registered AFTER the list route — matchRoute walks routes in
+    // registration order (router.zig route-order rule).
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksGetHandler);
     // Kanban task tag autocomplete (Chunk 1 of plan
     // docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
     // Paginated suggestions for the kanban task detail dialog's tag chip
