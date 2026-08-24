@@ -3562,7 +3562,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Refetch a single task from the server and patch the in-store copy
+  // Refetch ONE task from the server and patch the in-store copy
   // in place. Used by KanbanView.handleViewTaskDetail so the
   // Task details dialog opens with the live `is_auto_retry_until_stop`
   // value (which lives on sessions, joined at read time) rather than
@@ -3570,30 +3570,31 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // prevents the "toggle shows OFF but the DB is ON" race when a
   // different client toggled the flag since this client last loaded.
   //
-  // Implementation note: we re-fetch the WHOLE task list for the
-  // item (via the existing GET /api/workspaces/:ws/items/:item/tasks
-  // endpoint) and pluck the one we care about. This avoids adding
-  // a new GET /tasks/:id endpoint just for this case — the backend
-  // already returns is_auto_retry_until_stop via the JOIN we just
-  // added (commit 2e2373ed). A list refresh is heavier than a
-  // single-row fetch but the workspace_item_tasks table is small
-  // (typically <20 rows per item) so the cost is negligible.
+  // Implementation note: we fetch the single task via
+  // GET /api/workspaces/:ws/items/:item/tasks/:task_id (plan:
+  // docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md).
+  // This used to be a whole-list refetch (api.getTasks with
+  // limit=100 + pluck-one) — wasteful on a 270+ task board since
+  // every row carries routine JOINs, tags, and base64 image_urls.
   //
   // Best-effort: a failure is logged but does NOT block the dialog
   // from opening. The dialog will fall back to the cached value
   // (which is still better than blocking the user with a network
-  // error on every dialog open).
+  // error on every dialog open). A 404 (getTask → null) is also a
+  // no-op: the cached copy stays until the delete-event SSE removes
+  // it.
   async function refreshTask(
     workspaceId: string,
     itemId: string,
     taskId: string,
   ): Promise<void> {
     try {
-      const { tasks: fresh } = await api.getTasks(workspaceId, itemId, 100)
+      const fetched = await api.getTask(workspaceId, itemId, taskId)
+      if (!fetched) return
       // Migration 067 — normalize tags from wire string to in-memory
-      // string[] before splicing into the store.
-      const freshTask = fresh.map(normalizeTaskTags).find((t) => t.id === taskId)
-      if (!freshTask) return
+      // string[] (also folds in image_urls splitting) before splicing
+      // into the store.
+      const freshTask = normalizeTaskTags(fetched)
       for (const ws of workspaces.value) {
         if (ws.id !== workspaceId) continue
         for (const item of ws.items) {

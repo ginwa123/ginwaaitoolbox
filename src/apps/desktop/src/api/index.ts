@@ -620,6 +620,37 @@ export async function getTasks(
 }
 
 /**
+ * Fetch ONE workspace item task by id (kanban Task details dialog).
+ * GET /api/workspaces/:ws/items/:item/tasks/:task_id → { task } | 404.
+ *
+ * Resolves to the Task, or null on 404 (task deleted / wrong item in
+ * the path). Replaces the old refreshTask list-refetch (limit=100) —
+ * one row on the wire instead of the whole board.
+ *
+ * 404 is silent (no error toast) — "the task is gone" is an expected
+ * state, not an error worth surfacing. Other failures (network, 5xx)
+ * throw ApiError; the store's best-effort catch handles them.
+ *
+ * Plan: docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md
+ */
+export async function getTask(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+): Promise<Task | null> {
+  try {
+    const data = await apiFetch<{ task: Task | null }>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/items/${encodeURIComponent(itemId)}/tasks/${encodeURIComponent(taskId)}`,
+      { silent: true },
+    )
+    return data.task ?? null
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+/**
  * Stamp `workspace_item_tasks.last_human_touched_at` so the kanban
  * card flips from the orange "AI finished — awaiting review" dot
  * to the green "reviewed" checkmark. Fire-and-forget: the caller

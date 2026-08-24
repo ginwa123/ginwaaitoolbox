@@ -4,22 +4,25 @@
  * `refreshTask` is called from KanbanView.handleViewTaskDetail so the
  * Task details dialog opens with the LIVE `is_auto_retry_until_stop`
  * value (which lives on sessions, joined at read time) rather than
- * the value cached at workspaces store init() time. The action re-
- * fetches the parent item's task list via `api.getTasks` and patches
+ * the value cached at workspaces store init() time. The action fetches
+ * the ONE task via `api.getTask` (GET .../tasks/:task_id) and patches
  * the matching task object in place — the dialog's watcher re-derives
  * its local form state from the new task via the `[show, task?.id,
  * mode]` dependency, so the toggle reflects the live DB value.
  *
- * Behaviors under test:
- *  1. Replaces the cached task with the fresh one (including the
- *     `is_auto_retry_until_stop` field that motivated this action).
- *  2. Is a no-op if the task is not present in the fresh list
- *     (e.g. server-side deletion raced with our dialog open).
- *  3. Does NOT throw on API failure — the dialog should still open
- *     with the cached value. The failure is logged but suppressed.
+ * Plan: docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md
+ * (Task 3). `refreshTask` used to refetch the WHOLE task list via
+ * `api.getTasks(ws, item, 100)` and pluck one task — the regression
+ * test below locks in `getTask` (and NOT `getTasks`).
  *
- * Plan: docs/superpowers/plans/2026-07-17-frontend-error-logs.md
- *   (the original fix that exposed the JOIN-on-sessions gap).
+ * Behaviors under test:
+ *  1. Calls getTask (single-task endpoint), NOT getTasks (list).
+ *  2. Replaces the cached task with the fresh one (including the
+ *     `is_auto_retry_until_stop` field that motivated this action).
+ *  3. Is a no-op when the server answers 404 → null (e.g. server-side
+ *     deletion raced with our dialog open).
+ *  4. Does NOT throw on API failure — the dialog should still open
+ *     with the cached value. The failure is logged but suppressed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -29,6 +32,7 @@ import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
 describe('useWorkspacesStore.refreshTask', () => {
+  const getTaskMock = vi.fn()
   const getTasksMock = vi.fn()
 
   let localStorageStub: Storage
@@ -42,6 +46,9 @@ describe('useWorkspacesStore.refreshTask', () => {
       configurable: true,
     })
 
+    vi.spyOn(api, 'getTask').mockImplementation(getTaskMock)
+    // getTasks is the OLD path — mocked so any accidental call is
+    // observable (the regression test asserts it stays untouched).
     vi.spyOn(api, 'getTasks').mockImplementation(getTasksMock)
     // init() never runs in these tests, but stub defensively.
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
@@ -50,6 +57,7 @@ describe('useWorkspacesStore.refreshTask', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    getTaskMock.mockReset()
     getTasksMock.mockReset()
   })
 
@@ -89,24 +97,23 @@ describe('useWorkspacesStore.refreshTask', () => {
     ]
   }
 
-  it('patches the cached task with the fresh one (including is_auto_retry_until_stop)', async () => {
+  it('fetches the ONE task via getTask and never touches the list endpoint', async () => {
     seedStore({ taskId: 'task_x', cachedUnattended: '0' })
-    getTasksMock.mockResolvedValue({
-      tasks: [
-        {
-          id: 'task_x',
-          name: 'Fresh name from server',
-
-          description: 'Fresh description',
-          is_auto_retry_until_stop: '1',
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
+    getTaskMock.mockResolvedValue({
+      id: 'task_x',
+      name: 'Fresh name from server',
+      description: 'Fresh description',
+      is_auto_retry_until_stop: '1',
     })
 
     const ws = useWorkspacesStore()
     await ws.refreshTask('ws_1', 'item_1', 'task_x')
+
+    // THE contract of plan 2026-08-24-kanban-task-detail-single-fetch:
+    // one single-task request, zero list requests.
+    expect(getTaskMock).toHaveBeenCalledTimes(1)
+    expect(getTaskMock).toHaveBeenCalledWith('ws_1', 'item_1', 'task_x')
+    expect(getTasksMock).not.toHaveBeenCalled()
 
     const task = ws.workspaces[0]!.items[0]!.tasks![0]!
     expect(task.id).toBe('task_x')
@@ -119,18 +126,11 @@ describe('useWorkspacesStore.refreshTask', () => {
     // This is the exact bug the user reported: cached value says
     // OFF, server has ON, the dialog must show ON after refresh.
     seedStore({ taskId: 'task_x', cachedUnattended: '0' })
-    getTasksMock.mockResolvedValue({
-      tasks: [
-        {
-          id: 'task_x',
-          name: 'Cached name',
-
-          description: '',
-          is_auto_retry_until_stop: '1',
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
+    getTaskMock.mockResolvedValue({
+      id: 'task_x',
+      name: 'Cached name',
+      description: '',
+      is_auto_retry_until_stop: '1',
     })
 
     const ws = useWorkspacesStore()
@@ -139,13 +139,9 @@ describe('useWorkspacesStore.refreshTask', () => {
     expect(ws.workspaces[0]!.items[0]!.tasks![0]!.is_auto_retry_until_stop).toBe('1')
   })
 
-  it('is a no-op if the fresh list does not include the task (race with deletion)', async () => {
+  it('is a no-op when the server answers 404 → null (race with deletion)', async () => {
     seedStore({ taskId: 'task_x', cachedUnattended: '0', cachedName: 'Original name' })
-    getTasksMock.mockResolvedValue({
-      tasks: [], // task was deleted server-side between open and fetch
-      has_more: false,
-      next_cursor: null,
-    })
+    getTaskMock.mockResolvedValue(null) // getTask resolves null on 404
 
     const ws = useWorkspacesStore()
     await ws.refreshTask('ws_1', 'item_1', 'task_x')
@@ -159,7 +155,7 @@ describe('useWorkspacesStore.refreshTask', () => {
 
   it('does NOT throw on API failure (dialog falls back to cached value)', async () => {
     seedStore({ taskId: 'task_x', cachedUnattended: '1' })
-    getTasksMock.mockRejectedValue(new Error('network down'))
+    getTaskMock.mockRejectedValue(new Error('network down'))
 
     const ws = useWorkspacesStore()
     // No throw — the dialog must still open even when the fetch fails.
@@ -196,14 +192,10 @@ describe('useWorkspacesStore.refreshTask', () => {
         ],
       },
     ]
-    getTasksMock.mockResolvedValue({
-      tasks: [
-        { id: 'task_a', name: 'A fresh', is_auto_retry_until_stop: '1' },
-        // task_b deliberately omitted (e.g. hidden by another tab's
-        // mutation, or the response was capped at 1 row).
-      ],
-      has_more: false,
-      next_cursor: null,
+    getTaskMock.mockResolvedValue({
+      id: 'task_a',
+      name: 'A fresh',
+      is_auto_retry_until_stop: '1',
     })
 
     await ws.refreshTask('ws_1', 'item_1', 'task_a')
@@ -218,10 +210,10 @@ describe('useWorkspacesStore.refreshTask', () => {
 
   it('is a no-op when the workspace_id does not match any cached workspace', async () => {
     seedStore({ taskId: 'task_x', cachedUnattended: '0' })
-    getTasksMock.mockResolvedValue({
-      tasks: [{ id: 'task_x', name: 'Fresh', is_auto_retry_until_stop: '1' }],
-      has_more: false,
-      next_cursor: null,
+    getTaskMock.mockResolvedValue({
+      id: 'task_x',
+      name: 'Fresh',
+      is_auto_retry_until_stop: '1',
     })
 
     const ws = useWorkspacesStore()
