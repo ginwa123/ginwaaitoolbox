@@ -328,7 +328,25 @@ function normalizeTaskDatesInPlace(task: Task): void {
 // the `llm_history.image_url` convention. Plan:
 // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
 function normalizeTaskImageUrlsInPlace(task: Task): void {
-  if (task.imageUrls === undefined) return
+  // Wire→camel bridge (read-path fix, 2026-08-24): the backend's
+  // WorkspaceItemTaskResponse serializes the field as snake_case
+  // `image_urls` (the ||-delimited string), but the Task interface +
+  // every consumer read camelCase `imageUrls`. Without this bridge
+  // the camelCase field is undefined on freshly-fetched tasks, the
+  // early-return below fires, and the wire string leaks through
+  // unsplit — the detail dialog gallery + board card thumbnails
+  // never render. Same pattern as normalizeTaskDatesInPlace above
+  // (read the snake_case wire field, write the camelCase field).
+  // Tags don't need this because the name is identical on both
+  // sides of the wire.
+  if (task.imageUrls === undefined) {
+    const wire = task as unknown as Record<string, unknown>
+    const wireVal = wire['image_urls']
+    if (wireVal === undefined) return
+    // Present the wire value to the splitter below via the camelCase
+    // field (string | string[] | anything-else all handled there).
+    task.imageUrls = wireVal as string[]
+  }
   // Already an array (legacy code paths / optimistic local writes).
   if (Array.isArray(task.imageUrls)) return
   // Wire format: `||`-delimited base64 data URLs.
@@ -1882,6 +1900,38 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (newPosition !== undefined) {
       task.kanban_position = newPosition
     }
+  }
+
+  // Patch a task's `needs_human_review` flag IN PLACE (zero network).
+  // Called by the kanbanSse handler for `human_touched` events —
+  // opening a task's chat fires `PUT .../tasks/:id/touched`, the
+  // backend stamps the column and emits `kanban_task` SSE with
+  // `action: "human_touched"` + `needs_human_review: false`. The
+  // ONLY visual effect is the kanban card's orange "AI finished —
+  // awaiting review" dot flipping to the green "reviewed" checkmark
+  // (WorkspaceItemTaskCard.vue reads task.needs_human_review).
+  //
+  // Pre-fix, this event fell into the unassign refetch branch
+  // (`new_column_id` is null on the wire) and fired one
+  // `tasks?limit=100` per column — 7 calls / ~5 MB on a 270-task
+  // board — just from opening a chatview. The wire payload already
+  // carries the after-state (`needs_human_review: false`, see
+  // task_mark_human_touched.zig:91), so a local patch is exactly
+  // equivalent to the refetch.
+  //
+  // Mirrors `mirrorKanbanTaskMove`'s shape + defensive semantics:
+  // silently no-ops when the item or task isn't in the local store.
+  function applyHumanTouched(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    needsHumanReview: boolean,
+  ): void {
+    const item = findItem(workspaceId, itemId)
+    if (!item || !item.tasks) return
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return
+    task.needs_human_review = needsHumanReview
   }
 
   // ─── Design mode actions (Chunk 6 of design-mode-redesign plan) ──────
@@ -4069,6 +4119,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // source-column copy AND adds the fresh destination-column copy,
     // producing a visible duplicate in the UI until refresh.
     mirrorKanbanTaskMove,
+    // NEW (chatview-open api-spam fix, 2026-08-24): in-place
+    // needs_human_review patch for `human_touched` SSE events —
+    // replaces the 7× tasks?limit=100 refetch that fired every time
+    // the user opened a task's chatview.
+    applyHumanTouched,
     updateKanbanItemPath,
     updateKanbanItemName,
     fetchKanbanColumns,
