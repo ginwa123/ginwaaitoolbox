@@ -161,6 +161,10 @@ pub const Route = struct {
     /// without invoking the handler. Null = no gate (safe for GETs and
     /// non-browser endpoints). See `RouteOptions`.
     on_pre_handler_fail: ?[]const u8 = null,
+    /// Per-route body-size override (bytes). Null = inherit the group's
+    /// `maxBodyBytes`, or the server's `max_body_bytes` when the group
+    /// has none. See `RouteOptions.max_body_bytes`.
+    max_body_bytes: ?usize = null,
 };
 
 /// Options for the `*WithOpts` route-registration variants. Mirrors the
@@ -172,6 +176,11 @@ pub const RouteOptions = struct {
     /// `/signup?error=cross_origin`. Null disables the gate for this
     /// route (the default — GETs don't need it).
     on_pre_handler_fail: ?[]const u8 = null,
+    /// Per-route body-size cap override (bytes). Takes precedence over
+    /// the group's `maxBodyBytes` and the server's `max_body_bytes`.
+    /// Null = inherit. Example: a 100 MB upload route on an otherwise-
+    /// capped server: `.max_body_bytes = 100 * 1024 * 1024`.
+    max_body_bytes: ?usize = null,
 };
 
 pub fn defaultHandler(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
@@ -222,12 +231,24 @@ pub const Group = struct {
     /// A route's `RouteOptions.on_pre_handler_fail` overrides this.
     /// Null = routes get no gate unless they opt in individually.
     pre_handler_fail_base: ?[]const u8 = null,
+    /// Group-level body-size cap override (bytes). Routes registered
+    /// after `maxBodyBytes` inherit it; route opts win over the group;
+    /// null = inherit the server's `max_body_bytes`. Nested groups
+    /// created after the call inherit it.
+    max_body_bytes: ?usize = null,
 
     /// Set the group-wide fail-redirect base (e.g. `"/admin/users?error="`).
     /// Applies to state-changing routes registered after this call;
     /// nested groups created after this call inherit it.
     pub fn preHandlerFailBase(self: *Group, base: []const u8) !void {
         self.pre_handler_fail_base = try self.router.arena.dupe(u8, base);
+    }
+
+    /// Set a group-wide body-size cap override (bytes). Applies to all
+    /// routes registered after this call; nested groups created after
+    /// this call inherit it. Route-level `.max_body_bytes` wins.
+    pub fn maxBodyBytes(self: *Group, cap: usize) void {
+        self.max_body_bytes = cap;
     }
 
     /// Add a middleware to this group. Runs for every route registered
@@ -322,9 +343,10 @@ pub const Group = struct {
             .router = self.router,
             .prefix = combined,
             .middlewares = mws,
-            // Nested groups inherit the parent's fail base at creation
-            // time (same snapshot semantics as middlewares).
+            // Nested groups inherit the parent's fail base + body cap at
+            // creation time (same snapshot semantics as middlewares).
             .pre_handler_fail_base = self.pre_handler_fail_base,
+            .max_body_bytes = self.max_body_bytes,
         };
     }
 
@@ -358,12 +380,14 @@ pub const Group = struct {
         // changing methods inherit the group's preHandlerFailBase. GET /
         // SSE / WS are never gated.
         const is_state_changing = std.mem.eql(u8, method, "POST") or
-            std.mem.eql(u8, method, "PUT") or
             std.mem.eql(u8, method, "PATCH") or
+            std.mem.eql(u8, method, "PUT") or
             std.mem.eql(u8, method, "DELETE");
         const fail_base: ?[]const u8 = if (opts.on_pre_handler_fail) |b|
             try self.router.arena.dupe(u8, b)
         else if (is_state_changing) self.pre_handler_fail_base else null;
+        // Body-cap resolution: route opts > group maxBodyBytes > null
+        // (null = inherit the server's max_body_bytes at dispatch time).
         try self.router.routes.append(self.router.arena, Route{
             .method = method,
             .path = path,
@@ -373,6 +397,7 @@ pub const Group = struct {
             .ws_handler = ws_handler,
             .middlewares = mws,
             .on_pre_handler_fail = fail_base,
+            .max_body_bytes = opts.max_body_bytes orelse self.max_body_bytes,
         });
     }
 };
@@ -545,6 +570,10 @@ pub const RouteResult = union(enum) {
         ctx: http_parser.HttpContext,
         req: http_parser.HttpRequest,
         res: http_parser.HttpResponse,
+        /// Effective body cap for THIS route: route/group override when
+        /// set, otherwise the server's `max_body_bytes`. The dispatch
+        /// loop passes it to the engine gate.
+        max_body_bytes: usize,
     },
     sse: struct {
         handler: SseHandlerFn,
@@ -595,7 +624,7 @@ pub fn matchRoute(
                 .on_pre_handler_fail = route.on_pre_handler_fail,
             };
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
-            return .{ .handler = .{ .chain = chain, .ctx = ctx, .req = req.*, .res = res } };
+            return .{ .handler = .{ .chain = chain, .ctx = ctx, .req = req.*, .res = res, .max_body_bytes = route.max_body_bytes orelse 0 } };
         }
 
         // Try pattern matching with params (e.g., /hello/:name)
@@ -613,7 +642,7 @@ pub fn matchRoute(
                 .on_pre_handler_fail = route.on_pre_handler_fail,
             };
             const res = http_parser.HttpResponse.init(200, "OK", ctx.allocator);
-            return .{ .handler = .{ .chain = chain, .ctx = ctx, .req = req.*, .res = res } };
+            return .{ .handler = .{ .chain = chain, .ctx = ctx, .req = req.*, .res = res, .max_body_bytes = route.max_body_bytes orelse 0 } };
         }
     }
     return null;

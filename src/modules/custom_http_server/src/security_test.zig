@@ -18,7 +18,13 @@ const builtin = @import("builtin");
 const testing = std.testing;
 const security = @import("security.zig");
 const http_server = @import("http_server.zig");
+const router = @import("router.zig");
+const http_parser = @import("http_parser.zig");
 const linux = std.posix.system;
+
+fn noopHandler(_: http_parser.HttpContext, _: http_parser.HttpRequest, res: http_parser.HttpResponse) anyerror!http_parser.HttpResponse {
+    return res.withBody("");
+}
 
 const TEST_SECRET = "test-csrf-secret-do-not-use-in-prod";
 
@@ -1838,7 +1844,10 @@ test "preGateCheck: zero limit blocks any non-empty body" {
     try testing.expectEqual(security.PreGateResult.block_body_too_large, result);
 }
 
-test "GinwaServer.max_body_bytes defaults to 16 KiB" {
+test "GinwaServer.max_body_bytes defaults to UNLIMITED (opt-in cap)" {
+    // Framework default: no body-size limit. A server that wants a cap
+    // sets `server.max_body_bytes` explicitly. Prevents surprise 413s
+    // for apps that never asked for a limit.
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -1849,7 +1858,130 @@ test "GinwaServer.max_body_bytes defaults to 16 KiB" {
     var server = try http_server.GinwaServer.init(arena.allocator(), undefined, addr);
     defer server.destroy(arena.allocator());
 
-    try std.testing.expectEqual(@as(usize, 16 * 1024), server.max_body_bytes);
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), server.max_body_bytes);
+
+    // And with that default, an arbitrarily large body passes the gate.
+    var req = gateReq(arena.allocator(), "POST", null);
+    req.body = "x" ** 4096;
+    const result = try security.preGateCheck(&req, .{ .enabled = false }, server.max_body_bytes);
+    try testing.expect(result == .pass);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  Per-route / per-group body-size overrides.
+//
+//  Use case: a server capped at 16 KiB with one large /upload route.
+//  Resolution order: RouteOptions.max_body_bytes > Group.maxBodyBytes >
+//  GinwaServer.max_body_bytes. Nested groups inherit at creation time.
+// ───────────────────────────────────────────────────────────────────────────
+
+test "RouteOptions.max_body_bytes overrides server default" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+
+    try g.postWithOpts("/upload", noopHandler, .{ .max_body_bytes = 100 * 1024 * 1024 });
+
+    const cap = r.routes.items[0].max_body_bytes orelse return error.MaxBodyMissing;
+    try std.testing.expectEqual(@as(usize, 100 * 1024 * 1024), cap);
+}
+
+test "route without max_body_bytes option has null (inherits server)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+
+    try g.post("/normal", noopHandler);
+    try std.testing.expectEqual(@as(?usize, null), r.routes.items[0].max_body_bytes);
+}
+
+test "group.maxBodyBytes applies to routes registered after it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+    g.maxBodyBytes(64 * 1024);
+
+    try g.post("/a", noopHandler);
+    try g.get("/b", noopHandler); // GET carries it too — harmless, gate skips GET
+
+    const cap_a = r.routes.items[0].max_body_bytes orelse return error.MaxBodyMissing;
+    try std.testing.expectEqual(@as(usize, 64 * 1024), cap_a);
+}
+
+test "route opts override group maxBodyBytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var g = r.group("");
+    g.maxBodyBytes(64 * 1024);
+
+    try g.postWithOpts("/huge", noopHandler, .{ .max_body_bytes = 512 * 1024 });
+
+    const cap = r.routes.items[0].max_body_bytes orelse return error.MaxBodyMissing;
+    try std.testing.expectEqual(@as(usize, 512 * 1024), cap);
+}
+
+test "nested group inherits parent maxBodyBytes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var rootg = r.group("");
+    rootg.maxBodyBytes(64 * 1024);
+    var adm = try rootg.group("/admin");
+
+    try adm.post("/x", noopHandler);
+    const cap = r.routes.items[0].max_body_bytes orelse return error.MaxBodyMissing;
+    try std.testing.expectEqual(@as(usize, 64 * 1024), cap);
+}
+
+test "nested group can BYPASS parent maxBodyBytes via explicit set" {
+    // Documented escape hatch: a child group that explicitly sets its own
+    // cap overrides the inherited parent value. Same precedence rule as
+    // everywhere else: explicit > inherited.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var rootg = r.group("");
+    rootg.maxBodyBytes(16 * 1024); // parent: tight cap
+    var uploads = try rootg.group("/uploads");
+    uploads.maxBodyBytes(512 * 1024 * 1024); // child: explicit override
+
+    try uploads.post("/video", noopHandler);
+
+    const cap = r.routes.items[0].max_body_bytes orelse return error.MaxBodyMissing;
+    try std.testing.expectEqual(@as(usize, 512 * 1024 * 1024), cap);
+}
+
+test "nested group can also WIDEN a parent fail base via explicit set" {
+    // Same bypass semantics for the redirect base: child sets its own.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var r = router.Router.init(arena.allocator());
+    defer r.deinit();
+    var rootg = r.group("");
+    try rootg.preHandlerFailBase("/?error=");
+    var adm = try rootg.group("/admin");
+    try adm.preHandlerFailBase("/admin/users?error=");
+
+    try adm.post("/x", noopHandler);
+    const base = r.routes.items[0].on_pre_handler_fail orelse return error.FailBaseMissing;
+    try std.testing.expectEqualStrings("/admin/users?error=", base);
 }
 
 test "rateLimitResetForTesting is idempotent on second call" {

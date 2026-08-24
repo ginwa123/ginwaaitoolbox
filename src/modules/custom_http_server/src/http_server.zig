@@ -282,10 +282,18 @@ pub const GinwaServer = struct {
     cors: CORSConfig = .{},
 
     /// Engine-level request-body cap in bytes. ALWAYS enforced by the
-    /// dispatch loop (independent of `cors`) — oversized bodies get a
+    /// dispatch loop (independent of `cors`) — bodies over the cap get a
     /// 413 engine page + console log before any handler runs. Handlers
     /// must not re-check body size.
-    max_body_bytes: usize = 16 * 1024,
+    ///
+    /// DEFAULT: `maxInt(usize)` = effectively unlimited. A server opts
+    /// into a cap explicitly, e.g.:
+    ///   server.max_body_bytes = 16 * 1024;          // 16 KiB
+    ///   server.max_body_bytes = 100 * 1024 * 1024;  // 100 MB uploads
+    /// Per-route / per-group overrides: see `RouteOptions.max_body_bytes`
+    /// and `Group.maxBodyBytes` (e.g. a large `/upload` route on an
+    /// otherwise-capped server).
+    max_body_bytes: usize = std.math.maxInt(usize),
 
     /// Server-wide security response headers (CSP etc.). Defaults to a
     /// strict `'self'`-only baseline. Apps loading third-party assets
@@ -488,7 +496,8 @@ pub const GinwaServer = struct {
                         // ─── Engine auto-gate (zero-config) ─────────────
                         // Two engine-owned protections, both before route
                         // matching:
-                        //   1. Body-size cap (ALWAYS on; server.max_body_bytes)
+                        //   1. Body-size cap (ALWAYS on; effective cap =
+                        //      route/group override or server.max_body_bytes)
                         //   2. Origin allowlist (when server.cors.enabled)
                         // Failure → built-in 403/413 explanation page +
                         // console log so the developer sees the issue.
@@ -564,6 +573,35 @@ pub const GinwaServer = struct {
                         if (server.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
                             switch (result) {
                                 .handler => |h| {
+                                    // ─── Route-level body cap (override) ───
+                                    // When the matched route (or its group)
+                                    // declared a body cap, re-check with THAT
+                                    // limit — it may be tighter OR looser than
+                                    // the server default. `0` = no override.
+                                    if (h.max_body_bytes != 0 and h.max_body_bytes != server.max_body_bytes) {
+                                        const route_gate = security.preGateCheck(&h.req, .{ .enabled = false }, h.max_body_bytes) catch .pass;
+                                        if (route_gate != .pass) {
+                                            std.debug.print(
+                                                "HTTP_SERVER [pre-gate]: {s} {s} blocked ({s}) — route body cap {d} bytes\n",
+                                                .{ h.req.method, h.req.path, @tagName(route_gate), h.max_body_bytes },
+                                            );
+                                            var page = security.buildEngineBlockPage(allocator, route_gate, null, "this route") catch {
+                                                _ = closeFd(fd);
+                                                return;
+                                            };
+                                            defer page.headers.deinit();
+                                            server.applySecurityHeadersTo(&page);
+                                            const page_bytes = page.toBytes() catch {
+                                                _ = closeFd(fd);
+                                                return;
+                                            };
+                                            defer allocator.free(page_bytes);
+                                            _ = server.sendToClient(fd, page_bytes) catch {};
+                                            _ = closeFd(fd);
+                                            return;
+                                        }
+                                    }
+
                                     // ─── Framework pre-handler security gate ───
                                     // When the route opted in via
                                     // `on_pre_handler_fail`, run origin +
@@ -577,7 +615,7 @@ pub const GinwaServer = struct {
                                             allocator,
                                             &h.req,
                                             server.cors,
-                                            security.MAX_BODY_BYTES,
+                                            if (h.max_body_bytes != 0) h.max_body_bytes else security.MAX_BODY_BYTES,
                                             fail_base,
                                         ) catch |err| blk: {
                                             std.debug.print("pre-handler gate failed: {s}\n", .{@errorName(err)});
