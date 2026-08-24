@@ -649,8 +649,12 @@ fn validateModelThinkingOnDiskProfileMap(obj: json.ObjectMap) !void {
         // thinking_budget_tokens: must be a positive integer in
         // (0, 2_000_000]. Type-check the raw JSON value because the
         // on-disk shape bypasses the `ProfileChange` parse struct.
+        // JSON `.null` is the legitimate "no override" sentinel
+        // (matches `LlmProfile.thinking_budget_tokens: ?u32 = null`
+        // in Config.zig) — must be accepted, not rejected.
         if (profile_obj.get("thinking_budget_tokens")) |tbt| {
             switch (tbt) {
+                .null => {},
                 .integer => |i| {
                     if (i <= 0 or i > 2_000_000) return error.InvalidThinkingBudgetTokens;
                 },
@@ -658,13 +662,17 @@ fn validateModelThinkingOnDiskProfileMap(obj: json.ObjectMap) !void {
             }
         }
 
-        // reasoning_effort: must be one of low / medium / high / auto.
+        // reasoning_effort: must be one of low / medium / high / auto,
+        // or `.null` for "no override" (matches
+        // `LlmProfile.reasoning_effort: ?[]const u8 = null`).
         if (profile_obj.get("reasoning_effort")) |re| {
-            const re_str: []const u8 = switch (re) {
-                .string => |s| s,
+            switch (re) {
+                .null => {},
+                .string => |s| {
+                    _ = parse_thinking_mod.parseReasoningEffort(s) catch return error.InvalidReasoningEffort;
+                },
                 else => return error.InvalidReasoningEffort,
-            };
-            _ = parse_thinking_mod.parseReasoningEffort(re_str) catch return error.InvalidReasoningEffort;
+            }
         }
     }
 }
