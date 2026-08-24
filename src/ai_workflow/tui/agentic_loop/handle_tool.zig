@@ -811,6 +811,11 @@ fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
 }
 
 fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, cwd: []const u8, agent_name: []const u8, parent_session_id: []const u8, temperature: f32, is_thinking: bool, is_input: bool, is_output: bool, tool_calls_json: ?[]agent.ToolCall) !void {
+    // 2026-08-24 wire-shape fix (task_1787590621966_10): the raw array is
+    // passed through unchanged — on_event_sent.onEventSendLLMHistory now
+    // serializes tool_calls to a JSON STRING internally (single
+    // serialization point, all callers fixed at once).
+
     const latestMessage = getLatestMessage(allocator, db, session_id) catch |err| {
         std.debug.print("SSE_DEBUG: getLatestMessage failed for session {s}: {s}\n", .{ session_id, @errorName(err) });
         return;

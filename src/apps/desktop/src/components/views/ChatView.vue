@@ -1387,7 +1387,13 @@ const groupToolNames = computed((): (string | null)[] => {
     // Look for any message in this assistant group whose tool_calls_json
     // either already has a matching tool row OR yields parseable names.
     for (const msg of group.messages) {
-      if (msg.tool_calls_json?.trim()) {
+      // 2026-08-24 wire-shape fix (task_1787590621966_10): the backend
+      // now always serializes tool_calls_json as a JSON STRING, but
+      // older events (or any future array-shaped regression) must not
+      // crash the render — `.trim` doesn't exist on arrays and `?.`
+      // only guards null/undefined. Non-string values fall through to
+      // the finish_reason heuristic below instead of throwing.
+      if (typeof msg.tool_calls_json === 'string' && msg.tool_calls_json.trim()) {
         try {
           const parsed = JSON.parse(msg.tool_calls_json)
           // tool_calls_json IS the array directly: [{id, type, function: {name}}]
@@ -1454,7 +1460,10 @@ function findSubAgentArgsForToolGroup(
     if (!g) continue
     if (g.role !== 'assistant') continue
     for (const msg of g.messages) {
-      if (!msg.tool_calls_json) continue
+      // 2026-08-24 wire-shape fix: typeof guard — parseSpawnSubAgentArgs
+      // JSON.parses this value; a non-string (legacy array shape) would
+      // throw inside the computed. Non-strings simply yield no badge.
+      if (typeof msg.tool_calls_json !== 'string') continue
       const args = parseSpawnSubAgentArgs(msg.tool_calls_json, toolCallId)
       if (args) return args
     }

@@ -108,7 +108,14 @@ function applyChunkToMessages(
         finish_reason: ev.finish_reason ?? existing.finish_reason,
         // tool_calls_json / tool_name arrive on the assistant turn that
         // emits a tool call; preserve them across subsequent content chunks.
-        tool_calls_json: (ev as { tool_calls?: unknown }).tool_calls ?? existing.tool_calls_json,
+        // 2026-08-24 wire-shape fix: only copy STRING values into
+        // tool_calls_json — the legacy `ev.tool_calls` field was an
+        // array on the old wire shape, and a non-string here would
+        // crash ChatView's `.trim()` consumer downstream.
+        tool_calls_json:
+          typeof (ev as { tool_calls?: unknown }).tool_calls === 'string'
+            ? (ev as { tool_calls: string }).tool_calls
+            : existing.tool_calls_json,
         tool_name: ev.tool_name ?? existing.tool_name,
       }
       const arr = messages.value.slice()
@@ -123,7 +130,12 @@ function applyChunkToMessages(
           content: ev.content ?? '',
           created_at: ev.created_at ?? Math.floor(Date.now() / 1000),
           tool_name: ev.tool_name,
-          tool_calls_json: (ev as { tool_calls?: unknown }).tool_calls,
+          // 2026-08-24 wire-shape fix: only accept STRING tool_calls —
+          // legacy array-shaped values are dropped (see applyChunkToMessages).
+          tool_calls_json:
+            typeof (ev as { tool_calls?: unknown }).tool_calls === 'string'
+              ? (ev as { tool_calls: string }).tool_calls
+              : undefined,
           finish_reason: ev.finish_reason ?? undefined,
         } as Message
         messages.value = [...messages.value, newMsg]
