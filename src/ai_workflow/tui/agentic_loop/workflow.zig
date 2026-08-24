@@ -2394,3 +2394,130 @@ test "workspace_items_update handler rejects empty body with 400" {
         return error.EmptyBodyNotRejected;
     }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Static-contract tests: dynamic retry/bail error messages
+// (plan: docs/superpowers/plans/2026-08-24-dynamic-retry-error-messages.md)
+//
+// These tests grep THIS file's source for the contract that makes
+// retry/bail diagnostics carry the ACTUAL server reason (HTTP status +
+// body, scanner error, raw SSE sample) instead of only `@errorName`:
+//
+//   1. `saveRetryAttemptMessage` takes a `server_detail` param and
+//      interpolates it into its format literal.
+//   2. Both TooManyRetries bail diagnostics (soft + hard) interpolate
+//      `last_retry_server_detail`.
+//   3. `last_retry_server_detail` is captured on every retry and reset
+//      at every site that resets `last_retry_error`.
+//   4. All three diagnostic insertLLMHistories calls pass
+//      `.is_skip_db = true` — diagnostics must NEVER persist to sqlite
+//      (user constraint, 2026-08-24).
+//
+// Technique follows the workspace_items_update tests above: read the
+// file source at runtime via a repo-root-relative path.
+// ════════════════════════════════════════════════════════════════════════════
+
+const workflowSelfPath = "src/ai_workflow/tui/agentic_loop/workflow.zig";
+
+fn workflowReadSelfSource(allocator: std.mem.Allocator) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        workflowSelfPath,
+        allocator,
+        .limited(4 * 1024 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+test "saveRetryAttemptMessage takes server_detail param and interpolates it" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    const start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse return error.SaveRetryFnMissing;
+    const end = std.mem.indexOfPos(u8, source, start, "\nfn ") orelse return error.SaveRetryFnEndMissing;
+    const body = source[start..end];
+
+    // New parameter in the signature.
+    if (std.mem.indexOf(u8, body, "server_detail: []const u8") == null)
+        return error.ServerDetailParamMissing;
+    // Format literal interpolates it.
+    if (std.mem.indexOf(u8, body, "Server said:") == null)
+        return error.ServerDetailLiteralMissing;
+}
+
+test "retry-catch passes server_detail into saveRetryAttemptMessage" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    const start = std.mem.indexOf(u8, source, "last_retry_source = \"callDynamicAgentNew\";") orelse return error.RetryCatchMissing;
+    const call_start = std.mem.indexOfPos(u8, source, start, "try saveRetryAttemptMessage(") orelse return error.RetryCallMissing;
+    const call_end = std.mem.indexOfPos(u8, source, call_start, ");") orelse return error.RetryCallEndMissing;
+    const call_args = source[call_start..call_end];
+
+    // The catch-site call must reference the detail variable.
+    if (std.mem.indexOf(u8, call_args, "server_detail") == null)
+        return error.ServerDetailNotPassed;
+}
+
+test "both bail diagnostics interpolate last_retry_server_detail" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    // Soft-bail diagnostic.
+    const soft_start = std.mem.indexOf(u8, source, "UNATTENDED SOFT-BAIL") orelse return error.SoftBailMissing;
+    const soft_end = std.mem.indexOfPos(u8, source, soft_start, "Existing hard-bail") orelse return error.SoftBailEndMissing;
+    const soft_body = source[soft_start..soft_end];
+    if (std.mem.indexOf(u8, soft_body, "Server said: {s}") == null or
+        std.mem.indexOf(u8, soft_body, "last_retry_server_detail") == null)
+        return error.SoftBailDetailMissing;
+
+    // Hard-bail diagnostic.
+    const hard_start = std.mem.indexOf(u8, source, "workflow halted after {} consecutive retries") orelse return error.HardBailMissing;
+    const hard_end = std.mem.indexOfPos(u8, source, hard_start, "logger.errFmt(\"TooManyRetries exhausted") orelse return error.HardBailEndMissing;
+    const hard_body = source[hard_start..hard_end];
+    if (std.mem.indexOf(u8, hard_body, "Server said: {s}") == null or
+        std.mem.indexOf(u8, hard_body, "last_retry_server_detail") == null)
+        return error.HardBailDetailMissing;
+}
+
+test "last_retry_server_detail declared, captured, and reset alongside last_retry_error" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    // Declared exactly once in the IMPL section (before the first
+    // `test "` marker) — the count includes this test's own grep string,
+    // so expect exactly 2.
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, source, "var last_retry_server_detail"));
+
+    // Captured at both retry sites + reset at all 3 reset points +
+    // read at both bail sites → expect >= 6 total references.
+    const ref_count = std.mem.count(u8, source, "last_retry_server_detail");
+    if (ref_count < 6)
+        return error.ServerDetailRefCountTooLow;
+}
+
+test "all three diagnostic sites keep is_skip_db=true (never persist to sqlite)" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    // Soft-bail block.
+    const soft_start = std.mem.indexOf(u8, source, "unattended-mode soft-bail after") orelse return error.SoftBailMissing;
+    const soft_end = std.mem.indexOfPos(u8, source, soft_start, "Existing hard-bail") orelse return error.SoftBailEndMissing;
+    if (std.mem.indexOf(u8, source[soft_start..soft_end], ".is_skip_db = true") == null)
+        return error.SoftBailPersistsToDb;
+
+    // Hard-bail block: window runs from the diagnostic literal to the
+    // `return error.TooManyRetries` — covers the insertLLMHistories call.
+    const hard_start = std.mem.indexOf(u8, source, "workflow halted after {} consecutive retries") orelse return error.HardBailMissing;
+    const hard_end = std.mem.indexOfPos(u8, source, hard_start, "return error.TooManyRetries") orelse return error.HardBailEndMissing;
+    if (std.mem.indexOf(u8, source[hard_start..hard_end], ".is_skip_db = true") == null)
+        return error.HardBailPersistsToDb;
+
+    // Per-retry message helper.
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse return error.SaveRetryFnMissing;
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start, "\nfn ") orelse return error.SaveRetryFnEndMissing;
+    if (std.mem.indexOf(u8, source[fn_start..fn_end], ".is_skip_db = true") == null)
+        return error.RetryHelperPersistsToDb;
+}

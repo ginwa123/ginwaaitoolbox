@@ -82,7 +82,4 @@ test {
     // per-thread struct. Drops of these regress user-visible
     // progress to "0 sub-agents".
     _ = @import("tools_exec_spawn_sub_agent.zig");
-    // 2026-08-24 dynamic-retry-error-messages — static-contract tests
-    // grepping workflow.zig for the server_detail threading contract.
-    _ = @import("workflow_retry_detail_test.zig");
 }
