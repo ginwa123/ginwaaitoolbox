@@ -1308,19 +1308,26 @@ jobs:
         # `shell:` key can't take ${{ }} matrix expressions anyway.
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          TARGET: ${{ matrix.target.zig }}
         run: |
           set -euo pipefail
-          stage="bin-stage-${{ matrix.target.zig }}"
+          stage="bin-stage-$TARGET"
           mkdir -p "$stage"
           staged=0
           for bin in nalar nalar-desktop; do
-            for candidate in "$bin" "$bin.exe"; do
-              if [ -f "zig-out/bin/$candidate" ]; then
-                cp "zig-out/bin/$candidate" "$stage/$candidate"
-                echo "→ staged $stage/$candidate"
-                staged=1
-              fi
-            done
+            src="zig-out/bin/$bin"
+            if [ -f "$src" ]; then
+              dst="$stage/$bin-$TARGET"
+            elif [ -f "$src.exe" ]; then
+              src="$src.exe"
+              dst="$stage/$bin-$TARGET.exe"
+            else
+              continue
+            fi
+            cp "$src" "$dst"
+            echo "→ staged $dst"
+            staged=1
           done
           if [ "$staged" -eq 0 ]; then
             echo "✗ no binaries found in zig-out/bin — build step failed?" >&2
@@ -1333,16 +1340,21 @@ jobs:
         # installs pwsh on the Windows runner.
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          TARGET: ${{ matrix.target.zig }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $stage = "bin-stage-${{ matrix.target.zig }}"
+          $stage = "bin-stage-$env:TARGET"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           foreach ($bin in @('nalar', 'nalar-desktop')) {
-            foreach ($candidate in @($bin, "$bin.exe")) {
-              if (Test-Path "zig-out/bin/$candidate") {
-                Copy-Item "zig-out/bin/$candidate" "$stage/$candidate"
-                Write-Host "→ staged $stage/$candidate"
-              }
+            if (Test-Path "zig-out/bin/$bin.exe") {
+              $dst = Join-Path $stage "$bin-$env:TARGET.exe"
+              Copy-Item "zig-out/bin/$bin.exe" $dst
+              Write-Host "→ staged $dst"
+            } elseif (Test-Path "zig-out/bin/$bin") {
+              $dst = Join-Path $stage "$bin-$env:TARGET"
+              Copy-Item "zig-out/bin/$bin" $dst
+              Write-Host "→ staged $dst"
             }
           }
           if (-not (Get-ChildItem $stage)) {
@@ -1374,8 +1386,12 @@ jobs:
             - Commit: ${{ github.sha }}
             - Built: ${{ github.run_id }}
 
-            Assets carry the zig target triple:
-            `nalar[-desktop]-<target>[.exe]`. Install both binaries with
+            Asset names carry the binary name + zig target triple:
+            `nalar-<target>[.exe]`, `nalar-desktop-<target>[.exe]` —
+            e.g. `nalar-x86_64-linux-gnu`,
+            `nalar-desktop-aarch64-macos`,
+            `nalar-desktop-x86_64-windows-gnu.exe`.
+            Install both binaries with
             `sudo scripts/install-nalar-desktop.sh` after downloading.
           prerelease: true
           make_latest: false
