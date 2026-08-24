@@ -115,27 +115,6 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
       if ('column_id' in event) {
         void ws.fetchKanbanColumns(event.workspace_id, event.item_id)
       } else if ('task_id' in event) {
-        // `human_touched` (chatview-open api-spam fix, 2026-08-24):
-        // fired by `PUT .../tasks/:id/touched` every time the user
-        // opens a task's chat. The wire payload carries the full
-        // after-state (`needs_human_review: false`, no column change)
-        // so we patch the local task IN PLACE and return — NO
-        // refetch. Pre-fix, this event fell through to the unassign
-        // branch below (`new_column_id` is null on the wire) and
-        // fired one `tasks?limit=100` per column — 7 calls / ~5 MB
-        // on a 270-task board — just from opening a chatview.
-        if (event.action === 'human_touched') {
-          ws.applyHumanTouched(
-            event.workspace_id,
-            event.item_id,
-            event.task_id,
-            // Backend always sends the explicit after-state on this
-            // action (task_mark_human_touched.zig:91); default false
-            // for defensive parity with older emitters that omit it.
-            event.needs_human_review ?? false,
-          )
-          return
-        }
         // Mirror the local task's column (and position) BEFORE the
         // refetch. Without this mirror, `fetchKanbanTasks`'s merge
         // logic — `otherTasks = filter(t => t.kanban_column_id !==
@@ -148,13 +127,20 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
         // SSE round-trip. Non-UI moves (agent's `kanban_move_task`
         // tool, edits from another tab) bypass `moveTaskToColumn`,
         // so we have to mirror here.
-        ws.mirrorKanbanTaskMove(
-          event.workspace_id,
-          event.item_id,
-          event.task_id,
-          event.new_column_id ?? null,
-          event.new_position ?? undefined,
-        )
+        //
+        // Skipped for `human_touched` (its payload carries
+        // `new_column_id: null` and is NOT a move — the agent's
+        // task-update flow re-fetches the task to flip the
+        // "awaiting review" indicator).
+        if (event.action !== 'human_touched') {
+          ws.mirrorKanbanTaskMove(
+            event.workspace_id,
+            event.item_id,
+            event.task_id,
+            event.new_column_id ?? null,
+            event.new_position ?? undefined,
+          )
+        }
         // Kanban task search (Chunk 7): forward the active q so a
         // remote move/edit during a search doesn't reset the user's
         // narrowed view to the unfiltered list. activeSearchQueries
