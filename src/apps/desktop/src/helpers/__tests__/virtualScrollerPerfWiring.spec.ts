@@ -235,7 +235,7 @@ describe('VirtualScroller adaptive item-height estimation', () => {
   })
 
   it('falls back to the prop when nothing has been measured yet', async () => {
-    const { wrapper, el } = mountScroller({
+    const { wrapper } = mountScroller({
       items: makeItems(50),
       buffer: 2,
       defaultItemHeight: 64,
