@@ -689,106 +689,94 @@ const messagesWrapperRef = ref<HTMLElement | null>(null)
 // first `loadMore` after mount isn't blocked.
 const lastAutoStickAt = ref(0)
 
-// MutationObserver that watches the VirtualScroller's spacer elements
-// (the top/bottom spacer divs whose `style.height` is driven by
-// `visibleRange.topSpacer` / `visibleRange.bottomSpacer`). Whenever
-// spacers resize — which happens asynchronously after VirtualScroller
-// measures real item heights (~50-100ms after mount, and again whenever
-// new items scroll into view) — we re-stick to the bottom IF the user
-// was at the bottom. This is "stick-to-bottom" behavior and naturally
-// handles both the initial-load measurement drift and the chain-reaction
-// where measuring one batch of items reveals more items that get measured
-// too. Once the user scrolls up, isAtBottom flips to false and we stop
-// fighting them.
+// contentShift handler (P2, task_1787551495337_9) — replaces the old
+// spacer MutationObserver. VirtualScroller now positions its window with
+// `translate3d` inside a sizer div (no spacer `style.height` mutations
+// left to observe), so it emits an explicit `contentShift` event whenever
+// the virtual layout's geometry changes. Whenever that happens — which is
+// asynchronously after VirtualScroller measures real item heights
+// (~50-100ms after mount, and again whenever new items scroll into view)
+// — we re-stick to the bottom IF the user was at bottom. This is
+// "stick-to-bottom" behavior and naturally handles both the initial-load
+// measurement drift and the chain-reaction where measuring one batch of
+// items reveals more items that get measured too. Once the user scrolls
+// up, isAtBottom flips to false and we stop fighting them.
 let spacerRafId: number | null = null
 let lastObservedScrollHeight = 0
-let spacerObserver: MutationObserver | null = null
+// True while a loadMore preserve window is in flight — contentShift
+// events are ignored entirely (same effect as the old observer teardown,
+// without detaching anything).
+let suppressContentShiftStick = false
 
-const onSpacersResized = () => {
-  spacerRafId = null
-  const container = virtualScrollerRef.value?.containerRef
-  if (!container) return
-  const newScrollHeight = container.scrollHeight
-  // Only re-stick if the scrollHeight actually changed (a measurement
-  // update). Style mutations from other causes (none in current
-  // VirtualScroller, but defensive) won't trigger a re-scroll.
-  if (newScrollHeight === lastObservedScrollHeight) return
-  const delta = newScrollHeight - lastObservedScrollHeight
-  lastObservedScrollHeight = newScrollHeight
-  // Build a context with the *pre-stick* geometry (scrollTop before
-  // we touch it), so the log answers "what was the world like when
-  // this re-stick fired?".
-  const ctx = buildScrollContext(container, {
-    chatId: sessionId.value || props.chatId,
-    messages: messages.value.length,
-    isAtBottom: isAtBottom.value,
-    virtualScrollerRef,
-    wrapperRef: messagesWrapperRef,
-  })
-  if (!isAtBottom.value) {
-    scrollLogger.debug({
-      ...ctx,
-      caller: 'onSpacersResized',
-      origin: 'programmatic',
-      extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up' },
+const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total: number }) => {
+  if (suppressContentShiftStick) return
+  if (spacerRafId !== null) cancelAnimationFrame(spacerRafId)
+  spacerRafId = requestAnimationFrame(() => {
+    spacerRafId = null
+    const container = virtualScrollerRef.value?.containerRef
+    if (!container) return
+    const newScrollHeight = container.scrollHeight
+    // Only re-stick if the scrollHeight actually changed (a measurement
+    // update). Positioning-only shifts (pure window moves at constant
+    // total height) won't trigger a re-scroll.
+    if (newScrollHeight === lastObservedScrollHeight) return
+    const delta = newScrollHeight - lastObservedScrollHeight
+    lastObservedScrollHeight = newScrollHeight
+    void shift
+    // Build a context with the *pre-stick* geometry (scrollTop before
+    // we touch it), so the log answers "what was the world like when
+    // this re-stick fired?".
+    const ctx = buildScrollContext(container, {
+      chatId: sessionId.value || props.chatId,
+      messages: messages.value.length,
+      isAtBottom: isAtBottom.value,
+      virtualScrollerRef,
+      wrapperRef: messagesWrapperRef,
     })
+    if (!isAtBottom.value) {
+      scrollLogger.debug({
+        ...ctx,
+        caller: 'onContentShift',
+        origin: 'programmatic',
+        extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up' },
+      })
+      scrollLogger.info({
+        ...ctx,
+        caller: 'onContentShift',
+        reason: 'spacer-resize-skip',
+        extra: { delta, lastObservedScrollHeight: newScrollHeight },
+      })
+      return
+    }
+    // We are going to assign scrollTop. Mark the next scroll event as
+    // programmatic BEFORE the assignment so the browser-fired scroll
+    // reads origin='programmatic' in handleVirtualScroll. This is the
+    // critical bit: without it, a stick-to-bottom action looks identical
+    // to a user scroll in the logs.
+    scrollLogger.markProgrammatic()
+    // Record the auto-stick timestamp so the loadMore gate knows the
+    // stick is actively engaged right now (not just that the LLM is
+    // busy — those are different things, see autoStickGate.ts).
+    lastAutoStickAt.value = Date.now()
+    // Native clamp: `scrollTop = scrollHeight` gets clamped to
+    // `scrollHeight - clientHeight` by the browser, so we always land at
+    // the true bottom even if VirtualScroller's cached `containerHeight`
+    // ref is stale.
+    container.scrollTop = container.scrollHeight
     scrollLogger.info({
       ...ctx,
-      caller: 'onSpacersResized',
-      reason: 'spacer-resize-skip',
+      caller: 'onContentShift',
+      reason: 'spacer-resize-stick',
       extra: { delta, lastObservedScrollHeight: newScrollHeight },
     })
-    return
-  }
-  // We are going to assign scrollTop. Mark the next scroll event as
-  // programmatic BEFORE the assignment so the browser-fired scroll
-  // reads origin='programmatic' in handleVirtualScroll. This is the
-  // critical bit: without it, a stick-to-bottom action looks identical
-  // to a user scroll in the logs.
-  scrollLogger.markProgrammatic()
-  // Record the auto-stick timestamp so the loadMore gate knows the
-  // stick is actively engaged right now (not just that the LLM is
-  // busy — those are different things, see autoStickGate.ts).
-  lastAutoStickAt.value = Date.now()
-  // Native clamp: `scrollTop = scrollHeight` gets clamped to
-  // `scrollHeight - clientHeight` by the browser, so we always land at
-  // the true bottom even if VirtualScroller's cached `containerHeight`
-  // ref is stale.
-  container.scrollTop = container.scrollHeight
-  scrollLogger.info({
-    ...ctx,
-    caller: 'onSpacersResized',
-    reason: 'spacer-resize-stick',
-    extra: { delta, lastObservedScrollHeight: newScrollHeight },
   })
 }
 
-const setupSpacerObserver = () => {
-  const container = virtualScrollerRef.value?.containerRef
-  if (!container) return
-  lastObservedScrollHeight = container.scrollHeight
-  spacerObserver = new MutationObserver(() => {
-    if (spacerRafId !== null) cancelAnimationFrame(spacerRafId)
-    spacerRafId = requestAnimationFrame(onSpacersResized)
-  })
-  // Observe the container's direct children only (the two spacers and
-  // the content wrapper). `subtree: false` keeps us from observing every
-  // message bubble's internal style changes, which would be very chatty.
-  // `attributeFilter: ['style']` is the only thing that actually fires
-  // for spacer resize — childList/characterData don't happen for spacers.
-  spacerObserver.observe(container, {
-    attributes: true,
-    attributeFilter: ['style'],
-  })
-}
-
-const teardownSpacerObserver = () => {
+const teardownContentShiftRaf = () => {
   if (spacerRafId !== null) {
     cancelAnimationFrame(spacerRafId)
     spacerRafId = null
   }
-  spacerObserver?.disconnect()
-  spacerObserver = null
 }
 
 // State
@@ -1588,14 +1576,14 @@ const loadChatHistory = async (loadMore = false) => {
     }))
 
     if (loadMore) {
-      // Tear down the spacer MutationObserver for the duration of the
+      // Suppress the contentShift re-stick for the duration of the
       // preserve. The user is scrolling *up* to load older history
       // (not at the bottom), so the stick-to-bottom behavior is
-      // useless here — and its onSpacersResized callback firing on
-      // every spacer resize during the forceRender/measure/anchor
-      // dance is what was causing the visible flicker. Detaching it
-      // eliminates that work entirely for this window.
-      teardownSpacerObserver()
+      // useless here — and its re-stick callback firing on every
+      // layout shift during the forceRender/measure/anchor dance is
+      // what was causing the visible flicker. Detaching the rAF
+      // handler eliminates that work entirely for this window.
+      suppressContentShiftStick = true
 
       // Preserve scroll position when prepending new (older) messages at the top.
       // beginPreserve must be called BEFORE mutating the array so the anchor
@@ -1648,13 +1636,13 @@ const loadChatHistory = async (loadMore = false) => {
         },
       })
 
-      // Re-attach the observer. setupSpacerObserver also re-initializes
-      // `lastObservedScrollHeight` from the current `scrollHeight`, so
-      // the next spacer resize is compared against the post-preserve
-      // state — not the stale pre-preserve value, which would have made
-      // the very first post-preserve spacer resize look like a
-      // "measurement update" and re-trigger the stick path.
-      setupSpacerObserver()
+      // Re-arm the re-stick. Re-seed `lastObservedScrollHeight` from the
+      // current `scrollHeight`, so the next contentShift is compared
+      // against the post-preserve state — not the stale pre-preserve
+      // value, which would have made the very first post-preserve shift
+      // look like a "measurement update" and re-trigger the stick path.
+      lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
+      suppressContentShiftStick = false
     } else {
       // Initial load path. Set isInitialLoad BEFORE the messages
       // assignment so the messages-length watcher's sync callback
@@ -2478,11 +2466,11 @@ onMounted(async () => {
   }
 
   if (sessionId.value) {
-    // Set up the spacer MutationObserver BEFORE loadChatHistory so we
-    // catch the very first measurement-driven spacer resize. The
-    // VirtualScroller's child component mounts before us (child before
-    // parent in Vue 3), so its containerRef is already populated.
-    setupSpacerObserver()
+    // Seed the re-stick baseline BEFORE loadChatHistory so we catch the
+    // very first measurement-driven contentShift. The VirtualScroller's
+    // child component mounts before us (child before parent in Vue 3),
+    // so its containerRef is already populated.
+    lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
 
     await loadChatHistory()
     connectSse()
@@ -2498,7 +2486,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  teardownSpacerObserver()
+  teardownContentShiftRaf()
   disconnectSse()
   stopGitStatusPoll()
   document.removeEventListener('click', closeOnOutsideClick)
@@ -2846,6 +2834,7 @@ const compactSession = async () => {
           @load-more-suppressed="handleLoadMoreSuppressed"
           @scroll="handleVirtualScroll"
           @scrollability-change="scrollerIsScrollable = $event"
+          @content-shift="onContentShift"
         >
           <template #default="{ item: group, index: groupIndex }">
             <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">

@@ -219,15 +219,18 @@ describe('VirtualScroller adaptive item-height estimation', () => {
     await vi.advanceTimersByTimeAsync(120)
     await nextTick()
 
-    // Read spacers from the DOM.
-    const spacers = el.querySelectorAll('.virtual-scroller-spacer')
-    expect(spacers.length).toBe(2)
-    const bottomSpacerPx = parseFloat((spacers[1] as HTMLElement).style.height)
+    // Read the positioning values from the contentShift emit (P2: no
+    // spacer DIVs anymore — the payload carries topSpacer/bottomSpacer).
+    const events = wrapper.emitted<[shift: { topSpacer: number; bottomSpacer: number; total: number }]>(
+      'contentShift',
+    )
+    expect(events).toBeTruthy()
+    const last = events![events!.length - 1]![0]
 
     // Static-64 estimate for the ~95 unmeasured tail items would be
     // 95*64 ≈ 6080px. Adaptive median(300) gives ≈ 28500px. Assert we
     // got the ADAPTIVE value (well above the static estimate).
-    expect(bottomSpacerPx).toBeGreaterThan(15000)
+    expect(last.bottomSpacer).toBeGreaterThan(15000)
     wrapper.unmount()
   })
 
@@ -245,9 +248,12 @@ describe('VirtualScroller adaptive item-height estimation', () => {
     // is 0 until the first scroll event syncs it (jsdom has no layout),
     // so visibleRange sees viewBottom=scrollTop+0 → only buffer items
     // render: start=0, end=2 → bottom=(50-2)*64=3072.
-    const spacers = el.querySelectorAll('.virtual-scroller-spacer')
-    const bottomSpacerPx = parseFloat((spacers[1] as HTMLElement).style.height)
-    expect(bottomSpacerPx).toBeCloseTo(3072, 0)
+    const events = wrapper.emitted<[shift: { topSpacer: number; bottomSpacer: number; total: number }]>(
+      'contentShift',
+    )
+    expect(events).toBeTruthy()
+    const last = events![events!.length - 1]![0]
+    expect(last.bottomSpacer).toBeCloseTo(3072, 0)
     wrapper.unmount()
   })
 })
