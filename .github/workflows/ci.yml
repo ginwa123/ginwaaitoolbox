@@ -896,17 +896,28 @@ jobs:
           restore-keys: |
             v2-zig-${{ runner.os }}-${{ matrix.target.zig }}-
 
-      - name: Run main test suite
+      - name: Test + build (single zig invocation)
         if: runner.os != 'Windows'
-        run: zig build test --summary all
+        # PERF (2026-08-25): `zig build test` and `zig build
+        # nalar-desktop` used to be two separate steps. Each invocation
+        # pays a full dependency-graph traversal + vendor-probe pass, so
+        # merging them into ONE command removes the duplicate walk while
+        # still compiling everything both steps needed:
+        #   - test binaries (compile + run via --listen=-)
+        #   - install nalar         → zig-out/bin/nalar (~58 MB)
+        #   - install nalar-desktop → zig-out/bin/nalar-desktop (~34 MB,
+        #     embedded webapp; needed by scripts/install-nalar-desktop.sh)
+        # `--summary all` prints per-step totals for BOTH the test run
+        # and the install steps in one output.
+        run: zig build test nalar-desktop --summary all
 
-      - name: Run main test suite (Windows)
+      - name: Test + build (single zig invocation, Windows)
         # After this PR's build.zig probes detect vcpkg-installed
         # libs at `C:/vcpkg/installed/x64-windows/{include,lib}/`
         # (sqlite3, openssl/ssl, openssl/crypto, libpq, curl) and the
         # `fetch-vendor-{sqlite3,curl}` bash steps are skipped
-        # automatically, `zig build test` works on Windows without
-        # needing the broken Strawberry-Perl/python3 git-bash env.
+        # automatically, `zig build test nalar-desktop` works on Windows
+        # without needing the broken Strawberry-Perl/python3 git-bash env.
         # The CI installs the vcpkg ports (curl:openssl:libpq:sqlite3
         # at the `Install vcpkg ports (Windows)` step), so the build
         # probes always find them.
@@ -931,32 +942,9 @@ jobs:
           # vcpkg bin dir — libcurl.dll, libssl-3.dll, libcrypto-3.dll,
           # sqlite3.dll live here and the test binary needs them at runtime.
           $env:PATH = 'C:\vcpkg\installed\x64-windows\bin;' + $env:PATH
-          # Build the test binary (compile + run via --listen=-).
-          & $bash -lc 'zig build test --summary all'
-
-      - name: Build nalar + nalar-desktop binaries
-        if: runner.os != 'Windows'
-        # The deliverable. Runs on both Linux and macOS cells (each builds
-        # its native platform's ELF/Mach-O via `zig build nalar-desktop`):
-        #   install nalar         → zig-out/bin/nalar
-        #     compile exe nalar  → ~58 MB native binary
-        #   install nalar-desktop → zig-out/bin/nalar-desktop
-        #     compile exe nalar-desktop → ~34 MB native binary w/ embedded webapp
-        # Both are needed by scripts/install-nalar-desktop.sh.
-        run: zig build nalar-desktop --summary all
-
-      - name: Build nalar + nalar-desktop binaries (Windows)
-        # After build.zig probes detect vcpkg-installed libs and the
-        # bash vendor steps are skipped automatically, `zig build
-        # nalar-desktop` works on the Windows runner the same way it
-        # does on the Linux cross-compile cell. The two cells produce
-        # the same .exe — native Windows build now matches the
-        # `install:windows` cross-compile.
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
-          & 'C:\Program Files\Git\bin\bash.exe' -lc 'zig build nalar-desktop --summary all'
+          # Build the test binaries AND both deliverable exes in one
+          # graph walk (see the non-Windows twin above).
+          & $bash -lc 'zig build test nalar-desktop --summary all'
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
