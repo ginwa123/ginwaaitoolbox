@@ -584,7 +584,71 @@ pub const LlmConfig = struct {
         // Parse top-level sub_agents (skip-with-warning on bad entries).
         config.sub_agents = try parseSubAgentsList(allocator, config_json.sub_agents);
 
+        // Plan 2026-08-24-config-simplify-remove-defaults: config.json no
+        // longer carries top-level api_key/model/base_url/url_style. When
+        // absent/empty, derive them from the active profile so every
+        // downstream consumer of cfg.model etc. keeps working unchanged.
+        // Present keys always win (backward compat with old configs).
+        try backfillTopLevelFromProfiles(&config);
+
         return config;
+    }
+
+    /// Derive empty top-level LLM fields from the resolved profile.
+    ///
+    /// Cascade: `active_profile` → first profile entry (HashMap iteration
+    /// order — nondeterministic with multiple profiles; documented as
+    /// unspecified. Deterministic-path tests use single-profile fixtures).
+    ///
+    /// url_style note: `LlmConfigJson.url_style` defaults to "openai", so
+    /// an ABSENT key is indistinguishable from explicit-openai post-parse.
+    /// Rule: whenever ANY field is backfilled, a non-empty profile
+    /// url_style also wins over the parse default (the profile defines the
+    /// wire format). An explicitly-set top-level url_style is preserved by
+    /// the same rule only when it differs... no — simpler: profile wins for
+    /// url_style whenever the other fields needed backfilling AND the
+    /// profile's url_style is non-empty. Explicit top-level configs that
+    /// set all four keys never enter this path at all.
+    fn backfillTopLevelFromProfiles(config: *LlmConfig) LoadError!void {
+        const needs_backfill =
+            config.model.len == 0 or
+            config.base_url.len == 0 or
+            config.api_key.len == 0;
+        if (!needs_backfill) return;
+
+        // resolveSessionProfileCompat walks selected→active; here there is
+        // no session context, so selection is just active_profile.
+        var p: ?LlmProfile = config.resolveSessionProfileCompat("");
+        if (p == null) {
+            // No active profile (or it names a missing entry): fall back to
+            // the first profile with a non-empty model.
+            var it = config.profiles_models.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.model.len > 0) {
+                    p = entry.value_ptr.*;
+                    break;
+                }
+            }
+        }
+        const prof = p orelse return; // no usable profile → leave as-is
+
+        if (config.model.len == 0) {
+            config.model = try config.allocator.dupe(u8, prof.model);
+        }
+        if (config.base_url.len == 0) {
+            config.base_url = try config.allocator.dupe(u8, prof.base_url);
+        }
+        if (config.api_key.len == 0) {
+            config.api_key = try config.allocator.dupe(u8, prof.api_key);
+        }
+        // url_style: profile-wins rule (see doc comment above). Only when
+        // we actually backfilled something AND the profile's style is set.
+        if (prof.url_style.len > 0 and !std.mem.eql(u8, config.url_style, prof.url_style)) {
+            // Free the old owned slice before replacing (url_style is
+            // always heap-owned: duped in init/clone).
+            config.allocator.free(config.url_style);
+            config.url_style = try config.allocator.dupe(u8, prof.url_style);
+        }
     }
 
     /// Free all keys and value strings inside a ProfilesMap, then deinit the map.
