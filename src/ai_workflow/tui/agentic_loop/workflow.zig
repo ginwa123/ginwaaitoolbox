@@ -15,7 +15,6 @@ const sqlite = nalarcore.sqlite;
 const migration_mod = nalarcore.migrations_mod.migration;
 const migration = migration_mod;
 const config_mod = nalarcore.config;
-const parse_thinking_mod = nalarcore.parse_thinking;
 const logger_mod = nalarcore.loggermod;
 const agent = nalarcore.agent;
 const prompt = nalarcore.agent.prompt;
@@ -200,51 +199,6 @@ pub const RunAgenticMultiStepInput = struct {
     environment: ?*const std.process.Environ.Map,
 };
 
-/// Resolve a single LLM field by walking the profile cascade:
-///   1. `selected_profile_model` if non-empty AND profile exists
-///   2. `config.active_profile` if non-null AND non-empty AND profile exists
-///   3. top-level `top_level` fallback
-///
-/// `comptime field` is the name of the field on `LlmProfile` to read
-/// (e.g. `"model"`, `"api_key"`, `"base_url"`, `"url_style"`).
-///
-/// The caller is responsible for emitting any "profile not found"
-/// warning (we don't log here so this helper stays logger-free and
-/// unit-testable — `runAgenticMultiStepnew` emits the warning at the
-/// one place where it can compute it cheaply without duplicating the
-/// `getProfile` lookup).
-///
-/// Plan: docs/superpowers/plans/2026-08-06-set-active-profile-default.md
-fn resolveProfileField(
-    comptime field: []const u8,
-    config: *const config_mod.LlmConfig,
-    selected_profile_model: []const u8,
-    active_profile: ?[]const u8,
-    top_level: []const u8,
-) []const u8 {
-    // Step 1: per-session / per-call selection wins.
-    if (selected_profile_model.len > 0) {
-        if (config.getProfile(selected_profile_model)) |profile| {
-            const v = @field(profile, field);
-            if (v.len > 0) return v;
-        }
-    }
-    // Step 2: user-set active profile (the new fallback). Silent on
-    // miss — `active_profile` is the user's default, so a typo or a
-    // deleted profile is a normal fall-through to top-level (logged
-    // at the call site if the user wants to debug).
-    if (active_profile) |ap| {
-        if (ap.len > 0) {
-            if (config.getProfile(ap)) |profile| {
-                const v = @field(profile, field);
-                if (v.len > 0) return v;
-            }
-        }
-    }
-    // Step 3: top-level config (built-in default).
-    return top_level;
-}
-
 // ─── re_read_selected_profile_model — live-re-read from sessions table ─────
 //
 // **Why this helper exists** (bug report task_1786031708725, 2026-08-06):
@@ -428,96 +382,28 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     );
 
     var config = nalarcore.getLlmConfig(di.di);
-    var effective_api_key = resolveProfileField("api_key", config, params.selected_profile_model, config.active_profile, config.api_key);
-    var effective_model = resolveProfileField("model", config, params.selected_profile_model, config.active_profile, config.model);
-    var effective_base_url = resolveProfileField("base_url", config, params.selected_profile_model, config.active_profile, config.base_url);
-    var effective_url_style = resolveProfileField("url_style", config, params.selected_profile_model, config.active_profile, config.url_style);
-
-    // === Model-thinking (plan 2026-08-23-model-thinking) =============
-    // Resolve the per-profile `thinking` / `thinking_budget_tokens` /
-    // `reasoning_effort` into typed effective-* vars the rest of the
-    // workflow can use without re-parsing. This is the MAIN-AGENT
-    // wire that was previously missing — the UI's Thinking selector
-    // (Auto / On / Off) was purely cosmetic for main-agent sessions
-    // because `get_current_agent_by_session_id` defaults
-    // `is_thinking = true` via `COALESCE(is_thinking, 1)`. The
-    // profile's `thinking` string is parsed into a typed `?bool`
-    // (auto → null, on → true, off → false) and then persisted onto
-    // the session's initial `llm_history.is_thinking` value below
-    // via the initial-agent-state INSERT.
+    // === Profile resolution (plan 2026-08-23-refactor-profile-resolution)
+    // ONE typed cascade — selected_profile → active_profile → top-level —
+    // for ALL fields (model/base_url/api_key/url_style + the
+    // model-thinking trio). Replaces ~120 lines of hand-rolled cascade
+    // blocks previously duplicated across this entry site and the
+    // per-iteration re-read below.
     //
-    // For sub-agents, `params.sub_agent_overrides` (built from
-    // `ResolvedSubAgent`) carries the same fields and overrides the
-    // profile resolution at the per-iteration override site (see
-    // block at lines ~805-810).
-    var effective_thinking_str: []const u8 = blk: {
-        if (params.selected_profile_model.len > 0) {
-            if (config.getProfile(params.selected_profile_model)) |profile| {
-                if (profile.thinking.len > 0) break :blk profile.thinking;
-            }
-        }
-        if (config.active_profile) |ap| {
-            if (ap.len > 0) {
-                if (config.getProfile(ap)) |profile| {
-                    if (profile.thinking.len > 0) break :blk profile.thinking;
-                }
-            }
-        }
-        break :blk "auto";
-    };
-    // Parse the resolved string. Garbage falls through to null
-    // (= auto) — same defensive pattern as the sub-agent path
-    // (buildResolvedFromConfig catches and ignores bad values).
-    var effective_is_thinking: ?bool = parse_thinking_mod.parseThinkingString(effective_thinking_str) catch null;
-    // `thinkingAdaptive` is true when the user picked "auto" — that
-    // branch maps to Anthropic's `type: "adaptive"` mode in
-    // buildJsonAnthropicRequest, letting the model pick its own
-    // budget. When user picked "on", we use the explicit
-    // budget_tokens override (or the 50%-of-max heuristic when null).
-    var effective_thinking_adaptive: bool = std.mem.eql(u8, effective_thinking_str, "auto");
-    // Budget override for Anthropic extended thinking. Cascade
-    // exactly like resolveProfileField (per-session → active → null).
-    var effective_thinking_budget_tokens: ?u32 = null;
-    if (params.selected_profile_model.len > 0) {
-        if (config.getProfile(params.selected_profile_model)) |profile| {
-            if (profile.thinking_budget_tokens) |t| effective_thinking_budget_tokens = t;
-        }
-    }
-    if (effective_thinking_budget_tokens == null) {
-        if (config.active_profile) |ap| {
-            if (ap.len > 0) {
-                if (config.getProfile(ap)) |profile| {
-                    if (profile.thinking_budget_tokens) |t| effective_thinking_budget_tokens = t;
-                }
-            }
-        }
-    }
-    // Reasoning effort (OpenAI o1/o3/GPT-5/DeepSeek-R1). Same
-    // cascade. Empty string is normalized to null upstream by the
-    // HTTP layer; we still defensively skip it here.
-    var effective_reasoning_effort: ?[]const u8 = null;
-    if (params.selected_profile_model.len > 0) {
-        if (config.getProfile(params.selected_profile_model)) |profile| {
-            if (profile.reasoning_effort) |re| {
-                if (re.len > 0) effective_reasoning_effort = re;
-            }
-        }
-    }
-    if (effective_reasoning_effort == null) {
-        if (config.active_profile) |ap| {
-            if (ap.len > 0) {
-                if (config.getProfile(ap)) |profile| {
-                    if (profile.reasoning_effort) |re| {
-                        if (re.len > 0) effective_reasoning_effort = re;
-                    }
-                }
-            }
-        }
-    }
+    // Model-thinking semantics preserved: `is_thinking` /
+    // `thinking_adaptive` are derived ONCE from the final
+    // `thinking_str` inside resolveEffectiveProfile ("auto" →
+    // null/true, "on" → true/false, "off" → false/false, garbage →
+    // null/false). The profile's choice is persisted onto the session's
+    // initial llm_history.is_thinking via the user-message INSERT below.
+    //
+    // For sub-agents, params.sub_agent_overrides (built from
+    // ResolvedSubAgent) overrides these values at the override site
+    // further down the loop body.
+    var eff = config.resolveEffectiveProfile(params.selected_profile_model);
 
     logger.infoFmt(
-        "[CHECKPOINT] profile selected_profile_model='{s}' effective_model={s} effective_base_url={s} effective_url_style={s} effective_thinking_str={s} effective_thinking_budget_tokens={?d} effective_reasoning_effort={?s}",
-        .{ params.selected_profile_model, effective_model, effective_base_url, effective_url_style, effective_thinking_str, effective_thinking_budget_tokens, effective_reasoning_effort },
+        "[CHECKPOINT] profile selected_profile_model='{s}' eff.model={s} eff.base_url={s} eff.url_style={s} eff.thinking_str={s} eff.thinking_budget_tokens={?d} eff.reasoning_effort={?s}",
+        .{ params.selected_profile_model, eff.model, eff.base_url, eff.url_style, eff.thinking_str, eff.thinking_budget_tokens, eff.reasoning_effort },
     );
 
     const copy_parent_session_id = try parent_allocator.dupe(u8, params.parent_session_id);
@@ -747,101 +633,20 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         {
             logger.warnFmt("WORKFLOW: selected_profile_model '{s}' not found in LlmConfig.profiles_models, using top-level config", .{live_selected_profile_model});
         }
-        effective_api_key = resolveProfileField("api_key", config, live_selected_profile_model, config.active_profile, config.api_key);
-        effective_model = resolveProfileField("model", config, live_selected_profile_model, config.active_profile, config.model);
-        effective_base_url = resolveProfileField("base_url", config, live_selected_profile_model, config.active_profile, config.base_url);
-        effective_url_style = resolveProfileField("url_style", config, live_selected_profile_model, config.active_profile, config.url_style);
-
-        // === Per-iteration model-thinking re-resolution =====================
-        // Mirrors the resolveProfileField cascade for the new thinking /
-        // budget / effort fields so user-initiated profile changes via
-        // NalarSettings take effect on the NEXT LLM call without waiting
-        // for the workflow run to end. Same live-re-read pattern as the
-        // effective_* fields above.
-        const iter_thinking_str: []const u8 = blk: {
-            if (live_selected_profile_model.len > 0) {
-                if (config.getProfile(live_selected_profile_model)) |p| {
-                    if (p.thinking.len > 0) break :blk p.thinking;
-                }
-            }
-            if (config.active_profile) |ap| {
-                if (ap.len > 0) {
-                    if (config.getProfile(ap)) |p| {
-                        if (p.thinking.len > 0) break :blk p.thinking;
-                    }
-                }
-            }
-            break :blk "auto";
-        };
-        const iter_is_thinking: ?bool = parse_thinking_mod.parseThinkingString(iter_thinking_str) catch null;
-        const iter_thinking_adaptive: bool = std.mem.eql(u8, iter_thinking_str, "auto");
-        var iter_thinking_budget_tokens: ?u32 = null;
-        if (live_selected_profile_model.len > 0) {
-            if (config.getProfile(live_selected_profile_model)) |p| {
-                if (p.thinking_budget_tokens) |t| iter_thinking_budget_tokens = t;
-            }
-        }
-        if (iter_thinking_budget_tokens == null) {
-            if (config.active_profile) |ap| {
-                if (ap.len > 0) {
-                    if (config.getProfile(ap)) |p| {
-                        if (p.thinking_budget_tokens) |t| iter_thinking_budget_tokens = t;
-                    }
-                }
-            }
-        }
-        var iter_reasoning_effort: ?[]const u8 = null;
-        if (live_selected_profile_model.len > 0) {
-            if (config.getProfile(live_selected_profile_model)) |p| {
-                if (p.reasoning_effort) |re| {
-                    if (re.len > 0) iter_reasoning_effort = re;
-                }
-            }
-        }
-        if (iter_reasoning_effort == null) {
-            if (config.active_profile) |ap| {
-                if (ap.len > 0) {
-                    if (config.getProfile(ap)) |p| {
-                        if (p.reasoning_effort) |re| {
-                            if (re.len > 0) iter_reasoning_effort = re;
-                        }
-                    }
-                }
-            }
-        }
-        // Promote the per-iteration resolution back into the
-        // `effective_*` variables so the rest of the loop body uses
-        // the live values without renaming every call site.
-        effective_thinking_str = iter_thinking_str;
-        effective_is_thinking = iter_is_thinking;
-        effective_thinking_adaptive = iter_thinking_adaptive;
-        effective_thinking_budget_tokens = iter_thinking_budget_tokens;
-        effective_reasoning_effort = iter_reasoning_effort;
-
-        // 2026-08-21-fix-ui-context-window — resolve the session's
-        // selected profile once per iteration so the compaction threshold
-        // decision (maybeCompactMessagesNew → shouldCompactDefault) honors
-        // the profile's `max_capacity_tokens` / `compaction_threshold_percent`
-        // overrides. Mirrors the resolveProfileField cascade: session
-        // selection → active_profile → null (top-level defaults).
-        // `getProfile` returns the profile by value borrowing from the
-        // config (process-lifetime singleton) — safe to use within the
-        // iteration; no free needed.
-        const iter_profile: ?config_mod.LlmConfig.LlmProfile = blk: {
-            if (live_selected_profile_model.len > 0) {
-                if (config.getProfile(live_selected_profile_model)) |p| break :blk p;
-            }
-            if (config.active_profile) |ap| {
-                if (ap.len > 0) {
-                    if (config.getProfile(ap)) |p| break :blk p;
-                }
-            }
-            break :blk null;
-        };
+        // === Per-iteration profile re-resolution ============================
+        // ONE typed cascade call replaces the 4× resolveProfileField +
+        // ~50 lines of hand-rolled thinking/budget/effort blocks + the
+        // iter_profile lookup. Same live-re-read pattern as the
+        // effective_* fields above: user-initiated profile changes via
+        // NalarSettings take effect on the NEXT LLM call without
+        // waiting for the workflow run to end.
+        eff = config.resolveEffectiveProfile(live_selected_profile_model);
+        const iter_profile: ?config_mod.LlmConfig.LlmProfile =
+            config.resolveSessionProfileCompat(live_selected_profile_model);
 
         logger.infoFmt(
-            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} effective_model={s}",
-            .{ copy_session_id, loop_counter, retry_count, effective_model },
+            "[CHECKPOINT] loop iter start session_id={s} loop_counter={d} retry_count={d} eff.model={s}",
+            .{ copy_session_id, loop_counter, retry_count, eff.model },
         );
 
         // Check cancellation using DB
@@ -891,7 +696,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
-                    .model = effective_model,
+                    .model = eff.model,
                     .response_content = queued.message,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
@@ -916,7 +721,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     // below) win over the profile, and the session's own
                     // mid-conversation `set_agent_properties` tool call
                     // wins over both via its own `ov.is_thinking` path.
-                    .is_thinking = effective_is_thinking orelse initial_agent_state.is_thinking,
+                    .is_thinking = eff.is_thinking orelse initial_agent_state.is_thinking,
                     .prompt_tokens = 0,
                     .completion_tokens = 0,
                     .total_tokens = 0,
@@ -969,21 +774,21 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // bool/f32 fields override the session's current values.
         var sub_agent_session_name: []const u8 = "";
         if (params.sub_agent_overrides) |ov| {
-            if (ov.model.len > 0) effective_model = ov.model;
-            if (ov.base_url.len > 0) effective_base_url = ov.base_url;
-            if (ov.api_key.len > 0) effective_api_key = ov.api_key;
-            if (ov.url_style.len > 0) effective_url_style = ov.url_style;
+            if (ov.model.len > 0) eff.model = ov.model;
+            if (ov.base_url.len > 0) eff.base_url = ov.base_url;
+            if (ov.api_key.len > 0) eff.api_key = ov.api_key;
+            if (ov.url_style.len > 0) eff.url_style = ov.url_style;
             if (ov.is_thinking) |t| {
                 isThinking = t;
                 // Mirror the override onto the session-state carrier
                 // so the user-message INSERT below carries the
                 // sub-agent's resolved `is_thinking`, not the
                 // profile's. Without this, the inserted user row
-                // would record `effective_is_thinking` (from the
+                // would record `eff.is_thinking` (from the
                 // profile), and the assistant response would echo it
                 // even though the sub-agent actually uses `isThinking`
                 // for its LLM call.
-                effective_is_thinking = t;
+                eff.is_thinking = t;
             }
             if (ov.temperature) |t| agent_temperature = t;
             // Model-thinking overrides (plan 2026-08-23-model-thinking).
@@ -993,9 +798,9 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // effective_* vars keep their per-iteration resolved
             // values. The empty-string guard on reasoning_effort
             // matches the form's "auto" representation.
-            if (ov.thinking_budget_tokens) |t| effective_thinking_budget_tokens = t;
+            if (ov.thinking_budget_tokens) |t| eff.thinking_budget_tokens = t;
             if (ov.reasoning_effort) |re| {
-                if (re.len > 0) effective_reasoning_effort = re;
+                if (re.len > 0) eff.reasoning_effort = re;
             }
             sub_agent_session_name = ov.resolved_name;
         }
@@ -1063,7 +868,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     // accumulated across unattended-mode cycles.
                     .is_skip_db = true,
                     .cwd = copy_cwd,
-                    .entity = .{ .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .session_id = copy_session_id, .model = effective_model, .response_content = soft_diagnostic, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = effective_agent_name, .loop_index = loop_counter, .temperature = agent_temperature, .is_thinking = isThinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = copy_parent_session_id, .parent_session_id = copy_parent_session_id, .is_input = true, .is_output = false, .image_urls = null, .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .is_feed_to_llm = false },
+                    .entity = .{ .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .session_id = copy_session_id, .model = eff.model, .response_content = soft_diagnostic, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = effective_agent_name, .loop_index = loop_counter, .temperature = agent_temperature, .is_thinking = isThinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = copy_parent_session_id, .parent_session_id = copy_parent_session_id, .is_input = true, .is_output = false, .image_urls = null, .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .is_feed_to_llm = false },
                 });
 
                 if (!retryDelayMs(.{
@@ -1118,7 +923,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
-                    .model = effective_model,
+                    .model = eff.model,
                     .response_content = diagnostic,
                     .reasoning_content = null,
                     .role = agent.Role.user.to_str(),
@@ -1174,7 +979,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
         loop_counter += 1;
         if (loop_counter == 1 and is_task_kanban == false) {
-            generateSessionNameNew(db_messages, allocator, effective_api_key, effective_model, effective_base_url, copy_session_id, logger, io, db, event_bus);
+            generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, copy_session_id, logger, io, db, event_bus);
         }
 
         const merged_tools = try filterAndMergeTools(allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
@@ -1187,7 +992,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         try messagesLists.appendSlice(allocator, initialMessages);
 
-        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, effective_model, false, &messagesLists, effective_api_key, effective_base_url, effective_url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config, if (iter_profile) |*p| p else null);
+        const is_do_compaction = try maybeCompactMessagesNew(defaultCompactDeps, allocator, total_tokens, eff.model, false, &messagesLists, eff.api_key, eff.base_url, eff.url_style, copy_cwd, copy_session_id, db, io, logger, event_bus, config, if (iter_profile) |*p| p else null);
         if (is_do_compaction) {
             logger.infoFmt(
                 "[CHECKPOINT] compaction triggered session_id={s} loop_counter={d} total_tokens={d} prompt_msg_count={d}",
@@ -1201,11 +1006,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         const checkpoint_llm_start_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
         logger.infoFmt(
             "[CHECKPOINT] calling LLM session_id={s} model={s} loop_counter={d} prompt_msg_count={d} max_tokens={d} retry_count={d}",
-            .{ copy_session_id, effective_model, loop_counter, messagesLists.items.len, current_max_tokens, retry_count },
+            .{ copy_session_id, eff.model, loop_counter, messagesLists.items.len, current_max_tokens, retry_count },
         );
 
         var last_dynamic_agent_error_message: ?[]const u8 = null;
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, effective_thinking_budget_tokens, effective_thinking_adaptive, effective_reasoning_effort, effective_api_key, effective_model, effective_base_url, effective_url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, eff.thinking_budget_tokens, eff.thinking_adaptive, eff.reasoning_effort, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -1233,7 +1038,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // each attempt live AND the AI has the full retry progression
             // in context for its next turn (instead of only learning about
             // retries after the budget is exhausted).
-            try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), server_detail, config.retry_delay_ms);
+            try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, eff.model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), server_detail, config.retry_delay_ms);
             // Sleep before the next attempt so the upstream can recover (or
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
@@ -1337,7 +1142,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                     .session_id = copy_session_id,
-                    .model = effective_model,
+                    .model = eff.model,
                     .response_content = res_dynamic_agent.content orelse "",
                     .reasoning_content = res_dynamic_agent.reasoning_content,
                     .role = agent.Role.assistant.to_str(),
@@ -1418,7 +1223,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // sub-agents stuck to the profile at run start.) The snapshot
                 // stays allocated for the run's lifetime as the fallback if
                 // a future iteration's re-read fails.
-                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, effective_model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, live_selected_profile_model);
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, eff.model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, live_selected_profile_model);
             } else {
                 retry_count += 1;
                 // Capture the unexpected finish_reason as a synthetic
@@ -1434,7 +1239,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // Save a per-retry diagnostic (no `err` here — unexpected
                 // finish_reason has no underlying error name, so use the
                 // source label as the diagnostic).
-                try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, effective_model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "finish_reason else", "unexpected finish_reason", "(no server detail — LLM responded with an unexpected finish_reason)", config.retry_delay_ms);
+                try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, eff.model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "finish_reason else", "unexpected finish_reason", "(no server detail — LLM responded with an unexpected finish_reason)", config.retry_delay_ms);
                 // Same delay policy as the callDynamicAgentNew catch —
                 // sleep before the loop restarts so we don't hammer the
                 // upstream when it returns an unexpected finish_reason
@@ -1944,150 +1749,6 @@ pub const RunParamsNew = struct {
     // behaviour (always queue the initial message).
     skip_initial_queue_message: bool = false,
 };
-
-// ─── Inline tests for `resolveProfileField` ──────────────────────────────────
-// Per the agentic_loop/ README: this directory uses inline tests, not
-// separate `_test.zig` files (the only exception is `parsing_test.zig`).
-//
-// Why behavioural, not static-contract?
-// ─────────────────────────────────────
-// The user rule (2026-07-29) is: "Never write static-contract tests —
-// call the function, assert the return." `resolveProfileField` is a
-// pure function over `LlmConfig`, so we construct a minimal config
-// in-memory and call it directly.
-
-/// Allocate a fresh `LlmConfig` with the minimal fields needed by the
-/// helper: top-level fields + one profile `"alpha"`. Caller owns the
-/// result and must call `cfg.deinit()`.
-fn makeTestConfig(allocator: std.mem.Allocator) !config_mod.LlmConfig {
-    var cfg: config_mod.LlmConfig = .{
-        .allocator = allocator,
-        .api_key = try allocator.dupe(u8, "default-key"),
-        .model = try allocator.dupe(u8, "default-model"),
-        .base_url = try allocator.dupe(u8, "https://default.example.com"),
-        .url_style = try allocator.dupe(u8, "openai"),
-        .model_compaction_size_kb = 100,
-        .notify_on_complete = false,
-        .retry_delay_ms = 0,
-        .max_capacity_token_model = null,
-        .compaction_threshold_percent = null,
-        .active_profile = null,
-        .mcpServers_parsed = null,
-        .mcp_servers = config_mod.LlmConfig.McpServersMap.init(allocator),
-        .profiles_models = config_mod.LlmConfig.ProfilesMap.init(allocator),
-        .sub_agents = &.{},
-        .random_names = &.{},
-    };
-    errdefer cfg.deinit();
-
-    // Profile "alpha" — every field populated, non-empty.
-    try cfg.profiles_models.put(try allocator.dupe(u8, "alpha"), .{
-        .model = try allocator.dupe(u8, "alpha-model"),
-        .base_url = try allocator.dupe(u8, "https://alpha.example.com"),
-        .thinking = try allocator.dupe(u8, "auto"),
-        .temperature = try allocator.dupe(u8, "auto"),
-        .url_style = try allocator.dupe(u8, "anthropic"),
-        .api_key = try allocator.dupe(u8, "alpha-key"),
-        .sub_agents = &.{},
-        .max_capacity_tokens = null,
-        .compaction_threshold_percent = null,
-    });
-    return cfg;
-}
-
-test "resolveProfileField: empty selected + null active_profile → top-level" {
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-
-    const got = resolveProfileField("model", &cfg, "", null, cfg.model);
-    try testing.expectEqualStrings("default-model", got);
-}
-
-test "resolveProfileField: selected_profile_model wins over active_profile" {
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    // Both names resolve to "alpha" in our test config, but the
-    // selected one is checked first — we can't observe a difference
-    // unless we add a second profile. Skip the distinct-values check
-    // here; the precedence is covered by the "wins over top-level"
-    // test below (which would fail if step 1 was skipped).
-    const got = resolveProfileField("model", &cfg, "alpha", "alpha", cfg.model);
-    try testing.expectEqualStrings("alpha-model", got);
-}
-
-test "resolveProfileField: active_profile wins over top-level when selected is empty" {
-    // This is the bug: previously, `active_profile` was parsed + saved
-    // but the workflow ignored it, always falling through to top-level.
-    // With the fix, `active_profile = "alpha"` should select the
-    // profile's model.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    const got = resolveProfileField("model", &cfg, "", "alpha", cfg.model);
-    try testing.expectEqualStrings("alpha-model", got);
-}
-
-test "resolveProfileField: active_profile also resolves base_url + url_style + api_key" {
-    // The fix is for the WHOLE profile, not just the model field.
-    // Verify each of the four fields the workflow cascades.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
-    try testing.expectEqualStrings("https://alpha.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
-    try testing.expectEqualStrings("anthropic", resolveProfileField("url_style", &cfg, "", "alpha", cfg.url_style));
-    try testing.expectEqualStrings("alpha-key", resolveProfileField("api_key", &cfg, "", "alpha", cfg.api_key));
-}
-
-test "resolveProfileField: missing active_profile name falls through to top-level" {
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "does_not_exist");
-
-    const got = resolveProfileField("model", &cfg, "", "does_not_exist", cfg.model);
-    try testing.expectEqualStrings("default-model", got);
-}
-
-test "resolveProfileField: empty active_profile string falls through to top-level" {
-    // Empty string would come from a stale config or a manual JSON
-    // edit. Must not crash on `getProfile("")`.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-    cfg.active_profile = try alloc.dupe(u8, "");
-
-    const got = resolveProfileField("model", &cfg, "", "", cfg.model);
-    try testing.expectEqualStrings("default-model", got);
-}
-
-test "resolveProfileField: profile with empty field falls through to top-level for THAT field only" {
-    // The existing "len > 0" guard: a profile might have a model but
-    // an empty base_url. Verify each field cascades independently.
-    const alloc = testing.allocator;
-    var cfg = try makeTestConfig(alloc);
-    defer cfg.deinit();
-
-    // Override "alpha" so base_url is empty (but model is set).
-    if (cfg.profiles_models.getEntry("alpha")) |entry| {
-        alloc.free(entry.value_ptr.base_url);
-        entry.value_ptr.base_url = try alloc.dupe(u8, "");
-    }
-    cfg.active_profile = try alloc.dupe(u8, "alpha");
-
-    // model still picks up the profile (alpha-model)
-    try testing.expectEqualStrings("alpha-model", resolveProfileField("model", &cfg, "", "alpha", cfg.model));
-    // base_url falls through (alpha has empty base_url, so top-level wins)
-    try testing.expectEqualStrings("https://default.example.com", resolveProfileField("base_url", &cfg, "", "alpha", cfg.base_url));
-}
 
 // ─── Inline tests (formerly compaction_long_context_test.zig) ────────────
 // Long-context compaction test. Inlined here. The original test file

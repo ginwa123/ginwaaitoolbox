@@ -1845,3 +1845,4 @@ test "profiles_models: missing key → cfg.profiles_models.count is 0 (back-comp
 
     try std.testing.expectEqual(@as(u32, 0), cfg.profiles_models.count());
 }
+
