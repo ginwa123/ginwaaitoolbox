@@ -1183,10 +1183,14 @@ test "writeDefaultConfig creates a valid JSON config file at the given path" {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
-    try std.testing.expect(obj.get("api_key") != null);
-    try std.testing.expect(obj.get("model") != null);
-    try std.testing.expect(obj.get("base_url") != null);
-    try std.testing.expectEqualStrings("openai", obj.get("url_style").?.string);
+    // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+    // defaults are GONE from the default file. Profiles + operational
+    // settings only.
+    try std.testing.expect(obj.get("api_key") == null);
+    try std.testing.expect(obj.get("model") == null);
+    try std.testing.expect(obj.get("base_url") == null);
+    try std.testing.expect(obj.get("url_style") == null);
+    try std.testing.expect(obj.get("profiles_models") != null);
     try std.testing.expectEqual(@as(i64, 100), obj.get("model_compaction_size_kb").?.integer);
     try std.testing.expectEqual(@as(bool, false), obj.get("notify_on_complete").?.bool);
     // Plan 2026-07-07-compaction-inline: the top-level
@@ -1223,7 +1227,10 @@ test "writeDefaultConfig creates parent directories that do not exist" {
     const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
     try std.testing.expect(content.len > 0);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
+    // Plan 2026-08-24-config-simplify-remove-defaults: no top-level
+    // api_key in the default file anymore.
+    try std.testing.expect(std.mem.indexOf(u8, content, "api_key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"profiles_models\"") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,8 +1280,8 @@ test "init auto-creates config.json when default path does not exist (path=null)
     var reader = file.reader(std.testing.io, &read_buf);
     const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"url_style\": \"openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "api_key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"profiles_models\": {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"model_compaction_size_kb\": 100") != null);
     // Plan 2026-07-15-retry-delay: top-level `retry_delay_ms` is
     // auto-created as 0 (the documented default = no delay).

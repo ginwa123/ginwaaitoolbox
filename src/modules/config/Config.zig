@@ -1644,18 +1644,20 @@ pub const LlmConfig = struct {
     }
 
     /// The default `config.json` content written on first run (when no
-    /// config file exists at the platform-default path). All required
-    /// fields are present as empty strings — the user MUST edit this
-    /// file and add `api_key`, `model`, and `base_url` before LLM calls
-    /// will succeed. Optional fields are populated with their documented
-    /// defaults so a subsequent `LlmConfig.init` re-parse yields a
-    /// well-formed `LlmConfig`.
+    /// config file exists at the platform-default path).
+    ///
+    /// Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+    /// defaults (`api_key` / `model` / `base_url` / `url_style`) are NO
+    /// LONGER written. The user configures LLM access exclusively through
+    /// `profiles_models`; `LlmConfig.init` backfills the in-memory
+    /// top-level fields from the active profile at load time. Optional
+    /// operational fields are populated with their documented defaults so
+    /// a subsequent `LlmConfig.init` re-parse yields a well-formed
+    /// `LlmConfig`.
     pub const defaultConfigJson: []const u8 =
         \\{
-        \\  "api_key": "",
-        \\  "model": "",
-        \\  "base_url": "",
-        \\  "url_style": "openai",
+        \\  "profiles_models": {},
+        \\  "active_profile": null,
         \\  "model_compaction_size_kb": 100,
         \\  "notify_on_complete": false,
         \\  "retry_delay_ms": 0,
