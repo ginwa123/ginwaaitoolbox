@@ -272,14 +272,20 @@ jobs:
         #   required by Chromium's network stack).
         run: |
           set -u
-          # Refresh the package DB FIRST. The self-hosted runner's
-          # cached package DB can list versions that are no longer on
-          # the mirrors (observed on CI run 31718984987:
-          # `postgresql-libs-18.4-3-x86_64.pkg.tar.zst` 404'd from
-          # every mirror). `pacman -Sy` syncs the DB with all configured
-          # mirrors; without it, the next `pacman -S` may try to
-          # download a phantom package version.
-          sudo -n pacman -Sy --noconfirm
+          # PERF (2026-08-25): the package-presence loop now runs FIRST.
+          # `pacman -Sy` (DB refresh) only fires when something is
+          # actually missing — on the steady-state runner where every
+          # package is present, the step makes ZERO network calls
+          # (previously the unconditional `pacman -Sy` re-downloaded
+          # mirror DBs on every run, ~5-20 s depending on mirror
+          # latency).
+          #
+          # The refresh-before-install ordering is preserved for the
+          # cold path: a stale cached package DB can list versions that
+          # are no longer on the mirrors (observed on CI run
+          # 31718984987: `postgresql-libs-18.4-3-x86_64.pkg.tar.zst`
+          # 404'd from every mirror), so `pacman -S` must be preceded by
+          # `pacman -Sy` whenever an install is actually about to run.
           missing=()
           for pkg in base-devel openssl curl sqlite postgresql-libs ripgrep pkgconf webkit2gtk-4.1 gtk3 libsoup3 unzip nss nspr libxkbcommon libdrm libxcomposite libxdamage libxfixes libxrandr mesa pango cairo alsa-lib at-spi2-core at-spi2-atk libcups; do
             if pacman -Q "$pkg" >/dev/null 2>&1; then
@@ -289,18 +295,21 @@ jobs:
               missing+=("$pkg")
             fi
           done
-          if [[ ${#missing[@]} -gt 0 ]]; then
-            echo ""
-            echo "Missing packages: ${missing[*]}"
-            echo "Attempting passwordless sudo install..."
-            if sudo -n true 2>/dev/null; then
-              sudo -n pacman -S --needed --noconfirm "${missing[@]}"
-            else
-              echo "✗ passwordless sudo is not available on the runner" >&2
-              echo "  Fix: run on the runner host as root:" >&2
-              echo "    pacman -S --needed ${missing[*]}" >&2
-              exit 1
-            fi
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "✓ all required packages present (no DB refresh needed)"
+            exit 0
+          fi
+          echo ""
+          echo "Missing packages: ${missing[*]}"
+          echo "Refreshing package DB + attempting passwordless sudo install..."
+          sudo -n pacman -Sy --noconfirm
+          if sudo -n true 2>/dev/null; then
+            sudo -n pacman -S --needed --noconfirm "${missing[@]}"
+          else
+            echo "✗ passwordless sudo is not available on the runner" >&2
+            echo "  Fix: run on the runner host as root:" >&2
+            echo "    pacman -S --needed ${missing[*]}" >&2
+            exit 1
           fi
           echo "✓ all required packages present"
 
