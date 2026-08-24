@@ -758,11 +758,20 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
     // stick is actively engaged right now (not just that the LLM is
     // busy — those are different things, see autoStickGate.ts).
     lastAutoStickAt.value = Date.now()
-    // Native clamp: `scrollTop = scrollHeight` gets clamped to
-    // `scrollHeight - clientHeight` by the browser, so we always land at
-    // the true bottom even if VirtualScroller's cached `containerHeight`
-    // ref is stale.
-    container.scrollTop = container.scrollHeight
+    // Explicit bottom computation — do NOT rely on the browser's
+    // implicit clamp of `scrollTop = scrollHeight`. The clamp formula
+    // is `scrollHeight - clientHeight`, but it is evaluated against
+    // whatever scrollHeight the browser has at assignment time. If the
+    // sizer's `:style.height` binding hasn't flushed to the DOM yet
+    // (Vue's render is a microtask; the rAF can fire before it in some
+    // engines), the clamp lands at the OLD bottom — leaving a scrollable
+    // gap equal to (new max − old max) once the layout catches up. That
+    // gap is the "scroll past the bottom into blank space" symptom
+    // (task_1787595375531_0). Computing the target explicitly from the
+    // same scrollHeight/clientHeight read makes the math engine- and
+    // timing-independent, and matches the pattern already used by
+    // VirtualScroller.scrollToBottom (line ~785).
+    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight)
     scrollLogger.info({
       ...ctx,
       caller: 'onContentShift',

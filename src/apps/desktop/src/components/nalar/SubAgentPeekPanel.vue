@@ -145,7 +145,14 @@ watch(
   async () => {
     await nextTick()
     if (scrollRef.value) {
-      scrollRef.value.scrollTop = scrollRef.value.scrollHeight
+      // Explicit bottom computation — see ChatView.vue onContentShift
+      // for the rationale (avoid relying on the browser's implicit
+      // scrollTop clamp, which is timing-fragile when the DOM hasn't
+      // finished flushing).
+      scrollRef.value.scrollTop = Math.max(
+        0,
+        scrollRef.value.scrollHeight - scrollRef.value.clientHeight,
+      )
     }
   },
 )
