@@ -2153,7 +2153,28 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // (force=true), which always scrolls regardless of this flag. So
   // opening a session still lands at the bottom, but once the user
   // scrolls up even a few pixels, the auto-scroll disengages.
-  isAtBottom.value = newIsAtBottom
+  //
+  // ── Content-grew-under-a-stationary-viewport guard (task_1787595375531_0) ──
+  //
+  // When scrollHeight grows (SSE chunk / measurement pass) while the
+  // user's scrollTop is UNCHANGED (deltaTop === 0), the user did NOT
+  // scroll — the bottom simply moved away from them. Flipping
+  // isAtBottom=false here permanently disengages the auto-stick: every
+  // later contentShift sees isAtBottom=false and skips (the
+  // `spacer-resize-skip` log), so the gap never closes and grows with
+  // every chunk — the "huge blank space below" symptom.
+  //
+  // Log evidence (scroll#228→#231): top=10638 constant, scrollHeight
+  // 11641→11732 (+91), bottom 0→91px, `left-bottom` fired with
+  // deltaTop=0, then every re-stick skipped forever after.
+  //
+  // Fix: only DIS-engage when the user actually moved (deltaTop < 0 —
+  // a real upward scroll). A stationary viewport with growing content
+  // keeps the stick engaged so the next contentShift re-stick closes
+  // the gap.
+  const userScrolledUp = deltaTop < 0
+  const disengagedByContentGrowth = contentGrew && !userScrolledUp
+  isAtBottom.value = newIsAtBottom || disengagedByContentGrowth
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
