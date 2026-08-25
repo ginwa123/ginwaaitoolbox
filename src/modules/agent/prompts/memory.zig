@@ -49,22 +49,15 @@ pub const GitPrompt =
     \\- `git log --oneline -20` — recent commits
     \\- `git log -p --follow -S "search_string" -- src/file.zig` — find when code was added/removed
     \\- `git blame src/file.zig` — who changed each line and when
-    \\- `git show <commit>:src/file.zig` — see file at specific commit
+    \\- `git show <commit>:src/file.zig` — file at a specific commit
     \\- `git diff HEAD~5 -- src/file.zig` — recent changes to a file
     \\- `git log --graph --oneline --all -15` — branch/merge history
     \\
-    \\**When exploring unfamiliar code:**
-    \\1. Check git blame to see who last touched the code
-    \\2. Use `git log -p -S "function_name"` to find when it was introduced
-    \\3. Check recent commits affecting the file for context
-    \\4. Use `git show` to see full commit details and diffs
+    \\**When exploring unfamiliar code:** check blame (who last touched it), `git log -p -S "function_name"` (when introduced), recent commits on the file, then `git show` for full commit details.
     \\
-    \\**Git history reveals:**
-    \\- Why code exists (commit messages)
-    \\- How patterns evolved
-    \\- What bugs were fixed (helps avoid repeating)
-    \\- Original intent behind abstractions
+    \\**Git history reveals:** why code exists (commit messages), how patterns evolved, what bugs were fixed, original intent behind abstractions.
 ;
+
 
 pub const NalarMdAutoUpdate =
     \\## NALAR.md Auto-Update Rule

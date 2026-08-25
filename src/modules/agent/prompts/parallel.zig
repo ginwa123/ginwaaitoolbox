@@ -5,10 +5,7 @@
 pub const ParallelWork =
     \\## Parallel Work
     \\
-    \\**Rule:** If 2+ tasks share zero dependencies AND each is
-    \\substantial enough to be worth the coordination overhead, spawn
-    \\sub-agents. Trivial tasks (a two-line config read, a one-word
-    \\lookup) usually aren't — just do them inline.
+    \\**Rule:** If 2+ tasks share zero dependencies AND each is substantial enough to be worth the coordination overhead, spawn sub-agents. Trivial tasks (a two-line config read, a one-word lookup) → do inline.
     \\
     \\```
     \\independent + substantial tasks → parallelize
@@ -24,47 +21,32 @@ pub const ParallelWork =
     \\| Research N topics         | N agents, 1 per topic             |
     \\| Search N patterns/symbols | N agents, 1 per pattern           |
     \\| Investigate N components  | N agents, 1 per component         |
-    \\| Debug N independent bugs  | N agents, 1 per bug (see below)   |
+    \\| Debug N independent bugs  | N agents, 1 per bug               |
     \\| Fetch N URLs              | N agents, 1 per URL               |
     \\| Run N independent tests   | N agents, 1 per test suite        |
     \\
     \\### Fan-out ceiling
     \\
-    \\Don't spawn unbounded numbers of agents at once. Above ~8
-    \\concurrent tasks, batch them (e.g. 8 at a time) rather than
-    \\firing all N simultaneously — this keeps synthesis manageable and
-    \\avoids overwhelming the coordination step.
+    \\Above ~8 concurrent tasks, batch them (e.g. 8 at a time) rather than firing all N simultaneously — keeps synthesis manageable.
     \\
     \\### Fan-in: sub-agents return findings, not raw output
     \\
-    \\**This is the part that's easy to get wrong.** A sub-agent
-    \\reading a file should NOT dump the full file content back to the
-    \\parent — that just moves the bloat problem from serial to
-    \\parallel. Instead:
+    \\**This is the part that's easy to get wrong.** A sub-agent reading a file should NOT dump the full file content back to the parent — that just moves the bloat from serial to parallel.
     \\
-    \\- Sub-agent's job: do the work, then return a short distilled
-    \\  summary of what matters for the parent's task (the answer, the
-    \\  relevant excerpt, the finding) — not the full transcript of how
-    \\  it got there.
-    \\- Parent's job: synthesize N short summaries, not N full outputs.
-    \\- If the parent genuinely needs the raw content later (e.g. to
-    \\  edit the file), it re-reads it directly at that point — the
-    \\  sub-agent's exploratory read doesn't need to carry the full
-    \\  content back "just in case."
+    \\- Sub-agent: do the work, return a short distilled summary of what matters for the parent's task (the answer, the relevant excerpt, the finding) — not the full transcript of how it got there.
+    \\- Parent: synthesize N short summaries, not N full outputs.
+    \\- If the parent genuinely needs raw content later (e.g. to edit the file), it re-reads it directly at that point.
     \\
     \\### Never Spawn For
     \\
-    \\- Edits that touch the **same file** or **same shared mutable
-    \\  state** (race conditions, corrupted writes) — independent files
-    \\  with independent edits are fine to parallelize.
+    \\- Edits touching the **same file** or **same shared mutable state** (race conditions, corrupted writes) — independent files are fine to parallelize.
     \\- Any task where step B needs output from step A.
     \\- Single-file edits or single-target operations.
     \\- Build/test pipelines with ordered stages.
     \\
     \\### Mixed dependency graphs
     \\
-    \\Most real tasks aren't purely parallel or purely sequential.
-    \\Break the work into stages at each sync point:
+    \\Most real tasks aren't purely parallel or sequential. Break the work into stages at each sync point:
     \\
     \\```
     \\spawn(read(a.ts), read(b.ts), read(c.ts))   // stage 1: parallel
@@ -73,56 +55,23 @@ pub const ParallelWork =
     \\→ spawn(test(a), test(b), test(c))           // stage 3: parallel
     \\```
     \\
-    \\Identify the sync points, then parallelize freely within each
-    \\stage.
+    \\Identify sync points, then parallelize freely within each stage.
     \\
     \\### Decision Test
     \\
-    \\Before starting: ask "Can task B begin before task A finishes?"
-    \\- Yes → parallel
-    \\- No  → sequential
-    \\
-    \\And: "Is this task substantial enough that spawning beats doing
-    \\it inline?" If not, just do it directly.
+    \\Before starting, ask: "Can task B begin before task A finishes?" Yes → parallel; No → sequential. And: "Is spawning substantial enough to beat doing it inline?" If not, do it directly.
     \\
     \\### Handling partial failures
     \\
-    \\If some spawned agents fail or return low-confidence results:
-    \\
-    \\- Retry only the failed ones, not the whole batch.
-    \\- If a task is on the critical path for a later sequential step,
-    \\  don't proceed on partial/failed results — surface the gap.
-    \\- If it's not critical (e.g. one of 10 independent research
-    \\  topics came back empty), proceed with what succeeded and note
-    \\  the gap rather than blocking everything.
+    \\- Retry only the failed agents, not the whole batch.
+    \\- Critical-path task failed → don't proceed on partial results; surface the gap.
+    \\- Non-critical miss (e.g. 1 of 10 research topics empty) → proceed with what succeeded and note the gap.
     \\
     \\### Examples
     \\
-    \\**Wrong — sequential read:**
-    \\```
-    \\read(auth.ts); read(router.ts); read(db.ts); // slow, wasteful
-    \\```
+    \\**Wrong:** `read(auth.ts); read(router.ts); read(db.ts);` — slow, wasteful serial reads.
+    \\**Right:** `spawn(read(auth.ts), read(router.ts), read(db.ts));` — each returns a distilled summary ("auth.ts: uses JWT, no refresh token logic"), not full file content.
     \\
-    \\**Right — parallel read, distilled return:**
-    \\```
-    \\spawn(read(auth.ts), read(router.ts), read(db.ts));
-    \\// each sub-agent returns e.g. "auth.ts: uses JWT, no refresh
-    \\// token logic" — not the full file content
-    \\```
-    \\
-    \\**Wrong — parallel write to same file:**
-    \\```
-    \\spawn(edit(auth.ts), edit(auth.ts)); // race condition, corrupts file
-    \\```
-    \\
-    \\**Right — sequential write to same file:**
-    \\```
-    \\edit(auth.ts); edit(auth.ts); // safe, ordered
-    \\```
-    \\
-    \\**Right — parallel write, independent files:**
-    \\```
-    \\spawn(edit(auth.ts), edit(billing.ts), edit(search.ts));
-    \\// safe: no shared file or state between them
-    \\```
+    \\**Wrong:** `spawn(edit(auth.ts), edit(auth.ts));` — parallel write to the same file corrupts it.
+    \\**Right:** `edit(auth.ts); edit(auth.ts);` for same-file edits (ordered); `spawn(edit(auth.ts), edit(billing.ts));` for independent files.
 ;
