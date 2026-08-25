@@ -1403,6 +1403,12 @@ export interface SseEvent {
   // without attached images (most assistant responses, error paths,
   // tool results that don't carry image data).
   image_url?: string
+  // True when this event is an agentic-loop diagnostic (retry attempt or
+  // TooManyRetries bail) rather than a real chat turn. Backend:
+  // sse_on_event_send_llm_history.zig SseEventLLMHistory.is_error — set
+  // by workflow.zig's 3 diagnostic sites. ChatView routes these into
+  // AgentErrorCard instead of the message list.
+  is_error?: boolean
 }
 
 // List all chat sessions with pagination

@@ -64,6 +64,9 @@ import { useSubAgentPeek } from '../../composables/useSubAgentPeek'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 import { useRouter } from 'vue-router'
 import CompactionCard from '../preview/CompactionCard.vue'
+// 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
+// for agentic-loop error/retry diagnostics (is_error=true SSE events).
+import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
 import WorktreeMenu from '../workspace/WorktreeMenu.vue'
@@ -1158,6 +1161,18 @@ const expandedToolIds = ref<Set<string>>(new Set())
 // arrives so the parsed-envelope view takes over rendering.
 const subAgentProgressMap = ref<SubAgentProgressMap>({})
 
+// 2026-08-25 agent-error-card (task_1787663566535_2): live-only list of
+// agentic-loop error/retry diagnostics. Fed by `full` SSE events with
+// is_error=true (workflow.zig's 3 diagnostic sites — never persisted,
+// is_skip_db=true). Rendered OUTSIDE the VirtualScroller (below it) so
+// the scroller's height-estimate model never sees these rows; cleared
+// on session switch / fresh history load since they're transient.
+interface AgentErrorEntry {
+  id: string
+  content: string
+}
+const agentErrors = ref<AgentErrorEntry[]>([])
+
 // Image preview state
 const previewImageUrl = ref<string | null>(null)
 
@@ -2244,6 +2259,9 @@ const connectSse = () => {
   disconnectSse()
 
   streamingContent.value = ''
+  // 2026-08-25 agent-error-card: diagnostics are live-only per-session —
+  // a fresh session starts with an empty error list.
+  agentErrors.value = []
 
   const bus = useSseBus()
   // Subscribe FIRST so we don't miss any bus events that arrive between
@@ -2282,6 +2300,22 @@ const connectSse = () => {
     // (`reasoning_chunk`, `tool_call_delta`, `connected`) are handled
     // by their own dedicated branches above.
     if (event.type !== 'chunk' && event.type !== 'chunk_final' && event.type !== 'full') {
+      return
+    }
+
+    // 2026-08-25 agent-error-card (task_1787663566535_2): agentic-loop
+    // diagnostics (retry attempts + TooManyRetries bails) arrive as
+    // `full` events with is_error=true. Route them into the dedicated
+    // agentErrors list and STOP — they must never enter messages.value
+    // (they'd render as a plain user bubble and pollute the transcript).
+    // The card renders below the VirtualScroller; entries are transient
+    // (backend never persists these rows).
+    if (event.type === 'full' && event.is_error) {
+      agentErrors.value.push({
+        id: event.id || `agent-error-${Date.now()}`,
+        content: event.content || '',
+      })
+      nextTick(() => scrollToBottom(false, 'agent-error-card'))
       return
     }
 
@@ -3363,6 +3397,27 @@ const compactSession = async () => {
             </div>
           </template>
         </VirtualScroller>
+
+        <!-- 2026-08-25 agent-error-card (task_1787663566535_2):
+             Agentic-loop error/retry diagnostics. Rendered OUTSIDE the
+             VirtualScroller on purpose — the scroller's height-estimate
+             model only knows about messageGroups rows, and injecting
+             foreign rows desyncs the estimated scroll window (same class
+             of bug as the empty-group note above). These are transient,
+             live-only diagnostics (backend is_skip_db=true), so pinning
+             them at the bottom of the transcript area is correct UX too:
+             the newest error is always visible without scrolling. -->
+        <div
+          v-if="agentErrors.length > 0"
+          class="px-4 max-w-4xl mx-auto pb-2 space-y-2"
+          data-testid="agent-error-list"
+        >
+          <AgentErrorCard
+            v-for="err in agentErrors"
+            :key="err.id"
+            :content="err.content"
+          />
+        </div>
       </div>
 
       <!-- Scroll to bottom button -->

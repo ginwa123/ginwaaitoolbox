@@ -53,6 +53,10 @@ const EmitRequest = struct {
     role: []const u8 = "",
     tool_call_id: []const u8 = "",
     tool_name: []const u8 = "",
+    /// Mirrors SseEventLLMHistory.is_error — lets UI tests inject
+    /// agentic-loop diagnostics through the real wire path
+    /// (task_1787663566535_2).
+    is_error: bool = false,
 };
 
 pub fn emitLlmHandler(
@@ -108,7 +112,7 @@ pub fn emitLlmHandler(
         // SseEventLLMHistory-shaped. The frontend's `full` branch
         // requires finish_reason + at least one renderable field.
         try buf.print(allocator,
-            \\{{"index":{d},"content":{f},"type":"full","session_id":"{s}","role":"{s}","finish_reason":"{s}","tool_call_id":"{s}","tool_name":"{s}"}}
+            \\{{"index":{d},"content":{f},"type":"full","session_id":"{s}","role":"{s}","finish_reason":"{s}","tool_call_id":"{s}","tool_name":"{s}","is_error":{},"id":"test-{d}"}}
         , .{
             parsed.index,
             std.json.fmt(parsed.content, .{}),
@@ -117,6 +121,8 @@ pub fn emitLlmHandler(
             if (parsed.finish_reason.len > 0) parsed.finish_reason else "stop",
             parsed.tool_call_id,
             parsed.tool_name,
+            parsed.is_error,
+            parsed.index,
         });
     } else {
         // Default: content chunk.
