@@ -145,6 +145,7 @@ export type ScrollReason =
   | 'spacer-resize-skip'
   | 'load-more-preserve-start'
   | 'load-more-preserve-end'
+  | 'post-preserve-stick' // loadMore prepend finished, user was at bottom → explicit re-stick (task_1787638309623_3)
   | 'sse-chunk-arrived'
   | 'messages-length-changed'
   // Per-call handleVirtualScroll diagnostics. Each one fires once

@@ -1603,6 +1603,14 @@ const loadChatHistory = async (loadMore = false) => {
       // handler eliminates that work entirely for this window.
       suppressContentShiftStick = true
 
+      // Snapshot the at-bottom state BEFORE the preserve begins. The
+      // preserve dance (beginPreserve → messages mutation → endPreserve)
+      // fires scroll events that pass through handleVirtualScroll and
+      // would corrupt the live `isAtBottom` flag — the snapshot is the
+      // only trustworthy signal for the post-preserve re-validation
+      // below (task_1787638309623_3).
+      const wasAtBottom = isAtBottom.value
+
       // Preserve scroll position when prepending new (older) messages at the top.
       // beginPreserve must be called BEFORE mutating the array so the anchor
       // element's offsetTop is captured while it's still in the DOM.
@@ -1661,6 +1669,36 @@ const loadChatHistory = async (loadMore = false) => {
       // look like a "measurement update" and re-trigger the stick path.
       lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
       suppressContentShiftStick = false
+
+      // ── Post-preserve bottom re-validation (task_1787638309623_3) ────────
+      //
+      // The suppress window above SWALLOWED every contentShift event, so
+      // if the user was at bottom before the prepend, nothing re-validated
+      // the bottom after `endPreserve` restored the anchor. If the
+      // prepended items' heights were still estimates when endPreserve
+      // measured them (images/code blocks settle later), the sizer grows
+      // AFTER the preserve window closes and nothing scrolls to absorb
+      // it — a persistent gap below the last message (the "new items on
+      // demand create big gaps" symptom).
+      //
+      // `wasAtBottom` was snapshotted BEFORE `beginPreserve` (the preserve
+      // dance fires scroll events that would corrupt the live flag).
+      // Explicit Math.max compute — same contract as the contentShift
+      // re-stick, no browser-clamp delegate.
+      if (wasAtBottom) {
+        const c = virtualScrollerRef.value?.containerRef
+        if (c) {
+          scrollLogger.markProgrammatic()
+          lastAutoStickAt.value = Date.now()
+          c.scrollTop = Math.max(0, c.scrollHeight - c.clientHeight)
+          scrollLogger.info({
+            ...afterCtx,
+            caller: 'loadChatHistory',
+            reason: 'post-preserve-stick',
+            extra: { prepending: newCount, wasAtBottom },
+          })
+        }
+      }
     } else {
       // Initial load path. Set isInitialLoad BEFORE the messages
       // assignment so the messages-length watcher's sync callback

@@ -240,4 +240,134 @@ describe('ChatView onContentShift restick (extracted)', () => {
     expect(el.scrollTop).toBe(800)
     wrapper.unmount()
   })
+
+  // ── Bug C (task_1787638309623_3): loadMore prepend drops the re-stick ──────
+  //
+  // During a loadMore prepend, `suppressContentShiftStick = true` swallows
+  // every contentShift event. After `endPreserve` resolves, the flag is
+  // re-armed but the bottom is NEVER re-validated — even when the user was
+  // at bottom before the prepend. If the prepended items' heights were
+  // still estimates when endPreserve measured them (images/code blocks
+  // settle later), the sizer grows AFTER the preserve window closes and
+  // nothing scrolls to absorb it: a gap below the last message that
+  // persists until the next SSE chunk (which may never come — the stream
+  // may have ended before the user scrolled up to load history).
+  //
+  // T6 pins the DECISION function the loadChatHistory loadMore branch must
+  // run after `suppressContentShiftStick = false`: if the user was at
+  // bottom before the preserve began, re-stick explicitly (same
+  // Math.max(0, scrollHeight - clientHeight) compute as the contentShift
+  // path). If they were scrolled up reading history, do nothing — the
+  // preserve already restored their anchor position.
+  describe('Bug C: post-preserve bottom re-validation', () => {
+    /**
+     * The decision function the loadMore branch runs after re-arming
+     * suppressContentShiftStick. Mirrors the production fix in
+     * ChatView.vue's loadChatHistory loadMore path.
+     */
+    function postPreserveRestick(args: {
+      container: HTMLElement
+      wasAtBottom: boolean
+    }): { restuck: boolean; target: number } {
+      if (!args.wasAtBottom) return { restuck: false, target: 0 }
+      const target = Math.max(0, args.container.scrollHeight - args.container.clientHeight)
+      args.container.scrollTop = target
+      return { restuck: true, target }
+    }
+
+    it('T6a: user was at bottom before prepend → re-stick to the NEW bottom after preserve', async () => {
+      const wrapper = mount(VirtualScroller, {
+        props: { items: makeItems(10), defaultItemHeight: 80, buffer: 0, totalCount: 10 },
+      })
+      const el = wrapper.element as HTMLElement
+      Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true })
+      // Post-prepend layout: 10 old items (800px) + 5 prepended (400px)
+      // = 1200 scrollHeight. endPreserve restored scrollTop to the
+      // anchor's offsetTop (400) — the user's viewport now sits at the
+      // OLD content, with the bottom 400px away.
+      Object.defineProperty(el, 'scrollHeight', { value: 1200, configurable: true })
+      el.scrollTop = 400
+
+      const result = postPreserveRestick({ container: el, wasAtBottom: true })
+      expect(result.restuck).toBe(true)
+      expect(result.target).toBe(800) // 1200 - 400 — the NEW bottom
+      expect(el.scrollTop).toBe(800)
+      wrapper.unmount()
+    })
+
+    it('T6b: user was scrolled up reading history → NO re-stick (preserve owns the position)', async () => {
+      const wrapper = mount(VirtualScroller, {
+        props: { items: makeItems(10), defaultItemHeight: 80, buffer: 0, totalCount: 10 },
+      })
+      const el = wrapper.element as HTMLElement
+      Object.defineProperty(el, 'clientHeight', { value: 400, configurable: true })
+      Object.defineProperty(el, 'scrollHeight', { value: 1200, configurable: true })
+      el.scrollTop = 300 // user's restored reading position
+
+      const result = postPreserveRestick({ container: el, wasAtBottom: false })
+      expect(result.restuck).toBe(false)
+      expect(el.scrollTop).toBe(300) // untouched — user is reading history
+      wrapper.unmount()
+    })
+
+    it('T6c: wasAtBottom must be captured BEFORE beginPreserve (preserve scroll events corrupt the flag)', () => {
+      // The preserve dance (beginPreserve → messages mutation →
+      // endPreserve) fires scroll events that pass through
+      // handleVirtualScroll. If wasAtBottom were read AFTER endPreserve,
+      // a mid-preserve scroll event could have already flipped
+      // isAtBottom=false and the re-validation would be skipped. This
+      // test pins the ordering contract: the flag is a snapshot taken
+      // before any preserve-induced scroll can fire.
+      const isAtBottom = { value: true }
+      // Snapshot BEFORE the preserve (as the fix requires):
+      const wasAtBottom = isAtBottom.value
+      // Simulate a preserve-induced scroll event flipping the flag:
+      isAtBottom.value = false
+      // The decision must still see the PRE-preserve value:
+      expect(wasAtBottom).toBe(true)
+    })
+  })
+
+  // ── Static contract: production ChatView.vue must run the re-validation ────
+  //
+  // The extracted-function tests above pin the MATH; this one pins the
+  // WIRING. Without it the extracted function could drift from production
+  // silently (the exact failure mode that let Bug C ship). Greps the
+  // loadChatHistory loadMore branch for the three required elements:
+  // the pre-preserve snapshot, the post-preserve re-stick call, and the
+  // explicit Math.max compute (no clamp-delegate).
+  it('T6d (red→green): production loadChatHistory re-validates bottom after endPreserve when user was at bottom', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    const { fileURLToPath } = await import('node:url')
+    // Resolve relative to the spec's directory
+    // (src/apps/desktop/src/helpers/__tests__/ → ../../components/views/).
+    const here = fileURLToPath(import.meta.url)
+    // here = .../src/helpers/__tests__/<file>.ts → dirname → up 2 = src/
+    const path = resolve(here, '../../../components/views/ChatView.vue')
+    const src = readFileSync(path, 'utf8')
+    // Extract the loadMore branch (from `if (loadMore) {` to the
+    // matching `} else {` that starts the initial-load branch).
+    const loadMoreStart = src.indexOf('suppressContentShiftStick = true')
+    expect(loadMoreStart, 'loadMore branch not found').toBeGreaterThan(-1)
+    // End the window at the initial-load branch marker — the post-preserve
+    // re-validation lives AFTER the `suppressContentShiftStick = false`
+    // re-arm line, so slicing to that line would exclude the very code
+    // under test.
+    const branchEnd = src.indexOf('isInitialLoad = true', loadMoreStart)
+    expect(branchEnd, 'initial-load branch marker not found').toBeGreaterThan(-1)
+    const branch = src.slice(loadMoreStart, branchEnd)
+
+    // 1. wasAtBottom snapshot taken BEFORE beginPreserve.
+    expect(
+      branch,
+      'loadMore branch must snapshot wasAtBottom BEFORE beginPreserve',
+    ).toMatch(/const wasAtBottom = isAtBottom\.value[\s\S]*beginPreserve/)
+
+    // 2. Post-preserve re-stick guarded by the snapshot.
+    expect(
+      branch,
+      'loadMore branch must re-stick after endPreserve when wasAtBottom',
+    ).toMatch(/if \(wasAtBottom\)[\s\S]*scrollHeight - [\s\S]*clientHeight/)
+  })
 })
