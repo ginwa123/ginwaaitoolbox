@@ -42,6 +42,8 @@ pub const ToolCreateError = error{
     ToolNameRequired,
     /// `tool_name` is not in the canonical registry.
     UnknownTool,
+    /// The workspace_item doesn't exist OR isn't a kanban.
+    KanbanNotFound,
     /// The board already has this tool enabled (UNIQUE violation).
     DuplicateTool,
     /// `db.exec` failed on the INSERT (non-UNIQUE reason — 500).
@@ -84,6 +86,11 @@ fn isKnownTool(tool_name: []const u8) bool {
 /// tool_name is in the canonical registry, then INSERTs with
 /// `enabled = 1`. The UNIQUE(kanban_id, tool_name) constraint maps to
 /// `DuplicateTool`. Transport-agnostic.
+///
+/// Auto-seeds the `agent_kanbans` row (with empty description) when
+/// it doesn't exist yet — matches the agent world where enabling a
+/// tool auto-creates the parent config row. Keeps the frontend's
+/// unconfigured→configured flow to a single click.
 fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
@@ -92,6 +99,28 @@ fn useCase(
     if (input.kanban_id.len == 0) return error.KanbanIdRequired;
     if (input.tool_name.len == 0) return error.ToolNameRequired;
     if (!isKnownTool(input.tool_name)) return error.UnknownTool;
+
+    // Validate the workspace_item is a kanban + auto-seed the
+    // agent_kanbans row if missing (opt-in config → enabled-tool
+    // implies configured). The INSERT is idempotent because of the
+    // UNIQUE(workspace_item_id) constraint — we catch the conflict
+    // and treat it as success.
+    {
+        var q = db.query(allocator,
+            \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'
+        , &[_][]const u8{input.kanban_id}) catch return error.InsertFailed;
+        defer q.deinit();
+        const row = q.next() catch null;
+        if (row) |r| r.deinit(allocator);
+        if (row == null) return error.KanbanNotFound;
+    }
+
+    // Auto-seed the agent_kanbans row. INSERT OR IGNORE so re-enabling
+    // the same tool doesn't trip the UNIQUE(workspace_item_id) constraint.
+    db.exec(allocator,
+        "INSERT OR IGNORE INTO agent_kanbans (id, workspace_item_id) VALUES (?, ?)",
+        &[_][]const u8{ input.kanban_id, input.kanban_id },
+    ) catch {};
 
     // Generate id + INSERT.
     const ts = helpers.unixTimestampNanos();
@@ -166,6 +195,7 @@ pub fn agentKanbanToolsCreateHandler(
             error.KanbanIdRequired => 400,
             error.ToolNameRequired => 400,
             error.UnknownTool => 400,
+            error.KanbanNotFound => 404,
             error.DuplicateTool => 409,
             error.InsertFailed => 500,
             error.RefetchFailed => 500,
@@ -176,6 +206,7 @@ pub fn agentKanbanToolsCreateHandler(
             error.KanbanIdRequired => "kanban_id required",
             error.ToolNameRequired => "tool_name is required",
             error.UnknownTool => "tool_name is not in the registry",
+            error.KanbanNotFound => "kanban not found",
             error.DuplicateTool => "tool already enabled for this board",
             error.InsertFailed => "Failed to insert tool",
             error.RefetchFailed => "Failed to read row",
