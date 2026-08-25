@@ -21,9 +21,19 @@ import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
  * before this composable is consulted — the composable itself
  * doesn't handle the legacy shape.
  *
+ * ## kanban-settings variant (plan: 2026-09-02-kanban-settings-as-page)
+ *
+ * Path-based vue-router route `/app/kanban/:itemId/settings`. itemId
+ * comes from `route.params` (path); workspaceId is optional and comes
+ * from `?workspaceId=X` query (used by the back navigation to round-
+ * trip back to `?view=workspace&workspaceId=X&itemId=Y`). The kanban's
+ * owning workspaceId is derived from the store by the page itself
+ * (itemId is globally unique, no need to encode workspaceId).
+ *
  * Specs:
  *   - docs/superpowers/specs/2026-08-06-sidebar-single-active-state-design.md
  *   - docs/superpowers/specs/2026-08-15-simplify-url-browser-design.md
+ *   - docs/superpowers/plans/2026-09-02-kanban-settings-as-page.md
  */
 export type CurrentMainView =
   | { kind: 'chat'; sessionId: string }
@@ -33,6 +43,11 @@ export type CurrentMainView =
       itemId: string
       pageId?: string
       chatTaskId?: string
+    }
+  | {
+      kind: 'kanban-settings'
+      workspaceId?: string
+      itemId: string
     }
   | { kind: 'none' }
 
@@ -67,6 +82,34 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
         }
       }
       return { kind: 'none' }
+    }
+    // kanban-settings page (path route /app/kanban/:itemId/settings).
+    // itemId comes from route.params (path); workspaceId is optional
+    // and comes from ?workspaceId=X query (used by the back navigation
+    // to round-trip back to ?view=workspace&workspaceId=X&itemId=Y).
+    // itemId may be empty if Vue Router matched a malformed URL — we
+    // return the empty string so the page can render a friendly hint
+    // instead of crashing.
+    //
+    // The regex matches /app/kanban/<itemId>/settings with an empty
+    // itemId ALLOWED (defensive — Vue Router would normally reject
+    // this, but we degrade gracefully so the page can render a hint).
+    // The regex deliberately does NOT match /app/kanban/X (no /settings)
+    // — the kanban board itself stays at the existing ?view=workspace
+    // URL, so a future migration to /app/kanban/:itemId would be a
+    // separate plan.
+    const kanbanSettingsMatch = /^\/app\/kanban\/([^/]*)\/settings\/?$/.exec(
+      route?.path ?? '',
+    )
+    if (kanbanSettingsMatch) {
+      return {
+        kind: 'kanban-settings',
+        workspaceId:
+          typeof q.workspaceId === 'string' && q.workspaceId.length > 0
+            ? q.workspaceId
+            : undefined,
+        itemId: kanbanSettingsMatch[1] ?? '',
+      }
     }
     return { kind: 'none' }
   })
