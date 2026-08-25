@@ -1706,6 +1706,14 @@ const loadChatHistory = async (loadMore = false) => {
           scrollLogger.markProgrammatic()
           lastAutoStickAt.value = Date.now()
           c.scrollTop = Math.max(0, c.scrollHeight - c.clientHeight)
+          // Re-engage the stick explicitly: the user WAS at bottom before
+          // the prepend, and we just moved them to the new bottom on their
+          // behalf. The preserve dance's programmatic scroll events may
+          // have flipped isAtBottom=false mid-prepend (the round-2 guard
+          // only retains the stick for users who were already engaged) —
+          // without this re-arm, the next SSE chunk's contentShift would
+          // skip and leave a gap below the last message.
+          isAtBottom.value = true
           scrollLogger.info({
             ...afterCtx,
             caller: 'loadChatHistory',
@@ -2225,9 +2233,27 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // a real upward scroll). A stationary viewport with growing content
   // keeps the stick engaged so the next contentShift re-stick closes
   // the gap.
+  //
+  // ── Round-2 refinement (task_1787638309623_3): previousIsAtBottom gate ──
+  //
+  // The round-1 guard (`newIsAtBottom || (contentGrew && !userScrolledUp)`)
+  // couldn't distinguish "user AT bottom, content grows away" from "user
+  // ALREADY scrolled up reading, content grows below, viewport
+  // stationary". In the second case it RE-ENGAGED the stick
+  // (previousIsAtBottom=false → true), and the next contentShift yanked
+  // the user to the bottom mid-read — the "bouncing text" symptom.
+  //
+  // Log evidence (scroll#234-#247): user scrolling up (top 33249→30533,
+  // bottom 4436px), SSE chunk grew scrollHeight +172 with deltaTop≈0,
+  // `spacer-resize-stick` fired and teleported the user to top=35039
+  // (bottom=4px).
+  //
+  // Fix: only RETAIN the stick if it WAS engaged. A user who already
+  // scrolled up must never be re-engaged by content growth — only by
+  // actually scrolling back down to the bottom (newIsAtBottom).
   const userScrolledUp = deltaTop < 0
-  const disengagedByContentGrowth = contentGrew && !userScrolledUp
-  isAtBottom.value = newIsAtBottom || disengagedByContentGrowth
+  const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp
+  isAtBottom.value = newIsAtBottom || retainedThroughGrowth
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
