@@ -912,6 +912,24 @@ const scrollToPosition = (scrollTop: number, behavior: ScrollBehavior = 'auto') 
 const scrollToItem = (index: number, behavior: ScrollBehavior = 'auto') =>
   scrollToIndex(index, behavior)
 
+/**
+ * Full recompute of the height model from the live DOM (2026-08-25
+ * append-gap fix). The parent calls this whenever it KNOWS content
+ * changed — new message appended, streaming text mutated in place,
+ * streaming row swapped for the canonical row. measureItems() reads
+ * every rendered child's real offsetHeight, writes the model, rebuilds
+ * the sizer, and anchor-compensates — the same pass a scroll event
+ * triggers, invoked explicitly at data-mutation time instead of being
+ * inferred from DOM observation (the ResizeObserver attempt froze the
+ * browser: observe → measure → sizer write → re-observe loop).
+ *
+ * Call inside nextTick (or later) so the DOM already reflects the
+ * mutation — offsetHeight reads need the patched layout.
+ */
+const remeasure = () => {
+  measureItems()
+}
+
 let ro: ResizeObserver | null = null
 onMounted(() => {
   if (containerRef.value) {
@@ -939,6 +957,7 @@ defineExpose({
   scrollToBottom,
   scrollToPosition,
   scrollToItem,
+  remeasure,
   beginPreserve,
   endPreserve,
   preserveScrollPosition: endPreserve, // legacy alias

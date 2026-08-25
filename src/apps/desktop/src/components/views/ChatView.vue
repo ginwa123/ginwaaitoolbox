@@ -634,6 +634,8 @@ interface VirtualScrollerExposed {
   scrollToBottom: (behavior?: ScrollBehavior) => void
   scrollToPosition: (scrollTop: number, behavior?: ScrollBehavior) => void
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
+  /** Full height-model recompute from the live DOM (append-gap fix). */
+  remeasure: () => void
   beginPreserve: (newItemsCount: number) => void
   endPreserve: () => Promise<void>
   preserveScrollPosition: () => Promise<void>
@@ -2494,7 +2496,18 @@ const connectSse = () => {
       // (AUTO_STICK_GATE_MS) the gate lifts and the user can
       // scroll-up-and-prepend as normal.
       lastAutoStickAt.value = Date.now()
-      nextTick(() => scrollToBottom(false, 'sse-message-complete'))
+      nextTick(() => {
+        // Recompute the height model BEFORE the auto-stick (append-gap
+        // fix): the streaming-* row was just replaced by the canonical
+        // DB row, which re-renders at a DIFFERENT height (markdown
+        // settles, reasoning collapses). nextTick first — the DOM must
+        // reflect the swap before offsetHeight reads mean anything.
+        // Without the recompute the sizer keeps the stale streaming
+        // height — the phantom gap below the last message (DevTools
+        // evidence: sizer 11664px vs real content bottom 10859px).
+        virtualScrollerRef.value?.remeasure()
+        scrollToBottom(false, 'sse-message-complete')
+      })
       setupCodeBlockCopyButtons()
 
       // 2026-08-23 spawn-subagent-live-progress: when the FINAL
@@ -2626,6 +2639,11 @@ const updateStreamingMessage = () => {
       requestAnimationFrame(() => {
         sseScrollPending = false
         scrollLogger.markProgrammatic()
+        // Recompute the height model BEFORE scrolling (append-gap fix):
+        // the streaming row's real height changed (text grew in place)
+        // and the sizer must reflect it or scrollToBottom lands short
+        // or past the real content.
+        virtualScrollerRef.value?.remeasure()
         scrollToBottom(false, 'sse-chunk')
       })
     }
@@ -2705,7 +2723,16 @@ watch(
     // the watcher also fires), and the streaming message's first
     // push before updateStreamingMessage's own mark takes over.
     lastAutoStickAt.value = Date.now()
-    nextTick(() => scrollToBottom(false, 'messages-length'))
+    nextTick(() => {
+      // Recompute the height model BEFORE the auto-stick (append-gap
+      // fix): a new item's real height is unknown until it renders;
+      // the sizer's estimate may overshoot (phantom gap) or undershoot
+      // (stick lands short). remeasure() reads the freshly-patched DOM
+      // and makes the sizer exact before scrollToBottom computes the
+      // target from it.
+      virtualScrollerRef.value?.remeasure()
+      scrollToBottom(false, 'messages-length')
+    })
   },
 )
 
