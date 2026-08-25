@@ -561,10 +561,6 @@ watch(
 // layout change (image load, content expansion, streaming).
 const HYSTERESIS_PX = 4
 
-// Rate-limit for the tail-exact clamp (freeze guard 2). See the clamp
-// comment in measureItems below.
-let lastTailClampAt = 0
-
 const measureItems = () => {
   if (!containerRef.value) return
   const content = containerRef.value.querySelector('.virtual-scroller-content')
