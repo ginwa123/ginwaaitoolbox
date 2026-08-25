@@ -1619,6 +1619,61 @@ pub fn build(b: *std.Build) void {
     const install_cli_step = b.step("install:cli", "Install the nalarcli binary only");
     install_cli_step.dependOn(&cli_install.step);
 
+    // =====================================================================
+    // TUI executable (`src/apps/cli/src/tui_main.zig`) — an interactive,
+    // streaming, Claude-Code-style chat client over the same backend
+    // endpoints as `nalarcli`. Powered by the from-scratch `tui` module
+    // (Bubble-Tea-style Model/update/view architecture) that lives at
+    // `src/apps/cli/src/tui/`. Same libcurl transport via
+    // `custom_http_client_mod`; no new dependencies.
+    const tui_module = b.addModule("tui", .{
+        .root_source_file = b.path("src/apps/cli/src/tui/root.zig"),
+        .target = target,
+    });
+    tui_module.addImport("custom_http_client", custom_http_client_mod);
+    // Let the app model reach the transport helpers through the same
+    // import surface used by nalarcli.
+    tui_module.addImport("cli", cli_module);
+
+    const tui_exe = b.addExecutable(.{
+        .name = "nalar-tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/apps/cli/src/tui_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "tui", .module = tui_module },
+                .{ .name = "cli", .module = cli_module },
+                .{ .name = "custom_http_client", .module = custom_http_client_mod },
+                .{ .name = "helpers", .module = helpers_mod },
+            },
+        }),
+    });
+    tui_exe.root_module.linkSystemLibrary("c", .{});
+    tui_exe.root_module.link_libc = true;
+    linkPlatformDeps(b, tui_exe, target);
+    const tui_install = b.addInstallArtifact(tui_exe, .{});
+
+    const run_tui_step = b.step("run:tui", "Run the interactive chat TUI");
+    const run_tui_cmd = b.addRunArtifact(tui_exe);
+    run_tui_step.dependOn(&run_tui_cmd.step);
+    run_tui_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| run_tui_cmd.addArgs(args);
+
+    // === nalar-tui unit tests (`zig build test:tui`) ===
+    // The tui module re-exports its test files via `tui/root.zig`, so a
+    // single addTest on the module picks up every test in the tree.
+    const tui_tests = b.addTest(.{ .root_module = tui_module });
+    tui_tests.root_module.linkSystemLibrary("c", .{});
+    tui_tests.root_module.link_libc = true;
+    const test_tui = b.step("test:tui", "Run nalar-tui unit tests");
+    const run_tui_tests = b.addRunArtifact(tui_tests);
+    test_tui.dependOn(&run_tui_tests.step);
+
+    // === nalar-tui install-only (`zig build install:tui`) ===
+    const install_tui_step = b.step("install:tui", "Install the nalar-tui binary only");
+    install_tui_step.dependOn(&tui_install.step);
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);
