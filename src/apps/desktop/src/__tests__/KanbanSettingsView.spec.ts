@@ -71,10 +71,12 @@ function setupRoute(
   params: Record<string, string> = { itemId: 'wi_test' },
 ) {
   const obj = reactive({ query, path, params, fullPath: path })
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouteMock.mockReturnValue(obj as any)
   const push = vi.fn()
   const replace = vi.fn()
   const back = vi.fn()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouterMock.mockReturnValue({ push, replace, back, currentRoute: obj } as any)
   return { route: obj, router: { push, replace, back } }
 }
