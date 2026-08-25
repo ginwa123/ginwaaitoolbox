@@ -234,13 +234,37 @@ const heightEstimator = new AdaptiveItemHeightEstimator({
   maxSamples: 64,
 })
 
+// Highest index that has a real measured height. The learned median is
+// only trusted for items AT OR BEFORE this index (history the user has
+// actually scrolled through). Items AFTER it — the growing tail during
+// SSE streaming — fall back to the static `defaultItemHeight` prop.
+//
+// WHY (gap-below-last-message bug, reported after P1+P2): the median of
+// a chat's history is much taller than a freshly-appended streaming
+// bubble. Estimating the tail at the median made the sizer extend past
+// the real content, and stick-to-bottom (scrollTop = scrollHeight) put
+// the viewport in that empty over-estimated region — a large blank gap
+// below the last message. The old static 64px default never showed this
+// because it UNDER-estimated (content overflowed the estimate instead).
+let maxMeasuredIndex = -1
+
 /**
  * Estimated height for an item with no stored measurement. Feeds the
- * prefix-sum builder and the visible-range scan. Falls back to the static
- * prop until the first measurements land (identical behavior to pre-P1).
+ * prefix-sum builder and the visible-range scan.
+ *
+ * - Index ≤ maxMeasuredIndex (history): learned median — representative
+ *   of what the user has scrolled through.
+ * - Index > maxMeasuredIndex (tail): static prop — deliberately a
+ *   conservative UNDER-estimate so the sizer never extends past real
+ *   content (no scrollable gap below the last message).
  */
-const estimateHeight = (index: number): number =>
-  itemHeights.value.get(index) ?? heightEstimator.estimate()
+const estimateHeight = (index: number): number => {
+  const stored = itemHeights.value.get(index)
+  if (stored !== undefined) return stored
+  return index <= maxMeasuredIndex
+    ? heightEstimator.estimate()
+    : props.defaultItemHeight
+}
 
 /**
  * Whether the container's content currently overflows its visible area
@@ -345,7 +369,10 @@ watch(
     // A collapse to 0 means the list was swapped (chat switch) — forget
     // the previous chat's height profile so its median doesn't pollute
     // the new chat's estimates.
-    if (newLen === 0 && (oldLen ?? 0) > 0) heightEstimator.reset()
+    if (newLen === 0 && (oldLen ?? 0) > 0) {
+      heightEstimator.reset()
+      maxMeasuredIndex = -1
+    }
     updateAccumulatedHeights()
   },
   { immediate: true },
@@ -552,6 +579,9 @@ const measureItems = () => {
     // Feed the adaptive estimator so future unmeasured items inherit a
     // realistic median instead of the static prop guess.
     heightEstimator.observe(heightPx)
+    // Track the measurement frontier: the learned median is only
+    // trusted for items at or before this index (see estimateHeight).
+    if (index > maxMeasuredIndex) maxMeasuredIndex = index
   }
   updateAccumulatedHeights()
 
