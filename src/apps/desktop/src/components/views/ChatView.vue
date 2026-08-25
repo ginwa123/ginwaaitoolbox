@@ -2638,6 +2638,22 @@ onMounted(async () => {
     lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
 
     await loadChatHistory()
+    // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
+    // BEFORE connectSse(): if a stream is in flight for this session
+    // (user closed/re-selected mid-stream), seed the streaming-*
+    // placeholder with the backend's partial text so subsequent chunk
+    // events APPEND to the recovered content instead of starting from
+    // an empty buffer. Best-effort: a failed snapshot fetch must never
+    // block the chat from loading.
+    try {
+      const snap = await api.getStreamSnapshot(sessionId.value)
+      if (snap.active && snap.content) {
+        streamingContent.value = snap.content
+        updateStreamingMessage()
+      }
+    } catch (err) {
+      console.warn('[ChatView] stream snapshot fetch failed (resume skipped):', err)
+    }
     // Wrap connectSse + startGitStatusPoll in try/catch so a thrown
     // error (e.g. useSseBus() throwing if the bus was torn down by
     // a test's `__resetSseBus()` after the test's assertions ran but

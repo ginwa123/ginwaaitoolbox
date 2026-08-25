@@ -25,6 +25,9 @@ pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
 pub const sessionExistHandler = @import("session_exist.zig").sessionExistHandler;
 pub const sessionMessagesHandler = @import("session_messages_get.zig").sessionMessagesHandler;
+// GET /api/llm/session/:session_id/stream — in-flight stream snapshot
+// (task_1787673548905_0 stream-resume-on-reselect).
+pub const streamGetHandler = @import("stream_get.zig").streamGetHandler;
 pub const sessionLatestHandler = @import("session_latest.zig").sessionLatestHandler;
 pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHandler;
 pub const pingHandler = @import("ping.zig").pingHandler;

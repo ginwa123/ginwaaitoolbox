@@ -320,6 +320,12 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
     try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
+    // In-flight stream snapshot (task_1787673548905_0 stream-resume-on-
+    // reselect) — serves `{ active, content }` from the in-memory
+    // stream_snapshot registry so a re-mounted ChatView can resume a
+    // mid-stream session. Registered AFTER the sibling /messages +
+    // /queue_messages routes (route-order rule).
+    try gs.router.get("/api/llm/session/:session_id/stream", ai_mod.http_handlers.streamGetHandler);
     // Unified SSE endpoint — single EventSource for all event families
     // (workers, sessions, kanban_column, kanban_task, per-session llm +
     // queue_messages). Replaces the 5 dedicated routes that previously

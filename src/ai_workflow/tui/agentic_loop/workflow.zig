@@ -41,6 +41,7 @@ const mark_history_not_for_llmrun_mod = @import("markHistoryNotForLLMRun.zig");
 const retry_delay_ms_mod = @import("retry_delay_ms.zig");
 const session_skills_mod = @import("session_skills.zig");
 const sse_mod = @import("sse.zig");
+const stream_snapshot = @import("stream_snapshot.zig");
 const sse_on_event_send_session_mod = @import("sse_on_event_send_session.zig");
 const sse_send_event_worker_mod = @import("sse_send_event_worker.zig");
 const update_session_name_mod = @import("update_session_name.zig");
@@ -1551,6 +1552,11 @@ fn callDynamicAgentNew(
         .session_id = session_id,
         .chunk_index = 0,
     };
+    // 2026-09-02 stream-resume-on-reselect — mark the in-flight stream
+    // buffer as started (clears any stale content from a previous turn)
+    // so `GET /api/llm/session/:id/stream` can serve the partial text to
+    // a re-mounted ChatView.
+    stream_snapshot.beginStream(allocator, session_id);
     // `stream_callback` is typed as agent.StreamCallback; callStreaming
     // wants the same type — direct assignment, no @ptrCast needed.
     const callback_for_agent: agent.StreamCallback = &stream_callback;
@@ -1602,6 +1608,9 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     // Handle done marker - no data to send
     if (chunk.done) {
         stream_ctx.chunk_index = 0;
+        // 2026-09-02 stream-resume-on-reselect — flip the snapshot to
+        // inactive (content stays readable for a late poll).
+        stream_snapshot.endStream(allocator, session_id);
         return;
     }
 
@@ -1614,6 +1623,10 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
                 .session_id = session_id,
             };
             on_event_sent.sendStreamChunkContent(allocator, session_id, content_chunk);
+            // 2026-09-02 stream-resume-on-reselect — accumulate the delta
+            // into the in-memory snapshot so a re-selected ChatView can
+            // recover the partial text via GET /api/llm/session/:id/stream.
+            stream_snapshot.appendContent(allocator, session_id, content);
         }
     }
 
