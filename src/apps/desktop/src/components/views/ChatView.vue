@@ -2000,7 +2000,7 @@ let previousScrollTop = -1
 let previousScrollHeight = -1
 let previousDirection: 'up' | 'down' | null = null
 
-const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement) => {
+const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic = false) => {
   // Prefer the event target — it's the actual DOM element that
   // dispatched the scroll event, so the browser guarantees it
   // exists for the lifetime of this handler. The ref chain
@@ -2259,7 +2259,19 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // Fix: only RETAIN the stick if it WAS engaged. A user who already
   // scrolled up must never be re-engaged by content growth — only by
   // actually scrolling back down to the bottom (newIsAtBottom).
-  const userScrolledUp = deltaTop < 0
+  // ── Programmatic-write guard (2026-08-25 append-gap fix) ──────────────
+  //
+  // `userScrolledUp` must mean "the USER scrolled up", not "scrollTop
+  // decreased". VirtualScroller's anchor compensation (measureItems)
+  // and endPreserve restoration write scrollTop directly; those writes
+  // fire native scroll events that arrive here with
+  // `isProgrammatic=true` (4th emit arg). A downward compensation
+  // (measured height < estimate — streamed markdown settling shorter)
+  // previously read as a real upward gesture: isAtBottom flipped
+  // false, the auto-stick disengaged, and every later SSE chunk's
+  // contentShift hit the spacer-resize-skip guard — the gap below the
+  // last message accumulated with each chunk and never self-healed.
+  const userScrolledUp = !isProgrammatic && deltaTop < 0
   const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp
   isAtBottom.value = newIsAtBottom || retainedThroughGrowth
   // Persist the current state for the next call's deltas. Done
