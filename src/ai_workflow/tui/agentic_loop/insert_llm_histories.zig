@@ -21,6 +21,11 @@ pub const InsertLLMHistoriesInput = struct {
     cwd: []const u8,
     entity: LLMHistory,
     is_skip_db: bool = false,
+    /// True when this insert is an agentic-loop diagnostic (retry attempt
+    /// or TooManyRetries bail) — forwarded to the SSE payload so the
+    /// frontend renders it in a dedicated AgentErrorCard. Never persisted
+    /// (diagnostic sites always pair this with is_skip_db = true).
+    is_error: bool = false,
 };
 
 pub fn inserLLMHistories(
@@ -219,6 +224,7 @@ pub fn inserLLMHistories(
                 .total_tokens = input.total_tokens,
                 .diffview_before = copy_diffview_before,
                 .diffview_after = copy_diffview_after,
+                .is_error = obj.is_error,
             } }) catch |on_event_sent_err| {
                 logger.?.errFmt("[{s}] failed to sent llm historry: {s}\n", .{ keyword, @errorName(on_event_sent_err) });
             };

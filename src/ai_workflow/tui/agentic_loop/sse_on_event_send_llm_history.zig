@@ -42,6 +42,12 @@ const SseEventLLMHistory = struct {
     diffview_after: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
     session_skills: ?[]const SkillInfo = null,
+    /// True when this event is an agentic-loop diagnostic (retry attempt
+    /// or TooManyRetries bail) rather than a real chat turn. The frontend
+    /// routes these into a dedicated AgentErrorCard instead of the normal
+    /// message list. Default false — only workflow.zig's 3 diagnostic
+    /// sites set it.
+    is_error: bool = false,
 };
 
 pub const OnEventInputLLMHistory = struct {
@@ -69,6 +75,9 @@ pub const OnEventInputLLMHistory = struct {
     diffview_after: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
     session_skills: []const SkillInfo,
+    /// See SseEventLLMHistory.is_error — threaded through from
+    /// InsertLLMHistoriesInput by insert_llm_histories.zig.
+    is_error: bool = false,
 };
 
 pub const OnEventSendLLMHistoryInput = struct { allocator: std.mem.Allocator, io: std.Io, logger: ?*logger_mod.Logger, event_bus: *event_bus_mod.EventBus, entity: OnEventInputLLMHistory };
@@ -163,6 +172,7 @@ pub fn onEventSendLLMHistory(
         .diffview_after = input.diffview_after,
         .image_url = input.image_url,
         .session_skills = session_skills_json,
+        .is_error = input.is_error,
     };
 
     var buf: std.ArrayList(u8) = .empty;
@@ -483,4 +493,86 @@ test "onEventSendLLMHistory: emits on both session_id and 'llm' keys (central br
 
     const ev = captured_llm_event orelse return error.NoEventCaptured;
     try testing.expectEqualStrings("llm_full", ev.event_type.?);
+}
+
+// ─── is_error flag (agent error card, task_1787663566535_2) ────────────────
+//
+// Agentic-loop diagnostics (retry attempts + TooManyRetries bails) are
+// emitted over the SAME `llm_full` event as normal messages. The frontend
+// needs an explicit marker to route them into a dedicated AgentErrorCard
+// instead of rendering them as a plain user chat bubble.
+
+test "onEventSendLLMHistory: is_error=true serializes into the JSON payload" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_err",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = "[Retry 1/10] StreamInterrupted (callDynamicAgentNew). Retrying in 10000ms.",
+            .reasoning_content = null,
+            .role = "user",
+            .finish_reason = "null",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = true,
+            .is_output = false,
+            .is_error = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"is_error\": true") != null);
+}
+
+test "onEventSendLLMHistory: is_error defaults to false in the JSON payload" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_noerr",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = "normal assistant turn",
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    // Default path must NOT claim to be an error — the frontend routes on
+    // this exact field.
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"is_error\": false") != null);
 }
