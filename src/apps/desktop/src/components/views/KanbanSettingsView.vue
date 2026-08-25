@@ -7,12 +7,13 @@
   The page reads itemId from route.params and derives workspaceId
   from the store by walking workspaces (itemId is globally unique).
 
-  Layout (mirrors SettingsView's 240px sidebar + content panel):
-    1. Left sidebar — back button + "⚙ Kanban Settings" title +
-       kanban name (inline rename via InlineEditableText) + tab
-       strip ("Columns" / "🧠 Local Memories"; memories tab hidden
-       when item?.path is null).
-    2. Right content panel:
+  Layout (single column, no sidebar — the page REPLACES the kanban
+  board entirely, not overlays it):
+    1. Top header bar — back button + "⚙ Kanban Settings" title +
+       kanban name (inline rename) all on one row.
+    2. Tab strip below the header — "Columns" / "🠯 Local Memories"
+       (memories tab hidden when item.path is null).
+    3. Content area (full width):
        - Columns tab: add-column inline form + columns list with
          per-row edit/delete + copy-spec footer.
        - Memories tab: WorkspaceItemMemoriesView (renders only when
@@ -206,28 +207,43 @@ function sortedColumns() {
 
 <template>
   <div
-    class="flex h-full"
+    class="flex flex-col h-full"
     style="background-color: var(--semantic-content-bg)"
     data-testid="kanban-settings-page"
   >
-    <!-- Left sidebar (240px wide, mirrors SettingsView) -->
+    <!-- Empty / not-found states (centered, full-page) -->
     <div
-      class="h-full flex flex-col shrink-0"
-      style="
-        width: 240px;
-        background-color: var(--semantic-sidebar-bg);
-        border-right: 1px solid var(--color-border);
-      "
+      v-if="emptyHint"
+      class="flex-1 flex items-center justify-center p-8"
+      data-testid="kanban-settings-page-no-item"
     >
-      <!-- Header: back button + page title -->
+      <p class="text-sm" style="color: var(--semantic-text-dim)">
+        No kanban selected. Open this page from a kanban board's ⚙ Settings button.
+      </p>
+    </div>
+    <div
+      v-else-if="notFound"
+      class="flex-1 flex items-center justify-center p-8"
+      data-testid="kanban-settings-page-not-found"
+    >
+      <p class="text-sm" style="color: var(--semantic-text-dim)">
+        That kanban doesn't exist or has been deleted.
+      </p>
+    </div>
+
+    <!-- Real content (header + tabs + body). Using v-if="item"
+         (not v-else) so vue-tsc narrows item to non-null in the
+         template body. -->
+    <template v-if="item">
+      <!-- Header bar: back button + page title + kanban name -->
       <div
-        class="h-14 flex items-center px-4 shrink-0"
+        class="h-14 px-5 flex items-center gap-3 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
       >
         <button
           type="button"
           @click="goBack"
-          class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-200 hover:opacity-80 mr-3"
+          class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-200 hover:opacity-80"
           style="color: var(--semantic-text-muted)"
           title="Back to kanban"
           data-testid="kanban-settings-page-back"
@@ -253,87 +269,55 @@ function sortedColumns() {
         >
           <span aria-hidden="true">⚙️</span>
           <span>Kanban Settings</span>
-        </h1>
-      </div>
-
-      <!-- Kanban name + tab strip -->
-      <div
-        v-if="item"
-        class="flex-1 flex flex-col overflow-hidden"
-      >
-        <!-- Inline rename (mirrors KanbanSettingsDialog header pattern) -->
-        <div class="px-4 pt-3 pb-2">
+          <span style="color: var(--semantic-text-dim)" class="text-sm font-normal">·</span>
           <InlineEditableText
             :value="item.name"
             :placeholder="'unnamed kanban'"
             :ariaLabel="'kanban name'"
             :testId="`kanban-settings-page-rename`"
-            display-class="text-sm font-normal"
+            display-class="text-sm font-normal ml-1"
             @save="(newName) => emit('renameItem', newName)"
           />
-        </div>
+        </h1>
+      </div>
 
-        <!-- Tab strip: Columns | Local Memories. Hidden when no path. -->
-        <div
-          v-if="item?.path"
-          class="flex gap-1 px-4 pt-2 pb-0 shrink-0"
-          style="border-bottom: 1px solid var(--color-border)"
-          data-testid="kanban-settings-page-tabs"
+      <!-- Tab strip: Columns | Local Memories. Hidden when no path. -->
+      <div
+        v-if="item.path"
+        class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
+        style="border-bottom: 1px solid var(--color-border)"
+        data-testid="kanban-settings-page-tabs"
+      >
+        <button
+          type="button"
+          @click="settingsMode = 'columns'"
+          data-testid="kanban-settings-page-tab-columns"
+          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+          :style="
+            settingsMode === 'columns'
+              ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+              : 'background-color: transparent; color: var(--semantic-text-muted);'
+          "
         >
-          <button
-            type="button"
-            @click="settingsMode = 'columns'"
-            data-testid="kanban-settings-page-tab-columns"
-            class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
-            :style="
-              settingsMode === 'columns'
-                ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
-                : 'background-color: transparent; color: var(--semantic-text-muted);'
-            "
-          >
-            Columns
-          </button>
-          <button
-            type="button"
-            @click="settingsMode = 'memories'"
-            data-testid="kanban-settings-page-tab-memories"
-            class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
-            :style="
-              settingsMode === 'memories'
-                ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
-                : 'background-color: transparent; color: var(--semantic-text-muted);'
-            "
-          >
-            🧠 Local Memories
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Right content panel -->
-    <main class="flex-1 flex flex-col overflow-hidden">
-      <!-- Empty / not-found hints (centered) -->
-      <div
-        v-if="emptyHint"
-        class="flex-1 flex items-center justify-center p-8"
-        data-testid="kanban-settings-page-no-item"
-      >
-        <p class="text-sm" style="color: var(--semantic-text-dim)">
-          No kanban selected. Open this page from a kanban board's ⚙ Settings button.
-        </p>
-      </div>
-      <div
-        v-else-if="notFound"
-        class="flex-1 flex items-center justify-center p-8"
-        data-testid="kanban-settings-page-not-found"
-      >
-        <p class="text-sm" style="color: var(--semantic-text-dim)">
-          That kanban doesn't exist or has been deleted.
-        </p>
+          Columns
+        </button>
+        <button
+          type="button"
+          @click="settingsMode = 'memories'"
+          data-testid="kanban-settings-page-tab-memories"
+          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+          :style="
+            settingsMode === 'memories'
+              ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+              : 'background-color: transparent; color: var(--semantic-text-muted);'
+          "
+        >
+          🧠 Local Memories
+        </button>
       </div>
 
-      <!-- Columns tab body (add-form + columns list + copy-spec footer) -->
-      <template v-else-if="settingsMode === 'columns'">
+      <!-- Body -->
+      <template v-if="settingsMode === 'columns'">
         <!-- Add Column inline form -->
         <div
           class="px-5 py-4 shrink-0"
@@ -510,7 +494,7 @@ function sortedColumns() {
 
       <!-- Memories tab body -->
       <div
-        v-else-if="settingsMode === 'memories' && item?.path"
+        v-else-if="settingsMode === 'memories' && item.path"
         class="flex-1 min-h-0 overflow-hidden"
         data-testid="kanban-settings-page-memories-panel"
       >
@@ -520,7 +504,7 @@ function sortedColumns() {
         />
       </div>
       <div
-        v-else-if="settingsMode === 'memories' && !item?.path"
+        v-else-if="settingsMode === 'memories' && !item.path"
         class="flex-1 flex items-center justify-center p-8"
         data-testid="kanban-settings-page-memories-no-path"
       >
@@ -528,7 +512,7 @@ function sortedColumns() {
           No directory is set on this kanban — pick one when creating the kanban to enable local memories.
         </p>
       </div>
-    </main>
+    </template>
 
     <!--
       Per-row rename/delete editor (lifted from KanbanSettingsDialog).
