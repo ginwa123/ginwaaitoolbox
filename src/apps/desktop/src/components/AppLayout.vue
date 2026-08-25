@@ -2353,6 +2353,21 @@ defineExpose({
         />
       </div>
 
+      <!-- Kanban settings page (plan: 2026-09-02-kanban-settings-as-page).
+           Mounted INSIDE the <main> v-else-if chain (BEFORE KanbanView)
+           so the settings page REPLACES the kanban board — no overlay.
+           The :key forces a fresh mount when the user navigates from
+           one kanban's settings to another's (the page re-reads
+           route.params.itemId on mount). -->
+      <KanbanSettingsView
+        v-else-if="currentView === 'kanban-settings'"
+        :key="'kanban-settings-' + (route.params.itemId as string)"
+        @add-column="handleKanbanSettingsAddColumn"
+        @edit-column="handleKanbanSettingsEditColumn"
+        @delete-column="handleKanbanSettingsDeleteColumn"
+        @rename-item="handleKanbanRenameItem"
+        @copy-spec="handleOpenCopyKanbanSpec"
+      />
       <!-- Kanban view (kanban-embed-chatview plan, Task 5). The kanban
            now owns the chat pane + resize handle internally — the old
            3-column sibling-of-KanbanView branch (was at lines
@@ -2746,28 +2761,6 @@ defineExpose({
       @add="handleKanbanColumnEditorAdd"
       @rename="handleKanbanColumnEditorRename"
       @delete="handleKanbanColumnEditorDelete"
-    />
-
-    <!--
-      KanbanSettingsView — dedicated full-page route for per-board
-      kanban settings (plan: 2026-09-02-kanban-settings-as-page).
-      Replaces KanbanSettingsDialog (deleted). Mounted alongside the
-      kanban / design / agent main-content branches (gated on
-      currentView === 'kanban-settings' so the kanban board is
-      unmounted while the settings page is visible).
-
-      The :key forces a fresh mount when the user navigates from one
-      kanban's settings to another's (the page's URL restore logic
-      re-reads route.params.itemId on mount).
-    -->
-    <KanbanSettingsView
-      v-if="currentView === 'kanban-settings'"
-      :key="'kanban-settings-' + (route.params.itemId as string)"
-      @add-column="handleKanbanSettingsAddColumn"
-      @edit-column="handleKanbanSettingsEditColumn"
-      @delete-column="handleKanbanSettingsDeleteColumn"
-      @rename-item="handleKanbanRenameItem"
-      @copy-spec="handleOpenCopyKanbanSpec"
     />
 
     <!--
