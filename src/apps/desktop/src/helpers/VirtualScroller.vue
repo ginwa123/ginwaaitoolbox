@@ -561,6 +561,10 @@ watch(
 // layout change (image load, content expansion, streaming).
 const HYSTERESIS_PX = 4
 
+// Rate-limit for the tail-exact clamp (freeze guard 2). See the clamp
+// comment in measureItems below.
+let lastTailClampAt = 0
+
 const measureItems = () => {
   if (!containerRef.value) return
   const content = containerRef.value.querySelector('.virtual-scroller-content')
@@ -633,6 +637,17 @@ const measureItems = () => {
     if (index > maxMeasuredIndex) maxMeasuredIndex = index
   }
   updateAccumulatedHeights()
+
+  // NOTE (2026-08-25): a "tail-exact clamp" (force-write rendered tail
+  // heights + shrink the sizer to the real content bottom when the
+  // window shows the last item) was tried here and REMOVED. It caused
+  // an oscillation loop — clamp shrinks sizer → window shifts → next
+  // pass reads different heights → sizer grows → shifts again — which
+  // the user experienced as app freezes and bouncing text during SSE
+  // streams. Product decision (user): gaps below the last message are
+  // ACCEPTABLE; bouncing is NOT. The anchor compensation above already
+  // keeps scrolled-up reading stable; the remeasure() calls in ChatView
+  // keep the at-bottom case tight without any clamping.
 
   // ── Apply the anchor compensation ────────────────────────────────────
   //

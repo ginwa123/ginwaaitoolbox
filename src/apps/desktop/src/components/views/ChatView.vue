@@ -2502,10 +2502,11 @@ const connectSse = () => {
         // DB row, which re-renders at a DIFFERENT height (markdown
         // settles, reasoning collapses). nextTick first — the DOM must
         // reflect the swap before offsetHeight reads mean anything.
-        // Without the recompute the sizer keeps the stale streaming
-        // height — the phantom gap below the last message (DevTools
-        // evidence: sizer 11664px vs real content bottom 10859px).
-        virtualScrollerRef.value?.remeasure()
+        // Gated on isAtBottom: a scrolled-up reader must not be
+        // disturbed by sizer mutations (the bouncing bug); the at-
+        // bottom case gets an exact sizer so the stick lands on the
+        // real last message, not in a phantom region.
+        if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
         scrollToBottom(false, 'sse-message-complete')
       })
       setupCodeBlockCopyButtons()
@@ -2639,11 +2640,13 @@ const updateStreamingMessage = () => {
       requestAnimationFrame(() => {
         sseScrollPending = false
         scrollLogger.markProgrammatic()
-        // Recompute the height model BEFORE scrolling (append-gap fix):
-        // the streaming row's real height changed (text grew in place)
-        // and the sizer must reflect it or scrollToBottom lands short
-        // or past the real content.
-        virtualScrollerRef.value?.remeasure()
+        // Recompute the height model BEFORE scrolling (append-gap fix),
+        // but ONLY when the stick is engaged. A scrolled-up user must
+        // not be disturbed: remeasure mutates the sizer, and sizer
+        // mutations during active reading = the bouncing-text bug.
+        // Gaps below are acceptable while reading; the moment the user
+        // returns to the bottom, this branch re-runs and tightens.
+        if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
         scrollToBottom(false, 'sse-chunk')
       })
     }
@@ -2727,10 +2730,10 @@ watch(
       // Recompute the height model BEFORE the auto-stick (append-gap
       // fix): a new item's real height is unknown until it renders;
       // the sizer's estimate may overshoot (phantom gap) or undershoot
-      // (stick lands short). remeasure() reads the freshly-patched DOM
-      // and makes the sizer exact before scrollToBottom computes the
-      // target from it.
-      virtualScrollerRef.value?.remeasure()
+      // (stick lands short). Gated on isAtBottom — scrolled-up readers
+      // are never disturbed; at-bottom users get an exact sizer so the
+      // stick shows the real last message.
+      if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
       scrollToBottom(false, 'messages-length')
     })
   },
