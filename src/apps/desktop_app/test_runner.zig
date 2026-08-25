@@ -16,5 +16,10 @@ test {
     _ = @import("subprocess_test.zig");
     _ = @import("extraction_test.zig");
     _ = @import("platform/linux_test.zig");
+    _ = @import("platform/linux_gfx_test.zig");
+    _ = @import("platform/linux_asset_lookup_test.zig");
+    _ = @import("platform/macos/nalar_webview_static_test.zig");
+    _ = @import("platform/windows/nalar_webview_static_test.zig");
+    _ = @import("platform/webview_header_dedup_test.zig");
     _ = @import("attach_test.zig");
 }

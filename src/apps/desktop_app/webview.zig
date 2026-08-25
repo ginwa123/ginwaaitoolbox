@@ -22,6 +22,22 @@ pub const CAsset = extern struct {
     mime: [*:0]const u8,
 };
 
+/// Graphics/compositing preset for the embedded webview.
+///
+/// WebKitGTK (Linux) picks its rendering path from environment variables
+/// read during GLib/WebKit init. Driver support varies wildly — some
+/// setups silently fall back to software rendering (slow scrolling),
+/// others glitch with the DMABUF renderer. The presets let users pick a
+/// known-good combination without editing platform code:
+///
+///   .auto   — pin acceleration-friendly defaults, but respect any value
+///             already present in the process environ (user override wins)
+///   .compat — force the conservative path (DMABUF renderer disabled);
+///             for machines that render black/glitched windows with
+///             DMABUF (older NVIDIA, some virtualized GPUs)
+///   .debug  — same as auto plus WEBKIT_DEBUG compositing output on stderr
+pub const GfxPreset = enum(c_int) { auto = 0, compat = 1, debug = 2 };
+
 /// Mirror of nalar_webview_config.
 pub const Config = extern struct {
     title: [*:0]const u8 = "Nalar",
@@ -40,6 +56,9 @@ pub const Config = extern struct {
     /// Inspect Element → DevTools). Off by default; enable with the
     /// nalar-desktop `--devtools` flag.
     enable_developer_extras: bool = false,
+    /// Linux-only today (no-op elsewhere): which WebKitGTK gfx env preset
+    /// to apply before gtk_init. See GfxPreset docs above.
+    gfx_preset: GfxPreset = .auto,
 };
 
 // extern "c" declarations of the C ABI. The implementations live in

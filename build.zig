@@ -1286,7 +1286,17 @@ pub fn build(b: *std.Build) void {
             });
 
             const mm_file = b.path("src/apps/desktop_app/platform/macos/nalar_webview.mm");
-            desktop_exe.root_module.addCSourceFile(.{ .file = mm_file, .flags = &.{"-ObjC++"} });
+            // -I src/apps/desktop_app: the shim includes the shared C ABI
+            // header via `#import "shared/webview_c.h"`. zig cc compiles
+            // the .mm from the build root, so a relative `../shared/...`
+            // quoted include does NOT resolve against the source file's
+            // directory on macOS CI (clang's quoted-search first hops are
+            // include-path based here). The -I flag makes the include
+            // resolve deterministically on every host.
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = mm_file,
+                .flags = &.{ "-ObjC++", "-Isrc/apps/desktop_app" },
+            });
             desktop_exe.root_module.linkFramework("Cocoa", .{});
             desktop_exe.root_module.linkFramework("WebKit", .{});
         },
@@ -1396,6 +1406,12 @@ pub fn build(b: *std.Build) void {
             n += 1;
             cpp_args[n] = "-fcxx-exceptions";
             n += 1;
+            // -I src/apps/desktop_app: the shim includes the shared C ABI
+            // header via `#include "shared/webview_c.h"` (single-copy
+            // header dedup). The include path makes it resolve regardless
+            // of the compile cwd.
+            cpp_args[n] = "-Isrc/apps/desktop_app";
+            n += 1;
             for (candidate_dirs) |dir| {
                 if (dir.len == 0) continue;
                 cpp_args[n] = "-isystem";
@@ -1456,6 +1472,8 @@ pub fn build(b: *std.Build) void {
                     b.graph.zig_exe, "cc",
                     "-target", "x86_64-windows-gnu",
                     "-c",
+                    // -I for the shared webview_c.h include (header dedup)
+                    "-Isrc/apps/desktop_app",
                     "-o",  stub_cpp_obj,
                     stub_cpp_src,
                 });

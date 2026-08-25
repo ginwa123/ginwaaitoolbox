@@ -222,7 +222,30 @@ extern "c" fn webkit_uri_scheme_request_finish(
 const SchemeContext = struct {
     assets: [*]const webview.CAsset,
     count: usize,
+    /// O(1) path -> asset-index lookup, built once in
+    /// nalar_webview_create (see buildAssetIndex). Replaces the old
+    /// per-request linear scan over `assets` — the callback runs on the
+    /// GTK main thread, so every saved cycle is a saved scroll frame.
+    asset_index: std.StringHashMapUnmanaged(u32) = .empty,
 };
+
+/// Build the path -> index map for the scheme callback. Keys point into
+/// the C asset table's path strings (static lifetime per the C ABI
+/// contract), so no key duplication is needed.
+fn buildAssetIndex(
+    allocator: std.mem.Allocator,
+    ctx: *SchemeContext,
+) !void {
+    try ctx.asset_index.ensureTotalCapacity(allocator, @intCast(ctx.count));
+    for (ctx.assets[0..ctx.count], 0..) |asset, i| {
+        const asset_path = std.mem.span(asset.path);
+        // First occurrence wins on duplicate paths (same semantics as
+        // the old linear scan, which returned the first match).
+        if (!ctx.asset_index.contains(asset_path)) {
+            try ctx.asset_index.put(allocator, asset_path, @intCast(i));
+        }
+    }
+}
 
 /// Opaque handle returned by nalar_webview_create. Mirrors the
 /// nalar_webview (C side) / Webview (Zig side) opaque type — the
@@ -247,10 +270,72 @@ const NalarWebview = struct {
 /// other files in the module — see the force-link pub consts at the end
 /// of the file. Without those, the Zig linker would dead-code-eliminate
 /// the implementation and drop the GTK/WebKit system library dependencies.
+/// Graphics environment presets for WebKitGTK, applied BEFORE gtk_init.
+///
+/// WebKitGTK reads its renderer-selection env vars during GLib/WebKit
+/// initialization. When they are unset (the previous state of this file —
+/// zero env configuration), many Linux drivers silently fall back to
+/// software rendering: every scroll frame is CPU-painted instead of
+/// GPU-composited. That is the main reason the desktop app "feels slower
+/// than Chrome" on Linux.
+///
+/// Presets (mirrors webview.GfxPreset):
+///   .auto   — pin acceleration-friendly defaults; any var already present
+///             in the process environ wins (user override respected)
+///   .compat — force-disable the DMABUF renderer; escape hatch for
+///             machines that render black/glitched windows with DMABUF
+///             (older NVIDIA, some virtualized GPUs)
+///   .debug  — auto behavior plus WEBKIT_DEBUG=Compositing on stderr
+fn applyLinuxGfxEnv(preset: webview.GfxPreset) void {
+    // setenv(3)/getenv(3) via libc. overwrite=true is safe because we only
+    // reach each setenv call after confirming the var is absent from
+    // environ (std.c.getenv). Zig 0.16 removed std.posix.getenv.
+    const c = struct {
+        extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+    };
+
+    switch (preset) {
+        .auto, .debug => {
+            // Acceleration-friendly defaults. WEBKIT_DISABLE_DMABUF_RENDERER=1
+            // sounds backwards but is the community-verified fix for janky
+            // scrolling on NVIDIA + mixed-GPU setups (the DMABUF path has
+            // had long-standing frame-pacing bugs there); FORCE_COMPOSITING
+            // keeps WebKit on the accelerated compositor instead of the
+            // legacy non-composited blit path.
+            if (std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") == null) {
+                _ = c.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
+            }
+            if (std.c.getenv("WEBKIT_FORCE_COMPOSITING_MODE") == null) {
+                _ = c.setenv("WEBKIT_FORCE_COMPOSITING_MODE", "1", 1);
+            }
+        },
+        .compat => {
+            // Conservative path: no DMABUF at all, compositing still forced
+            // so resize/scroll go through the compositor rather than blits.
+            if (std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") == null) {
+                _ = c.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
+            }
+            if (std.c.getenv("WEBKIT_FORCE_COMPOSITING_MODE") == null) {
+                _ = c.setenv("WEBKIT_FORCE_COMPOSITING_MODE", "1", 1);
+            }
+        },
+    }
+
+    if (preset == .debug) {
+        if (std.c.getenv("WEBKIT_DEBUG") == null) {
+            _ = c.setenv("WEBKIT_DEBUG", "Compositing", 1);
+        }
+    }
+}
+
 pub export fn nalar_webview_create(
     cfg: *const webview.Config,
     url: [*:0]const u8,
 ) ?*webview.Webview {
+    // Pin the WebKitGTK gfx env BEFORE gtk_init — GLib/GDK and WebKit read
+    // these vars during init; setting them afterwards has no effect.
+    applyLinuxGfxEnv(cfg.gfx_preset);
+
     // gtk_init — null/null is fine; we don't have a CLI to parse.
     gtk_init(null, null);
 
@@ -274,6 +359,15 @@ pub export fn nalar_webview_create(
     scheme_ctx.* = .{
         .assets = cfg.assets,
         .count = cfg.asset_count,
+    };
+
+    // O(1) asset lookup: build the path -> index map once, here, so the
+    // per-request callback never linear-scans the table on the GTK main
+    // thread. On failure we fall back to count=0 (all requests 404)
+    // rather than aborting window creation.
+    buildAssetIndex(std.heap.page_allocator, scheme_ctx) catch |err| {
+        std.log.warn("linux.zig: asset index build failed ({any}); app:// lookups disabled", .{err});
+        scheme_ctx.count = 0;
     };
 
     webkit_web_context_register_uri_scheme(
@@ -502,15 +596,12 @@ fn uriSchemeCallback(
     const path_z: [*:0]const u8 = webkit_uri_scheme_request_get_path(request);
     const path = std.mem.span(path_z);
 
-    // Linear search through the asset table. For a few hundred entries
-    // (typical webapp size after bundling), this is fine — a hash table
-    // would only matter for thousands of assets.
-    for (ctx.assets[0..ctx.count]) |asset| {
-        const asset_path = std.mem.span(asset.path);
-        if (std.mem.eql(u8, asset_path, path)) {
-            serveAsset(request, asset);
-            return;
-        }
+    // O(1) lookup through the prebuilt index (see buildAssetIndex).
+    // Falls back to the empty-serve path when the map has no entry —
+    // same not-found semantics as the old linear scan.
+    if (ctx.asset_index.get(path)) |asset_idx| {
+        serveAsset(request, ctx.assets[asset_idx]);
+        return;
     }
 
     // Asset not found — return an empty body with a plain MIME type. We
