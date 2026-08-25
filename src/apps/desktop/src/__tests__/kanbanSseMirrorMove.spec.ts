@@ -424,28 +424,22 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
   it('human_touched event: no column change (the SSE payload carries null), local untouched', async () => {
     const { ws, wsId, itemId, taskId } = seedKanbanWithTask({})
 
-    // human_touched has new_column_id: null. The mirror should set
-    // kanban_column_id = null, BUT the user's interaction was NOT a
-    // move — the agent's kanban_card UI listens to this event and
-    // re-fetches the task list. Setting column_id to null here would
-    // be wrong: the task didn't actually move.
-    //
-    // The fix's mirror only fires for `moved` / `assigned` (with a
-    // non-null new_column_id) and `unassigned`. `human_touched`
-    // bypasses the mirror because the event payload signals "no
-    // position change". Assert this contract: column_id is preserved.
-    vi.spyOn(api, 'getTasks').mockResolvedValue({
-      tasks: [
-        {
-          id: taskId,
-          name: 'cli',
-          kanban_column_id: 'colA',
-          kanban_position: 5,
-        },
-      ],
-      has_more: false,
-      next_cursor: null,
-    })
+    // REGRESSION (2026-08-24): human_touched has new_column_id: null.
+    // Pre-fix, the event fell into the unassign refetch branch and
+    // fired fetchKanbanTasksForAllColumns → one tasks?limit=100 per
+    // column EVERY time the user opened a task's chatview. The wire
+    // payload already carries the after-state (needs_human_review:
+    // false), so the handler must patch the local task in place and
+    // fetch NOTHING. The getTasks spy is deliberately left unmocked —
+    // any accidental network call would blow up the test.
+    const getTasksSpy = vi.spyOn(api, 'getTasks')
+
+    // Seed the "awaiting review" state the card shows before the
+    // touch: the orange dot renders when needs_human_review=true.
+    const localTaskBefore = ws.workspaces[0]!.items[0]!.tasks!.find(
+      (t) => t.id === taskId,
+    )!
+    localTaskBefore.needs_human_review = true
 
     const store = useKanbanSseStore()
     await store.initKanbanSse(wsId)
@@ -457,14 +451,21 @@ describe('kanbanSse — mirror local task on move/assign/unassign (fix duplicate
       task_id: taskId,
       new_column_id: null,
       new_position: null,
+      needs_human_review: false,
     })
 
     await new Promise((r) => setTimeout(r, 10))
     await nextTick()
 
+    // Zero network — the whole point of the fix.
+    expect(getTasksSpy).not.toHaveBeenCalled()
+
     const localTask = ws.workspaces[0]!.items[0]!.tasks!.find(
       (t) => t.id === taskId,
     )!
+    // The review flag flipped (orange dot → green checkmark).
+    expect(localTask.needs_human_review).toBe(false)
+    // Column + position are untouched (it was NOT a move).
     expect(localTask.kanban_column_id).toBe('colA')
     expect(localTask.kanban_position).toBe(5)
   })

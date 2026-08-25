@@ -3014,6 +3014,12 @@ export interface KanbanTaskEvent {
   task_id: string
   new_column_id?: string | null
   new_position?: number | null
+  // After-action review state — present ONLY on `human_touched`
+  // events (task_mark_human_touched.zig sends `false`; null on
+  // assigned/moved/unassigned). Read by the kanbanSse handler to
+  // patch the local task in place instead of refetching every
+  // column (chatview-open api-spam fix, 2026-08-24).
+  needs_human_review?: boolean | null
 }
 
 /**
