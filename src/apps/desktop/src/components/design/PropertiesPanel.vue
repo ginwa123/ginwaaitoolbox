@@ -204,7 +204,7 @@ watch(htmlExpanded, async (expanded) => {
   // import call.
   if (monacoEditor.value) return
   try {
-    const monaco = await import('monaco-editor')
+    const monaco = await import(/* @vite-ignore */ 'monaco-editor')
     // Disable web workers — Monaco's default worker setup doesn't
     // work in our Vite/jsdom environment; the simpler approach is to
     // run monaco in the main thread (slightly slower autocomplete
