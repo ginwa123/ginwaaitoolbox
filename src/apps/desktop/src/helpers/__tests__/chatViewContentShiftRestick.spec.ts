@@ -458,10 +458,7 @@ describe('ChatView onContentShift restick (extracted)', () => {
       const src = readFileSync(path, 'utf8')
       // The guard must reference previousIsAtBottom — without it the
       // stick re-engages for users who are already scrolled up.
-      expect(
-        src,
-        'handleVirtualScroll content-growth guard must check previousIsAtBottom',
-      ).toMatch(
+      expect(src).toMatch(
         /previousIsAtBottom\s*&&\s*contentGrew\s*&&\s*!userScrolledUp/,
       )
     })
