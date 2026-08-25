@@ -31,18 +31,12 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     // Try to read the config file
     const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch {
-        // If file doesn't exist, return empty config
+        // If file doesn't exist, return an empty profile-only config
+        // (plan 2026-08-24-config-simplify-remove-defaults: no top-level
+        // LLM defaults on the wire).
         return res.jsonResponse(.{
             .status_code = 200,
-            .data = try http_response.makeNalarConfigResponse(allocator, .{
-                .api_endpoint = "",
-                .api_key = "",
-                .model = "",
-                .url_style = "openai",
-                .temperature = 0.7,
-                .max_tokens = null,
-                .system_prompt = "",
-            }),
+            .data = try http_response.makeNalarConfigResponse(allocator, .{}),
         });
     };
     defer file.close(io);
@@ -98,13 +92,9 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     return res.jsonResponse(.{
         .status_code = 200,
         .data = try http_response.makeNalarConfigResponse(allocator, .{
-            .api_endpoint = cfg.base_url,
-            .api_key = cfg.api_key,
-            .model = cfg.model,
-            .url_style = cfg.url_style,
-            .temperature = parseTemperatureOrAuto(cfg.temperature),
-            .max_tokens = cfg.max_tokens,
-            .system_prompt = cfg.system_prompt,
+            // Plan 2026-08-24-config-simplify-remove-defaults: the
+            // top-level LLM defaults are no longer on the wire. Profiles
+            // + operational settings only.
             .profiles = cfg.profiles_models,
             .active_profile = cfg.active_profile,
             .mcp_servers = cfg.mcp_servers,
@@ -116,22 +106,11 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .max_capacity_token_model = cfg.max_capacity_token_model,
             .compaction_threshold_percent = cfg.compaction_threshold_percent,
             .retry_delay_ms = cfg.retry_delay_ms,
-            // The compaction-related fields were moved to per-profile in
-            // Chunk 7. Frontend reads `profiles` map directly and shows
-            // one row per profile (see CompactionSection.vue).
         }),
     });
 }
 
 const ConfigJson = struct {
-    api_key: []const u8 = "",
-    model: []const u8 = "",
-    base_url: []const u8 = "",
-    url_style: []const u8 = "openai",
-    max_tokens: ?usize = null,
-    system_prompt: []const u8 = "",
-    temperature: json.Value = .null,
-    thinking: json.Value = .null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
     /// Each value is a `{"url": "...", "headers": {...}}` object.
     mcp_servers: ?json.Value = null,
@@ -159,16 +138,3 @@ const ConfigJson = struct {
     retry_delay_ms: u32 = 0,
 };
 
-fn parseTemperatureOrAuto(value: json.Value) f64 {
-    switch (value) {
-        .float => |v| return v,
-        .integer => |v| return @floatFromInt(v),
-        .string => |v| {
-            if (std.mem.eql(u8, v, "auto") or std.mem.eql(u8, v, "0") or std.mem.eql(u8, v, "0.0")) {
-                return 0.0;
-            }
-            return std.fmt.parseFloat(f64, v) catch 0.0;
-        },
-        else => return 0.0,
-    }
-}
