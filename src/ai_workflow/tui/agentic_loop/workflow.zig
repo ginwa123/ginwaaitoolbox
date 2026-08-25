@@ -867,6 +867,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     // the AI's next turn shouldn't see 10+ retry snapshots
                     // accumulated across unattended-mode cycles.
                     .is_skip_db = true,
+                    // Frontend AgentErrorCard routing (task_1787663566535_2).
+                    .is_error = true,
                     .cwd = copy_cwd,
                     .entity = .{ .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .session_id = copy_session_id, .model = eff.model, .response_content = soft_diagnostic, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = effective_agent_name, .loop_index = loop_counter, .temperature = agent_temperature, .is_thinking = isThinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = copy_parent_session_id, .parent_session_id = copy_parent_session_id, .is_input = true, .is_output = false, .image_urls = null, .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .is_feed_to_llm = false },
                 });
@@ -919,6 +921,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // diagnostic is purely a UX message, not a follow-up
                 // prompt for the next turn.
                 .is_skip_db = true,
+                // Frontend AgentErrorCard routing (task_1787663566535_2).
+                .is_error = true,
                 .cwd = copy_cwd,
                 .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
@@ -1446,6 +1450,8 @@ fn saveRetryAttemptMessage(
         .is_emit_sse = true,
         .cwd = cwd,
         .is_skip_db = true,
+        // Frontend AgentErrorCard routing (task_1787663566535_2).
+        .is_error = true,
         .entity = .{
             .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
             .session_id = session_id,
@@ -2181,4 +2187,34 @@ test "all three diagnostic sites keep is_skip_db=true (never persist to sqlite)"
     const fn_end = std.mem.indexOfPos(u8, source, fn_start, "\nfn ") orelse return error.SaveRetryFnEndMissing;
     if (std.mem.indexOf(u8, source[fn_start..fn_end], ".is_skip_db = true") == null)
         return error.RetryHelperPersistsToDb;
+}
+
+test "all three diagnostic sites set is_error=true (frontend AgentErrorCard routing)" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    // Soft-bail block.
+    const soft_start = std.mem.indexOf(u8, source, "unattended-mode soft-bail after") orelse return error.SoftBailMissing;
+    const soft_end = std.mem.indexOfPos(u8, source, soft_start, "Existing hard-bail") orelse return error.SoftBailEndMissing;
+    if (std.mem.indexOf(u8, source[soft_start..soft_end], ".is_error = true") == null)
+        return error.SoftBailNotMarkedError;
+
+    // Hard-bail block: same window as the is_skip_db test — from the
+    // diagnostic literal to `return error.TooManyRetries`.
+    const hard_start = std.mem.indexOf(u8, source, "workflow halted after {} consecutive retries") orelse return error.HardBailMissing;
+    const hard_end = std.mem.indexOfPos(u8, source, hard_start, "return error.TooManyRetries") orelse return error.HardBailEndMissing;
+    if (std.mem.indexOf(u8, source[hard_start..hard_end], ".is_error = true") == null)
+        return error.HardBailNotMarkedError;
+
+    // Per-retry message helper.
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse return error.SaveRetryFnMissing;
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start, "\nfn ") orelse return error.SaveRetryFnEndMissing;
+    if (std.mem.indexOf(u8, source[fn_start..fn_end], ".is_error = true") == null)
+        return error.RetryHelperNotMarkedError;
+
+    // The flag must appear EXACTLY 3 times in the impl — no other
+    // insertLLMHistories call site may claim is_error. The count
+    // includes the test's own grep literals (3 indexOf calls + 1
+    // expectEqual literal = 4 test-side), so expect 7 total.
+    try testing.expectEqual(@as(usize, 7), std.mem.count(u8, source, ".is_error = true"));
 }
