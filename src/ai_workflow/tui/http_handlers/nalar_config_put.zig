@@ -111,6 +111,12 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.notify_on_complete) |n| {
         config_json.notify_on_complete = n;
     }
+    // notify_on_error: parallel to notify_on_complete, gated on the
+    // error path of the workflow (transport failure, TooManyRetries,
+    // outer catch). Absent = preserve existing on-disk value.
+    if (input.notify_on_error) |n| {
+        config_json.notify_on_error = n;
+    }
     if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
     }
@@ -452,6 +458,12 @@ pub const ConfigInput = struct {
     /// existing on-disk value. Mirrors the `LlmConfigJson` default
     /// (`false`) so a brand-new config has notifications off.
     notify_on_complete: ?bool = null,
+    /// When true, fire an OS-level notification when the LLM workflow
+    /// hits an error (transport failure, TooManyRetries, outer catch).
+    /// Absent = preserve existing on-disk value. Mirrors the
+    /// `LlmConfigJson` default (`false`) so a brand-new config has
+    /// error notifications off.
+    notify_on_error: ?bool = null,
     /// Threshold (in KB) above which the session compactor is invoked
     /// to shrink the LLM context. Absent = preserve existing on-disk
     /// value. Mirrors the `LlmConfigJson` default (`100`).
@@ -532,6 +544,10 @@ const ConfigJson = struct {
     /// `LlmConfigJson` (Config.zig:96); a brand-new config has
     /// notifications off.
     notify_on_complete: bool = false,
+    /// Opt-in OS notification flag for the error path. Default `false`
+    /// matches `LlmConfigJson` (Config.zig); a brand-new config has
+    /// error notifications off.
+    notify_on_error: bool = false,
     /// Compaction threshold in KB. Default `100` matches
     /// `LlmConfigJson` (Config.zig:92).
     model_compaction_size_kb: usize = 100,

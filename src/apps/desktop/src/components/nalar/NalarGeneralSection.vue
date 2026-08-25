@@ -1,0 +1,206 @@
+<script setup lang="ts">
+/**
+ * NalarGeneralSection — General tab in Nalar settings.
+ *
+ * Three operational settings the user can toggle from the UI:
+ *
+ * 1. `notify_on_complete` — OS notification when an LLM response finishes
+ *    with `finish_reason === 'stop'`. Existing config.json field.
+ *
+ * 2. `notify_on_error` — NEW (plan 2026-08-25-notify-on-error). OS
+ *    notification when the workflow hits a transport error, exhausts
+ *    retries (TooManyRetries), or fails the outer agentic loop.
+ *    Mirrors `notify_on_complete` but on the error path. Default false.
+ *
+ * 3. `retry_delay_ms` — Backoff between failed LLM retries (0–60 000).
+ *    Already persisted in config.json; just hidden from the UI before
+ *    this plan. The backend clamps > 60 000 to 60 000 at the PUT layer
+ *    (see nalar_config_put.zig:133-135).
+ *
+ * Single `defineModel<{ ... }>()` v-model surface so the orchestrator
+ * (NalarSettings.vue) hydrates from `syncFromConfig` and writes back
+ * via `syncToConfig` — same pattern as the other sections.
+ */
+import { computed } from 'vue'
+
+export interface NalarGeneralSettings {
+  /** OS notification on `finish_reason === 'stop'`. Mirrors
+   * `NalarConfig.notify_on_complete`. Default false. */
+  notify_on_complete: boolean
+  /** OS notification on transport error / TooManyRetries / outer catch.
+   * Mirrors `NalarConfig.notify_on_error`. Default false. */
+  notify_on_error: boolean
+  /** Workflow retry backoff in milliseconds (0–60 000). Mirrors
+   * `NalarConfig.retry_delay_ms`. Default 0 = no delay. */
+  retry_delay_ms: number
+}
+
+const model = defineModel<NalarGeneralSettings>({ required: true })
+
+// Hard cap mirrors the backend's PUT clamp
+// (nalar_config_put.zig:133-135). The user typing past this would
+// silently snap to 60 000 server-side, so clamp in the UI too.
+const RETRY_DELAY_MIN = 0
+const RETRY_DELAY_MAX = 60_000
+
+const retryDelaySeconds = computed<number>({
+  // Read: convert ms → seconds (rounded) for a friendlier display.
+  get() {
+    return Math.round((model.value.retry_delay_ms ?? 0) / 1000)
+  },
+  // Write: convert seconds → ms, clamped to [0, 60_000].
+  set(seconds: number) {
+    const clamped = Math.min(RETRY_DELAY_MAX, Math.max(RETRY_DELAY_MIN, Math.round(seconds * 1000)))
+    model.value = { ...model.value, retry_delay_ms: clamped }
+  },
+})
+
+function onRetryDelayInput(event: Event) {
+  const target = event.target as HTMLInputElement
+  // Empty input → keep at 0 (matches the default). Non-numeric → ignore.
+  const raw = target.value.trim()
+  if (raw === '') {
+    model.value = { ...model.value, retry_delay_ms: 0 }
+    return
+  }
+  const seconds = Number.parseInt(raw, 10)
+  if (!Number.isFinite(seconds)) return
+  // The input shows SECONDS (user-friendly unit); the stored field is
+  // MILLISECONDS (matches the backend wire format). Multiply here so
+  // "5" in the UI → 5000 ms in the config (5-second delay).
+  const ms = Math.min(RETRY_DELAY_MAX, Math.max(RETRY_DELAY_MIN, Math.round(seconds * 1000)))
+  model.value = { ...model.value, retry_delay_ms: ms }
+}
+
+// `change` event fires when the user commits a value (blur / Enter),
+// which is the natural commit boundary for a number input. Listening
+// for `change` (NOT `input`) means vitest's `setValue()` (which fires
+// `change` by default) and the user's manual entry both reach the
+// handler. `input` fires on every keystroke which would re-emit
+// intermediate invalid states like "5" then "55".
+function onRetryDelayChange(event: Event) {
+  onRetryDelayInput(event)
+}
+</script>
+
+<template>
+  <div class="space-y-6" data-testid="nalar-general-section">
+    <!-- Section header — short, human-readable summary of what this tab controls -->
+    <div>
+      <h2 class="text-base font-semibold" style="color: var(--semantic-text);">General</h2>
+      <p class="text-xs mt-1" style="color: var(--semantic-text-muted);">
+        Operational settings — desktop notifications and retry behavior.
+      </p>
+    </div>
+
+    <!-- Notifications card -->
+    <div
+      class="rounded-lg p-5 space-y-4"
+      style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
+    >
+      <div class="flex items-center gap-2">
+        <span class="text-base" aria-hidden="true">🔔</span>
+        <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">Notifications</h3>
+      </div>
+
+      <!-- Toggle: notify on complete -->
+      <label
+        class="flex items-start gap-3 cursor-pointer"
+        data-testid="row-notify-on-complete"
+      >
+        <input
+          type="checkbox"
+          data-testid="toggle-notify-on-complete"
+          :checked="model.notify_on_complete"
+          @change="model = { ...model, notify_on_complete: ($event.target as HTMLInputElement).checked }"
+          class="mt-1 w-4 h-4 cursor-pointer"
+          style="accent-color: var(--color-violet);"
+        />
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+            Notify when agent finishes
+          </div>
+          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+            Fire a desktop notification when the LLM response completes
+            (<code class="text-[10px] font-mono">finish_reason = "stop"</code>).
+            Useful when you walk away from the app.
+          </div>
+        </div>
+      </label>
+
+      <!-- Toggle: notify on error -->
+      <label
+        class="flex items-start gap-3 cursor-pointer"
+        data-testid="row-notify-on-error"
+      >
+        <input
+          type="checkbox"
+          data-testid="toggle-notify-on-error"
+          :checked="model.notify_on_error"
+          @change="model = { ...model, notify_on_error: ($event.target as HTMLInputElement).checked }"
+          class="mt-1 w-4 h-4 cursor-pointer"
+          style="accent-color: var(--color-violet);"
+        />
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+            Notify when agent fails
+          </div>
+          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+            Fire a desktop notification when the workflow hits a transport
+            error, retries exhaust, or the agentic loop fails. Independent
+            from the "finishes" toggle.
+          </div>
+        </div>
+      </label>
+    </div>
+
+    <!-- Retry card -->
+    <div
+      class="rounded-lg p-5 space-y-3"
+      style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
+    >
+      <div class="flex items-center gap-2">
+        <span class="text-base" aria-hidden="true">⏱️</span>
+        <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">Retry</h3>
+      </div>
+
+      <label
+        class="flex items-start gap-3"
+        data-testid="row-retry-delay"
+      >
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+            Retry delay (seconds)
+          </div>
+          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+            Backoff before each failed LLM call is retried.
+            <code class="text-[10px] font-mono">0</code> = retry immediately.
+            Max 60 seconds (clamped server-side to 60 000 ms).
+          </div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          <input
+            type="number"
+            min="0"
+            max="60"
+            step="1"
+            inputmode="numeric"
+            data-testid="input-retry-delay-seconds"
+            :value="retryDelaySeconds"
+            @change="onRetryDelayChange($event)"
+            class="w-20 h-8 px-2 rounded-md text-sm font-mono text-right"
+            style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+          />
+          <span class="text-xs font-mono" style="color: var(--semantic-text-muted);">sec</span>
+        </div>
+      </label>
+
+      <!-- ms readout — shows the underlying value the backend will write -->
+      <div class="flex items-center justify-end gap-1 text-[10px] font-mono" style="color: var(--semantic-text-dim);">
+        <span data-testid="retry-delay-ms-readout">
+          {{ model.retry_delay_ms }} ms
+        </span>
+      </div>
+    </div>
+  </div>
+</template>

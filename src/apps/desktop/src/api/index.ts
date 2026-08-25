@@ -3506,6 +3506,16 @@ export interface NalarConfig {
    */
   notify_on_complete?: boolean
   /**
+   * Plan 2026-08-25-notify-on-error — opt-in OS notification flag
+   * for the error path. When true, the backend fires a desktop
+   * notification when the workflow hits a transport error, exhausts
+   * retries (TooManyRetries), or fails the outer agentic loop.
+   * Defaults to `false` when absent (matches `LlmConfigJson`).
+   * Independent from `notify_on_complete` — toggling one doesn't
+   * affect the other.
+   */
+  notify_on_error?: boolean
+  /**
    * Compaction threshold in KB. Sessions whose DB-stored token
    * estimate exceeds this value trigger context compaction. Defaults
    * to `100` when absent. Not exposed in the UI — power users can
