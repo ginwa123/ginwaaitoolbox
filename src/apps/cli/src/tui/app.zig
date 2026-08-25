@@ -14,6 +14,16 @@ const tui = @import("root.zig");
 const custom_http_client = @import("custom_http_client");
 const transport = @import("transport.zig");
 
+/// Case-insensitive ASCII equality. Avoids a std lib function that may
+/// or may not be available depending on Zig patch version.
+fn asciiEqIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
+    }
+    return true;
+}
+
 /// Poll cadence while waiting for the assistant reply (ms).
 const POLL_MS: u64 = 500;
 
@@ -140,7 +150,11 @@ pub const App = struct {
     /// `body` is the raw JSON response; we extract message contents for
     /// rows beyond `seen_count`.
     pub fn onMessages(self: *App, body: []const u8) !void {
-        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch return;
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
+            // Malformed body — keep streaming and let the next poll try
+            // again. Never let a bad JSON snapshot wedge the spinner.
+            return;
+        };
         defer parsed.deinit();
 
         const root = parsed.value.object.get("messages") orelse return;
@@ -156,24 +170,22 @@ pub const App = struct {
         var i = self.seen_count;
         while (i < arr.items.len) : (i += 1) {
             const item = arr.items[i];
-            if (item != .object) continue;
+            if (item != .object) continue; // skip strings/numbers/null etc.
             const obj = item.object;
-            const role = if (obj.get("role")) |r| (if (r == .string) r.string else "") else "";
             const content = if (obj.get("content")) |c| (if (c == .string) c.string else "") else "";
             if (content.len == 0) continue;
-            const prefix: []const u8 = if (std.mem.eql(u8, role, "user")) "" else "";
-            _ = prefix;
             try self.viewport.appendLine(content, .{});
         }
         self.seen_count = arr.items.len;
 
         // Heuristic: once an assistant message lands after our send,
-        // the turn is over.
+        // the turn is over. Case-insensitive to match server variants
+        // like "Assistant".
         if (self.is_streaming and arr.items.len > 0) {
             const last = arr.items[arr.items.len - 1];
             if (last == .object) {
                 const role = last.object.get("role") orelse return;
-                if (role == .string and std.mem.eql(u8, role.string, "assistant")) {
+                if (role == .string and asciiEqIgnoreCase(role.string, "assistant")) {
                     self.is_streaming = false;
                 }
             }

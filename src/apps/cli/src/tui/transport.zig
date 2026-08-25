@@ -22,11 +22,7 @@ pub fn postSend(
     session_id: []const u8,
     message: []const u8,
 ) ![]u8 {
-    const body = try std.fmt.allocPrint(
-        allocator,
-        "{{\"session_id\":\"{s}\",\"queue_message\":\"{s}\",\"allowed_tools\":\"all\",\"cwd_session\":\"\",\"image_urls\":\"\",\"selected_profile_model\":\"\",\"is_auto_retry_until_stop\":\"\"}}",
-        .{ session_id, message },
-    );
+    const body = try buildSendBody(allocator, session_id, message);
     defer allocator.free(body);
 
     const url = try joinUrl(allocator, server, "/api/llm/session");
@@ -95,6 +91,29 @@ fn joinUrl(allocator: std.mem.Allocator, server: []const u8, path: []const u8) !
     else
         server;
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ base, path });
+}
+
+/// Build the JSON body for POST /api/llm/session. Every string field is
+/// properly JSON-escaped (quotes, backslashes, control bytes) so user
+/// input containing `"`, `\`, or newlines cannot break the wire shape.
+pub fn buildSendBody(
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    message: []const u8,
+) ![]u8 {
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    const w = &aw.writer;
+    try w.writeAll("{\"session_id\":");
+    try std.json.Stringify.encodeJsonString(session_id, .{}, w);
+    try w.writeAll(",\"queue_message\":");
+    try std.json.Stringify.encodeJsonString(message, .{}, w);
+    try w.writeAll(
+        ",\"allowed_tools\":\"all\",\"cwd_session\":\"\"," ++
+            "\"image_urls\":\"\",\"selected_profile_model\":\"\"," ++
+            "\"is_auto_retry_until_stop\":\"\"}",
+    );
+    return aw.toOwnedSlice();
 }
 
 // ----------------------------------------------------------------------------

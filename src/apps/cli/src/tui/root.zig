@@ -57,4 +57,6 @@ test {
     _ = app;
     _ = transport;
     _ = sse;
+    // TDD regression rounds (written before the fixes they pin).
+    _ = @import("tdd_round2_test.zig");
 }

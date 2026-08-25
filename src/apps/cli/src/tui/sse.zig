@@ -21,44 +21,79 @@ pub const Event = struct {
 };
 
 /// Parse ALL complete SSE events in `buf`. Returns how many bytes were
-/// consumed (events are complete only when terminated by a blank line).
-/// `out` receives the parsed events (borrowed slices into buf).
+/// consumed (events are complete only when terminated by a blank line
+/// — either `\n\n` or `\r\n\r\n`). `out` receives parsed events whose
+/// `data` field is either a borrowed slice into `buf` (single-line)
+/// or a freshly-allocated, newline-joined slice (multi-line, caller
+/// owns).
 pub fn parse(buf: []const u8, out: *std.ArrayList(Event), allocator: std.mem.Allocator) !usize {
     var consumed: usize = 0;
     var rest = buf;
     while (rest.len > 0) {
-        const frame_end = std.mem.indexOf(u8, rest, "\n\n") orelse
-            (if (std.mem.indexOf(u8, rest, "\r\n\r\n")) |i| i else break);
-        const sep_len: usize = if (std.mem.startsWith(u8, rest[frame_end..], "\r\n\r\n")) 4 else 2;
+        const lf_lf = std.mem.indexOf(u8, rest, "\n\n");
+        const crlf = std.mem.indexOf(u8, rest, "\r\n\r\n");
+        const frame_end, const sep_len = chooseFrameEnd(lf_lf, crlf) orelse break;
         const frame = rest[0..frame_end];
         consumed += frame_end + sep_len;
         rest = rest[frame_end + sep_len ..];
 
         var name: []const u8 = "";
-        var data_start: ?usize = null;
-        var data_end: usize = 0;
+        var data_pieces: std.ArrayList([]const u8) = .empty;
+        defer data_pieces.deinit(allocator);
 
         var it = std.mem.splitScalar(u8, frame, '\n');
         while (it.next()) |raw_line| {
-            const line = if (std.mem.endsWith(u8, raw_line, "\r")) raw_line[0 .. raw_line.len - 1] else raw_line;
+            const line = if (std.mem.endsWith(u8, raw_line, "\r"))
+                raw_line[0 .. raw_line.len - 1]
+            else
+                raw_line;
             if (std.mem.startsWith(u8, line, "event:")) {
                 name = std.mem.trim(u8, line["event:".len..], " ");
             } else if (std.mem.startsWith(u8, line, "data:")) {
                 var payload = line["data:".len..];
                 while (payload.len > 0 and payload[0] == ' ') payload = payload[1..];
-                const offset = @intFromPtr(payload.ptr) - @intFromPtr(frame.ptr);
-                if (data_start == null) data_start = offset;
-                data_end = offset + payload.len;
+                try data_pieces.append(allocator, payload);
             }
         }
-        if (data_start) |ds| {
-            try out.append(allocator, .{
-                .name = name,
-                .data = frame[ds..data_end],
-            });
-        }
+        if (data_pieces.items.len == 0) continue;
+
+        const data: []const u8 = if (data_pieces.items.len == 1)
+            data_pieces.items[0]
+        else
+            try joinDataLines(allocator, data_pieces.items);
+
+        try out.append(allocator, .{ .name = name, .data = data });
     }
     return consumed;
+}
+
+/// Choose the nearer frame separator. Returns null if neither exists.
+fn chooseFrameEnd(lf_lf: ?usize, crlf: ?usize) ?struct { usize, usize } {
+    if (lf_lf == null and crlf == null) return null;
+    if (lf_lf == null) return .{ crlf.?, 4 };
+    if (crlf == null) return .{ lf_lf.?, 2 };
+    if (lf_lf.? <= crlf.?) return .{ lf_lf.?, 2 };
+    return .{ crlf.?, 4 };
+}
+
+/// Join multiple `data:` payload pieces with newlines, per the SSE
+/// spec ("If the line starts with a colon, ... If the line is empty,
+/// ... Otherwise concatenate the lines with newlines"). Caller owns.
+fn joinDataLines(allocator: std.mem.Allocator, pieces: []const []const u8) ![]u8 {
+    var total: usize = 0;
+    for (pieces) |p| total += p.len;
+    total += pieces.len - 1; // separating newlines
+    const out = try allocator.alloc(u8, total);
+    var cursor: usize = 0;
+    for (pieces, 0..) |p, i| {
+        if (i > 0) {
+            out[cursor] = '\n';
+            cursor += 1;
+        }
+        @memcpy(out[cursor..][0..p.len], p);
+        cursor += p.len;
+    }
+    return out;
 }
 
 /// Extract `"action"` from an SSE data payload (JSON). Returns null if
