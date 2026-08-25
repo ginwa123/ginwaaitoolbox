@@ -1183,10 +1183,14 @@ test "writeDefaultConfig creates a valid JSON config file at the given path" {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
-    try std.testing.expect(obj.get("api_key") != null);
-    try std.testing.expect(obj.get("model") != null);
-    try std.testing.expect(obj.get("base_url") != null);
-    try std.testing.expectEqualStrings("openai", obj.get("url_style").?.string);
+    // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+    // defaults are GONE from the default file. Profiles + operational
+    // settings only.
+    try std.testing.expect(obj.get("api_key") == null);
+    try std.testing.expect(obj.get("model") == null);
+    try std.testing.expect(obj.get("base_url") == null);
+    try std.testing.expect(obj.get("url_style") == null);
+    try std.testing.expect(obj.get("profiles_models") != null);
     try std.testing.expectEqual(@as(i64, 100), obj.get("model_compaction_size_kb").?.integer);
     try std.testing.expectEqual(@as(bool, false), obj.get("notify_on_complete").?.bool);
     // Plan 2026-07-07-compaction-inline: the top-level
@@ -1223,7 +1227,10 @@ test "writeDefaultConfig creates parent directories that do not exist" {
     const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
     try std.testing.expect(content.len > 0);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
+    // Plan 2026-08-24-config-simplify-remove-defaults: no top-level
+    // api_key in the default file anymore.
+    try std.testing.expect(std.mem.indexOf(u8, content, "api_key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"profiles_models\"") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,8 +1280,8 @@ test "init auto-creates config.json when default path does not exist (path=null)
     var reader = file.reader(std.testing.io, &read_buf);
     const content = try reader.interface.allocRemaining(allocator, .limited(64 * 1024));
     defer allocator.free(content);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"api_key\": \"\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, content, "\"url_style\": \"openai\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "api_key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "\"profiles_models\": {}") != null);
     try std.testing.expect(std.mem.indexOf(u8, content, "\"model_compaction_size_kb\": 100") != null);
     // Plan 2026-07-15-retry-delay: top-level `retry_delay_ms` is
     // auto-created as 0 (the documented default = no delay).
@@ -1846,3 +1853,187 @@ test "profiles_models: missing key → cfg.profiles_models.count is 0 (back-comp
     try std.testing.expectEqual(@as(u32, 0), cfg.profiles_models.count());
 }
 
+
+// ---------------------------------------------------------------------------
+// Top-level defaults backfill (plan 2026-08-24-config-simplify-remove-defaults)
+//
+// config.json no longer carries top-level api_key/model/base_url/url_style.
+// When absent/empty, LlmConfig.init derives them from the active profile so
+// every downstream consumer of cfg.model etc. keeps working unchanged.
+// Present keys always win (backward compat with old configs).
+// ---------------------------------------------------------------------------
+
+test "backfill: missing top-level keys derived from active_profile" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "profiles_models": {
+        \\    "alpha": {
+        \\      "model": "alpha-model",
+        \\      "base_url": "https://alpha.example.com",
+        \\      "api_key": "alpha-key",
+        \\      "url_style": "anthropic"
+        \\    }
+        \\  },
+        \\  "active_profile": "alpha"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("alpha-model", cfg.model);
+    try std.testing.expectEqualStrings("https://alpha.example.com", cfg.base_url);
+    try std.testing.expectEqualStrings("alpha-key", cfg.api_key);
+    try std.testing.expectEqualStrings("anthropic", cfg.url_style);
+}
+
+test "backfill: present top-level keys win over profile values" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "top-key",
+        \\  "model": "top-model",
+        \\  "base_url": "https://top.example.com",
+        \\  "url_style": "openai",
+        \\  "profiles_models": {
+        \\    "alpha": {
+        \\      "model": "alpha-model",
+        \\      "base_url": "https://alpha.example.com",
+        \\      "api_key": "alpha-key",
+        \\      "url_style": "anthropic"
+        \\    }
+        \\  },
+        \\  "active_profile": "alpha"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("top-model", cfg.model);
+    try std.testing.expectEqualStrings("https://top.example.com", cfg.base_url);
+    try std.testing.expectEqualStrings("top-key", cfg.api_key);
+    try std.testing.expectEqualStrings("openai", cfg.url_style);
+}
+
+test "backfill: partial top-level keys — only empty fields are filled" {
+    const allocator = std.testing.allocator;
+
+    // model present, api_key absent → api_key backfilled, model untouched.
+    const json =
+        \\{
+        \\  "model": "top-model",
+        \\  "profiles_models": {
+        \\    "alpha": {
+        \\      "model": "alpha-model",
+        \\      "base_url": "https://alpha.example.com",
+        \\      "api_key": "alpha-key",
+        \\      "url_style": "anthropic"
+        \\    }
+        \\  },
+        \\  "active_profile": "alpha"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("top-model", cfg.model);
+    try std.testing.expectEqualStrings("https://alpha.example.com", cfg.base_url);
+    try std.testing.expectEqualStrings("alpha-key", cfg.api_key);
+}
+
+test "backfill: no active_profile and single profile → falls back to that profile" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "profiles_models": {
+        \\    "solo": {
+        \\      "model": "solo-model",
+        \\      "base_url": "https://solo.example.com",
+        \\      "api_key": "solo-key",
+        \\      "url_style": "openai"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("solo-model", cfg.model);
+    try std.testing.expectEqualStrings("https://solo.example.com", cfg.base_url);
+    try std.testing.expectEqualStrings("solo-key", cfg.api_key);
+}
+
+test "backfill: no profiles at all → fields stay empty (first-run shape)" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "model_compaction_size_kb": 100 }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("", cfg.model);
+    try std.testing.expectEqualStrings("", cfg.base_url);
+    try std.testing.expectEqualStrings("", cfg.api_key);
+}
+
+test "backfill: active_profile names a missing profile → falls back to first entry" {
+    const allocator = std.testing.allocator;
+
+    // Single-profile fixture keeps the fallback deterministic (HashMap
+    // iteration order is unspecified for multi-profile maps).
+    const json =
+        \\{
+        \\  "profiles_models": {
+        \\    "real": {
+        \\      "model": "real-model",
+        \\      "base_url": "https://real.example.com",
+        \\      "api_key": "real-key",
+        \\      "url_style": "openai"
+        \\    }
+        \\  },
+        \\  "active_profile": "does_not_exist"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("real-model", cfg.model);
+    try std.testing.expectEqualStrings("real-key", cfg.api_key);
+}
+
+test "backfill: url_style copied from profile even when default openai present" {
+    const allocator = std.testing.allocator;
+
+    // url_style key ABSENT from the file → parse default "openai". The
+    // profile says anthropic; backfill must prefer the profile's wire
+    // format (absence is indistinguishable from explicit-openai post-parse,
+    // so profile-wins is the documented rule for url_style).
+    const json =
+        \\{
+        \\  "profiles_models": {
+        \\    "anthropic-p": {
+        \\      "model": "claude-x",
+        \\      "base_url": "https://a.example.com",
+        \\      "api_key": "a-key",
+        \\      "url_style": "anthropic"
+        \\    }
+        \\  },
+        \\  "active_profile": "anthropic-p"
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqualStrings("anthropic", cfg.url_style);
+}

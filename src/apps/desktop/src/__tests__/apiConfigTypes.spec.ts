@@ -10,14 +10,14 @@ import type { NalarConfig } from '../api'
 describe('NalarConfig', () => {
   it('accepts retry_delay_ms as an optional number', () => {
     const cfg: NalarConfig = {
-      api_key: 'sk-test',
+      active_profile: 'work',
       retry_delay_ms: 5000,
     }
     expect(cfg.retry_delay_ms).toBe(5000)
   })
 
   it('allows retry_delay_ms to be omitted (defaults undefined)', () => {
-    const cfg: NalarConfig = { api_key: 'sk-test' }
+    const cfg: NalarConfig = { active_profile: 'work' }
     expect(cfg.retry_delay_ms).toBeUndefined()
   })
 })

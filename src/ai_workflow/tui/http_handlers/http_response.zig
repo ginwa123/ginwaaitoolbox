@@ -345,13 +345,11 @@ pub fn makeErrorResponse(allocator: std.mem.Allocator, response: ErrorResponse) 
 }
 
 pub const NalarConfigResponse = struct {
-    api_endpoint: []const u8,
-    api_key: []const u8,
-    model: []const u8,
-    url_style: []const u8,
-    temperature: f64,
-    max_tokens: ?usize,
-    system_prompt: []const u8,
+    // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+    // defaults (api_endpoint/api_key/model/url_style/temperature/
+    // max_tokens/system_prompt) were REMOVED from the wire. The backend
+    // derives effective credentials from the active profile at load time;
+    // profiles are the only config surface.
     profiles: ?std.json.Value = null,
     active_profile: ?[]const u8 = null,
     /// Map of MCP server name to its raw JSON config (`{"url": "...", "headers": {...}}`).

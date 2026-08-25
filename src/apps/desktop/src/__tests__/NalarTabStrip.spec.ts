@@ -21,32 +21,33 @@ describe('NalarTabStrip', () => {
     })
   })
 
-  it('renders all 4 tab labels in order', () => {
+  it('renders all 3 tab labels in order (Defaults removed — config-simplify)', () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'profiles' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
     expect(buttons.map(b => b.text().trim())).toEqual([
-      'Defaults', 'Profiles', 'Sub-agents', 'MCP Servers',
+      'Profiles', 'Sub-agents', 'MCP Servers',
     ])
   })
 
-  it('does NOT render the Compaction tab (plan 2026-07-07-compaction-inline)', () => {
+  it('does NOT render the Compaction or Defaults tabs', () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'profiles' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
     expect(buttons.some(b => b.text().trim() === 'Compaction')).toBe(false)
+    expect(buttons.some(b => b.text().trim() === 'Defaults')).toBe(false)
   })
 
   it('emits update:modelValue when a tab is clicked', async () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'profiles' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(3)
     await buttons[1]!.trigger('click')
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['profiles'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['sub-agents'])
   })
 
   it('marks the active tab with aria-selected=true', () => {
@@ -54,14 +55,14 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'sub-agents' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(3)
     expect(buttons[0]!.attributes('aria-selected')).toBe('false')
-    expect(buttons[2]!.attributes('aria-selected')).toBe('true')
+    expect(buttons[1]!.attributes('aria-selected')).toBe('true')
   })
 
   it('persists the active tab to localStorage when the modelValue prop changes', async () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'profiles' },
     })
     // Simulate the parent applying v-model after the click.
     await wrapper.setProps({ modelValue: 'mcp' })
@@ -69,12 +70,12 @@ describe('NalarTabStrip', () => {
   })
 
   it('emits update:modelValue on mount to restore the active tab from localStorage', () => {
-    localStorage.setItem('nalar-settings-active-tab', 'profiles')
+    localStorage.setItem('nalar-settings-active-tab', 'mcp')
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'profiles' },
     })
     // The onMounted hook fires the update so the parent picks up
     // the saved tab.
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['profiles'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['mcp'])
   })
 })

@@ -3471,13 +3471,11 @@ export interface McpServer {
 }
 
 export interface NalarConfig {
-  api_endpoint?: string
-  api_key?: string
-  model?: string
-  url_style?: string
-  temperature?: number
-  max_tokens?: string
-  system_prompt?: string
+  // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+  // defaults (api_endpoint/api_key/model/url_style/temperature/max_tokens/
+  // system_prompt) were REMOVED from config.json. LLM access is configured
+  // exclusively via `profiles`; the backend derives effective credentials
+  // from the active profile at load time.
   profiles?: Record<string, NalarProfile>
   active_profile?: string
   /**
