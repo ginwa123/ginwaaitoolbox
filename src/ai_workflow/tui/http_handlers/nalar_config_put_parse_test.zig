@@ -56,10 +56,10 @@ test "parseConfigInput: accepts the on-disk object-map shape (user's main settin
     const input = try parseConfigInput(arena.allocator(), USER_BODY);
 
     // Sanity: the top-level scalars parsed.
-    try testing.expectEqualStrings("MiniMax-M3", input.model);
-    try testing.expectEqualStrings("openai", input.url_style);
-    try testing.expectEqualStrings("https://api.minimax.io/v1", input.api_endpoint);
-    try testing.expectEqualStrings("", input.max_tokens.?);
+    // Plan 2026-08-24-config-simplify-remove-defaults: the old
+    // model/url_style/api_endpoint/max_tokens assertions are gone —
+    // those fields no longer exist on ConfigInput (silently dropped
+    // via ignore_unknown_fields).
     try testing.expectEqual(@as(?u32, 500000), input.max_capacity_token_model);
     try testing.expectEqual(@as(?u8, 95), input.compaction_threshold_percent);
     try testing.expect(input.notify_on_complete == true);

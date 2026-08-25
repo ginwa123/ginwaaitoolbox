@@ -16,6 +16,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // (plan 2026-08-23-model-thinking). Source-grep pattern locks
     // in the new validation paths + LoadError variants.
     _ = @import("http_handlers/nalar_config_put_thinking_test.zig");
+    // Static-contract tests for config-simplify (plan
+    // 2026-08-24-config-simplify-remove-defaults): PUT handler must not
+    // persist top-level LLM defaults.
+    _ = @import("http_handlers/nalar_config_put_simplify_test.zig");
     _ = @import("http_handlers/nalar_config_get_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");
