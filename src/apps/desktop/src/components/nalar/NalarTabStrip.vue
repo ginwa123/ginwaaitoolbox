@@ -3,7 +3,7 @@ import { onMounted, watch } from 'vue'
 
 const STORAGE_KEY = 'nalar-settings-active-tab'
 
-type TabId = 'defaults' | 'profiles' | 'sub-agents' | 'mcp'
+type TabId = 'profiles' | 'sub-agents' | 'mcp'
 
 const props = defineProps<{
   modelValue: TabId
@@ -13,8 +13,9 @@ const emit = defineEmits<{
   'update:modelValue': [value: TabId]
 }>()
 
+// Plan 2026-08-24-config-simplify-remove-defaults: the 'defaults' tab
+// was removed — profiles are the only LLM config surface now.
 const tabs: ReadonlyArray<{ id: TabId; label: string }> = [
-  { id: 'defaults', label: 'Defaults' },
   { id: 'profiles', label: 'Profiles' },
   { id: 'sub-agents', label: 'Sub-agents' },
   { id: 'mcp', label: 'MCP Servers' },
