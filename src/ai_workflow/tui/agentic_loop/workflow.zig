@@ -159,23 +159,7 @@ pub const CallbackAiWorkerFlow = struct {
             // "TooManyRetries" generic message that would just confuse it again.
             if (err == error.TooManyRetries) {
                 logger.errFmt("[{s}] TooManyRetries\n", .{keyword});
-                // OS notification — hard bail. Top-level only.
-                if (nalarcore.getLlmConfig(di).notify_on_error) {
-                    const notif_body = std.fmt.allocPrint(allocator, "TooManyRetries in {s}: {s}", .{ keyword, @errorName(err) }) catch "TooManyRetries";
-                    defer allocator.free(notif_body);
-                    const truncated_body = truncateForNotification(notif_body);
-                    notifications.notify(io, allocator, "Agent Nalar — error", truncated_body) catch {};
-                }
                 return;
-            }
-
-            // OS notification — generic outer catch (Cancelled, AllocFailed,
-            // OutOfMemory, BuildRequestFailed, etc.). Top-level only.
-            if (nalarcore.getLlmConfig(di).notify_on_error) {
-                const notif_body = std.fmt.allocPrint(allocator, "Workflow error in {s}: {s}", .{ keyword, @errorName(err) }) catch @errorName(err);
-                defer allocator.free(notif_body);
-                const truncated_body = truncateForNotification(notif_body);
-                notifications.notify(io, allocator, "Agent Nalar — error", truncated_body) catch {};
             }
 
             const initial_agent_state = llm_history.get_current_agent_by_session_id(
@@ -967,17 +951,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 },
             });
 
-            // OS notification on the hard-bail path. Top-level only
-            // (sub-agents would spam the user). The hard-bail is the
-            // final stop so we don't worry about retry_count incrementing
-            // further — emit ONCE.
-            if (config.notify_on_error and copy_is_sub_agent == false) {
-                const notif_body = std.fmt.allocPrint(allocator, "TooManyRetries after {d} consecutive failures: {s} (source: {s})", .{ retry_count, reason_error, reason_source }) catch "TooManyRetries";
-                defer allocator.free(notif_body);
-                const truncated_body = truncateForNotification(notif_body);
-                notifications.notify(io, allocator, "Agent Nalar — error", truncated_body) catch {};
-            }
-
             return error.TooManyRetries;
         }
 
@@ -1071,16 +1044,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // retries after the budget is exhausted).
             try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, eff.model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), server_detail, config.retry_delay_ms);
 
-            // OS notification on the error path — mirrors notify_on_complete
-            // (fire-and-forget; notify-send failure is logged and swallowed).
-            // Only emit on TOP-LEVEL workflows; sub-agents would spam the
-            // user with one toast per LLM step. Same gate as notify_on_complete.
-            if (config.notify_on_error and copy_is_sub_agent == false) {
-                const notif_body = std.fmt.allocPrint(allocator, "Retry {d}/10: {s} — {s}", .{ retry_count, @errorName(err), server_detail }) catch @errorName(err);
-                defer allocator.free(notif_body);
-                const truncated_body = truncateForNotification(notif_body);
-                notifications.notify(io, allocator, "Agent Nalar — error", truncated_body) catch {};
-            }
             // Sleep before the next attempt so the upstream can recover (or
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
@@ -2257,37 +2220,3 @@ test "all three diagnostic sites set is_error=true (frontend AgentErrorCard rout
     try testing.expectEqual(@as(usize, 7), std.mem.count(u8, source, ".is_error = true"));
 }
 
-/// truncateForNotification — return a slice of `body` clipped to
-/// `MAX_NOTIFICATION_BODY_LEN` characters, appending "…" if truncated.
-/// Allocated input `body` is owned by the caller; the returned slice
-/// is borrowed (points into `body`) so the caller can free `body`
-/// after the notification fires. Used by the three error-notification
-/// sites (callDynamicAgentNew catch, TooManyRetries hard bail, outer
-/// runAgenticMultiStepnew catch) so the OS toast isn't a wall of text.
-fn truncateForNotification(body: []const u8) []const u8 {
-    const max_len: usize = 200;
-    if (body.len <= max_len) return body;
-    return body[0..max_len];
-}
-
-// Inline tests for the truncate helper. Keeps the contract local so
-// a future refactor (e.g. adding a "…" suffix) doesn't silently drift.
-test "truncateForNotification returns the body unchanged when short" {
-    try testing.expectEqualStrings(
-        "retry failed",
-        truncateForNotification("retry failed"),
-    );
-}
-
-test "truncateForNotification clips to 200 chars when long" {
-    var long_body: [500]u8 = undefined;
-    for (&long_body, 0..) |*b, i| b.* = @as(u8, @intCast('a' + @mod(i, 26)));
-    const out = truncateForNotification(&long_body);
-    try testing.expectEqual(@as(usize, 200), out.len);
-    try testing.expectEqual(@as(u8, 'a'), out[0]);
-    try testing.expectEqual(@as(u8, 'a' + @as(u8, @intCast(@mod(199, 26)))), out[199]);
-}
-
-test "truncateForNotification returns empty slice unchanged" {
-    try testing.expectEqual(@as(usize, 0), truncateForNotification("").len);
-}
