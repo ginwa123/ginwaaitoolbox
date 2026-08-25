@@ -612,6 +612,8 @@ test {
     _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_system_prompt.zig");
     // Agent-Kanbans mirror (Migration 081): impl + tests in one file.
     _ = @import("ai_workflow/tui/agentic_loop/agent_kanban_tools_allowed.zig");
+    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_kanban_knowledge.zig");
+    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
     // `databases` package tests run via its own `zig build test`
     // (cd src/modules/databases && zig build test) — see the
     // package's build.zig. The main test step doesn't import them
