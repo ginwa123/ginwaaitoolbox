@@ -156,6 +156,47 @@ def _read_session_name(harness: FunctionalHarness, session_id: str) -> str | Non
     return row[0] if row else None
 
 
+def _read_session_name_after(
+    harness: FunctionalHarness,
+    session_id: str,
+    *,
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.05,
+) -> str | None:
+    """Poll the DB for a sessions row matching ``session_id`` until one
+    appears OR ``timeout_s`` elapses.
+
+    Required for the lazy-init path (test 7). The chain is:
+
+        POST /api/llm/session → useCase → di.emit_run_agent (synchronous)
+            → insert_worker (scheduled on the Io group, NOT synchronous)
+            → returns HTTP response
+        (HTTP response arrives BEFORE insert_worker runs)
+
+    So a naïve `_read_session_name` immediately after the POST can
+    return ``None`` because the async `insert_worker` task that owns
+    the actual `INSERT OR IGNORE INTO sessions` hasn't been scheduled
+    yet. Locally the gap is microseconds (passes 5/5); on a slower
+    CI runner with different IO scheduling, the gap can stretch past
+    the test's read deadline. Polling bridges that without making the
+    test's semantics looser (we still verify the row eventually lands
+    with the right name — just on a small time budget).
+
+    Returns the row's ``name`` column when present, or ``None`` on
+    timeout.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        got = _read_session_name(harness, session_id)
+        if got is not None:
+            return got
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_interval_s)
+
+
 # ─── Test 1: mode='create_session' ─────────────────────────────────────────
 
 
@@ -449,10 +490,13 @@ def test_chat_first_message_after_lazy_create_binds_session_name_to_task_name(
     # empty session_name and (pre-fix) defaults to "New Session",
     # losing the bind to the task title.
     # The endpoint may 201 on success OR 500 when the stub LLM profile
-    # fails to reach a real API. Either way, by the time the response
-    # arrives, the sessions INSERT OR IGNORE inside insert_worker has
-    # already executed (it's synchronous before the worker is queued).
-    # Tolerate both so we can read the row regardless of the LLM outcome.
+    # fails to reach a real API. Tolerate both — the worker may fail
+    # silently because the harness has no real LLM key, but the wire
+    # round-trip still triggers the relevant code path. Critically,
+    # the session INSERT happens in the *async* `insert_worker` task
+    # scheduled by `di.emit_run_agent`'s Io group; the HTTP response
+    # returns BEFORE that task runs. We poll for the row to appear
+    # in test step 4 below.
     r = llm_harness.http(
         "POST",
         "/api/llm/session",
@@ -466,21 +510,21 @@ def test_chat_first_message_after_lazy_create_binds_session_name_to_task_name(
         },
         expect=(201, 500),
     )
-    # Allow either success or graceful failure (the worker may fail
-    # silently because the harness has no real LLM key). Both paths
-    # go through di.emit_run_agent → insert_worker → INSERT OR IGNORE
-    # INTO sessions — so by the time the response (success or fail)
-    # arrives, the row exists.
 
-    # 4. Read the sessions row directly from the DB. The contract:
-    # sessions.name MUST equal the task title (NOT task_id, NOT
-    # "New Session").
-    got = _read_session_name(llm_harness, task_id)
+    # 4. Poll for the sessions row to appear. The async insert_worker
+    # scheduled by di.emit_run_agent may run microseconds (local dev,
+    # fast CPU) or hundreds of milliseconds (CI runner, busy host)
+    # after the HTTP response returns. A single read with no poll
+    # intermittently returned `None` on the CI runner (the original
+    # failure CI run 32868582221) — see the `_read_session_name_after`
+    # docstring for the full timing rationale.
+    got = _read_session_name_after(llm_harness, task_id, timeout_s=5.0)
     assert got is not None, (
         f"chat first-message POST must trigger lazy session-row init "
-        f"for task_id={task_id!r}. Got no row — insert_worker's "
-        f"INSERT OR IGNORE was skipped (session_create.zig may not "
-        f"have called emit_run_agent)."
+        f"for task_id={task_id!r}. Got no row within 5s — "
+        f"insert_worker's INSERT OR IGNORE was skipped (session_create.zig "
+        f"may not have called emit_run_agent) or the async Io group "
+        f"task is taking >5s to schedule."
     )
     assert got == task_title, (
         f"sessions.name must equal the user-typed task title after "
