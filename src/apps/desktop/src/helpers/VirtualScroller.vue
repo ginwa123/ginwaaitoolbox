@@ -746,6 +746,26 @@ const beginPreserve = (newItemsCount: number) => {
   isPreservingScroll.value = true
   _pendingNewItemsCount = newItemsCount
 
+  // ── Shift index-keyed heights by the prepend count ──────────────────
+  //
+  // Heights are keyed by ARRAY INDEX. A prepend shifts every item's
+  // index by +N, so without this remap every stored height would be
+  // attributed to the WRONG item (old item k's height lands on the new
+  // item k, which is a different message). Over many loadMore prepends
+  // the sizer drifts hundreds/thousands of px away from the real
+  // content — the "gap below the last message" bug in long chats.
+  // Shifting here (before the items array is mutated) keeps every
+  // stored height attached to its own item.
+  if (newItemsCount > 0 && itemHeights.value.size > 0) {
+    const shifted = new Map<number, number>()
+    for (const [index, height] of itemHeights.value) {
+      shifted.set(index + newItemsCount, height)
+    }
+    itemHeights.value = shifted
+    maxMeasuredIndex += newItemsCount
+    updateAccumulatedHeights()
+  }
+
   const content = containerRef.value.querySelector('.virtual-scroller-content')
   const anchorEl = content
     ? (content.querySelector('[data-vs-index="0"]') as HTMLElement | null)
