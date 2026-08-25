@@ -634,6 +634,8 @@ interface VirtualScrollerExposed {
   scrollToBottom: (behavior?: ScrollBehavior) => void
   scrollToPosition: (scrollTop: number, behavior?: ScrollBehavior) => void
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
+  /** Full height-model recompute from the live DOM (append-gap fix). */
+  remeasure: () => void
   beginPreserve: (newItemsCount: number) => void
   endPreserve: () => Promise<void>
   preserveScrollPosition: () => Promise<void>
@@ -2000,7 +2002,7 @@ let previousScrollTop = -1
 let previousScrollHeight = -1
 let previousDirection: 'up' | 'down' | null = null
 
-const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement) => {
+const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic = false) => {
   // Prefer the event target — it's the actual DOM element that
   // dispatched the scroll event, so the browser guarantees it
   // exists for the lifetime of this handler. The ref chain
@@ -2259,7 +2261,19 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // Fix: only RETAIN the stick if it WAS engaged. A user who already
   // scrolled up must never be re-engaged by content growth — only by
   // actually scrolling back down to the bottom (newIsAtBottom).
-  const userScrolledUp = deltaTop < 0
+  // ── Programmatic-write guard (2026-08-25 append-gap fix) ──────────────
+  //
+  // `userScrolledUp` must mean "the USER scrolled up", not "scrollTop
+  // decreased". VirtualScroller's anchor compensation (measureItems)
+  // and endPreserve restoration write scrollTop directly; those writes
+  // fire native scroll events that arrive here with
+  // `isProgrammatic=true` (4th emit arg). A downward compensation
+  // (measured height < estimate — streamed markdown settling shorter)
+  // previously read as a real upward gesture: isAtBottom flipped
+  // false, the auto-stick disengaged, and every later SSE chunk's
+  // contentShift hit the spacer-resize-skip guard — the gap below the
+  // last message accumulated with each chunk and never self-healed.
+  const userScrolledUp = !isProgrammatic && deltaTop < 0
   const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp
   isAtBottom.value = newIsAtBottom || retainedThroughGrowth
   // Persist the current state for the next call's deltas. Done
@@ -2482,7 +2496,19 @@ const connectSse = () => {
       // (AUTO_STICK_GATE_MS) the gate lifts and the user can
       // scroll-up-and-prepend as normal.
       lastAutoStickAt.value = Date.now()
-      nextTick(() => scrollToBottom(false, 'sse-message-complete'))
+      nextTick(() => {
+        // Recompute the height model BEFORE the auto-stick (append-gap
+        // fix): the streaming-* row was just replaced by the canonical
+        // DB row, which re-renders at a DIFFERENT height (markdown
+        // settles, reasoning collapses). nextTick first — the DOM must
+        // reflect the swap before offsetHeight reads mean anything.
+        // Gated on isAtBottom: a scrolled-up reader must not be
+        // disturbed by sizer mutations (the bouncing bug); the at-
+        // bottom case gets an exact sizer so the stick lands on the
+        // real last message, not in a phantom region.
+        if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
+        scrollToBottom(false, 'sse-message-complete')
+      })
       setupCodeBlockCopyButtons()
 
       // 2026-08-23 spawn-subagent-live-progress: when the FINAL
@@ -2614,6 +2640,13 @@ const updateStreamingMessage = () => {
       requestAnimationFrame(() => {
         sseScrollPending = false
         scrollLogger.markProgrammatic()
+        // Recompute the height model BEFORE scrolling (append-gap fix),
+        // but ONLY when the stick is engaged. A scrolled-up user must
+        // not be disturbed: remeasure mutates the sizer, and sizer
+        // mutations during active reading = the bouncing-text bug.
+        // Gaps below are acceptable while reading; the moment the user
+        // returns to the bottom, this branch re-runs and tightens.
+        if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
         scrollToBottom(false, 'sse-chunk')
       })
     }
@@ -2706,7 +2739,16 @@ watch(
     // the watcher also fires), and the streaming message's first
     // push before updateStreamingMessage's own mark takes over.
     lastAutoStickAt.value = Date.now()
-    nextTick(() => scrollToBottom(false, 'messages-length'))
+    nextTick(() => {
+      // Recompute the height model BEFORE the auto-stick (append-gap
+      // fix): a new item's real height is unknown until it renders;
+      // the sizer's estimate may overshoot (phantom gap) or undershoot
+      // (stick lands short). Gated on isAtBottom — scrolled-up readers
+      // are never disturbed; at-bottom users get an exact sizer so the
+      // stick shows the real last message.
+      if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
+      scrollToBottom(false, 'messages-length')
+    })
   },
 )
 

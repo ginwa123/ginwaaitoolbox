@@ -174,8 +174,21 @@ const emit = defineEmits<{
    * The component-level `containerRef` is still exposed for the
    * initial-load, scroll-to-bottom, and other controlled paths that
    * don't have an event to extract the element from.
+   *
+   * `isProgrammatic` (4th arg, 2026-08-25 append-gap fix): true when
+   * this scroll event was caused by the scroller's OWN scrollTop
+   * write — the anchor-compensation inside `measureItems()` (and the
+   * `endPreserve` restoration). Assigning `.scrollTop` fires a real
+   * native `scroll` event that is otherwise indistinguishable from a
+   * user gesture. ChatView's `handleVirtualScroll` uses this to keep
+   * `userScrolledUp` honest: a compensation write that happens to
+   * move scrollTop DOWN (measured height < estimate — common when
+   * streamed markdown settles shorter) must NOT flip `isAtBottom`
+   * to false, or the auto-stick disengages and every later SSE
+   * chunk's contentShift hits the `spacer-resize-skip` guard — the
+   * "gap below the last message grows forever" symptom.
    */
-  scroll: [scrollTop: number, direction: 'up' | 'down', target: HTMLElement]
+  scroll: [scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic: boolean]
   /**
    * Fired whenever the scroller's `isScrollable` computed value
    * CHANGES (not on every re-evaluation — only when the boolean
@@ -216,6 +229,42 @@ const itemHeights = ref<Map<number, number>>(new Map())
 const accumulatedHeights = ref<number[]>([0])
 const isPreservingScroll = ref(false)
 const forceRenderUpTo = ref(-1)
+
+// ── Programmatic-scroll tracking (2026-08-25 append-gap fix) ────────────────
+//
+// The scroller writes `containerRef.scrollTop` itself in two places:
+// the anchor-compensation inside `measureItems()` and the restoration
+// in `endPreserve()`. Assigning `.scrollTop` fires a REAL native
+// `scroll` event — indistinguishable from a user gesture by the time
+// it reaches `onScroll`. Without a flag, ChatView's
+// `handleVirtualScroll` reads a downward compensation write (measured
+// height < estimate) as `userScrolledUp = true`, flips `isAtBottom`
+// to false, and the auto-stick disengages for the rest of the stream
+// — every later contentShift hits the `spacer-resize-skip` guard and
+// the gap below the last message grows with each chunk.
+//
+// Same counter pattern as scrollLogger.markProgrammatic (which only
+// labels LOG lines — it has no influence on the stick decision).
+// `pendingProgrammaticScrolls` is bumped BEFORE the write and consumed
+// by the very next `onScroll`, which forwards the flag on the `scroll`
+// emit. The 100ms reset timer is the same leak-guard scrollLogger
+// uses (scroll event never fires because scrollTop didn't change).
+let pendingProgrammaticScrolls = 0
+let programmaticResetTimer: ReturnType<typeof setTimeout> | null = null
+const markProgrammaticScroll = (): void => {
+  pendingProgrammaticScrolls += 1
+  if (programmaticResetTimer) clearTimeout(programmaticResetTimer)
+  programmaticResetTimer = setTimeout(() => {
+    pendingProgrammaticScrolls = 0
+  }, 100)
+}
+const consumeProgrammaticScroll = (): boolean => {
+  if (pendingProgrammaticScrolls > 0) {
+    pendingProgrammaticScrolls -= 1
+    return true
+  }
+  return false
+}
 
 // ── P1 perf: adaptive item-height estimation (task_1787551495337_9) ─────────
 //
@@ -512,6 +561,10 @@ watch(
 // layout change (image load, content expansion, streaming).
 const HYSTERESIS_PX = 4
 
+// Rate-limit for the tail-exact clamp (freeze guard 2). See the clamp
+// comment in measureItems below.
+let lastTailClampAt = 0
+
 const measureItems = () => {
   if (!containerRef.value) return
   const content = containerRef.value.querySelector('.virtual-scroller-content')
@@ -585,6 +638,17 @@ const measureItems = () => {
   }
   updateAccumulatedHeights()
 
+  // NOTE (2026-08-25): a "tail-exact clamp" (force-write rendered tail
+  // heights + shrink the sizer to the real content bottom when the
+  // window shows the last item) was tried here and REMOVED. It caused
+  // an oscillation loop — clamp shrinks sizer → window shifts → next
+  // pass reads different heights → sizer grows → shifts again — which
+  // the user experienced as app freezes and bouncing text during SSE
+  // streams. Product decision (user): gaps below the last message are
+  // ACCEPTABLE; bouncing is NOT. The anchor compensation above already
+  // keeps scrolled-up reading stable; the remeasure() calls in ChatView
+  // keep the at-bottom case tight without any clamping.
+
   // ── Apply the anchor compensation ────────────────────────────────────
   //
   // Only writes for indices strictly ABOVE the anchor shift content
@@ -603,6 +667,11 @@ const measureItems = () => {
     measurements: pendingMeasurements,
   })
   if (result.shiftPx !== 0 && !isPreservingScroll.value) {
+    // Mark BEFORE the write: assigning .scrollTop fires a native scroll
+    // event that onScroll must label as programmatic (see the counter
+    // comment above — without this, a downward compensation is misread
+    // as "user scrolled up" and disengages ChatView's auto-stick).
+    markProgrammaticScroll()
     containerRef.value.scrollTop = result.newScrollTop
     scrollTop.value = result.newScrollTop
     lastScrollTop.value = result.newScrollTop
@@ -681,7 +750,12 @@ const onScroll = (e: Event) => {
   // ONE component re-render and ONE visibleRange evaluation.
   scrollTop.value = st
   lastScrollTop.value = st
-  emit('scroll', st, dir as 'up' | 'down', target)
+  // Consume the programmatic flag BEFORE the emit: a markProgrammatic
+  // bump (from measureItems' compensation write or endPreserve's
+  // restoration) belongs to exactly THIS event — the next one is a
+  // fresh gesture (or another marked write).
+  const isProgrammatic = consumeProgrammaticScroll()
+  emit('scroll', st, dir as 'up' | 'down', target, isProgrammatic)
 
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   loadMoreDebounce = setTimeout(() => {
@@ -804,6 +878,8 @@ const endPreserve = async () => {
   if (anchorEl) {
     const newST = anchorEl.offsetTop
     console.log('[endPreserve] strategy A — anchorEl.offsetTop:', newST)
+    // Programmatic write — see markProgrammaticScroll's comment.
+    markProgrammaticScroll()
     containerRef.value!.scrollTop = newST
     scrollTop.value = newST
     lastScrollTop.value = newST
@@ -812,6 +888,7 @@ const endPreserve = async () => {
     let sum = 0
     for (let i = 0; i < n; i++) sum += itemHeights.value.get(i) ?? props.defaultItemHeight
     console.log('[endPreserve] strategy B — sum:', sum)
+    markProgrammaticScroll()
     containerRef.value!.scrollTop = sum
     scrollTop.value = sum
     lastScrollTop.value = sum
@@ -850,6 +927,24 @@ const scrollToPosition = (scrollTop: number, behavior: ScrollBehavior = 'auto') 
 const scrollToItem = (index: number, behavior: ScrollBehavior = 'auto') =>
   scrollToIndex(index, behavior)
 
+/**
+ * Full recompute of the height model from the live DOM (2026-08-25
+ * append-gap fix). The parent calls this whenever it KNOWS content
+ * changed — new message appended, streaming text mutated in place,
+ * streaming row swapped for the canonical row. measureItems() reads
+ * every rendered child's real offsetHeight, writes the model, rebuilds
+ * the sizer, and anchor-compensates — the same pass a scroll event
+ * triggers, invoked explicitly at data-mutation time instead of being
+ * inferred from DOM observation (the ResizeObserver attempt froze the
+ * browser: observe → measure → sizer write → re-observe loop).
+ *
+ * Call inside nextTick (or later) so the DOM already reflects the
+ * mutation — offsetHeight reads need the patched layout.
+ */
+const remeasure = () => {
+  measureItems()
+}
+
 let ro: ResizeObserver | null = null
 onMounted(() => {
   if (containerRef.value) {
@@ -868,6 +963,7 @@ onUnmounted(() => {
   if (measureDebounce) clearTimeout(measureDebounce)
   if (heightDebounce) clearTimeout(heightDebounce)
   if (_prePaintTrailing) clearTimeout(_prePaintTrailing)
+  if (programmaticResetTimer) clearTimeout(programmaticResetTimer)
 })
 
 defineExpose({
@@ -876,6 +972,7 @@ defineExpose({
   scrollToBottom,
   scrollToPosition,
   scrollToItem,
+  remeasure,
   beginPreserve,
   endPreserve,
   preserveScrollPosition: endPreserve, // legacy alias
