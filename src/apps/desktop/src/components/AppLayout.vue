@@ -22,6 +22,7 @@ import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
+import KanbanAgentSettings from './kanban/KanbanAgentSettings.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -1639,6 +1640,21 @@ const handleCloseKanbanSettings = () => {
   showKanbanSettingsDialog.value = false
 }
 
+// ─── KanbanAgentSettings — per-board agent config (Migration 081) ──────
+//
+// Mounted as a sibling of KanbanSettingsDialog (same Teleport/animation
+// lifecycle rationale). All state lives inside the dialog component —
+// AppLayout only owns the open/close ref.
+const showKanbanAgentSettings = ref(false)
+
+const handleOpenKanbanAgentSettings = () => {
+  showKanbanAgentSettings.value = true
+}
+
+const handleCloseKanbanAgentSettings = () => {
+  showKanbanAgentSettings.value = false
+}
+
 const handleKanbanSettingsAddColumn = (name: string, description: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
@@ -2358,6 +2374,7 @@ defineExpose({
         @run-routine="handleKanbanRunRoutine"
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
+        @open-agent-settings="handleOpenKanbanAgentSettings"
         @rename-item="handleKanbanRenameItem"
         @close-chat="handleCloseTaskView"
       />
@@ -2742,6 +2759,19 @@ defineExpose({
       @delete-column="handleKanbanSettingsDeleteColumn"
       @rename-item="handleKanbanRenameItem"
       @copy-spec="handleOpenCopyKanbanSpec"
+    />
+
+    <!--
+      KanbanAgentSettings — per-board agent config (Migration 081,
+      agent-kanbans mirror). Mounted as a sibling of
+      KanbanSettingsDialog so the modal's Teleport/animation lifecycle
+      works cleanly even if the KanbanView branch unmounts mid-edit.
+    -->
+    <KanbanAgentSettings
+      :show="showKanbanAgentSettings"
+      :item="activeWorkspaceItem ?? null"
+      :workspace-id="activeWorkspace?.id ?? ''"
+      @close="handleCloseKanbanAgentSettings"
     />
 
     <!--
