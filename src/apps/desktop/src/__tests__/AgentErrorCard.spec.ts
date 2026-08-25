@@ -67,18 +67,16 @@ describe('AgentErrorCard', () => {
     expect(delay.text()).toContain('10000ms')
   })
 
-  it('is collapsed by default and expands on toggle click', async () => {
+  it('is expanded by default — detail is visible immediately', () => {
     wrapper = mount(AgentErrorCard, {
       props: { content: RETRY_MESSAGE },
       attachTo: document.body,
     })
     const detailEl = wrapper.find('[data-testid="agent-error-detail"]')
       .element as HTMLElement
-    // Collapsed by default — the detail's `display` is 'none' (v-show).
-    expect(detailEl.style.display).toBe('none')
-
-    await wrapper.find('[data-testid="agent-error-toggle"]').trigger('click')
-    await wrapper.vm.$nextTick()
+    // 2026-08-25 task_1787668954023_2: detail rendered unhidden by
+    // default — no toggle, no collapse interaction. The header is
+    // informational; the user gets the raw server detail at a glance.
     expect(detailEl.style.display).not.toBe('none')
   })
 

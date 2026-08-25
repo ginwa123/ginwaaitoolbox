@@ -1167,11 +1167,19 @@ const subAgentProgressMap = ref<SubAgentProgressMap>({})
 // is_skip_db=true). Rendered OUTSIDE the VirtualScroller (below it) so
 // the scroller's height-estimate model never sees these rows; cleared
 // on session switch / fresh history load since they're transient.
+//
+// 2026-08-25 task_1787668954023_2: SINGLE-LATEST semantics — only the most
+// recent error is rendered. New error events overwrite the previous entry
+// (status of a retry chain progressing: 1/10 → 2/10 → ... → final 10/10
+// bail, all on the same card). This avoids the pile-up you see in the
+// screenshot. The card is also cleared as soon as ANY non-error `full`
+// SSE event arrives for this session (handled in the SSE listener below)
+/// — meaning the moment the agent recovers, the error card disappears.
 interface AgentErrorEntry {
   id: string
   content: string
 }
-const agentErrors = ref<AgentErrorEntry[]>([])
+const agentError = ref<AgentErrorEntry | null>(null)
 
 // Image preview state
 const previewImageUrl = ref<string | null>(null)
@@ -2286,8 +2294,8 @@ const connectSse = () => {
 
   streamingContent.value = ''
   // 2026-08-25 agent-error-card: diagnostics are live-only per-session —
-  // a fresh session starts with an empty error list.
-  agentErrors.value = []
+  // a fresh session starts with no error card.
+  agentError.value = null
 
   const bus = useSseBus()
   // Subscribe FIRST so we don't miss any bus events that arrive between
@@ -2329,18 +2337,22 @@ const connectSse = () => {
       return
     }
 
-    // 2026-08-25 agent-error-card (task_1787663566535_2): agentic-loop
-    // diagnostics (retry attempts + TooManyRetries bails) arrive as
-    // `full` events with is_error=true. Route them into the dedicated
-    // agentErrors list and STOP — they must never enter messages.value
-    // (they'd render as a plain user bubble and pollute the transcript).
-    // The card renders below the VirtualScroller; entries are transient
-    // (backend never persists these rows).
+    // 2026-08-25 agent-error-card (task_1787663566535_2) +
+    // 2026-08-25 dedupe (task_1787668954023_2): agentic-loop diagnostics
+    // (retry attempts + TooManyRetries bails) arrive as `full` events
+    // with is_error=true. Route them into the dedicated agentError slot
+    // (single-card, latest-wins) and STOP — they must never enter
+    // messages.value (they'd render as a plain user bubble and pollute
+    // the transcript). Each new error overwrites the previous one
+    // (so 1/10 → 2/10 → ... → 10/10 all show on the same card).
+    // The card also auto-clears as soon as ANY non-error `full` event
+    // arrives below in this handler — i.e. the moment the agent
+    // recovers from the retry chain, the error disappears.
     if (event.type === 'full' && event.is_error) {
-      agentErrors.value.push({
+      agentError.value = {
         id: event.id || `agent-error-${Date.now()}`,
         content: event.content || '',
-      })
+      }
       nextTick(() => scrollToBottom(false, 'agent-error-card'))
       return
     }
@@ -2384,6 +2396,14 @@ const connectSse = () => {
         (event.image_url && event.image_url.length > 0)
       )
     if (event.type === 'full' && event.finish_reason && hasRenderableFullPayload) {
+      // 2026-08-25 task_1787668954023_2: any non-error `full` event that
+      // passes the renderable gate means the agent is alive and
+      // producing output — clear the error card so it disappears the
+      // moment the agent recovers from the retry chain.
+      if (agentError.value) {
+        console.log('[SSE ChatView] clearing agent error card on non-error full event')
+        agentError.value = null
+      }
       messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
       const role =
@@ -3434,15 +3454,11 @@ const compactSession = async () => {
              them at the bottom of the transcript area is correct UX too:
              the newest error is always visible without scrolling. -->
         <div
-          v-if="agentErrors.length > 0"
-          class="px-4 max-w-4xl mx-auto pb-2 space-y-2"
+          v-if="agentError"
+          class="px-4 max-w-4xl mx-auto pb-2"
           data-testid="agent-error-list"
         >
-          <AgentErrorCard
-            v-for="err in agentErrors"
-            :key="err.id"
-            :content="err.content"
-          />
+          <AgentErrorCard :key="agentError.id" :content="agentError.content" />
         </div>
       </div>
 

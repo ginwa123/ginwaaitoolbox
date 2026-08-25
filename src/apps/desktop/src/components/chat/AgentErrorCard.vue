@@ -19,11 +19,9 @@
  *
  * Purely presentational — parses props.content, no store/API access.
  */
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 
 const props = defineProps<{ content: string }>()
-
-const expanded = ref(false)
 
 // "[Retry 1/10]" → "1/10". Absent on bail diagnostics.
 const retryLabel = computed((): string | null => {
@@ -66,15 +64,7 @@ const serverDetail = computed((): string | null => {
     data-testid="agent-error-card"
     role="alert"
   >
-    <header
-      class="flex items-center gap-2 select-none"
-      data-testid="agent-error-toggle"
-      role="button"
-      tabindex="0"
-      @click="expanded = !expanded"
-      @keydown.enter.prevent="expanded = !expanded"
-      @keydown.space.prevent="expanded = !expanded"
-    >
+    <header class="flex items-center gap-2 select-none">
       <span aria-hidden="true" class="text-red-500">⚠</span>
       <span class="font-medium text-red-500">Agent error</span>
       <span
@@ -87,9 +77,6 @@ const serverDetail = computed((): string | null => {
         class="text-xs text-[var(--semantic-text-muted)]"
         data-testid="agent-error-delay"
       >{{ delayMs }}</span>
-      <span class="ml-auto text-xs text-[var(--semantic-text-muted)]">{{
-        expanded ? '▾' : '▸'
-      }}</span>
     </header>
 
     <div class="mt-1 text-xs text-[var(--semantic-text-muted)]" data-testid="agent-error-headline">
@@ -98,7 +85,6 @@ const serverDetail = computed((): string | null => {
 
     <div
       v-if="serverDetail"
-      v-show="expanded"
       class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/20 px-2 py-1.5 font-mono text-xs text-red-300"
       data-testid="agent-error-detail"
     >{{ serverDetail }}</div>
