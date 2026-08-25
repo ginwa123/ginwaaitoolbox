@@ -105,6 +105,11 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
     _ = @import("http_handlers/kanban_tasks_create_test.zig"); // 2026-08-13-kanban-task-create-endpoint (Task 1)
+    // NEW (2026-09-02-kanban-task-session-name-bind, task 1787671636395_1):
+    // session_create.zig now has inline static-contract tests for the
+    // resolveNameFromTask helper + the useCase call site. Importing
+    // the file surfaces them to zig build test (mirrors start_agent.zig).
+    _ = @import("http_handlers/session_create.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/kanban_tags_list.zig"); // 2026-07-30-kanban-task-tags-autocomplete — inline useCase tests
