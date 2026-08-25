@@ -370,4 +370,103 @@ describe('ChatView onContentShift restick (extracted)', () => {
       'loadMore branch must re-stick after endPreserve when wasAtBottom',
     ).toMatch(/if \(wasAtBottom\)[\s\S]*scrollHeight - [\s\S]*clientHeight/)
   })
+
+  // ── Bug D (task_1787638309623_3 round 2): stick must NOT re-engage for a
+  // user who is ALREADY scrolled up ─────────────────────────────────────────
+  //
+  // The content-grew guard from round 1 (`isAtBottom = newIsAtBottom ||
+  // disengagedByContentGrowth`) was designed for "user AT bottom, content
+  // grows away" — but it can't distinguish that from "user ALREADY scrolled
+  // up reading, content grows below, viewport stationary". In the second
+  // case it RE-ENGAGES the stick (previousIsAtBottom=false → true), and the
+  // next contentShift yanks the user to the bottom — the "bouncing text"
+  // symptom.
+  //
+  // Log evidence (scroll#234-#247): user scrolling up (top 33249→30533,
+  // bottom 4436px), SSE chunk grew scrollHeight +172 with deltaTop≈0,
+  // `spacer-resize-stick` fired and teleported the user to top=35039
+  // (bottom=4px) mid-read.
+  //
+  // Fix: only RETAIN the stick if it WAS engaged. A user who already
+  // scrolled up must never be re-engaged by content growth.
+  describe('Bug D: content growth must not re-engage a disengaged stick', () => {
+    /**
+     * The decision function handleVirtualScroll runs for isAtBottom.
+     * Mirrors the production fix in ChatView.vue.
+     */
+    function computeIsAtBottom(args: {
+      newIsAtBottom: boolean
+      previousIsAtBottom: boolean
+      contentGrew: boolean
+      userScrolledUp: boolean
+    }): boolean {
+      const retainedThroughGrowth =
+        args.previousIsAtBottom && args.contentGrew && !args.userScrolledUp
+      return args.newIsAtBottom || retainedThroughGrowth
+    }
+
+    it('T7a: user AT bottom, content grows, no scroll → stick stays engaged (round-1 contract)', () => {
+      expect(
+        computeIsAtBottom({
+          newIsAtBottom: false,
+          previousIsAtBottom: true,
+          contentGrew: true,
+          userScrolledUp: false,
+        }),
+      ).toBe(true)
+    })
+
+    it('T7b: user ALREADY scrolled up, content grows, viewport stationary → stick stays OFF', () => {
+      // The bouncing bug: previousIsAtBottom=false (user is reading
+      // history), content grew below them, deltaTop≈0. The round-1
+      // guard re-engaged here; the fix must not.
+      expect(
+        computeIsAtBottom({
+          newIsAtBottom: false,
+          previousIsAtBottom: false,
+          contentGrew: true,
+          userScrolledUp: false,
+        }),
+      ).toBe(false)
+    })
+
+    it('T7c: real upward scroll always disengages (UX contract)', () => {
+      expect(
+        computeIsAtBottom({
+          newIsAtBottom: false,
+          previousIsAtBottom: true,
+          contentGrew: false,
+          userScrolledUp: true,
+        }),
+      ).toBe(false)
+    })
+
+    it('T7d: user reaches bottom by scrolling down → engaged', () => {
+      expect(
+        computeIsAtBottom({
+          newIsAtBottom: true,
+          previousIsAtBottom: false,
+          contentGrew: false,
+          userScrolledUp: false,
+        }),
+      ).toBe(true)
+    })
+
+    it('T7e (red→green): production handleVirtualScroll retains the stick ONLY when it was previously engaged', async () => {
+      const { readFileSync } = await import('node:fs')
+      const { resolve } = await import('node:path')
+      const { fileURLToPath } = await import('node:url')
+      const here = fileURLToPath(import.meta.url)
+      const path = resolve(here, '../../../components/views/ChatView.vue')
+      const src = readFileSync(path, 'utf8')
+      // The guard must reference previousIsAtBottom — without it the
+      // stick re-engages for users who are already scrolled up.
+      expect(
+        src,
+        'handleVirtualScroll content-growth guard must check previousIsAtBottom',
+      ).toMatch(
+        /previousIsAtBottom\s*&&\s*contentGrew\s*&&\s*!userScrolledUp/,
+      )
+    })
+  })
 })
