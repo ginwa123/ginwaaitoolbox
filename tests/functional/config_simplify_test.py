@@ -44,10 +44,30 @@ from harness import (
 # ─── Preboot fixture: seed config.json BEFORE the binary starts ──────────
 
 
+def _platform_config_dir(temp_dir: Path) -> Path:
+    """Mirror nalar's `getDefaultConfigDir` (Config.zig) per-OS layout:
+      - macOS   → <HOME>/Library/Application Support/nalar/
+      - Windows → <APPDATA>/nalar/
+      - else    → <XDG_CONFIG_HOME or HOME/.config>/nalar/
+    """
+    import platform as _platform
+    system = _platform.system()
+    if system == "Darwin":
+        return temp_dir / "Library" / "Application Support" / "nalar"
+    if system == "Windows":
+        appdata = os.environ.get("APPDATA") or str(temp_dir / "AppData" / "Roaming")
+        # The harness shadows HOME, not APPDATA; resolve relative to temp_dir.
+        if appdata.startswith(str(temp_dir)):
+            return Path(appdata) / "nalar"
+        return temp_dir / "AppData" / "Roaming" / "nalar"
+    return temp_dir / ".config" / "nalar"
+
+
 @pytest.fixture
 def preboot(default_nalar_bin):
     """`h = preboot(cfg_dict)` — writes config.json into a fresh tempdir
-    layout, THEN boots nalar against it. Yields the booted harness.
+    layout (at the PLATFORM-CORRECT path), THEN boots nalar against it.
+    Yields the booted harness.
     """
     booted: list[FunctionalHarness] = []
 
@@ -67,7 +87,7 @@ def preboot(default_nalar_bin):
         if not is_safe_tmp(str(temp_dir), orig_home):
             raise RuntimeError(f"unsafe tmp path: {temp_dir}")
 
-        config_dir = temp_dir / ".config" / "nalar"
+        config_dir = _platform_config_dir(temp_dir)
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "config.json").write_text(json.dumps(cfg, indent=2))
 
@@ -180,7 +200,7 @@ def test_put_without_defaults_keeps_file_clean(preboot) -> None:
     h.http("PUT", "/api/config/nalar", json_body=put_body, expect=200)
 
     on_disk = json.loads(
-        (h.temp_dir / ".config" / "nalar" / "config.json").read_text()
+        (_platform_config_dir(h.temp_dir) / "config.json").read_text()
     )
     for key in ("api_key", "model", "base_url", "url_style",
                 "max_tokens", "system_prompt"):
@@ -253,6 +273,6 @@ def test_put_live_reload_succeeds_on_profile_only_config(preboot) -> None:
 
     # And the value landed on disk.
     on_disk = json.loads(
-        (h.temp_dir / ".config" / "nalar" / "config.json").read_text()
+        (_platform_config_dir(h.temp_dir) / "config.json").read_text()
     )
     assert on_disk.get("retry_delay_ms") == 250
