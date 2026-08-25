@@ -758,11 +758,20 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
     // stick is actively engaged right now (not just that the LLM is
     // busy — those are different things, see autoStickGate.ts).
     lastAutoStickAt.value = Date.now()
-    // Native clamp: `scrollTop = scrollHeight` gets clamped to
-    // `scrollHeight - clientHeight` by the browser, so we always land at
-    // the true bottom even if VirtualScroller's cached `containerHeight`
-    // ref is stale.
-    container.scrollTop = container.scrollHeight
+    // Explicit bottom computation — do NOT rely on the browser's
+    // implicit clamp of `scrollTop = scrollHeight`. The clamp formula
+    // is `scrollHeight - clientHeight`, but it is evaluated against
+    // whatever scrollHeight the browser has at assignment time. If the
+    // sizer's `:style.height` binding hasn't flushed to the DOM yet
+    // (Vue's render is a microtask; the rAF can fire before it in some
+    // engines), the clamp lands at the OLD bottom — leaving a scrollable
+    // gap equal to (new max − old max) once the layout catches up. That
+    // gap is the "scroll past the bottom into blank space" symptom
+    // (task_1787595375531_0). Computing the target explicitly from the
+    // same scrollHeight/clientHeight read makes the math engine- and
+    // timing-independent, and matches the pattern already used by
+    // VirtualScroller.scrollToBottom (line ~785).
+    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight)
     scrollLogger.info({
       ...ctx,
       caller: 'onContentShift',
@@ -1594,6 +1603,14 @@ const loadChatHistory = async (loadMore = false) => {
       // handler eliminates that work entirely for this window.
       suppressContentShiftStick = true
 
+      // Snapshot the at-bottom state BEFORE the preserve begins. The
+      // preserve dance (beginPreserve → messages mutation → endPreserve)
+      // fires scroll events that pass through handleVirtualScroll and
+      // would corrupt the live `isAtBottom` flag — the snapshot is the
+      // only trustworthy signal for the post-preserve re-validation
+      // below (task_1787638309623_3).
+      const wasAtBottom = isAtBottom.value
+
       // Preserve scroll position when prepending new (older) messages at the top.
       // beginPreserve must be called BEFORE mutating the array so the anchor
       // element's offsetTop is captured while it's still in the DOM.
@@ -1652,6 +1669,36 @@ const loadChatHistory = async (loadMore = false) => {
       // look like a "measurement update" and re-trigger the stick path.
       lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
       suppressContentShiftStick = false
+
+      // ── Post-preserve bottom re-validation (task_1787638309623_3) ────────
+      //
+      // The suppress window above SWALLOWED every contentShift event, so
+      // if the user was at bottom before the prepend, nothing re-validated
+      // the bottom after `endPreserve` restored the anchor. If the
+      // prepended items' heights were still estimates when endPreserve
+      // measured them (images/code blocks settle later), the sizer grows
+      // AFTER the preserve window closes and nothing scrolls to absorb
+      // it — a persistent gap below the last message (the "new items on
+      // demand create big gaps" symptom).
+      //
+      // `wasAtBottom` was snapshotted BEFORE `beginPreserve` (the preserve
+      // dance fires scroll events that would corrupt the live flag).
+      // Explicit Math.max compute — same contract as the contentShift
+      // re-stick, no browser-clamp delegate.
+      if (wasAtBottom) {
+        const c = virtualScrollerRef.value?.containerRef
+        if (c) {
+          scrollLogger.markProgrammatic()
+          lastAutoStickAt.value = Date.now()
+          c.scrollTop = Math.max(0, c.scrollHeight - c.clientHeight)
+          scrollLogger.info({
+            ...afterCtx,
+            caller: 'loadChatHistory',
+            reason: 'post-preserve-stick',
+            extra: { prepending: newCount, wasAtBottom },
+          })
+        }
+      }
     } else {
       // Initial load path. Set isInitialLoad BEFORE the messages
       // assignment so the messages-length watcher's sync callback
@@ -2144,7 +2191,28 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // (force=true), which always scrolls regardless of this flag. So
   // opening a session still lands at the bottom, but once the user
   // scrolls up even a few pixels, the auto-scroll disengages.
-  isAtBottom.value = newIsAtBottom
+  //
+  // ── Content-grew-under-a-stationary-viewport guard (task_1787595375531_0) ──
+  //
+  // When scrollHeight grows (SSE chunk / measurement pass) while the
+  // user's scrollTop is UNCHANGED (deltaTop === 0), the user did NOT
+  // scroll — the bottom simply moved away from them. Flipping
+  // isAtBottom=false here permanently disengages the auto-stick: every
+  // later contentShift sees isAtBottom=false and skips (the
+  // `spacer-resize-skip` log), so the gap never closes and grows with
+  // every chunk — the "huge blank space below" symptom.
+  //
+  // Log evidence (scroll#228→#231): top=10638 constant, scrollHeight
+  // 11641→11732 (+91), bottom 0→91px, `left-bottom` fired with
+  // deltaTop=0, then every re-stick skipped forever after.
+  //
+  // Fix: only DIS-engage when the user actually moved (deltaTop < 0 —
+  // a real upward scroll). A stationary viewport with growing content
+  // keeps the stick engaged so the next contentShift re-stick closes
+  // the gap.
+  const userScrolledUp = deltaTop < 0
+  const disengagedByContentGrowth = contentGrew && !userScrolledUp
+  isAtBottom.value = newIsAtBottom || disengagedByContentGrowth
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
@@ -3202,38 +3270,6 @@ const compactSession = async () => {
 
                     <!-- ── Assistant ── -->
                     <template v-else-if="group.role === 'assistant'">
-                      <!-- Show tool_calls header only when tool outputs are NOT shown -->
-                      <div v-if="groupToolNames[groupIndex] !== null">
-                        <div class="tool-calls-summary">
-                          <span class="tool-calls-badge">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              class="w-3.5 h-3.5"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            >
-                              <path
-                                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-                              />
-                            </svg>
-                            <span class="font-medium">tools</span>
-                          </span>
-                          <div class="tool-names-list">
-                            <span
-                              v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(
-                                ',',
-                              )"
-                              :key="tIdx"
-                              class="tool-name-chip"
-                              >{{ toolName.trim() }}</span
-                            >
-                          </div>
-                        </div>
-                      </div>
                       <!-- Hide the messages block when every message in the group
                            is empty after stripping thinking tags — this happens
                            on tool_calls-only assistant turns. The tool header

@@ -197,44 +197,6 @@ def test_chatview_renders_multi_turn_conversation(ui_harness: UIHarness, page) -
     )
 
 
-# ─── Test 4: assistant with tool calls (no tool result yet) ────────────────
-
-
-def test_chatview_renders_assistant_with_tool_calls(
-    ui_harness: UIHarness, page,
-) -> None:
-    """An assistant row with ``tool_calls_json`` (no matching tool result yet).
-
-    The chatview renders a ``.tool-calls-summary`` chip inline with
-    the assistant bubble, showing the TOOL NAMES (not the call IDs).
-    We assert the assistant text + the tool name chip are visible.
-    """
-    h = ui_harness
-    session_id = "sess_chatview_toolcall_001"
-    seed = DbSeed(_seed_db_path(h))
-    with seed.connect() as conn:
-        seed.seed_session(conn, session_id, "Tool-call only")
-        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
-        seed.seed_user_message(conn, session_id, "list files", created_at=ts[0])
-        seed.seed_assistant_message(
-            conn, session_id,
-            text="I'll run a command.",
-            finish_reason="tool_calls",
-            tool_calls=[{
-                "id": "call_abc123",
-                "type": "function",
-                "function": {"name": "bash", "arguments": {"command": "ls"}},
-            }],
-            created_at=ts[1],
-        )
-
-    _open_chatview(page, h, session_id)
-    _wait_for_text(page, "I'll run a command.")
-    # The tool-call summary chip shows the tool name ("bash"), not the
-    # call id. See ChatView.vue:2807-2813 (groupToolNames rendering).
-    _wait_for_text(page, "bash")
-
-
 # ─── Test 5: tool call + result pair (Bash card renders stdout) ────────────
 
 

@@ -326,6 +326,10 @@ pub fn main(init: std.process.Init) !void {
     // registered one EventSource per family. See
     // src/ai_workflow/tui/http_handlers/unified_events_sse.zig.
     try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
+    // Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
+    // 404 when off. Functional UI tests use it to drive the chatview's
+    // SSE streaming path without a real LLM.
+    try gs.router.post("/api/dev/sse/emit_llm", ai_mod.http_handlers.devSseEmitLlmHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
