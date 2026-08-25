@@ -51,6 +51,47 @@ if (typeof (globalThis as { ResizeObserver?: unknown }).ResizeObserver === 'unde
   }
 }
 
+// jsdom does not implement `Element.prototype.scrollTo`. VirtualScroller.vue
+// calls `containerRef.value.scrollTo(...)` in scrollToBottom, scrollToTop,
+// and scrollToPosition — and ChatView's scrollToBottom is invoked from
+// setTimeout / nextTick after the test's assertions have completed. Without
+// this polyfill, those post-test async callbacks throw
+// `TypeError: containerRef.value.scrollTo is not a function` and surface
+// as unhandled rejections in the vitest output (vitest reports them as
+// "caught unhandled errors" but `dangerouslyIgnoreUnhandledErrors` lets
+// the suite exit 0 — the warnings still pollute CI logs and obscure real
+// regressions).
+//
+// Implementation: parse the ScrollToOptions (or the two-arg form
+// ScrollToOptions-like), and assign scrollTop + scrollLeft on the
+// element. Tests that rely on `container.scrollTop === N` to assert
+// scroll-restore behavior (see ChatView.scrollRestore.spec.ts) require
+// a real assignment — a no-op polyfill would break those tests.
+//
+// `behavior: 'smooth'` is silently ignored (jsdom doesn't run animation
+// frames; tests that need to assert on smooth-scroll easing should mock
+// the component instead).
+if (typeof Element !== 'undefined' && !Element.prototype.scrollTo) {
+  Element.prototype.scrollTo = function scrollToPolyfill(
+    this: Element,
+    x?: number | ScrollToOptions,
+    y?: number,
+  ): void {
+    const el = this as Element & { scrollTop?: number; scrollLeft?: number }
+    let top: number | undefined
+    let left: number | undefined
+    if (typeof x === 'number') {
+      top = x
+      left = y ?? el.scrollLeft ?? 0
+    } else if (x && typeof x === 'object') {
+      top = x.top
+      left = x.left
+    }
+    if (top !== undefined) el.scrollTop = top
+    if (left !== undefined) el.scrollLeft = left
+  }
+}
+
 // Stub global fetch so relative-URL API calls in tests don't throw
 // "Failed to parse URL from /api/..." TypeErrors. Tests that need
 // real API behavior should mock the api module (vi.spyOn(api, ...))
@@ -74,3 +115,48 @@ const stubFetch: typeof fetch = async () =>
     headers: { 'Content-Type': 'application/json' },
   })
 ;(globalThis as { fetch: typeof fetch }).fetch = stubFetch
+
+// Install the SSE bus ONCE for the whole test file. Why this is in
+// setup.ts (not in every test's beforeEach):
+//
+//   1. ChatView's onMounted calls connectSse() which calls useSseBus().
+//      If a test mounts AppLayout (which renders ChatView) and the bus
+//      is torn down between mount and connectSse, useSseBus throws.
+//
+//   2. ChatView also schedules scrollToBottom via setTimeout / nextTick
+//      AFTER the test body has returned and afterEach has run. If the
+//      bus was reset by afterEach, the post-test async chain throws
+//      `useSseBus called before installSseBus` and surfaces as an
+//      unhandled rejection in the vitest output.
+//
+// The pre-existing per-spec beforeEach that calls
+// `__resetSseBus() → installSseBus(createApp({})) → __setSseBusGlobalClient(stub)`
+// is still safe — installSseBus() is idempotent (`if (_instance) return
+// _instance`), and our global installSseBus() here just re-asserts the
+// invariant the spec expects.
+//
+// App.spec.ts's "unmounting App.vue calls bus.close() on the bus
+// singleton" test still works because it relies on App.vue's own
+// onUnmounted → useSseBus().close() (which nulls the singleton), not
+// on __resetSseBus. The global install here doesn't prevent close()
+// from nulling _instance.
+import { createApp } from 'vue'
+import { installSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
+
+installSseBus(createApp({}))
+__setSseBusGlobalClient({
+  // `state` is a private field on the real SseClient class; the cast
+  // is fine because the stub is never type-checked against the
+  // interface contract (no test asserts on it directly).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  state: 'open' as any,
+  lastError: null,
+  getState: () => 'open',
+  isConnected: () => false,
+  onEvent: () => {},
+  onError: () => {},
+  onStateChange: () => () => {},
+  reconnect: () => {},
+  close: () => {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any)
