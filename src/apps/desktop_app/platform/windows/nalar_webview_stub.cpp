@@ -18,34 +18,26 @@
 // and exits 1). The CI runner, which installs MSVC, takes the real
 // .cpp path.
 //
-// This stub has no MSVC / WRL / WebView2 dependencies — just plain C99
-// — so it compiles on any host that has zig cc.
+// This stub has no MSVC / WRL / WebView2 dependencies — just the shared
+// header (<stddef.h> is its only transitive need) — so it compiles on
+// any host that has zig cc.
 //
-// Implements the same `webview_c.h` ABI as nalar_webview.cpp:
-//     void* nalar_webview_create(...);
-//     int   nalar_webview_run(void* handle);
-//     void  nalar_webview_destroy(void* handle);
+// Implements the exact ABI declared in shared/webview_c.h (single-copy
+// header dedup — the stub includes the real header so signature drift
+// is a compile error, not a silent link bug):
+//     nalar_webview* nalar_webview_create(const nalar_webview_config*, const char*);
+//     void           nalar_webview_run(nalar_webview*);
+//     void           nalar_webview_destroy(nalar_webview*);
 //
 // The real nalar_webview.cpp uses HWND + WRL::ComPtr + CreateCoreWebView2
 // etc.; this stub returns NULL from create and treats NULL as the "no
 // webview available" signal that webview.zig already handles.
 
-#include <stddef.h>
-
 #include "shared/webview_c.h"
 
-// `Config` and `Asset` are forward-declared structurally in webview_c.h
-// as opaque pointers to keep this stub free of <wrl.h> / <webview2.h>.
-// We don't dereference them — nalar_webview_create just returns NULL,
-// webview.zig checks for NULL and surfaces a "WebView2 unavailable"
-// error to the user.
-//
-// Signature: `void* nalar_webview_create(const void* config, size_t asset_count, const void* assets, int parent_hwnd)`
-extern "C" void* nalar_webview_create(
-    const void* /*config*/,
-    size_t /*asset_count*/,
-    const void* /*assets*/,
-    int /*parent_hwnd*/
+extern "C" nalar_webview* nalar_webview_create(
+    const nalar_webview_config* /*cfg*/,
+    const char* /*url*/
 ) {
     // No webview on this dev box. webview.zig treats a NULL return as
     // a "WebView2 not available" signal and prints a clear error to the
@@ -53,13 +45,10 @@ extern "C" void* nalar_webview_create(
     return NULL;
 }
 
-// Signature: `int nalar_webview_run(void* handle)`
-extern "C" int nalar_webview_run(void* /*handle*/) {
+extern "C" void nalar_webview_run(nalar_webview* /*wv*/) {
     // Stub: no-op (handle is always NULL from the stubbed create()).
-    return -1;
 }
 
-// Signature: `void nalar_webview_destroy(void* handle)`
-extern "C" void nalar_webview_destroy(void* /*handle*/) {
+extern "C" void nalar_webview_destroy(nalar_webview* /*wv*/) {
     // Stub: nothing to free (handle is always NULL).
 }
