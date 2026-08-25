@@ -81,13 +81,26 @@ def _seed_db_path(h: UIHarness) -> Path:
     return h.temp_dir / ".config" / "nalar" / "agent.db"
 
 
-def _seed_session_with_history(h: UIHarness, session_id: str, n_messages: int = 20) -> None:
+def _seed_session_with_history(
+    h: UIHarness,
+    session_id: str,
+    n_messages: int = 20,
+    older_count: int = 0,
+) -> None:
     """Seed a session with enough history to make the scroller overflow.
 
     20 alternating user/assistant messages with multi-paragraph bodies
     ≈ 6000-8000px of content — comfortably taller than the ~900px chat
     viewport, so the scroller is scrollable and the initial-load
     scrollToBottom matters.
+
+    ``older_count``: extra messages seeded with created_at_nano values
+    BELOW the main batch (chronologically older). The messages endpoint
+    pages with `direction=desc` + `cursor` (created_at_nano < cursor),
+    so these older rows are what a loadMore prepend fetches — and
+    because they exist, the initial page reports has_more=true (the
+    backend queries limit+1 rows). Pass >0 to exercise the loadMore
+    prepend path (Bug C, task_1787638309623_3).
     """
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
@@ -107,6 +120,28 @@ def _seed_session_with_history(h: UIHarness, session_id: str, n_messages: int = 
                 seed.seed_user_message(conn, session_id, body, created_at=stamps[i])
             else:
                 seed.seed_assistant_message(conn, session_id, body, created_at=stamps[i])
+        if older_count > 0:
+            # Chronologically OLDER than stamps[0] — the loadMore cursor
+            # (created_at_nano < stamps[0]) fetches exactly these.
+            from datetime import datetime, timedelta, timezone
+
+            first_dt = datetime.fromisoformat(stamps[0].replace("Z", "+00:00"))
+            older_stamps = DbSeed.baseline_timestamps(
+                base=first_dt - timedelta(seconds=60 * (older_count + 1)),
+                count=older_count,
+                interval_seconds=30,
+            )
+            for i in range(older_count):
+                body = (
+                    f"Older message {i} paragraph one.\n\n"
+                    f"Older message {i} paragraph two with enough filler text "
+                    f"to give the prepended bubble real height in the layout. "
+                    f"Lorem ipsum dolor sit amet, consectetur adipiscing elit."
+                )
+                if i % 2 == 0:
+                    seed.seed_user_message(conn, session_id, body, created_at=older_stamps[i])
+                else:
+                    seed.seed_assistant_message(conn, session_id, body, created_at=older_stamps[i])
 
 
 def _emit_llm_event(h: UIHarness, session_id: str, payload: dict) -> None:
@@ -351,4 +386,137 @@ def test_user_scroll_up_during_stream_is_respected(page, ui_harness: UIHarness) 
     # NOT stuck back at 0.
     assert geo_after["distanceFromBottom"] > 400, (
         f"user scroll-up was overridden by the auto-stick: {geo_after}"
+    )
+
+
+def test_loadmore_during_stream_no_gap_on_return_to_bottom(
+    page, ui_harness: UIHarness, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Bug C (task_1787638309623_3): loadMore prepend mid-stream must not
+    leave a gap when the user returns to the bottom.
+
+    Scenario: seed >PAGE_SIZE messages so has_more=true, open the chat
+    (initial page = newest PAGE_SIZE), scroll to the top to trigger the
+    loadMore prepend (older messages arrive), then fire SSE chunks. The
+    prepend's preserve window swallows contentShift events; pre-fix,
+    nothing re-validated the bottom after endPreserve, so the sizer's
+    post-prepend growth left a persistent gap below the last message.
+
+    Post-fix: wasAtBottom is snapshotted before beginPreserve and the
+    bottom is re-validated explicitly after endPreserve — the final
+    distanceFromBottom stays under STICK_GAP_THRESHOLD_PX.
+
+    NOTE: PAGE_SIZE is 1000, so seeding >1000 messages is impractical.
+    Instead we exercise the SAME code path via the loadMore prepend that
+    the "Load N older messages" button triggers (handleLoadMore →
+    loadChatHistory(true)) — the button is rendered when
+    hasMoreMessages is true, which the seeded session satisfies when the
+    backend reports has_more. We force has_more by seeding more than the
+    initial page renders... actually the backend computes has_more from
+    the DB row count vs limit, so we seed a modest history and drive the
+    prepend through the button click (which calls the identical
+    loadChatHistory(true) path regardless of message count).
+    """
+    h = ui_harness
+    session_id = "sess_sse_stick_003"
+    # older_count=5 → the initial page (limit=1000, queried limit+1) sees
+    # 26 rows > 1000? No — 26 < 1001, so has_more would be false. BUT the
+    # cursor path is what matters: the "Load more messages" button only
+    # renders when hasMoreMessages is true, so we drive the prepend via
+    # the scroll-to-top trigger instead (VirtualScroller emits @load-more
+    # when scrollTop < threshold on a scrollable container — no has_more
+    # needed for the EMIT; ChatView's handleLoadMore guard checks
+    # hasMoreMessages though). To satisfy that guard we rely on the
+    # backend's has_more: seed enough total messages that limit+1
+    # overflows. PAGE_SIZE=1000 makes that impractical, so instead we
+    # call the prepend path directly through the exposed
+    # loadChatHistory(true) via the button IF present, else accept that
+    # the scroll-driven emit fires but handleLoadMore's no-more-messages
+    # guard suppresses the fetch — in which case this test degenerates
+    # to the burst test. The REAL Bug C coverage lives in the unit spec
+    # (T6a-T6d); this functional test proves the wire-level path end to
+    # end when has_more is true.
+    _seed_session_with_history(h, session_id, n_messages=10, older_count=5)
+
+    page.set_viewport_size({"width": 1440, "height": 900})
+
+    # The frontend's loadChatHistory always passes PAGE_SIZE=1000, which
+    # never overflows our 15-row seed. Monkey-patch the messages API
+    # to rewrite `limit=1000` → `limit=10` so has_more=true on the
+    # initial response — then the Load-more button + scroll-driven
+    # prepend path both fire. The handler runs BEFORE the goto so the
+    # initial page load picks up the smaller limit.
+    def _rewrite_messages_url(route):
+        url = route.request.url
+        if "limit=1000" in url:
+            url = url.replace("limit=1000", "limit=10")
+        route.continue_(url=url)
+
+    page.route(
+        "**/api/llm/session/*/messages**",
+        _rewrite_messages_url,
+    )
+
+    page.goto(
+        h.web_url(f"/app?view=chat&session={session_id}"),
+        wait_until="domcontentloaded",
+        timeout=30000,
+    )
+    # The seed picks the NEWEST page (limit=10, desc sort) → renders
+    # the 10 newest of the 15 seeded rows. Wait for any of them to
+    # appear so we know the page is mounted.
+    _wait_for_streaming_text(page, "paragraph one")
+
+    geo_before = _scroller_geometry(page)
+    assert geo_before is not None
+    assert geo_before["distanceFromBottom"] < STICK_GAP_THRESHOLD_PX, (
+        f"initial load did not land at the bottom: {geo_before}"
+    )
+
+    # Trigger the loadMore prepend path. The scroll-driven @load-more
+    # needs has_more=true (backend-side), but the "Load older messages"
+    # button calls the same loadChatHistory(true) — click it if present;
+    # otherwise scroll to the top to trigger the scroll-driven path.
+    # Either way the preserve window (beginPreserve → prepend →
+    # endPreserve) runs with the user at bottom.
+    load_more_btn = page.locator("[data-testid=load-more-messages] button")
+    if load_more_btn.count() > 0:
+        load_more_btn.first.click()
+    else:
+        page.evaluate(
+            """() => {
+                const all = [...document.querySelectorAll('.virtual-scroller')]
+                    .filter(el => el.offsetParent !== null)
+                    .sort((a, b) => b.clientHeight - a.clientHeight);
+                all[0].scrollTop = 0;
+                all[0].dispatchEvent(new Event('scroll'));
+            }"""
+        )
+    # The prepend + preserve dance (beginPreserve → nextTick → 2×rAF →
+    # measure → endPreserve) plus the post-preserve re-validation.
+    page.wait_for_timeout(1200)
+
+    # Fire SSE chunks AFTER the prepend — the exact mid-stream-prepend
+    # ordering from the user's report. The stick must still be engaged
+    # (wasAtBottom was true) and every chunk's contentShift re-sticks.
+    for i in range(1, 6):
+        _emit_llm_event(
+            h,
+            session_id,
+            {"type": "chunk", "index": i, "content": CHUNK_TEXT_TEMPLATE.format(i=i)},
+        )
+        page.wait_for_timeout(60)
+
+    page.wait_for_timeout(1000)
+    geo_after = _scroller_geometry(page)
+    assert geo_after is not None
+
+    # THE assertion: after prepend + stream, the view is at the bottom —
+    # no persistent gap. Pre-fix this failed with distanceFromBottom in
+    # the hundreds (the swallowed contentShift + no post-preserve
+    # re-validation).
+    assert geo_after["distanceFromBottom"] < STICK_GAP_THRESHOLD_PX, (
+        "loadMore prepend mid-stream left the view detached from the "
+        f"bottom — post-preserve re-validation missing. geometry={geo_after} "
+        f"threshold={STICK_GAP_THRESHOLD_PX}px"
     )
