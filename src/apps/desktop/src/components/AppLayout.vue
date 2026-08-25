@@ -2363,6 +2363,15 @@ defineExpose({
            from one kanban to another (KanbanView fetches columns on
            mount). `@close-chat` fires when ChatView's close button is
            clicked — AppLayout handles URL routing + state cleanup. -->
+      <KanbanSettingsView
+        v-else-if="currentView === 'kanban-settings'"
+        :key="'kanban-settings-' + (route.params.itemId as string)"
+        @add-column="handleKanbanSettingsAddColumn"
+        @edit-column="handleKanbanSettingsEditColumn"
+        @delete-column="handleKanbanSettingsDeleteColumn"
+        @rename-item="handleKanbanRenameItem"
+        @copy-spec="handleOpenCopyKanbanSpec"
+      />
       <KanbanView
         v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'kanban'"
         :key="'kanban-' + activeWorkspaceItem.id"
@@ -2749,32 +2758,10 @@ defineExpose({
     />
 
     <!--
-      KanbanSettingsView — dedicated full-page route for per-board
-      kanban settings (plan: 2026-09-02-kanban-settings-as-page).
-      Replaces KanbanSettingsDialog (deleted). Mounted alongside the
-      kanban / design / agent main-content branches (gated on
-      currentView === 'kanban-settings' so the kanban board is
-      unmounted while the settings page is visible).
-
-      The :key forces a fresh mount when the user navigates from one
-      kanban's settings to another's (the page's URL restore logic
-      re-reads route.params.itemId on mount).
-    -->
-    <KanbanSettingsView
-      v-if="currentView === 'kanban-settings'"
-      :key="'kanban-settings-' + (route.params.itemId as string)"
-      @add-column="handleKanbanSettingsAddColumn"
-      @edit-column="handleKanbanSettingsEditColumn"
-      @delete-column="handleKanbanSettingsDeleteColumn"
-      @rename-item="handleKanbanRenameItem"
-      @copy-spec="handleOpenCopyKanbanSpec"
-    />
-
-    <!--
       CopyKanbanSpecDialog — source picker + Replace/Append radio for
       bulk-copying column spec from another kanban. Mounted as a SIBLING
-      of <KanbanSettingsDialog> (not nested) so a user can stack them:
-      Settings dialog under, picker over, both visible at once. The picker
+      of <KanbanSettingsView> (not nested) so a user can stack them:
+      Settings page under, picker over, both visible at once. The picker
       filters out the active kanban as a source (CopyKanbanSpecDialog's
       `availableSources` computed).
       Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md
