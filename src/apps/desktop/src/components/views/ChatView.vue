@@ -3202,38 +3202,6 @@ const compactSession = async () => {
 
                     <!-- ── Assistant ── -->
                     <template v-else-if="group.role === 'assistant'">
-                      <!-- Show tool_calls header only when tool outputs are NOT shown -->
-                      <div v-if="groupToolNames[groupIndex] !== null">
-                        <div class="tool-calls-summary">
-                          <span class="tool-calls-badge">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              class="w-3.5 h-3.5"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            >
-                              <path
-                                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-                              />
-                            </svg>
-                            <span class="font-medium">tools</span>
-                          </span>
-                          <div class="tool-names-list">
-                            <span
-                              v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(
-                                ',',
-                              )"
-                              :key="tIdx"
-                              class="tool-name-chip"
-                              >{{ toolName.trim() }}</span
-                            >
-                          </div>
-                        </div>
-                      </div>
                       <!-- Hide the messages block when every message in the group
                            is empty after stripping thinking tags — this happens
                            on tool_calls-only assistant turns. The tool header
