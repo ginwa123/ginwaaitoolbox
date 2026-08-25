@@ -80,7 +80,7 @@
   for theme compatibility.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted, inject } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount, onUnmounted, inject } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
@@ -521,6 +521,32 @@ const _openFilePreview = (path: string) => {
 const closeFilePreview = () => {
   previewFilePath.value = null
 }
+
+// Persisted-image gallery preview. The thumbnail strip renders <img>
+// tags but had no click handler, so users on already-created tasks
+// (edit mode) could see the thumbnails but could NOT preview them at
+// full size — the create-mode flow goes through FilePreview.vue (File
+// + blob: URL) which doesn't fit persisted data: URLs. This ref
+// holds the currently-popped image src; clicking a thumbnail sets it,
+// Esc / backdrop-click clears it. The overlay is Teleported to body
+// so it escapes the dialog's overflow:hidden ancestors and renders
+// full-screen.
+const imagePopupUrl = ref<string | null>(null)
+const openImagePopup = (url: string) => {
+  imagePopupUrl.value = url
+}
+const closeImagePopup = () => {
+  imagePopupUrl.value = null
+}
+const handleImagePopupKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape' && imagePopupUrl.value !== null) {
+    closeImagePopup()
+  }
+}
+onMounted(() => document.addEventListener('keydown', handleImagePopupKeydown))
+onBeforeUnmount(() =>
+  document.removeEventListener('keydown', handleImagePopupKeydown),
+)
 
 // True when the dialog is rendering the create flow (rather than
 // edit-in-place). Drives header copy / icon, save-button text, the
@@ -1298,9 +1324,10 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   :key="idx"
                   :src="url"
                   :alt="`Task image ${idx + 1}`"
-                  class="w-24 h-24 object-cover rounded border"
+                  class="w-24 h-24 object-cover rounded border cursor-pointer transition-opacity hover:opacity-80"
                   style="border-color: var(--color-border);"
                   :data-testid="`kanban-task-detail-image-${idx}`"
+                  @click="openImagePopup(url)"
                 />
               </div>
 
@@ -1679,6 +1706,36 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
     :file-path="previewFilePath"
     @close="closeFilePreview"
   />
+
+  <!-- Persisted-image gallery preview. Teleported to body so it
+       escapes the dialog overflow. Opened by clicking a gallery
+       thumbnail (imagePopupUrl). Esc / backdrop-click closes it. -->
+  <Teleport to="body">
+    <div
+      v-if="imagePopupUrl"
+      class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/85 p-5"
+      data-testid="kanban-task-detail-image-popup-overlay"
+      @click="closeImagePopup"
+    >
+      <button
+        type="button"
+        class="absolute top-2 right-2 p-2 text-white opacity-70 hover:opacity-100 transition-opacity"
+        aria-label="Close image preview"
+        @click.stop="closeImagePopup"
+      >
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+      <img
+        :src="imagePopupUrl"
+        alt="Task image preview"
+        class="max-w-full max-h-full object-contain rounded-lg"
+        data-testid="kanban-task-detail-image-popup-img"
+        @click.stop
+      />
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
