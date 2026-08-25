@@ -14,6 +14,7 @@ import { useNalarConfig } from '../composables/useNalarConfig'
 
 import NalarTabStrip from './nalar/NalarTabStrip.vue'
 import NalarSaveBar from './nalar/NalarSaveBar.vue'
+import NalarGeneralSection, { type NalarGeneralSettings } from './nalar/NalarGeneralSection.vue'
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 import SubAgentsSection from './nalar/SubAgentsSection.vue'
 import McpServersSection from './nalar/McpServersSection.vue'
@@ -39,8 +40,11 @@ defineExpose({
 
 // ─── Tab state ────────────────────────────────────────────────────────────
 // Plan 2026-08-24-config-simplify-remove-defaults: 'defaults' tab removed.
-type Tab = 'profiles' | 'sub-agents' | 'mcp'
-const activeTab = ref<Tab>('profiles')
+// Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: 'general' tab
+// added as the FIRST tab — operational settings (notification toggles +
+// retry delay) are the broadest, most-frequently-touched UI surface.
+type Tab = 'general' | 'profiles' | 'sub-agents' | 'mcp'
+const activeTab = ref<Tab>('general')
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
 const { config, loaded, dirty, unsavedCount, saving, setConfig, save, reset } = useNalarConfig()
@@ -65,11 +69,19 @@ const activeProfile = ref<string | null>(null)
 const subAgentsList = ref<SubAgent[]>([])
 const mcpServersList = ref<McpServer[]>([])
 
-// Plan 2026-07-07-compaction-inline: CompactionSection.vue is removed;
-// its per-profile overrides live on each `LlmProfile.max_capacity_tokens`
-// and `LlmProfile.compaction_threshold_percent` (edited via the Edit-profile
-// modal). Top-level defaults live on the Defaults tab and are carried by
-// `max_capacity_token_model` + `compaction_threshold_percent` (top-level).
+// Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the General
+// tab uses a single `defineModel<NalarGeneralSettings>` v-model surface
+// in NalarGeneralSection.vue. The orchestrator hydrates from the loaded
+// config on first load, and writes back through `syncToConfig` when the
+// user mutates a control. Each of the three keys is a top-level
+// `NalarConfig` field — `notify_on_complete`, `notify_on_error`,
+// `retry_delay_ms` — so the diff in `useNalarConfig` tracks them as
+// primitives.
+const generalSettings = ref<NalarGeneralSettings>({
+  notify_on_complete: false,
+  notify_on_error: false,
+  retry_delay_ms: 0,
+})
 
 function syncFromConfig() {
   if (!config.value) return
@@ -97,6 +109,20 @@ function syncFromConfig() {
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
   mcpServersList.value = parseMcpServers(c.mcp_servers)
+
+  // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: hydrate
+  // the General tab from the loaded config. Three top-level fields,
+  // each defaulted to a safe zero so a missing-on-disk config still
+  // renders without crashing (the orchestrator's diff treats missing
+  // and explicit zero as different — see useNalarConfig.spec.ts).
+  generalSettings.value = {
+    notify_on_complete: c.notify_on_complete ?? false,
+    notify_on_error: c.notify_on_error ?? false,
+    // Treat `undefined` (missing key) and explicit 0 the same way so
+    // the dirty pill doesn't flash on first load when the field is
+    // absent from config.json.
+    retry_delay_ms: c.retry_delay_ms ?? 0,
+  }
 }
 
 function syncToConfig() {
@@ -116,12 +142,17 @@ function syncToConfig() {
   const mcpServers = serializeMcpServers(mcpServersList.value)
   config.value = {
     ...c,
-    notify_on_complete: c.notify_on_complete ?? false,
+    // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
+    // three operational settings are driven by the General tab
+    // (`generalSettings`). Always write them through so toggling
+    // surfaces in the dirty pill + save bar.
+    notify_on_complete: generalSettings.value.notify_on_complete,
+    notify_on_error: generalSettings.value.notify_on_error,
+    retry_delay_ms: generalSettings.value.retry_delay_ms,
     // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
     // Unconditional spread so `null` is preserved (cascade wildcard).
     max_capacity_token_model: c.max_capacity_token_model,
     compaction_threshold_percent: c.compaction_threshold_percent,
-    retry_delay_ms: c.retry_delay_ms,
     // Per-profile compaction overrides still live on `profiles` below.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
@@ -179,7 +210,7 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [profilesList, activeProfile, subAgentsList, mcpServersList],
+  [profilesList, activeProfile, subAgentsList, mcpServersList, generalSettings],
   () => { if (loaded.value) syncToConfig() },
   { deep: true },
 )
@@ -493,6 +524,11 @@ const isLoading = computed(() => !loaded.value)
 
       <!-- Scrollable tab content -->
       <div class="flex-1 overflow-y-auto p-6 space-y-6">
+        <NalarGeneralSection
+          v-if="activeTab === 'general'"
+          v-model="generalSettings"
+        />
+
         <ProfilesSection
           v-if="activeTab === 'profiles'"
           v-model="profilesList"

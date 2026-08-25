@@ -100,6 +100,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .mcp_servers = cfg.mcp_servers,
             .sub_agents = sub_agents_response,
             .notify_on_complete = cfg.notify_on_complete,
+            .notify_on_error = cfg.notify_on_error,
             .model_compaction_size_kb = cfg.model_compaction_size_kb,
             // Top-level compaction defaults — restored in plan
             // 2026-07-07-compaction-inline.
@@ -125,6 +126,9 @@ const ConfigJson = struct {
     sub_agents: ?[]const LlmConfig.SubAgentJson = null,
     /// Opt-in OS notification flag (see LlmConfigJson in Config.zig).
     notify_on_complete: bool = false,
+    /// Opt-in OS notification flag for the error path (see LlmConfigJson).
+    /// Defaults to `false` so a missing-on-disk config is silent on errors.
+    notify_on_error: bool = false,
     /// Compaction threshold in KB (see LlmConfigJson in Config.zig).
     model_compaction_size_kb: usize = 100,
     /// Optional top-level context window override (see

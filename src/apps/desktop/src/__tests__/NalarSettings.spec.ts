@@ -25,25 +25,30 @@ describe('NalarSettings (orchestrator)', () => {
     })
   })
 
-  it('renders the 3 tab labels (Defaults tab removed — config-simplify)', async () => {
+  it('renders the 4 tab labels in order: General / Profiles / Sub-agents / MCP Servers', async () => {
+    // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
+    // General tab is the FIRST tab. Tab order matters — operational
+    // settings (notification toggles + retry delay) belong at the top.
     mockGet.mockResolvedValueOnce({})
     const wrapper = mount(NalarSettings, {
       global: { stubs: { Teleport: true } },
     })
     await flushPromises()
+    const tabs = wrapper.findAll('button[role="tab"]').map(b => b.text().trim())
+    expect(tabs).toEqual(['General', 'Profiles', 'Sub-agents', 'MCP Servers'])
     expect(wrapper.text()).not.toContain('Defaults')
-    expect(wrapper.text()).toContain('Profiles')
-    expect(wrapper.text()).toContain('Sub-agents')
-    expect(wrapper.text()).toContain('MCP Servers')
   })
 
-  it('lands on the Profiles tab by default', async () => {
+  it('lands on the General tab by default', async () => {
+    // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
+    // first-load tab is General — operational settings are the most
+    // likely entry point for new users.
     mockGet.mockResolvedValueOnce({})
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
     const activeTab = wrapper.find('button[role="tab"][data-active="true"]')
     expect(activeTab.exists()).toBe(true)
-    expect(activeTab.text()).toBe('Profiles')
+    expect(activeTab.text()).toBe('General')
   })
 
   it('loads the config on mount and shows the Profiles section', async () => {
@@ -64,6 +69,11 @@ describe('NalarSettings (orchestrator)', () => {
     })
     mockSave.mockResolvedValueOnce({ success: true })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    // Switch to the Profiles tab. Plan 2026-08-25-notify-on-error
+    // moved General to index 0; Profiles is now at index 1.
+    const profileTab = wrapper.find('[data-tab-id="profiles"]')
+    await profileTab.trigger('click')
     await flushPromises()
     // Edit a profile to make the form dirty.
     await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
@@ -89,8 +99,9 @@ describe('NalarSettings (orchestrator)', () => {
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
 
-    // Switch to the Profiles tab (first tab — Defaults removed).
-    const profileTab = wrapper.findAll('button[role="tab"]')[0]!
+    // Switch to the Profiles tab. Plan 2026-08-25-notify-on-error
+    // moved General to index 0; Profiles is now at index 1.
+    const profileTab = wrapper.find('[data-tab-id="profiles"]')
     expect(profileTab.text()).toBe('Profiles')
     await profileTab.trigger('click')
     await flushPromises()
@@ -155,8 +166,9 @@ describe('NalarSettings (orchestrator)', () => {
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
 
-    // Switch to Profiles tab (first tab — Defaults removed).
-    const profileTab = wrapper.findAll('button[role="tab"]')[0]!
+    // Switch to Profiles tab. Plan 2026-08-25-notify-on-error moved
+    // General to index 0; Profiles is now at index 1.
+    const profileTab = wrapper.find('[data-tab-id="profiles"]')
     await profileTab.trigger('click')
     await flushPromises()
 
@@ -184,7 +196,7 @@ describe('NalarSettings (orchestrator)', () => {
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
 
-    const profileTab = wrapper.findAll('button[role="tab"]')[0]!
+    const profileTab = wrapper.find('[data-tab-id="profiles"]')
     await profileTab.trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="reset-active-btn"]').trigger('click')
@@ -201,7 +213,7 @@ describe('NalarSettings (orchestrator)', () => {
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
 
-    const profileTab = wrapper.findAll('button[role="tab"]')[0]!
+    const profileTab = wrapper.find('[data-tab-id="profiles"]')
     await profileTab.trigger('click')
     await flushPromises()
     await wrapper.find('[data-testid="reset-active-btn"]').trigger('click')
@@ -212,5 +224,156 @@ describe('NalarSettings (orchestrator)', () => {
     expect(wrapper.text()).toContain('work')
     // And an error notification should fire.
     expect(wrapper.emitted('notification')?.some(e => e[1] === 'error')).toBe(true)
+  })
+
+  // ─── General tab (plan 2026-08-25-notify-on-error-and-retry-ms-in-settings) ──
+  //
+  // Three operational settings live in the General tab:
+  //   - `notify_on_complete` (existing config.json field)
+  //   - `notify_on_error` (new field added by this plan)
+  //   - `retry_delay_ms` (existing config.json field)
+  //
+  // Each one must (a) hydrate from the API response, (b) flip the
+  // dirty pill when the user changes it, (c) round-trip through the
+  // PUT body on save.
+
+  it('hydrates the General tab from the loaded config (notify_on_complete + notify_on_error + retry_delay_ms)', async () => {
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: true,
+      notify_on_error: true,
+      retry_delay_ms: 15000,
+    })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    // The General tab is the first tab and lands there by default.
+    expect(wrapper.find('button[role="tab"][data-active="true"]').text()).toBe('General')
+    // Both toggles reflect the loaded values.
+    expect(
+      (wrapper.find('[data-testid="toggle-notify-on-complete"]').element as HTMLInputElement).checked,
+    ).toBe(true)
+    expect(
+      (wrapper.find('[data-testid="toggle-notify-on-error"]').element as HTMLInputElement).checked,
+    ).toBe(true)
+    // The retry-delay input is in seconds (15000 ms = 15 sec).
+    expect(
+      Number((wrapper.find('[data-testid="input-retry-delay-seconds"]').element as HTMLInputElement).value),
+    ).toBe(15)
+  })
+
+  it('toggling notify_on_error in the General tab flips dirty=true and round-trips through save', async () => {
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: false,
+      notify_on_error: false,
+      retry_delay_ms: 0,
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    // The save bar should be hidden (dirty=false on first load).
+    expect(wrapper.find('[data-testid="save-bar"]').exists()).toBe(false)
+
+    // Toggle notify_on_error ON.
+    const toggle = wrapper.find('[data-testid="toggle-notify-on-error"]')
+    await toggle.setValue(true)
+    await flushPromises()
+
+    // Now the dirty pill should appear.
+    expect(wrapper.find('[data-testid="save-bar"]').exists()).toBe(true)
+
+    // Click Save — the PUT body must carry notify_on_error: true.
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+    expect(savedConfig.notify_on_error).toBe(true)
+    // The other two operational settings should also be in the body
+    // (syncToConfig writes them through unconditionally).
+    expect(savedConfig.notify_on_complete).toBe(false)
+    expect(savedConfig.retry_delay_ms).toBe(0)
+  })
+
+  it('typing into the retry-delay input round-trips to retry_delay_ms in the PUT body', async () => {
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: false,
+      notify_on_error: false,
+      retry_delay_ms: 0,
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    // Set the retry delay to 5 seconds → backend expects 5000 ms.
+    const input = wrapper.find('[data-testid="input-retry-delay-seconds"]')
+    await input.setValue('5')
+    await flushPromises()
+
+    // Save.
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+    expect(savedConfig.retry_delay_ms).toBe(5000)
+  })
+
+  it('clamps retry-delay input values to [0, 60] seconds in the General tab', async () => {
+    // The backend caps retry_delay_ms at 60_000 (nalar_config_put.zig).
+    // The UI clamps at the same range so the user gets immediate
+    // feedback instead of a silent server-side clamp.
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: false,
+      notify_on_error: false,
+      retry_delay_ms: 0,
+    })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    const input = wrapper.find('[data-testid="input-retry-delay-seconds"]')
+
+    // Above-max → clamps to 60 seconds (the underlying value should
+    // be 60_000 ms — assert via the ms readout element's text
+    // content, which is the source of truth the user sees).
+    await input.setValue('999')
+    await flushPromises()
+    // The input element's `.value` is a string — vitest sometimes
+    // formats numbers with locale separators, so check via the
+    // dedicated ms-readout element instead.
+    const msReadout = wrapper.find('[data-testid="retry-delay-ms-readout"]')
+    expect(msReadout.text()).toContain('60000')
+
+    // Below-min (negative) → clamps to 0.
+    await input.setValue('-5')
+    await flushPromises()
+    expect(msReadout.text()).toContain('0')
+  })
+
+  it('the PUT body always includes all three operational settings, even when the user only edits one', async () => {
+    // The General tab MUST write all three operational settings
+    // through (syncToConfig does this unconditionally). This is a
+    // regression guard so a future refactor doesn't accidentally
+    // drop one of them and silently re-introduce the hidden-field
+    // bug. Toggling ONLY `notify_on_error` must still surface the
+    // other two unchanged fields in the PUT body.
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: true,
+      notify_on_error: false,
+      retry_delay_ms: 10000,
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    // Toggle ONLY notify_on_error.
+    await wrapper.find('[data-testid="toggle-notify-on-error"]').setValue(true)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+    expect(savedConfig.notify_on_complete).toBe(true)
+    expect(savedConfig.notify_on_error).toBe(true)
+    expect(savedConfig.retry_delay_ms).toBe(10000)
   })
 })

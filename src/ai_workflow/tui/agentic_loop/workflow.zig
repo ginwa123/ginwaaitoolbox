@@ -1043,6 +1043,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // in context for its next turn (instead of only learning about
             // retries after the budget is exhausted).
             try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, eff.model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), server_detail, config.retry_delay_ms);
+
             // Sleep before the next attempt so the upstream can recover (or
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
@@ -2218,3 +2219,4 @@ test "all three diagnostic sites set is_error=true (frontend AgentErrorCard rout
     // expectEqual literal = 4 test-side), so expect 7 total.
     try testing.expectEqual(@as(usize, 7), std.mem.count(u8, source, ".is_error = true"));
 }
+

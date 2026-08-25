@@ -380,6 +380,79 @@ test "notify_on_complete: reads false from JSON when explicitly false" {
 }
 
 // ---------------------------------------------------------------------------
+// notify_on_error: opt-in OS notification flag for the error path
+// (transport failure, TooManyRetries, outer catch). Mirrors
+// `notify_on_complete` but fires on error sites in workflow.zig
+// instead of the success path. Plan 2026-08-25-notify-on-error.
+// ---------------------------------------------------------------------------
+
+test "notify_on_error: defaults to false when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.notify_on_error);
+}
+
+test "notify_on_error: reads true from JSON when present" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "notify_on_error": true
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.notify_on_error);
+}
+
+test "notify_on_error: reads false from JSON when explicitly false" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "notify_on_error": false
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.notify_on_error);
+}
+
+test "notify_on_error: round-trips independently of notify_on_complete" {
+    // The two flags are independent toggles — enabling one MUST NOT
+    // flip the other. Lock the contract so a future refactor doesn't
+    // accidentally collapse them into a single `notify: bool`.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "notify_on_complete": true,
+        \\  "notify_on_error": false
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.notify_on_complete);
+    try std.testing.expectEqual(false, cfg.notify_on_error);
+}
+
+// ---------------------------------------------------------------------------
 // url_style: top-level OpenAI vs Anthropic selector (regression for
 // `NalarSettings.vue` URL Style dropdown — see plan
 // `2026-06-11-nalar-config-url-style.md`).

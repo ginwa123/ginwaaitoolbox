@@ -365,6 +365,13 @@ pub const NalarConfigResponse = struct {
     /// completes with `finish_reason == "stop"`. Consumed by
     /// `workflow.zig:483`.
     notify_on_complete: bool = false,
+    /// Opt-in OS notification flag for the error path. When true, the
+    /// backend fires a desktop notification when the workflow hits a
+    /// transport error, exhausts retries (TooManyRetries), or fails
+    /// the outer agentic loop. Default `false` so a brand-new install
+    /// is silent on errors. Consumed by `workflow.zig` at the same
+    /// sites as `notify_on_complete`.
+    notify_on_error: bool = false,
     /// Compaction threshold in KB. Sessions whose DB-stored token
     /// estimate exceeds this value trigger context compaction.
     /// Consumed by `session_compact.zig:57`.

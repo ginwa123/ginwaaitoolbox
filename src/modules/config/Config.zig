@@ -30,6 +30,15 @@ pub const LlmConfig = struct {
     /// the backend (notify-send / osascript / PowerShell) so they work
     /// even when the desktop app's browser is closed.
     notify_on_complete: bool = true,
+    /// When true, fire an OS-level notification when the LLM workflow
+    /// hits a transport error, retries exhaust (TooManyRetries), or
+    /// the outer agentic loop catches an unrecoverable error. Mirrors
+    /// `notify_on_complete` (off by default — the user opts in).
+    /// Fired from `workflow.zig` at three sites: (1) the
+    /// `callDynamicAgentNew` catch, (2) the TooManyRetries hard bail,
+    /// (3) the outer `runAgenticMultiStepnew` catch. Body is the
+    /// captured `reason_error` + server detail, truncated to 200 chars.
+    notify_on_error: bool = false,
     /// Delay in milliseconds that the workflow sleeps before retrying a
     /// failed `callDynamicAgentNew` call. 0 = no delay (current behavior,
     /// the retry fires immediately on the next loop iteration). Upper
@@ -281,6 +290,11 @@ pub const LlmConfig = struct {
         /// with `finish_reason === 'stop'`. Default false (user must
         /// explicitly enable in config to avoid surprise notifications).
         notify_on_complete: bool = false,
+        /// Opt-in: fire an OS notification when the LLM workflow hits an
+        /// error (transport failure, TooManyRetries, outer catch). Default
+        /// false. Mirrors `notify_on_complete`; default off so a brand-new
+        /// install is silent on errors too.
+        notify_on_error: bool = false,
         /// Delay in milliseconds before retrying a failed workflow call.
         /// See `LlmConfig.retry_delay_ms` for semantics. Plan
         /// 2026-07-15-retry-delay.
@@ -455,6 +469,7 @@ pub const LlmConfig = struct {
             .url_style = try allocator.dupe(u8, config_json.url_style),
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
+            .notify_on_error = config_json.notify_on_error,
             .retry_delay_ms = config_json.retry_delay_ms,
             // Top-level compaction defaults — restored in plan
             // 2026-07-07-compaction-inline. Persisted as raw optional
@@ -1041,6 +1056,7 @@ pub const LlmConfig = struct {
             .url_style = try self.allocator.dupe(u8, self.url_style),
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .notify_on_complete = self.notify_on_complete,
+            .notify_on_error = self.notify_on_error,
             // Top-level compaction defaults — primitive copies, no
             // allocation needed (they're plain optionals).
             .max_capacity_token_model = self.max_capacity_token_model,

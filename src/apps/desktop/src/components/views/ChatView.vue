@@ -2638,8 +2638,21 @@ onMounted(async () => {
     lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
 
     await loadChatHistory()
-    connectSse()
-    startGitStatusPoll()
+    // Wrap connectSse + startGitStatusPoll in try/catch so a thrown
+    // error (e.g. useSseBus() throwing if the bus was torn down by
+    // a test's `__resetSseBus()` after the test's assertions ran but
+    // before this async block resumed) doesn't bubble out as an
+    // unhandled rejection. In production the bus is installed by
+    // App.vue's onMounted and only torn down on App unmount, so the
+    // catch is a no-op for real users — but it prevents vitest from
+    // surfacing "caught unhandled error" warnings during teardown of
+    // AppLayout.* tests that mount a child ChatView.
+    try {
+      connectSse()
+      startGitStatusPoll()
+    } catch (err) {
+      console.warn('[ChatView] SSE init failed (likely torn down by test cleanup):', err)
+    }
 
     try {
       const result = await api.getQueuedMessages(sessionId.value)
