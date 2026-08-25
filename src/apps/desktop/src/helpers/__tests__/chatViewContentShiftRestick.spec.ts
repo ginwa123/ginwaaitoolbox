@@ -55,7 +55,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
 import VirtualScroller from '../VirtualScroller.vue'
 
 type Item = { id: number }
@@ -349,26 +348,24 @@ describe('ChatView onContentShift restick (extracted)', () => {
     // Extract the loadMore branch (from `if (loadMore) {` to the
     // matching `} else {` that starts the initial-load branch).
     const loadMoreStart = src.indexOf('suppressContentShiftStick = true')
-    expect(loadMoreStart, 'loadMore branch not found').toBeGreaterThan(-1)
+    expect(loadMoreStart).toBeGreaterThan(-1)
     // End the window at the initial-load branch marker — the post-preserve
     // re-validation lives AFTER the `suppressContentShiftStick = false`
     // re-arm line, so slicing to that line would exclude the very code
     // under test.
     const branchEnd = src.indexOf('isInitialLoad = true', loadMoreStart)
-    expect(branchEnd, 'initial-load branch marker not found').toBeGreaterThan(-1)
+    expect(branchEnd).toBeGreaterThan(-1)
     const branch = src.slice(loadMoreStart, branchEnd)
 
     // 1. wasAtBottom snapshot taken BEFORE beginPreserve.
-    expect(
-      branch,
-      'loadMore branch must snapshot wasAtBottom BEFORE beginPreserve',
-    ).toMatch(/const wasAtBottom = isAtBottom\.value[\s\S]*beginPreserve/)
+    expect(branch).toMatch(
+      /const wasAtBottom = isAtBottom\.value[\s\S]*beginPreserve/,
+    )
 
     // 2. Post-preserve re-stick guarded by the snapshot.
-    expect(
-      branch,
-      'loadMore branch must re-stick after endPreserve when wasAtBottom',
-    ).toMatch(/if \(wasAtBottom\)[\s\S]*scrollHeight - [\s\S]*clientHeight/)
+    expect(branch).toMatch(
+      /if \(wasAtBottom\)[\s\S]*scrollHeight - [\s\S]*clientHeight/,
+    )
   })
 
   // ── Bug D (task_1787638309623_3 round 2): stick must NOT re-engage for a

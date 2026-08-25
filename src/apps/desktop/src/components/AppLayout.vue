@@ -21,7 +21,7 @@ import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
 import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
-import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
+import KanbanSettingsView from './views/KanbanSettingsView.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -888,6 +888,19 @@ const fetchChatSessionCwd = async (sessionId: string) => {
 const currentView = computed(() => {
   const path = route.path
   if (path === '/app/settings') return 'settings'
+  // NEW (plan: 2026-09-02-kanban-settings-as-page). Path-based
+  // kanban-settings route (/app/kanban/:itemId/settings). Must come
+  // BEFORE the route.query.view fallthrough because the URL has no
+  // `view=` query param — the path IS the discriminator.
+  //
+  // The regex matches /app/kanban/<itemId>/settings with optional
+  // trailing slash. It deliberately does NOT match /app/kanban/X
+  // (no /settings) — the kanban board itself stays at the existing
+  // ?view=workspace URL, so a future migration to /app/kanban/:itemId
+  // would be a separate plan.
+  if (/^\/app\/kanban\/[^/]+\/settings\/?$/.test(path)) {
+    return 'kanban-settings'
+  }
   // gitfile view - check only the ref (set synchronously before navigation)
   if (gitViewerFile.value) {
     console.log('[currentView] returning gitfile, gitViewerFile:', gitViewerFile.value.path)
@@ -1628,23 +1641,27 @@ const handleKanbanColumnEditorDelete = () => {
   showKanbanColumnEditor.value = false
 }
 
-// ─── KanbanSettingsDialog — per-board column management ─────────────────
+// ─── Kanban settings page (plan: 2026-09-02-kanban-settings-as-page) ────
 //
-// A single modal that shows the kanban name, an inline "Add Column"
-// form, and the list of existing columns with per-row Edit / Delete
-// actions. The dialog reuses the KanbanColumnEditor in 'rename' /
-// 'delete' modes for per-row edits, so the per-board and per-⋮-menu
-// flows share the same UX. The dialog itself stays open across
-// add/edit/delete so the user can manage several columns in
-// succession without reopening it.
-const showKanbanSettingsDialog = ref(false)
-
+// The settings UI moved from a centered modal dialog (the deleted
+// KanbanSettingsDialog) to a dedicated full-page route
+// (/app/kanban/:itemId/settings). Clicking ⚙ on a kanban board
+// header now pushes a vue-router path route instead of opening a
+// dialog. The new <KanbanSettingsView> component (mounted below)
+// is gated on currentView === 'kanban-settings'.
+//
+// The handlers below route the page's emits (addColumn, editColumn,
+// deleteColumn, renameItem, copySpec) to the existing
+// workspacesStore actions — same contract as the old dialog, no
+// backend changes.
 const handleOpenKanbanSettings = () => {
-  showKanbanSettingsDialog.value = true
-}
-
-const handleCloseKanbanSettings = () => {
-  showKanbanSettingsDialog.value = false
+  const itemId = activeWorkspaceItem.value?.id ?? ''
+  if (!itemId) return
+  // Path-based route: /app/kanban/:itemId/settings (registered in
+  // router/index.ts). workspaceId is derived from the store by the
+  // page itself — no need to encode it in the URL (itemId is
+  // globally unique across all workspaces).
+  router.push({ path: `/app/kanban/${itemId}/settings` })
 }
 
 const handleKanbanSettingsAddColumn = (name: string, description: string) => {
@@ -2732,19 +2749,20 @@ defineExpose({
     />
 
     <!--
-      KanbanSettingsDialog — per-board column management. Mounted
-      alongside the KanbanColumnEditor (not inside the KanbanView
-      scoped tree) so the modal's Teleport/animation lifecycle
-      works cleanly even if the KanbanView branch unmounts
-      mid-edit. The dialog owns its own KanbanColumnEditor
-      instance for per-row rename/delete actions so the two
-      dialogs can coexist (a user can open the settings while
-      the ⋮ menu is already showing).
+      KanbanSettingsView — dedicated full-page route for per-board
+      kanban settings (plan: 2026-09-02-kanban-settings-as-page).
+      Replaces KanbanSettingsDialog (deleted). Mounted alongside the
+      kanban / design / agent main-content branches (gated on
+      currentView === 'kanban-settings' so the kanban board is
+      unmounted while the settings page is visible).
+
+      The :key forces a fresh mount when the user navigates from one
+      kanban's settings to another's (the page's URL restore logic
+      re-reads route.params.itemId on mount).
     -->
-    <KanbanSettingsDialog
-      :show="showKanbanSettingsDialog"
-      :item="activeWorkspaceItem ?? null"
-      @close="handleCloseKanbanSettings"
+    <KanbanSettingsView
+      v-if="currentView === 'kanban-settings'"
+      :key="'kanban-settings-' + (route.params.itemId as string)"
       @add-column="handleKanbanSettingsAddColumn"
       @edit-column="handleKanbanSettingsEditColumn"
       @delete-column="handleKanbanSettingsDeleteColumn"

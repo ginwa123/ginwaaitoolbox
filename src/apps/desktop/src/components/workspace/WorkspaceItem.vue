@@ -98,11 +98,18 @@ const isExpanded = computed(() => {
 // backwards-compat with other consumers and for the right-side active
 // dot). When the URL changes, the computed re-runs and the row styling
 // updates — no watcher needed, the template binding is enough.
+//
+// NEW (plan: 2026-09-02-kanban-settings-as-page): keep the parent row
+// highlighted when the user is on the kanban settings page. The page
+// is a sub-state of the kanban (same itemId), so the row should stay
+// visually selected until the user navigates elsewhere.
 const currentMainView = useCurrentMainView()
-const isCurrentMainView = computed(() =>
-  currentMainView.value.kind === 'workspace'
-    && currentMainView.value.itemId === props.item.id,
-)
+const isCurrentMainView = computed(() => {
+  const v = currentMainView.value
+  if (v.kind === 'workspace' && v.itemId === props.item.id) return true
+  if (v.kind === 'kanban-settings' && v.itemId === props.item.id) return true
+  return false
+})
 
 // Computed: true if any of this item's tasks is currently being processed
 // by a worker. Drives the right-side yellow spinner on the item row so

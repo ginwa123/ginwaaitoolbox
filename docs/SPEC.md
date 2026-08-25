@@ -238,8 +238,9 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-06-21-workspace-item-kanban.md` | ✅ | `feature/workspace-item-kanban` — full kanban subsystem |
 | `2026-06-21-workspace-item-kanban-design.md` | ✅ | Companion design |
 | `2026-06-26-fix-kanban-list-empty-add-sse.md` | ✅ | Shape-validation hints + SSE pipeline |
-| `2026-06-27-kanban-column-description-settings.md` | ✅ | Migration 053 + `KanbanSettingsDialog.vue` |
+| `2026-06-27-kanban-column-description-settings.md` | ✅ | Migration 053 + `KanbanSettingsDialog.vue` (replaced by `KanbanSettingsView` — see `2026-09-02-kanban-settings-as-page.md`) |
 | `2026-06-27-kanban-sse-auto-move.md` | ✅ | `fetchKanbanTasks` on `kanban_task.*` SSE + card auto-move (#43) |
+| `2026-09-02-kanban-settings-as-page.md` | ✅ | Path route `/app/kanban/:itemId/settings` + new `KanbanSettingsView.vue` (full-page; replaces the modal `KanbanSettingsDialog`). See §3.7.11 below. |
 | `2026-06-29-kanban-move-task-sse-emit.md` | ✅ | `kanban_move_task` emits `onEventSendKanbanTask` (#46) |
 | `2026-06-30-fix-kanban-drop-position.md` | ⏳ | Plan committed; `KanbanColumn.handleDrop` still hardcodes `position = cardsInColumn.value.length` |
 | `2026-07-16-kanban-task-detail-dialog.md` | ✅ | Kanban task detail dialog with persistent description (#101) |
@@ -564,6 +565,22 @@ Each kanban task card displays a small GitHub-style fork/branch icon + branch na
 **Out of scope.** Auto-refresh on `git checkout` (would need SSE event for branch change — separate feature). Per-task branch override UI (read-only display for v1). Branch picker dropdown on the task card. Showing remote tracking branch (e.g. `origin/main`).
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md`
+
+#### 3.7.11 Kanban settings — dedicated page (path route) (2026-09-02)
+
+Clicking ⚙ on a kanban board header navigates to a dedicated full-page route (`/app/kanban/:itemId/settings`) instead of opening a centered modal. The page mirrors `SettingsView`'s 240px sidebar + content panel shape — left sidebar carries the back button + page title + kanban name (inline rename) + Columns/Memories tab strip; the right panel renders the columns tab (add-form + columns list + copy-spec footer) or the memories tab (`WorkspaceItemMemoriesView`).
+
+**Why a path route (not a query param like `?view=kanban-settings&itemId=X`)?** Mirrors the established convention for sibling sub-page routes: `/app/settings`, `/app/chat/:sessionId`, `/app/task/:taskId`. Path params are native to vue-router (`route.params.itemId`), URLs are more readable, and the structure aligns with how Notion / Linear / GitHub organize their URLs. The kanban board itself stays at `?view=workspace&workspaceId=X&itemId=Y` for now — migrating it to `/app/kanban/:itemId` is out of scope.
+
+**Why `workspaceId` is NOT in the URL.** itemId is globally unique across all workspaces (`workspace_items.id` is the PK). The page derives workspaceId by walking `workspacesStore.workspaces` looking for which workspace owns the item — used only by the `goBack` handler to round-trip back to `?view=workspace&workspaceId=X&itemId=Y`. Encoding workspaceId in the URL would add noise (and break if a kanban is ever moved between workspaces — unlikely but possible).
+
+**Sidebar active-row highlight.** `WorkspaceItem.isCurrentMainView` now also matches `kind === 'kanban-settings'` AND `itemId === props.item.id`. The parent kanban row stays visually selected while the user is on its settings page — matches how `?view=workspace` already behaves.
+
+**Wire (frontend).** `<KanbanSettingsView>` is mounted at the AppLayout root level parallel to `<SettingsView>` (NOT inside the `<main>` chain — settings pages don't share the kanban/design/agent mutually-exclusive chain). `currentView` computed gains a regex branch `if (/^\/app\/kanban\/[^/]+\/settings\/?$/.test(path)) return 'kanban-settings'`. The router (`router/index.ts`) gains one new entry: `path: '/app/kanban/:itemId/settings', name: 'kanban-settings', component: AppLayout` (same pattern as the existing `/app/settings` route).
+
+**No backend changes.** All HTTP routes (`addKanbanColumn`, `updateKanbanColumn`, `copyKanbanSpecFrom`, etc.) stay unchanged. The page is purely presentational — same emit contract as the deleted `KanbanSettingsDialog`.
+
+**Plan:** `docs/superpowers/plans/2026-09-02-kanban-settings-as-page.md`
 **Commits:** `1130e5cd` (backend) + this PR (frontend).
 
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
