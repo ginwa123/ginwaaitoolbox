@@ -1293,28 +1293,22 @@ pub fn build(b: *std.Build) void {
             });
         },
         .macos => {
-            // Chunk 6: Cocoa, WebKit (via .mm shim)
+            // macOS webview: vendored webview/webview library (same as
+            // the Linux branch above). webview.h auto-selects its
+            // Cocoa/WKWebView backend on __APPLE__ — no WEBVIEW_COCOA
+            // define needed. The old Objective-C++ shim
+            // (platform/macos/nalar_webview.mm) is deleted: it
+            // implemented the old nalar_webview_* C ABI which main.zig
+            // no longer calls (the webview-lib swap moved main.zig to
+            // webview_create/webview_run directly).
             //
-            // The Objective-C++ shim at platform/macos/nalar_webview.mm
-            // implements the 3 C ABI functions (nalar_webview_create,
-            // _run, _destroy) using AppKit + WebKit. We compile it with
-            // the host's clang via `addCSourceFile` and `-ObjC++`, then
-            // link the Cocoa + WebKit frameworks. Note: `addCSourceFile`
-            // and `linkFramework` are both methods on `root_module` in
-            // Zig 0.16 (not on the Compile step like in older versions) —
-            // see the Linux branch above for the matching addCSourceFile
-            // pattern.
-            //
-            // FIX: Zig doesn't auto-detect the macOS SDK here because
-            // `target`'s query has an explicit .os_tag (see the
+            // SDK paths: Zig doesn't auto-detect the macOS SDK here
+            // because `target`'s query has an explicit .os_tag (see the
             // standardTargetOptions default_target block near the top of
             // `build`), which disables Zig's native-SDK autodetection
-            // fast path — that path only runs when os_tag is left null.
-            // Without it, `linkFramework` has nowhere to look and fails
-            // with "unable to find framework 'Cocoa'. searched paths: none".
-            // We resolve the SDK path ourselves via `xcrun` and wire the
-            // framework/include/library search paths manually before
-            // linking. See `getMacosSdkPath` above for more detail.
+            // fast path. We resolve the SDK path ourselves via `xcrun`
+            // and wire the framework/include/library search paths
+            // manually before linking. See `getMacosSdkPath` above.
             const sdk_path = getMacosSdkPath(b);
             desktop_exe.root_module.addSystemFrameworkPath(.{
                 .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk_path}),
@@ -1326,18 +1320,18 @@ pub fn build(b: *std.Build) void {
                 .cwd_relative = b.fmt("{s}/usr/lib", .{sdk_path}),
             });
 
-            const mm_file = b.path("src/apps/desktop_app/platform/macos/nalar_webview.mm");
-            // -I src/apps/desktop_app: the shim includes the shared C ABI
-            // header via `#import "shared/webview_c.h"`. zig cc compiles
-            // the .mm from the build root, so a relative `../shared/...`
-            // quoted include does NOT resolve against the source file's
-            // directory on macOS CI (clang's quoted-search first hops are
-            // include-path based here). The -I flag makes the include
-            // resolve deterministically on every host.
             desktop_exe.root_module.addCSourceFile(.{
-                .file = mm_file,
-                .flags = &.{ "-ObjC++", "-Isrc/apps/desktop_app" },
+                .file = b.path("vendor/webview/webview.cc"),
+                .flags = &.{
+                    "-std=c++11",
+                    "-DWEBVIEW_STATIC",
+                    "-Ivendor/webview",
+                },
             });
+            // C++ runtime for webview.o (operator new, __cxa_begin_catch,
+            // ...). On macOS the SDK's libc++ is used via the SDK lib
+            // path added above.
+            desktop_exe.root_module.link_libcpp = true;
             desktop_exe.root_module.linkFramework("Cocoa", .{});
             desktop_exe.root_module.linkFramework("WebKit", .{});
         },
