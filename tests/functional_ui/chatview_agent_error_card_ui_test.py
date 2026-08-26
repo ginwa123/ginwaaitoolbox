@@ -20,9 +20,9 @@ THE FIX (this branch):
 
     workflow.zig's 3 diagnostic sites set is_error=true; the flag rides
     the llm_full payload to the frontend. ChatView intercepts full events
-    with is_error=true BEFORE the dedupe/push logic, routes them into an
-    agentErrors list, and renders them via AgentErrorCard BELOW the
-    VirtualScroller (never inside messages.value).
+    with is_error=true BEFORE the dedupe/push logic, routes them into the
+    `agentError` singleton ref, and renders the single card via
+    AgentErrorCard BELOW the VirtualScroller (never inside messages.value).
 
 How this test drives the SSE path without a real LLM:
 
@@ -39,7 +39,10 @@ Assertions (the bug contract):
     2. The event does NOT appear as a user message in the transcript.
     3. A normal (is_error=false) full event still renders as a regular
        assistant message — no regression on the happy path.
-    4. Multiple error events accumulate (one card each).
+    4. Multiple error events overwrite in place — the singleton slot
+       shows only the LATEST error (retry chain progress: 1/10 → 2/10
+       on the SAME card). See commit 1e1d113a (task_1787668954023_2)
+       for the rationale: avoids pile-up, surfaces the latest status.
 
 Run:
     NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \\
@@ -207,10 +210,23 @@ def test_normal_full_event_still_renders_as_assistant_message(
     assert page.locator('[data-testid="agent-error-card"]').count() == 0
 
 
-def test_multiple_error_events_accumulate_one_card_each(
+def test_multiple_error_events_latest_wins_overwrites_in_place(
     page, ui_harness: UIHarness
 ) -> None:
-    """Two consecutive retries → two cards (accumulation contract)."""
+    """Two consecutive retries → ONE card with the LATEST content.
+
+    ChatView routes every `full` SSE event with is_error=true into a
+    singleton `agentError` ref (see ChatView.vue: the line that does
+    `agentError.value = { ... }` overwrites the previous entry on every
+    new error). The retry chain therefore shows 1/10 → 2/10 → ... →
+    final 10/10 bail ALL on the SAME card, not as a pile-up.
+
+    Rationale (commit 1e1d113a, task_1787668954023_2, dedupe +
+    expand): the user only ever needs the most recent status; older
+    errors are noise once the agent has moved past them. The card also
+    auto-clears as soon as ANY non-error `full` event arrives for the
+    same session — i.e. the moment the agent recovers.
+    """
     h = ui_harness
     session_id = "sess_agent_err_003"
     _seed_session(h, session_id)
@@ -231,11 +247,35 @@ def test_multiple_error_events_accumulate_one_card_each(
         )
         page.wait_for_timeout(150)
 
-    cards = page.locator('[data-testid="agent-error-card"]')
-    cards.first.wait_for(timeout=10000, state="visible")
-    assert cards.count() == 2, f"expected 2 error cards, got {cards.count()}"
+    # Wait for the (single) card to surface. The Vue key=agentError.id
+    # means the SECOND emission triggers a fresh mount, so we wait_for
+    # the 2/10 retry chip to confirm the latest content arrived (the
+    # first emission's 1/10 chip would race past this point in time).
+    chip = page.locator('[data-testid="agent-error-retry"]').first
+    chip.wait_for(timeout=10000, state="visible")
+    assert "2/10" in chip.inner_text(), (
+        f"latest-wins: retry chip should reflect the SECOND error "
+        f"event's content, got {chip.inner_text()!r}"
+    )
 
+    # SINGLE card on the page (no accumulation).
+    cards = page.locator('[data-testid="agent-error-card"]')
+    assert cards.count() == 1, (
+        f"latest-wins: expected 1 error card (singleton ref), got {cards.count()}"
+    )
+
+    # SINGLE retry chip too (the older one is replaced, not appended).
     chips = page.locator('[data-testid="agent-error-retry"]')
-    assert chips.count() == 2
-    assert "1/10" in chips.nth(0).inner_text()
-    assert "2/10" in chips.nth(1).inner_text()
+    assert chips.count() == 1, (
+        f"latest-wins: expected 1 retry chip, got {chips.count()}"
+    )
+
+    # The card's content reflects the latest emission (RETRY_CONTENT_2 =
+    # "Retry 2/10 ... upstream provider rate-limited"), NOT the first
+    # one. Both the retry chip and the server-detail section reflect
+    # this overwrite-in-place behavior.
+    detail = page.locator('[data-testid="agent-error-detail"]').first
+    assert "upstream provider rate-limited" in detail.inner_text(), (
+        f"latest-wins: detail should reflect the SECOND error's "
+        f"'Server said:' payload, got {detail.inner_text()!r}"
+    )
