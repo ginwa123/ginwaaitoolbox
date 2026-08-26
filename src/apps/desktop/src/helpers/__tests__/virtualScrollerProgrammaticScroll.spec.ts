@@ -234,10 +234,7 @@ describe('ChatView handleVirtualScroll programmatic guard (static contract)', ()
     // The guard must not treat a programmatic compensation write as a
     // real upward gesture — otherwise isAtBottom flips false and the
     // auto-stick disengages for the rest of the stream (the gap bug).
-    expect(
-      src,
-      'handleVirtualScroll userScrolledUp must exclude isProgrammatic events',
-    ).toMatch(/userScrolledUp\s*=\s*!isProgrammatic\s*&&\s*deltaTop\s*<\s*0/)
+    expect(src).toMatch(/userScrolledUp\s*=\s*!isProgrammatic\s*&&\s*deltaTop\s*<\s*0/)
   })
 
   it('handleVirtualScroll accepts the 4th isProgrammatic emit arg', async () => {

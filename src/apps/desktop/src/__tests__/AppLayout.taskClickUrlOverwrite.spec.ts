@@ -191,12 +191,12 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     // global fetch stub (see setup.ts) because no other code path
     // catches the rejection. The test doesn't exercise the folder
     // picker, so a minimal empty response is sufficient.
-    // eslint-disable-next-line @typescript-eslint/no-explicitly-any
     vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
       path: '/',
       absolute: '/',
       home: '/',
       entries: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
 

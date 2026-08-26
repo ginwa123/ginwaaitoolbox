@@ -25,6 +25,15 @@ export default mergeConfig(
       exclude: [...configDefaults.exclude, 'e2e/**'],
       root: fileURLToPath(new URL('./', import.meta.url)),
       setupFiles: ['./src/__tests__/setup.ts'],
+      // Bump the default test timeout from vitest's 5000ms to 15000ms.
+      // Component-mount tests (AppLayout.*, ChatView.*, DesignView.*,
+      // DesignChatDialog, AddDesignElementDialog, …) involve heavy
+      // jsdom + Vue Test Utils setup that completes in <500ms on Linux
+      // and macOS but consistently pushes past 5000ms on the Windows
+      // runner (Node startup + NTFS fs latency). 15s is still well
+      // below the per-job timeout and surfaces real hangs (>15s) while
+      // letting the slow-but-correct Windows tests pass.
+      testTimeout: 15000,
       // Don't fail on console.error — store actions log caught errors
       // (e.g. fetch failures from unmocked API calls in tests). The
       // error count is informational; the tests themselves pass.
