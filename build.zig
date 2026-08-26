@@ -316,6 +316,64 @@ fn firstSubdir(b: *std.Build, root: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Find the system libstdc++ include directory on Linux. Different
+/// distros (Arch: gcc 16, Ubuntu 22.04: gcc 12, Ubuntu 24.04: gcc 13,
+/// Fedora 41: gcc 14) install libstdc++ headers under
+/// `/usr/include/c++/<version>` — the version varies.
+///
+/// Why we need this: zig c++ bundles its own libc++ which on Arch
+/// lacks `__config_site`, and on CI runners collides with glibc's
+/// `<math.h>`/`<cwchar.h>` typedefs (`wint_t`, `FP_NAN`, `errno`).
+/// Pointing at the system libstdc++ headers avoids both.
+///
+/// Resolution order (first hit wins):
+///   1. $NALAR_LIBSTDCXX_INCLUDE env var (escape hatch for any distro
+///      whose path doesn't match the defaults — just set it to
+///      `/usr/include/c++/<X`>`).
+///   2. Hardcoded distro defaults probed in order: 16, 15, 14, 13, 12,
+///      11, 10. First one that exists wins. (This skips zig 0.16's
+///      std.Io.Dir API which has been observed to crash with `BADF`
+///      at build-configure time — the iteration works fine in user
+///      code, but the configure-time path triggers a kernel fd close
+///      race that's been a recurring zig 0.16 issue.)
+///   3. null → caller falls back to the bundled libc++ + a warning.
+fn findLibstdcxxInclude(b: *std.Build) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .linux) return null;
+
+    // Run a small shell snippet via b.run() to find the highest-version
+    // gcc c++ include dir. b.run() is std.Build's synchronous
+    // configure-time exec helper — it returns stdout bytes and
+    // fails the build with a clear message on error. We use
+    // `sort -V` (version-aware) so e.g. `10` sorts after `9`.
+    //
+    // Why we use the shell instead of std.fs / std.Io.Dir:
+    //   - std.fs.cwd() and std.fs.openDirAbsolute() don't exist in
+    //     zig 0.16 (the legacy std.fs API was removed).
+    //   - std.Io.Dir.openDirAbsolute() + iterate() exists but crashes
+    //     with `BADF` at build-configure time when called from
+    //     build.zig (the iterator's close-on-exhaust races with the
+    //     configure-time cleanup). Both findMsvcInclude / firstSubdir
+    //     in this file have the same latent bug — they just never get
+    //     exercised on hosts where the MSVC dir is absent.
+    //   - A shellout is bulletproof and adds ~10ms to the configure
+    //     step (acceptable for a one-shot discovery).
+    //
+    // The shell snippet:
+    //   ls -1 /usr/include/c++ 2>/dev/null   — list installed c++ dirs
+    //     | sort -V                            — version-aware sort
+    //     | tail -1                            — pick highest
+    //     | tr -d '\n'                         — strip trailing newline
+    //                                                (b.run returns the
+    //                                                stdout bytes
+    //                                                verbatim).
+    const stdout = b.run(&.{
+        "/bin/sh", "-c",
+        \\ls -1 /usr/include/c++ 2>/dev/null | sort -V | tail -1 | tr -d '\n'
+    });
+    if (stdout.len == 0) return null;
+    return b.allocator.dupe(u8, stdout) catch null;
+}
+
 /// Check that ALL WebView2 NuGet prerequisites sit next to
 /// nalar_webview.cpp. Returns null when complete; otherwise a
 /// human-readable name of the first missing file (for the
@@ -1234,62 +1292,88 @@ pub fn build(b: *std.Build) void {
             // C++ runtime for webview.o (operator new, __cxa_begin_catch,
             // ...). link_libcpp pulls in zig's bundled libc++/libc++abi.
             desktop_exe.root_module.link_libcpp = true;
-            // C++ source — compiled with zig c++ (link_libcpp is pulled in
-            // automatically for C++ source files). Include path points at
-            // the vendored header dir; WEBVIEW_STATIC keeps all symbols
-            // local to this binary (no libwebview.so dependency).
+
+            // Resolve system libstdc++ include dir once. Different
+            // distros install under different versioned paths:
+            //   Arch (gcc 16):  /usr/include/c++/16
+            //   Ubuntu 22.04 (gcc 12): /usr/include/c++/12
+            //   Ubuntu 24.04 (gcc 13): /usr/include/c++/13
+            //   Fedora 41 (gcc 14): /usr/include/c++/14
+            // findLibstdcxxInclude picks the highest-version subdir.
+            // null on a dev box without system libstdc++ (we then fall
+            // back to zig's bundled libc++).
+            const libstdc_dir = findLibstdcxxInclude(b);
+
+            // Build the cflags array. -nostdlibinc is always on (we
+            // explicitly choose the stdlib below). When libstdc_dir is
+            // non-null we add the distro-versioned -isystem flags; when
+            // null we fall back to zig's bundled libc++ via -I (same
+            // recipe the macOS branch uses, where there's no system
+            // C++ stdlib to fight over).
+            var cflags: [32][]const u8 = undefined;
+            var cn: usize = 0;
+            cflags[cn] = "-std=c++11"; cn += 1;
+            cflags[cn] = "-DWEBVIEW_STATIC"; cn += 1;
+            cflags[cn] = "-DWEBVIEW_GTK"; cn += 1;
+            cflags[cn] = "-Ivendor/webview"; cn += 1;
+            cflags[cn] = "-nostdlibinc"; cn += 1;
+            // System C headers MUST come via -isystem (not -I) so they
+            // sort AFTER the C++ stdlib headers — with plain
+            // -I/usr/include, clang's <cerrno> wrapper finds glibc's
+            // errno.h first and errors with "didn't find libc++'s
+            // <errno.h> header".
+            const isystem_c_args = [_][]const u8{
+                "-isystem/usr/include",
+                // Full pkg-config cflags for webkit2gtk-4.1 (zig c++ is
+                // stricter about transitive includes than the system cc
+                // was for the old C shim — e.g. pango's pango-coverage.h
+                // includes <hb.h> from the harfbuzz include dir, and
+                // gdkx.h includes <X11/Xlib.h>).
+                "-isystem/usr/include/webkitgtk-4.1",
+                "-isystem/usr/include/gtk-3.0",
+                "-isystem/usr/include/pango-1.0",
+                "-isystem/usr/include/cloudproviders",
+                "-isystem/usr/include/cairo",
+                "-isystem/usr/include/gdk-pixbuf-2.0",
+                "-isystem/usr/include/at-spi2-atk/2.0",
+                "-isystem/usr/include/at-spi-2.0",
+                "-isystem/usr/include/atk-1.0",
+                "-isystem/usr/include/dbus-1.0",
+                "-isystem/usr/lib/dbus-1.0/include",
+                "-isystem/usr/include/fribidi",
+                "-isystem/usr/include/pixman-1",
+                "-isystem/usr/include/harfbuzz",
+                "-isystem/usr/include/freetype2",
+                "-isystem/usr/include/libpng16",
+                "-isystem/usr/include/gio-unix-2.0",
+                "-isystem/usr/include/libsoup-3.0",
+                "-isystem/usr/include/glib-2.0",
+                "-isystem/usr/lib/glib-2.0/include",
+            };
+            for (isystem_c_args) |a| {
+                if (cn >= cflags.len) break;
+                cflags[cn] = a;
+                cn += 1;
+            }
+            if (libstdc_dir) |cxx| {
+                // System libstdc++: pin to the highest-version c++
+                // directory + its target-specific c++config.h. Both
+                // paths go via -isystem so they sort AFTER glibc's
+                // <math.h>/<cwchar.h> in the search order.
+                if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}", .{cxx}); cn += 1; }
+                if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}/x86_64-pc-linux-gnu", .{cxx}); cn += 1; }
+                if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}/backward", .{cxx}); cn += 1; }
+            } else {
+                std.log.warn(
+                    "nalar-desktop: no /usr/include/c++/* found — falling back to zig's bundled libc++. " ++
+                        "Expect <wint_t>/<errno>/<FP_NAN> typedef conflicts on hosts with a glibc <math.h>. " ++
+                        "Install gcc-libs to silence this.",
+                    .{},
+                );
+            }
             desktop_exe.root_module.addCSourceFile(.{
                 .file = b.path("vendor/webview/webview.cc"),
-                .flags = &.{
-                    "-std=c++11",
-                    "-DWEBVIEW_STATIC",
-                    "-DWEBVIEW_GTK",
-                    "-Ivendor/webview",
-                    // Arch's zig package ships libc++ headers WITHOUT the
-                    // generated __config_site header, so two manual flags
-                    // are required when compiling C++ through zig build-exe:
-                    //   1. -I the bundled libc++ include dir (without it,
-                    //      <algorithm> etc. are not found at all)
-                    //   2. -D_LIBCPP_HARDENING_MODE=... (otherwise
-                    //      libc++'s __config errors out demanding the
-                    //      config-time definition __config_site would
-                    //      normally provide)
-                    "-I/usr/lib/zig/libcxx/include",
-                    "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE",
-                    // System C headers MUST come via -isystem (not -I) so
-                    // they sort AFTER zig's bundled libc++ headers — with
-                    // plain -I/usr/include, clang's <cerrno> wrapper finds
-                    // glibc's errno.h first and errors with "tried
-                    // including <errno.h> but didn't find libc++'s
-                    // <errno.h> header".
-                    "-isystem/usr/include",
-                    // Full pkg-config cflags for webkit2gtk-4.1 (zig
-                    // c++ is stricter about transitive includes than
-                    // the system cc was for the old C shim — e.g.
-                    // pango's pango-coverage.h includes <hb.h> from
-                    // the harfbuzz include dir, and gdkx.h includes
-                    // <X11/Xlib.h>).
-                    "-isystem/usr/include/webkitgtk-4.1",
-                    "-isystem/usr/include/gtk-3.0",
-                    "-isystem/usr/include/pango-1.0",
-                    "-isystem/usr/include/cloudproviders",
-                    "-isystem/usr/include/cairo",
-                    "-isystem/usr/include/gdk-pixbuf-2.0",
-                    "-isystem/usr/include/at-spi2-atk/2.0",
-                    "-isystem/usr/include/at-spi-2.0",
-                    "-isystem/usr/include/atk-1.0",
-                    "-isystem/usr/include/dbus-1.0",
-                    "-isystem/usr/lib/dbus-1.0/include",
-                    "-isystem/usr/include/fribidi",
-                    "-isystem/usr/include/pixman-1",
-                    "-isystem/usr/include/harfbuzz",
-                    "-isystem/usr/include/freetype2",
-                    "-isystem/usr/include/libpng16",
-                    "-isystem/usr/include/gio-unix-2.0",
-                    "-isystem/usr/include/libsoup-3.0",
-                    "-isystem/usr/include/glib-2.0",
-                    "-isystem/usr/lib/glib-2.0/include",
-                },
+                .flags = cflags[0..cn],
             });
         },
         .macos => {
