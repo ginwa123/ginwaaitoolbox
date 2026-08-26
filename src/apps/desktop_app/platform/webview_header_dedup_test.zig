@@ -1,15 +1,21 @@
 // src/apps/desktop_app/platform/webview_header_dedup_test.zig
 //
-// Static-contract test: the webview C ABI header must exist in exactly
-// ONE place (shared/webview_c.h). The per-platform copies were a
-// sync hazard — adding a field to nalar_webview_config required editing
-// 3 files in lockstep, and nothing failed loudly if you missed one.
+// Static-contract test: the legacy webview C ABI header must exist in
+// exactly ONE place (shared/webview_c.h). The per-platform copies
+// were a sync hazard — adding a field to nalar_webview_config
+// required editing 3 files in lockstep, and nothing failed loudly if
+// you missed one.
+//
+// After the webview-lib swap (PR #354) the macOS + Windows shims
+// (platform/macos/nalar_webview.mm, platform/windows/nalar_webview.cpp)
+// were deleted — they implemented the old nalar_webview_* C ABI that
+// main.zig no longer calls. The dev-box fallback STUB shim remains
+// (Windows-only, used when MSVC + WebView2 NuGet are unavailable) and
+// still includes the shared header for parity.
 //
 // Contract:
 //   1. Exactly one webview_c.h exists under src/apps/desktop_app.
-//   2. The macOS shim includes it via the relative shared path.
-//   3. The Windows shim includes it via the relative shared path.
-//   4. The stub shim includes it via the relative shared path.
+//   2. The windows stub shim includes it via the relative shared path.
 
 const std = @import("std");
 const testing = std.testing;
@@ -22,10 +28,10 @@ test "exactly one webview_c.h exists under desktop_app" {
 
     var dir = try std.Io.Dir.cwd().openDir(std.testing.io, APP_DIR, .{ .iterate = true });
     defer dir.close(std.testing.io);
-    var walker = try dir.walk(std.testing.allocator);
+    var walker = try dir.walk(testing.allocator);
     defer walker.deinit();
 
-    while (try walker.next(std.testing.io)) |entry| {
+    while (try walker.next(testing.io)) |entry| {
         if (entry.kind != .file) continue;
         if (std.mem.eql(u8, entry.basename, "webview_c.h")) {
             count += 1;
@@ -67,34 +73,10 @@ fn assertIncludesSharedPath(source: []const u8, label: []const u8) !void {
     }
 }
 
-test "macos shim includes the shared header via relative path" {
-    const allocator = testing.allocator;
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        APP_DIR ++ "/platform/macos/nalar_webview.mm",
-        allocator,
-        .limited(256 * 1024),
-    );
-    defer allocator.free(raw);
-    try assertIncludesSharedPath(raw, "nalar_webview.mm");
-}
-
-test "windows shim includes the shared header via relative path" {
-    const allocator = testing.allocator;
-    const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        APP_DIR ++ "/platform/windows/nalar_webview.cpp",
-        allocator,
-        .limited(256 * 1024),
-    );
-    defer allocator.free(raw);
-    try assertIncludesSharedPath(raw, "nalar_webview.cpp");
-}
-
 test "windows stub shim includes the shared header via relative path" {
     const allocator = testing.allocator;
     const raw = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
+        testing.io,
         APP_DIR ++ "/platform/windows/nalar_webview_stub.cpp",
         allocator,
         .limited(256 * 1024),
