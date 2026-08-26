@@ -1313,6 +1313,17 @@ interface MessageGroup {
   timestamp: Date
 }
 
+/**
+ * Stable identity for a message group (2026-08-26 stable-keys fix).
+ * The VirtualScroller keys its height cache by this — a group keeps
+ * its measured height wherever it moves in the array. messageGroups
+ * re-merges/re-filters on every SSE event, shifting indices; with
+ * index-keyed heights those shifts corrupted the sizer (heights
+ * describing the wrong rows → phantom gaps → blank stick-to-bottom).
+ * The first message's DB id is stable across regrouping.
+ */
+const groupKey = (group: MessageGroup): string => group.messages[0]?.id ?? `empty-${group.timestamp.getTime()}`
+
 const messageGroups = computed((): MessageGroup[] => {
   const groups: MessageGroup[] = []
 
@@ -3044,6 +3055,7 @@ const compactSession = async () => {
           v-if="isLoading || messageGroups.length > 0"
           ref="virtualScrollerRef"
           :items="messageGroups"
+          :item-key="groupKey"
           :total-count="0"
           :buffer="30"
           :default-item-height="64"
