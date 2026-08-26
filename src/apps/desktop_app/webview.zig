@@ -36,7 +36,16 @@ pub const CAsset = extern struct {
 ///             for machines that render black/glitched windows with
 ///             DMABUF (older NVIDIA, some virtualized GPUs)
 ///   .debug  — same as auto plus WEBKIT_DEBUG compositing output on stderr
-pub const GfxPreset = enum(c_int) { auto = 0, compat = 1, debug = 2 };
+///   .x11    — same as auto, plus force GDK_BACKEND=x11 before gtk_init.
+///             Workaround for the NVIDIA + Wayland stack where the
+///             wl_drm / linux-dmabuf-feedback path is broken on
+///             Hyprland + GeForce, so WebKitGTK's GPU process silently
+///             fails to spawn — the web-process then rasterizes every
+///             frame in software on the JS main thread and pins one
+///             CPU core at 99%. Routing GTK through XWayland gives
+///             WebKit a working NVIDIA GL path so the GPU process
+///             starts normally.
+pub const GfxPreset = enum(c_int) { auto = 0, compat = 1, debug = 2, x11 = 3 };
 
 /// Mirror of nalar_webview_config.
 pub const Config = extern struct {

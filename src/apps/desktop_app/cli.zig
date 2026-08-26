@@ -52,6 +52,20 @@ pub const Config = struct {
     /// Element → DevTools panel). Off by default; enable for dev
     /// workflow.
     enable_devtools: bool = false,
+    /// Linux-only today (no-op on macOS/Windows): when true, force
+    /// `GDK_BACKEND=x11` before gtk_init. The default Wayland backend
+    /// silently falls back to software rendering on NVIDIA+Wayland
+    /// setups (the wl_drm / linux-dmabuf-feedback path is broken on
+    /// Hyprland + GeForce, so WebKitGTK never spawns its GPU process
+    /// and rasterizes every frame in the web-process JS thread → 99% CPU
+    /// core). XWayland is the workaround: NVIDIA's GL path under X11
+    /// is mature and lets WebKitGTK bring up its GPU process normally.
+    ///
+    /// Off by default so first-time users on the working path (AMD/
+    /// Intel + Wayland) are not affected. The user opts in with
+    /// `--x11` when they hit the symptom and are happy to pay the
+    /// XWayland translation cost.
+    force_x11: bool = false,
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         if (self.nalar_path) |p| allocator.free(p);
@@ -102,6 +116,12 @@ const usage =
     \\  --smoke-test             Open, wait 2s, exit (for CI)
     \\  --devtools               Enable webview DevTools (right-click → Inspect
     \\                            Element → DevTools panel). Off by default.
+    \\  --x11                    Linux only: force GDK_BACKEND=x11 so WebKitGTK
+    \\                            uses XWayland instead of Wayland. Workaround
+    \\                            for the NVIDIA + Wayland stack where
+    \\                            WebKitGPUProcess silently fails to start and
+    \\                            the web-process eats 1 CPU core doing software
+    \\                            rasterization. No-op on macOS/Windows.
     \\  --help, -h               Show this help
     \\
 ;
@@ -161,6 +181,17 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             cfg.attach_port = std.fmt.parseInt(u16, args[i], 10) catch return error.InvalidPort;
         } else if (std.mem.eql(u8, arg, "--devtools")) {
             cfg.enable_devtools = true;
+        } else if (std.mem.eql(u8, arg, "--x11")) {
+            // Linux-only flag (no-op on macOS/Windows). Forces the GDK
+            // windowing backend to X11 so GDK/XWayland backs the WebKit
+            // web view instead of GDK/Wayland. The Wayland+NVIDIA path
+            // doesn't bring up WebKitGPUProcess today, which leaves the
+            // web-process main thread doing all rasterization in
+            // software (≈1 core pinned at 99%). XWayland's NVIDIA GL
+            // stack is mature and lets WebKitGPUProcess spawn
+            // normally. The opt-in keeps the AMD/Intel+Wayland happy
+            // path unchanged for users who don't need the workaround.
+            cfg.force_x11 = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             // std.debug.print writes to stderr by default. Zig 0.16 removed
             // std.fs.File.stderr() in favor of std.Io.File.stderr() which

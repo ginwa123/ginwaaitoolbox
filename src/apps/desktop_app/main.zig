@@ -256,6 +256,16 @@ fn runWebview(
         .assets = c_assets.ptr,
         .asset_count = c_assets.len,
         .enable_developer_extras = cfg.enable_devtools,
+        // Linux-only opt-in via `--x11`: forces GDK_BACKEND=x11 so the
+        // window goes through XWayland. Workaround for the
+        // NVIDIA + Wayland stack where WebKitGPUProcess silently fails
+        // to spawn and the web-process falls back to software
+        // rasterization on its JS main thread (Linux 99% CPU bug,
+        // task_1787683960703_0, 2026-08-25). On macOS/Windows the
+        // applyLinuxGfxEnv path is skipped, so the value is harmless.
+        // .auto elsewhere (default — keeps the AMD/Intel+Wayland path
+        // unchanged for users who don't hit the symptom).
+        .gfx_preset = if (cfg.force_x11) .x11 else .auto,
     };
 
     std.log.info("Opening webview at {s}", .{url});

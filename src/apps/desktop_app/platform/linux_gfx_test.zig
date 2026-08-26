@@ -112,3 +112,76 @@ test "webview.Config exposes gfx_preset enum with auto default" {
         return error.GfxPresetEnumMissing;
     }
 }
+
+test "GfxPreset exposes an x11 variant that forces GDK_BACKEND=x11" {
+    // The Linux 99% CPU bug (task_1787683960703_0, 2026-08-25) was a
+    // WebKitGPUProcess silent failure on NVIDIA+Wayland. The fix is
+    // `GDK_BACKEND=x11` set BEFORE gtk_init; this regression guard
+    // locks in (a) the enum variant exists, (b) linux.zig's
+    // applyLinuxGfxEnv sets GDK_BACKEND=x11 when the preset is .x11,
+    // (c) the env var is set BEFORE gtk_init (else GDK ignores it),
+    // and (d) the user can still override GDK_BACKEND via their own
+    // environ (the helper must consult getenv first).
+    const allocator = testing.allocator;
+    const cfg_src = try readSource(allocator, CONFIG_PATH);
+    defer allocator.free(cfg_src);
+    const linux_src = try readSource(allocator, LINUX_PATH);
+    defer allocator.free(linux_src);
+
+    // (a) .x11 variant exists in the enum.
+    if (std.mem.indexOf(u8, cfg_src, ".x11 = 3") == null and
+        std.mem.indexOf(u8, cfg_src, ".x11,") == null)
+    {
+        std.debug.print(
+            "!! webview.zig GfxPreset missing .x11 variant — add it to the enum !!\n",
+            .{},
+        );
+        return error.X11GfxPresetMissing;
+    }
+
+    // (b) applyLinuxGfxEnv sets GDK_BACKEND=x11 in the .x11 branch.
+    if (std.mem.indexOf(u8, linux_src, "\"GDK_BACKEND\"") == null or
+        std.mem.indexOf(u8, linux_src, "\"x11\"") == null)
+    {
+        std.debug.print(
+            "!! linux.zig applyLinuxGfxEnv does not setenv GDK_BACKEND=x11 !!\n",
+            .{},
+        );
+        return error.GdkX11SetenvMissing;
+    }
+
+    // (c) GDK_BACKEND=x11 is set BEFORE gtk_init — GDK reads it once
+    // at init and ignores subsequent changes. ApplyLin's setenv calls
+    // happen in applyLinuxGfxEnv, which nalar_webview_create calls
+    // before gtk_init. Lock in the file-level ordering the same way
+    // the earlier WebKit pin tests do.
+    const gdk_setenv_site = std.mem.indexOf(u8, linux_src, "\"GDK_BACKEND\"") orelse {
+        return error.GdkX11SetenvMissing;
+    };
+    const gtk_init_site = std.mem.indexOf(u8, linux_src, "gtk_init(null, null);") orelse {
+        std.debug.print("!! linux.zig lost its gtk_init call !!\n", .{});
+        return error.GtkInitMissing;
+    };
+    if (gdk_setenv_site > gtk_init_site) {
+        std.debug.print(
+            "!! GDK_BACKEND=x11 set AFTER gtk_init (offset {d} > {d}) — GDK would ignore it !!\n",
+            .{ gdk_setenv_site, gtk_init_site },
+        );
+        return error.GdkX11AfterGtkInit;
+    }
+
+    // (d) User override honored: must consult getenv before setenv.
+    // Substring-check is sufficient (the existing `gfx env application
+    // respects existing user environment` test already guards the
+    // .auto/.compat/.debug paths; .x11 goes through the same helper
+    // and reuses the same getenv-then-setenv pattern).
+    if (std.mem.indexOf(u8, linux_src, "\"GDK_BACKEND\"").? <
+        std.mem.indexOf(u8, linux_src, "getenv(\"GDK_BACKEND\")").?)
+    {
+        std.debug.print(
+            "!! GDK_BACKEND setenv appears before its getenv guard !!\n",
+            .{},
+        );
+        return error.GdkX11NoOverrideCheck;
+    }
+}

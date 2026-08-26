@@ -286,6 +286,17 @@ const NalarWebview = struct {
 ///             machines that render black/glitched windows with DMABUF
 ///             (older NVIDIA, some virtualized GPUs)
 ///   .debug  — auto behavior plus WEBKIT_DEBUG=Compositing on stderr
+///   .x11    — auto behavior plus force GDK_BACKEND=x11 so GDK uses
+///             XWayland instead of Wayland. Workaround for the
+///             NVIDIA + Wayland stack where WebKitGPUProcess silently
+///             fails to start (the wl_drm / linux-dmabuf-feedback
+///             protocol path is broken on Hyprland + GeForce today),
+///             which leaves the web-process to rasterize every frame
+///             in software on its JS main thread — pinning one CPU
+///             core at ~99%. XWayland uses NVIDIA's mature X11 GL
+///             path and lets WebKitGPUProcess spawn normally. Opt-in
+///             via `--x11` on the CLI; default path stays unchanged
+///             for users on the working AMD/Intel+Wayland stack.
 fn applyLinuxGfxEnv(preset: webview.GfxPreset) void {
     // setenv(3)/getenv(3) via libc. overwrite=true is safe because we only
     // reach each setenv call after confirming the var is absent from
@@ -295,13 +306,15 @@ fn applyLinuxGfxEnv(preset: webview.GfxPreset) void {
     };
 
     switch (preset) {
-        .auto, .debug => {
+        .auto, .debug, .x11 => {
             // Acceleration-friendly defaults. WEBKIT_DISABLE_DMABUF_RENDERER=1
             // sounds backwards but is the community-verified fix for janky
             // scrolling on NVIDIA + mixed-GPU setups (the DMABUF path has
             // had long-standing frame-pacing bugs there); FORCE_COMPOSITING
             // keeps WebKit on the accelerated compositor instead of the
-            // legacy non-composited blit path.
+            // legacy non-composited blit path. .x11 also includes these
+            // — the DMABUF-disable + force-compositing combo is just as
+            // useful under XWayland as under native Wayland.
             if (std.c.getenv("WEBKIT_DISABLE_DMABUF_RENDERER") == null) {
                 _ = c.setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", 1);
             }
@@ -324,6 +337,18 @@ fn applyLinuxGfxEnv(preset: webview.GfxPreset) void {
     if (preset == .debug) {
         if (std.c.getenv("WEBKIT_DEBUG") == null) {
             _ = c.setenv("WEBKIT_DEBUG", "Compositing", 1);
+        }
+    }
+
+    // .x11: pin GDK_BACKEND=x11 so GTK/XWayland backs the window
+    // instead of GDK/Wayland. MUST run before gtk_init — GDK reads
+    // GDK_BACKEND exactly once at init and ignores subsequent
+    // changes. Honor any value already in environ (the user can
+    // still force .wayland by exporting GDK_BACKEND=wayland before
+    // launch; this branch only fires when no value is set).
+    if (preset == .x11) {
+        if (std.c.getenv("GDK_BACKEND") == null) {
+            _ = c.setenv("GDK_BACKEND", "x11", 1);
         }
     }
 }
