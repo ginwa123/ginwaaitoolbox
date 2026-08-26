@@ -209,19 +209,31 @@ def test_create_session_with_description_inserts_user_role_row(
     assert msg.get("session_id") == task_id
 
 
-# ─── Test 2: create_session EMPTY description skips the insert ─────────────
+# ─── Test 2: create_session EMPTY description STILL inserts a user row ─────
 
 
-def test_create_session_with_empty_description_skips_user_message(
+def test_create_session_with_empty_description_inserts_user_message(
     llm_harness: FunctionalHarness,
 ) -> None:
-    """Title-only tasks (description == '') must NOT get a stray
-    'name\n\n' bubble — the chatview should land on a clean empty
-    session so the user types the first message.
+    """Regression for the empty-description bug (task_1787757006639_2).
 
-    The fix has an explicit `if (description.len > 0)` guard. This
-    test exercises that guard from the wire: a title-only task with
-    no description produces zero user-role llm_history rows.
+    Title-only tasks (description == '' AND no image_urls) MUST still
+    get a user-role llm_history row, otherwise the chatview lands on
+    a blank session showing "How can I help you?" (the user has no
+    record that they ever created the task and no way to recover
+    the title from the chat).
+
+    Pre-fix, the handler gated the INSERT behind
+    `description.len > 0 or image_urls_wire.len > 0` — when both were
+    empty, NO row was inserted and the chatview rendered the empty
+    state. Post-fix the gate is removed and the INSERT always fires
+    with content = `name + "\n\n" + description` (empty description
+    → content = `name + "\n\n"`, with the trailing separator).
+
+    This test replays the EXACT wire the dialog sends when the user
+    types a title and no description and clicks "Create task"
+    (mode='create_session'). The frontend's KanbanView.handleCreateTaskSave
+    forwards an empty description verbatim (no trim, no fallback).
     """
     ws_id = _create_workspace(llm_harness)
     kanban_id = _create_kanban(llm_harness, ws_id)
@@ -236,18 +248,37 @@ def test_create_session_with_empty_description_skips_user_message(
     )
     task_id = resp["task"]["id"]
 
-    # No user message in the chat — clean state for the user to type.
+    # Exactly ONE user-role row — the INSERT must fire even with
+    # empty description (the empty gate is the bug being fixed).
     user_msgs = _user_role_messages(llm_harness, task_id)
-    assert len(user_msgs) == 0, (
-        f"title-only task should have ZERO user-role rows (gate on "
-        f"description.len > 0), got {len(user_msgs)}: {user_msgs!r}"
+    assert len(user_msgs) == 1, (
+        f"title-only task must get EXACTLY 1 user-role row (the "
+        f"`description.len > 0` gate is the bug), got {len(user_msgs)}: "
+        f"{user_msgs!r}"
     )
 
-    # And no assistant/tool rows either — nothing has run yet.
-    all_msgs = _get_session_messages(llm_harness, task_id)
-    assert len(all_msgs) == 0, (
-        f"empty-description create_session should produce NO llm_history "
-        f"rows at all, got {len(all_msgs)}: {all_msgs!r}"
+    # Content shape: name + "\n\n" + description. Empty description
+    # means the literal ends in "\n\n". This matches the wire shape
+    # create_and_run already uses, so a user who switches from
+    # "Create task" to "Create task & run agent" sees the same first
+    # user bubble.
+    expected_content = "Title-only task\n\n"
+    actual_content = user_msgs[0].get("content")
+    assert actual_content == expected_content, (
+        f"title-only user-role row should have content = name + '\\n\\n':\n"
+        f"  expected: {expected_content!r}\n"
+        f"  actual:   {actual_content!r}"
+    )
+
+    # Standard wire fields still apply (role='user', session_id matches
+    # task.id per the task.id == session.id convention).
+    msg = user_msgs[0]
+    assert msg.get("role") == "user", (
+        f"inserted row must have role='user', got {msg.get('role')!r}"
+    )
+    assert msg.get("session_id") == task_id, (
+        f"inserted row must have session_id == task.id, got "
+        f"{msg.get('session_id')!r} vs task.id={task_id!r}"
     )
 
 
