@@ -38,7 +38,7 @@ type StreamSnapshot = {
 
 const SID = 'sess_resume'
 
-function makeHandler(snapshot: StreamSnapshot) {
+function makeHandler(_snapshot: StreamSnapshot) {
   const streamingContent = ref('')
   const isStreaming = ref(false)
   const messages = ref<StreamMsg[]>([])
