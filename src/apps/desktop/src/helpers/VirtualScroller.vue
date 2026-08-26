@@ -134,6 +134,31 @@ const props = withDefaults(
      * appended past the visible area.
      */
     loadMoreAtTop?: boolean
+    /**
+     * Stable identity function for items (2026-08-26 stable-keys fix).
+     * Returns a string that uniquely identifies the item's CONTENT —
+     * e.g. a DB id — and survives position changes in the array.
+     *
+     * WHY: the height cache was keyed by ARRAY INDEX. ChatView renders
+     * `messageGroups`, a computed that re-merges/re-filters on every
+     * SSE event — so a group count change (thinking-only row dropped,
+     * tool row arriving, streaming row swapped) SHIFTS every later
+     * index. The stored height for index k then described a different
+     * row: a 40px tool-card height landed on a 2000px markdown message
+     * and vice versa. The sizer became the sum of mismatched heights →
+     * wildly too tall → stick-to-bottom landed in blank space (the
+     * "sizer 16034px vs real content 13720px" DevTools evidence).
+     *
+     * With `itemKey`, heights are keyed by identity: a row keeps its
+     * own measured height wherever it moves. Index shifts become
+     * harmless. Also used as the v-for key so Vue reuses the correct
+     * DOM node per item (less re-render flicker during streaming).
+     *
+     * Default: `String(index)` — index-keyed, the historical behavior.
+     * Consumers with stable ids (ChatView: `group.messages[0].id`)
+     * SHOULD pass this prop.
+     */
+    itemKey?: (item: T, index: number) => string
   }>(),
   {
     totalCount: 0,
@@ -142,6 +167,7 @@ const props = withDefaults(
     loadMoreThreshold: 200,
     loadMoreThresholdRatio: 0.5,
     loadMoreAtTop: false,
+    itemKey: undefined,
   },
 )
 
@@ -225,10 +251,22 @@ const containerRef = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const lastScrollTop = ref(0)
 const containerHeight = ref(0)
-const itemHeights = ref<Map<number, number>>(new Map())
+// Heights keyed by STABLE ID (itemKey(item)), not array index — see the
+// itemKey prop JSDoc for the index-shift corruption this prevents.
+const itemHeights = ref<Map<string, number>>(new Map())
 const accumulatedHeights = ref<number[]>([0])
 const isPreservingScroll = ref(false)
 const forceRenderUpTo = ref(-1)
+
+/**
+ * Stable identity for the item at `index`. Falls back to the index
+ * string when no `itemKey` prop is supplied (historical behavior).
+ */
+const keyOf = (index: number): string => {
+  const item = props.items[index]
+  if (item === undefined) return `#${index}`
+  return props.itemKey ? props.itemKey(item, index) : `#${index}`
+}
 
 // ── Programmatic-scroll tracking (2026-08-25 append-gap fix) ────────────────
 //
@@ -308,7 +346,7 @@ let maxMeasuredIndex = -1
  *   content (no scrollable gap below the last message).
  */
 const estimateHeight = (index: number): number => {
-  const stored = itemHeights.value.get(index)
+  const stored = itemHeights.value.get(keyOf(index))
   if (stored !== undefined) return stored
   return index <= maxMeasuredIndex
     ? heightEstimator.estimate()
@@ -602,7 +640,7 @@ const measureItems = () => {
   // computed would attribute old children's heights to the wrong indices.
   // The attribute is stamped by the renderer at mount time and always
   // matches the node it decorates.
-  const pendingWrites: Array<[number, number]> = []
+  const pendingWrites: Array<[string, number, number]> = []
   for (let i = 0; i < children.length; i++) {
     const el = children[i] as HTMLElement
     const realIndex = visibleRange.value.start + i
@@ -612,7 +650,11 @@ const measureItems = () => {
       // sub-pixel layout re-quantize differently between our prefix sums
       // and the browser's layout → ±1px spacer drift → micro-jitter.
       const heightPx = quantizePx(h)
-      const prev = itemHeights.value.get(realIndex)
+      // Stable-key lookup: the height belongs to the ITEM (via its
+      // itemKey), not the array slot — immune to index shifts from
+      // messageGroups regrouping (the sizer-corruption bug).
+      const key = keyOf(realIndex)
+      const prev = itemHeights.value.get(key)
       // First measurement (prev === undefined) always writes. On
       // subsequent measurements, skip unless the delta exceeds the
       // dead-band. Without this, 1-2 px sub-pixel noise from the
@@ -621,20 +663,20 @@ const measureItems = () => {
       // symptom in docs/plans/2026-06-10-scroll-ratcheting-fix.md.
       if (prev === undefined || Math.abs(heightPx - prev) > HYSTERESIS_PX) {
         pendingMeasurements.push({ index: realIndex, newHeight: heightPx, oldHeight: prev })
-        pendingWrites.push([realIndex, heightPx])
+        pendingWrites.push([key, heightPx, realIndex])
         changed = true
       }
     }
   }
   if (!changed) return
-  for (const [index, heightPx] of pendingWrites) {
-    itemHeights.value.set(index, heightPx)
+  for (const [key, heightPx, realIndex] of pendingWrites) {
+    itemHeights.value.set(key, heightPx)
     // Feed the adaptive estimator so future unmeasured items inherit a
     // realistic median instead of the static prop guess.
     heightEstimator.observe(heightPx)
     // Track the measurement frontier: the learned median is only
     // trusted for items at or before this index (see estimateHeight).
-    if (index > maxMeasuredIndex) maxMeasuredIndex = index
+    if (realIndex > maxMeasuredIndex) maxMeasuredIndex = realIndex
   }
   updateAccumulatedHeights()
 
@@ -820,22 +862,15 @@ const beginPreserve = (newItemsCount: number) => {
   isPreservingScroll.value = true
   _pendingNewItemsCount = newItemsCount
 
-  // ── Shift index-keyed heights by the prepend count ──────────────────
-  //
-  // Heights are keyed by ARRAY INDEX. A prepend shifts every item's
-  // index by +N, so without this remap every stored height would be
-  // attributed to the WRONG item (old item k's height lands on the new
-  // item k, which is a different message). Over many loadMore prepends
-  // the sizer drifts hundreds/thousands of px away from the real
-  // content — the "gap below the last message" bug in long chats.
-  // Shifting here (before the items array is mutated) keeps every
-  // stored height attached to its own item.
-  if (newItemsCount > 0 && itemHeights.value.size > 0) {
-    const shifted = new Map<number, number>()
-    for (const [index, height] of itemHeights.value) {
-      shifted.set(index + newItemsCount, height)
-    }
-    itemHeights.value = shifted
+  // NOTE (2026-08-26 stable-keys fix): the old index-shift remap
+  // (rebuilding the Map with every key +N) is GONE. Heights are keyed
+  // by stable itemKey, so a prepend needs no remap — each item keeps
+  // its own height wherever it moves. maxMeasuredIndex still advances
+  // (the frontier is index-based: the prepended items are new tail
+  // relative to the estimator's trust boundary... actually they are
+  // NEW items at the FRONT, so the frontier advances by N to keep
+  // pointing at the same physical item).
+  if (newItemsCount > 0) {
     maxMeasuredIndex += newItemsCount
     updateAccumulatedHeights()
   }
@@ -884,9 +919,9 @@ const endPreserve = async () => {
     scrollTop.value = newST
     lastScrollTop.value = newST
   } else {
-    // Fallback: sum measured heights of new items
+    // Fallback: sum measured heights of new items (key-based lookup)
     let sum = 0
-    for (let i = 0; i < n; i++) sum += itemHeights.value.get(i) ?? props.defaultItemHeight
+    for (let i = 0; i < n; i++) sum += itemHeights.value.get(keyOf(i)) ?? props.defaultItemHeight
     console.log('[endPreserve] strategy B — sum:', sum)
     markProgrammaticScroll()
     containerRef.value!.scrollTop = sum
@@ -1007,7 +1042,11 @@ defineExpose({
         class="virtual-scroller-content"
         :style="{ transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)` }"
       >
-        <div v-for="{ item, index } in visibleItems" :key="index" :data-vs-index="index">
+        <!-- :key is the STABLE itemKey (not the index): Vue reuses the
+             correct DOM node per item across index shifts (regrouping,
+             prepends) — less re-render flicker, and offsetHeight mocks
+             / real heights travel with their item. -->
+        <div v-for="{ item, index } in visibleItems" :key="keyOf(index)" :data-vs-index="index">
           <slot :item="item" :index="index" />
         </div>
       </div>

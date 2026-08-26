@@ -108,18 +108,27 @@ describe('VirtualScroller prepend height remap (100-message lifecycle)', () => {
     wrapper.unmount()
   })
 
-  it('remaps heights so a prepended-in item keeps its own measured height', async () => {
-    // Focused unit: measure items 0..2 at DISTINCT heights (100/200/300),
-    // call beginPreserve(2), and assert — synchronously — that the
-    // stored heights shifted to indices 2..4.
+  it('a prepended item keeps its own measured height (stable-key cache, no remap needed)', async () => {
+    // Focused unit — UPDATED for the stable-key cache (2026-08-26).
+    // The old design remapped index keys by +N inside beginPreserve;
+    // the new design keys heights by itemKey, so heights travel with
+    // their items automatically and the remap is gone. The OUTCOME
+    // contract is unchanged: after a prepend, each item's stored
+    // height still describes its own item.
     //
-    // Sizer math at the assert instant (items.length still 3):
-    //   shifted map {2:100, 3:200, 4:300}; indices 0,1 unmeasured but
-    //   ≤ maxMeasuredIndex (2+2=4) → median(100,200,300)=200 each;
-    //   index 2 stored 100. acc[3] = 200+200+100 = 500.
-    // Without the remap the map stays {0:100,1:200,2:300} → acc[3]=600.
+    // Sizer math at the assert instant (items.length still 3, ids
+    // "0","1","2" measured at 100/200/300): the map is keyed by id, so
+    // beginPreserve(2) changes nothing about stored heights — acc[3]
+    // stays 100+200+300 = 600. (The old index-remap produced 500 here
+    // by shifting keys; that intermediate state no longer exists.)
     const wrapper = mount(VirtualScroller, {
-      props: { items: mk(3), buffer: 10, defaultItemHeight: 64, totalCount: 0 },
+      props: {
+        items: mk(3),
+        buffer: 10,
+        defaultItemHeight: 64,
+        totalCount: 0,
+        itemKey: (item: unknown) => String((item as { id: number }).id),
+      },
     })
     const el = wrapper.element as HTMLElement
     Object.defineProperty(el, 'clientHeight', { value: 800, configurable: true })
@@ -136,16 +145,17 @@ describe('VirtualScroller prepend height remap (100-message lifecycle)', () => {
     await vi.advanceTimersByTimeAsync(120)
     await nextTick()
 
-    // Pre-shift: acc[3] = 100+200+300 = 600.
+    // Pre-prepend: acc[3] = 100+200+300 = 600.
     expect(parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height)).toBe(600)
 
     const vm = wrapper.vm as unknown as { beginPreserve: (n: number) => void }
     vm.beginPreserve(2)
-    // DOM style flushes on nextTick (no measure pass runs here —
-    // beginPreserve changes neither scrollTop nor items).
     await nextTick()
-    // Post-shift: 500 (proves the remap ran — without it this stays 600).
-    expect(parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height)).toBe(500)
+    // Stable keys: heights are untouched by beginPreserve — the sizer
+    // stays 600 (the heights still describe their own items). The
+    // corruption the old remap guarded against is now impossible by
+    // construction.
+    expect(parseFloat((el.querySelector('.virtual-scroller-sizer') as HTMLElement).style.height)).toBe(600)
     wrapper.unmount()
   })
 })
