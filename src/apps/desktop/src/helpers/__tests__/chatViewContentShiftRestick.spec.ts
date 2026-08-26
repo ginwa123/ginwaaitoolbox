@@ -362,9 +362,14 @@ describe('ChatView onContentShift restick (extracted)', () => {
       /const wasAtBottom = isAtBottom\.value[\s\S]*beginPreserve/,
     )
 
-    // 2. Post-preserve re-stick guarded by the snapshot.
+    // 2. Post-preserve re-stick guarded by the snapshot. UPDATED
+    // (2026-08-26 real-bottom fix): the inline `scrollHeight -
+    // clientHeight` computation was replaced by a delegation to the
+    // scroller's scrollToBottom, which targets the REAL rendered
+    // content bottom when the window shows the last item (a residual
+    // sizer overshoot can no longer land the stick in blank space).
     expect(branch).toMatch(
-      /if \(wasAtBottom\)[\s\S]*scrollHeight - [\s\S]*clientHeight/,
+      /if \(wasAtBottom\)[\s\S]*scrollToBottom\('auto'\)/,
     )
   })
 

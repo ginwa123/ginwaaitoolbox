@@ -248,6 +248,8 @@ const emit = defineEmits<{
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
+// The content div is measured via the onContentRef callback (see the
+// sizer-clamp comment near updateAccumulatedHeights) — no ref needed.
 const scrollTop = ref(0)
 const lastScrollTop = ref(0)
 const containerHeight = ref(0)
@@ -431,6 +433,51 @@ const updateAccumulatedHeights = () => {
   }
   accumulatedHeights.value = h
 }
+
+// ── Render-level sizer clamp (2026-08-26 blank-viewport fix) ─────────────────
+//
+// The model total (Σ stored/estimated heights) can overshoot the real
+// content — the browser then lets the user scroll into the phantom
+// region below the last message (the "big gap / blank viewport"
+// symptom, sizer 29389px vs real ~13720px). This computed clamps the
+// RENDERED sizer height to the real content bottom whenever the
+// rendered window includes the LAST item (every tail item is in the
+// DOM, so the real bottom is directly measurable).
+//
+// CRITICAL SAFETY PROPERTY: this NEVER writes the height model — it
+// only clamps the style binding. The model stays the source of truth
+// for positioning (topSpacer/visibleRange); the clamp only trims the
+// scrollable void. Because it is a pure function of reactive state
+// (no DOM writes, no scrollTop writes), it CANNOT oscillate — the
+// failure mode that killed the earlier tail clamp.
+//
+// `realContentHeight` is measured in the template ref callback below
+// (after each render, before paint) and stored non-reactively; the
+// reactive trigger is `renderTick`, bumped by that callback.
+const modelTotal = computed(() => accumulatedHeights.value[props.items.length] ?? 0)
+let realContentHeight = 0
+const renderTick = ref(0)
+// Ref callback: runs after every commit of the content div (mount +
+// each patch that reuses the element). Measure the real rendered
+// height and bump the tick so sizerHeight re-evaluates. Guarded
+// against no-op bumps (same height → no reactive write → no loop).
+const onContentRef = (el: unknown) => {
+  const h = el ? (el as HTMLElement).offsetHeight : 0
+  if (h > 0 && h !== realContentHeight) {
+    realContentHeight = h
+    renderTick.value++
+  }
+}
+const sizerHeight = computed(() => {
+  void renderTick.value // re-evaluate after each measured render
+  const range = visibleRange.value
+  if (range.end < props.items.length || realContentHeight <= 0) return modelTotal.value
+  const realTotal = range.topSpacer + realContentHeight
+  // Only clamp overshoot; never inflate past the model (undershoot is
+  // handled by the normal measure path — content grows into it).
+  const overshoot = modelTotal.value - realTotal
+  return overshoot > HYSTERESIS_PX ? realTotal : modelTotal.value
+})
 
 // CRITICAL: `{ immediate: true }` is required here. Without it,
 // `updateAccumulatedHeights` only runs when `props.items.length`
@@ -942,6 +989,38 @@ const scrollToTop = (behavior: ScrollBehavior = 'auto') =>
   containerRef.value?.scrollTo({ top: 0, behavior })
 const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return
+  // ── Real-bottom target (2026-08-26 blank-viewport fix) ───────────────
+  //
+  // The sizer height is a MODEL number (Σ stored/estimated heights) and
+  // can overshoot the real content — stick-to-bottom computed from it
+  // (scrollHeight - clientHeight) landed PAST the last row, in the
+  // phantom region: the user's fully-blank-viewport screenshots
+  // (sizer 29389px, window translated to 27971px, nothing visible).
+  //
+  // When the rendered window includes the LAST item, the real content
+  // bottom is directly measurable: topSpacer + content.offsetHeight
+  // (the content div is a flex column holding exactly the rendered
+  // window). Targeting that instead of the model total guarantees the
+  // last message is on screen — regardless of any residual model
+  // overshoot. READ-ONLY: no sizer writes, no feedback loop (the tail
+  // clamp that oscillated was a writer; this is a reader).
+  const range = visibleRange.value
+  const content = containerRef.value.querySelector('.virtual-scroller-content')
+  const contentH = content ? (content as HTMLElement).offsetHeight : 0
+  // Guard: a 0-height content div means layout hasn't settled (jsdom,
+  // mid-frame) — trusting it would stick to the TOP. Fall through to
+  // the model path instead.
+  if (range.end >= props.items.length && contentH > 0) {
+    const realBottom = range.topSpacer + contentH
+    const target = Math.max(0, realBottom - containerHeight.value)
+    // Only override when the model actually overshoots; otherwise the
+    // plain scrollHeight path is already correct.
+    const modelBottom = containerRef.value.scrollHeight - containerHeight.value
+    if (modelBottom - target > HYSTERESIS_PX) {
+      containerRef.value.scrollTo({ top: target, behavior })
+      return
+    }
+  }
   containerRef.value.scrollTo({
     top: Math.max(0, containerRef.value.scrollHeight - containerHeight.value),
     behavior,
@@ -1033,8 +1112,9 @@ defineExpose({
       height to draw a scrollbar and clamp scrollTop); the transform puts
       the visible window at its exact offset within that height.
     -->
-    <div class="virtual-scroller-sizer" :style="{ height: (accumulatedHeights[items.length] ?? 0) + 'px' }">
+    <div class="virtual-scroller-sizer" :style="{ height: sizerHeight + 'px' }">
       <div
+        :ref="onContentRef"
         class="virtual-scroller-content"
         :style="{ transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)` }"
       >
