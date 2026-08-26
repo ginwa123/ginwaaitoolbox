@@ -51,20 +51,6 @@ function scroll(el: HTMLElement, top: number) {
   el.dispatchEvent(new Event('scroll'))
 }
 
-function setChildHeights(el: HTMLElement, heightById: (id: string) => number) {
-  const content = el.querySelector('.virtual-scroller-content')
-  if (!content) throw new Error('.virtual-scroller-content not found')
-  for (const child of Array.from(content.children)) {
-    const idx = Number((child as HTMLElement).getAttribute('data-vs-index'))
-    // The item's id is recoverable from the v-for key... but the key
-    // attribute isn't exposed as a DOM attribute. Instead the test
-    // relies on items being rendered in index order and the caller
-    // knowing the items array. We pass ids via a parallel array.
-    void idx
-  }
-  return content
-}
-
 function sizerTotal(el: HTMLElement): number {
   const sizer = el.querySelector('.virtual-scroller-sizer') as HTMLElement
   return parseFloat(sizer.style.height)

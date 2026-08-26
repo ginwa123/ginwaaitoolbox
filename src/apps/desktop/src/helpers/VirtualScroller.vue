@@ -248,9 +248,8 @@ const emit = defineEmits<{
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
-// Content-div ref: its ref callback measures the REAL rendered height
-// after every render (feeds the sizer clamp — see sizerHeight above).
-const contentRef = ref<HTMLElement | null>(null)
+// The content div is measured via the onContentRef callback (see the
+// sizer-clamp comment near updateAccumulatedHeights) — no ref needed.
 const scrollTop = ref(0)
 const lastScrollTop = ref(0)
 const containerHeight = ref(0)
