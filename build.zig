@@ -1204,50 +1204,91 @@ pub fn build(b: *std.Build) void {
     // Switch kept here so the pattern is validated by the Chunk 1 build.
     switch (target.result.os.tag) {
         .linux => {
-            // Chunk 5: gtk-3, webkit2gtk-4.1, soup-3.0
+            // Linux webview: vendored webview/webview library
+            // (vendor/webview/webview.{h,cc}, upstream 0.12.0).
             //
-            // The implementation in src/apps/desktop_app/platform/linux.zig
-            // uses manual `extern "c"` declarations (no @cImport) because
-            // @cImport's parser chokes on GLib's `_Pragma` constructs inside
-            // `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` (used by `G_DECLARE_FINAL_TYPE`
-            // throughout soup/webkit headers). The C shim
-            // platform/webview_linux.c is compiled with cc and pulls in the
-            // GTK/WebKit headers — cc handles _Pragma correctly. The Zig
-            // extern declarations trust the signatures and link against
-            // libwebkit2gtk-4.1 / libgtk-3 / libsoup-3.0 / libglib-2.0.
+            // webview.cc is a one-line TU that includes webview.h with
+            // WEBVIEW_IMPLEMENTATION semantics — the whole engine
+            // (GTK3 + WebKitGTK 4.1) lives in the header. Compiled here
+            // with zig c++ (C++11; the header uses _Pragma-heavy GLib
+            // headers which zig c++ handles fine, unlike zig's @cImport).
+            //
+            // The library applies its own WebKit DMA-BUF/NVIDIA
+            // workaround (apply_webkit_dmabuf_workaround in webview.h),
+            // enables javascript_can_access_clipboard, and enables
+            // developer extras when webview_create(debug=1) — all the
+            // behaviors our old hand-rolled linux.zig provided.
             //
             // Library search path: with glibc 2.38 target, the linker's
             // default search path doesn't include /usr/lib in some contexts.
-            // Add it explicitly so `linkSystemLibrary` finds the SO files
-            // (otherwise we get "unable to find dynamic system library
-            // 'webkit2gtk-4.1' using strategy 'paths_first'. searched paths: none").
+            // Add it explicitly so `linkSystemLibrary` finds the SO files.
             // Note: don't add `/usr/lib/x86_64-linux-gnu` — that's a
             // Debian/Ubuntu multi-arch path that doesn't exist on Arch /
             // Fedora, and Zig treats a missing library dir as a fatal error.
-            // /usr/lib alone catches both layouts (Debian symlinks .so files
-            // at /usr/lib too).
             desktop_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             desktop_exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
             desktop_exe.root_module.linkSystemLibrary("gtk-3", .{});
             desktop_exe.root_module.linkSystemLibrary("soup-3.0", .{});
             desktop_exe.root_module.linkSystemLibrary("glib-2.0", .{});
             desktop_exe.root_module.linkSystemLibrary("javascriptcoregtk-4.1", .{});
-            // C source file — compiled with cc, which handles the GTK/
-            // WebKit headers (including _Pragma) correctly. The method
-            // lives on *Build.Module in Zig 0.16 (not on *Build.Step.Compile
-            // like in older versions).
+            // C++ runtime for webview.o (operator new, __cxa_begin_catch,
+            // ...). link_libcpp pulls in zig's bundled libc++/libc++abi.
+            desktop_exe.root_module.link_libcpp = true;
+            // C++ source — compiled with zig c++ (link_libcpp is pulled in
+            // automatically for C++ source files). Include path points at
+            // the vendored header dir; WEBVIEW_STATIC keeps all symbols
+            // local to this binary (no libwebview.so dependency).
             desktop_exe.root_module.addCSourceFile(.{
-                .file = b.path("src/apps/desktop_app/platform/webview_linux.c"),
+                .file = b.path("vendor/webview/webview.cc"),
                 .flags = &.{
-                    "-I/usr/include/webkitgtk-4.1",
-                    "-I/usr/include/gtk-3.0",
-                    "-I/usr/include/pango-1.0",
-                    "-I/usr/include/cairo",
-                    "-I/usr/include/gdk-pixbuf-2.0",
-                    "-I/usr/include/atk-1.0",
-                    "-I/usr/include/libsoup-3.0",
-                    "-I/usr/include/glib-2.0",
-                    "-I/usr/lib/glib-2.0/include",
+                    "-std=c++11",
+                    "-DWEBVIEW_STATIC",
+                    "-DWEBVIEW_GTK",
+                    "-Ivendor/webview",
+                    // Arch's zig package ships libc++ headers WITHOUT the
+                    // generated __config_site header, so two manual flags
+                    // are required when compiling C++ through zig build-exe:
+                    //   1. -I the bundled libc++ include dir (without it,
+                    //      <algorithm> etc. are not found at all)
+                    //   2. -D_LIBCPP_HARDENING_MODE=... (otherwise
+                    //      libc++'s __config errors out demanding the
+                    //      config-time definition __config_site would
+                    //      normally provide)
+                    "-I/usr/lib/zig/libcxx/include",
+                    "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_NONE",
+                    // System C headers MUST come via -isystem (not -I) so
+                    // they sort AFTER zig's bundled libc++ headers — with
+                    // plain -I/usr/include, clang's <cerrno> wrapper finds
+                    // glibc's errno.h first and errors with "tried
+                    // including <errno.h> but didn't find libc++'s
+                    // <errno.h> header".
+                    "-isystem/usr/include",
+                    // Full pkg-config cflags for webkit2gtk-4.1 (zig
+                    // c++ is stricter about transitive includes than
+                    // the system cc was for the old C shim — e.g.
+                    // pango's pango-coverage.h includes <hb.h> from
+                    // the harfbuzz include dir, and gdkx.h includes
+                    // <X11/Xlib.h>).
+                    "-isystem/usr/include/webkitgtk-4.1",
+                    "-isystem/usr/include/gtk-3.0",
+                    "-isystem/usr/include/pango-1.0",
+                    "-isystem/usr/include/cloudproviders",
+                    "-isystem/usr/include/cairo",
+                    "-isystem/usr/include/gdk-pixbuf-2.0",
+                    "-isystem/usr/include/at-spi2-atk/2.0",
+                    "-isystem/usr/include/at-spi-2.0",
+                    "-isystem/usr/include/atk-1.0",
+                    "-isystem/usr/include/dbus-1.0",
+                    "-isystem/usr/lib/dbus-1.0/include",
+                    "-isystem/usr/include/fribidi",
+                    "-isystem/usr/include/pixman-1",
+                    "-isystem/usr/include/harfbuzz",
+                    "-isystem/usr/include/freetype2",
+                    "-isystem/usr/include/libpng16",
+                    "-isystem/usr/include/gio-unix-2.0",
+                    "-isystem/usr/include/libsoup-3.0",
+                    "-isystem/usr/include/glib-2.0",
+                    "-isystem/usr/lib/glib-2.0/include",
                 },
             });
         },
