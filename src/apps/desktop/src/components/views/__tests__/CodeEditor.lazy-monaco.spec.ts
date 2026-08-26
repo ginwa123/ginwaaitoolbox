@@ -154,14 +154,7 @@ describe('CodeEditor.vue — lazy monaco-editor load', () => {
     //   import { editor } from 'monaco-editor'
     //   import 'monaco-editor'                       (side-effect import)
     const staticImport = /^\s*import\s+[^;]*?from\s+['"]monaco-editor['"]/m
-    expect(
-      scriptBody,
-      'CodeEditor.vue must not statically import monaco-editor — ' +
-        'use `await import(\'monaco-editor\')` inside onMounted instead. ' +
-        'A top-level import forces Vite to ship all 30+ Monaco language ' +
-        'worker bundles (~96 MB) into the entry chunk, which WebKitGTK ' +
-        'then re-parses on every app start and pins one CPU core at 80–100%.',
-    ).not.toMatch(staticImport)
+    expect(scriptBody).not.toMatch(staticImport)
 
     // Belt-and-braces: also reject a bare side-effect import on its own
     // line. The regex above misses `import 'monaco-editor'` because the
@@ -210,11 +203,9 @@ describe('CodeEditor.vue — lazy monaco-editor load', () => {
     expect(bodyEnd).toBeGreaterThan(bodyOpen)
     const onMountedBody = src.slice(bodyOpen, bodyEnd + 1)
 
-    expect(
-      onMountedBody,
-      'CodeEditor.vue must load monaco-editor via dynamic import inside onMounted. ' +
-        'Found onMounted block but no `await import(\'monaco-editor\')` inside it.',
-    ).toMatch(/await\s+import\s*\([^)]*['"]monaco-editor['"][^)]*\)/)
+    expect(onMountedBody).toMatch(
+      /await\s+import\s*\([^)]*['"]monaco-editor['"][^)]*\)/,
+    )
   })
 
   it('does not pre-declare a typed monaco-editor ref at script scope', () => {
@@ -237,10 +228,6 @@ describe('CodeEditor.vue — lazy monaco-editor load', () => {
     // token in a top-level type annotation or const initializer.
     const strippedOfBodies = stripBodies(scriptBody)
 
-    expect(
-      strippedOfBodies,
-      'Top-level script must not reference monaco.* — type the editor ref with ' +
-        'unknown/any, then narrow inside onMounted after the dynamic import resolves.',
-    ).not.toMatch(/\bmonaco\./)
+    expect(strippedOfBodies).not.toMatch(/\bmonaco\./)
   })
 })
