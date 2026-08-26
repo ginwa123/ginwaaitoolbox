@@ -1336,25 +1336,25 @@ pub fn build(b: *std.Build) void {
             desktop_exe.root_module.linkFramework("WebKit", .{});
         },
         .windows => {
-            // Gate nalar-desktop's .cpp shim compile on having MSVC's C++
-            // standard-library headers. `wrl/client.h` (pulled in by the
-            // shim's `#include <wrl.h>`) starts with `#include <cstddef>`
-            // which is a C++ stdlib header — without MSVC's `include/`
-            // dir on the search path, the .cpp can't compile. On dev
-            // boxes without MSVC Build Tools installed, fall back to a
-            // minimal stub .cpp that exports the same 3 C ABI symbols
-            // (nalar_webview_create / _run / _destroy) as no-ops. This
-            // keeps `zig build nalar-desktop` working on a fresh Windows
-            // checkout that hasn't installed Visual Studio (CI installs
-            // MSVC via the bootstrapper; local dev boxes can skip it).
-            // Two gates for the real WebView2 shim:
-            //   1. An MSVC C++ toolchain must be installed (WRL pulls in
-            //      MSVC STL headers like <cstddef>).
-            //   2. ALL WebView2 NuGet files must sit next to the .cpp.
-            //      A partial extraction (WebView2.h without its
-            //      EventToken.h sibling) previously poisoned the CI
-            //      runner: the compile died deep inside Microsoft's
-            //      header. Fall back to the stub instead of failing.
+            // Windows webview: vendored webview/webview library (same as
+            // the Linux + macOS branches above). webview.h auto-selects
+            // its WebView2 backend on _WIN32 — no WEBVIEW_EDGE define
+            // needed. The old C++ shim (platform/windows/nalar_webview.cpp)
+            // implemented the old nalar_webview_* C ABI which main.zig
+            // no longer calls (webview-lib swap moved main.zig to
+            // webview_create/run directly). Its prerequisite gate
+            // (MSVC C++ stdlib + WebView2 NuGet) was a separate concern;
+            // for the vendored lib we still need MSVC's STL headers
+            // (wrl/client.h transitively pulls <cstddef>) and the
+            // WebView2 NuGet's headers (WebView2.h, EventToken.h).
+            //
+            // We compile vendor/webview/webview.cc with zig cc using
+            // MSVC's include dirs (resolved from VCToolsInstallDir).
+            // Two gates: the MSVC C++ stdlib must be available, AND
+            // the WebView2 NuGet headers must be staged next to the .cpp.
+            // If either is missing, fall back to a stub that exports
+            // the symbols as no-ops so `zig build nalar-desktop` still
+            // succeeds on dev boxes without MSVC + NuGet extraction.
             const use_real_webview = blk: {
                 if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
                 if (webview2MissingPrereq(b)) |missing| {
@@ -1371,25 +1371,7 @@ pub fn build(b: *std.Build) void {
             };
             if (use_real_webview) {
             //
-            // The C++ shim at platform/windows/nalar_webview.cpp implements
-            // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
-            // using Win32 (HWND/WndProc) + WebView2 (ICoreWebView2, etc.).
-            // We compile it with the host's MSVC clang via `addCSourceFile`
-            // and `/std:c++17 /EHsc` flags, then link the system libraries
-            // that Win32 + COM + WebView2 need at link time.
-            //
-            // Build-time prerequisite: the WebView2 NuGet package's headers
-            // (WebView2.h, WebView2Loader.h) must be extracted into the
-            // same directory as the .cpp. The NuGet DLL (WebView2Loader.dll)
-            // must ship alongside nalar-desktop.exe at runtime. The .cpp
-            // file documents this in its top comment; see also:
-            //   https://www.nuget.org/packages/Microsoft.Web.WebView2/
-            //
-            // Zig 0.16: `addCSourceFile` and `linkSystemLibrary` are both
-            // methods on `root_module` (not on the Compile step like in
-            // older versions) — see the Linux branch above for the matching
-            // addCSourceFile pattern.
-            // Compile nalar_webview.cpp manually with zig cc. We can't use
+            // Compile vendor/webview/webview.cc with zig cc. We can't use
             // `addCSourceFile` here because Zig 0.16's build-exe CLI
             // doesn't accept multiple flags after `-cflags` (each flag has
             // to be its own `-cflags <flag>`, and the second `-cflags`
@@ -1398,20 +1380,21 @@ pub fn build(b: *std.Build) void {
             // leading `/` makes them look like file paths). Switch to the
             // clang-style equivalents: `-std=c++17` and `-fcxx-exceptions`.
             //
-            // The .cpp needs C++17 (for WRL templates) and exception
-            // handling (for WebView2 COM callbacks). Compile to a .obj,
-            // then addObjectFile so the desktop_exe links it.
+            // The vendored library needs C++17 (for std::filesystem
+            // features in webview.h) and exception handling (for
+            // WebView2 COM callbacks). Compile to a .obj, then
+            // addObjectFile so the desktop_exe links it.
             //
             // CRITICAL: `zig cc` on Windows does NOT auto-pick up the MSVC
-            // include path. `wrl/client.h` (transitively included via
-            // `wrl.h` in the .cpp) starts with `#include <cstddef>` —
-            // without `-I` pointing at the MSVC `VC/Tools/MSVC/<ver>/include/`
-            // dir, the compile dies with `fatal error: 'cstddef' file not
-            // found`. Re-derive the path from `VCToolsInstallDir` (set by
+            // include path. WebView2.h transitively includes <wrl/client.h>
+            // which starts with `#include <cstddef>` — without `-isystem`
+            // pointing at the MSVC `VC/Tools/MSVC/<ver>/include/` dir, the
+            // compile dies with `fatal error: 'cstddef' file not found`.
+            // Re-derive the path from `VCToolsInstallDir` (set by
             // `vcvars64.bat`) with a fallback to the canonical install
             // locations — matching `hasMsvcCppStllib` above.
-            const cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview.cpp";
-            const cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview.obj";
+            const cpp_src = "vendor/webview/webview.cc";
+            const cpp_obj = "vendor/webview/webview.obj";
             const msvc_include = findMsvcInclude(b);
             // Build the arg list dynamically: skip any include dir that
             // failed to resolve. Emitting `-isystem ""` is a confusing
@@ -1441,11 +1424,9 @@ pub fn build(b: *std.Build) void {
             n += 1;
             cpp_args[n] = "-fcxx-exceptions";
             n += 1;
-            // -I src/apps/desktop_app: the shim includes the shared C ABI
-            // header via `#include "shared/webview_c.h"` (single-copy
-            // header dedup). The include path makes it resolve regardless
-            // of the compile cwd.
-            cpp_args[n] = "-Isrc/apps/desktop_app";
+            cpp_args[n] = "-DWEBVIEW_STATIC";
+            n += 1;
+            cpp_args[n] = "-Ivendor/webview";
             n += 1;
             for (candidate_dirs) |dir| {
                 if (dir.len == 0) continue;
@@ -1464,39 +1445,32 @@ pub fn build(b: *std.Build) void {
             cpp_compile.setCwd(b.path(""));
             desktop_exe.step.dependOn(&cpp_compile.step);
             desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
+            // Win32 / COM / WebView2 link deps (same as the old shim used).
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
             // Zig's MinGW (gnu) link line doesn't auto-pull kernel32.dll /
             // ws2_32.dll for raw `extern "kernel32"` / `extern "ws2_32"`
-            // decls in Zig code (it does for `addCSourceFile`'d C/C++ —
-            // those get the MSVC-style default libs). Add them explicitly
-            // so the Win32 externs in extraction.zig / subprocess.zig
-            // resolve at link time. Without these, lld-link reports
-            // "undefined symbol" for functions like
-            // `extGetFileAttributesW` and `ws_socket`.
+            // decls in Zig code. Add them explicitly so the Win32 externs
+            // in extraction.zig / subprocess.zig resolve at link time.
             desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
             desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
-            // WebView2's static-link import library (`WebView2Loader.lib`) is
-            // staged by the CI workflow at `src\apps\desktop_app\platform\windows\`
-            // next to the .cpp — same directory as `#pragma comment(lib,
-            // "WebView2Loader.lib")` would resolve it on MSVC. Zig's LLD linker
-            // doesn't auto-search that directory; `linkSystemLibrary("WebView2Loader")`
-            // translates to `-lWebView2Loader` which searches LIB paths only
-            // (default Windows LIB = MSVC install dirs + a few system dirs —
-            // NOT the source tree). Add the WebView2 dir as a library search
-            // path so LLD finds `WebView2Loader.lib` next to the .cpp. The
-            // runtime DLL (`WebView2Loader.dll`) is shipped alongside the
-            // .exe by `install-nalar-desktop.sh` — see the runtime comment
-            // in `nalar_webview.cpp:51`.
+            // WebView2Loader.lib lives next to nalar_webview.cpp in the
+            // old layout; webview.h includes <WebView2.h> from
+            // src/apps/desktop_app/platform/windows/ (NuGet-staged
+            // location). Add that dir to the include + library search
+            // paths so the compile finds the header and LLD finds the
+            // import library.
+            desktop_exe.root_module.addIncludePath(.{
+                .cwd_relative = "src/apps/desktop_app/platform/windows",
+            });
             desktop_exe.root_module.addLibraryPath(.{
                 .cwd_relative = "src/apps/desktop_app/platform/windows",
             });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
             } else {
                 // Dev-box fallback: no MSVC C++ stdlib available. Compile
-                // a minimal stub .cpp that exports the 3 C ABI symbols
-                // (nalar_webview_create / _run / _destroy) as no-ops.
-                // Without a real webview, nalar-desktop won't actually
+                // a minimal stub .cpp that exports the webview symbols as
+                // no-ops. Without a real webview, nalar-desktop won't actually
                 // display anything on these dev boxes — but the binary
                 // builds + links + the CLI args parser + the asset
                 // extraction smoke test all still work. CI's runner
@@ -1507,8 +1481,6 @@ pub fn build(b: *std.Build) void {
                     b.graph.zig_exe, "cc",
                     "-target", "x86_64-windows-gnu",
                     "-c",
-                    // -I for the shared webview_c.h include (header dedup)
-                    "-Isrc/apps/desktop_app",
                     "-o",  stub_cpp_obj,
                     stub_cpp_src,
                 });
