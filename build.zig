@@ -1418,6 +1418,15 @@ pub fn build(b: *std.Build) void {
             desktop_exe.root_module.link_libcpp = true;
             desktop_exe.root_module.linkFramework("Cocoa", .{});
             desktop_exe.root_module.linkFramework("WebKit", .{});
+            // AppKit: linked explicitly so `otool -L` shows AppKit.framework
+            // (the vendored webview/webview library fetches NSApplication
+            // / NSWindow via runtime objc_getClass + dlopen, so without
+            // this explicit link the framework only shows up transitively
+            // under the Cocoa umbrella and the CI smoke step's
+            // `otool -L | grep AppKit.framework` check fails). No runtime
+            // behavior change — AppKit is already loaded by the Cocoa
+            // umbrella at startup; this just forces a direct link entry.
+            desktop_exe.root_module.linkFramework("AppKit", .{});
         },
         .windows => {
             // Windows webview: vendored webview/webview library (same as
