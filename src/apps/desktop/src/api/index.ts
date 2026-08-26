@@ -2981,6 +2981,20 @@ export async function getQueuedMessages(sessionId: string): Promise<{
   )
 }
 
+// 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
+// in-flight stream snapshot. When the user closes/re-selects a chat
+// session mid-stream, ChatView drops its streaming-* placeholder; this
+// endpoint returns the backend's authoritative partial text so the
+// re-mounted view can resume seamlessly.
+export interface StreamSnapshot {
+  active: boolean
+  content: string
+}
+
+export async function getStreamSnapshot(sessionId: string): Promise<StreamSnapshot> {
+  return await apiFetch<StreamSnapshot>(`/llm/session/${sessionId}/stream`)
+}
+
 // Workers SSE event types
 export interface WorkerEvent {
   action: 'created' | 'updated' | 'deleted' | 'reordered'

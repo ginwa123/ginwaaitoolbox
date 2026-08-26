@@ -84,4 +84,7 @@ test {
     // per-thread struct. Drops of these regress user-visible
     // progress to "0 sub-agents".
     _ = @import("tools_exec_spawn_sub_agent.zig");
+    // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
+    // in-flight stream buffer registry + snapshot getter. Tests inline.
+    _ = @import("stream_snapshot.zig");
 }

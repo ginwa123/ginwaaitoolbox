@@ -27,6 +27,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/task_delete_test.zig");
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/tasks_get_test.zig");                // single-task GET endpoint (plan 2026-08-24-kanban-task-detail-single-fetch)
+    _ = @import("http_handlers/stream_get_test.zig");               // in-flight stream snapshot GET (task_1787673548905_0 stream-resume-on-reselect)
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
     _ = @import("http_handlers/task_create_description_test.zig");  // Migration 062 description in create path
