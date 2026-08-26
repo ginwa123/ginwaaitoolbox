@@ -995,15 +995,12 @@ jobs:
               || { echo "✗ $bin: not an arm64 Mach-O"; exit 1; }
           done
           # macOS uses Cocoa + WebKit frameworks (NOT webkit2gtk-4.1 like
-          # Linux). Check via otool -L for the WebKit framework, which is
-          # what platform/macos/nalar_webview.mm links via linkFramework.
-          if ! otool -L zig-out/bin/nalar-desktop | grep -q WebKit.framework; then
-            echo "✗ nalar-desktop missing WebKit.framework link"; exit 1
-          fi
-          if ! otool -L zig-out/bin/nalar-desktop | grep -q AppKit.framework; then
-            echo "✗ nalar-desktop missing AppKit.framework link"; exit 1
-          fi
-          echo "✓ all link deps present (WebKit.framework, AppKit.framework)"
+          # Linux). After the webview-lib swap (PR #354) the vendored
+          # library uses runtime ObjC class lookup (`objc_getClass(...)`)
+          # + dlopen for both Cocoa and WebKit — neither framework
+          # shows up in `otool -L`. The Mach-O + size checks above
+          # are sufficient smoke validation.
+          echo "✓ macOS link check (Mach-O + size) — vendored webview loads frameworks at runtime"
 
       - name: "Smoke test: criteria pass"
         if: matrix.target.step != '__SKIP__'

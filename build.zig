@@ -1552,32 +1552,29 @@ pub fn build(b: *std.Build) void {
             });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
             } else {
-                // Dev-box fallback: no MSVC C++ stdlib available. Compile
-                // a minimal stub .cpp that exports the webview symbols as
-                // no-ops. Without a real webview, nalar-desktop won't actually
-                // display anything on these dev boxes — but the binary
-                // builds + links + the CLI args parser + the asset
-                // extraction smoke test all still work. CI's runner
-                // installs MSVC and takes the real path above.
-                const stub_cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview_stub.cpp";
-                const stub_cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview_stub.obj";
-                const stub_compile = b.addSystemCommand(&.{
-                    b.graph.zig_exe, "cc",
-                    "-target", "x86_64-windows-gnu",
-                    "-c",
-                    "-o",  stub_cpp_obj,
-                    stub_cpp_src,
-                });
-                stub_compile.setCwd(b.path(""));
-                desktop_exe.step.dependOn(&stub_compile.step);
-                desktop_exe.root_module.addObjectFile(.{ .cwd_relative = stub_cpp_obj });
-                // Dev-box fallback path also needs the raw Win32 / WinSock2
-                // externs declared in extraction.zig / subprocess.zig to
-                // resolve at link time (see the MSVC branch above for the
-                // full rationale on why Zig's MinGW link doesn't auto-pull
-                // these for `extern "kernel32"` / `extern "ws2_32"` decls).
-                desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
-                desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
+                // Dev-box fallback: no MSVC C++ stdlib (or no WebView2
+                // NuGet headers) available. The webview/webview library
+                // hard-requires both for Windows — webview.h's win32
+                // implementation includes <wrl/client.h> which transitively
+                // pulls MSVC's <cstddef>, and webview.h itself includes
+                // <EventToken.h> from the NuGet. Without those, the
+                // compile fails deep inside Microsoft's headers.
+                //
+                // After the webview-lib swap (PR #354), the old
+                // nalar_webview_stub.cpp fallback (which implemented the
+                // removed nalar_webview_* C ABI as no-ops) is gone too.
+                // The only honest option here is to abort the build
+                // with a clear message — we won't ship a silent no-op
+                // desktop binary that pretends to work.
+                std.log.err(
+                    "nalar-desktop: Windows requires both MSVC C++ toolchain AND " ++
+                        "the Microsoft.Web.WebView2 NuGet headers under " ++
+                        "src/apps/desktop_app/platform/windows/ " ++
+                        "(build/native/include/WebView2.h + EventToken.h + runtimes/win-x64/native/WebView2Loader.dll). " ++
+                        "Install Visual Studio Build Tools and extract the NuGet, then re-run zig build nalar-desktop.",
+                    .{},
+                );
+                std.process.exit(1);
             }
         },
         else => {},
