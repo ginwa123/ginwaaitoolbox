@@ -169,4 +169,72 @@ describe('VirtualScroller stable-key height cache', () => {
     expect(sizerTotal(el)).toBe(10 * 64)
     wrapper.unmount()
   })
+
+  it('scrollToBottom targets the REAL content bottom when the model overshoots (blank-viewport fix)', async () => {
+    // The user's screenshot: sizer 29389px but the real rendered
+    // content was far shorter — stick-to-bottom computed from
+    // scrollHeight landed PAST the last row into blank space. With the
+    // real-bottom override, the stick targets topSpacer + rendered
+    // content height instead.
+    const { wrapper, el } = mountKeyed(20)
+    await nextTick()
+
+    // Measure all items at 64px → model total = 1280 (matches reality).
+    const content = el.querySelector('.virtual-scroller-content')!
+    for (const child of Array.from(content.children)) {
+      Object.defineProperty(child, 'offsetHeight', { value: 64, configurable: true })
+    }
+    scroll(el, 0)
+    vi.advanceTimersByTime(120)
+    await nextTick()
+
+    // NOW the model overshoots: the sizer binding says 29389 (stale
+    // model) while the real rendered content is only 20×64=1280.
+    // jsdom: scrollHeight is whatever we define it to be — set it to
+    // the phantom value the browser would report from the inflated
+    // sizer. Also mock the content div's offsetHeight (jsdom does no
+    // layout; the browser's real value would be 1280).
+    Object.defineProperty(el, 'scrollHeight', { value: 29389, configurable: true })
+    Object.defineProperty(content, 'offsetHeight', { value: 20 * 64, configurable: true })
+    // jsdom has no scrollTo; stub it to capture the target.
+    let capturedTop = -1
+    ;(el as unknown as { scrollTo: (o: { top: number }) => void }).scrollTo = (o) => {
+      capturedTop = o.top
+    }
+
+    const vm = wrapper.vm as unknown as { scrollToBottom: (b?: ScrollBehavior) => void }
+    vm.scrollToBottom('auto')
+
+    // The stick must target the REAL bottom (1280 − 800 = 480), NOT
+    // the phantom model bottom (29389 − 800 = 28589).
+    expect(capturedTop).toBe(20 * 64 - 800)
+    wrapper.unmount()
+  })
+
+  it('scrollToBottom falls back to scrollHeight when the model matches reality', async () => {
+    const { wrapper, el } = mountKeyed(20)
+    await nextTick()
+
+    const content = el.querySelector('.virtual-scroller-content')!
+    for (const child of Array.from(content.children)) {
+      Object.defineProperty(child, 'offsetHeight', { value: 64, configurable: true })
+    }
+    scroll(el, 0)
+    vi.advanceTimersByTime(120)
+    await nextTick()
+
+    // Model agrees with reality: scrollHeight = 1280. Mock the content
+    // div's height too (jsdom does no layout).
+    Object.defineProperty(el, 'scrollHeight', { value: 20 * 64, configurable: true })
+    Object.defineProperty(content, 'offsetHeight', { value: 20 * 64, configurable: true })
+    let capturedTop = -1
+    ;(el as unknown as { scrollTo: (o: { top: number }) => void }).scrollTo = (o) => {
+      capturedTop = o.top
+    }
+
+    const vm = wrapper.vm as unknown as { scrollToBottom: (b?: ScrollBehavior) => void }
+    vm.scrollToBottom('auto')
+    expect(capturedTop).toBe(20 * 64 - 800)
+    wrapper.unmount()
+  })
 })

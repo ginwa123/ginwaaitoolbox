@@ -763,20 +763,16 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
     // stick is actively engaged right now (not just that the LLM is
     // busy — those are different things, see autoStickGate.ts).
     lastAutoStickAt.value = Date.now()
-    // Explicit bottom computation — do NOT rely on the browser's
-    // implicit clamp of `scrollTop = scrollHeight`. The clamp formula
-    // is `scrollHeight - clientHeight`, but it is evaluated against
-    // whatever scrollHeight the browser has at assignment time. If the
-    // sizer's `:style.height` binding hasn't flushed to the DOM yet
-    // (Vue's render is a microtask; the rAF can fire before it in some
-    // engines), the clamp lands at the OLD bottom — leaving a scrollable
-    // gap equal to (new max − old max) once the layout catches up. That
-    // gap is the "scroll past the bottom into blank space" symptom
-    // (task_1787595375531_0). Computing the target explicitly from the
-    // same scrollHeight/clientHeight read makes the math engine- and
-    // timing-independent, and matches the pattern already used by
-    // VirtualScroller.scrollToBottom (line ~785).
-    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight)
+    // Explicit bottom computation — DELEGATED to the scroller's
+    // scrollToBottom (2026-08-26 blank-viewport fix): the scroller
+    // targets the REAL rendered content bottom when the window shows
+    // the last item, so a residual sizer overshoot can no longer land
+    // the stick in the phantom region (the user's fully-blank
+    // viewport screenshots: sizer 29389px, window at 27971px, nothing
+    // visible). The old inline `scrollHeight - clientHeight` trusted
+    // the model total; the scroller's version falls back to it only
+    // when the model agrees with reality.
+    virtualScrollerRef.value?.scrollToBottom('auto')
     scrollLogger.info({
       ...ctx,
       caller: 'onContentShift',
@@ -1726,7 +1722,9 @@ const loadChatHistory = async (loadMore = false) => {
         if (c) {
           scrollLogger.markProgrammatic()
           lastAutoStickAt.value = Date.now()
-          c.scrollTop = Math.max(0, c.scrollHeight - c.clientHeight)
+          // Delegated to the scroller's scrollToBottom (real-bottom
+          // target — same rationale as the onContentShift stick).
+          virtualScrollerRef.value?.scrollToBottom('auto')
           // Re-engage the stick explicitly: the user WAS at bottom before
           // the prepend, and we just moved them to the new bottom on their
           // behalf. The preserve dance's programmatic scroll events may
