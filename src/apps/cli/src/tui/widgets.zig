@@ -56,6 +56,13 @@ pub const Viewport = struct {
 
     /// Render the last `height` visible lines into a fresh Frame of
     /// size `width x height`. Caller owns the frame.
+    ///
+    /// Long lines are word-wrapped at the last space that fits
+    /// within `width` columns (or hard-split at `width` when the
+    /// line has no spaces). The underlying `Line.text` is unchanged
+    /// — wrapping is a render-time concern only. The scroll offset
+    /// counts LOGICAL lines, not visual rows — slight inaccuracy on
+    /// very long wrapped text is accepted for v1 simplicity.
     pub fn render(self: *const Viewport, allocator: std.mem.Allocator, width: u16, height: u16) !frame_mod.Frame {
         var f = try frame_mod.Frame.init(allocator, width, height);
         errdefer f.deinit(allocator);
@@ -67,15 +74,97 @@ pub const Viewport = struct {
 
         var row: u16 = 0;
         var i = start;
-        while (i < end and row < height) : ({
-            i += 1;
-            row += 1;
-        }) {
-            _ = f.writeText(0, row, self.lines.items[i].text, self.lines.items[i].style);
+        while (i < end and row < height) : (i += 1) {
+            const text = self.lines.items[i].text;
+            const style = self.lines.items[i].style;
+            const chunks = try wrapText(allocator, text, width);
+            // Free inner chunks AND the outer slice in the right
+            // order: inner chunks first (they're allocated per
+            // chunk), then the outer list slice.
+            defer {
+                for (chunks) |c| allocator.free(c);
+                allocator.free(chunks);
+            }
+            for (chunks) |chunk| {
+                if (row >= height) break;
+                _ = f.writeText(0, row, chunk, style);
+                row += 1;
+            }
         }
         return f;
     }
+
+    /// Returns the visual-row count that `line_idx` will occupy when
+    /// rendered at `width`. Used by the scroll bindings (Task 5) to
+    /// step `scroll_from_bottom` in visual rows rather than logical
+    /// lines — without this, wrapped text makes PgUp/PgDn feel
+    /// stuck. Caller-owned slice; free with `allocator.free`.
+    pub fn wrappedHeightOf(self: *const Viewport, allocator: std.mem.Allocator, width: u16, line_idx: usize) !usize {
+        const text = self.lines.items[line_idx].text;
+        const chunks = try wrapText(allocator, text, width);
+        defer {
+            for (chunks) |c| allocator.free(c);
+            allocator.free(chunks);
+        }
+        return chunks.len;
+    }
 };
+
+// ============================================================================
+// wrapText — naive word-wrap for viewport rendering
+// ============================================================================
+//
+// Splits `text` into a list of `[]const u8` chunks, each ≤ `width`
+// cols, broken at the last ASCII space that fits. When the line has
+// no spaces in the first `width` bytes (e.g. a long URL or token),
+// hard-splits at `width`. Trailing whitespace is trimmed from each
+// chunk so wrapped rows don't show ragged right-edges.
+//
+// Returns an owned `[]const []const u8`; caller frees both the outer
+// slice and each inner chunk via `allocator.free`. Caller frees the
+// outer slice LAST, after any work on the chunks is done.
+
+fn wrapText(allocator: std.mem.Allocator, text: []const u8, width: u16) ![]const []const u8 {
+    var chunks: std.ArrayList([]const u8) = .empty;
+    defer chunks.deinit(allocator);
+
+    if (text.len == 0) {
+        // Single empty chunk keeps the renderer happy (always emits
+        // at least one row per Line). Caller still owns the slice.
+        try chunks.append(allocator, try allocator.dupe(u8, ""));
+        return chunks.toOwnedSlice(allocator);
+    }
+
+    var rest: []const u8 = text;
+    while (rest.len > width) {
+        // Look for the last space in rest[0..=width].
+        const window = rest[0..width];
+        const last_space = std.mem.lastIndexOfScalar(u8, window, ' ');
+        if (last_space) |sp| {
+            // Split at the space, trim trailing whitespace from the
+            // chunk, advance past the space.
+            const chunk = std.mem.trim(u8, rest[0..sp], &std.ascii.whitespace);
+            if (chunk.len > 0) try chunks.append(allocator, try allocator.dupe(u8, chunk));
+            rest = rest[sp + 1 ..];
+        } else {
+            // No space in window — hard split at width.
+            try chunks.append(allocator, try allocator.dupe(u8, rest[0..width]));
+            rest = rest[width..];
+        }
+    }
+    // Whatever remains fits within width. Trim trailing whitespace
+    // and emit (unless it's all whitespace — then skip; otherwise the
+    // trailing space would survive into the final row).
+    const trimmed = std.mem.trim(u8, rest, &std.ascii.whitespace);
+    if (trimmed.len > 0) try chunks.append(allocator, try allocator.dupe(u8, trimmed));
+
+    // Defensive: empty input or all-whitespace input → single empty
+    // chunk. The renderer relies on at-least-one-row-per-Line.
+    if (chunks.items.len == 0) {
+        try chunks.append(allocator, try allocator.dupe(u8, ""));
+    }
+    return chunks.toOwnedSlice(allocator);
+}
 
 // ============================================================================
 // Input — single-line input with cursor + history
@@ -374,6 +463,87 @@ test "Input: ctrl-u clears to start" {
     _ = try in.handleKey(.left);
     _ = try in.handleKey(.ctrl_u);
     try testing.expectEqualStrings("b", in.text());
+}
+
+// ----------------------------------------------------------------------------
+// Viewport word-wrap (round-2 — Task 3)
+// ----------------------------------------------------------------------------
+
+test "Viewport.render wraps long line into multiple rows" {
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    try vp.appendLine("hello world", .{});
+
+    var f = try vp.render(testing.allocator, 6, 4);
+    defer f.deinit(testing.allocator);
+
+    // Wrap "hello world" at width 6 → ["hello", "world"]. The
+    // natural split eats the space between them.
+    try testing.expectEqual(@as(u21, 'h'), f.get(0, 0).char);
+    try testing.expectEqual(@as(u21, 'o'), f.get(4, 0).char);
+    // Row 1: "world" (no leading space — wrap eats the separator)
+    try testing.expectEqual(@as(u21, 'w'), f.get(0, 1).char);
+    try testing.expectEqual(@as(u21, 'd'), f.get(4, 1).char);
+}
+
+test "Viewport.render short line renders on a single row" {
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    try vp.appendLine("hi", .{});
+
+    var f = try vp.render(testing.allocator, 20, 4);
+    defer f.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u21, 'h'), f.get(0, 0).char);
+    // Row 1 should be blank (no spurious wrapped rows).
+    try testing.expectEqual(@as(u21, ' '), f.get(0, 1).char);
+}
+
+test "Viewport.render hard-splits a single word longer than width" {
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    try vp.appendLine("abcdefgh", .{});
+
+    var f = try vp.render(testing.allocator, 4, 4);
+    defer f.deinit(testing.allocator);
+
+    // Row 0: "abcd"
+    try testing.expectEqual(@as(u21, 'a'), f.get(0, 0).char);
+    try testing.expectEqual(@as(u21, 'd'), f.get(3, 0).char);
+    // Row 1: "efgh"
+    try testing.expectEqual(@as(u21, 'e'), f.get(0, 1).char);
+    try testing.expectEqual(@as(u21, 'h'), f.get(3, 1).char);
+}
+
+test "Viewport.render trims trailing whitespace on the wrapped row" {
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    // "xx yy zzz" (9 chars) at width=5. Our wrap is "split at the
+    // last space ≤ width, trim the chunk, advance past the space":
+    //   - "xx yy zzz" → "xx" + rest "yy zzz" (last space at pos 2)
+    //   - "yy zzz"   → "yy" + rest "zzz"   (last space at pos 2)
+    //   - "zzz"      → "zzz" (≤ 5)
+    // Result: ["xx", "yy", "zzz"] (3 rows). No ragged trailing
+    // whitespace; the wrap eats the separators cleanly.
+    try vp.appendLine("xx yy zzz", .{});
+
+    var f = try vp.render(testing.allocator, 5, 4);
+    defer f.deinit(testing.allocator);
+
+    // Row 0: "xx" — col 2 onwards should be blank, not a trailing space.
+    try testing.expectEqual(@as(u21, 'x'), f.get(0, 0).char);
+    try testing.expectEqual(@as(u21, 'x'), f.get(1, 0).char);
+    try testing.expectEqual(@as(u21, ' '), f.get(2, 0).char); // col 2 is blank padding
+
+    // Row 1: "yy"
+    try testing.expectEqual(@as(u21, 'y'), f.get(0, 1).char);
+    try testing.expectEqual(@as(u21, 'y'), f.get(1, 1).char);
+    try testing.expectEqual(@as(u21, ' '), f.get(2, 1).char);
+
+    // Row 2: "zzz"
+    try testing.expectEqual(@as(u21, 'z'), f.get(0, 2).char);
+    try testing.expectEqual(@as(u21, 'z'), f.get(1, 2).char);
+    try testing.expectEqual(@as(u21, 'z'), f.get(2, 2).char);
 }
 
 test "Spinner: tick advances frames cyclically" {
