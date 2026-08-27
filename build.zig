@@ -1501,7 +1501,7 @@ pub fn build(b: *std.Build) void {
                 msvc_include.shared_include,
                 msvc_include.winrt_include,
             };
-            var cpp_args: [26][]const u8 = undefined;
+            var cpp_args: [28][]const u8 = undefined;
             var n: usize = 0;
             cpp_args[n] = b.graph.zig_exe;
             n += 1;
@@ -1538,6 +1538,27 @@ pub fn build(b: *std.Build) void {
             // `_Pragma` expects. (CI run 33067379610, job 98500726647,
             // 2026-08-27 — reproduced 20 errors after PR #359's
             // directory-creation fix unblocked the staging step.)
+            // `-nostdinc++` excludes zig's bundled libc++ headers from
+            // the include search path. zig cc on Windows defaults to its
+            // own libc++ (`zig/lib/include/yvals_core.h`, `cstddef`,
+            // `__stddef_max_align_t.h`, etc.), but the build is wired to
+            // use the host's MSVC STL (`MSVC/<ver>/include/algorithm`,
+            // `vcruntime.h`, `cstddef`, ...) so WebView2.h's transitive
+            // `<wrl/client.h>` -> `<cstddef>` resolves cleanly. Mixing
+            // the two STLs in the same TU is the root cause of the
+            // second wave of compile errors after the `__pragma` fix:
+            // zig's `__stddef_max_align_t.h` defines `max_align_t` as a
+            // struct, then MSVC's `cstddef` re-declares it as a typedef
+            // (`using _STD max_align_t;`), and the compiler chokes on
+            // the conflict. Same class of conflict for `wchar_t`,
+            // `_Mbstatet`, `uintptr_t`, `_THROW`, `_STL_INTERNAL_CHECK`,
+            // `_STL_VERIFY`, `_STL_ASSERT` -- every internal MSVC STL
+            // identifier collides with whatever the zig libc++ headers
+            // happened to declare first.
+            //
+            // (-D__pragma(x) is set two entries below this comment.)
+            cpp_args[n] = "-nostdinc++";
+            n += 1;
             cpp_args[n] = "-D__pragma(x)=_Pragma(#x)";
             n += 1;
             for (candidate_dirs) |dir| {
