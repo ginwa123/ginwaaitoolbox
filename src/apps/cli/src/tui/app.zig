@@ -135,9 +135,13 @@ pub const App = struct {
         if (submitted) {
             const hist = self.input.history.items;
             const msg_text = hist[hist.len - 1];
-            const prompt = try std.fmt.allocPrint(self.allocator, "> {s}", .{msg_text});
-            defer self.allocator.free(prompt);
-            try self.viewport.appendLine(prompt, .{ .bold = true });
+            // NOTE: do NOT echo the user message into the viewport
+            // here. The next SSE/poll delivers the canonical row
+            // from the server's `llm_history` table, and `onMessages`
+            // renders it via the same renderMessage dispatcher. Echoing
+            // here would duplicate every user message (welcome + echo
+            // + SSE = two copies). The cost is a ≤500 ms blank between
+            // Enter and the first poll — accepted per the round-2 plan.
             self.is_streaming = true;
             self.spinner.label = "thinking";
             // The executor (tui_main.execCmd) frees the duped payload.
@@ -445,6 +449,36 @@ test "App: onMessages renders user prompt as > bold green" {
 // bold green, tool cards as ▶ name primary ✓ headers, and the
 // assistant reply rendered as plain text with the thinking block
 // stripped.
+test "App: handleKey + Enter does NOT immediately echo user message" {
+    var app = try testApp();
+    defer app.deinit();
+    _ = try app.update(.{ .key = .{ .rune = 'h' } });
+    _ = try app.update(.{ .key = .{ .rune = 'a' } });
+    _ = try app.update(.{ .key = .{ .rune = 'i' } });
+    const cmd = try app.update(.{ .key = .enter });
+    app.freeCmd(cmd);
+    // Welcome line only — the user message will arrive via SSE/poll,
+    // not via an immediate local echo. Otherwise we'd render `> hai`
+    // twice (once here, once when the server's row is polled).
+    try testing.expectEqual(@as(usize, 1), app.viewport.lines.items.len);
+}
+
+test "App: onMessages renders SSE-delivered user prompt as > bold green" {
+    var app = try testApp();
+    defer app.deinit();
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    // welcome + user prompt = 2 lines (the SSE-delivered row IS the source of truth)
+    try testing.expectEqual(@as(usize, 2), app.viewport.lines.items.len);
+    const last = app.viewport.lines.items[1];
+    try testing.expectEqualStrings("> hai", last.text);
+    try testing.expect(last.style.bold);
+}
+
 test "App: onMessages renders user-reported scenario (tool cards + stripped think)" {
     var app = try testApp();
     defer app.deinit();
