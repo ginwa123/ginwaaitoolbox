@@ -583,6 +583,20 @@ Clicking ⚙ on a kanban board header navigates to a dedicated full-page route (
 **Plan:** `docs/superpowers/plans/2026-09-02-kanban-settings-as-page.md`
 **Commits:** `1130e5cd` (backend) + this PR (frontend).
 
+#### 3.7.11a Kanban settings — Agent config moves to 3rd tab (2026-08-27)
+
+The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by Migration 081's `agent_kanbans` mirror) used to live in a centered modal `KanbanAgentSettings` opened by the 🤖 Agent button on the kanban header. Now it lives as a third tab (🤖 Agent) inside the dedicated Kanban Settings page from §3.7.11, accessed via `?tab=agent`. The 🤖 Agent toolbar button navigates to `/app/kanban/:itemId/settings?tab=agent` instead of opening a modal — reload-safe, deep-linkable, Back returns to the kanban board naturally. `<KanbanAgentSettings>` is deleted; its body (3 sections + 3 reused sub-dialogs) is lifted verbatim into `KanbanAgentPanel.vue` with every `data-testid` preserved. The active tab is URL-backed via a writable `settingsMode` computed that reads `route.query.tab` and writes via `router.replace`; default `'columns'` strips the query so the URL stays clean; unknown tab values fall back to `'columns'`. Tab strip is always visible (no `item.path` gate on the whole strip); the Local Memories button is individually gated on `item.path`, the Agent button is always visible.
+
+**Why merge into settings (not keep as a separate page).** One settings home per board beats two (modal + page). The 3 sections are conceptually "board configuration" — the same surface the user visits for columns + memories. URL-backed tab means reload preserves state, browser back/forward works, and links are shareable.
+
+**Why strip the modal chrome.** `<Teleport to="body">` + backdrop + close button + enter/leave animation added ~30 lines of plumbing with no value inside the page. The body stays in normal flow inside the tab; going Columns → Agent → Columns → Agent re-mounts the panel (fresh load), matching the existing Columns/Memories tab re-mount behaviour.
+
+**Wire (frontend).** `KanbanSettingsView` gains `'agent'` to its `SettingsMode` union + a 3rd tab button (always visible) + a 3rd body branch that mounts `<KanbanAgentPanel :item :workspace-id>`. `KanbanView` swaps the 🤖 Agent button's handler from `emit('openAgentSettings')` (consumed by AppLayout's now-deleted `showKanbanAgentSettings` ref + `<KanbanAgentSettings>` mount) to `router.push({ path: '/app/kanban/:itemId/settings', query: { tab: 'agent' } })`. AppLayout strips 4 sites: the import, the open/close handlers, the `<KanbanAgentSettings>` mount, and the `@open-agent-settings` listener.
+
+**No backend changes.** All 14 `/api/agent-kanbans/...` endpoints (Migration 081 — bundle GET, knowledge CRUD, system_prompt CRUD, tools list/create/delete) are reused unchanged. Wire payload shapes, error codes, 404 NotConfigured semantics — all preserved. `tests/functional/agent_kanbans_test.py` wire contract stays meaningful without edits.
+
+**Plan:** `docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md`
+
 ### 3.8 Frontend — Design Canvas (Workspace Item Type)
 
 | Plan | Status | Key file / PR |
