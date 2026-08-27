@@ -1079,14 +1079,18 @@ pub fn build(b: *std.Build) void {
         \\# relative to this script so the binary works from anywhere.
         \\set -e
         \\SCRIPT_DIR=$(dirname "$0")
-        \\exec node "$SCRIPT_DIR/../src/apps/mcp_hello_world/dist/index.js" "$@"
+        \\# zig-out/bin/mcp-hello-world -> zig-out/bin/. We need to reach
+        \\# <repo-root>/src/apps/mcp_hello_world/dist/index.js. From
+        \\# zig-out/bin, `..` is zig-out, `../..` is the repo root.
+        \\exec node "$SCRIPT_DIR/../../src/apps/mcp_hello_world/dist/index.js" "$@"
     ;
     const wrapper_cache_name = "mcp-hello-world-wrapper.sh";
-    const mcp_wrapper_write = b.addWriteFile(wrapper_cache_name, wrapper_body);
+    const mcp_wrapper_write = b.addWriteFiles();
+    const wrapper_lazy_path = mcp_wrapper_write.add(wrapper_cache_name, wrapper_body);
     mcp_wrapper_write.step.dependOn(&mcp_build.step);
 
     const mcp_wrapper_install = b.addInstallBinFile(
-        mcp_wrapper_write.getOutput(),
+        wrapper_lazy_path,
         "mcp-hello-world",
     );
     mcp_wrapper_install.step.dependOn(&mcp_wrapper_write.step);
