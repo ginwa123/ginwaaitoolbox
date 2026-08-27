@@ -1501,7 +1501,7 @@ pub fn build(b: *std.Build) void {
                 msvc_include.shared_include,
                 msvc_include.winrt_include,
             };
-            var cpp_args: [24][]const u8 = undefined;
+            var cpp_args: [26][]const u8 = undefined;
             var n: usize = 0;
             cpp_args[n] = b.graph.zig_exe;
             n += 1;
@@ -1520,6 +1520,25 @@ pub fn build(b: *std.Build) void {
             cpp_args[n] = "-DWEBVIEW_STATIC";
             n += 1;
             cpp_args[n] = "-Ivendor/webview";
+            n += 1;
+            // MSVC's vcruntime.h / sal.h use the MSVC-specific
+            // `__pragma(x)` macro to embed `#pragma` statements inside
+            // `_CRT_BEGIN_C_HEADER` / `_CRT_END_C_HEADER` (and similar).
+            // `zig cc` is clang, which doesn't recognise `__pragma` and
+            // dies with `a type specifier is required for all declarations`
+            // the moment vcruntime.h gets included (the vendor webview.cc
+            // pulls it in via `<algorithm>` → `<yvals_core.h>` →
+            // `<vcruntime.h>`). `clang` has its own equivalent — `_Pragma`
+            // — that takes a string literal: `_Pragma("pack(push, 8)")`.
+            // Forward the MSVC `__pragma(x)` call to `_Pragma` so the
+            // embedded `#pragma pack(push/pop)`, warning suppressions,
+            // etc. still take effect for the compiled translation unit.
+            // The function-like macro `#x` stringifies its argument; the
+            // resulting `"pack(push, 8)"` is exactly the spelling clang's
+            // `_Pragma` expects. (CI run 33067379610, job 98500726647,
+            // 2026-08-27 — reproduced 20 errors after PR #359's
+            // directory-creation fix unblocked the staging step.)
+            cpp_args[n] = "-D__pragma(x)=_Pragma(#x)";
             n += 1;
             for (candidate_dirs) |dir| {
                 if (dir.len == 0) continue;
