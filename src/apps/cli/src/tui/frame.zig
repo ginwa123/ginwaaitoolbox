@@ -8,7 +8,14 @@ const color = @import("color.zig");
 pub const Cell = struct {
     char: u21 = ' ',
     fg: ?color.Color = null,
-    bg: ?color.Color = null,
+    /// Default to BLACK so the TUI looks consistent regardless of the
+    /// terminal emulator's default background. Without this, on a
+    /// light-themed terminal the viewport + input show the terminal's
+    /// default white background — visible in the user screenshot as
+    /// a big white block above the input. `writeText` preserves the
+    /// existing bg when the caller passes `style.bg = null`, so the
+    /// default stays applied unless explicitly overridden.
+    bg: ?color.Color = .black,
     bold: bool = false,
 };
 
@@ -44,15 +51,23 @@ pub const Frame = struct {
 
     /// Write `text` starting at (x, y), clipped to the frame bounds.
     /// Returns the x position just past the last written char.
+    ///
+    /// When `style.bg` is null, the existing cell bg is PRESERVED
+    /// rather than reset to null. Combined with the `Cell.bg =
+    /// .black` default, this gives a consistent dark TUI: cells we
+    /// don't write stay black; cells we write without a style.bg
+    /// preserve the default black; cells we write WITH a style.bg
+    /// override per-cell (e.g. the status bar's `.brightBlack`).
     pub fn writeText(self: *Frame, x: u16, y: u16, text: []const u8, style: Style) u16 {
         var cx = x;
         var it = std.unicode.Utf8View.initUnchecked(text).iterator();
         while (it.nextCodepoint()) |cp| {
             if (cx >= self.width) break;
+            const existing = self.cells[@as(usize, y) * self.width + cx];
             self.set(cx, y, .{
                 .char = cp,
                 .fg = style.fg,
-                .bg = style.bg,
+                .bg = style.bg orelse existing.bg,
                 .bold = style.bold,
             });
             cx += 1;
@@ -229,7 +244,9 @@ test "diff: single cell change emits one move + one rune" {
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\x1b[2;4H") != null); // row 2 col 4
     try testing.expect(std.mem.indexOf(u8, out, "X") != null);
-    try testing.expect(std.mem.indexOf(u8, out, ";1m") != null); // bold SGR
+    // Bold SGR — round-3 emitted as `[0;1;40m` (reset + bold + bg black
+    // inherited from the Cell default) instead of the old `[0;1m`.
+    try testing.expect(std.mem.indexOf(u8, out, ";1;40m") != null);
 }
 
 test "diff: resize triggers full repaint" {
@@ -241,4 +258,51 @@ test "diff: resize triggers full repaint" {
     const out = try diff(testing.allocator, &a, &b);
     defer testing.allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\x1b[2J") != null);
+}
+
+// Round-3 user-reported: "scrolling makes the background white".
+// The diff function MUST emit SGR bg codes so the TUI shows an
+// explicit dark background regardless of the terminal's default
+// (light-themed terminals default to white bg; without an explicit
+// bg, the TUI inherits that white and looks wrong).
+test "diff: emits bg=black SGR codes so terminal shows dark bg even on light themes" {
+    var prev = try Frame.init(testing.allocator, 4, 1);
+    defer prev.deinit(testing.allocator);
+    var next = try Frame.init(testing.allocator, 4, 1);
+    defer next.deinit(testing.allocator);
+    next.set(0, 0, .{ .char = 'h' });
+    next.set(1, 0, .{ .char = 'i' });
+    const out = try diff(testing.allocator, &prev, &next);
+    defer testing.allocator.free(out);
+    // The SGR sequence is `\x1B[0;<fg>;<bg>m` — fg precedes bg. So
+    // look for `;40m` (the bg=black code, separated from the reset
+    // by the fg code).
+    try testing.expect(std.mem.indexOf(u8, out, ";40m") != null);
+}
+
+// Scroll scenario: prev frame has OLD chat, next frame has NEW chat
+// (the result of scrolling). Every cell carries an explicit bg via
+// the default. Confirm the diff emits a black-bg SGR for each
+// changed row so the rolled-over chat area is dark.
+test "diff: scroll scenario emits black bg for every changed cell" {
+    var prev = try Frame.init(testing.allocator, 10, 4);
+    defer prev.deinit(testing.allocator);
+    var next = try Frame.init(testing.allocator, 10, 4);
+    defer next.deinit(testing.allocator);
+
+    var p: usize = 0;
+    while (p < 40) : (p += 1) {
+        prev.cells[p] = .{ .char = 'a' + @as(u21, @intCast(p % 26)), .fg = .white };
+    }
+    var n: usize = 0;
+    while (n < 40) : (n += 1) {
+        next.cells[n] = .{ .char = 'z' - @as(u21, @intCast(n % 26)), .fg = .green };
+    }
+
+    const out = try diff(testing.allocator, &prev, &next);
+    defer testing.allocator.free(out);
+    // The SGR sequence is `\x1B[0;<fg>;<bg>m` — fg precedes bg. So
+    // look for `;40m` (the bg=black code, separated from the reset
+    // by the fg code).
+    try testing.expect(std.mem.indexOf(u8, out, ";40m") != null);
 }

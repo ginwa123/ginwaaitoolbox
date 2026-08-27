@@ -699,7 +699,7 @@ test "StatusBar: left/right render at edges" {
     try testing.expectEqual(@as(u21, 'g'), f.get(29, 0).char);
 }
 
-test "Input: cursor cell uses foreground-only caret (no bg)" {
+test "Input: cursor cell uses foreground-only caret (round-3: bg inherits black default)" {
     var in = Input.init(testing.allocator);
     defer in.deinit();
     _ = try in.handleKey(.{ .rune = 'a' });
@@ -708,10 +708,11 @@ test "Input: cursor cell uses foreground-only caret (no bg)" {
     // Cursor sits at column 3 ("> a" is 3 chars: '>', ' ', 'a').
     const cursor = f.get(3, 0);
     try testing.expectEqual(@as(u21, '|'), cursor.char);
-    try testing.expect(cursor.bg == null); // NO background fill — the old
-    // cursor cell used `.bg = .white` which several terminal
-    // palettes (iTerm2, Solarized, GNOME default) render as a
-    // yellow block. The fg-only caret is universally supported.
+    // Round-3: bg now inherits the Cell default (.black) via the
+    // writeText "preserve existing bg when style.bg is null" rule,
+    // so the TUI looks consistent on light-themed terminals. The
+    // cursor still has no EXPLICIT bg attribute.
+    try testing.expectEqual(@as(?@import("color.zig").Color, .black), cursor.bg);
     try testing.expectEqual(@as(?@import("color.zig").Color, .white), cursor.fg);
     try testing.expect(cursor.bold);
 }

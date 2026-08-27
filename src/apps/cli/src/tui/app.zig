@@ -218,16 +218,39 @@ pub const App = struct {
         if (root != .array) return;
         const arr = root.array;
 
-        // Heuristic: once an assistant message lands after our send,
-        // the turn is over. Case-insensitive to match server variants
-        // like "Assistant". Walked first so a streaming-burst re-poll
-        // that re-includes the final assistant still flips the flag.
-        if (self.is_streaming and arr.items.len > 0) {
-            const last = arr.items[arr.items.len - 1];
-            if (last == .object) {
-                if (last.object.get("role")) |role| {
-                    if (role == .string and asciiEqIgnoreCase(role.string, "assistant")) {
+        // Heuristic: the turn is over once we see an assistant
+        // message with `finish_reason="stop"`. Previously this only
+        // checked the LAST message's role — but when the agent emits
+        // tool calls, the last DB row is the tool result, not the
+        // assistant's final response, so the heuristic flipped back
+        // to "not streaming" too late (the spinner kept spinning even
+        // though the agent had finished its final reply). Round-3
+        // fix: scan ALL assistant messages and flip when ANY has
+        // finish_reason="stop". Fall back to the legacy heuristic
+        // (last message is assistant) when finish_reason is missing,
+        // so old conversations without the field still work.
+        if (self.is_streaming) {
+            var idx: usize = 0;
+            while (idx < arr.items.len) : (idx += 1) {
+                const item = arr.items[idx];
+                if (item != .object) continue;
+                const obj = item.object;
+                const role = obj.get("role") orelse continue;
+                if (role != .string or !asciiEqIgnoreCase(role.string, "assistant")) continue;
+                const fr = obj.get("finish_reason");
+                if (fr) |fr_val| {
+                    if (fr_val == .string and std.mem.eql(u8, fr_val.string, "stop")) {
                         self.is_streaming = false;
+                        break;
+                    }
+                    // finish_reason="tool_calls" or anything else →
+                    // agent will continue. Keep spinning.
+                } else {
+                    // No finish_reason field (legacy). Fall back to:
+                    // the LAST message is assistant → done.
+                    if (idx == arr.items.len - 1) {
+                        self.is_streaming = false;
+                        break;
                     }
                 }
             }
@@ -396,6 +419,42 @@ test "App: onMessages ignores already-seen messages" {
     try app.onMessages(body);
     try app.onMessages(body); // same count → no new lines
     try testing.expectEqual(@as(usize, 2), app.viewport.lines.items.len);
+}
+
+test "App: onMessages flips is_streaming=false when assistant finish_reason=stop appears mid-array" {
+    // Round-3 regression: agent emits tool calls, so the LAST DB
+    // row is a tool result, not the assistant's final response.
+    // The old heuristic checked only `arr.items[len-1].role` and so
+    // never saw the assistant's `finish_reason=stop`, leaving the
+    // spinner running and locking the input widget.
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"},
+        \\ {"id":"a1","role":"assistant","content":"","finish_reason":"tool_calls"},
+        \\ {"id":"t1","role":"tool","tool_name":"read_file","content":"<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/foo</path></data></tool>"},
+        \\ {"id":"a2","role":"assistant","content":"done","finish_reason":"stop"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    try testing.expect(!app.is_streaming);
+}
+
+test "App: onMessages keeps is_streaming=true when no assistant stop seen yet" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"},
+        \\ {"id":"a1","role":"assistant","content":"","finish_reason":"tool_calls"},
+        \\ {"id":"t1","role":"tool","tool_name":"read_file","content":"<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/foo</path></data></tool>"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    try testing.expect(app.is_streaming);
 }
 
 test "App: onMessages dedupes by message id (regression: <tool> x3 bug)" {
