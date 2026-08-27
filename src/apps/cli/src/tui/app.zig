@@ -439,6 +439,52 @@ test "App: onMessages renders user prompt as > bold green" {
     try testing.expectEqual(@as(?tui.Color, .green), last.style.fg);
 }
 
+// User-reported regression test — the body shape from the screenshot
+// in the design spec. Before the fix: raw <tool> envelopes and raw
+// <think> blocks were appended verbatim. After: user prompt in
+// bold green, tool cards as ▶ name primary ✓ headers, and the
+// assistant reply rendered as plain text with the thinking block
+// stripped.
+test "App: onMessages renders user-reported scenario (tool cards + stripped think)" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"},
+        \\ {"id":"t1","role":"tool","tool_name":"load_memory","content":"<tool><name>load_memory</name><parameters><query>user preferences language</query><limit>5</limit></parameters><success>true</success><data><results><item>lang:id</item></results></data></tool>"},
+        \\ {"id":"t2","role":"tool","tool_name":"update_activity","content":"<tool><name>update_activity</name><parameters><thought>2026-04-15 session</thought></parameters><success>true</success><data><activity>ok</activity></data></tool>"},
+        \\ {"id":"a1","role":"assistant","content":"<think>The user prefers Indonesian language based on the memory.</think>The user prefers Indonesian language."}
+        \\]}
+    ;
+    try app.onMessages(body);
+
+    // Collect the rendered texts.
+    const items = app.viewport.lines.items;
+    try testing.expectEqual(@as(usize, 5), items.len); // welcome + u1 + t1 + t2 + a1
+
+    // 1. welcome — unchanged.
+    try testing.expect(std.mem.indexOf(u8, items[0].text, "nalar-tui") != null);
+
+    // 2. user prompt — bold green.
+    try testing.expectEqualStrings("> hai", items[1].text);
+    try testing.expect(items[1].style.bold);
+    try testing.expectEqual(@as(?tui.Color, .green), items[1].style.fg);
+
+    // 3. tool card #1 — no raw XML, header line instead.
+    try testing.expect(std.mem.indexOf(u8, items[2].text, "<tool>") == null);
+    try testing.expect(std.mem.indexOf(u8, items[2].text, "▶ load_memory") != null);
+    try testing.expect(std.mem.indexOf(u8, items[2].text, "✓") != null);
+
+    // 4. tool card #2.
+    try testing.expect(std.mem.indexOf(u8, items[3].text, "<tool>") == null);
+    try testing.expect(std.mem.indexOf(u8, items[3].text, "▶ update_activity") != null);
+
+    // 5. assistant — think stripped, only the visible text remains.
+    try testing.expect(std.mem.indexOf(u8, items[4].text, "<think>") == null);
+    try testing.expectEqualStrings("The user prefers Indonesian language.", items[4].text);
+}
+
 test "App: view produces full-height frame with status bar" {
     var app = try testApp();
     defer app.deinit();
