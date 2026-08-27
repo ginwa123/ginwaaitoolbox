@@ -368,15 +368,44 @@ pub const LlmConfig = struct {
 
     /// Typed configuration for a single MCP server.
     ///
-    /// `url` and every key/value in `headers` are owned strings
-    /// (allocated with the parent `LlmConfig.allocator`).
+    /// Each entry is EITHER an HTTP server (with `url` + optional
+    /// `headers`) OR a stdio server (with `command` + optional `args`
+    /// + optional `cwd`). Exactly one transport must be present —
+    /// entries with both, neither, or empty discriminators are skipped
+    /// at parse time with a warning.
+    ///
+    /// All string fields are owned (allocated with the parent
+    /// `LlmConfig.allocator`). `args` is an owned slice of owned
+    /// strings — freed in `freeMcpServersMap`.
     pub const McpServerConfig = struct {
-        url: []const u8,
+        /// HTTP transport: the URL of the MCP server. Null for stdio entries.
+        url: ?[]const u8,
+        /// HTTP transport: optional request headers (e.g. `Authorization`).
         headers: McpHeadersMap,
+        /// stdio transport: the command to spawn. Null for HTTP entries.
+        command: ?[]const u8,
+        /// stdio transport: command-line args. Null when not specified.
+        args: ?[]const []const u8,
+        /// stdio transport: working directory. Null = inherit from parent.
+        cwd: ?[]const u8,
 
-        /// Returns true when the server is configured and has a non-empty URL.
+        pub const Transport = enum { http, stdio };
+
+        /// Returns the transport discriminator — derived from which
+        /// field is set. `command` takes precedence over `url` (so a
+        /// future "hybrid" entry would default to stdio).
+        pub fn transport(self: McpServerConfig) Transport {
+            if (self.command) |c| if (c.len > 0) return .stdio;
+            return .http;
+        }
+
+        /// Returns true when the server is configured with exactly one
+        /// non-empty transport (HTTP url OR stdio command, but not both,
+        /// not neither, not either empty).
         pub fn isValid(self: McpServerConfig) bool {
-            return self.url.len > 0;
+            const has_url = if (self.url) |u| u.len > 0 else false;
+            const has_cmd = if (self.command) |c| c.len > 0 else false;
+            return has_url != has_cmd; // exactly one
         }
     };
 
@@ -916,9 +945,7 @@ pub const LlmConfig = struct {
         var it = map.iterator();
         while (it.next()) |entry| {
             allocator.free(entry.key_ptr.*);
-            const server = entry.value_ptr.*;
-            allocator.free(server.url);
-            freeMcpHeadersMap(&entry.value_ptr.headers, allocator);
+            freeMcpServerConfig(entry.value_ptr, allocator);
         }
         map.deinit();
     }
@@ -952,46 +979,115 @@ pub const LlmConfig = struct {
 
     /// Parse a single `McpServerConfig` from a JSON object value.
     /// Returns `null` when `value` is not an object, or when the object
-    /// is missing a string `url` field. The `headers` field is optional —
-    /// if absent or malformed, the returned config has an empty headers map.
+    /// has neither a non-empty `url` (HTTP) nor a non-empty `command`
+    /// (stdio). The `headers` field is HTTP-only and optional — if
+    /// absent or malformed, the returned config has an empty headers map.
+    /// The `args` and `cwd` fields are stdio-only and optional.
     fn parseMcpServerConfig(allocator: std.mem.Allocator, value: std.json.Value) !?McpServerConfig {
         const obj = switch (value) {
             .object => |o| o,
             else => return null,
         };
 
-        const url_field = obj.get("url") orelse {
-            std.log.warn("MCP server config missing 'url'; skipping", .{});
-            return null;
+        var config: McpServerConfig = .{
+            .url = null,
+            .headers = McpHeadersMap.init(allocator),
+            .command = null,
+            .args = null,
+            .cwd = null,
         };
-        const url_str = switch (url_field) {
-            .string => |s| s,
-            else => {
-                std.log.warn("MCP server 'url' is not a string; skipping", .{});
+        errdefer freeMcpServerConfig(&config, allocator);
+
+        // ── HTTP branch: `url` field ──────────────────────────────────
+        if (obj.get("url")) |url_field| {
+            const url_str = switch (url_field) {
+                .string => |s| s,
+                else => {
+                    std.log.warn("MCP server 'url' is not a string; skipping", .{});
+                    return null;
+                },
+            };
+            if (url_str.len == 0) {
+                std.log.warn("MCP server 'url' is empty; skipping", .{});
                 return null;
-            },
-        };
-        if (url_str.len == 0) {
-            std.log.warn("MCP server 'url' is empty; skipping", .{});
+            }
+            config.url = try allocator.dupe(u8, url_str);
+
+            // Headers (HTTP-only).
+            if (obj.get("headers")) |h| {
+                if (h == .object) {
+                    freeMcpHeadersMap(&config.headers, allocator);
+                    config.headers = try parseMcpHeadersMap(allocator, h.object);
+                }
+            }
+        }
+
+        // ── stdio branch: `command` field ─────────────────────────────
+        if (obj.get("command")) |cmd_field| {
+            const cmd_str = switch (cmd_field) {
+                .string => |s| s,
+                else => {
+                    std.log.warn("MCP server 'command' is not a string; skipping", .{});
+                    return null;
+                },
+            };
+            if (cmd_str.len == 0) {
+                std.log.warn("MCP server 'command' is empty; skipping", .{});
+                return null;
+            }
+            config.command = try allocator.dupe(u8, cmd_str);
+
+            // Args (stdio-only, optional).
+            if (obj.get("args")) |args_value| {
+                const args_arr = switch (args_value) {
+                    .array => |a| a,
+                    else => {
+                        std.log.warn("MCP server 'args' must be a JSON array of strings; skipping", .{});
+                        return null;
+                    },
+                };
+                var args_list: std.ArrayList([]const u8) = .empty;
+                defer args_list.deinit(allocator);
+                for (args_arr.items) |item| {
+                    const s = switch (item) {
+                        .string => |x| x,
+                        else => continue,
+                    };
+                    try args_list.append(allocator, try allocator.dupe(u8, s));
+                }
+                config.args = try args_list.toOwnedSlice(allocator);
+            }
+
+            // cwd (stdio-only, optional).
+            if (obj.get("cwd")) |cwd_field| {
+                if (cwd_field == .string) {
+                    config.cwd = try allocator.dupe(u8, cwd_field.string);
+                }
+            }
+        }
+
+        // Validate: exactly one transport present.
+        const has_url = if (config.url) |u| u.len > 0 else false;
+        const has_cmd = if (config.command) |c| c.len > 0 else false;
+        if (has_url == has_cmd) {
+            std.log.warn("MCP server config needs exactly one of 'url' or 'command'; skipping", .{});
             return null;
         }
 
-        const url_dup = try allocator.dupe(u8, url_str);
-        errdefer allocator.free(url_dup);
+        return config;
+    }
 
-        var headers = blk: {
-            const h = obj.get("headers") orelse break :blk McpHeadersMap.init(allocator);
-            break :blk switch (h) {
-                .object => |o| try parseMcpHeadersMap(allocator, o),
-                else => McpHeadersMap.init(allocator),
-            };
-        };
-        errdefer freeMcpHeadersMap(&headers, allocator);
-
-        return McpServerConfig{
-            .url = url_dup,
-            .headers = headers,
-        };
+    /// Free all owned memory inside a `McpServerConfig` (but NOT the
+    /// `McpServersMap` entry itself). Safe to call with partial configs.
+    fn freeMcpServerConfig(cfg: *McpServerConfig, allocator: std.mem.Allocator) void {
+        if (cfg.url) |u| allocator.free(u);
+        if (cfg.command) |c| allocator.free(c);
+        if (cfg.args) |a| {
+            for (a) |arg| allocator.free(arg);
+            allocator.free(a);
+        }
+        if (cfg.cwd) |c| allocator.free(c);
+        freeMcpHeadersMap(&cfg.headers, allocator);
     }
 
     /// Parse a full `McpServersMap` from a JSON object map (the body of
@@ -1098,13 +1194,21 @@ pub const LlmConfig = struct {
             config.mcpServers_parsed = reparsed;
         }
 
-        // Deep-copy the typed MCP servers map.
+        // Deep-copy the typed MCP servers map. Each entry is cloned field
+        // by field — only the transport actually in use (url OR command)
+        // has its strings duped; the other's slots stay null.
         var mcp_it = self.mcp_servers.iterator();
         while (mcp_it.next()) |entry| {
             const src = entry.value_ptr.*;
 
-            var cloned_headers = McpHeadersMap.init(self.allocator);
-            errdefer freeMcpHeadersMap(&cloned_headers, self.allocator);
+            var cloned: McpServerConfig = .{
+                .url = null,
+                .headers = McpHeadersMap.init(self.allocator),
+                .command = null,
+                .args = null,
+                .cwd = null,
+            };
+            errdefer freeMcpServerConfig(&cloned, self.allocator);
 
             var h_it = src.headers.iterator();
             while (h_it.next()) |h| {
@@ -1112,19 +1216,25 @@ pub const LlmConfig = struct {
                 errdefer self.allocator.free(k);
                 const v = try self.allocator.dupe(u8, h.value_ptr.*);
                 errdefer self.allocator.free(v);
-                try cloned_headers.put(k, v);
+                try cloned.headers.put(k, v);
             }
 
-            const url_dup = try self.allocator.dupe(u8, src.url);
-            errdefer self.allocator.free(url_dup);
+            if (src.url) |u| cloned.url = try self.allocator.dupe(u8, u);
+            if (src.command) |c| cloned.command = try self.allocator.dupe(u8, c);
+            if (src.cwd) |c| cloned.cwd = try self.allocator.dupe(u8, c);
+            if (src.args) |src_args| {
+                const args_dup = try self.allocator.alloc([]const u8, src_args.len);
+                errdefer self.allocator.free(args_dup);
+                for (src_args, 0..) |a, i| {
+                    args_dup[i] = try self.allocator.dupe(u8, a);
+                }
+                cloned.args = args_dup;
+            }
 
             const key_dup = try self.allocator.dupe(u8, entry.key_ptr.*);
             errdefer self.allocator.free(key_dup);
 
-            try config.mcp_servers.put(key_dup, McpServerConfig{
-                .url = url_dup,
-                .headers = cloned_headers,
-            });
+            try config.mcp_servers.put(key_dup, cloned);
         }
 
         // Clone all profiles.

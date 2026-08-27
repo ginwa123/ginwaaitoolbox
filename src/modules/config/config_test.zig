@@ -73,7 +73,7 @@ test "mcp_servers: parses snake_case field with one server" {
     try std.testing.expect(!cfg.hasMcpServer("nope"));
 
     const ctx = cfg.mcpServerConfig("context7").?;
-    try std.testing.expectEqualStrings("https://mcp.context7.com/mcp", ctx.url);
+    try std.testing.expectEqualStrings("https://mcp.context7.com/mcp", ctx.url.?);
     try std.testing.expect(ctx.isValid());
     try std.testing.expectEqual(@as(u32, 1), @as(u32, @intCast(ctx.headers.count())));
     try std.testing.expectEqualStrings("YOUR_API_KEY", ctx.headers.get("CONTEXT7_API_KEY").?);
@@ -119,7 +119,7 @@ test "mcp_servers: parses multiple servers" {
     try std.testing.expectEqualStrings("gh-token", gh.headers.get("GITHUB_TOKEN").?);
 
     const plain = cfg.mcpServerConfig("plain").?;
-    try std.testing.expectEqualStrings("https://mcp.plain.com/mcp", plain.url);
+    try std.testing.expectEqualStrings("https://mcp.plain.com/mcp", plain.url.?);
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(plain.headers.count())));
 }
 
@@ -257,6 +257,157 @@ test "mcp_servers: skips non-string header values" {
     try std.testing.expect(mix.headers.get("BAD") == null);
 }
 
+test "mcp_servers: parses stdio server with command+args" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": {
+        \\      "command": "mcp-hello-world",
+        \\      "args": ["--port", "3001"]
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.hasMcpServer("hello"));
+    const server = cfg.mcpServerConfig("hello").?;
+    try std.testing.expectEqualStrings("mcp-hello-world", server.command.?);
+    try std.testing.expectEqual(@as(usize, 2), server.args.?.len);
+    try std.testing.expectEqualStrings("--port", server.args.?[0]);
+    try std.testing.expectEqualStrings("3001", server.args.?[1]);
+    try std.testing.expectEqual(LlmConfig.McpServerConfig.Transport.stdio, server.transport());
+}
+
+test "mcp_servers: parses stdio server with command+args+cwd" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": {
+        \\      "command": "mcp-hello-world",
+        \\      "args": ["server.js"],
+        \\      "cwd": "/opt/mcp"
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const server = cfg.mcpServerConfig("hello").?;
+    try std.testing.expectEqualStrings("/opt/mcp", server.cwd.?);
+    try std.testing.expectEqual(LlmConfig.McpServerConfig.Transport.stdio, server.transport());
+}
+
+test "mcp_servers: stdio server with empty args array works" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": { "command": "mcp-hello-world" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const server = cfg.mcpServerConfig("hello").?;
+    try std.testing.expectEqualStrings("mcp-hello-world", server.command.?);
+    try std.testing.expect(server.args == null);
+}
+
+test "mcp_servers: skips server with neither url nor command" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "bad":  { "headers": { "X": "y" } },
+        \\    "good": { "url": "https://good.example.com" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(!cfg.hasMcpServer("bad"));
+    try std.testing.expect(cfg.hasMcpServer("good"));
+}
+
+test "mcp_servers: skips server with empty command" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "empty_cmd": { "command": "" },
+        \\    "good":      { "url": "https://good.example.com" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(!cfg.hasMcpServer("empty_cmd"));
+    try std.testing.expect(cfg.hasMcpServer("good"));
+}
+
+test "mcp_servers: skips server with non-string command" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "numeric_cmd": { "command": 42 },
+        \\    "good":        { "url": "https://good.example.com" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(!cfg.hasMcpServer("numeric_cmd"));
+    try std.testing.expect(cfg.hasMcpServer("good"));
+}
+
+test "mcp_servers: http transport discriminator returns http for url entries" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "http": { "url": "https://x.example.com" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const server = cfg.mcpServerConfig("http").?;
+    try std.testing.expectEqual(LlmConfig.McpServerConfig.Transport.http, server.transport());
+    try std.testing.expectEqualStrings("https://x.example.com", server.url.?);
+}
+
 test "mcp_servers: non-object headers field is treated as empty" {
     const allocator = std.testing.allocator;
 
@@ -276,7 +427,7 @@ test "mcp_servers: non-object headers field is treated as empty" {
     defer cfg.deinit();
 
     const weird = cfg.mcpServerConfig("weird").?;
-    try std.testing.expectEqualStrings("https://weird.example.com", weird.url);
+    try std.testing.expectEqualStrings("https://weird.example.com", weird.url.?);
     try std.testing.expectEqual(@as(u32, 0), @as(u32, @intCast(weird.headers.count())));
 }
 
@@ -581,12 +732,12 @@ test "mcp_servers: clone produces independent deep copy" {
     // Both should have the same data.
     try std.testing.expect(cloned.hasMcpServer("context7"));
     const ctx = cloned.mcpServerConfig("context7").?;
-    try std.testing.expectEqualStrings("https://mcp.context7.com/mcp", ctx.url);
+    try std.testing.expectEqualStrings("https://mcp.context7.com/mcp", ctx.url.?);
     try std.testing.expectEqualStrings("YOUR_API_KEY", ctx.headers.get("CONTEXT7_API_KEY").?);
 
     // The strings should be at different addresses — independent allocations.
     const orig_url = cfg.mcpServerUrl("context7").?;
-    try std.testing.expect(orig_url.ptr != ctx.url.ptr);
+    try std.testing.expect(orig_url.ptr != ctx.url.?.ptr);
 
     const orig_key = cfg.mcpServerConfig("context7").?.headers.get("CONTEXT7_API_KEY").?;
     try std.testing.expect(orig_key.ptr != ctx.headers.get("CONTEXT7_API_KEY").?.ptr);
