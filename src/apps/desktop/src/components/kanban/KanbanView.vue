@@ -316,9 +316,10 @@ const emit = defineEmits<{
   // Open the per-board KanbanSettingsDialog (host owns it). No
   // payload — the host derives the active item from its own state.
   openSettings: []
-  // Open the per-board KanbanAgentSettings dialog (Migration 081,
-  // agent-kanbans mirror — host owns the mount like openSettings).
-  openAgentSettings: []
+  // (openAgentSettings was REMOVED in the kanban-agent-as-tab plan —
+  // the Agent button now navigates directly to /app/kanban/:itemId/settings?tab=agent
+  // instead of emitting for the host to mount a dialog. See plan
+  // docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md.)
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
@@ -578,10 +579,16 @@ const handleOpenSettings = () => {
   emit('openSettings')
 }
 
-// Agent-Kanbans mirror (Migration 081): open the per-board agent
-// config dialog (host owns the mount, same pattern as openSettings).
+// Agent-Kanbans mirror (Migration 081): navigate to the dedicated
+// settings page with the Agent tab active. URL is the source of truth
+// — reload preserves state. The old `openAgentSettings` emit +
+// AppLayout-level dialog ref are gone; see plan
+// docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md.
 const handleOpenAgentSettings = () => {
-  emit('openAgentSettings')
+  void router.push({
+    path: `/app/kanban/${props.item.id}/settings`,
+    query: { tab: 'agent' },
+  })
 }
 
 // NEW (plan: 2026-08-06-kanban-add-task-button-placement). Open the
@@ -1160,7 +1167,7 @@ const handleCreateTaskSave = async (payload: {
         "
         :data-testid="`kanban-view-${item.id}-open-agent-settings`"
         @click="handleOpenAgentSettings"
-        title="Open agent config (knowledge, system prompt, tools)"
+        title="Open agent config in board settings"
       >
         <span aria-hidden="true">🤖</span>
         <span class="ml-1">Agent</span>
