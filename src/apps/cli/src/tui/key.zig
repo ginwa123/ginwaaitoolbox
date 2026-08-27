@@ -18,6 +18,11 @@ pub const Key = union(enum) {
     end,
     page_up,
     page_down,
+    /// SGR-encoded mouse wheel up (button 64). See the test block
+    /// below for the wire shape.
+    wheel_up,
+    /// SGR-encoded mouse wheel down (button 65).
+    wheel_down,
     ctrl_c,
     ctrl_d,
     ctrl_u,
@@ -53,6 +58,35 @@ pub fn parse(buf: []const u8) !?struct { key: Key, len: usize } {
             if (buf.len == 1) return .{ .key = .escape, .len = 1 };
             // CSI sequences: ESC [ <params> <final>
             if (buf[1] == '[') {
+                // SGR mouse: ESC [ < button ; col ; row M (or m for release).
+                // Distinguish from ordinary CSI by the '<' prefix character
+                // and the final byte (M or m). We treat the rest of the
+                // existing CSI dispatch as a fallback.
+                // NB: need buf.len > 2 (strict) so index 2 is in-range.
+                if (buf.len > 2 and buf[2] == '<') {
+                    var i: usize = 3;
+                    while (i < buf.len and (std.ascii.isDigit(buf[i]) or buf[i] == ';')) : (i += 1) {}
+                    if (i >= buf.len) return null; // incomplete
+                    const final = buf[i];
+                    if (final != 'M' and final != 'm') return null; // not SGR mouse
+                    const consumed = i + 1;
+                    // Parse the button field (params[0]) — col/row are
+                    // ignored in v1 (no click handling). button is the
+                    // FIRST ';'-separated number after '<'.
+                    const semicolon = std.mem.indexOfScalar(u8, buf[3..i], ';') orelse 0;
+                    const button_str = buf[3 .. 3 + semicolon];
+                    const button = std.fmt.parseInt(u16, button_str, 10) catch {
+                        return null;
+                    };
+                    const k: ?Key = switch (button) {
+                        64 => .wheel_up,
+                        65 => .wheel_down,
+                        else => null, // 0/1/2 = clicks — ignore for v1
+                    };
+                    if (k) |key| return .{ .key = key, .len = consumed };
+                    return null; // unhandled SGR mouse event — drop
+                }
+
                 var i: usize = 2;
                 while (i < buf.len and (std.ascii.isDigit(buf[i]) or buf[i] == ';')) : (i += 1) {}
                 if (i >= buf.len) return null; // incomplete — need more bytes
@@ -146,6 +180,42 @@ test "parse: home/end/delete/page keys" {
     try testing.expectEqual(Key.delete, (try parse("\x1b[3~")).?.key);
     try testing.expectEqual(Key.page_up, (try parse("\x1b[5~")).?.key);
     try testing.expectEqual(Key.page_down, (try parse("\x1b[6~")).?.key);
+}
+
+// ----------------------------------------------------------------------------
+// SGR mouse wheel (round-2 — Task 5)
+// ----------------------------------------------------------------------------
+//
+// Format: \x1b[<button;col;rowM (uppercase M = press, lowercase m = release).
+//   button 64 = wheel up, 65 = wheel down (no modifier). Other buttons
+//   (clicks, drags) are ignored in v1 — parser returns null so the
+//   dispatcher drops them without entering an infinite loop.
+//
+// We enable SGR mode (CSI ? 1006 h) and basic mouse tracking (CSI ?
+// 1000 h) on program startup, so the terminal is guaranteed to send
+// the modern format. X10 mode (legacy \x1b[M + 3 bytes) is NOT
+// supported in v1.
+
+test "parse: SGR mouse wheel up = button 64" {
+    const got = (try parse("\x1b[<64;12;8M")).?.key;
+    try testing.expectEqual(Key.wheel_up, got);
+}
+
+test "parse: SGR mouse wheel down = button 65" {
+    const got = (try parse("\x1b[<65;12;8M")).?.key;
+    try testing.expectEqual(Key.wheel_down, got);
+}
+
+test "parse: SGR mouse press (button 0) returns null, not a wheel key" {
+    // \x1b[<0;10;5M → left-button press; v1 ignores clicks.
+    const got = try parse("\x1b[<0;10;5M");
+    try testing.expect(got == null);
+}
+
+test "parse: SGR mouse release (button 0, lowercase m) returns null" {
+    // \x1b[<0;10;5m → release; same as press — ignored in v1.
+    const got = try parse("\x1b[<0;10;5m");
+    try testing.expect(got == null);
 }
 
 test "parse: incomplete escape returns null" {

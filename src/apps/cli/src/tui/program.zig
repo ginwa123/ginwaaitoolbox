@@ -60,9 +60,24 @@ pub fn Program(comptime Model: type) type {
             defer {
                 if (self.raw_mode) |rm| terminal.leaveRawMode(rm);
                 self.writeOut("\x1b[?25h\x1b[?1049l"); // show cursor, leave alt-screen
+                // Disable mouse tracking (paired with the enable in
+                // run()). MUST be in the same defer block as the
+                // enable so a mid-run crash doesn't leave the user's
+                // terminal in mouse-tracking mode (which would make
+                // text selection paste escape sequences).
+                self.writeOut("\x1b[?1006l\x1b[?1000l");
             }
 
             self.writeOut("\x1b[?1049h\x1b[?25l"); // enter alt-screen, hide cursor
+            // Round-2 (Task 5): enable SGR mouse tracking so the
+            // terminal sends `\x1b[<button;col;rowM` sequences when
+            // the user scrolls the wheel. 1000 = basic mouse tracking
+            // (press/release), 1006 = SGR-encoded coordinates. We
+            // only handle wheel events in v1 (button 64/65); clicks
+            // are dropped at the key parser. Disable on cleanup so
+            // the terminal is left in a normal state — otherwise text
+            // selection (drag-to-highlight) would paste garbage.
+            self.writeOut("\x1b[?1000h\x1b[?1006h");
 
             var size = terminal.size();
             try self.draw(size.width, size.height);

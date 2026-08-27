@@ -28,6 +28,8 @@ fn usage() []const u8 {
     \\  Enter              Send the message
     \\  Ctrl-C / Ctrl-D    Quit
     \\  Up/Down            Input history
+    \\  PgUp / PgDn        Scroll chat history
+    \\  Mouse wheel        Scroll chat history
     \\
     ;
 }

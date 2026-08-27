@@ -64,6 +64,10 @@ pub const App = struct {
     seen_ids: std.StringHashMapUnmanaged(void) = .empty,
     /// Milliseconds accumulated since the last poll.
     since_poll_ms: u64 = 0,
+    /// Last rendered viewport height (in rows). Recorded at the end
+    /// of `App.view` so the scroll bindings (PgUp/PgDn) can step by
+    /// `(height - 2)` — the "one screen minus context" convention.
+    last_height: u16 = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, cfg: Config) !App {
         var app = App{
@@ -127,8 +131,32 @@ pub const App = struct {
     }
 
     fn handleKey(self: *App, k: tui.Key) !tui.Cmd {
+        // Scroll keys are intercepted BEFORE the input widget sees them,
+        // otherwise arrow / page keys would route to input-history nav
+        // (Up/Down) or be dropped (PageUp/PageDown/wheel). Round-2
+        // added PgUp/PgDn + mouse wheel (Task 5).
         switch (k) {
             .ctrl_c, .ctrl_d => return .none, // Program handles quit itself
+            .page_up => {
+                // One screen minus a 2-row context line — matches less / vim.
+                const step = self.last_height -| 2;
+                if (step > 0) self.viewport.scrollUp(step);
+                return .none;
+            },
+            .page_down => {
+                const step = self.last_height -| 2;
+                if (step > 0) self.viewport.scrollDown(step);
+                return .none;
+            },
+            .wheel_up => {
+                // 3 visual rows per wheel notch — matches lazygit / k9s.
+                self.viewport.scrollUp(3);
+                return .none;
+            },
+            .wheel_down => {
+                self.viewport.scrollDown(3);
+                return .none;
+            },
             else => {},
         }
         const submitted = try self.input.handleKey(k);
@@ -286,6 +314,10 @@ pub const App = struct {
         const st_off = @as(usize, height - 1) * width;
         @memcpy(out.cells[st_off..][0..st_frame.cells.len], st_frame.cells);
 
+        // Record the height so scroll bindings can step by
+        // (height - 2). Without this, last_height stays 0 and
+        // PgUp/PgDn no-op.
+        self.last_height = height;
         return out;
     }
 };
@@ -461,6 +493,46 @@ test "App: handleKey + Enter does NOT immediately echo user message" {
     // not via an immediate local echo. Otherwise we'd render `> hai`
     // twice (once here, once when the server's row is polled).
     try testing.expectEqual(@as(usize, 1), app.viewport.lines.items.len);
+}
+
+test "App: PgUp scrolls up; PgDn scrolls back to bottom (round-2 Task 5)" {
+    var app = try testApp();
+    defer app.deinit();
+    // Pre-record the viewport height by calling view once.
+    {
+        var frame = try app.view(testing.allocator, 80, 20);
+        defer frame.deinit(testing.allocator);
+    }
+    // Fill the viewport with more lines than fit in 20 rows.
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        const body = try std.fmt.allocPrint(testing.allocator, "{{\"messages\":[{{\"id\":\"m{d}\",\"role\":\"assistant\",\"content\":\"line {d}\"}}]}}", .{ i, i });
+        defer testing.allocator.free(body);
+        try app.onMessages(body);
+    }
+    try testing.expectEqual(@as(usize, 0), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .page_up });
+    try testing.expect(app.viewport.scroll_from_bottom > 0);
+    _ = try app.update(.{ .key = .page_down });
+    try testing.expectEqual(@as(usize, 0), app.viewport.scroll_from_bottom);
+}
+
+test "App: mouse wheel up scrolls by 3 rows; wheel_down back" {
+    var app = try testApp();
+    defer app.deinit();
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        const body = try std.fmt.allocPrint(testing.allocator, "{{\"messages\":[{{\"id\":\"m{d}\",\"role\":\"assistant\",\"content\":\"line {d}\"}}]}}", .{ i, i });
+        defer testing.allocator.free(body);
+        try app.onMessages(body);
+    }
+    try testing.expectEqual(@as(usize, 0), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .wheel_up });
+    try testing.expectEqual(@as(usize, 3), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .wheel_up });
+    try testing.expectEqual(@as(usize, 6), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .wheel_down });
+    try testing.expectEqual(@as(usize, 3), app.viewport.scroll_from_bottom);
 }
 
 test "App: onMessages renders SSE-delivered user prompt as > bold green" {
