@@ -211,9 +211,14 @@ pub const Input = struct {
         const prompt = "> ";
         var cx = f.writeText(0, 0, prompt, .{ .bold = true });
         cx = f.writeText(cx, 0, self.buf.items, .{});
-        // Cursor cell: inverse-video block on the next char position.
+        // Cursor cell: bold `|` caret, foreground only. The previous
+        // implementation used a background-fill block (`.bg = .white`)
+        // which several terminal palettes (iTerm2, Solarized, GNOME
+        // default) render as a yellow block. A fg-only caret is
+        // universally supported and matches how Claude Code / lazygit
+        // / k9s render their input.
         if (cx < width) {
-            f.set(cx, 0, .{ .char = ' ', .bg = .white });
+            f.set(cx, 0, .{ .char = '|', .fg = .white, .bold = true });
         }
         f.cursor = .{ .x = cx, .y = 0 };
         return f;
@@ -390,4 +395,21 @@ test "StatusBar: left/right render at edges" {
     try testing.expectEqual(@as(u21, 's'), f.get(0, 0).char);
     // Right-aligned: last chars of "streaming" land at x=29.
     try testing.expectEqual(@as(u21, 'g'), f.get(29, 0).char);
+}
+
+test "Input: cursor cell uses foreground-only caret (no bg)" {
+    var in = Input.init(testing.allocator);
+    defer in.deinit();
+    _ = try in.handleKey(.{ .rune = 'a' });
+    var f = try in.render(testing.allocator, 20);
+    defer f.deinit(testing.allocator);
+    // Cursor sits at column 3 ("> a" is 3 chars: '>', ' ', 'a').
+    const cursor = f.get(3, 0);
+    try testing.expectEqual(@as(u21, '|'), cursor.char);
+    try testing.expect(cursor.bg == null); // NO background fill — the old
+    // cursor cell used `.bg = .white` which several terminal
+    // palettes (iTerm2, Solarized, GNOME default) render as a
+    // yellow block. The fg-only caret is universally supported.
+    try testing.expectEqual(@as(?@import("color.zig").Color, .white), cursor.fg);
+    try testing.expect(cursor.bold);
 }
