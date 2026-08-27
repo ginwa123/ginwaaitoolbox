@@ -688,6 +688,15 @@ jobs:
           # NuGet download, not project sources).
           New-Item -Path $webview2Dst -ItemType Directory -Force | Out-Null
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
+          # EventToken.h ships next to WebView2.h in the NuGet and is
+          # `#include`d by WebView2.h itself. build.zig's
+          # webview2MissingPrereq check lists it explicitly — without
+          # it, zig cc dies with "fatal error: 'EventToken.h' file
+          # not found" deep inside Microsoft's headers (this is what
+          # PR #359's directory-creation fix accidentally let surface
+          # — see the build.zig check at the webview2MissingPrereq
+          # comment for the original 2026-08-22 failure trace).
+          Copy-Item -Force (Join-Path $webview2Src "build\native\include\EventToken.h") (Join-Path $webview2Dst "EventToken.h")
           # WebView2Loader.h was renamed/removed in 1.0.2651.64 — the
           # loader inline is now consolidated inside WebView2.h
           # itself. The .dll + .lib still exist for runtime + static
@@ -838,6 +847,11 @@ jobs:
             Write-Host "  ok $wv2\WebView2.h"
           } else {
             Write-Warning "$wv2\WebView2.h missing"
+          }
+          if (Test-Path "$wv2\EventToken.h") {
+            Write-Host "  ok $wv2\EventToken.h"
+          } else {
+            Write-Warning "$wv2\EventToken.h missing"
           }
           if (Test-Path "$wv2\WebView2Loader.h") {
             Write-Host "  ok $wv2\WebView2Loader.h"
