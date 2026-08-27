@@ -8,7 +8,7 @@ Plan: `docs/superpowers/plans/2026-08-27-mcp-stdio.md`
 
 - [x] **Task 1** — `mcp_stdio.zig`: ONE file with framing + StdioClient + StdioRegistry + 17 inline tests (14 behavioural + 3 FD-leak regression tests)
 - [x] **Task 2** — Extend `McpServerConfig` to carry both transports (Config.zig)
-- [ ] **Task 3** — Wire stdio client into `handle_mcp_tool.zig` + tool list fetch
+- [x] **Task 3** — Wire stdio client into `handle_mcp_tool.zig` + tool list fetch
 - [ ] **Task 4** — `mcp-hello-world` binary (using existing McpServer framework)
 - [ ] **Task 5** — Functional test: end-to-end agent calls `say_hello`
 - [ ] **Task 6** — Frontend: extend `McpServer` type, modal, serializer
