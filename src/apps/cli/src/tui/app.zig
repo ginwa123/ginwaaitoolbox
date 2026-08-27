@@ -13,6 +13,7 @@ const std = @import("std");
 const tui = @import("root.zig");
 const custom_http_client = @import("custom_http_client");
 const transport = @import("transport.zig");
+const render_msg = @import("render_msg.zig");
 
 /// Case-insensitive ASCII equality. Avoids a std lib function that may
 /// or may not be available depending on Zig patch version.
@@ -46,8 +47,21 @@ pub const App = struct {
 
     session_id: ?[]u8 = null,
     is_streaming: bool = false,
-    /// Number of messages already rendered from the last poll.
-    seen_count: usize = 0,
+    /// IDs of messages already rendered from a prior poll. Used to
+    /// dedupe re-polls — the server returns the LAST N messages on
+    /// every poll, so we must NOT re-render rows we've already
+    /// shown. Replaces the previous `seen_count` counter (which
+    /// silently dropped rows when the response shrank).
+    ///
+    /// Uses `StringHashMapUnmanaged` with MANUAL key ownership —
+    /// Zig 0.16's `StringHashMap` family does NOT dupe keys (see
+    /// `std/hash_map.zig:68` "Key memory is managed by the
+    /// caller"). We `allocator.dupe` on insert and free each key
+    /// in `App.deinit`. Storing the borrowed `id` slice directly
+    /// would dangle when `parsed.deinit()` runs after the JSON poll
+    /// ends — the next `getOrPut` then segfaults comparing against
+    /// the freed memory.
+    seen_ids: std.StringHashMapUnmanaged(void) = .empty,
     /// Milliseconds accumulated since the last poll.
     since_poll_ms: u64 = 0,
 
@@ -61,6 +75,7 @@ pub const App = struct {
             .spinner = .{ .label = "thinking" },
             .status = .{},
             .http_client = custom_http_client.Client.init(allocator),
+            .seen_ids = .empty,
         };
         if (cfg.session_id) |sid| {
             app.session_id = try allocator.dupe(u8, sid);
@@ -75,6 +90,14 @@ pub const App = struct {
         self.viewport.deinit();
         self.input.deinit();
         if (self.session_id) |sid| self.allocator.free(sid);
+        // Free each duped key before the hashmap's buckets are freed.
+        // Hashmap's `deinit` does NOT free keys (see std/hash_map.zig
+        // "Key memory is managed by the caller").
+        var it = self.seen_ids.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(@constCast(entry.key_ptr.*));
+        }
+        self.seen_ids.deinit(self.allocator);
         self.http_client.deinit();
     }
 
@@ -147,8 +170,10 @@ pub const App = struct {
     }
 
     /// Called by the command executor after GET .../messages succeeds.
-    /// `body` is the raw JSON response; we extract message contents for
-    /// rows beyond `seen_count`.
+    /// `body` is the raw JSON response; we render each new message
+    /// via `renderMessage` and append the styled `[]Line`s to the
+    /// viewport. Dedupe is by message id (not by array index), so
+    /// re-polls don't re-render the same rows.
     pub fn onMessages(self: *App, body: []const u8) !void {
         const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
             // Malformed body — keep streaming and let the next poll try
@@ -161,34 +186,72 @@ pub const App = struct {
         if (root != .array) return;
         const arr = root.array;
 
-        // The endpoint returns the LAST `limit` messages in asc order;
-        // if more arrived than we've seen, skip ahead.
-        if (arr.items.len <= self.seen_count) {
-            self.seen_count = arr.items.len;
-            if (!self.is_streaming) return;
-        }
-        var i = self.seen_count;
-        while (i < arr.items.len) : (i += 1) {
-            const item = arr.items[i];
-            if (item != .object) continue; // skip strings/numbers/null etc.
-            const obj = item.object;
-            const content = if (obj.get("content")) |c| (if (c == .string) c.string else "") else "";
-            if (content.len == 0) continue;
-            try self.viewport.appendLine(content, .{});
-        }
-        self.seen_count = arr.items.len;
-
         // Heuristic: once an assistant message lands after our send,
         // the turn is over. Case-insensitive to match server variants
-        // like "Assistant".
+        // like "Assistant". Walked first so a streaming-burst re-poll
+        // that re-includes the final assistant still flips the flag.
         if (self.is_streaming and arr.items.len > 0) {
             const last = arr.items[arr.items.len - 1];
             if (last == .object) {
-                const role = last.object.get("role") orelse return;
-                if (role == .string and asciiEqIgnoreCase(role.string, "assistant")) {
-                    self.is_streaming = false;
+                if (last.object.get("role")) |role| {
+                    if (role == .string and asciiEqIgnoreCase(role.string, "assistant")) {
+                        self.is_streaming = false;
+                    }
                 }
             }
+        }
+
+        // Render every message we haven't seen yet.
+        for (arr.items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+
+            const id = if (obj.get("id")) |c| (if (c == .string) c.string else "") else "";
+            // Backend always returns an id for stored rows; for legacy
+            // / synthetic messages without id we still render (no
+            // dedupe) so we don't drop them silently. The hashmap
+            // does NOT dupe keys (see the comment on `seen_ids`) —
+            // we must dupe the key ourselves before insert, otherwise
+            // it dangles the moment `parsed.deinit()` runs.
+            if (id.len > 0) {
+                const gop = try self.seen_ids.getOrPut(self.allocator, id);
+                if (gop.found_existing) continue;
+                // Replace the borrowed key with an owned copy. The
+                // unmanaged `getOrPut` wrote `key` (borrowed) into
+                // `gop.key_ptr.*` — overwrite with our dupe so it
+                // survives past this function's `defer parsed.deinit()`.
+                const owned = try self.allocator.dupe(u8, id);
+                gop.key_ptr.* = owned;
+            }
+
+            const role = if (obj.get("role")) |c| (if (c == .string) c.string else "") else "";
+            const content = if (obj.get("content")) |c| (if (c == .string) c.string else "") else "";
+            const tool_name = if (obj.get("tool_name")) |c| (if (c == .string) c.string else "") else "";
+            const reasoning_content = if (obj.get("reasoning_content")) |c| (if (c == .string) c.string else "") else "";
+
+            // Skip messages with no renderable content AND no role
+            // (defensive — a row like {"id":"x"} shouldn't render as
+            // a blank line). Tool rows with `<tool>` envelopes ARE
+            // renderable even when content looks empty after parsing.
+            if (role.len == 0 and content.len == 0) continue;
+
+            const msg_view = render_msg.MessageView{
+                .role = role,
+                .content = content,
+                .tool_name = tool_name,
+                .reasoning_content = reasoning_content,
+            };
+            const lines = render_msg.renderMessage(self.allocator, msg_view) catch |err| switch (err) {
+                error.OutOfMemory => return,
+            };
+            for (lines) |line| {
+                // Move ownership of `line.text` into the viewport's
+                // Line (which will free it on viewport.deinit). We
+                // still own the outer slice and must free it.
+                const owned = tui.widgets.Line{ .text = line.text, .style = line.style };
+                try self.viewport.lines.append(self.allocator, owned);
+            }
+            self.allocator.free(lines);
         }
     }
 
@@ -278,8 +341,8 @@ test "App: onMessages appends new assistant content and stops streaming" {
     app.is_streaming = true;
     const body =
         \\{"messages":[
-        \\ {"role":"user","content":"hi"},
-        \\ {"role":"assistant","content":"hello!"}
+        \\ {"id":"u1","role":"user","content":"hi"},
+        \\ {"id":"a1","role":"assistant","content":"hello!"}
         \\]}
     ;
     try app.onMessages(body);
@@ -292,11 +355,88 @@ test "App: onMessages ignores already-seen messages" {
     var app = try testApp();
     defer app.deinit();
     const body =
-        \\{"messages":[{"role":"assistant","content":"a"}]}
+        \\{"messages":[{"id":"a1","role":"assistant","content":"a"}]}
     ;
     try app.onMessages(body);
     try app.onMessages(body); // same count → no new lines
     try testing.expectEqual(@as(usize, 2), app.viewport.lines.items.len);
+}
+
+test "App: onMessages dedupes by message id (regression: <tool> x3 bug)" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hi"},
+        \\ {"id":"t1","role":"tool","tool_name":"read_file","content":"<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/a</path><content>x</content></data></tool>"},
+        \\ {"id":"a1","role":"assistant","content":"<think>p</think>done"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    const first_count = app.viewport.lines.items.len;
+    try app.onMessages(body); // re-poll
+    try testing.expectEqual(first_count, app.viewport.lines.items.len);
+}
+
+test "App: onMessages renders tool card header (no raw <tool> xml)" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"t1","role":"tool","tool_name":"read_file","content":"<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/foo.txt</path><content>x</content></data></tool>"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    const lines = app.viewport.lines.items;
+    try testing.expect(std.mem.indexOf(u8, lines[lines.len - 1].text, "▶ read_file  /foo.txt  ✓") != null);
+    try testing.expect(std.mem.indexOf(u8, lines[lines.len - 1].text, "<tool>") == null);
+}
+
+test "App: onMessages strips <think> from assistant content" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"a1","role":"assistant","content":"<think>secret plan</think>hello user"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    const lines = app.viewport.lines.items;
+    try testing.expect(std.mem.indexOf(u8, lines[lines.len - 1].text, "<think>") == null);
+    try testing.expectEqualStrings("hello user", lines[lines.len - 1].text);
+}
+
+test "App: onMessages renders thinking-only assistant as chip" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"a1","role":"assistant","content":"<think>just thinking</think>"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    const lines = app.viewport.lines.items;
+    try testing.expectEqualStrings("… thinking …", lines[lines.len - 1].text);
+}
+
+test "App: onMessages renders user prompt as > bold green" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    const last = app.viewport.lines.items[app.viewport.lines.items.len - 1];
+    try testing.expectEqualStrings("> hai", last.text);
+    try testing.expect(last.style.bold);
+    try testing.expectEqual(@as(?tui.Color, .green), last.style.fg);
 }
 
 test "App: view produces full-height frame with status bar" {
