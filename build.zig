@@ -2395,6 +2395,7 @@ pub fn build(b: *std.Build) void {
     build_all_step.dependOn(host_install_step);
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
+    build_all_step.dependOn(&tui_install.step);
     build_all_step.dependOn(&build_banner.step);
     // Make `zig build` (default) auto-fetch the vendored curl archive
     // when missing. The fetch script is idempotent — re-running on a
