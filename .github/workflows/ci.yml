@@ -688,15 +688,58 @@ jobs:
           # NuGet download, not project sources).
           New-Item -Path $webview2Dst -ItemType Directory -Force | Out-Null
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
-          # EventToken.h ships next to WebView2.h in the NuGet and is
-          # `#include`d by WebView2.h itself. build.zig's
-          # webview2MissingPrereq check lists it explicitly — without
-          # it, zig cc dies with "fatal error: 'EventToken.h' file
-          # not found" deep inside Microsoft's headers (this is what
-          # PR #359's directory-creation fix accidentally let surface
-          # — see the build.zig check at the webview2MissingPrereq
-          # comment for the original 2026-08-22 failure trace).
-          Copy-Item -Force (Join-Path $webview2Src "build\native\include\EventToken.h") (Join-Path $webview2Dst "EventToken.h")
+          # EventToken.h is `#include`d by WebView2.h itself
+          # (line 1700 of build/native/include/WebView2.h). build.zig's
+          # webview2MissingPrereq check lists it as a required staging
+          # file alongside WebView2.h — without it, the compile fails
+          # with `fatal error: 'EventToken.h' file not found` deep
+          # inside Microsoft's headers (original 2026-08-22 CI trace).
+          #
+          # EventToken.h is NOT shipped by the WebView2 NuGet in 1.0.2651.64
+          # (only build/native/include/{WebView2.h, WebView2EnvironmentOptions.h}
+          # are present). It's a WinRT base header that lives in the Windows
+          # SDK at `<kitroot>\Include\<ver>\winrt\EventToken.h`. Older WebView2
+          # NuGet revs (~1.0.1418) did ship it next to WebView2.h, so try the
+          # NuGet path first and fall back to the SDK winrt dir resolved from
+          # $env:INCLUDE (set by vcvars64.bat / VS dev shells) or the canonical
+          # Windows Kits probe. CI run 33061112059 (after PR #359's New-Item
+          # fix) reproduced `Cannot find path '...\build\native\include\EventToken.h'`
+          # — confirming the NuGet no longer carries it on 1.0.2651.64.
+          $eventTokenSource = $null
+          if (Test-Path (Join-Path $webview2Src "build\native\include\EventToken.h")) {
+            $eventTokenSource = Join-Path $webview2Src "build\native\include\EventToken.h"
+          } else {
+            # Resolve the Windows SDK winrt include dir. $env:INCLUDE is the
+            # authoritative source when running under vcvars64 / VS dev shells;
+            # otherwise probe the canonical Windows Kits install paths and
+            # pick the highest-version subdir that has a winrt\EventToken.h.
+            $winrtDirs = @()
+            if ($env:INCLUDE) {
+              $winrtDirs += ($env:INCLUDE -split ';' | Where-Object {
+                ($_ -ne '') -and ((Split-Path $_ -Leaf) -eq 'winrt') -and (Test-Path (Join-Path $_ 'EventToken.h'))
+              })
+            }
+            if ($winrtDirs.Count -eq 0) {
+              $kitRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+              if (-not (Test-Path $kitRoot)) { $kitRoot = 'C:\Program Files\Windows Kits\10\Include' }
+              if (Test-Path $kitRoot) {
+                $versions = Get-ChildItem -Path $kitRoot -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path (Join-Path (Join-Path $kitRoot $_.Name) 'winrt\EventToken.h') } |
+                  Sort-Object Name -Descending
+                if ($versions.Count -gt 0) {
+                  $winrtDirs += Join-Path (Join-Path $kitRoot $versions[0].Name) 'winrt'
+                }
+              }
+            }
+            if ($winrtDirs.Count -gt 0) {
+              $eventTokenSource = Join-Path $winrtDirs[0] 'EventToken.h'
+            }
+          }
+          if ($eventTokenSource) {
+            Copy-Item -Force $eventTokenSource (Join-Path $webview2Dst "EventToken.h")
+          } else {
+            Write-Warning "EventToken.h not found in NuGet or Windows SDK winrt; zig cc will likely fail with 'EventToken.h file not found'"
+          }
           # WebView2Loader.h was renamed/removed in 1.0.2651.64 — the
           # loader inline is now consolidated inside WebView2.h
           # itself. The .dll + .lib still exist for runtime + static
