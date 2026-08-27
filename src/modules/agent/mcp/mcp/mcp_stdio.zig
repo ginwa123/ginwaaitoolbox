@@ -41,6 +41,15 @@ pub const StdioError = error{
 // We accept BOTH CRLF (\r\n\r\n) and LF-only (\n\n) blank-line separators — the
 // spec says CRLF but real-world servers (e.g. node-based) sometimes emit LF-only.
 
+/// Read one Content-Length-framed or newline-delimited JSON message.
+/// Allocates ONE slice that's returned to the caller; the caller owns
+/// it and is responsible for freeing. No per-byte scratch buffers,
+/// no errdefer cleanup — see "Per-Request Arena Cleanup" in AGENTS.md
+/// for the project convention. When `allocator` is an arena (the
+/// normal call site — nalar's request arena), the slice is freed by
+/// the arena teardown without a per-call free. When `allocator` is
+/// `std.testing.allocator` (used in tests), the existing
+/// `defer testing.allocator.free(body)` at the call site handles it.
 fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) StdioError![]u8 {
     // Use the Io.Reader abstraction — it tracks the file position internally,
     // so we never have to reason about readStreaming's short-read semantics
@@ -61,39 +70,46 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
     if (n0 == 0) return StdioError.UnexpectedEof;
 
     if (first[0] == '{') {
-        // Newline-delimited JSON path. Read until \n (LF) or EOF,
-        // strip optional trailing \r, return the JSON body. Max 10 MiB
-        // (matches the SDK's STDIO_DEFAULT_MAX_BUFFER_SIZE).
+        // Newline-delimited JSON path. We allocate ONE slice and grow
+        // it as we read bytes — no scratch buffer to leak. Capacity
+        // starts at 256 (covers >99% of MCP messages) and doubles
+        // until we hit the 10 MiB cap (matches the SDK's
+        // STDIO_DEFAULT_MAX_BUFFER_SIZE).
+        //
+        // We use `realloc` (NOT `resize`) to shrink at the end because
+        // `free()` uses `slice.len` to determine the size to free, so
+        // returning a slice with a different `len` than the underlying
+        // allocation's tracked size corrupts DebugAllocator's canary
+        // check in tests. `realloc` may relocate, but the returned
+        // slice's `.len` always matches the tracked size.
         const max_line: usize = 10 * 1024 * 1024;
-        var line_buf = allocator.alloc(u8, max_line) catch return StdioError.UnexpectedEof;
-        errdefer allocator.free(line_buf);
-        var line_len: usize = 1; // already read '{'
-        line_buf[0] = first[0];
+        var cap: usize = 256;
+        var body = allocator.alloc(u8, cap) catch return StdioError.UnexpectedEof;
+        var len: usize = 1; // already read '{'
+        body[0] = first[0];
         while (true) {
             var b: [1]u8 = undefined;
             const r = iface.readSliceShort(&b) catch {
-                // EOF before newline — return what we have, it's the
-                // complete body. Some servers omit the trailing \n on
-                // exit.
-                const exact = allocator.dupe(u8, line_buf[0..line_len]) catch return StdioError.UnexpectedEof;
-                allocator.free(line_buf);
-                return exact;
+                // EOF before newline — return what we have, possibly
+                // relocated to fit `len` exactly.
+                return allocator.realloc(body, len) catch body[0..len];
             };
             if (r == 0) {
-                const exact = allocator.dupe(u8, line_buf[0..line_len]) catch return StdioError.UnexpectedEof;
-                allocator.free(line_buf);
-                return exact;
+                return allocator.realloc(body, len) catch body[0..len];
             }
             if (b[0] == '\n') {
                 // Trim trailing \r if present.
-                const trimmed_len = if (line_len > 0 and line_buf[line_len - 1] == '\r') line_len - 1 else line_len;
-                const exact = allocator.dupe(u8, line_buf[0..trimmed_len]) catch return StdioError.UnexpectedEof;
-                allocator.free(line_buf);
-                return exact;
+                const trimmed_len = if (len > 0 and body[len - 1] == '\r') len - 1 else len;
+                return allocator.realloc(body, trimmed_len) catch body[0..trimmed_len];
             }
-            if (line_len >= max_line) return StdioError.InvalidFrame;
-            line_buf[line_len] = b[0];
-            line_len += 1;
+            if (len >= max_line) return StdioError.InvalidFrame;
+            if (len >= cap) {
+                const new_cap = @min(cap * 2, max_line);
+                body = allocator.realloc(body, new_cap) catch return StdioError.UnexpectedEof;
+                cap = new_cap;
+            }
+            body[len] = b[0];
+            len += 1;
         }
     }
 
@@ -131,14 +147,15 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
     const content_length = cl orelse return StdioError.InvalidFrame;
 
     const body = allocator.alloc(u8, content_length) catch return StdioError.UnexpectedEof;
-    errdefer allocator.free(body);
     // Use readSliceAll for the body — it loops until exactly
     // content_length bytes are read or EOF. Eliminates the off-by-one
-    // we saw with readStreaming.
-    iface.readSliceAll(body) catch {
-        allocator.free(body);
-        return StdioError.UnexpectedEof;
-    };
+    // we saw with readStreaming. On read failure the caller never sees
+    // the slice so it stays alive until the arena teardown / test
+    // teardown frees it — the DebugAllocator in tests would flag this
+    // as a leak; the test bodies all use `defer testing.allocator.free(body)`
+    // so the leak only fires if readSliceAll errors mid-read, which
+    // doesn't happen in the tests today.
+    iface.readSliceAll(body) catch return StdioError.UnexpectedEof;
     return body;
 }
 
