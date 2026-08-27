@@ -30,9 +30,12 @@ import { useRoute, useRouter } from 'vue-router'
 import KanbanColumnEditor from '../kanban/KanbanColumnEditor.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
+import KanbanAgentPanel from './KanbanAgentPanel.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 
-type SettingsMode = 'columns' | 'memories'
+type SettingsMode = 'columns' | 'memories' | 'agent'
+
+const VALID_TABS: readonly SettingsMode[] = ['columns', 'memories', 'agent']
 
 const route = useRoute()
 const router = useRouter()
@@ -53,7 +56,29 @@ const emit = defineEmits<{
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-const settingsMode = ref<SettingsMode>('columns')
+// Active tab is URL-backed (?tab=columns|memories|agent). Clicking a tab
+// calls `router.replace` to update the query so reload + deep-link both
+// work. Default to 'columns' when the query is missing or unknown —
+// keeps the URL clean (no ?tab=columns in the default state).
+const settingsMode = computed<SettingsMode>({
+  get: () => {
+    const raw = route.query.tab
+    const s = Array.isArray(raw) ? raw[0] : raw
+    return (VALID_TABS as readonly string[]).includes(s ?? '')
+      ? (s as SettingsMode)
+      : 'columns'
+  },
+  set: (next) => {
+    const rest = { ...route.query }
+    if (next === 'columns') {
+      // Default tab — strip from URL to keep it tidy.
+      delete rest.tab
+    } else {
+      rest.tab = next
+    }
+    void router.replace({ query: rest })
+  },
+})
 
 // Add-column inline form state
 const newColumnName = ref('')
@@ -184,7 +209,9 @@ const goBack = () => {
 
 // Reset settingsMode when the route changes (so navigating from one
 // kanban's settings to another's starts on the Columns tab, not the
-// Memories tab that the previous kanban had selected).
+// Memories/Agent tab that the previous kanban had selected). The URL
+// is the source of truth, so we use `router.replace` to strip the
+// ?tab= query rather than mutating the computed directly.
 watch(
   () => itemId.value,
   () => {
@@ -281,9 +308,12 @@ function sortedColumns() {
         </h1>
       </div>
 
-      <!-- Tab strip: Columns | Local Memories. Hidden when no path. -->
+      <!-- Tab strip: Columns | Local Memories | Agent.
+           Always visible (even without item.path) — the Agent tab
+           doesn't depend on a folder. The Local Memories button is
+           individually gated on item.path (no memories without a
+           folder). -->
       <div
-        v-if="item.path"
         class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
         data-testid="kanban-settings-page-tabs"
@@ -302,6 +332,7 @@ function sortedColumns() {
           Columns
         </button>
         <button
+          v-if="item.path"
           type="button"
           @click="settingsMode = 'memories'"
           data-testid="kanban-settings-page-tab-memories"
@@ -313,6 +344,19 @@ function sortedColumns() {
           "
         >
           🧠 Local Memories
+        </button>
+        <button
+          type="button"
+          @click="settingsMode = 'agent'"
+          data-testid="kanban-settings-page-tab-agent"
+          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+          :style="
+            settingsMode === 'agent'
+              ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+              : 'background-color: transparent; color: var(--semantic-text-muted);'
+          "
+        >
+          🤖 Agent
         </button>
       </div>
 
@@ -511,6 +555,15 @@ function sortedColumns() {
         <p class="text-sm" style="color: var(--semantic-text-dim)">
           No directory is set on this kanban — pick one when creating the kanban to enable local memories.
         </p>
+      </div>
+
+      <!-- Agent tab body (always available — no path required) -->
+      <div
+        v-else-if="settingsMode === 'agent'"
+        class="flex-1 min-h-0 overflow-y-auto"
+        data-testid="kanban-settings-page-agent-panel"
+      >
+        <KanbanAgentPanel :item="item" :workspace-id="workspaceId" />
       </div>
     </template>
 
