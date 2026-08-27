@@ -1154,9 +1154,10 @@ const handleCreateTaskSave = async (payload: {
         <span class="ml-1">Settings</span>
       </button>
 
-      <!-- Agent config (Migration 081, agent-kanbans mirror). Opens
-           KanbanAgentSettings — knowledge / persona / tool allowlist
-           injected into every chat on this board. -->
+      <!-- Agent config (Migration 081, agent-kanbans mirror).
+           Navigates to /app/kanban/:itemId/settings?tab=agent — the
+           Knowledge / System Prompt / Tools panels are mounted there
+           as a tab body (KanbanAgentPanel inside KanbanSettingsView). -->
       <button
         type="button"
         class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
