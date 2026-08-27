@@ -50,8 +50,57 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
     var reader = std.Io.File.reader(file, io, &reader_buf);
     const iface = &reader.interface;
 
+    // Peek the first byte to detect framing style:
+    //   '{' ⇒ newline-delimited JSON (the @modelcontextprotocol/sdk
+    //          default in v1.x; the message ends at the next \n)
+    //   anything else ⇒ Content-Length framed (the MCP stdio spec
+    //                   default; header terminated by \r\n\r\n or \n\n,
+    //                   then `Content-Length: N` body)
+    var first: [1]u8 = undefined;
+    const n0 = iface.readSliceShort(&first) catch return StdioError.UnexpectedEof;
+    if (n0 == 0) return StdioError.UnexpectedEof;
+
+    if (first[0] == '{') {
+        // Newline-delimited JSON path. Read until \n (LF) or EOF,
+        // strip optional trailing \r, return the JSON body. Max 10 MiB
+        // (matches the SDK's STDIO_DEFAULT_MAX_BUFFER_SIZE).
+        const max_line: usize = 10 * 1024 * 1024;
+        var line_buf = allocator.alloc(u8, max_line) catch return StdioError.UnexpectedEof;
+        errdefer allocator.free(line_buf);
+        var line_len: usize = 1; // already read '{'
+        line_buf[0] = first[0];
+        while (true) {
+            var b: [1]u8 = undefined;
+            const r = iface.readSliceShort(&b) catch {
+                // EOF before newline — return what we have, it's the
+                // complete body. Some servers omit the trailing \n on
+                // exit.
+                const exact = allocator.dupe(u8, line_buf[0..line_len]) catch return StdioError.UnexpectedEof;
+                allocator.free(line_buf);
+                return exact;
+            };
+            if (r == 0) {
+                const exact = allocator.dupe(u8, line_buf[0..line_len]) catch return StdioError.UnexpectedEof;
+                allocator.free(line_buf);
+                return exact;
+            }
+            if (b[0] == '\n') {
+                // Trim trailing \r if present.
+                const trimmed_len = if (line_len > 0 and line_buf[line_len - 1] == '\r') line_len - 1 else line_len;
+                const exact = allocator.dupe(u8, line_buf[0..trimmed_len]) catch return StdioError.UnexpectedEof;
+                allocator.free(line_buf);
+                return exact;
+            }
+            if (line_len >= max_line) return StdioError.InvalidFrame;
+            line_buf[line_len] = b[0];
+            line_len += 1;
+        }
+    }
+
+    // Content-Length framed path (the MCP stdio spec default).
     var header_buf: [MAX_HEADER_BYTES]u8 = undefined;
-    var header_len: usize = 0;
+    var header_len: usize = 1;
+    header_buf[0] = first[0];
     var found_blank = false;
 
     while (!found_blank) {
@@ -198,6 +247,10 @@ fn mutexLock(m: *std.atomic.Mutex) void {
 pub const StdioRegistry = struct {
     arena: std.heap.ArenaAllocator,
     io: std.Io,
+    /// Owns the Threaded io backing `self.io` when non-null. The
+    /// global registry lazily creates one via `global()`; per-test
+    /// registries pass their own `io` and leave this null.
+    threaded: ?*std.Io.Threaded = null,
     /// Keys (server names) and values (StdioClient pointers) are both
     /// allocated from the arena. `deinit` calls `arena.deinit()` once,
     /// which frees every key + client in one shot — no per-entry free
@@ -209,6 +262,21 @@ pub const StdioRegistry = struct {
         return .{
             .arena = std.heap.ArenaAllocator.init(parent_allocator),
             .io = io,
+            .threaded = null,
+            .entries = std.StringHashMap(*StdioClient).init(parent_allocator),
+        };
+    }
+
+    /// Lazy-init helper for the global registry: creates the Threaded
+    /// io backing the registry. Per-instance callers should pass an
+    /// existing `io` via `init` and leave `threaded` null.
+    fn initThreaded(parent_allocator: std.mem.Allocator) !StdioRegistry {
+        const threaded = try parent_allocator.create(std.Io.Threaded);
+        threaded.* = std.Io.Threaded.init(parent_allocator, .{});
+        return .{
+            .arena = std.heap.ArenaAllocator.init(parent_allocator),
+            .io = threaded.io(),
+            .threaded = threaded,
             .entries = std.StringHashMap(*StdioClient).init(parent_allocator),
         };
     }
@@ -265,8 +333,15 @@ pub const StdioRegistry = struct {
             kv.value_ptr.*.deinit();
         }
         self.entries.deinit();
-        // Single arena.deinit() frees ALL the clients + keys at once.
-        // No more `allocator.free(client)` / `allocator.free(key)` calls.
+        // If we own a Threaded io (the global registry case), tear it
+        // down before the arena — the Threaded instance is allocated
+        // FROM the arena, so we must .deinit() it (which joins its
+        // background threads) before the arena wipes the memory.
+        if (self.threaded) |t| {
+            t.deinit();
+        }
+        // Single arena.deinit() frees ALL the clients + keys + the
+        // Threaded struct at once.
         self.arena.deinit();
     }
 
@@ -284,19 +359,23 @@ pub const StdioRegistry = struct {
     /// Get the process-global registry. Lazily initialized on first call.
     /// `allocator` is the long-lived allocator (passed down from main.zig,
     /// typically `di.allocator`) — NOT `std.heap.page_allocator`.
-    /// TODO(wire-up): pass real io when wired into nalar's main loop. For
-    /// now we use std.testing.io which works inside test contexts.
+    ///
+    /// The global registry owns its own `std.Io.Threaded` instance,
+    /// created lazily here and torn down in `deinitGlobal`. This is
+    /// the same pattern used elsewhere in the codebase for long-lived
+    /// io contexts (see e.g. `agent_memories.zig:525`).
     pub fn global(allocator: std.mem.Allocator) *StdioRegistry {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
         if (global_registry == null) {
-            global_registry = StdioRegistry.init(allocator, std.testing.io);
+            global_registry = initThreaded(allocator) catch @panic("OOM: StdioRegistry.global");
         }
         return &global_registry.?;
     }
 
     /// Called by main.zig shutdown hook. Kills all spawned children AND
-    /// frees all registry memory (via the arena).
+    /// frees all registry memory (via the arena) AND deinits the
+    /// owned Threaded io.
     pub fn deinitGlobal() void {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
@@ -401,6 +480,58 @@ test "writeFramed roundtrips through readFramed" {
     const body = try readFramed(testing.allocator, testing.io, file_b);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"a\":1}", body);
+}
+
+test "readFramed parses newline-delimited JSON body (MCP SDK default)" {
+    // The canonical @modelcontextprotocol/sdk v1.x writes
+    // `JSON.stringify(message) + '\n'` — newline-delimited JSON, NOT
+    // Content-Length framed. readFramed auto-detects by peeking the
+    // first byte ('{' triggers the NDJSON path). See:
+    //   src/apps/mcp_hello_world/node_modules/@modelcontextprotocol/
+    //   sdk/dist/cjs/shared/stdio.js:37 (serializeMessage)
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(testing.io, "ndjson.txt", .{});
+    try file.writeStreamingAll(testing.io, "{\"json\":\"rpc\",\"id\":1}\n");
+    file.close(testing.io);
+
+    var file2 = try tmp.dir.openFile(testing.io, "ndjson.txt", .{});
+    defer file2.close(testing.io);
+    const body = try readFramed(testing.allocator, testing.io, file2);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("{\"json\":\"rpc\",\"id\":1}", body);
+}
+
+test "readFramed parses newline-delimited JSON without trailing newline" {
+    // Some servers (or test harnesses) omit the trailing \n on exit.
+    // We still return whatever we accumulated up to EOF.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(testing.io, "no_nl.txt", .{});
+    try file.writeStreamingAll(testing.io, "{\"json\":\"rpc\"}");
+    file.close(testing.io);
+
+    var file2 = try tmp.dir.openFile(testing.io, "no_nl.txt", .{});
+    defer file2.close(testing.io);
+    const body = try readFramed(testing.allocator, testing.io, file2);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("{\"json\":\"rpc\"}", body);
+}
+
+test "readFramed handles CRLF terminator on newline-delimited JSON" {
+    // Some servers emit \r\n on Windows-style line endings. readFramed
+    // must strip the trailing \r before returning the JSON body.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(testing.io, "crlf.txt", .{});
+    try file.writeStreamingAll(testing.io, "{\"json\":\"rpc\"}\r\n");
+    file.close(testing.io);
+
+    var file2 = try tmp.dir.openFile(testing.io, "crlf.txt", .{});
+    defer file2.close(testing.io);
+    const body = try readFramed(testing.allocator, testing.io, file2);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("{\"json\":\"rpc\"}", body);
 }
 
 // ── StdioClient tests (real child process) ────────────────────────────────

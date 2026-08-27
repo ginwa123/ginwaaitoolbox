@@ -739,6 +739,37 @@ def _default_nalar_bin() -> Path:
     )
 
 
+def mcp_hello_world_bin() -> Path:
+    """Resolve the mcp-hello-world test MCP server binary.
+
+    Built by `zig build mcp-hello-world`. Same sibling-binary
+    resolution as the nalar binary: the wrapper lives at
+    zig-out/bin/mcp-hello-world next to nalarcore-*.
+
+    Resolution order:
+      1. ``$MCP_HELLO_WORLD_BIN`` env var
+      2. ``./zig-out/bin/mcp-hello-world`` (sibling of nalar binary)
+      3. ``./zig-out/bin/mcp-hello-world-linux-x86_64`` (cross-target)
+
+    Raises FunctionalHarnessError if no binary is found.
+    """
+    candidates: list[Path] = []
+    env_bin = os.environ.get("MCP_HELLO_WORLD_BIN")
+    if env_bin:
+        candidates.append(Path(env_bin))
+    candidates.extend([
+        Path("./zig-out/bin/mcp-hello-world"),
+        Path("./zig-out/bin/mcp-hello-world-linux-x86_64"),
+    ])
+    for c in candidates:
+        if c.exists() and os.access(c, os.X_OK):
+            return c.resolve()
+    raise FunctionalHarnessError(
+        "mcp-hello-world binary not found; set MCP_HELLO_WORLD_BIN or run "
+        "`zig build mcp-hello-world` first."
+    )
+
+
 def _wait_ready(
     port: int, timeout_s: float, proc: subprocess.Popen[bytes], log_path: Path
 ) -> None:
