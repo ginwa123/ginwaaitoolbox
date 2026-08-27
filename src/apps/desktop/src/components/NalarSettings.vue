@@ -170,8 +170,22 @@ function profilesToRecord(list: ProfileRow[]): Record<string, NalarProfile> {
   return out
 }
 
+/**
+ * Raw wire shape of a single MCP server entry as it appears in
+ * config.json's `mcp_servers` map. Discriminated union matching the
+ * type on `NalarConfig.mcp_servers` (api/index.ts):
+ * - presence of `command` ⇒ stdio
+ * - presence of `url` ⇒ http
+ * We use the union form (not a struct with all-optional fields) so
+ * TypeScript can discriminate `command: string` from `command: undefined`
+ * when we type-narrow on `typeof server.command === 'string'`.
+ */
+type RawMcpServerEntry =
+  | { url: string; headers?: Record<string, string> }
+  | { command: string; args?: string[]; env?: string[]; cwd?: string }
+
 function parseMcpServers(
-  raw: Record<string, any> | undefined,
+  raw: Record<string, RawMcpServerEntry> | undefined,
 ): McpServer[] {
   if (!raw) return []
   const out: McpServer[] = []
@@ -180,20 +194,18 @@ function parseMcpServers(
     // Transport discriminator: presence of `command` ⇒ stdio,
     // presence of `url` ⇒ http. Legacy entries (url-only) hydrate as
     // http. Entries with neither are silently dropped.
-    const hasCommand = typeof server.command === 'string' && server.command.length > 0
-    const hasUrl = typeof server.url === 'string' && server.url.length > 0
-    if (hasCommand) {
+    if ('command' in server && typeof server.command === 'string' && server.command.length > 0) {
       out.push({
         name,
         transport: 'stdio',
         command: server.command,
-        args: Array.isArray(server.args) ? server.args.map((a: unknown) => String(a)) : [],
-        env: Array.isArray(server.env) ? server.env.map((e: unknown) => String(e)) : [],
+        args: Array.isArray(server.args) ? server.args.map((a: string) => a) : [],
+        env: Array.isArray(server.env) ? server.env.map((e: string) => e) : [],
         cwd: typeof server.cwd === 'string' ? server.cwd : '',
         url: '',
         headers: [],
       })
-    } else if (hasUrl) {
+    } else if ('url' in server && typeof server.url === 'string' && server.url.length > 0) {
       const headers = server.headers
         ? Object.entries(server.headers).map(([key, value]) => ({ key, value: String(value ?? '') }))
         : []
@@ -215,14 +227,14 @@ function parseMcpServers(
 
 function serializeMcpServers(
   list: McpServer[],
-): Record<string, any> | undefined {
+): Record<string, RawMcpServerEntry> | undefined {
   if (list.length === 0) return undefined
-  const out: Record<string, any> = {}
+  const out: Record<string, RawMcpServerEntry> = {}
   for (const server of list) {
     if (!server.name) continue
     if (server.transport === 'stdio') {
       if (!server.command) continue
-      const entry: Record<string, any> = { command: server.command }
+      const entry: RawMcpServerEntry = { command: server.command }
       if (server.args && server.args.length) entry.args = server.args
       if (server.env && server.env.length) entry.env = server.env
       if (server.cwd && server.cwd.length) entry.cwd = server.cwd

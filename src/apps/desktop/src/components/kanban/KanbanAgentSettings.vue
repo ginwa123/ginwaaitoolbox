@@ -26,7 +26,11 @@
 import { ref, computed, watch } from 'vue'
 import {
   getAgentKanban,
-  updateAgentKanban,
+  // updateAgentKanban is exported but not yet wired — the per-board
+  // config is currently read-only from this dialog (knowledge + tools
+  // + system-prompt editors cover the editable surface; the top-level
+  // agent-kanban row is set on creation and never edited). Re-add
+  // the import when the top-level editor lands.
   addAgentKanbanKnowledge,
   updateAgentKanbanKnowledge,
   deleteAgentKanbanKnowledge,

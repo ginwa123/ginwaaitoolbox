@@ -3521,6 +3521,16 @@ export interface NalarConfig {
    * Each value follows the `{"url": "...", "headers": {...}}` shape used by
    * the LLM config. Sent verbatim to the backend on save.
    */
+  /**
+   * Raw wire shape of a single MCP server entry (snake_case, matches
+   * `mcp_servers` in config.json). Discriminated by which top-level
+   * field is present: `command` ⇒ stdio, `url` ⇒ http.
+   *
+   * Note: this type is also re-exported and re-used by the
+   * `NalarSettings.vue` parser/serializer pair so the frontend
+   * round-trips config.json unchanged. If you add a field here, add
+   * it to the `McpServer` interface above too (camelCase).
+   */
   mcp_servers?: Record<
     string,
     | { url: string; headers?: Record<string, string> }
