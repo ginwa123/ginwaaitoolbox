@@ -12,6 +12,18 @@
 **Branch:** worktree/mcp-stdio
 **Task:** task_1787843426969_1
 
+### 2026-08-27: Kanban agent config — modal dialog → settings page (4 tabs)
+
+**What landed.** The per-board agent config (Knowledge / System Prompt / Tools) used to live in a centered modal `KanbanAgentSettings` (538 lines) that opened when the user clicked 🤖 Agent on a kanban header. Now it lives as **two separate top-level tabs** inside the existing dedicated Kanban Settings page: **🛠 Tools** (the agent_kanban_tools allowlist) and **🧠 Knowledge** (Knowledge rows + System Prompt blocks — merged since both are persona content injected into the agent's system prompt). The tab strip is now 4 tabs: Columns / Local Memories / Tools / Knowledge. The 🤖 Agent toolbar button navigates to `/app/kanban/:itemId/settings?tab=tools` (the more security-critical config) instead of opening a modal — reload-safe, deep-linkable, Back returns to the kanban board naturally. The active tab is URL-backed via a writable `settingsMode` computed that reads `route.query.tab` and writes via `router.replace`; default `'columns'` strips the query so the URL stays clean; unknown tab values fall back to `'columns'`. The tab strip is always visible (no `item.path` gate on the whole strip) — the Local Memories button is individually gated on `item.path`; the Tools + Knowledge buttons are always visible.
+
+**Files.** 9 + iteration-2 split (3 NEW + 2 RENAME + 2 EDIT + 2 docs): NEW `KanbanToolsPanel.vue`, `KanbanToolsPanel.spec.ts`, `KanbanKnowledgePanel.spec.ts`; RENAME `KanbanAgentPanel.vue` → `KanbanKnowledgePanel.vue`, `KanbanAgentPanel.spec.ts` → `KanbanKnowledgePanel.spec.ts`; EDIT `KanbanSettingsView.vue` (4-tab strip + 2 new body branches), `KanbanSettingsView.spec.ts` (URL contract for tools + knowledge), `KanbanView.vue` (Agent button → `?tab=tools`), `KanbanView.spec.ts`, `AppLayout.vue` (stripped `KanbanAgentSettings` mount + handlers). DELETE: `KanbanAgentSettings.vue` (538 lines), `KanbanAgentPanel.spec.ts` (replaced by `KanbanKnowledgePanel.spec.ts`). Zero backend changes — all 14 `/api/agent-kanbans/...` endpoints (Migration 081) are reused unchanged.
+
+**Verification.** `zig build test --summary all`: 2803 pass / 6 skip / 0 fail. `npm run test:unit` (vitest): **2737/2737** pass across 290 files (+6 net from iteration 2: +6 new KanbanToolsPanel tests + 9 new KanbanKnowledgePanel tests + 3 new KanbanSettingsView tests − 12 deleted old KanbanAgentPanel tests + 0 KanbanView changes). `npx vue-tsc --noEmit -p tsconfig.app.json`: clean. No functional wire changes (Migration 081 endpoints + payloads untouched); `tests/functional/agent_kanbans_test.py` wire contract unchanged.
+
+**Plan:** docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md
+**Branch:** worktree/kanban-agent-as-tab
+**Task:** task_1787843016481_0
+
 ### 2026-09-02: Kanban settings: centered modal → dedicated page
 
 **What landed.** Clicking ⚙ on a kanban board header used to open `KanbanSettingsDialog` as a centered modal. Now navigates to the vue-router path route `/app/kanban/:itemId/settings` and renders the new `KanbanSettingsView` (full-page layout mirroring `SettingsView`'s 240px sidebar + content panel shape). The URL is the source of truth — reload preserves the page, **← Back** returns to the kanban board. `<KanbanSettingsDialog>` + its spec are deleted. `useCurrentMainView` gains a `{ kind: 'kanban-settings', workspaceId, itemId }` variant that parses `route.path` + `route.params`. AppLayout's `currentView` computed recognizes the new path via regex (before the route.query.view fallthrough). Sidebar's `WorkspaceItem.isCurrentMainView` now also matches `kind === 'kanban-settings'` so the parent kanban row stays highlighted while the user is on its settings page.

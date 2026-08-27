@@ -316,9 +316,10 @@ const emit = defineEmits<{
   // Open the per-board KanbanSettingsDialog (host owns it). No
   // payload — the host derives the active item from its own state.
   openSettings: []
-  // Open the per-board KanbanAgentSettings dialog (Migration 081,
-  // agent-kanbans mirror — host owns the mount like openSettings).
-  openAgentSettings: []
+  // (openAgentSettings was REMOVED in the kanban-agent-as-tab plan —
+  // the Agent button now navigates directly to /app/kanban/:itemId/settings?tab=agent
+  // instead of emitting for the host to mount a dialog. See plan
+  // docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md.)
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
@@ -578,10 +579,16 @@ const handleOpenSettings = () => {
   emit('openSettings')
 }
 
-// Agent-Kanbans mirror (Migration 081): open the per-board agent
-// config dialog (host owns the mount, same pattern as openSettings).
+// Agent-Kanbans mirror (Migration 081): navigate to the dedicated
+// settings page with the Tools tab active (iteration 2 — the Agent
+// umbrella tab was split into Tools + Knowledge; we land on Tools
+// since that's the more security-critical config — the access
+// allowlist). URL is the source of truth — reload preserves state.
 const handleOpenAgentSettings = () => {
-  emit('openAgentSettings')
+  void router.push({
+    path: `/app/kanban/${props.item.id}/settings`,
+    query: { tab: 'tools' },
+  })
 }
 
 // NEW (plan: 2026-08-06-kanban-add-task-button-placement). Open the
@@ -1147,9 +1154,12 @@ const handleCreateTaskSave = async (payload: {
         <span class="ml-1">Settings</span>
       </button>
 
-      <!-- Agent config (Migration 081, agent-kanbans mirror). Opens
-           KanbanAgentSettings — knowledge / persona / tool allowlist
-           injected into every chat on this board. -->
+      <!-- Agent config (Migration 081, agent-kanbans mirror).
+           Navigates to /app/kanban/:itemId/settings?tab=tools — the
+           Tools allowlist is mounted there as a tab body
+           (KanbanToolsPanel inside KanbanSettingsView). User can
+           also visit ?tab=knowledge for the Knowledge + System
+           Prompt persona-content panel (KanbanKnowledgePanel). -->
       <button
         type="button"
         class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
@@ -1160,7 +1170,7 @@ const handleCreateTaskSave = async (payload: {
         "
         :data-testid="`kanban-view-${item.id}-open-agent-settings`"
         @click="handleOpenAgentSettings"
-        title="Open agent config (knowledge, system prompt, tools)"
+        title="Open agent config in board settings"
       >
         <span aria-hidden="true">🤖</span>
         <span class="ml-1">Agent</span>

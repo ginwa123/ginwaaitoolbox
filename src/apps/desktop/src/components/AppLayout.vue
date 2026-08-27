@@ -22,7 +22,6 @@ import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsView from './views/KanbanSettingsView.vue'
-import KanbanAgentSettings from './kanban/KanbanAgentSettings.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -297,7 +296,7 @@ watch(
 //      history entries).
 watch(
   () => [workspacesStore.activeWorkspaceItemId, workspacesStore.activeDesignPageId] as const,
-  ([itemId, pageId]) => {
+  ([itemId, pageId], [oldItemId]) => {
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
     // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
@@ -337,6 +336,21 @@ watch(
     // was removed from handleNavigate — the flag now guards the
     // chat-open (view=workspace + /chat/<taskId>) navigation too.
     if (workspacesStore.isNavigatingToTask) return
+    // FIX (chat-click-url-overwrite, task_1787844892180_2, 2026-08-27):
+    // Inverse of the task_1785959660154 race. When the user navigates
+    // AWAY from a workspace item (e.g. Sidebar.handleChatsNavigate
+    // clearing activeWorkspaceItemId before its own router.replace
+    // applies), this watcher fires with itemId = null while
+    // route.query.view is still 'workspace' from the previous page.
+    // The currentView guard does NOT return early in that window and
+    // the watcher would clobber the destination's URL with
+    // router.replace({view: 'workspace'}). The fix: skip the mirror
+    // when itemId is being cleared from a previously-truthy value —
+    // the destination's router call wins, this watcher must not race.
+    // The mirror still fires for the truthy → truthy and null → truthy
+    // transitions (regression-guarded by
+    // AppLayout.chatClickUrlOverwrite.spec.ts Test 2).
+    if (!itemId && oldItemId) return
     // Only sync when we're on the workspace view — all other views
     // (chat, settings, gitfile, skill, code-editor) have their
     // own URL contract and should be preserved.
@@ -1665,21 +1679,6 @@ const handleOpenKanbanSettings = () => {
   router.push({ path: `/app/kanban/${itemId}/settings` })
 }
 
-// ─── KanbanAgentSettings — per-board agent config (Migration 081) ──────
-//
-// Mounted as a sibling of KanbanSettingsDialog (same Teleport/animation
-// lifecycle rationale). All state lives inside the dialog component —
-// AppLayout only owns the open/close ref.
-const showKanbanAgentSettings = ref(false)
-
-const handleOpenKanbanAgentSettings = () => {
-  showKanbanAgentSettings.value = true
-}
-
-const handleCloseKanbanAgentSettings = () => {
-  showKanbanAgentSettings.value = false
-}
-
 const handleKanbanSettingsAddColumn = (name: string, description: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
@@ -2414,7 +2413,6 @@ defineExpose({
         @run-routine="handleKanbanRunRoutine"
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
-        @open-agent-settings="handleOpenKanbanAgentSettings"
         @rename-item="handleKanbanRenameItem"
         @close-chat="handleCloseTaskView"
       />
@@ -2778,21 +2776,6 @@ defineExpose({
       @add="handleKanbanColumnEditorAdd"
       @rename="handleKanbanColumnEditorRename"
       @delete="handleKanbanColumnEditorDelete"
-    />
-
-    <!--
-      KanbanAgentSettings — per-board agent config (Migration 081,
-      agent-kanbans mirror). Mounted at the AppLayout level (sibling
-      of KanbanColumnEditor) so the modal's Teleport/animation
-      lifecycle works cleanly even if the KanbanView branch unmounts
-      mid-edit. State (knowledge / system-prompt / tools tabs) is
-      owned by the dialog itself — AppLayout only toggles `show`.
-    -->
-    <KanbanAgentSettings
-      :show="showKanbanAgentSettings"
-      :item="activeWorkspaceItem ?? null"
-      :workspace-id="activeWorkspace?.id ?? ''"
-      @close="handleCloseKanbanAgentSettings"
     />
 
     <!--
