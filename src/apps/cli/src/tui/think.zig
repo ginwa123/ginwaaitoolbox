@@ -62,6 +62,42 @@ pub fn isThinkingOnly(allocator: std.mem.Allocator, content: []const u8) !bool {
     return stripped.len == 0;
 }
 
+/// Remove `<plain>`, `<markdown>`, `<html>` (and matching closing
+/// tags) while keeping the inner content. Mirrors the Vue frontend's
+/// `stripTags.ts:28-36` unwrap behaviour. Returns an owned slice.
+///
+/// Caller-owned: free with `allocator.free(slice)`.
+///
+/// Note: this is intentionally separate from `stripThinkingTags` —
+/// `<think>` is stripped (its content is hidden), but content-wrapper
+/// tags are unwrapped (their content is the visible text). Two
+/// helpers, two responsibilities.
+pub fn unwrapContentWrappers(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, content.len);
+
+    var cursor: usize = 0;
+    while (cursor < content.len) {
+        if (stripOneWrapper(content[cursor..])) |skip| {
+            cursor += skip;
+            continue;
+        }
+        try out.append(allocator, content[cursor]);
+        cursor += 1;
+    }
+    return allocator.dupe(u8, out.items);
+}
+
+/// Returns the byte length to skip if `content` starts with one of
+/// the six known content-wrapper tags, else null.
+fn stripOneWrapper(content: []const u8) ?usize {
+    inline for (.{ "<plain>", "</plain>", "<markdown>", "</markdown>", "<html>", "</html>" }) |tag| {
+        if (std.mem.startsWith(u8, content, tag)) return tag.len;
+    }
+    return null;
+}
+
 // ----------------------------------------------------------------------------
 // Tests
 // ----------------------------------------------------------------------------
@@ -128,4 +164,63 @@ test "isThinkingOnly: false when visible text remains" {
 
 test "isThinkingOnly: false when no tags" {
     try testing.expect(!(try isThinkingOnly(testing.allocator, "plain")));
+}
+
+// ----------------------------------------------------------------------------
+// unwrapContentWrappers — strip `<plain>`, `<markdown>`, `<html>` content
+// tags (matches the Vue frontend's stripTags.ts:28-36 behaviour). The tag
+// chars are removed but the inner content is preserved. Used by
+// render_msg's assistant branch AFTER stripThinkingTags so a payload
+// like `<think>plan</think><plain>The answer</plain>` arrives at the
+// renderer as just `The answer`.
+// ----------------------------------------------------------------------------
+
+test "unwrapContentWrappers: unwraps <plain>" {
+    const got = try unwrapContentWrappers(testing.allocator, "<plain>hello</plain>");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("hello", got);
+}
+
+test "unwrapContentWrappers: unwraps <markdown>" {
+    const got = try unwrapContentWrappers(testing.allocator, "<markdown>**x**</markdown>");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("**x**", got);
+}
+
+test "unwrapContentWrappers: unwraps <html>" {
+    const got = try unwrapContentWrappers(testing.allocator, "<html><p>x</p></html>");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("<p>x</p>", got);
+}
+
+test "unwrapContentWrappers: unwraps closing tags too" {
+    const got = try unwrapContentWrappers(testing.allocator, "</plain>tail");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("tail", got);
+}
+
+test "unwrapContentWrappers: leaves content untouched when no wrappers" {
+    const got = try unwrapContentWrappers(testing.allocator, "plain text");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("plain text", got);
+}
+
+test "unwrapContentWrappers: handles nested wrappers (inner stripped first)" {
+    const got = try unwrapContentWrappers(testing.allocator, "<plain><html>x</html></plain>");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("x", got);
+}
+
+test "unwrapContentWrappers: empty content → empty result" {
+    const got = try unwrapContentWrappers(testing.allocator, "");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("", got);
+}
+
+test "unwrapContentWrappers: only open tag, no close" {
+    // Malformed: open without close. We strip the open tag but keep
+    // the rest of the content verbatim — better than losing data.
+    const got = try unwrapContentWrappers(testing.allocator, "<plain>never closes");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("never closes", got);
 }

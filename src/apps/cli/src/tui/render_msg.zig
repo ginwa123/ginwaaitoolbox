@@ -57,7 +57,9 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
         }
         const stripped = try think.stripThinkingTags(allocator, msg.content);
         defer allocator.free(stripped);
-        const text = try allocator.dupe(u8, stripped);
+        const unwrapped = try think.unwrapContentWrappers(allocator, stripped);
+        defer allocator.free(unwrapped);
+        const text = try allocator.dupe(u8, unwrapped);
         const lines = try allocator.dupe(Line, &[_]Line{.{
             .text = text,
             .style = .{},
@@ -179,6 +181,28 @@ test "renderMessage: tool with malformed content falls back to raw dim" {
     defer freeLines(testing.allocator, lines);
     try testing.expectEqualStrings("some plain legacy output", lines[0].text);
     try testing.expectEqual(@as(?Color, .brightBlack), lines[0].style.fg);
+}
+
+test "renderMessage: assistant strips <plain> wrapper" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "<plain>saya bisa bantu</plain>",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("saya bisa bantu", lines[0].text);
+}
+
+test "renderMessage: assistant strips think AND <plain>" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "<think>plan</think><plain>the visible answer</plain>",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("the visible answer", lines[0].text);
 }
 
 test "renderMessage: unknown role renders raw dim" {
