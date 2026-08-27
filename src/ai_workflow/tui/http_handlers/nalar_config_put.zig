@@ -100,45 +100,22 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         config_json = parsed;
     }
 
-    // Update with new values
-    if (input.api_endpoint.len > 0) {
-        config_json.base_url = try allocator.dupe(u8, input.api_endpoint);
-    }
-    if (input.api_key.len > 0) {
-        config_json.api_key = try allocator.dupe(u8, input.api_key);
-    }
-    if (input.model.len > 0) {
-        config_json.model = try allocator.dupe(u8, input.model);
-    }
-    if (input.url_style.len > 0) {
-        config_json.url_style = try allocator.dupe(u8, input.url_style);
-    }
-    if (input.max_tokens) |mt| {
-        // Frontend sends `max_tokens` as a string (often "" or a number
-        // string). Accept the string shape as-is — `config_json.max_tokens`
-        // is `?[]const u8` and the on-disk loader parses it back to usize
-        // via `LlmConfig.init`. Empty / non-numeric strings are coerced to
-        // null (= "no change") so a malformed value doesn't poison the
-        // saved config.
-        if (mt.len > 0) {
-            // Reject purely-non-numeric content (e.g. "abc") but allow the
-            // legitimate empty-after-trim case. parseInt is a strict
-            // format check that catches the "abc" case without rejecting
-            // leading zeros / quoted-numbers the frontend may send.
-            if (std.fmt.parseInt(usize, mt, 10)) |_| {
-                config_json.max_tokens = try allocator.dupe(u8, mt);
-            } else |_| {
-                config_json.max_tokens = null;
-            }
-        } else {
-            config_json.max_tokens = null;
-        }
-    }
-    if (input.system_prompt.len > 0) {
-        config_json.system_prompt = try allocator.dupe(u8, input.system_prompt);
-    }
+    // Update with new values.
+    //
+    // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+    // defaults (api_key / model / base_url / url_style / max_tokens /
+    // system_prompt) are NO LONGER persisted. The write struct below
+    // doesn't declare them, so Stringify.valueAlloc never re-emits them
+    // to disk. Bodies that still send them (old frontends, curl scripts)
+    // are tolerated via `ignore_unknown_fields` and silently dropped.
     if (input.notify_on_complete) |n| {
         config_json.notify_on_complete = n;
+    }
+    // notify_on_error: parallel to notify_on_complete, gated on the
+    // error path of the workflow (transport failure, TooManyRetries,
+    // outer catch). Absent = preserve existing on-disk value.
+    if (input.notify_on_error) |n| {
+        config_json.notify_on_error = n;
     }
     if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
@@ -464,28 +441,13 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 /// HTTP handler would parse and assert the wire format matches the
 /// frontend's actual `NalarSettings.vue` shape.
 pub const ConfigInput = struct {
-    api_endpoint: []const u8 = "",
-    api_key: []const u8 = "",
-    model: []const u8 = "",
-    url_style: []const u8 = "openai",
+    // Plan 2026-08-24-config-simplify-remove-defaults: the old
+    // api_endpoint/api_key/model/url_style/max_tokens/system_prompt
+    // fields were REMOVED. Bodies that still send them are tolerated
+    // via `ignore_unknown_fields` (silently dropped — the top-level
+    // defaults are no longer persisted to config.json).
     temperature: f64 = 0.7,
-    /// Frontend sends `max_tokens` as a string (often `""` or a number
-    /// string like "4096"). Pre-fix this was typed as `?usize` and
-    /// the parser rejected empty / non-numeric strings with
-    /// `error.InvalidCharacter` — turning the whole PUT into a 400.
-    /// Accept the string shape; the apply block coerces to usize
-    /// with a safe fallback.
-    max_tokens: ?[]const u8 = null,
-    system_prompt: []const u8 = "",
-    // Two accepted wire formats (plan 2026-07-07 + bug fix for PUT 400):
-//   - ARRAY: `[{"name":"...", "action":"update|add|delete", ...}, ...]`
-//     (the granular per-profile change list — used by sub-agent add/edit/delete UIs)
-//   - OBJECT: `{"profile1": {"model":...}, "profile2": {...}}`
-//     (the on-disk shape, sent by the main settings panel's full-form PUT)
-// We accept both via `?json.Value` and branch at the apply site. Each
-// shape is validated + deep-copied into the new `config_json.profiles_models`
-// so the same downstream code works for both.
-profiles: ?json.Value = null,
+    profiles: ?json.Value = null,
     active_profile: ?[]const u8 = null,
     /// Whole-list replace for the `mcp_servers` map (snake_case).
     /// When present, replaces the existing MCP servers entirely.
@@ -496,6 +458,12 @@ profiles: ?json.Value = null,
     /// existing on-disk value. Mirrors the `LlmConfigJson` default
     /// (`false`) so a brand-new config has notifications off.
     notify_on_complete: ?bool = null,
+    /// When true, fire an OS-level notification when the LLM workflow
+    /// hits an error (transport failure, TooManyRetries, outer catch).
+    /// Absent = preserve existing on-disk value. Mirrors the
+    /// `LlmConfigJson` default (`false`) so a brand-new config has
+    /// error notifications off.
+    notify_on_error: ?bool = null,
     /// Threshold (in KB) above which the session compactor is invoked
     /// to shrink the LLM context. Absent = preserve existing on-disk
     /// value. Mirrors the `LlmConfigJson` default (`100`).
@@ -563,12 +531,11 @@ const ProfileChange = struct {
 };
 
 const ConfigJson = struct {
-    api_key: []const u8 = "",
-    model: []const u8 = "",
-    base_url: []const u8 = "",
-    url_style: []const u8 = "openai",
-    max_tokens: ?[]const u8 = null,
-    system_prompt: []const u8 = "",
+    // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+    // defaults (api_key/model/base_url/url_style/max_tokens/system_prompt)
+    // were REMOVED from the on-disk shape. This struct is the serializer
+    // for `Stringify.valueAlloc` — fields absent here are never written
+    // to config.json.
     profiles_models: ?json.Value = null,
     active_profile: ?[]const u8 = null,
     /// Configured MCP servers (snake_case, matches NALAR.md JSON convention).
@@ -577,6 +544,10 @@ const ConfigJson = struct {
     /// `LlmConfigJson` (Config.zig:96); a brand-new config has
     /// notifications off.
     notify_on_complete: bool = false,
+    /// Opt-in OS notification flag for the error path. Default `false`
+    /// matches `LlmConfigJson` (Config.zig); a brand-new config has
+    /// error notifications off.
+    notify_on_error: bool = false,
     /// Compaction threshold in KB. Default `100` matches
     /// `LlmConfigJson` (Config.zig:92).
     model_compaction_size_kb: usize = 100,

@@ -96,6 +96,22 @@ test "parseArgs: --devtools enables webview DevTools" {
     try testing.expect(cfg.enable_devtools);
 }
 
+test "parseArgs: --x11 forces X11 backend opt-in" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--x11" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.force_x11);
+}
+
+test "parseArgs: --x11 defaults to false" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{"nalar-desktop"};
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(!cfg.force_x11);
+}
+
 test "parseArgs: --help prints usage and signals help" {
     const allocator = testing.allocator;
     const args = [_][]const u8{ "nalar-desktop", "--help" };

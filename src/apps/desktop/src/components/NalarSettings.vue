@@ -14,7 +14,7 @@ import { useNalarConfig } from '../composables/useNalarConfig'
 
 import NalarTabStrip from './nalar/NalarTabStrip.vue'
 import NalarSaveBar from './nalar/NalarSaveBar.vue'
-import DefaultsSection, { type DefaultsConfig } from './nalar/DefaultsSection.vue'
+import NalarGeneralSection, { type NalarGeneralSettings } from './nalar/NalarGeneralSection.vue'
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 import SubAgentsSection from './nalar/SubAgentsSection.vue'
 import McpServersSection from './nalar/McpServersSection.vue'
@@ -39,89 +39,53 @@ defineExpose({
 })
 
 // ─── Tab state ────────────────────────────────────────────────────────────
-type Tab = 'defaults' | 'profiles' | 'sub-agents' | 'mcp'
-const activeTab = ref<Tab>('defaults')
+// Plan 2026-08-24-config-simplify-remove-defaults: 'defaults' tab removed.
+// Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: 'general' tab
+// added as the FIRST tab — operational settings (notification toggles +
+// retry delay) are the broadest, most-frequently-touched UI surface.
+type Tab = 'general' | 'profiles' | 'sub-agents' | 'mcp'
+const activeTab = ref<Tab>('general')
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
 const { config, loaded, dirty, unsavedCount, saving, setConfig, save, reset } = useNalarConfig()
 
-// ─── Legacy localStorage fallback keys (preserved from original) ───────
-const LEGACY_LS_KEYS = {
-  api_endpoint: 'settings-api-endpoint',
-  api_key: 'settings-api-key',
-  model: 'settings-model',
-  temperature: 'settings-temperature',
-  max_tokens: 'settings-max-tokens',
-  system_prompt: 'settings-system-prompt',
-} as const
-
-function loadLegacyLocalStorageFallback(): Partial<NalarConfig> {
-  const out: Partial<NalarConfig> = {}
-  const ep = localStorage.getItem(LEGACY_LS_KEYS.api_endpoint)
-  if (ep) out.api_endpoint = ep
-  const ak = localStorage.getItem(LEGACY_LS_KEYS.api_key)
-  if (ak) out.api_key = ak
-  const m = localStorage.getItem(LEGACY_LS_KEYS.model)
-  if (m) out.model = m
-  const t = localStorage.getItem(LEGACY_LS_KEYS.temperature)
-  if (t) {
-    const parsed = parseFloat(t)
-    if (!Number.isNaN(parsed)) out.temperature = parsed
-  }
-  const mt = localStorage.getItem(LEGACY_LS_KEYS.max_tokens)
-  if (mt) out.max_tokens = mt
-  const sp = localStorage.getItem(LEGACY_LS_KEYS.system_prompt)
-  if (sp) out.system_prompt = sp
-  return out
-}
-
 onMounted(async () => {
-  // Step 1: seed from localStorage (legacy fallback).
-  const legacy = loadLegacyLocalStorageFallback()
-  // Step 2: try the API; on success, layer the API response on top of
-  // the legacy fallback. The API wins because it's authoritative.
+  // Plan 2026-08-24-config-simplify-remove-defaults: the legacy
+  // localStorage fallback (which existed solely to seed the removed
+  // Defaults form) is gone. The API response is the only source.
   let apiData: NalarConfig | null = null
   try {
     apiData = await getNalarConfig()
   } catch {
-    // Network/API failure — keep legacy.
+    // Network/API failure — start with an empty config.
+    apiData = {}
   }
-  const merged: NalarConfig = { ...legacy, ...apiData }
-  setConfig(merged)
+  setConfig(apiData)
 })
 
 // ─── Per-section view state ──────────────────────────────────────────────
-const defaultsConfig = ref<DefaultsConfig | null>(null)
 const profilesList = ref<ProfileRow[]>([])
 const activeProfile = ref<string | null>(null)
 const subAgentsList = ref<SubAgent[]>([])
 const mcpServersList = ref<McpServer[]>([])
 
-// Plan 2026-07-07-compaction-inline: CompactionSection.vue is removed;
-// its per-profile overrides live on each `LlmProfile.max_capacity_tokens`
-// and `LlmProfile.compaction_threshold_percent` (edited via the Edit-profile
-// modal). Top-level defaults live on the Defaults tab and are carried by
-// `defaultsConfig.max_capacity_token_model` + `compaction_threshold_percent`.
+// Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the General
+// tab uses a single `defineModel<NalarGeneralSettings>` v-model surface
+// in NalarGeneralSection.vue. The orchestrator hydrates from the loaded
+// config on first load, and writes back through `syncToConfig` when the
+// user mutates a control. Each of the three keys is a top-level
+// `NalarConfig` field — `notify_on_complete`, `notify_on_error`,
+// `retry_delay_ms` — so the diff in `useNalarConfig` tracks them as
+// primitives.
+const generalSettings = ref<NalarGeneralSettings>({
+  notify_on_complete: false,
+  notify_on_error: false,
+  retry_delay_ms: 0,
+})
 
 function syncFromConfig() {
   if (!config.value) return
   const c = config.value
-  defaultsConfig.value = {
-    api_endpoint: c.api_endpoint ?? '',
-    api_key: c.api_key ?? '',
-    model: c.model ?? '',
-    url_style: c.url_style ?? 'openai',
-    temperature: typeof c.temperature === 'number' ? c.temperature : 0.7,
-    max_tokens: c.max_tokens ?? '',
-    system_prompt: c.system_prompt ?? '',
-    notify_on_complete: c.notify_on_complete ?? false,
-    // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
-    // Null = no top-level override (fall through to per-profile → built-in).
-    max_capacity_token_model: c.max_capacity_token_model ?? null,
-    compaction_threshold_percent: c.compaction_threshold_percent ?? null,
-    // Workflow retry delay — plan 2026-07-15-retry-delay.
-    retry_delay_ms: c.retry_delay_ms ?? 0,
-  }
   profilesList.value = Object.entries(c.profiles ?? {}).map(([name, p]) => ({
     name,
     model: p.model ?? '',
@@ -131,8 +95,7 @@ function syncFromConfig() {
     url_style: p.url_style ?? 'openai',
     api_key: p.api_key ?? '',
     sub_agents: p.sub_agents ?? [],
-    // Compaction overrides — both top-level (in defaultsConfig above)
-    // AND per-profile (here) coexist. Each layer cascades over the
+    // Compaction overrides — both top-level and per-profile coexist. Each layer cascades over the
     // next; per-profile wins over top-level.
     max_capacity_tokens: p.max_capacity_tokens ?? null,
     compaction_threshold_percent: p.compaction_threshold_percent ?? null,
@@ -146,37 +109,50 @@ function syncFromConfig() {
   activeProfile.value = c.active_profile ?? null
   subAgentsList.value = c.sub_agents ?? []
   mcpServersList.value = parseMcpServers(c.mcp_servers)
+
+  // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: hydrate
+  // the General tab from the loaded config. Three top-level fields,
+  // each defaulted to a safe zero so a missing-on-disk config still
+  // renders without crashing (the orchestrator's diff treats missing
+  // and explicit zero as different — see useNalarConfig.spec.ts).
+  generalSettings.value = {
+    notify_on_complete: c.notify_on_complete ?? false,
+    notify_on_error: c.notify_on_error ?? false,
+    // Treat `undefined` (missing key) and explicit 0 the same way so
+    // the dirty pill doesn't flash on first load when the field is
+    // absent from config.json.
+    retry_delay_ms: c.retry_delay_ms ?? 0,
+  }
 }
 
 function syncToConfig() {
-  if (!config.value || !defaultsConfig.value) return
+  if (!config.value) return
   const c = config.value
-  const d = defaultsConfig.value
   // Only write list fields when non-empty, so the structural shape
   // of the config stays close to the original (loaded) snapshot. The
   // composable's diff treats `undefined` and missing keys as
   // equivalent, but it can't tell the difference between "user
   // deleted everything" and "user never had anything here" if we
   // always materialize empty objects/arrays.
+  //
+  // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+  // defaults are no longer sent — profiles + operational settings only.
   const profiles = profilesToRecord(profilesList.value)
   const subAgents = subAgentsList.value
   const mcpServers = serializeMcpServers(mcpServersList.value)
   config.value = {
     ...c,
-    api_endpoint: d.api_endpoint,
-    api_key: d.api_key,
-    model: d.model,
-    url_style: d.url_style,
-    temperature: d.temperature,
-    max_tokens: d.max_tokens,
-    system_prompt: d.system_prompt,
-    notify_on_complete: d.notify_on_complete,
+    // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
+    // three operational settings are driven by the General tab
+    // (`generalSettings`). Always write them through so toggling
+    // surfaces in the dirty pill + save bar.
+    notify_on_complete: generalSettings.value.notify_on_complete,
+    notify_on_error: generalSettings.value.notify_on_error,
+    retry_delay_ms: generalSettings.value.retry_delay_ms,
     // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
     // Unconditional spread so `null` is preserved (cascade wildcard).
-    max_capacity_token_model: d.max_capacity_token_model,
-    compaction_threshold_percent: d.compaction_threshold_percent,
-    // Workflow retry delay — plan 2026-07-15-retry-delay.
-    retry_delay_ms: d.retry_delay_ms,
+    max_capacity_token_model: c.max_capacity_token_model,
+    compaction_threshold_percent: c.compaction_threshold_percent,
     // Per-profile compaction overrides still live on `profiles` below.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
@@ -234,7 +210,7 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [defaultsConfig, profilesList, activeProfile, subAgentsList, mcpServersList],
+  [profilesList, activeProfile, subAgentsList, mcpServersList, generalSettings],
   () => { if (loaded.value) syncToConfig() },
   { deep: true },
 )
@@ -548,13 +524,13 @@ const isLoading = computed(() => !loaded.value)
 
       <!-- Scrollable tab content -->
       <div class="flex-1 overflow-y-auto p-6 space-y-6">
-        <DefaultsSection
-          v-if="activeTab === 'defaults'"
-          v-model="defaultsConfig!"
+        <NalarGeneralSection
+          v-if="activeTab === 'general'"
+          v-model="generalSettings"
         />
 
         <ProfilesSection
-          v-else-if="activeTab === 'profiles'"
+          v-if="activeTab === 'profiles'"
           v-model="profilesList"
           :active-profile="activeProfile"
           @set-active="setActiveProfile"

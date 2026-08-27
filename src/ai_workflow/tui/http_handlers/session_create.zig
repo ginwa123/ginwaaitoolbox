@@ -115,6 +115,42 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
         session_id = try helpers.random.generateSessionId(alloc, io);
     }
     if (parsed.session_name.len > 0) session_name = parsed.session_name;
+    // NEW (plan: 2026-09-02-kanban-task-session-name-bind, task
+    // 1787671636395_1): when the caller did NOT supply session_name
+    // (the common case for kanban task chats — the frontend's
+    // `api.sendChatMessage` doesn't carry session_name) AND the
+    // default "New Session" is in effect, resolve the session name
+    // from the matching workspace_item_tasks row so the sidebar
+    // ChatsList shows the user-typed title instead of the literal
+    // "New Session" placeholder.
+    //
+    // Pre-fix this fallback was missing: the session row was
+    // inserted with name='New Session' (the literal at line 106).
+    // The kanban task itself was correct (workspace_item_tasks.name
+    // = the title) but the linked session row had a different name
+    // — the user's screenshot showed the join with both columns
+    // side-by-side: "settings like on notifi when error not s…" vs
+    // "task_1787671269086_0". The task_id was the placeholder for
+    // some rows, but for rows lazy-initialized via this handler the
+    // placeholder was "New Session" — same bug, different symptom.
+    //
+    // We only override when session_name is still the default AND
+    // the lookup finds a real task. For brand-new sessions
+    // (random session_id, no task row) the "New Session" default
+    // stays. For the sidebar's "New Chat" flow where the user
+    // explicitly types nothing, "New Session" stays too.
+    if (std.mem.eql(u8, session_name, "New Session") and parsed.session_id.len > 0) {
+        if (resolveNameFromTask(alloc, di, parsed.session_id)) |maybe_name| {
+            if (maybe_name) |task_name| {
+                session_name = task_name;
+            }
+        } else |err| {
+            std.log.warn(
+                "session_create: task-name fallback lookup failed (non-fatal, keeping 'New Session'): {s}",
+                .{@errorName(err)},
+            );
+        }
+    }
     if (parsed.queue_message.len > 0) queue_message = parsed.queue_message;
     if (parsed.cwd_session.len > 0) cwd_session = parsed.cwd_session;
     if (parsed.body_message.len > 0) body_message = parsed.body_message;
@@ -317,4 +353,171 @@ fn resolveCwdFromTaskOrItem(
     if (item_path.len > 0) return item_path;
 
     return "";
+}
+
+/// Server-side session-name fallback (task_1787671636395_1, plan
+/// 2026-09-02-kanban-task-session-name-bind). When the caller
+/// omitted session_name (the kanban chat first-message path —
+/// `api.sendChatMessage` doesn't carry session_name) AND the
+/// session_id matches a `workspace_item_tasks` row, return the
+/// task's title so the inserted sessions row matches the kanban
+/// card. Without this fallback the lazy-init path leaves
+/// ``sessions.name = 'New Session'`` while
+/// ``workspace_item_tasks.name = <user-typed title>`` — a name
+/// mismatch on the JOIN the sidebar's ChatsList reads.
+///
+/// Return shape:
+///   - `?[]const u8` — the duped task name, or null if no row
+///     matched (or matched but the title was empty). The dupe lives
+///     on the per-request arena; safe to return because the arena
+///     reaps everything on request teardown.
+///   - `!anyhow`     — the failure mode is `error.QueryFailed`
+///     (the SELECT bombed). The caller logs + keeps "New Session" so
+///     a transient DB blip doesn't block session creation.
+///
+/// Single SELECT (no JOIN) — cheaper than walking the cwd chain
+/// and avoids the worker's task-row vs item-row race we already
+/// guard against in `resolveCwdFromTaskOrItem`.
+fn resolveNameFromTask(
+    alloc: std.mem.Allocator,
+    di: *nalarcore.ContextIPCTui,
+    session_id: []const u8,
+) !?[]const u8 {
+    var q = di.db.query(
+        alloc,
+        "SELECT name FROM workspace_item_tasks WHERE id = ?",
+        &.{session_id},
+    ) catch return error.QueryFailed;
+    defer q.deinit();
+
+    const row_opt = q.next() catch return error.QueryFailed;
+    const row = row_opt orelse return null;
+    defer row.deinit(alloc);
+
+    const task_name = row.values[0];
+    // Empty title: treat as "no useful fallback" — keep "New Session".
+    if (task_name.len == 0) return null;
+
+    return try alloc.dupe(u8, task_name);
+}
+
+// =====================================================================
+// Static contract tests (NEW — plan 2026-09-02-kanban-task-session-name-bind)
+// =====================================================================
+//
+// Why static checks (and not behavioural DB tests) here: standing up
+// an in-memory SQLite + migrations + ContextIPCTui to test resolveNameFromTask
+// would duplicate the migration setup; the functional test in
+// tests/functional/kanban_task_session_name_test.py already pins the
+// end-to-end behaviour against a real nalar binary. These static
+// checks lock in the structural contract — fail closed if a future
+// refactor drops the helper or removes the useCase call site.
+
+const testing = std.testing;
+const text_normalize = @import("helpers").text_normalize;
+const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/session_create.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+// ─── Contract 1: resolveNameFromTask exists ───────────────────────────────
+
+test "session_create.zig defines resolveNameFromTask helper" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (!contains(source, "fn resolveNameFromTask(")) {
+        std.debug.print(
+            "\n!! {s} does not define `resolveNameFromTask` !!\n"
+            ++ "   The task-name fallback for lazy-init session rows is gone.\n"
+            ++ "   Without this helper, kanban task chats where the user\n"
+            ++ "   didn't pre-init the session end up with sessions.name =\n"
+            ++ "   'New Session' instead of the task title (task_1787671636395_1).\n",
+            .{HANDLER_PATH},
+        );
+        return error.ResolveNameFromTaskMissing;
+    }
+}
+
+// ─── Contract 2: useCase calls the helper on the default-name branch ────
+
+test "session_create useCase calls resolveNameFromTask when session_name is 'New Session'" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The useCase's default is "New Session" (line 106). When the
+    // caller doesn't supply a session_name AND the resolved
+    // session_id matches a workspace_item_tasks row, the useCase
+    // must call resolveNameFromTask to swap the default for the
+    // task title.
+    if (!contains(source, "resolveNameFromTask(")) {
+        std.debug.print(
+            "\n!! {s} does not call `resolveNameFromTask` !!\n"
+            ++ "   The useCase's session-name resolution is missing.\n"
+            ++ "   Without this call, lazy-init sessions keep name='New Session'.\n",
+            .{HANDLER_PATH},
+        );
+        return error.ResolveNameFromTaskCallMissing;
+    }
+
+    // The call must be gated on the default-name branch — i.e. must
+    // NOT fire when the caller supplied a real session_name.
+    // Source-order check: the literal `resolveNameFromTask(` must
+    // appear AFTER the default-name literal `New Session`.
+    const default_pos = std.mem.indexOf(u8, source, "New Session") orelse {
+        std.debug.print(
+            "\n!! {s} no longer has the 'New Session' default literal !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.NewSessionDefaultMissing;
+    };
+    const call_pos = std.mem.indexOf(u8, source, "resolveNameFromTask(") orelse {
+        return error.ResolveNameFromTaskCallMissing;
+    };
+    if (call_pos < default_pos) {
+        std.debug.print(
+            "\n!! {s} calls `resolveNameFromTask` BEFORE the 'New Session' default !!\n"
+            ++ "   The call site must be AFTER the default-name declaration so\n"
+            ++ "   the gate `if (session_name == 'New Session')` can check the value.\n",
+            .{HANDLER_PATH},
+        );
+        return error.ResolveNameFromTaskCallBeforeDefault;
+    }
+}
+
+// ─── Contract 3: helper's SELECT targets workspace_item_tasks ────────────
+
+test "session_create resolveNameFromTask SELECTs from workspace_item_tasks" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The helper must query workspace_item_tasks (the table holding
+    // the kanban task title). A regression that points it at a
+    // different table would silently miss the bind.
+    if (!contains(source, "SELECT name FROM workspace_item_tasks WHERE id = ?")) {
+        std.debug.print(
+            "\n!! {s} resolveNameFromTask does not SELECT from workspace_item_tasks !!\n"
+            ++ "   The helper must query the kanban task table (workspace_item_tasks)\n"
+            ++ "   to read the user-typed title. Pointing it at any other table\n"
+            ++ "   silently loses the bind.\n",
+            .{HANDLER_PATH},
+        );
+        return error.WrongSelectTable;
+    }
 }

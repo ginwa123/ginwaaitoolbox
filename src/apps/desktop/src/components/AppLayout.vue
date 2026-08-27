@@ -21,7 +21,7 @@ import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
 import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
-import KanbanSettingsDialog from './kanban/KanbanSettingsDialog.vue'
+import KanbanSettingsView from './views/KanbanSettingsView.vue'
 import KanbanAgentSettings from './kanban/KanbanAgentSettings.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
@@ -54,6 +54,14 @@ const sidebarStore = useSidebarStore()
 
 // Ref to Sidebar component
 const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
+
+// Dev-only FPS overlay (desktop scroll-perf plan, Task 5): lets us
+// measure platform rendering fixes (Linux gfx pinning, macOS scheme
+// handler, Windows resize coalescing) in the running app. mount() is a
+// no-op in prod builds; unmount on teardown keeps HMR clean.
+import { mount as mountFpsOverlay, unmount as unmountFpsOverlay } from '../helpers/fpsOverlay'
+onMounted(() => { mountFpsOverlay() })
+onUnmounted(() => { unmountFpsOverlay() })
 
 // Settings overlay state (now driven by route)
 
@@ -881,6 +889,19 @@ const fetchChatSessionCwd = async (sessionId: string) => {
 const currentView = computed(() => {
   const path = route.path
   if (path === '/app/settings') return 'settings'
+  // NEW (plan: 2026-09-02-kanban-settings-as-page). Path-based
+  // kanban-settings route (/app/kanban/:itemId/settings). Must come
+  // BEFORE the route.query.view fallthrough because the URL has no
+  // `view=` query param — the path IS the discriminator.
+  //
+  // The regex matches /app/kanban/<itemId>/settings with optional
+  // trailing slash. It deliberately does NOT match /app/kanban/X
+  // (no /settings) — the kanban board itself stays at the existing
+  // ?view=workspace URL, so a future migration to /app/kanban/:itemId
+  // would be a separate plan.
+  if (/^\/app\/kanban\/[^/]+\/settings\/?$/.test(path)) {
+    return 'kanban-settings'
+  }
   // gitfile view - check only the ref (set synchronously before navigation)
   if (gitViewerFile.value) {
     console.log('[currentView] returning gitfile, gitViewerFile:', gitViewerFile.value.path)
@@ -1621,23 +1642,27 @@ const handleKanbanColumnEditorDelete = () => {
   showKanbanColumnEditor.value = false
 }
 
-// ─── KanbanSettingsDialog — per-board column management ─────────────────
+// ─── Kanban settings page (plan: 2026-09-02-kanban-settings-as-page) ────
 //
-// A single modal that shows the kanban name, an inline "Add Column"
-// form, and the list of existing columns with per-row Edit / Delete
-// actions. The dialog reuses the KanbanColumnEditor in 'rename' /
-// 'delete' modes for per-row edits, so the per-board and per-⋮-menu
-// flows share the same UX. The dialog itself stays open across
-// add/edit/delete so the user can manage several columns in
-// succession without reopening it.
-const showKanbanSettingsDialog = ref(false)
-
+// The settings UI moved from a centered modal dialog (the deleted
+// KanbanSettingsDialog) to a dedicated full-page route
+// (/app/kanban/:itemId/settings). Clicking ⚙ on a kanban board
+// header now pushes a vue-router path route instead of opening a
+// dialog. The new <KanbanSettingsView> component (mounted below)
+// is gated on currentView === 'kanban-settings'.
+//
+// The handlers below route the page's emits (addColumn, editColumn,
+// deleteColumn, renameItem, copySpec) to the existing
+// workspacesStore actions — same contract as the old dialog, no
+// backend changes.
 const handleOpenKanbanSettings = () => {
-  showKanbanSettingsDialog.value = true
-}
-
-const handleCloseKanbanSettings = () => {
-  showKanbanSettingsDialog.value = false
+  const itemId = activeWorkspaceItem.value?.id ?? ''
+  if (!itemId) return
+  // Path-based route: /app/kanban/:itemId/settings (registered in
+  // router/index.ts). workspaceId is derived from the store by the
+  // page itself — no need to encode it in the URL (itemId is
+  // globally unique across all workspaces).
+  router.push({ path: `/app/kanban/${itemId}/settings` })
 }
 
 // ─── KanbanAgentSettings — per-board agent config (Migration 081) ──────
@@ -2344,6 +2369,21 @@ defineExpose({
         />
       </div>
 
+      <!-- Kanban settings page (plan: 2026-09-02-kanban-settings-as-page).
+           Mounted INSIDE the <main> v-else-if chain (BEFORE KanbanView)
+           so the settings page REPLACES the kanban board — no overlay.
+           The :key forces a fresh mount when the user navigates from
+           one kanban's settings to another's (the page re-reads
+           route.params.itemId on mount). -->
+      <KanbanSettingsView
+        v-else-if="currentView === 'kanban-settings'"
+        :key="'kanban-settings-' + (route.params.itemId as string)"
+        @add-column="handleKanbanSettingsAddColumn"
+        @edit-column="handleKanbanSettingsEditColumn"
+        @delete-column="handleKanbanSettingsDeleteColumn"
+        @rename-item="handleKanbanRenameItem"
+        @copy-spec="handleOpenCopyKanbanSpec"
+      />
       <!-- Kanban view (kanban-embed-chatview plan, Task 5). The kanban
            now owns the chat pane + resize handle internally — the old
            3-column sibling-of-KanbanView branch (was at lines
@@ -2741,31 +2781,12 @@ defineExpose({
     />
 
     <!--
-      KanbanSettingsDialog — per-board column management. Mounted
-      alongside the KanbanColumnEditor (not inside the KanbanView
-      scoped tree) so the modal's Teleport/animation lifecycle
-      works cleanly even if the KanbanView branch unmounts
-      mid-edit. The dialog owns its own KanbanColumnEditor
-      instance for per-row rename/delete actions so the two
-      dialogs can coexist (a user can open the settings while
-      the ⋮ menu is already showing).
-    -->
-    <KanbanSettingsDialog
-      :show="showKanbanSettingsDialog"
-      :item="activeWorkspaceItem ?? null"
-      @close="handleCloseKanbanSettings"
-      @add-column="handleKanbanSettingsAddColumn"
-      @edit-column="handleKanbanSettingsEditColumn"
-      @delete-column="handleKanbanSettingsDeleteColumn"
-      @rename-item="handleKanbanRenameItem"
-      @copy-spec="handleOpenCopyKanbanSpec"
-    />
-
-    <!--
       KanbanAgentSettings — per-board agent config (Migration 081,
-      agent-kanbans mirror). Mounted as a sibling of
-      KanbanSettingsDialog so the modal's Teleport/animation lifecycle
-      works cleanly even if the KanbanView branch unmounts mid-edit.
+      agent-kanbans mirror). Mounted at the AppLayout level (sibling
+      of KanbanColumnEditor) so the modal's Teleport/animation
+      lifecycle works cleanly even if the KanbanView branch unmounts
+      mid-edit. State (knowledge / system-prompt / tools tabs) is
+      owned by the dialog itself — AppLayout only toggles `show`.
     -->
     <KanbanAgentSettings
       :show="showKanbanAgentSettings"
@@ -2777,8 +2798,8 @@ defineExpose({
     <!--
       CopyKanbanSpecDialog — source picker + Replace/Append radio for
       bulk-copying column spec from another kanban. Mounted as a SIBLING
-      of <KanbanSettingsDialog> (not nested) so a user can stack them:
-      Settings dialog under, picker over, both visible at once. The picker
+      of <KanbanSettingsView> (not nested) so a user can stack them:
+      Settings page under, picker over, both visible at once. The picker
       filters out the active kanban as a source (CopyKanbanSpecDialog's
       `availableSources` computed).
       Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md

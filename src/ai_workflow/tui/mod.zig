@@ -27,6 +27,9 @@ pub const design_io = @import("agentic_loop/design_io.zig");
 pub const design_model = @import("agentic_loop/design_model.zig");
 pub const inherited_context = @import("agentic_loop/inherited_context.zig");
 pub const agent_memories = @import("agentic_loop/agent_memories.zig");
+// In-flight stream snapshot registry (task_1787673548905_0
+// stream-resume-on-reselect) — read by http_handlers/stream_get.zig.
+pub const stream_snapshot = @import("agentic_loop/stream_snapshot.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;

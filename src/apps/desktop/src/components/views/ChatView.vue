@@ -3,7 +3,7 @@ import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Re
 import { marked } from 'marked'
 import * as api from '../../api'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
-import { getThinkingTags, isThinkingTags, stripThinkingTags, isHtmlTags, VirtualScroller } from '@/helpers'
+import { stripThinkingTags, isHtmlTags, VirtualScroller, renderResponse } from '@/helpers'
 import {
   buildScrollContext,
   createScrollLogger,
@@ -64,6 +64,9 @@ import { useSubAgentPeek } from '../../composables/useSubAgentPeek'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 import { useRouter } from 'vue-router'
 import CompactionCard from '../preview/CompactionCard.vue'
+// 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
+// for agentic-loop error/retry diagnostics (is_error=true SSE events).
+import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
 import WorktreeMenu from '../workspace/WorktreeMenu.vue'
@@ -143,13 +146,6 @@ interface Message {
   reasoning_content?: string,
 }
 
-// Escape HTML to prevent XSS
-const escapeHtml = (text: string): string => {
-  const div = document.createElement('div')
-  div.textContent = text
-  return div.innerHTML
-}
-
 // Copy code content to clipboard
 const copyCodeContent = async (codeContent: string) => {
   try {
@@ -188,282 +184,17 @@ const setupCodeBlockCopyButtons = () => {
   })
 }
 
-// Render markdown content to HTML
-const renderResponse = (
-  content: string,
-  role: string,
-   
-  tool_name: string | undefined,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-  diffviewBefore?: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-  diffviewAfter?: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-  finish_reason?: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-  tool_calls_json?: string,
-): string => {
-  content = content.trim()
-  if (!content) return ''
-  try {
-    if (role === 'assistant') {
-      if (isThinkingTags(content)) {
-        return getThinkingTags(content)
-      }
-      const cleanContent = stripThinkingTags(content)
-      return marked.parse(cleanContent, { async: false }) as string
-    }
-
-    if (role === 'tool') {
-      if (tool_name === 'read_file') {
-        const mathPath = content.match(/<path>(.*?)<\/path>/)
-        const path = mathPath ? mathPath[1] : null
-        const errorArr = content.match(/<error>(.*?)<\/error>/)
-        if (errorArr) {
-          const errorQuery = errorArr[0]
-          return `<span class="tool-inline">${tool_name} → ${path} ${errorQuery}</span>`
-        }
-        return `<span class="tool-inline">${tool_name} → ${path}</span>`
-      }
-
-      if (tool_name === 'search') {
-        const fileMatch = content.match(/<file path="([^"]+)" total="(\d+)" count="(\d+)">/)
-        if (fileMatch) {
-          const matchCount = fileMatch[3]
-          return `<span class="tool-inline">search → ${matchCount} matches</span>`
-        }
-        const warningMatch = content.match(/<warning>(.*?)<\/warning>/)
-        if (warningMatch) {
-          return `<span class="tool-inline">search → ${warningMatch[1]}</span>`
-        }
-        const errorMatch = content.match(/<error>(.*?)<\/error>/)
-        return `<span class="tool-inline">search → ${errorMatch?.[1] || 'unknown'}</span>`
-      }
-
-      if (tool_name === 'glob') {
-        const patternMatch = content.match(/pattern="([^"]+)"/)
-        const totalMatch = content.match(/total="(\d+)"/)
-        const returnedMatch = content.match(/returned="(\d+)"/)
-        const warningMatch = content.match(/<warning>(.*?)<\/warning>/)
-        if (warningMatch) {
-          return `<span class="tool-inline">glob → ${warningMatch[1]}</span>`
-        }
-        const pattern = patternMatch ? patternMatch[1] : 'unknown'
-        const total = totalMatch ? totalMatch[1] : '0'
-        const returned = returnedMatch ? returnedMatch[1] : total
-        const resultsText = total !== '0' ? ` (${returned} files)` : ''
-        return `<span class="tool-inline">glob → "${pattern}"${resultsText}</span>`
-      }
-
-      // Collapsed-bubble summary for the inline tool pill in ChatView.
-      // Mirrors the structured ListDirectory.vue card so users see the
-      // same info (path + entry count) whether they look at the
-      // collapsed bubble or the expanded body. The wire shape is
-      // `<directory_listing path="..." count="N">...</directory_listing>`
-      // (see src/modules/agent/tools/list_directory.zig).
-      if (tool_name === 'list_directory') {
-        const errorMatch = content.match(/<error>([\s\S]*?)<\/error>/)
-        if (errorMatch) {
-          return `<span class="tool-inline">${tool_name} → ${escapeHtml(errorMatch[1]?.trim() || 'error')}</span>`
-        }
-        const pathMatch = content.match(/<directory_listing\s[^>]*\bpath="([^"]+)"/)
-        const countMatch = content.match(/<directory_listing\s[^>]*\bcount="(\d+)"/)
-        const dirPath = pathMatch?.[1] ?? 'unknown'
-        const dirCount = countMatch?.[1] ?? '0'
-        const plural = dirCount === '1' ? 'entry' : 'entries'
-        return `<span class="tool-inline">${tool_name} → ${escapeHtml(dirPath)} (${dirCount} ${plural})</span>`
-      }
-
-      if (tool_name === 'web_search') {
-        const mathQuery = content.match(/<query>(.*?)<\/query>/) || content.match(/"(.*?)"/)
-        const query = mathQuery ? mathQuery[1] : null
-        return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`
-      }
-
-      if (tool_name === 'mcp_context7_query-docs' || tool_name === 'context7') {
-        const mathQuery = content.match(/<query>(.*?)<\/query>/)
-        const query = mathQuery ? mathQuery[1] : null
-        return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`
-      }
-
-      if (
-        tool_name === 'list_skills' ||
-        tool_name === 'get_skill' ||
-        tool_name === 'add_skill' ||
-        tool_name === 'edit_skill' ||
-        tool_name === 'view_skill'
-      ) {
-        return `<span class="tool-inline">${tool_name}</span>`
-      }
-
-      if (tool_name === 'set_git_worktree') {
-        // SET success: <created>true</created><path>...</path>
-        const pathMatch = content.match(/<path>([\s\S]*?)<\/path>/)
-        if (pathMatch) {
-          return `<span class="tool-inline">${tool_name} → ${escapeHtml(pathMatch[1]?.trim() || '')}</span>`
-        }
-        // CLEAR success: <cleared>true</cleared>
-        if (/<cleared>\s*true\s*<\/cleared>/.test(content)) {
-          return `<span class="tool-inline">${tool_name} → cleared</span>`
-        }
-        // Error: <created>false</created><error>...</error>
-        const errMatch = content.match(/<error>([\s\S]*?)<\/error>/)
-        return `<span class="tool-inline">${tool_name} → ${escapeHtml(errMatch?.[1]?.trim() || 'error')}</span>`
-      }
-
-      if (tool_name === 'read_compacted_messages') {
-        // Collapsed-bubble summary for the inline tool pill in ChatView.
-        // Mirrors the structured ReadCompactedMessages.vue card so users
-        // see the same info (mode + count + session) whether they look
-        // at the collapsed bubble or the expanded body.
-        const errorMatch = content.match(/<error>([\s\S]*?)<\/error>/)
-        if (errorMatch) {
-          return `<span class="tool-inline">${tool_name} → ${escapeHtml(errorMatch[1]?.trim() || 'error')}</span>`
-        }
-        const modeMatch = content.match(/<read_compacted_messages\s+mode="([^"]+)"/)
-        const countMatch = content.match(/<count>(\d+)<\/count>/)
-        const sessionMatch = content.match(/<session_id>([\s\S]*?)<\/session_id>/)
-        const mode = modeMatch?.[1] ?? 'index'
-        const count = countMatch?.[1] ?? '?'
-        const session = sessionMatch?.[1]?.trim() ?? ''
-        return `<span class="tool-inline">${tool_name} → ${escapeHtml(mode)} mode · ${count} ${count === '1' ? 'message' : 'messages'}${session ? ' · ' + escapeHtml(session) : ''}</span>`
-      }
-
-      if (tool_name === 'update_plan') {
-        // Collapsed-bubble summary for the inline tool pill in ChatView.
-        // Mirrors the structured UpdatePlan.vue card so users see "wrote
-        // N bytes" whether they look at the collapsed bubble or expand
-        // the structured card. We approximate the byte count from the
-        // envelope's `<updated_at>` timestamp + the presence of
-        // `<session_id>` — the raw `content` argument isn't the LLM's
-        // input, so we can't show the exact byte count without
-        // threading the tool-call params through; the byte count from
-        // the plan body would require re-unwrapping, so we settle for
-        // a length-derived estimate from the inner envelope.
-        const updateError = content.match(/<error>([\s\S]*?)<\/error>/)
-        if (updateError && updateError[1]) {
-          return `<span class="tool-inline">${tool_name} → ${escapeHtml(updateError[1].trim()) || 'error'}</span>`
-        }
-        // Estimate byte count from the inner envelope length as a
-        // rough "how big was this plan write" signal. We pull the
-        // inner envelope (stripping both <tool> and <update_plan>
-        // wrappers) so the number reflects the actual content, not
-        // the XML envelope chrome.
-        const innerPlanMatch = content.match(/<update_plan>([\s\S]*?)<\/update_plan>/)
-        const innerBytes = innerPlanMatch?.[1]?.length ?? 0
-        return `<span class="tool-inline">${tool_name} → wrote ${innerBytes}b of plan</span>`
-      }
-
-      if (tool_name === 'get_plan') {
-        // Collapsed-bubble summary for the inline tool pill in ChatView.
-        // Mirrors the structured GetPlan.vue card so users see "fetched
-        // current plan · N items" whether they look at the collapsed
-        // bubble or expand the structured card.
-        const getError = content.match(/<error>([\s\S]*?)<\/error>/)
-        if (getError && getError[1]) {
-          return `<span class="tool-inline">${tool_name} → ${escapeHtml(getError[1].trim()) || 'error'}</span>`
-        }
-        // No-plan sentinel: <get_plan><empty/></get_plan>
-        if (/<empty\s*\/?>/.test(content)) {
-          return `<span class="tool-inline">${tool_name} → no plan set</span>`
-        }
-        // Count `- [ ]` / `- [x]` items in the CDATA-wrapped body for
-        // the "N items" hint. We strip the CDATA wrappers first so we
-        // only match checklist markers, not any literal `[ ]` text
-        // inside non-checklist prose.
-        const cdataMatch = content.match(/<!\[CDATA\[([\s\S]*?)\]\]>/)
-        const cdata = cdataMatch?.[1] ?? ''
-        const itemMatches = cdata.match(/^- \[(x| )\]\s+/gim)
-        const itemCount = itemMatches?.length ?? 0
-        const itemLabel = itemCount === 1 ? 'item' : 'items'
-        return `<span class="tool-inline">${tool_name} → fetched current plan${itemCount > 0 ? ` · ${itemCount} ${itemLabel}` : ''}</span>`
-      }
-
-      if (tool_name === 'nalar_browser') {
-        // Use the same action-aware summariser the standalone component uses,
-        // so the collapsed preview ("nalar_browser · open_page · Example Domain")
-        // matches what the user will see in the expanded body.
-        const nalarUnwrapped = tryUnwrapToolOutput(content)
-        if (nalarUnwrapped === null) {
-          return `<span class="tool-inline">${tool_name} → ${escapeHtml(content)}</span>`
-        }
-        const a = nalarUnwrapped.parameters
-        let action = 'unknown'
-        try {
-          const parsed = JSON.parse(a)
-          if (parsed && typeof parsed === 'object' && typeof parsed.action === 'string') {
-            action = parsed.action
-          }
-        } catch {
-          /* fall through */
-        }
-        const label = (() => {
-          if (nalarUnwrapped.error) return nalarUnwrapped.error
-          switch (action) {
-            case 'launch':
-              return nalarUnwrapped.data?.match(/<browser_id>([\s\S]*?)<\/browser_id>/)?.[1] ?? action
-            case 'open_page':
-              return (
-                nalarUnwrapped.data?.match(/<title>([\s\S]*?)<\/title>/)?.[1] ??
-                nalarUnwrapped.data?.match(/<url>([\s\S]*?)<\/url>/)?.[1] ??
-                action
-              )
-            case 'snapshot':
-              return (
-                (() => {
-                  const tree = nalarUnwrapped.data?.match(/<tree>([\s\S]*?)<\/tree>/)?.[1]
-                  if (!tree) return action
-                  try {
-                    const arr = JSON.parse(tree)
-                    return Array.isArray(arr)
-                      ? `snapshot · ${arr.length} element${arr.length !== 1 ? 's' : ''}`
-                      : action
-                  } catch {
-                    return action
-                  }
-                })()
-              )
-            case 'click':
-            case 'fill':
-            case 'press':
-            case 'close_page':
-            case 'close_browser':
-              return action
-            default:
-              return action
-          }
-        })()
-        return `<span class="tool-inline">${tool_name} · ${escapeHtml(action)} · ${escapeHtml(label)}</span>`
-      }
-      if (tool_name === 'spawn_sub_agent') {
-        const agentMatches = content.match(/<agent name="([^"]*)" success="([^"]*)">/g)
-        const agentCount = agentMatches ? agentMatches.length : 0
-        const summaryMatch = content.match(/<summary succeeded="(\d+)" failed="(\d+)" \/>/)
-        const succeeded = summaryMatch ? summaryMatch[1] : '0'
-        const failed = summaryMatch ? summaryMatch[2] : '0'
-        return `<span class="tool-inline">${tool_name} → ${agentCount} agents (${succeeded} succeeded, ${failed} failed)</span>`
-      }
-
-      // Fallback: render a concise summary from the <tool> envelope.
-      // If the content doesn't match the envelope (legacy), fall back to
-      // the raw text (existing behavior).
-      const unwrapped = tryUnwrapToolOutput(content)
-      if (unwrapped === null) {
-        return `<span class="tool-inline">${tool_name || 'tool'} → ${escapeHtml(content)}</span>`
-      }
-      const statusIcon = unwrapped.success ? '✓' : '✗'
-      const statusClass = unwrapped.success ? 'tool-inline-success' : 'tool-inline-error'
-      const preview = unwrapped.success
-        ? unwrapped.data?.slice(0, 80) ?? ''
-        : unwrapped.error ?? 'unknown error'
-      return `<span class="tool-inline">${tool_name || unwrapped.name} → <span class="${statusClass}">${statusIcon}</span> ${escapeHtml(preview)}${preview.length >= 80 ? '…' : ''}</span>`
-    }
-
-    return escapeHtml(content)
-  } catch {
-    return escapeHtml(content)
-  }
-}
+// NOTE (2026-08-27, task_1787761084050_0): renderResponse is no
+// longer defined here — it was extracted to
+// `src/apps/desktop/src/helpers/renderResponse.ts` and exported via
+// `@/helpers` (imported at the top of this file). The extraction
+// added module-scoped memoization (Map<string,string> keyed on
+// `${role}|${tool_name}|${trimmed}`) so a long chat's many messages
+// don't re-parse the same markdown on every Vue re-render. The
+// previous in-Vue implementation ran `marked.parse` synchronously
+// inside v-html — O(visible_messages × renders_per_second) parse
+// calls per second during SSE streaming. Memoization collapses that
+// to O(unique_messages) per content mutation.
 
 // ─── <html> wrapper-tag rendering (2026-08-23 html-tag-support) ────────────
 // When the LLM wraps raw HTML in <html>...</html>, the chat UI renders
@@ -631,6 +362,8 @@ interface VirtualScrollerExposed {
   scrollToBottom: (behavior?: ScrollBehavior) => void
   scrollToPosition: (scrollTop: number, behavior?: ScrollBehavior) => void
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
+  /** Full height-model recompute from the live DOM (append-gap fix). */
+  remeasure: () => void
   beginPreserve: (newItemsCount: number) => void
   endPreserve: () => Promise<void>
   preserveScrollPosition: () => Promise<void>
@@ -758,11 +491,16 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
     // stick is actively engaged right now (not just that the LLM is
     // busy — those are different things, see autoStickGate.ts).
     lastAutoStickAt.value = Date.now()
-    // Native clamp: `scrollTop = scrollHeight` gets clamped to
-    // `scrollHeight - clientHeight` by the browser, so we always land at
-    // the true bottom even if VirtualScroller's cached `containerHeight`
-    // ref is stale.
-    container.scrollTop = container.scrollHeight
+    // Explicit bottom computation — DELEGATED to the scroller's
+    // scrollToBottom (2026-08-26 blank-viewport fix): the scroller
+    // targets the REAL rendered content bottom when the window shows
+    // the last item, so a residual sizer overshoot can no longer land
+    // the stick in the phantom region (the user's fully-blank
+    // viewport screenshots: sizer 29389px, window at 27971px, nothing
+    // visible). The old inline `scrollHeight - clientHeight` trusted
+    // the model total; the scroller's version falls back to it only
+    // when the model agrees with reality.
+    virtualScrollerRef.value?.scrollToBottom('auto')
     scrollLogger.info({
       ...ctx,
       caller: 'onContentShift',
@@ -1149,6 +887,26 @@ const expandedToolIds = ref<Set<string>>(new Set())
 // arrives so the parsed-envelope view takes over rendering.
 const subAgentProgressMap = ref<SubAgentProgressMap>({})
 
+// 2026-08-25 agent-error-card (task_1787663566535_2): live-only list of
+// agentic-loop error/retry diagnostics. Fed by `full` SSE events with
+// is_error=true (workflow.zig's 3 diagnostic sites — never persisted,
+// is_skip_db=true). Rendered OUTSIDE the VirtualScroller (below it) so
+// the scroller's height-estimate model never sees these rows; cleared
+// on session switch / fresh history load since they're transient.
+//
+// 2026-08-25 task_1787668954023_2: SINGLE-LATEST semantics — only the most
+// recent error is rendered. New error events overwrite the previous entry
+// (status of a retry chain progressing: 1/10 → 2/10 → ... → final 10/10
+// bail, all on the same card). This avoids the pile-up you see in the
+// screenshot. The card is also cleared as soon as ANY non-error `full`
+// SSE event arrives for this session (handled in the SSE listener below)
+/// — meaning the moment the agent recovers, the error card disappears.
+interface AgentErrorEntry {
+  id: string
+  content: string
+}
+const agentError = ref<AgentErrorEntry | null>(null)
+
 // Image preview state
 const previewImageUrl = ref<string | null>(null)
 
@@ -1278,6 +1036,17 @@ interface MessageGroup {
   messages: Message[]
   timestamp: Date
 }
+
+/**
+ * Stable identity for a message group (2026-08-26 stable-keys fix).
+ * The VirtualScroller keys its height cache by this — a group keeps
+ * its measured height wherever it moves in the array. messageGroups
+ * re-merges/re-filters on every SSE event, shifting indices; with
+ * index-keyed heights those shifts corrupted the sizer (heights
+ * describing the wrong rows → phantom gaps → blank stick-to-bottom).
+ * The first message's DB id is stable across regrouping.
+ */
+const groupKey = (group: MessageGroup): string => group.messages[0]?.id ?? `empty-${group.timestamp.getTime()}`
 
 const messageGroups = computed((): MessageGroup[] => {
   const groups: MessageGroup[] = []
@@ -1594,6 +1363,14 @@ const loadChatHistory = async (loadMore = false) => {
       // handler eliminates that work entirely for this window.
       suppressContentShiftStick = true
 
+      // Snapshot the at-bottom state BEFORE the preserve begins. The
+      // preserve dance (beginPreserve → messages mutation → endPreserve)
+      // fires scroll events that pass through handleVirtualScroll and
+      // would corrupt the live `isAtBottom` flag — the snapshot is the
+      // only trustworthy signal for the post-preserve re-validation
+      // below (task_1787638309623_3).
+      const wasAtBottom = isAtBottom.value
+
       // Preserve scroll position when prepending new (older) messages at the top.
       // beginPreserve must be called BEFORE mutating the array so the anchor
       // element's offsetTop is captured while it's still in the DOM.
@@ -1652,6 +1429,46 @@ const loadChatHistory = async (loadMore = false) => {
       // look like a "measurement update" and re-trigger the stick path.
       lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
       suppressContentShiftStick = false
+
+      // ── Post-preserve bottom re-validation (task_1787638309623_3) ────────
+      //
+      // The suppress window above SWALLOWED every contentShift event, so
+      // if the user was at bottom before the prepend, nothing re-validated
+      // the bottom after `endPreserve` restored the anchor. If the
+      // prepended items' heights were still estimates when endPreserve
+      // measured them (images/code blocks settle later), the sizer grows
+      // AFTER the preserve window closes and nothing scrolls to absorb
+      // it — a persistent gap below the last message (the "new items on
+      // demand create big gaps" symptom).
+      //
+      // `wasAtBottom` was snapshotted BEFORE `beginPreserve` (the preserve
+      // dance fires scroll events that would corrupt the live flag).
+      // Explicit Math.max compute — same contract as the contentShift
+      // re-stick, no browser-clamp delegate.
+      if (wasAtBottom) {
+        const c = virtualScrollerRef.value?.containerRef
+        if (c) {
+          scrollLogger.markProgrammatic()
+          lastAutoStickAt.value = Date.now()
+          // Delegated to the scroller's scrollToBottom (real-bottom
+          // target — same rationale as the onContentShift stick).
+          virtualScrollerRef.value?.scrollToBottom('auto')
+          // Re-engage the stick explicitly: the user WAS at bottom before
+          // the prepend, and we just moved them to the new bottom on their
+          // behalf. The preserve dance's programmatic scroll events may
+          // have flipped isAtBottom=false mid-prepend (the round-2 guard
+          // only retains the stick for users who were already engaged) —
+          // without this re-arm, the next SSE chunk's contentShift would
+          // skip and leave a gap below the last message.
+          isAtBottom.value = true
+          scrollLogger.info({
+            ...afterCtx,
+            caller: 'loadChatHistory',
+            reason: 'post-preserve-stick',
+            extra: { prepending: newCount, wasAtBottom },
+          })
+        }
+      }
     } else {
       // Initial load path. Set isInitialLoad BEFORE the messages
       // assignment so the messages-length watcher's sync callback
@@ -1922,7 +1739,7 @@ let previousScrollTop = -1
 let previousScrollHeight = -1
 let previousDirection: 'up' | 'down' | null = null
 
-const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement) => {
+const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic = false) => {
   // Prefer the event target — it's the actual DOM element that
   // dispatched the scroll event, so the browser guarantees it
   // exists for the lifetime of this handler. The ref chain
@@ -2144,7 +1961,58 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // (force=true), which always scrolls regardless of this flag. So
   // opening a session still lands at the bottom, but once the user
   // scrolls up even a few pixels, the auto-scroll disengages.
-  isAtBottom.value = newIsAtBottom
+  //
+  // ── Content-grew-under-a-stationary-viewport guard (task_1787595375531_0) ──
+  //
+  // When scrollHeight grows (SSE chunk / measurement pass) while the
+  // user's scrollTop is UNCHANGED (deltaTop === 0), the user did NOT
+  // scroll — the bottom simply moved away from them. Flipping
+  // isAtBottom=false here permanently disengages the auto-stick: every
+  // later contentShift sees isAtBottom=false and skips (the
+  // `spacer-resize-skip` log), so the gap never closes and grows with
+  // every chunk — the "huge blank space below" symptom.
+  //
+  // Log evidence (scroll#228→#231): top=10638 constant, scrollHeight
+  // 11641→11732 (+91), bottom 0→91px, `left-bottom` fired with
+  // deltaTop=0, then every re-stick skipped forever after.
+  //
+  // Fix: only DIS-engage when the user actually moved (deltaTop < 0 —
+  // a real upward scroll). A stationary viewport with growing content
+  // keeps the stick engaged so the next contentShift re-stick closes
+  // the gap.
+  //
+  // ── Round-2 refinement (task_1787638309623_3): previousIsAtBottom gate ──
+  //
+  // The round-1 guard (`newIsAtBottom || (contentGrew && !userScrolledUp)`)
+  // couldn't distinguish "user AT bottom, content grows away" from "user
+  // ALREADY scrolled up reading, content grows below, viewport
+  // stationary". In the second case it RE-ENGAGED the stick
+  // (previousIsAtBottom=false → true), and the next contentShift yanked
+  // the user to the bottom mid-read — the "bouncing text" symptom.
+  //
+  // Log evidence (scroll#234-#247): user scrolling up (top 33249→30533,
+  // bottom 4436px), SSE chunk grew scrollHeight +172 with deltaTop≈0,
+  // `spacer-resize-stick` fired and teleported the user to top=35039
+  // (bottom=4px).
+  //
+  // Fix: only RETAIN the stick if it WAS engaged. A user who already
+  // scrolled up must never be re-engaged by content growth — only by
+  // actually scrolling back down to the bottom (newIsAtBottom).
+  // ── Programmatic-write guard (2026-08-25 append-gap fix) ──────────────
+  //
+  // `userScrolledUp` must mean "the USER scrolled up", not "scrollTop
+  // decreased". VirtualScroller's anchor compensation (measureItems)
+  // and endPreserve restoration write scrollTop directly; those writes
+  // fire native scroll events that arrive here with
+  // `isProgrammatic=true` (4th emit arg). A downward compensation
+  // (measured height < estimate — streamed markdown settling shorter)
+  // previously read as a real upward gesture: isAtBottom flipped
+  // false, the auto-stick disengaged, and every later SSE chunk's
+  // contentShift hit the spacer-resize-skip guard — the gap below the
+  // last message accumulated with each chunk and never self-healed.
+  const userScrolledUp = !isProgrammatic && deltaTop < 0
+  const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp
+  isAtBottom.value = newIsAtBottom || retainedThroughGrowth
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
@@ -2176,6 +2044,9 @@ const connectSse = () => {
   disconnectSse()
 
   streamingContent.value = ''
+  // 2026-08-25 agent-error-card: diagnostics are live-only per-session —
+  // a fresh session starts with no error card.
+  agentError.value = null
 
   const bus = useSseBus()
   // Subscribe FIRST so we don't miss any bus events that arrive between
@@ -2214,6 +2085,26 @@ const connectSse = () => {
     // (`reasoning_chunk`, `tool_call_delta`, `connected`) are handled
     // by their own dedicated branches above.
     if (event.type !== 'chunk' && event.type !== 'chunk_final' && event.type !== 'full') {
+      return
+    }
+
+    // 2026-08-25 agent-error-card (task_1787663566535_2) +
+    // 2026-08-25 dedupe (task_1787668954023_2): agentic-loop diagnostics
+    // (retry attempts + TooManyRetries bails) arrive as `full` events
+    // with is_error=true. Route them into the dedicated agentError slot
+    // (single-card, latest-wins) and STOP — they must never enter
+    // messages.value (they'd render as a plain user bubble and pollute
+    // the transcript). Each new error overwrites the previous one
+    // (so 1/10 → 2/10 → ... → 10/10 all show on the same card).
+    // The card also auto-clears as soon as ANY non-error `full` event
+    // arrives below in this handler — i.e. the moment the agent
+    // recovers from the retry chain, the error disappears.
+    if (event.type === 'full' && event.is_error) {
+      agentError.value = {
+        id: event.id || `agent-error-${Date.now()}`,
+        content: event.content || '',
+      }
+      nextTick(() => scrollToBottom(false, 'agent-error-card'))
       return
     }
 
@@ -2256,6 +2147,14 @@ const connectSse = () => {
         (event.image_url && event.image_url.length > 0)
       )
     if (event.type === 'full' && event.finish_reason && hasRenderableFullPayload) {
+      // 2026-08-25 task_1787668954023_2: any non-error `full` event that
+      // passes the renderable gate means the agent is alive and
+      // producing output — clear the error card so it disappears the
+      // moment the agent recovers from the retry chain.
+      if (agentError.value) {
+        console.log('[SSE ChatView] clearing agent error card on non-error full event')
+        agentError.value = null
+      }
       messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
       const role =
@@ -2334,7 +2233,19 @@ const connectSse = () => {
       // (AUTO_STICK_GATE_MS) the gate lifts and the user can
       // scroll-up-and-prepend as normal.
       lastAutoStickAt.value = Date.now()
-      nextTick(() => scrollToBottom(false, 'sse-message-complete'))
+      nextTick(() => {
+        // Recompute the height model BEFORE the auto-stick (append-gap
+        // fix): the streaming-* row was just replaced by the canonical
+        // DB row, which re-renders at a DIFFERENT height (markdown
+        // settles, reasoning collapses). nextTick first — the DOM must
+        // reflect the swap before offsetHeight reads mean anything.
+        // Gated on isAtBottom: a scrolled-up reader must not be
+        // disturbed by sizer mutations (the bouncing bug); the at-
+        // bottom case gets an exact sizer so the stick lands on the
+        // real last message, not in a phantom region.
+        if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
+        scrollToBottom(false, 'sse-message-complete')
+      })
       setupCodeBlockCopyButtons()
 
       // 2026-08-23 spawn-subagent-live-progress: when the FINAL
@@ -2466,6 +2377,13 @@ const updateStreamingMessage = () => {
       requestAnimationFrame(() => {
         sseScrollPending = false
         scrollLogger.markProgrammatic()
+        // Recompute the height model BEFORE scrolling (append-gap fix),
+        // but ONLY when the stick is engaged. A scrolled-up user must
+        // not be disturbed: remeasure mutates the sizer, and sizer
+        // mutations during active reading = the bouncing-text bug.
+        // Gaps below are acceptable while reading; the moment the user
+        // returns to the bottom, this branch re-runs and tightens.
+        if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
         scrollToBottom(false, 'sse-chunk')
       })
     }
@@ -2490,8 +2408,37 @@ onMounted(async () => {
     lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
 
     await loadChatHistory()
-    connectSse()
-    startGitStatusPoll()
+    // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
+    // BEFORE connectSse(): if a stream is in flight for this session
+    // (user closed/re-selected mid-stream), seed the streaming-*
+    // placeholder with the backend's partial text so subsequent chunk
+    // events APPEND to the recovered content instead of starting from
+    // an empty buffer. Best-effort: a failed snapshot fetch must never
+    // block the chat from loading.
+    try {
+      const snap = await api.getStreamSnapshot(sessionId.value)
+      if (snap.active && snap.content) {
+        streamingContent.value = snap.content
+        updateStreamingMessage()
+      }
+    } catch (err) {
+      console.warn('[ChatView] stream snapshot fetch failed (resume skipped):', err)
+    }
+    // Wrap connectSse + startGitStatusPoll in try/catch so a thrown
+    // error (e.g. useSseBus() throwing if the bus was torn down by
+    // a test's `__resetSseBus()` after the test's assertions ran but
+    // before this async block resumed) doesn't bubble out as an
+    // unhandled rejection. In production the bus is installed by
+    // App.vue's onMounted and only torn down on App unmount, so the
+    // catch is a no-op for real users — but it prevents vitest from
+    // surfacing "caught unhandled error" warnings during teardown of
+    // AppLayout.* tests that mount a child ChatView.
+    try {
+      connectSse()
+      startGitStatusPoll()
+    } catch (err) {
+      console.warn('[ChatView] SSE init failed (likely torn down by test cleanup):', err)
+    }
 
     try {
       const result = await api.getQueuedMessages(sessionId.value)
@@ -2545,7 +2492,16 @@ watch(
     // the watcher also fires), and the streaming message's first
     // push before updateStreamingMessage's own mark takes over.
     lastAutoStickAt.value = Date.now()
-    nextTick(() => scrollToBottom(false, 'messages-length'))
+    nextTick(() => {
+      // Recompute the height model BEFORE the auto-stick (append-gap
+      // fix): a new item's real height is unknown until it renders;
+      // the sizer's estimate may overshoot (phantom gap) or undershoot
+      // (stick lands short). Gated on isAtBottom — scrolled-up readers
+      // are never disturbed; at-bottom users get an exact sizer so the
+      // stick shows the real last message.
+      if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
+      scrollToBottom(false, 'messages-length')
+    })
   },
 )
 
@@ -2841,6 +2797,7 @@ const compactSession = async () => {
           v-if="isLoading || messageGroups.length > 0"
           ref="virtualScrollerRef"
           :items="messageGroups"
+          :item-key="groupKey"
           :total-count="0"
           :buffer="30"
           :default-item-height="64"
@@ -2931,6 +2888,8 @@ const compactSession = async () => {
                                 <img
                                   :src="imgUrl"
                                   alt="Attached image"
+                                  width="80"
+                                  height="80"
                                   class="chat-attached-image-img"
                                 />
                               </div>
@@ -3200,38 +3159,6 @@ const compactSession = async () => {
 
                     <!-- ── Assistant ── -->
                     <template v-else-if="group.role === 'assistant'">
-                      <!-- Show tool_calls header only when tool outputs are NOT shown -->
-                      <div v-if="groupToolNames[groupIndex] !== null">
-                        <div class="tool-calls-summary">
-                          <span class="tool-calls-badge">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              class="w-3.5 h-3.5"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              stroke-width="2"
-                              stroke-linecap="round"
-                              stroke-linejoin="round"
-                            >
-                              <path
-                                d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"
-                              />
-                            </svg>
-                            <span class="font-medium">tools</span>
-                          </span>
-                          <div class="tool-names-list">
-                            <span
-                              v-for="(toolName, tIdx) in (groupToolNames[groupIndex] || '').split(
-                                ',',
-                              )"
-                              :key="tIdx"
-                              class="tool-name-chip"
-                              >{{ toolName.trim() }}</span
-                            >
-                          </div>
-                        </div>
-                      </div>
                       <!-- Hide the messages block when every message in the group
                            is empty after stripping thinking tags — this happens
                            on tool_calls-only assistant turns. The tool header
@@ -3325,6 +3252,23 @@ const compactSession = async () => {
             </div>
           </template>
         </VirtualScroller>
+
+        <!-- 2026-08-25 agent-error-card (task_1787663566535_2):
+             Agentic-loop error/retry diagnostics. Rendered OUTSIDE the
+             VirtualScroller on purpose — the scroller's height-estimate
+             model only knows about messageGroups rows, and injecting
+             foreign rows desyncs the estimated scroll window (same class
+             of bug as the empty-group note above). These are transient,
+             live-only diagnostics (backend is_skip_db=true), so pinning
+             them at the bottom of the transcript area is correct UX too:
+             the newest error is always visible without scrolling. -->
+        <div
+          v-if="agentError"
+          class="px-4 max-w-4xl mx-auto pb-2"
+          data-testid="agent-error-list"
+        >
+          <AgentErrorCard :key="agentError.id" :content="agentError.content" />
+        </div>
       </div>
 
       <!-- Scroll to bottom button -->

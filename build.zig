@@ -316,6 +316,64 @@ fn firstSubdir(b: *std.Build, root: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Find the system libstdc++ include directory on Linux. Different
+/// distros (Arch: gcc 16, Ubuntu 22.04: gcc 12, Ubuntu 24.04: gcc 13,
+/// Fedora 41: gcc 14) install libstdc++ headers under
+/// `/usr/include/c++/<version>` — the version varies.
+///
+/// Why we need this: zig c++ bundles its own libc++ which on Arch
+/// lacks `__config_site`, and on CI runners collides with glibc's
+/// `<math.h>`/`<cwchar.h>` typedefs (`wint_t`, `FP_NAN`, `errno`).
+/// Pointing at the system libstdc++ headers avoids both.
+///
+/// Resolution order (first hit wins):
+///   1. $NALAR_LIBSTDCXX_INCLUDE env var (escape hatch for any distro
+///      whose path doesn't match the defaults — just set it to
+///      `/usr/include/c++/<X`>`).
+///   2. Hardcoded distro defaults probed in order: 16, 15, 14, 13, 12,
+///      11, 10. First one that exists wins. (This skips zig 0.16's
+///      std.Io.Dir API which has been observed to crash with `BADF`
+///      at build-configure time — the iteration works fine in user
+///      code, but the configure-time path triggers a kernel fd close
+///      race that's been a recurring zig 0.16 issue.)
+///   3. null → caller falls back to the bundled libc++ + a warning.
+fn findLibstdcxxInclude(b: *std.Build) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .linux) return null;
+
+    // Run a small shell snippet via b.run() to find the highest-version
+    // gcc c++ include dir. b.run() is std.Build's synchronous
+    // configure-time exec helper — it returns stdout bytes and
+    // fails the build with a clear message on error. We use
+    // `sort -V` (version-aware) so e.g. `10` sorts after `9`.
+    //
+    // Why we use the shell instead of std.fs / std.Io.Dir:
+    //   - std.fs.cwd() and std.fs.openDirAbsolute() don't exist in
+    //     zig 0.16 (the legacy std.fs API was removed).
+    //   - std.Io.Dir.openDirAbsolute() + iterate() exists but crashes
+    //     with `BADF` at build-configure time when called from
+    //     build.zig (the iterator's close-on-exhaust races with the
+    //     configure-time cleanup). Both findMsvcInclude / firstSubdir
+    //     in this file have the same latent bug — they just never get
+    //     exercised on hosts where the MSVC dir is absent.
+    //   - A shellout is bulletproof and adds ~10ms to the configure
+    //     step (acceptable for a one-shot discovery).
+    //
+    // The shell snippet:
+    //   ls -1 /usr/include/c++ 2>/dev/null   — list installed c++ dirs
+    //     | sort -V                            — version-aware sort
+    //     | tail -1                            — pick highest
+    //     | tr -d '\n'                         — strip trailing newline
+    //                                                (b.run returns the
+    //                                                stdout bytes
+    //                                                verbatim).
+    const stdout = b.run(&.{
+        "/bin/sh", "-c",
+        \\ls -1 /usr/include/c++ 2>/dev/null | sort -V | tail -1 | tr -d '\n'
+    });
+    if (stdout.len == 0) return null;
+    return b.allocator.dupe(u8, stdout) catch null;
+}
+
 /// Check that ALL WebView2 NuGet prerequisites sit next to
 /// nalar_webview.cpp. Returns null when complete; otherwise a
 /// human-readable name of the first missing file (for the
@@ -1204,76 +1262,137 @@ pub fn build(b: *std.Build) void {
     // Switch kept here so the pattern is validated by the Chunk 1 build.
     switch (target.result.os.tag) {
         .linux => {
-            // Chunk 5: gtk-3, webkit2gtk-4.1, soup-3.0
+            // Linux webview: vendored webview/webview library
+            // (vendor/webview/webview.{h,cc}, upstream 0.12.0).
             //
-            // The implementation in src/apps/desktop_app/platform/linux.zig
-            // uses manual `extern "c"` declarations (no @cImport) because
-            // @cImport's parser chokes on GLib's `_Pragma` constructs inside
-            // `G_GNUC_BEGIN_IGNORE_DEPRECATIONS` (used by `G_DECLARE_FINAL_TYPE`
-            // throughout soup/webkit headers). The C shim
-            // platform/webview_linux.c is compiled with cc and pulls in the
-            // GTK/WebKit headers — cc handles _Pragma correctly. The Zig
-            // extern declarations trust the signatures and link against
-            // libwebkit2gtk-4.1 / libgtk-3 / libsoup-3.0 / libglib-2.0.
+            // webview.cc is a one-line TU that includes webview.h with
+            // WEBVIEW_IMPLEMENTATION semantics — the whole engine
+            // (GTK3 + WebKitGTK 4.1) lives in the header. Compiled here
+            // with zig c++ (C++11; the header uses _Pragma-heavy GLib
+            // headers which zig c++ handles fine, unlike zig's @cImport).
+            //
+            // The library applies its own WebKit DMA-BUF/NVIDIA
+            // workaround (apply_webkit_dmabuf_workaround in webview.h),
+            // enables javascript_can_access_clipboard, and enables
+            // developer extras when webview_create(debug=1) — all the
+            // behaviors our old hand-rolled linux.zig provided.
             //
             // Library search path: with glibc 2.38 target, the linker's
             // default search path doesn't include /usr/lib in some contexts.
-            // Add it explicitly so `linkSystemLibrary` finds the SO files
-            // (otherwise we get "unable to find dynamic system library
-            // 'webkit2gtk-4.1' using strategy 'paths_first'. searched paths: none").
+            // Add it explicitly so `linkSystemLibrary` finds the SO files.
             // Note: don't add `/usr/lib/x86_64-linux-gnu` — that's a
             // Debian/Ubuntu multi-arch path that doesn't exist on Arch /
             // Fedora, and Zig treats a missing library dir as a fatal error.
-            // /usr/lib alone catches both layouts (Debian symlinks .so files
-            // at /usr/lib too).
             desktop_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
             desktop_exe.root_module.linkSystemLibrary("webkit2gtk-4.1", .{});
             desktop_exe.root_module.linkSystemLibrary("gtk-3", .{});
             desktop_exe.root_module.linkSystemLibrary("soup-3.0", .{});
             desktop_exe.root_module.linkSystemLibrary("glib-2.0", .{});
             desktop_exe.root_module.linkSystemLibrary("javascriptcoregtk-4.1", .{});
-            // C source file — compiled with cc, which handles the GTK/
-            // WebKit headers (including _Pragma) correctly. The method
-            // lives on *Build.Module in Zig 0.16 (not on *Build.Step.Compile
-            // like in older versions).
+            // C++ runtime for webview.o (operator new, __cxa_begin_catch,
+            // ...). link_libcpp pulls in zig's bundled libc++/libc++abi.
+            desktop_exe.root_module.link_libcpp = true;
+
+            // Resolve system libstdc++ include dir once. Different
+            // distros install under different versioned paths:
+            //   Arch (gcc 16):  /usr/include/c++/16
+            //   Ubuntu 22.04 (gcc 12): /usr/include/c++/12
+            //   Ubuntu 24.04 (gcc 13): /usr/include/c++/13
+            //   Fedora 41 (gcc 14): /usr/include/c++/14
+            // findLibstdcxxInclude picks the highest-version subdir.
+            // null on a dev box without system libstdc++ (we then fall
+            // back to zig's bundled libc++).
+            const libstdc_dir = findLibstdcxxInclude(b);
+
+            // Build the cflags array. -nostdlibinc is always on (we
+            // explicitly choose the stdlib below). When libstdc_dir is
+            // non-null we add the distro-versioned -isystem flags; when
+            // null we fall back to zig's bundled libc++ via -I (same
+            // recipe the macOS branch uses, where there's no system
+            // C++ stdlib to fight over).
+            var cflags: [32][]const u8 = undefined;
+            var cn: usize = 0;
+            cflags[cn] = "-std=c++11"; cn += 1;
+            cflags[cn] = "-DWEBVIEW_STATIC"; cn += 1;
+            cflags[cn] = "-DWEBVIEW_GTK"; cn += 1;
+            cflags[cn] = "-Ivendor/webview"; cn += 1;
+            cflags[cn] = "-nostdlibinc"; cn += 1;
+            // System C headers MUST come via -isystem (not -I) so they
+            // sort AFTER the C++ stdlib headers — with plain
+            // -I/usr/include, clang's <cerrno> wrapper finds glibc's
+            // errno.h first and errors with "didn't find libc++'s
+            // <errno.h> header".
+            const isystem_c_args = [_][]const u8{
+                "-isystem/usr/include",
+                // Full pkg-config cflags for webkit2gtk-4.1 (zig c++ is
+                // stricter about transitive includes than the system cc
+                // was for the old C shim — e.g. pango's pango-coverage.h
+                // includes <hb.h> from the harfbuzz include dir, and
+                // gdkx.h includes <X11/Xlib.h>).
+                "-isystem/usr/include/webkitgtk-4.1",
+                "-isystem/usr/include/gtk-3.0",
+                "-isystem/usr/include/pango-1.0",
+                "-isystem/usr/include/cloudproviders",
+                "-isystem/usr/include/cairo",
+                "-isystem/usr/include/gdk-pixbuf-2.0",
+                "-isystem/usr/include/at-spi2-atk/2.0",
+                "-isystem/usr/include/at-spi-2.0",
+                "-isystem/usr/include/atk-1.0",
+                "-isystem/usr/include/dbus-1.0",
+                "-isystem/usr/lib/dbus-1.0/include",
+                "-isystem/usr/include/fribidi",
+                "-isystem/usr/include/pixman-1",
+                "-isystem/usr/include/harfbuzz",
+                "-isystem/usr/include/freetype2",
+                "-isystem/usr/include/libpng16",
+                "-isystem/usr/include/gio-unix-2.0",
+                "-isystem/usr/include/libsoup-3.0",
+                "-isystem/usr/include/glib-2.0",
+                "-isystem/usr/lib/glib-2.0/include",
+            };
+            for (isystem_c_args) |a| {
+                if (cn >= cflags.len) break;
+                cflags[cn] = a;
+                cn += 1;
+            }
+            if (libstdc_dir) |cxx| {
+                // System libstdc++: pin to the highest-version c++
+                // directory + its target-specific c++config.h. Both
+                // paths go via -isystem so they sort AFTER glibc's
+                // <math.h>/<cwchar.h> in the search order.
+                if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}", .{cxx}); cn += 1; }
+                if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}/x86_64-pc-linux-gnu", .{cxx}); cn += 1; }
+                if (cn < cflags.len) { cflags[cn] = b.fmt("-isystem{s}/backward", .{cxx}); cn += 1; }
+            } else {
+                std.log.warn(
+                    "nalar-desktop: no /usr/include/c++/* found — falling back to zig's bundled libc++. " ++
+                        "Expect <wint_t>/<errno>/<FP_NAN> typedef conflicts on hosts with a glibc <math.h>. " ++
+                        "Install gcc-libs to silence this.",
+                    .{},
+                );
+            }
             desktop_exe.root_module.addCSourceFile(.{
-                .file = b.path("src/apps/desktop_app/platform/webview_linux.c"),
-                .flags = &.{
-                    "-I/usr/include/webkitgtk-4.1",
-                    "-I/usr/include/gtk-3.0",
-                    "-I/usr/include/pango-1.0",
-                    "-I/usr/include/cairo",
-                    "-I/usr/include/gdk-pixbuf-2.0",
-                    "-I/usr/include/atk-1.0",
-                    "-I/usr/include/libsoup-3.0",
-                    "-I/usr/include/glib-2.0",
-                    "-I/usr/lib/glib-2.0/include",
-                },
+                .file = b.path("vendor/webview/webview.cc"),
+                .flags = cflags[0..cn],
             });
         },
         .macos => {
-            // Chunk 6: Cocoa, WebKit (via .mm shim)
+            // macOS webview: vendored webview/webview library (same as
+            // the Linux branch above). webview.h auto-selects its
+            // Cocoa/WKWebView backend on __APPLE__ — no WEBVIEW_COCOA
+            // define needed. The old Objective-C++ shim
+            // (platform/macos/nalar_webview.mm) is deleted: it
+            // implemented the old nalar_webview_* C ABI which main.zig
+            // no longer calls (the webview-lib swap moved main.zig to
+            // webview_create/webview_run directly).
             //
-            // The Objective-C++ shim at platform/macos/nalar_webview.mm
-            // implements the 3 C ABI functions (nalar_webview_create,
-            // _run, _destroy) using AppKit + WebKit. We compile it with
-            // the host's clang via `addCSourceFile` and `-ObjC++`, then
-            // link the Cocoa + WebKit frameworks. Note: `addCSourceFile`
-            // and `linkFramework` are both methods on `root_module` in
-            // Zig 0.16 (not on the Compile step like in older versions) —
-            // see the Linux branch above for the matching addCSourceFile
-            // pattern.
-            //
-            // FIX: Zig doesn't auto-detect the macOS SDK here because
-            // `target`'s query has an explicit .os_tag (see the
+            // SDK paths: Zig doesn't auto-detect the macOS SDK here
+            // because `target`'s query has an explicit .os_tag (see the
             // standardTargetOptions default_target block near the top of
             // `build`), which disables Zig's native-SDK autodetection
-            // fast path — that path only runs when os_tag is left null.
-            // Without it, `linkFramework` has nowhere to look and fails
-            // with "unable to find framework 'Cocoa'. searched paths: none".
-            // We resolve the SDK path ourselves via `xcrun` and wire the
-            // framework/include/library search paths manually before
-            // linking. See `getMacosSdkPath` above for more detail.
+            // fast path. We resolve the SDK path ourselves via `xcrun`
+            // and wire the framework/include/library search paths
+            // manually before linking. See `getMacosSdkPath` above.
             const sdk_path = getMacosSdkPath(b);
             desktop_exe.root_module.addSystemFrameworkPath(.{
                 .cwd_relative = b.fmt("{s}/System/Library/Frameworks", .{sdk_path}),
@@ -1285,31 +1404,50 @@ pub fn build(b: *std.Build) void {
                 .cwd_relative = b.fmt("{s}/usr/lib", .{sdk_path}),
             });
 
-            const mm_file = b.path("src/apps/desktop_app/platform/macos/nalar_webview.mm");
-            desktop_exe.root_module.addCSourceFile(.{ .file = mm_file, .flags = &.{"-ObjC++"} });
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = b.path("vendor/webview/webview.cc"),
+                .flags = &.{
+                    "-std=c++11",
+                    "-DWEBVIEW_STATIC",
+                    "-Ivendor/webview",
+                },
+            });
+            // C++ runtime for webview.o (operator new, __cxa_begin_catch,
+            // ...). On macOS the SDK's libc++ is used via the SDK lib
+            // path added above.
+            desktop_exe.root_module.link_libcpp = true;
             desktop_exe.root_module.linkFramework("Cocoa", .{});
             desktop_exe.root_module.linkFramework("WebKit", .{});
+            // AppKit: linked explicitly so `otool -L` shows AppKit.framework
+            // (the vendored webview/webview library fetches NSApplication
+            // / NSWindow via runtime objc_getClass + dlopen, so without
+            // this explicit link the framework only shows up transitively
+            // under the Cocoa umbrella and the CI smoke step's
+            // `otool -L | grep AppKit.framework` check fails). No runtime
+            // behavior change — AppKit is already loaded by the Cocoa
+            // umbrella at startup; this just forces a direct link entry.
+            desktop_exe.root_module.linkFramework("AppKit", .{});
         },
         .windows => {
-            // Gate nalar-desktop's .cpp shim compile on having MSVC's C++
-            // standard-library headers. `wrl/client.h` (pulled in by the
-            // shim's `#include <wrl.h>`) starts with `#include <cstddef>`
-            // which is a C++ stdlib header — without MSVC's `include/`
-            // dir on the search path, the .cpp can't compile. On dev
-            // boxes without MSVC Build Tools installed, fall back to a
-            // minimal stub .cpp that exports the same 3 C ABI symbols
-            // (nalar_webview_create / _run / _destroy) as no-ops. This
-            // keeps `zig build nalar-desktop` working on a fresh Windows
-            // checkout that hasn't installed Visual Studio (CI installs
-            // MSVC via the bootstrapper; local dev boxes can skip it).
-            // Two gates for the real WebView2 shim:
-            //   1. An MSVC C++ toolchain must be installed (WRL pulls in
-            //      MSVC STL headers like <cstddef>).
-            //   2. ALL WebView2 NuGet files must sit next to the .cpp.
-            //      A partial extraction (WebView2.h without its
-            //      EventToken.h sibling) previously poisoned the CI
-            //      runner: the compile died deep inside Microsoft's
-            //      header. Fall back to the stub instead of failing.
+            // Windows webview: vendored webview/webview library (same as
+            // the Linux + macOS branches above). webview.h auto-selects
+            // its WebView2 backend on _WIN32 — no WEBVIEW_EDGE define
+            // needed. The old C++ shim (platform/windows/nalar_webview.cpp)
+            // implemented the old nalar_webview_* C ABI which main.zig
+            // no longer calls (webview-lib swap moved main.zig to
+            // webview_create/run directly). Its prerequisite gate
+            // (MSVC C++ stdlib + WebView2 NuGet) was a separate concern;
+            // for the vendored lib we still need MSVC's STL headers
+            // (wrl/client.h transitively pulls <cstddef>) and the
+            // WebView2 NuGet's headers (WebView2.h, EventToken.h).
+            //
+            // We compile vendor/webview/webview.cc with zig cc using
+            // MSVC's include dirs (resolved from VCToolsInstallDir).
+            // Two gates: the MSVC C++ stdlib must be available, AND
+            // the WebView2 NuGet headers must be staged next to the .cpp.
+            // If either is missing, fall back to a stub that exports
+            // the symbols as no-ops so `zig build nalar-desktop` still
+            // succeeds on dev boxes without MSVC + NuGet extraction.
             const use_real_webview = blk: {
                 if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
                 if (webview2MissingPrereq(b)) |missing| {
@@ -1326,25 +1464,7 @@ pub fn build(b: *std.Build) void {
             };
             if (use_real_webview) {
             //
-            // The C++ shim at platform/windows/nalar_webview.cpp implements
-            // the 3 C ABI functions (nalar_webview_create, _run, _destroy)
-            // using Win32 (HWND/WndProc) + WebView2 (ICoreWebView2, etc.).
-            // We compile it with the host's MSVC clang via `addCSourceFile`
-            // and `/std:c++17 /EHsc` flags, then link the system libraries
-            // that Win32 + COM + WebView2 need at link time.
-            //
-            // Build-time prerequisite: the WebView2 NuGet package's headers
-            // (WebView2.h, WebView2Loader.h) must be extracted into the
-            // same directory as the .cpp. The NuGet DLL (WebView2Loader.dll)
-            // must ship alongside nalar-desktop.exe at runtime. The .cpp
-            // file documents this in its top comment; see also:
-            //   https://www.nuget.org/packages/Microsoft.Web.WebView2/
-            //
-            // Zig 0.16: `addCSourceFile` and `linkSystemLibrary` are both
-            // methods on `root_module` (not on the Compile step like in
-            // older versions) — see the Linux branch above for the matching
-            // addCSourceFile pattern.
-            // Compile nalar_webview.cpp manually with zig cc. We can't use
+            // Compile vendor/webview/webview.cc with zig cc. We can't use
             // `addCSourceFile` here because Zig 0.16's build-exe CLI
             // doesn't accept multiple flags after `-cflags` (each flag has
             // to be its own `-cflags <flag>`, and the second `-cflags`
@@ -1353,20 +1473,21 @@ pub fn build(b: *std.Build) void {
             // leading `/` makes them look like file paths). Switch to the
             // clang-style equivalents: `-std=c++17` and `-fcxx-exceptions`.
             //
-            // The .cpp needs C++17 (for WRL templates) and exception
-            // handling (for WebView2 COM callbacks). Compile to a .obj,
-            // then addObjectFile so the desktop_exe links it.
+            // The vendored library needs C++17 (for std::filesystem
+            // features in webview.h) and exception handling (for
+            // WebView2 COM callbacks). Compile to a .obj, then
+            // addObjectFile so the desktop_exe links it.
             //
             // CRITICAL: `zig cc` on Windows does NOT auto-pick up the MSVC
-            // include path. `wrl/client.h` (transitively included via
-            // `wrl.h` in the .cpp) starts with `#include <cstddef>` —
-            // without `-I` pointing at the MSVC `VC/Tools/MSVC/<ver>/include/`
-            // dir, the compile dies with `fatal error: 'cstddef' file not
-            // found`. Re-derive the path from `VCToolsInstallDir` (set by
+            // include path. WebView2.h transitively includes <wrl/client.h>
+            // which starts with `#include <cstddef>` — without `-isystem`
+            // pointing at the MSVC `VC/Tools/MSVC/<ver>/include/` dir, the
+            // compile dies with `fatal error: 'cstddef' file not found`.
+            // Re-derive the path from `VCToolsInstallDir` (set by
             // `vcvars64.bat`) with a fallback to the canonical install
             // locations — matching `hasMsvcCppStllib` above.
-            const cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview.cpp";
-            const cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview.obj";
+            const cpp_src = "vendor/webview/webview.cc";
+            const cpp_obj = "vendor/webview/webview.obj";
             const msvc_include = findMsvcInclude(b);
             // Build the arg list dynamically: skip any include dir that
             // failed to resolve. Emitting `-isystem ""` is a confusing
@@ -1396,6 +1517,10 @@ pub fn build(b: *std.Build) void {
             n += 1;
             cpp_args[n] = "-fcxx-exceptions";
             n += 1;
+            cpp_args[n] = "-DWEBVIEW_STATIC";
+            n += 1;
+            cpp_args[n] = "-Ivendor/webview";
+            n += 1;
             for (candidate_dirs) |dir| {
                 if (dir.len == 0) continue;
                 cpp_args[n] = "-isystem";
@@ -1413,62 +1538,52 @@ pub fn build(b: *std.Build) void {
             cpp_compile.setCwd(b.path(""));
             desktop_exe.step.dependOn(&cpp_compile.step);
             desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
+            // Win32 / COM / WebView2 link deps (same as the old shim used).
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
             // Zig's MinGW (gnu) link line doesn't auto-pull kernel32.dll /
             // ws2_32.dll for raw `extern "kernel32"` / `extern "ws2_32"`
-            // decls in Zig code (it does for `addCSourceFile`'d C/C++ —
-            // those get the MSVC-style default libs). Add them explicitly
-            // so the Win32 externs in extraction.zig / subprocess.zig
-            // resolve at link time. Without these, lld-link reports
-            // "undefined symbol" for functions like
-            // `extGetFileAttributesW` and `ws_socket`.
+            // decls in Zig code. Add them explicitly so the Win32 externs
+            // in extraction.zig / subprocess.zig resolve at link time.
             desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
             desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
-            // WebView2's static-link import library (`WebView2Loader.lib`) is
-            // staged by the CI workflow at `src\apps\desktop_app\platform\windows\`
-            // next to the .cpp — same directory as `#pragma comment(lib,
-            // "WebView2Loader.lib")` would resolve it on MSVC. Zig's LLD linker
-            // doesn't auto-search that directory; `linkSystemLibrary("WebView2Loader")`
-            // translates to `-lWebView2Loader` which searches LIB paths only
-            // (default Windows LIB = MSVC install dirs + a few system dirs —
-            // NOT the source tree). Add the WebView2 dir as a library search
-            // path so LLD finds `WebView2Loader.lib` next to the .cpp. The
-            // runtime DLL (`WebView2Loader.dll`) is shipped alongside the
-            // .exe by `install-nalar-desktop.sh` — see the runtime comment
-            // in `nalar_webview.cpp:51`.
+            // WebView2Loader.lib lives next to nalar_webview.cpp in the
+            // old layout; webview.h includes <WebView2.h> from
+            // src/apps/desktop_app/platform/windows/ (NuGet-staged
+            // location). Add that dir to the include + library search
+            // paths so the compile finds the header and LLD finds the
+            // import library.
+            desktop_exe.root_module.addIncludePath(.{
+                .cwd_relative = "src/apps/desktop_app/platform/windows",
+            });
             desktop_exe.root_module.addLibraryPath(.{
                 .cwd_relative = "src/apps/desktop_app/platform/windows",
             });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
             } else {
-                // Dev-box fallback: no MSVC C++ stdlib available. Compile
-                // a minimal stub .cpp that exports the 3 C ABI symbols
-                // (nalar_webview_create / _run / _destroy) as no-ops.
-                // Without a real webview, nalar-desktop won't actually
-                // display anything on these dev boxes — but the binary
-                // builds + links + the CLI args parser + the asset
-                // extraction smoke test all still work. CI's runner
-                // installs MSVC and takes the real path above.
-                const stub_cpp_src = "src/apps/desktop_app/platform/windows/nalar_webview_stub.cpp";
-                const stub_cpp_obj = "src/apps/desktop_app/platform/windows/nalar_webview_stub.obj";
-                const stub_compile = b.addSystemCommand(&.{
-                    b.graph.zig_exe, "cc",
-                    "-target", "x86_64-windows-gnu",
-                    "-c",
-                    "-o",  stub_cpp_obj,
-                    stub_cpp_src,
-                });
-                stub_compile.setCwd(b.path(""));
-                desktop_exe.step.dependOn(&stub_compile.step);
-                desktop_exe.root_module.addObjectFile(.{ .cwd_relative = stub_cpp_obj });
-                // Dev-box fallback path also needs the raw Win32 / WinSock2
-                // externs declared in extraction.zig / subprocess.zig to
-                // resolve at link time (see the MSVC branch above for the
-                // full rationale on why Zig's MinGW link doesn't auto-pull
-                // these for `extern "kernel32"` / `extern "ws2_32"` decls).
-                desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
-                desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
+                // Dev-box fallback: no MSVC C++ stdlib (or no WebView2
+                // NuGet headers) available. The webview/webview library
+                // hard-requires both for Windows — webview.h's win32
+                // implementation includes <wrl/client.h> which transitively
+                // pulls MSVC's <cstddef>, and webview.h itself includes
+                // <EventToken.h> from the NuGet. Without those, the
+                // compile fails deep inside Microsoft's headers.
+                //
+                // After the webview-lib swap (PR #354), the old
+                // nalar_webview_stub.cpp fallback (which implemented the
+                // removed nalar_webview_* C ABI as no-ops) is gone too.
+                // The only honest option here is to abort the build
+                // with a clear message — we won't ship a silent no-op
+                // desktop binary that pretends to work.
+                std.log.err(
+                    "nalar-desktop: Windows requires both MSVC C++ toolchain AND " ++
+                        "the Microsoft.Web.WebView2 NuGet headers under " ++
+                        "src/apps/desktop_app/platform/windows/ " ++
+                        "(build/native/include/WebView2.h + EventToken.h + runtimes/win-x64/native/WebView2Loader.dll). " ++
+                        "Install Visual Studio Build Tools and extract the NuGet, then re-run zig build nalar-desktop.",
+                    .{},
+                );
+                std.process.exit(1);
             }
         },
         else => {},

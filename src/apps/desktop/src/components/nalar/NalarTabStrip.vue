@@ -3,7 +3,7 @@ import { onMounted, watch } from 'vue'
 
 const STORAGE_KEY = 'nalar-settings-active-tab'
 
-type TabId = 'defaults' | 'profiles' | 'sub-agents' | 'mcp'
+type TabId = 'general' | 'profiles' | 'sub-agents' | 'mcp'
 
 const props = defineProps<{
   modelValue: TabId
@@ -13,8 +13,14 @@ const emit = defineEmits<{
   'update:modelValue': [value: TabId]
 }>()
 
+// Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
+// 'general' tab is the FIRST tab — operational settings (notification
+// toggles + retry delay) sit before profiles so the user lands on
+// the most-frequently-touched settings first. Plan 2026-08-24-
+// config-simplify-remove-defaults: the 'defaults' tab was removed
+// (top-level LLM defaults no longer persist).
 const tabs: ReadonlyArray<{ id: TabId; label: string }> = [
-  { id: 'defaults', label: 'Defaults' },
+  { id: 'general', label: 'General' },
   { id: 'profiles', label: 'Profiles' },
   { id: 'sub-agents', label: 'Sub-agents' },
   { id: 'mcp', label: 'MCP Servers' },

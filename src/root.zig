@@ -210,6 +210,8 @@ pub const ContextIPCTui = struct {
             break :blk "0";
         };
 
+        // (no debug log — production code)
+
         const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
             "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)";
         const copy_session_name = try allocator.dupe(u8, session_name);

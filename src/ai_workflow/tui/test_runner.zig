@@ -16,6 +16,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // (plan 2026-08-23-model-thinking). Source-grep pattern locks
     // in the new validation paths + LoadError variants.
     _ = @import("http_handlers/nalar_config_put_thinking_test.zig");
+    // Static-contract tests for config-simplify (plan
+    // 2026-08-24-config-simplify-remove-defaults): PUT handler must not
+    // persist top-level LLM defaults.
+    _ = @import("http_handlers/nalar_config_put_simplify_test.zig");
     _ = @import("http_handlers/nalar_config_get_test.zig");
     _ = @import("http_handlers/nalar_config_profile_delete_test.zig");
     _ = @import("http_handlers/sse_handshake_test.zig");
@@ -23,6 +27,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/task_delete_test.zig");
     _ = @import("http_handlers/tasks_list_test.zig");
     _ = @import("http_handlers/tasks_get_test.zig");                // single-task GET endpoint (plan 2026-08-24-kanban-task-detail-single-fetch)
+    _ = @import("http_handlers/stream_get_test.zig");               // in-flight stream snapshot GET (task_1787673548905_0 stream-resume-on-reselect)
     _ = @import("http_handlers/task_create_routines_test.zig");
     _ = @import("http_handlers/task_create_memory_test.zig");
     _ = @import("http_handlers/task_create_description_test.zig");  // Migration 062 description in create path
@@ -115,6 +120,11 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
     _ = @import("http_handlers/kanban_tasks_create_test.zig"); // 2026-08-13-kanban-task-create-endpoint (Task 1)
+    // NEW (2026-09-02-kanban-task-session-name-bind, task 1787671636395_1):
+    // session_create.zig now has inline static-contract tests for the
+    // resolveNameFromTask helper + the useCase call site. Importing
+    // the file surfaces them to zig build test (mirrors start_agent.zig).
+    _ = @import("http_handlers/session_create.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/kanban_tags_list.zig"); // 2026-07-30-kanban-task-tags-autocomplete — inline useCase tests

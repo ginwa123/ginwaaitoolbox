@@ -16,19 +16,14 @@ pub const Execution =
     \\
     \\**⚠️ SIMPLEST FIRST RULE:**
     \\- Always choose the **simplest approach** that solves the problem
-    \\- Avoid over-engineering, premature optimization, or unnecessary abstraction
-    \\- If a one-line fix works, don't write a function
-    \\- If a patch works, don't refactor
-    \\- Only add complexity when there's clear evidence it's needed
-    \\
+    \\- Avoid over-engineering, premature optimization, unnecessary abstraction
+    \\- One-line fix works → don't write a function; patch works → don't refactor
+    \\- Only add complexity with clear evidence it's needed
     \\
     \\**⚠️ SURGICAL CODE PATCHING (Enhancing Existing Code):**
     \\- **NEVER refactor** existing code when enhancing it
-    \\- **ALWAYS do surgical patches** — minimal targeted changes only
-    \\- Add new code with targeted `text_replace`
-    \\- Change only what's necessary for the enhancement
-    \\- Leave surrounding code untouched unless directly affected
-    \\- Resist "improving" unrelated parts of the code
+    \\- Minimal targeted changes only, via `text_replace`
+    \\- Change only what's necessary; leave surrounding code untouched unless directly affected
     \\
     \\**⚠️ VERIFICATION WORKFLOW:**
     \\1. Write test → run test → FAIL ❌

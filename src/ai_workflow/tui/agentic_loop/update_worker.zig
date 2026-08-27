@@ -79,35 +79,33 @@ pub fn updateWorker(obj: UpsertWorkerInput) !void {
         },
     );
 
-    // Ensure the session exists.
-    const session_sql =
-        \\INSERT INTO sessions (
-        \\    id,
-        \\    name,
-        \\    status,
-        \\    created_at,
-        \\    updated_at
-        \\)
-        \\VALUES (
-        \\    ?,
-        \\    ?,
-        \\    'active',
-        \\    CURRENT_TIMESTAMP,
-        \\    CURRENT_TIMESTAMP
-        \\)
-        \\ON CONFLICT(id) DO UPDATE SET
-        \\    name = excluded.name,
-        \\    status = excluded.status,
-        \\    updated_at = CURRENT_TIMESTAMP;
-    ;
-
+    // Ensure the session exists WITHOUT overwriting `name`.
+    //
+    // Pre-fix, this was `INSERT ... ON CONFLICT(id) DO UPDATE SET
+    // name = excluded.name` which overwrote `sessions.name` with the
+    // literal `session_id` on every worker iteration. For kanban
+    // tasks (`task.id == session.id` per Migration 052) that meant the
+    // sidebar's ChatsList showed "task_<timestamp>" instead of the
+    // user-typed title — the same class of bug closed by PR #225 for
+    // the create paths, but missed at the worker-entry path here.
+    //
+    // Post-fix: `INSERT OR IGNORE` is a no-op when the row already
+    // exists (the handler bound the title at create time), and a
+    // follow-up UPDATE bumps `updated_at` so the
+    // cleanup_stale_worker cron doesn't wipe a long-running workflow
+    // (see memory `cleanup-stale-worker-cron`). The `name` column is
+    // NEVER touched by this upsert — the kanban create handlers bind
+    // the title, and non-kanban handlers bind the user's chosen name;
+    // the worker has no business overwriting either.
     try db.exec(
         allocator,
-        session_sql,
-        &.{
-            session_id,
-            session_id,
-        },
+        "INSERT OR IGNORE INTO sessions (id, name, status, created_at, updated_at) VALUES (?, '', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        &.{session_id},
+    );
+    try db.exec(
+        allocator,
+        "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        &.{session_id},
     );
 
     // update workspace_item_tasks if exists

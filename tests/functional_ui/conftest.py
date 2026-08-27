@@ -47,6 +47,20 @@ import pytest
 from ui_harness import UIHarness, FunctionalHarnessError
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom marks so PytestUnknownMarkWarning stays quiet.
+
+    ``no_sse_gate`` is applied to tests that need the SSE emit endpoint
+    left disabled (e.g. the gate-off contract test). It's a private mark
+    used by the autouse fixture in chatview_sse_stick_ui_test.py to
+    decide whether to arm NALAR_TEST_SSE_EMIT=1.
+    """
+    config.addinivalue_line(
+        "markers",
+        "no_sse_gate: skip arming NALAR_TEST_SSE_EMIT=1 for this test",
+    )
+
+
 # ─── Session-scoped: resolve the nalar binary once ──────────────────────────
 
 

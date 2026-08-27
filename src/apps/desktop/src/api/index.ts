@@ -1403,6 +1403,12 @@ export interface SseEvent {
   // without attached images (most assistant responses, error paths,
   // tool results that don't carry image data).
   image_url?: string
+  // True when this event is an agentic-loop diagnostic (retry attempt or
+  // TooManyRetries bail) rather than a real chat turn. Backend:
+  // sse_on_event_send_llm_history.zig SseEventLLMHistory.is_error — set
+  // by workflow.zig's 3 diagnostic sites. ChatView routes these into
+  // AgentErrorCard instead of the message list.
+  is_error?: boolean
 }
 
 // List all chat sessions with pagination
@@ -2975,6 +2981,20 @@ export async function getQueuedMessages(sessionId: string): Promise<{
   )
 }
 
+// 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
+// in-flight stream snapshot. When the user closes/re-selects a chat
+// session mid-stream, ChatView drops its streaming-* placeholder; this
+// endpoint returns the backend's authoritative partial text so the
+// re-mounted view can resume seamlessly.
+export interface StreamSnapshot {
+  active: boolean
+  content: string
+}
+
+export async function getStreamSnapshot(sessionId: string): Promise<StreamSnapshot> {
+  return await apiFetch<StreamSnapshot>(`/llm/session/${sessionId}/stream`)
+}
+
 // Workers SSE event types
 export interface WorkerEvent {
   action: 'created' | 'updated' | 'deleted' | 'reordered'
@@ -3014,6 +3034,12 @@ export interface KanbanTaskEvent {
   task_id: string
   new_column_id?: string | null
   new_position?: number | null
+  // After-action review state — present ONLY on `human_touched`
+  // events (task_mark_human_touched.zig sends `false`; null on
+  // assigned/moved/unassigned). Read by the kanbanSse handler to
+  // patch the local task in place instead of refetching every
+  // column (chatview-open api-spam fix, 2026-08-24).
+  needs_human_review?: boolean | null
 }
 
 /**
@@ -3465,13 +3491,11 @@ export interface McpServer {
 }
 
 export interface NalarConfig {
-  api_endpoint?: string
-  api_key?: string
-  model?: string
-  url_style?: string
-  temperature?: number
-  max_tokens?: string
-  system_prompt?: string
+  // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
+  // defaults (api_endpoint/api_key/model/url_style/temperature/max_tokens/
+  // system_prompt) were REMOVED from config.json. LLM access is configured
+  // exclusively via `profiles`; the backend derives effective credentials
+  // from the active profile at load time.
   profiles?: Record<string, NalarProfile>
   active_profile?: string
   /**
@@ -3495,6 +3519,16 @@ export interface NalarConfig {
    * `Config.zig`).
    */
   notify_on_complete?: boolean
+  /**
+   * Plan 2026-08-25-notify-on-error — opt-in OS notification flag
+   * for the error path. When true, the backend fires a desktop
+   * notification when the workflow hits a transport error, exhausts
+   * retries (TooManyRetries), or fails the outer agentic loop.
+   * Defaults to `false` when absent (matches `LlmConfigJson`).
+   * Independent from `notify_on_complete` — toggling one doesn't
+   * affect the other.
+   */
+  notify_on_error?: boolean
   /**
    * Compaction threshold in KB. Sessions whose DB-stored token
    * estimate exceeds this value trigger context compaction. Defaults

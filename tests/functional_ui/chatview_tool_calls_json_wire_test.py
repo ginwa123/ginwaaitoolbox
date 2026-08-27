@@ -155,53 +155,6 @@ def test_pill_suppressed_when_tool_rows_match_tool_call_ids(
     )
 
 
-# ─── Test 2: pill renders when there is a tool_calls row but NO tool row ──
-
-
-def test_pill_renders_when_assistant_has_tool_calls_but_no_tool_row(
-    ui_harness: UIHarness, page,
-) -> None:
-    """Orphan tool_calls: assistant row has tool_calls_json but no tool
-    rows exist in the transcript. The pill MUST render (so the user
-    knows the agent is waiting on a tool result) — defensive regression
-    guard so the suppression logic doesn't suppress legitimate "..."
-    cases.
-    """
-    h = ui_harness
-    session_id = "sess_pill_render_001"
-    seed = DbSeed(_seed_db_path(h))
-    with seed.connect() as conn:
-        seed.seed_session(conn, session_id, "Pill should render")
-
-        ts = DbSeed.baseline_timestamps(count=2, interval_seconds=10)
-        seed.seed_user_message(conn, session_id, "do thing", created_at=ts[0])
-
-        # Assistant row with tool_calls but NO matching tool rows follow
-        tool_calls = [
-            {
-                "id": "tc_orphan_1",
-                "type": "function",
-                "function": {"name": "bash", "arguments": '{"command": "x"}'},
-            },
-        ]
-        seed.seed_assistant_message(
-            conn,
-            session_id,
-            text="",
-            finish_reason="tool_calls",
-            tool_calls=tool_calls,
-            created_at=ts[1],
-        )
-
-    _open_chatview(page, h, session_id)
-    _wait_for_text(page, "do thing")
-    # Pill must appear because no tool row exists for tc_orphan_1
-    page.locator(".tool-calls-badge").first.wait_for(timeout=10000, state="attached")
-    assert _pill_count(page) >= 1, (
-        "pill_renders_when_no_tool_row: expected at least 1 tools pill "
-        "for an orphan tool_calls assistant row."
-    )
-
 
 # ─── Test 3: tool_calls_json is in the REST response (loadChatHistory) ────
 

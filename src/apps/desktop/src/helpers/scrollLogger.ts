@@ -145,6 +145,7 @@ export type ScrollReason =
   | 'spacer-resize-skip'
   | 'load-more-preserve-start'
   | 'load-more-preserve-end'
+  | 'post-preserve-stick' // loadMore prepend finished, user was at bottom → explicit re-stick (task_1787638309623_3)
   | 'sse-chunk-arrived'
   | 'messages-length-changed'
   // Per-call handleVirtualScroll diagnostics. Each one fires once
@@ -440,9 +441,10 @@ export const createScrollLogger = (chatId: string): ScrollLogger => {
 let eventCounter = 0
 
 const emit = (ctx: ScrollContext, level: 'debug' | 'info' | 'warn' | 'error'): void => {
-  // Production gate: silence per-frame debug spam. Errors/warns always
-  // log because they signal real problems.
-  if (level === 'debug' && !import.meta.env.DEV) return
+  // Production gate: silence per-frame debug spam AND the ~60Hz info
+  // stream that fires during SSE streaming scrolls (scroll-perf Task 6).
+  // Errors/warns always log because they signal real problems.
+  if ((level === 'debug' || level === 'info') && !import.meta.env.DEV) return
 
   eventCounter += 1
   let tag = `[scroll#${eventCounter} chat=${ctx.chatId} ${level.toUpperCase()}]`

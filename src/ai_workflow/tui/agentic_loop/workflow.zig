@@ -41,6 +41,7 @@ const mark_history_not_for_llmrun_mod = @import("markHistoryNotForLLMRun.zig");
 const retry_delay_ms_mod = @import("retry_delay_ms.zig");
 const session_skills_mod = @import("session_skills.zig");
 const sse_mod = @import("sse.zig");
+const stream_snapshot = @import("stream_snapshot.zig");
 const sse_on_event_send_session_mod = @import("sse_on_event_send_session.zig");
 const sse_send_event_worker_mod = @import("sse_send_event_worker.zig");
 const update_session_name_mod = @import("update_session_name.zig");
@@ -877,6 +878,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     // the AI's next turn shouldn't see 10+ retry snapshots
                     // accumulated across unattended-mode cycles.
                     .is_skip_db = true,
+                    // Frontend AgentErrorCard routing (task_1787663566535_2).
+                    .is_error = true,
                     .cwd = copy_cwd,
                     .entity = .{ .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .session_id = copy_session_id, .model = eff.model, .response_content = soft_diagnostic, .reasoning_content = null, .role = agent.Role.user.to_str(), .finish_reason = "null", .tool_calls_json = "", .tool_call_id = null, .agent = effective_agent_name, .loop_index = loop_counter, .temperature = agent_temperature, .is_thinking = isThinking, .prompt_tokens = 0, .completion_tokens = 0, .total_tokens = 0, .parent_id = copy_parent_session_id, .parent_session_id = copy_parent_session_id, .is_input = true, .is_output = false, .image_urls = null, .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}), .is_feed_to_llm = false },
                 });
@@ -929,6 +932,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // diagnostic is purely a UX message, not a follow-up
                 // prompt for the next turn.
                 .is_skip_db = true,
+                // Frontend AgentErrorCard routing (task_1787663566535_2).
+                .is_error = true,
                 .cwd = copy_cwd,
                 .entity = .{
                     .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
@@ -1049,6 +1054,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             // in context for its next turn (instead of only learning about
             // retries after the budget is exhausted).
             try saveRetryAttemptMessage(allocator, db, event_bus, logger, io, copy_cwd, copy_session_id, copy_parent_session_id, eff.model, effective_agent_name, agent_temperature, isThinking, loop_counter, retry_count, @as(u32, 10), "callDynamicAgentNew", @errorName(err), server_detail, config.retry_delay_ms);
+
             // Sleep before the next attempt so the upstream can recover (or
             // rate-limit window can close). 0 ms = no delay (current
             // behavior, the default). Interrupted by worker cancellation —
@@ -1456,6 +1462,8 @@ fn saveRetryAttemptMessage(
         .is_emit_sse = true,
         .cwd = cwd,
         .is_skip_db = true,
+        // Frontend AgentErrorCard routing (task_1787663566535_2).
+        .is_error = true,
         .entity = .{
             .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
             .session_id = session_id,
@@ -1554,6 +1562,11 @@ fn callDynamicAgentNew(
         .session_id = session_id,
         .chunk_index = 0,
     };
+    // 2026-09-02 stream-resume-on-reselect — mark the in-flight stream
+    // buffer as started (clears any stale content from a previous turn)
+    // so `GET /api/llm/session/:id/stream` can serve the partial text to
+    // a re-mounted ChatView.
+    stream_snapshot.beginStream(allocator, session_id);
     // `stream_callback` is typed as agent.StreamCallback; callStreaming
     // wants the same type — direct assignment, no @ptrCast needed.
     const callback_for_agent: agent.StreamCallback = &stream_callback;
@@ -1605,6 +1618,9 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
     // Handle done marker - no data to send
     if (chunk.done) {
         stream_ctx.chunk_index = 0;
+        // 2026-09-02 stream-resume-on-reselect — flip the snapshot to
+        // inactive (content stays readable for a late poll).
+        stream_snapshot.endStream(allocator, session_id);
         return;
     }
 
@@ -1617,6 +1633,10 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
                 .session_id = session_id,
             };
             on_event_sent.sendStreamChunkContent(allocator, session_id, content_chunk);
+            // 2026-09-02 stream-resume-on-reselect — accumulate the delta
+            // into the in-memory snapshot so a re-selected ChatView can
+            // recover the partial text via GET /api/llm/session/:id/stream.
+            stream_snapshot.appendContent(allocator, session_id, content);
         }
     }
 
@@ -2270,3 +2290,34 @@ test "all three diagnostic sites keep is_skip_db=true (never persist to sqlite)"
     if (std.mem.indexOf(u8, source[fn_start..fn_end], ".is_skip_db = true") == null)
         return error.RetryHelperPersistsToDb;
 }
+
+test "all three diagnostic sites set is_error=true (frontend AgentErrorCard routing)" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    // Soft-bail block.
+    const soft_start = std.mem.indexOf(u8, source, "unattended-mode soft-bail after") orelse return error.SoftBailMissing;
+    const soft_end = std.mem.indexOfPos(u8, source, soft_start, "Existing hard-bail") orelse return error.SoftBailEndMissing;
+    if (std.mem.indexOf(u8, source[soft_start..soft_end], ".is_error = true") == null)
+        return error.SoftBailNotMarkedError;
+
+    // Hard-bail block: same window as the is_skip_db test — from the
+    // diagnostic literal to `return error.TooManyRetries`.
+    const hard_start = std.mem.indexOf(u8, source, "workflow halted after {} consecutive retries") orelse return error.HardBailMissing;
+    const hard_end = std.mem.indexOfPos(u8, source, hard_start, "return error.TooManyRetries") orelse return error.HardBailEndMissing;
+    if (std.mem.indexOf(u8, source[hard_start..hard_end], ".is_error = true") == null)
+        return error.HardBailNotMarkedError;
+
+    // Per-retry message helper.
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse return error.SaveRetryFnMissing;
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start, "\nfn ") orelse return error.SaveRetryFnEndMissing;
+    if (std.mem.indexOf(u8, source[fn_start..fn_end], ".is_error = true") == null)
+        return error.RetryHelperNotMarkedError;
+
+    // The flag must appear EXACTLY 3 times in the impl — no other
+    // insertLLMHistories call site may claim is_error. The count
+    // includes the test's own grep literals (3 indexOf calls + 1
+    // expectEqual literal = 4 test-side), so expect 7 total.
+    try testing.expectEqual(@as(usize, 7), std.mem.count(u8, source, ".is_error = true"));
+}
+

@@ -25,6 +25,9 @@ pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
 pub const sessionExistHandler = @import("session_exist.zig").sessionExistHandler;
 pub const sessionMessagesHandler = @import("session_messages_get.zig").sessionMessagesHandler;
+// GET /api/llm/session/:session_id/stream — in-flight stream snapshot
+// (task_1787673548905_0 stream-resume-on-reselect).
+pub const streamGetHandler = @import("stream_get.zig").streamGetHandler;
 pub const sessionLatestHandler = @import("session_latest.zig").sessionLatestHandler;
 pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHandler;
 pub const pingHandler = @import("ping.zig").pingHandler;
@@ -58,6 +61,10 @@ pub const agentKnowledgeCreateHandler = @import("agent_knowledge_create.zig").ag
 pub const agentKnowledgeUpdateHandler = @import("agent_knowledge_update.zig").agentKnowledgeUpdateHandler;
 pub const agentKnowledgeDeleteHandler = @import("agent_knowledge_delete.zig").agentKnowledgeDeleteHandler;
 pub const agentKnowledgeReorderHandler = @import("agent_knowledge_reorder.zig").agentKnowledgeReorderHandler;
+// Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
+// returns 404 when the gate is off. Used by functional UI tests to drive
+// the chatview's SSE streaming path without a real LLM.
+pub const devSseEmitLlmHandler = @import("dev_sse_emit.zig").emitLlmHandler;
 // Agent Mode tools CRUD (Tasks 7-8)
 pub const agentToolsRegistryHandler = @import("agent_tools_registry.zig").agentToolsRegistryHandler;
 pub const agentToolsListHandler = @import("agent_tools_list.zig").agentToolsListHandler;

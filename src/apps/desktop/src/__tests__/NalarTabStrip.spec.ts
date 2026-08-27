@@ -21,32 +21,36 @@ describe('NalarTabStrip', () => {
     })
   })
 
-  it('renders all 4 tab labels in order', () => {
+  it('renders all 4 tab labels in order: General / Profiles / Sub-agents / MCP Servers', () => {
+    // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
+    // General tab is the FIRST tab. Tab order matters — operational
+    // settings (notification toggles + retry delay) belong at the top.
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'general' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
     expect(buttons.map(b => b.text().trim())).toEqual([
-      'Defaults', 'Profiles', 'Sub-agents', 'MCP Servers',
+      'General', 'Profiles', 'Sub-agents', 'MCP Servers',
     ])
   })
 
-  it('does NOT render the Compaction tab (plan 2026-07-07-compaction-inline)', () => {
+  it('does NOT render the Compaction or Defaults tabs', () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'general' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
     expect(buttons.some(b => b.text().trim() === 'Compaction')).toBe(false)
+    expect(buttons.some(b => b.text().trim() === 'Defaults')).toBe(false)
   })
 
   it('emits update:modelValue when a tab is clicked', async () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'general' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
     expect(buttons.length).toBe(4)
-    await buttons[1]!.trigger('click')
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['profiles'])
+    await buttons[2]!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['sub-agents'])
   })
 
   it('marks the active tab with aria-selected=true', () => {
@@ -61,7 +65,7 @@ describe('NalarTabStrip', () => {
 
   it('persists the active tab to localStorage when the modelValue prop changes', async () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'general' },
     })
     // Simulate the parent applying v-model after the click.
     await wrapper.setProps({ modelValue: 'mcp' })
@@ -69,12 +73,25 @@ describe('NalarTabStrip', () => {
   })
 
   it('emits update:modelValue on mount to restore the active tab from localStorage', () => {
-    localStorage.setItem('nalar-settings-active-tab', 'profiles')
+    localStorage.setItem('nalar-settings-active-tab', 'mcp')
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'defaults' },
+      props: { modelValue: 'general' },
     })
     // The onMounted hook fires the update so the parent picks up
     // the saved tab.
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['profiles'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['mcp'])
+  })
+
+  it('emits "general" when the General tab is clicked', async () => {
+    // Explicit test for the NEW tab — lock in the wire value so a
+    // future rename doesn't silently break the parent (which uses
+    // this exact string in the type Tab = 'general' | ...).
+    const wrapper = mount(NalarTabStrip, {
+      props: { modelValue: 'profiles' },
+    })
+    const buttons = wrapper.findAll('button[role="tab"]')
+    expect(buttons.length).toBe(4)
+    await buttons[0]!.trigger('click')
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['general'])
   })
 })

@@ -320,12 +320,22 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
     try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
     try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
+    // In-flight stream snapshot (task_1787673548905_0 stream-resume-on-
+    // reselect) — serves `{ active, content }` from the in-memory
+    // stream_snapshot registry so a re-mounted ChatView can resume a
+    // mid-stream session. Registered AFTER the sibling /messages +
+    // /queue_messages routes (route-order rule).
+    try gs.router.get("/api/llm/session/:session_id/stream", ai_mod.http_handlers.streamGetHandler);
     // Unified SSE endpoint — single EventSource for all event families
     // (workers, sessions, kanban_column, kanban_task, per-session llm +
     // queue_messages). Replaces the 5 dedicated routes that previously
     // registered one EventSource per family. See
     // src/ai_workflow/tui/http_handlers/unified_events_sse.zig.
     try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
+    // Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
+    // 404 when off. Functional UI tests use it to drive the chatview's
+    // SSE streaming path without a real LLM.
+    try gs.router.post("/api/dev/sse/emit_llm", ai_mod.http_handlers.devSseEmitLlmHandler);
     // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)

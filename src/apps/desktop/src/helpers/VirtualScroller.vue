@@ -134,6 +134,31 @@ const props = withDefaults(
      * appended past the visible area.
      */
     loadMoreAtTop?: boolean
+    /**
+     * Stable identity function for items (2026-08-26 stable-keys fix).
+     * Returns a string that uniquely identifies the item's CONTENT —
+     * e.g. a DB id — and survives position changes in the array.
+     *
+     * WHY: the height cache was keyed by ARRAY INDEX. ChatView renders
+     * `messageGroups`, a computed that re-merges/re-filters on every
+     * SSE event — so a group count change (thinking-only row dropped,
+     * tool row arriving, streaming row swapped) SHIFTS every later
+     * index. The stored height for index k then described a different
+     * row: a 40px tool-card height landed on a 2000px markdown message
+     * and vice versa. The sizer became the sum of mismatched heights →
+     * wildly too tall → stick-to-bottom landed in blank space (the
+     * "sizer 16034px vs real content 13720px" DevTools evidence).
+     *
+     * With `itemKey`, heights are keyed by identity: a row keeps its
+     * own measured height wherever it moves. Index shifts become
+     * harmless. Also used as the v-for key so Vue reuses the correct
+     * DOM node per item (less re-render flicker during streaming).
+     *
+     * Default: `String(index)` — index-keyed, the historical behavior.
+     * Consumers with stable ids (ChatView: `group.messages[0].id`)
+     * SHOULD pass this prop.
+     */
+    itemKey?: (item: T, index: number) => string
   }>(),
   {
     totalCount: 0,
@@ -142,6 +167,7 @@ const props = withDefaults(
     loadMoreThreshold: 200,
     loadMoreThresholdRatio: 0.5,
     loadMoreAtTop: false,
+    itemKey: undefined,
   },
 )
 
@@ -174,8 +200,21 @@ const emit = defineEmits<{
    * The component-level `containerRef` is still exposed for the
    * initial-load, scroll-to-bottom, and other controlled paths that
    * don't have an event to extract the element from.
+   *
+   * `isProgrammatic` (4th arg, 2026-08-25 append-gap fix): true when
+   * this scroll event was caused by the scroller's OWN scrollTop
+   * write — the anchor-compensation inside `measureItems()` (and the
+   * `endPreserve` restoration). Assigning `.scrollTop` fires a real
+   * native `scroll` event that is otherwise indistinguishable from a
+   * user gesture. ChatView's `handleVirtualScroll` uses this to keep
+   * `userScrolledUp` honest: a compensation write that happens to
+   * move scrollTop DOWN (measured height < estimate — common when
+   * streamed markdown settles shorter) must NOT flip `isAtBottom`
+   * to false, or the auto-stick disengages and every later SSE
+   * chunk's contentShift hits the `spacer-resize-skip` guard — the
+   * "gap below the last message grows forever" symptom.
    */
-  scroll: [scrollTop: number, direction: 'up' | 'down', target: HTMLElement]
+  scroll: [scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic: boolean]
   /**
    * Fired whenever the scroller's `isScrollable` computed value
    * CHANGES (not on every re-evaluation — only when the boolean
@@ -209,13 +248,63 @@ const emit = defineEmits<{
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
+// The content div is measured via the onContentRef callback (see the
+// sizer-clamp comment near updateAccumulatedHeights) — no ref needed.
 const scrollTop = ref(0)
 const lastScrollTop = ref(0)
 const containerHeight = ref(0)
-const itemHeights = ref<Map<number, number>>(new Map())
+// Heights keyed by STABLE ID (itemKey(item)), not array index — see the
+// itemKey prop JSDoc for the index-shift corruption this prevents.
+const itemHeights = ref<Map<string, number>>(new Map())
 const accumulatedHeights = ref<number[]>([0])
 const isPreservingScroll = ref(false)
 const forceRenderUpTo = ref(-1)
+
+/**
+ * Stable identity for the item at `index`. Falls back to the index
+ * string when no `itemKey` prop is supplied (historical behavior).
+ */
+const keyOf = (index: number): string => {
+  const item = props.items[index]
+  if (item === undefined) return `#${index}`
+  return props.itemKey ? props.itemKey(item, index) : `#${index}`
+}
+
+// ── Programmatic-scroll tracking (2026-08-25 append-gap fix) ────────────────
+//
+// The scroller writes `containerRef.scrollTop` itself in two places:
+// the anchor-compensation inside `measureItems()` and the restoration
+// in `endPreserve()`. Assigning `.scrollTop` fires a REAL native
+// `scroll` event — indistinguishable from a user gesture by the time
+// it reaches `onScroll`. Without a flag, ChatView's
+// `handleVirtualScroll` reads a downward compensation write (measured
+// height < estimate) as `userScrolledUp = true`, flips `isAtBottom`
+// to false, and the auto-stick disengages for the rest of the stream
+// — every later contentShift hits the `spacer-resize-skip` guard and
+// the gap below the last message grows with each chunk.
+//
+// Same counter pattern as scrollLogger.markProgrammatic (which only
+// labels LOG lines — it has no influence on the stick decision).
+// `pendingProgrammaticScrolls` is bumped BEFORE the write and consumed
+// by the very next `onScroll`, which forwards the flag on the `scroll`
+// emit. The 100ms reset timer is the same leak-guard scrollLogger
+// uses (scroll event never fires because scrollTop didn't change).
+let pendingProgrammaticScrolls = 0
+let programmaticResetTimer: ReturnType<typeof setTimeout> | null = null
+const markProgrammaticScroll = (): void => {
+  pendingProgrammaticScrolls += 1
+  if (programmaticResetTimer) clearTimeout(programmaticResetTimer)
+  programmaticResetTimer = setTimeout(() => {
+    pendingProgrammaticScrolls = 0
+  }, 100)
+}
+const consumeProgrammaticScroll = (): boolean => {
+  if (pendingProgrammaticScrolls > 0) {
+    pendingProgrammaticScrolls -= 1
+    return true
+  }
+  return false
+}
 
 // ── P1 perf: adaptive item-height estimation (task_1787551495337_9) ─────────
 //
@@ -234,13 +323,37 @@ const heightEstimator = new AdaptiveItemHeightEstimator({
   maxSamples: 64,
 })
 
+// Highest index that has a real measured height. The learned median is
+// only trusted for items AT OR BEFORE this index (history the user has
+// actually scrolled through). Items AFTER it — the growing tail during
+// SSE streaming — fall back to the static `defaultItemHeight` prop.
+//
+// WHY (gap-below-last-message bug, reported after P1+P2): the median of
+// a chat's history is much taller than a freshly-appended streaming
+// bubble. Estimating the tail at the median made the sizer extend past
+// the real content, and stick-to-bottom (scrollTop = scrollHeight) put
+// the viewport in that empty over-estimated region — a large blank gap
+// below the last message. The old static 64px default never showed this
+// because it UNDER-estimated (content overflowed the estimate instead).
+let maxMeasuredIndex = -1
+
 /**
  * Estimated height for an item with no stored measurement. Feeds the
- * prefix-sum builder and the visible-range scan. Falls back to the static
- * prop until the first measurements land (identical behavior to pre-P1).
+ * prefix-sum builder and the visible-range scan.
+ *
+ * - Index ≤ maxMeasuredIndex (history): learned median — representative
+ *   of what the user has scrolled through.
+ * - Index > maxMeasuredIndex (tail): static prop — deliberately a
+ *   conservative UNDER-estimate so the sizer never extends past real
+ *   content (no scrollable gap below the last message).
  */
-const estimateHeight = (index: number): number =>
-  itemHeights.value.get(index) ?? heightEstimator.estimate()
+const estimateHeight = (index: number): number => {
+  const stored = itemHeights.value.get(keyOf(index))
+  if (stored !== undefined) return stored
+  return index <= maxMeasuredIndex
+    ? heightEstimator.estimate()
+    : props.defaultItemHeight
+}
 
 /**
  * Whether the container's content currently overflows its visible area
@@ -321,6 +434,51 @@ const updateAccumulatedHeights = () => {
   accumulatedHeights.value = h
 }
 
+// ── Render-level sizer clamp (2026-08-26 blank-viewport fix) ─────────────────
+//
+// The model total (Σ stored/estimated heights) can overshoot the real
+// content — the browser then lets the user scroll into the phantom
+// region below the last message (the "big gap / blank viewport"
+// symptom, sizer 29389px vs real ~13720px). This computed clamps the
+// RENDERED sizer height to the real content bottom whenever the
+// rendered window includes the LAST item (every tail item is in the
+// DOM, so the real bottom is directly measurable).
+//
+// CRITICAL SAFETY PROPERTY: this NEVER writes the height model — it
+// only clamps the style binding. The model stays the source of truth
+// for positioning (topSpacer/visibleRange); the clamp only trims the
+// scrollable void. Because it is a pure function of reactive state
+// (no DOM writes, no scrollTop writes), it CANNOT oscillate — the
+// failure mode that killed the earlier tail clamp.
+//
+// `realContentHeight` is measured in the template ref callback below
+// (after each render, before paint) and stored non-reactively; the
+// reactive trigger is `renderTick`, bumped by that callback.
+const modelTotal = computed(() => accumulatedHeights.value[props.items.length] ?? 0)
+let realContentHeight = 0
+const renderTick = ref(0)
+// Ref callback: runs after every commit of the content div (mount +
+// each patch that reuses the element). Measure the real rendered
+// height and bump the tick so sizerHeight re-evaluates. Guarded
+// against no-op bumps (same height → no reactive write → no loop).
+const onContentRef = (el: unknown) => {
+  const h = el ? (el as HTMLElement).offsetHeight : 0
+  if (h > 0 && h !== realContentHeight) {
+    realContentHeight = h
+    renderTick.value++
+  }
+}
+const sizerHeight = computed(() => {
+  void renderTick.value // re-evaluate after each measured render
+  const range = visibleRange.value
+  if (range.end < props.items.length || realContentHeight <= 0) return modelTotal.value
+  const realTotal = range.topSpacer + realContentHeight
+  // Only clamp overshoot; never inflate past the model (undershoot is
+  // handled by the normal measure path — content grows into it).
+  const overshoot = modelTotal.value - realTotal
+  return overshoot > HYSTERESIS_PX ? realTotal : modelTotal.value
+})
+
 // CRITICAL: `{ immediate: true }` is required here. Without it,
 // `updateAccumulatedHeights` only runs when `props.items.length`
 // *changes* — but on initial mount the items are already present
@@ -345,7 +503,10 @@ watch(
     // A collapse to 0 means the list was swapped (chat switch) — forget
     // the previous chat's height profile so its median doesn't pollute
     // the new chat's estimates.
-    if (newLen === 0 && (oldLen ?? 0) > 0) heightEstimator.reset()
+    if (newLen === 0 && (oldLen ?? 0) > 0) {
+      heightEstimator.reset()
+      maxMeasuredIndex = -1
+    }
     updateAccumulatedHeights()
   },
   { immediate: true },
@@ -522,7 +683,7 @@ const measureItems = () => {
   // computed would attribute old children's heights to the wrong indices.
   // The attribute is stamped by the renderer at mount time and always
   // matches the node it decorates.
-  const pendingWrites: Array<[number, number]> = []
+  const pendingWrites: Array<[string, number, number]> = []
   for (let i = 0; i < children.length; i++) {
     const el = children[i] as HTMLElement
     const realIndex = visibleRange.value.start + i
@@ -532,7 +693,11 @@ const measureItems = () => {
       // sub-pixel layout re-quantize differently between our prefix sums
       // and the browser's layout → ±1px spacer drift → micro-jitter.
       const heightPx = quantizePx(h)
-      const prev = itemHeights.value.get(realIndex)
+      // Stable-key lookup: the height belongs to the ITEM (via its
+      // itemKey), not the array slot — immune to index shifts from
+      // messageGroups regrouping (the sizer-corruption bug).
+      const key = keyOf(realIndex)
+      const prev = itemHeights.value.get(key)
       // First measurement (prev === undefined) always writes. On
       // subsequent measurements, skip unless the delta exceeds the
       // dead-band. Without this, 1-2 px sub-pixel noise from the
@@ -541,19 +706,33 @@ const measureItems = () => {
       // symptom in docs/plans/2026-06-10-scroll-ratcheting-fix.md.
       if (prev === undefined || Math.abs(heightPx - prev) > HYSTERESIS_PX) {
         pendingMeasurements.push({ index: realIndex, newHeight: heightPx, oldHeight: prev })
-        pendingWrites.push([realIndex, heightPx])
+        pendingWrites.push([key, heightPx, realIndex])
         changed = true
       }
     }
   }
   if (!changed) return
-  for (const [index, heightPx] of pendingWrites) {
-    itemHeights.value.set(index, heightPx)
+  for (const [key, heightPx, realIndex] of pendingWrites) {
+    itemHeights.value.set(key, heightPx)
     // Feed the adaptive estimator so future unmeasured items inherit a
     // realistic median instead of the static prop guess.
     heightEstimator.observe(heightPx)
+    // Track the measurement frontier: the learned median is only
+    // trusted for items at or before this index (see estimateHeight).
+    if (realIndex > maxMeasuredIndex) maxMeasuredIndex = realIndex
   }
   updateAccumulatedHeights()
+
+  // NOTE (2026-08-25): a "tail-exact clamp" (force-write rendered tail
+  // heights + shrink the sizer to the real content bottom when the
+  // window shows the last item) was tried here and REMOVED. It caused
+  // an oscillation loop — clamp shrinks sizer → window shifts → next
+  // pass reads different heights → sizer grows → shifts again — which
+  // the user experienced as app freezes and bouncing text during SSE
+  // streams. Product decision (user): gaps below the last message are
+  // ACCEPTABLE; bouncing is NOT. The anchor compensation above already
+  // keeps scrolled-up reading stable; the remeasure() calls in ChatView
+  // keep the at-bottom case tight without any clamping.
 
   // ── Apply the anchor compensation ────────────────────────────────────
   //
@@ -573,6 +752,11 @@ const measureItems = () => {
     measurements: pendingMeasurements,
   })
   if (result.shiftPx !== 0 && !isPreservingScroll.value) {
+    // Mark BEFORE the write: assigning .scrollTop fires a native scroll
+    // event that onScroll must label as programmatic (see the counter
+    // comment above — without this, a downward compensation is misread
+    // as "user scrolled up" and disengages ChatView's auto-stick).
+    markProgrammaticScroll()
     containerRef.value.scrollTop = result.newScrollTop
     scrollTop.value = result.newScrollTop
     lastScrollTop.value = result.newScrollTop
@@ -651,7 +835,12 @@ const onScroll = (e: Event) => {
   // ONE component re-render and ONE visibleRange evaluation.
   scrollTop.value = st
   lastScrollTop.value = st
-  emit('scroll', st, dir as 'up' | 'down', target)
+  // Consume the programmatic flag BEFORE the emit: a markProgrammatic
+  // bump (from measureItems' compensation write or endPreserve's
+  // restoration) belongs to exactly THIS event — the next one is a
+  // fresh gesture (or another marked write).
+  const isProgrammatic = consumeProgrammaticScroll()
+  emit('scroll', st, dir as 'up' | 'down', target, isProgrammatic)
 
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   loadMoreDebounce = setTimeout(() => {
@@ -716,6 +905,19 @@ const beginPreserve = (newItemsCount: number) => {
   isPreservingScroll.value = true
   _pendingNewItemsCount = newItemsCount
 
+  // NOTE (2026-08-26 stable-keys fix): the old index-shift remap
+  // (rebuilding the Map with every key +N) is GONE. Heights are keyed
+  // by stable itemKey, so a prepend needs no remap — each item keeps
+  // its own height wherever it moves. maxMeasuredIndex still advances
+  // (the frontier is index-based: the prepended items are new tail
+  // relative to the estimator's trust boundary... actually they are
+  // NEW items at the FRONT, so the frontier advances by N to keep
+  // pointing at the same physical item).
+  if (newItemsCount > 0) {
+    maxMeasuredIndex += newItemsCount
+    updateAccumulatedHeights()
+  }
+
   const content = containerRef.value.querySelector('.virtual-scroller-content')
   const anchorEl = content
     ? (content.querySelector('[data-vs-index="0"]') as HTMLElement | null)
@@ -754,14 +956,17 @@ const endPreserve = async () => {
   if (anchorEl) {
     const newST = anchorEl.offsetTop
     console.log('[endPreserve] strategy A — anchorEl.offsetTop:', newST)
+    // Programmatic write — see markProgrammaticScroll's comment.
+    markProgrammaticScroll()
     containerRef.value!.scrollTop = newST
     scrollTop.value = newST
     lastScrollTop.value = newST
   } else {
-    // Fallback: sum measured heights of new items
+    // Fallback: sum measured heights of new items (key-based lookup)
     let sum = 0
-    for (let i = 0; i < n; i++) sum += itemHeights.value.get(i) ?? props.defaultItemHeight
+    for (let i = 0; i < n; i++) sum += itemHeights.value.get(keyOf(i)) ?? props.defaultItemHeight
     console.log('[endPreserve] strategy B — sum:', sum)
+    markProgrammaticScroll()
     containerRef.value!.scrollTop = sum
     scrollTop.value = sum
     lastScrollTop.value = sum
@@ -784,6 +989,38 @@ const scrollToTop = (behavior: ScrollBehavior = 'auto') =>
   containerRef.value?.scrollTo({ top: 0, behavior })
 const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return
+  // ── Real-bottom target (2026-08-26 blank-viewport fix) ───────────────
+  //
+  // The sizer height is a MODEL number (Σ stored/estimated heights) and
+  // can overshoot the real content — stick-to-bottom computed from it
+  // (scrollHeight - clientHeight) landed PAST the last row, in the
+  // phantom region: the user's fully-blank-viewport screenshots
+  // (sizer 29389px, window translated to 27971px, nothing visible).
+  //
+  // When the rendered window includes the LAST item, the real content
+  // bottom is directly measurable: topSpacer + content.offsetHeight
+  // (the content div is a flex column holding exactly the rendered
+  // window). Targeting that instead of the model total guarantees the
+  // last message is on screen — regardless of any residual model
+  // overshoot. READ-ONLY: no sizer writes, no feedback loop (the tail
+  // clamp that oscillated was a writer; this is a reader).
+  const range = visibleRange.value
+  const content = containerRef.value.querySelector('.virtual-scroller-content')
+  const contentH = content ? (content as HTMLElement).offsetHeight : 0
+  // Guard: a 0-height content div means layout hasn't settled (jsdom,
+  // mid-frame) — trusting it would stick to the TOP. Fall through to
+  // the model path instead.
+  if (range.end >= props.items.length && contentH > 0) {
+    const realBottom = range.topSpacer + contentH
+    const target = Math.max(0, realBottom - containerHeight.value)
+    // Only override when the model actually overshoots; otherwise the
+    // plain scrollHeight path is already correct.
+    const modelBottom = containerRef.value.scrollHeight - containerHeight.value
+    if (modelBottom - target > HYSTERESIS_PX) {
+      containerRef.value.scrollTo({ top: target, behavior })
+      return
+    }
+  }
   containerRef.value.scrollTo({
     top: Math.max(0, containerRef.value.scrollHeight - containerHeight.value),
     behavior,
@@ -799,6 +1036,24 @@ const scrollToPosition = (scrollTop: number, behavior: ScrollBehavior = 'auto') 
 }
 const scrollToItem = (index: number, behavior: ScrollBehavior = 'auto') =>
   scrollToIndex(index, behavior)
+
+/**
+ * Full recompute of the height model from the live DOM (2026-08-25
+ * append-gap fix). The parent calls this whenever it KNOWS content
+ * changed — new message appended, streaming text mutated in place,
+ * streaming row swapped for the canonical row. measureItems() reads
+ * every rendered child's real offsetHeight, writes the model, rebuilds
+ * the sizer, and anchor-compensates — the same pass a scroll event
+ * triggers, invoked explicitly at data-mutation time instead of being
+ * inferred from DOM observation (the ResizeObserver attempt froze the
+ * browser: observe → measure → sizer write → re-observe loop).
+ *
+ * Call inside nextTick (or later) so the DOM already reflects the
+ * mutation — offsetHeight reads need the patched layout.
+ */
+const remeasure = () => {
+  measureItems()
+}
 
 let ro: ResizeObserver | null = null
 onMounted(() => {
@@ -818,6 +1073,7 @@ onUnmounted(() => {
   if (measureDebounce) clearTimeout(measureDebounce)
   if (heightDebounce) clearTimeout(heightDebounce)
   if (_prePaintTrailing) clearTimeout(_prePaintTrailing)
+  if (programmaticResetTimer) clearTimeout(programmaticResetTimer)
 })
 
 defineExpose({
@@ -826,6 +1082,7 @@ defineExpose({
   scrollToBottom,
   scrollToPosition,
   scrollToItem,
+  remeasure,
   beginPreserve,
   endPreserve,
   preserveScrollPosition: endPreserve, // legacy alias
@@ -855,12 +1112,17 @@ defineExpose({
       height to draw a scrollbar and clamp scrollTop); the transform puts
       the visible window at its exact offset within that height.
     -->
-    <div class="virtual-scroller-sizer" :style="{ height: (accumulatedHeights[items.length] ?? 0) + 'px' }">
+    <div class="virtual-scroller-sizer" :style="{ height: sizerHeight + 'px' }">
       <div
+        :ref="onContentRef"
         class="virtual-scroller-content"
         :style="{ transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)` }"
       >
-        <div v-for="{ item, index } in visibleItems" :key="index" :data-vs-index="index">
+        <!-- :key is the STABLE itemKey (not the index): Vue reuses the
+             correct DOM node per item across index shifts (regrouping,
+             prepends) — less re-render flicker, and offsetHeight mocks
+             / real heights travel with their item. -->
+        <div v-for="{ item, index } in visibleItems" :key="keyOf(index)" :data-vs-index="index">
           <slot :item="item" :index="index" />
         </div>
       </div>

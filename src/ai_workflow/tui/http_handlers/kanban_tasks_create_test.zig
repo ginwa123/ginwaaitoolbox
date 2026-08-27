@@ -601,30 +601,45 @@ test "kanban_tasks_create (mode=create_session) inserts user-role llm_history ro
     }
 }
 
-test "kanban_tasks_create (mode=create_session) skips llm_history insert when description is empty" {
+test "kanban_tasks_create (mode=create_session) ALWAYS inserts llm_history row (no empty-description guard)" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    // The fix must skip the insert when description is empty —
-    // title-only tasks stay on a clean chat so the user types the
-    // first message. We assert the source contains an explicit
-    // empty-string guard (`description.len > 0` or equivalent
-    // `.len == 0` early-return). Without it, empty-description
-    // tasks would get a stray 'name\n\n' user message, which would
-    // land on the chatview as a confusing blank user bubble.
-    const has_empty_guard = std.mem.indexOf(u8, source, "description.len > 0") != null or
-        std.mem.indexOf(u8, source, "description.len == 0") != null or
-        std.mem.indexOf(u8, source, "description.len == 0") != null;
-    if (!has_empty_guard) {
-        std.debug.print(
-            "\n!! {s} has no explicit empty-description guard !!\n" ++
-                "   Title-only tasks (description == '' or null) must NOT get\n" ++
-                "   a stray 'name\\\\n\\\\n' user message — add `if (description.len > 0)`\n" ++
-                "   around the new user-role INSERT.\n",
-            .{HANDLER_PATH},
-        );
-        return error.EmptyDescriptionGuardMissing;
+    // Regression for task_1787757006639_2 ("bugs" -- empty description
+    // leaves llm_history empty so the chatview lands on the "How can
+    // I help you?" empty state).
+    //
+    // The user-role INSERT inside `if (is_create_session) { ... }`
+    // must NOT be guarded by an empty-description / empty-image-urls
+    // predicate. Pre-fix, the handler had `if (description.len > 0
+    // or image_urls_wire.len > 0)` around the INSERT -- when both
+    // were empty, NO row was inserted and the chatview rendered the
+    // empty state. Post-fix the INSERT is unconditional (the
+    // `is_create_session` outer guard is the only gate). Title-only
+    // tasks get a user-role row with content = `name + "\n\n"` so
+    // the chatview never lands on the empty state.
+    //
+    // We assert there is no such inner guard. The accepted
+    // variants are exactly the empty-description / empty-attachments
+    // predicates that existed pre-fix. We scan for the exact two
+    // predicates that gate the INSERT -- fail closed with a
+    // regression error if either reappears.
+    const guards = [_][]const u8{
+        "description.len > 0",
+        "image_urls_wire.len > 0",
+    };
+    for (guards) |guard| {
+        if (std.mem.indexOf(u8, source, guard) != null) {
+            std.debug.print(
+                "\n!! {s} still has empty-input guard `{s}` !!\n" ++
+                    "   The user-role llm_history INSERT inside `if (is_create_session) {{ ... }}`\n" ++
+                    "   must be UNCONDITIONAL -- title-only tasks must still get a user-role row,\n" ++
+                    "   otherwise the chatview lands on the empty state (task_1787757006639_2).\n",
+                .{ HANDLER_PATH, guard },
+            );
+            return error.EmptyDescriptionGuardReintroduced;
+        }
     }
 }
 

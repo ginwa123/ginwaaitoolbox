@@ -56,10 +56,10 @@ test "parseConfigInput: accepts the on-disk object-map shape (user's main settin
     const input = try parseConfigInput(arena.allocator(), USER_BODY);
 
     // Sanity: the top-level scalars parsed.
-    try testing.expectEqualStrings("MiniMax-M3", input.model);
-    try testing.expectEqualStrings("openai", input.url_style);
-    try testing.expectEqualStrings("https://api.minimax.io/v1", input.api_endpoint);
-    try testing.expectEqualStrings("", input.max_tokens.?);
+    // Plan 2026-08-24-config-simplify-remove-defaults: the old
+    // model/url_style/api_endpoint/max_tokens assertions are gone —
+    // those fields no longer exist on ConfigInput (silently dropped
+    // via ignore_unknown_fields).
     try testing.expectEqual(@as(?u32, 500000), input.max_capacity_token_model);
     try testing.expectEqual(@as(?u8, 95), input.compaction_threshold_percent);
     try testing.expect(input.notify_on_complete == true);
@@ -217,4 +217,65 @@ test "parseConfigInput: active_profile explicit non-empty string → Some(\"work
     const input = try parseConfigInput(arena.allocator(), body);
     try testing.expect(input.active_profile != null);
     try testing.expectEqualStrings("work", input.active_profile.?);
+}
+
+// ─── notify_on_error wire contract (task_1787671269086_0) ──────────────────
+//
+// The General settings tab in NalarSettings.vue toggles this field
+// alongside `notify_on_complete`. The wire parser must accept both
+// `true` and `false` values, and must leave the field at `null` when
+// omitted (so omitting on a PUT doesn't accidentally reset the
+// existing on-disk value — same convention as `notify_on_complete`).
+test "parseConfigInput: notify_on_error true → Some(true)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const body =
+        \\{"api_key":"k","model":"m","notify_on_error":true}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expect(input.notify_on_error != null);
+    try testing.expectEqual(true, input.notify_on_error.?);
+}
+
+test "parseConfigInput: notify_on_error false → Some(false)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const body =
+        \\{"api_key":"k","model":"m","notify_on_error":false}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expect(input.notify_on_error != null);
+    try testing.expectEqual(false, input.notify_on_error.?);
+}
+
+test "parseConfigInput: notify_on_error absent → null (don't touch on-disk)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const body =
+        \\{"api_key":"k","model":"m"}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expect(input.notify_on_error == null);
+}
+
+test "parseConfigInput: notify_on_complete + notify_on_error in same body parse independently" {
+    // Both fields are independent booleans. A body that sends BOTH
+    // must parse BOTH to the requested values. Lock the contract so a
+    // future rename doesn't collapse them.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const body =
+        \\{"api_key":"k","model":"m","notify_on_complete":false,"notify_on_error":true}
+    ;
+
+    const input = try parseConfigInput(arena.allocator(), body);
+    try testing.expectEqual(false, input.notify_on_complete.?);
+    try testing.expectEqual(true, input.notify_on_error.?);
 }

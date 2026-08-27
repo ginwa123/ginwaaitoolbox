@@ -30,6 +30,16 @@ const router = createRouter({
       name: 'task',
       component: AppLayout,
     },
+    // Kanban settings page (plan: 2026-09-02-kanban-settings-as-page).
+    // Resolves to AppLayout which dispatches via the `currentView`
+    // computed (path-based regex match at AppLayout.vue). The `name`
+    // is informational — we navigate by path from
+    // AppLayout.handleOpenKanbanSettings via `router.push`.
+    {
+      path: '/app/kanban/:itemId/settings',
+      name: 'kanban-settings',
+      component: AppLayout,
+    },
   ],
 })
 

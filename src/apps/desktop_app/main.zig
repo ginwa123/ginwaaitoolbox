@@ -37,7 +37,7 @@ const port = @import("port.zig");
 const path_resolve = @import("path_resolve.zig");
 const subprocess = @import("subprocess.zig");
 const extraction = @import("extraction.zig");
-const webview = @import("webview.zig");
+const webview_lib = @import("webview_lib.zig");
 const attach = @import("attach.zig");
 const nalarcore = @import("nalarcore");
 
@@ -45,25 +45,13 @@ const nalarcore = @import("nalarcore");
 // `extraction.AssetEntry` (both have `{ path, content, mime: []const u8 }`).
 const webapp_assets = @import("embedded/webapp_assets.zig");
 
-// Force-include the platform implementation. linux.zig declares
-// `pub export fn nalar_webview_create/run/destroy` which the extern
-// declarations in webview.zig call. Without this import, LTO would
-// dead-code-eliminate the entire linux.zig compilation (no caller
-// would reach the extern "c" symbols yet from main.zig's perspective).
-// After main() actually calls webview.run() (below), this import
-// becomes redundant, but keeping it is a one-line safety net against
-// future refactors.
-//
-// Cross-platform note: linux.zig has a comptime guard that errors
-// out on non-Linux targets, so this import must be wrapped in a
-// comptime branch — including it on macOS/Windows trips a
-// `@compileError` in linux.zig at module scope.
-comptime {
-    if (builtin.os.tag == .linux) {
-        const platform_linux = @import("platform/linux.zig");
-        _ = platform_linux; // bare `_ = ...;` is illegal at module scope
-    }
-}
+// The webview implementation is the vendored webview/webview library
+// (vendor/webview/webview.{h,cc}), compiled as C++ by build.zig and
+// linked into this binary. The extern "c" symbols (webview_create,
+// webview_run, ...) are declared in webview_lib.zig and defined in the
+// compiled library object — no platform/ import needed here anymore.
+// build.zig is responsible for compiling vendor/webview/webview.cc and
+// linking the GTK3/webkit2gtk-4.1 system libraries on Linux.
 
 // Pull in the test files so they run under `zig build test:desktop-app`.
 test {
@@ -118,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
     // skipped (the external nalar is responsible for serving the webapp).
     if (cfg.nalar_url) |url| {
         std.log.info("Connect mode: connecting to {s} (no spawn)", .{url});
-        try runWebview(allocator, cfg, url, &.{});
+        try runWebview(allocator, cfg, url);
         return;
     }
 
@@ -215,51 +203,36 @@ pub fn main(init: std.process.Init) !void {
     //    is now decoupled from nalar's. Closing the window does NOT
     //    signal nalar; only `nalar service stop` does.
     std.log.info("Attaching to nalar at {s} (we_spawned={any})", .{ url, attach_target.we_spawned });
-    try runWebview(allocator, cfg, url, &.{});
+    try runWebview(allocator, cfg, url);
 }
 
-/// Build the webview Config from the CLI settings + asset table, then run
-/// the platform event loop (blocks until the window closes). Used by both
-/// spawn mode (with the embedded webapp assets) and connect mode (with
-/// an empty asset table — the external nalar serves the webapp).
+/// Open the webview window and run the platform event loop (blocks
+/// until the window closes). Thin pass-through to the vendored
+/// webview/webview library — everything the library does by default is
+/// what ships (including its built-in WebKit DMA-BUF/NVIDIA
+/// workaround and clipboard-access setting).
 ///
-/// On error, logs the platform error and returns it. The caller is
-/// responsible for any `defer` cleanups (asset extraction, nalar child,
-/// etc.) — this helper does its own `defer` for the heap strings it
-/// allocates for the C ABI.
+/// The backend serves the webapp over http://127.0.0.1:PORT, so no
+/// custom scheme handler or embedded asset table is needed.
 fn runWebview(
     allocator: std.mem.Allocator,
     cfg: cli.Config,
     url: []const u8,
-    c_assets: []const webview.CAsset,
 ) !void {
     // Null-terminate the strings the C ABI expects.
     const title_z = try allocator.dupeZ(u8, cfg.title);
     defer allocator.free(title_z);
-    // Use `?[:0]u8` (mutable) so we can free in defer. Cast to
-    // `?[*:0]const u8` for the webview Config field via ua_z_const.
-    const ua_z: ?[:0]u8 = if (cfg.user_agent) |ua| try allocator.dupeZ(u8, ua) else null;
-    const ua_z_const: ?[*:0]const u8 = if (ua_z) |ua| ua.ptr else null;
-    defer if (ua_z) |ua| allocator.free(ua);
-
-    const webview_cfg: webview.Config = .{
-        .title = title_z.ptr,
-        .width = @intCast(cfg.window_width),
-        .height = @intCast(cfg.window_height),
-        .min_width = 400,
-        .min_height = 300,
-        .resizable = true,
-        .maximizable = true,
-        .minimizable = true,
-        .user_agent = ua_z_const,
-        .icon_path = null,
-        .assets = c_assets.ptr,
-        .asset_count = c_assets.len,
-        .enable_developer_extras = cfg.enable_devtools,
-    };
+    const url_z = try allocator.dupeZ(u8, url);
+    defer allocator.free(url_z);
 
     std.log.info("Opening webview at {s}", .{url});
-    webview.run(allocator, webview_cfg, url) catch |err| {
+    webview_lib.runWindow(
+        title_z.ptr,
+        url_z.ptr,
+        @intCast(cfg.window_width),
+        @intCast(cfg.window_height),
+        cfg.enable_devtools,
+    ) catch |err| {
         std.log.err("Webview error: {s}", .{@errorName(err)});
         return err;
     };

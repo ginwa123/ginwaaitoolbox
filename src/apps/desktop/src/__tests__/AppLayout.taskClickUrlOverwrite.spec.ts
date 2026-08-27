@@ -184,6 +184,20 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
       has_more: false,
       next_cursor: null,
     })
+    // Mock getSystemFolder so AppLayout's initializeFromSystemFolder
+    // path (which runs on mount) doesn't hit the stubbed 404 fetch
+    // and surface as an unhandled rejection. Without this mock,
+    // `api.getSystemFolder()` throws `ApiError: HTTP 404` from the
+    // global fetch stub (see setup.ts) because no other code path
+    // catches the rejection. The test doesn't exercise the folder
+    // picker, so a minimal empty response is sufficient.
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      path: '/',
+      absolute: '/',
+      home: '/',
+      entries: [],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
   })
 
   afterEach(() => {
