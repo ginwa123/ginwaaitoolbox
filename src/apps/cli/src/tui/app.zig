@@ -64,6 +64,10 @@ pub const App = struct {
     seen_ids: std.StringHashMapUnmanaged(void) = .empty,
     /// Milliseconds accumulated since the last poll.
     since_poll_ms: u64 = 0,
+    /// Last rendered viewport height (in rows). Recorded at the end
+    /// of `App.view` so the scroll bindings (PgUp/PgDn) can step by
+    /// `(height - 2)` — the "one screen minus context" convention.
+    last_height: u16 = 0,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, cfg: Config) !App {
         var app = App{
@@ -127,17 +131,45 @@ pub const App = struct {
     }
 
     fn handleKey(self: *App, k: tui.Key) !tui.Cmd {
+        // Scroll keys are intercepted BEFORE the input widget sees them,
+        // otherwise arrow / page keys would route to input-history nav
+        // (Up/Down) or be dropped (PageUp/PageDown/wheel). Round-2
+        // added PgUp/PgDn + mouse wheel (Task 5).
         switch (k) {
             .ctrl_c, .ctrl_d => return .none, // Program handles quit itself
+            .page_up => {
+                // One screen minus a 2-row context line — matches less / vim.
+                const step = self.last_height -| 2;
+                if (step > 0) self.viewport.scrollUp(step);
+                return .none;
+            },
+            .page_down => {
+                const step = self.last_height -| 2;
+                if (step > 0) self.viewport.scrollDown(step);
+                return .none;
+            },
+            .wheel_up => {
+                // 3 visual rows per wheel notch — matches lazygit / k9s.
+                self.viewport.scrollUp(3);
+                return .none;
+            },
+            .wheel_down => {
+                self.viewport.scrollDown(3);
+                return .none;
+            },
             else => {},
         }
         const submitted = try self.input.handleKey(k);
         if (submitted) {
             const hist = self.input.history.items;
             const msg_text = hist[hist.len - 1];
-            const prompt = try std.fmt.allocPrint(self.allocator, "> {s}", .{msg_text});
-            defer self.allocator.free(prompt);
-            try self.viewport.appendLine(prompt, .{ .bold = true });
+            // NOTE: do NOT echo the user message into the viewport
+            // here. The next SSE/poll delivers the canonical row
+            // from the server's `llm_history` table, and `onMessages`
+            // renders it via the same renderMessage dispatcher. Echoing
+            // here would duplicate every user message (welcome + echo
+            // + SSE = two copies). The cost is a ≤500 ms blank between
+            // Enter and the first poll — accepted per the round-2 plan.
             self.is_streaming = true;
             self.spinner.label = "thinking";
             // The executor (tui_main.execCmd) frees the duped payload.
@@ -186,16 +218,39 @@ pub const App = struct {
         if (root != .array) return;
         const arr = root.array;
 
-        // Heuristic: once an assistant message lands after our send,
-        // the turn is over. Case-insensitive to match server variants
-        // like "Assistant". Walked first so a streaming-burst re-poll
-        // that re-includes the final assistant still flips the flag.
-        if (self.is_streaming and arr.items.len > 0) {
-            const last = arr.items[arr.items.len - 1];
-            if (last == .object) {
-                if (last.object.get("role")) |role| {
-                    if (role == .string and asciiEqIgnoreCase(role.string, "assistant")) {
+        // Heuristic: the turn is over once we see an assistant
+        // message with `finish_reason="stop"`. Previously this only
+        // checked the LAST message's role — but when the agent emits
+        // tool calls, the last DB row is the tool result, not the
+        // assistant's final response, so the heuristic flipped back
+        // to "not streaming" too late (the spinner kept spinning even
+        // though the agent had finished its final reply). Round-3
+        // fix: scan ALL assistant messages and flip when ANY has
+        // finish_reason="stop". Fall back to the legacy heuristic
+        // (last message is assistant) when finish_reason is missing,
+        // so old conversations without the field still work.
+        if (self.is_streaming) {
+            var idx: usize = 0;
+            while (idx < arr.items.len) : (idx += 1) {
+                const item = arr.items[idx];
+                if (item != .object) continue;
+                const obj = item.object;
+                const role = obj.get("role") orelse continue;
+                if (role != .string or !asciiEqIgnoreCase(role.string, "assistant")) continue;
+                const fr = obj.get("finish_reason");
+                if (fr) |fr_val| {
+                    if (fr_val == .string and std.mem.eql(u8, fr_val.string, "stop")) {
                         self.is_streaming = false;
+                        break;
+                    }
+                    // finish_reason="tool_calls" or anything else →
+                    // agent will continue. Keep spinning.
+                } else {
+                    // No finish_reason field (legacy). Fall back to:
+                    // the LAST message is assistant → done.
+                    if (idx == arr.items.len - 1) {
+                        self.is_streaming = false;
+                        break;
                     }
                 }
             }
@@ -282,6 +337,10 @@ pub const App = struct {
         const st_off = @as(usize, height - 1) * width;
         @memcpy(out.cells[st_off..][0..st_frame.cells.len], st_frame.cells);
 
+        // Record the height so scroll bindings can step by
+        // (height - 2). Without this, last_height stays 0 and
+        // PgUp/PgDn no-op.
+        self.last_height = height;
         return out;
     }
 };
@@ -360,6 +419,42 @@ test "App: onMessages ignores already-seen messages" {
     try app.onMessages(body);
     try app.onMessages(body); // same count → no new lines
     try testing.expectEqual(@as(usize, 2), app.viewport.lines.items.len);
+}
+
+test "App: onMessages flips is_streaming=false when assistant finish_reason=stop appears mid-array" {
+    // Round-3 regression: agent emits tool calls, so the LAST DB
+    // row is a tool result, not the assistant's final response.
+    // The old heuristic checked only `arr.items[len-1].role` and so
+    // never saw the assistant's `finish_reason=stop`, leaving the
+    // spinner running and locking the input widget.
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"},
+        \\ {"id":"a1","role":"assistant","content":"","finish_reason":"tool_calls"},
+        \\ {"id":"t1","role":"tool","tool_name":"read_file","content":"<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/foo</path></data></tool>"},
+        \\ {"id":"a2","role":"assistant","content":"done","finish_reason":"stop"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    try testing.expect(!app.is_streaming);
+}
+
+test "App: onMessages keeps is_streaming=true when no assistant stop seen yet" {
+    var app = try testApp();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"},
+        \\ {"id":"a1","role":"assistant","content":"","finish_reason":"tool_calls"},
+        \\ {"id":"t1","role":"tool","tool_name":"read_file","content":"<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/foo</path></data></tool>"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    try testing.expect(app.is_streaming);
 }
 
 test "App: onMessages dedupes by message id (regression: <tool> x3 bug)" {
@@ -445,6 +540,76 @@ test "App: onMessages renders user prompt as > bold green" {
 // bold green, tool cards as ▶ name primary ✓ headers, and the
 // assistant reply rendered as plain text with the thinking block
 // stripped.
+test "App: handleKey + Enter does NOT immediately echo user message" {
+    var app = try testApp();
+    defer app.deinit();
+    _ = try app.update(.{ .key = .{ .rune = 'h' } });
+    _ = try app.update(.{ .key = .{ .rune = 'a' } });
+    _ = try app.update(.{ .key = .{ .rune = 'i' } });
+    const cmd = try app.update(.{ .key = .enter });
+    app.freeCmd(cmd);
+    // Welcome line only — the user message will arrive via SSE/poll,
+    // not via an immediate local echo. Otherwise we'd render `> hai`
+    // twice (once here, once when the server's row is polled).
+    try testing.expectEqual(@as(usize, 1), app.viewport.lines.items.len);
+}
+
+test "App: PgUp scrolls up; PgDn scrolls back to bottom (round-2 Task 5)" {
+    var app = try testApp();
+    defer app.deinit();
+    // Pre-record the viewport height by calling view once.
+    {
+        var frame = try app.view(testing.allocator, 80, 20);
+        defer frame.deinit(testing.allocator);
+    }
+    // Fill the viewport with more lines than fit in 20 rows.
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        const body = try std.fmt.allocPrint(testing.allocator, "{{\"messages\":[{{\"id\":\"m{d}\",\"role\":\"assistant\",\"content\":\"line {d}\"}}]}}", .{ i, i });
+        defer testing.allocator.free(body);
+        try app.onMessages(body);
+    }
+    try testing.expectEqual(@as(usize, 0), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .page_up });
+    try testing.expect(app.viewport.scroll_from_bottom > 0);
+    _ = try app.update(.{ .key = .page_down });
+    try testing.expectEqual(@as(usize, 0), app.viewport.scroll_from_bottom);
+}
+
+test "App: mouse wheel up scrolls by 3 rows; wheel_down back" {
+    var app = try testApp();
+    defer app.deinit();
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        const body = try std.fmt.allocPrint(testing.allocator, "{{\"messages\":[{{\"id\":\"m{d}\",\"role\":\"assistant\",\"content\":\"line {d}\"}}]}}", .{ i, i });
+        defer testing.allocator.free(body);
+        try app.onMessages(body);
+    }
+    try testing.expectEqual(@as(usize, 0), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .wheel_up });
+    try testing.expectEqual(@as(usize, 3), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .wheel_up });
+    try testing.expectEqual(@as(usize, 6), app.viewport.scroll_from_bottom);
+    _ = try app.update(.{ .key = .wheel_down });
+    try testing.expectEqual(@as(usize, 3), app.viewport.scroll_from_bottom);
+}
+
+test "App: onMessages renders SSE-delivered user prompt as > bold green" {
+    var app = try testApp();
+    defer app.deinit();
+    const body =
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"hai"}
+        \\]}
+    ;
+    try app.onMessages(body);
+    // welcome + user prompt = 2 lines (the SSE-delivered row IS the source of truth)
+    try testing.expectEqual(@as(usize, 2), app.viewport.lines.items.len);
+    const last = app.viewport.lines.items[1];
+    try testing.expectEqualStrings("> hai", last.text);
+    try testing.expect(last.style.bold);
+}
+
 test "App: onMessages renders user-reported scenario (tool cards + stripped think)" {
     var app = try testApp();
     defer app.deinit();

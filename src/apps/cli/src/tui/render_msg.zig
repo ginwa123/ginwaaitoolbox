@@ -57,7 +57,9 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
         }
         const stripped = try think.stripThinkingTags(allocator, msg.content);
         defer allocator.free(stripped);
-        const text = try allocator.dupe(u8, stripped);
+        const unwrapped = try think.unwrapContentWrappers(allocator, stripped);
+        defer allocator.free(unwrapped);
+        const text = try allocator.dupe(u8, unwrapped);
         const lines = try allocator.dupe(Line, &[_]Line{.{
             .text = text,
             .style = .{},
@@ -69,7 +71,13 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
         if (tool_envelope.tryParseToolEnvelope(msg.content)) |env| {
             const primary = tool_envelope.toolEnvelopePrimary(env);
             const badge = if (env.success) "✓" else "✗";
-            const text = try std.fmt.allocPrint(allocator, "▶ {s}  {s}  {s}", .{ env.name, primary, badge });
+            // Header shape adapts to whether the primary field is
+            // known. Empty primary → `▶ name  ✓` (no duplicated
+            // name — the round-2 fix).
+            const text = if (primary.len == 0)
+                try std.fmt.allocPrint(allocator, "▶ {s}  {s}", .{ env.name, badge })
+            else
+                try std.fmt.allocPrint(allocator, "▶ {s}  {s}  {s}", .{ env.name, primary, badge });
             const lines = try allocator.dupe(Line, &[_]Line{.{
                 .text = text,
                 .style = .{ .fg = if (env.success) .magenta else .red },
@@ -179,6 +187,45 @@ test "renderMessage: tool with malformed content falls back to raw dim" {
     defer freeLines(testing.allocator, lines);
     try testing.expectEqualStrings("some plain legacy output", lines[0].text);
     try testing.expectEqual(@as(?Color, .brightBlack), lines[0].style.fg);
+}
+
+test "renderMessage: tool with no primary field renders bare name + badge" {
+    // load_memory data is <results>...</results> — outside the
+    // whitelist. toolEnvelopePrimary returns "" — header should
+    // render as `▶ load_memory  ✓` (no duplicated name).
+    const content =
+        "<tool><name>load_memory</name><parameters></parameters><success>true</success><data><results>x</results></data></tool>";
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "tool",
+        .content = content,
+        .tool_name = "load_memory",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("▶ load_memory  ✓", lines[0].text);
+    try testing.expectEqual(@as(?Color, .magenta), lines[0].style.fg);
+}
+
+test "renderMessage: assistant strips <plain> wrapper" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "<plain>saya bisa bantu</plain>",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("saya bisa bantu", lines[0].text);
+}
+
+test "renderMessage: assistant strips think AND <plain>" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "<think>plan</think><plain>the visible answer</plain>",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("the visible answer", lines[0].text);
 }
 
 test "renderMessage: unknown role renders raw dim" {

@@ -36,6 +36,14 @@ pub fn Program(comptime Model: type) type {
         prev_frame: ?frame_mod.Frame = null,
         raw_mode: ?terminal.RawMode = null,
         quit_requested: bool = false,
+        /// Persistent input byte buffer. Bytes are read into
+        /// `input_buf[input_len..]`; after draining, leftover
+        /// (incomplete-sequence) bytes are shifted to the start so
+        /// the next read appends. 256 bytes is plenty for typical
+        /// sequences (SGR mouse is ~12 bytes). Sized to avoid
+        /// overflow with reasonable mouse-event bursts.
+        input_buf: [256]u8 = undefined,
+        input_len: usize = 0,
 
         pub fn init(model: *Model, allocator: std.mem.Allocator, io: std.Io) Self {
             return .{ .model = model, .allocator = allocator, .io = io };
@@ -60,9 +68,36 @@ pub fn Program(comptime Model: type) type {
             defer {
                 if (self.raw_mode) |rm| terminal.leaveRawMode(rm);
                 self.writeOut("\x1b[?25h\x1b[?1049l"); // show cursor, leave alt-screen
+                // Disable mouse tracking (paired with the enable in
+                // run()). MUST be in the same defer block as the
+                // enable so a mid-run crash doesn't leave the user's
+                // terminal in mouse-tracking mode (which would make
+                // text selection paste escape sequences).
+                self.writeOut("\x1b[?1006l\x1b[?1000l");
             }
 
             self.writeOut("\x1b[?1049h\x1b[?25l"); // enter alt-screen, hide cursor
+            // Round-2 (Task 5): enable SGR mouse tracking so the
+            // terminal sends `\x1b[<button;col;rowM` sequences when
+            // the user scrolls the wheel. 1000 = basic mouse tracking
+            // (press/release), 1006 = SGR-encoded coordinates. We
+            // only handle wheel events in v1 (button 64/65); clicks
+            // are dropped at the key parser. Disable on cleanup so
+            // the terminal is left in a normal state — otherwise text
+            // selection (drag-to-highlight) would paste garbage.
+            self.writeOut("\x1b[?1000h\x1b[?1006h");
+
+            // Round-3 fix (mouse-wheel leak): keep a persistent input
+            // buffer that accumulates bytes across reads. Without this,
+            // an SGR mouse event split across two reads (e.g. `\x1b[<`
+            // in read 1, `64;14;14M` in read 2) would: read 1 → parse
+            // returns "incomplete", dispatcher DROPS the 3 bytes; read
+            // 2 → parse sees `64;14;14M` starting with a digit, returns
+            // a rune for each — the user's input widget ends up with
+            // `64;14;14M...` typed text. The buffer carries the
+            // partial bytes into the next read so the parse eventually
+            // succeeds on the full sequence.
+            self.input_len = 0;
 
             var size = terminal.size();
             try self.draw(size.width, size.height);
@@ -73,26 +108,43 @@ pub fn Program(comptime Model: type) type {
             while (!self.quit_requested) {
                 // 1. Drain pending input (non-blocking-ish: raw mode with
                 //    VMIN=0/VTIME=1 makes reads return quickly).
-                var key_buf: [32]u8 = undefined;
-                const n = stdin_reader.interface.readSliceShort(&key_buf) catch 0;
+                //
+                // Round-3 fix: bytes go into `self.input_buf` AFTER any
+                // leftover from the previous iteration (incomplete
+                // sequence trailing bytes). Drain events from the head
+                // of the buffer; leftover (incomplete) bytes stay for
+                // the next read.
+                const n = stdin_reader.interface.readSliceShort(self.input_buf[self.input_len..]) catch 0;
                 if (n > 0) {
-                    var rest: []const u8 = key_buf[0..n];
-                    while (rest.len > 0) {
-                        const parsed = key_mod.parse(rest) catch null;
-                        const p = parsed orelse break; // incomplete seq — drop
-                        rest = rest[p.len..];
-                        switch (p.key) {
-                            .ctrl_c, .ctrl_d => {
-                                self.quit_requested = true;
-                            },
-                            else => {
-                                const cmd = self.model.update(.{ .key = p.key }) catch |e| {
-                                    std.log.err("model.update failed: {s}", .{@errorName(e)});
-                                    continue;
-                                };
-                                self.execCmd(cmd);
-                            },
+                    self.input_len += n;
+                    var consumed: usize = 0;
+                    while (consumed < self.input_len) {
+                        const rest = self.input_buf[consumed..self.input_len];
+                        const p = key_mod.parse(rest);
+                        if (p.len == 0) break; // incomplete — keep bytes for next read
+                        consumed += p.len;
+                        if (p.key) |key| {
+                            switch (key) {
+                                .ctrl_c, .ctrl_d => self.quit_requested = true,
+                                else => {
+                                    const cmd = self.model.update(.{ .key = key }) catch |e| {
+                                        std.log.err("model.update failed: {s}", .{@errorName(e)});
+                                        continue;
+                                    };
+                                    self.execCmd(cmd);
+                                },
+                            }
                         }
+                        // key=null + len>0 → unhandled but consumed
+                        // (e.g. button-27 movement event). We just
+                        // advanced past it — no dispatch.
+                    }
+                    // Shift any leftover (incomplete) bytes to the
+                    // start of the buffer for the next iteration.
+                    if (consumed > 0) {
+                        const leftover = self.input_len - consumed;
+                        if (leftover > 0) std.mem.copyForwards(u8, self.input_buf[0..leftover], self.input_buf[consumed..self.input_len]);
+                        self.input_len = leftover;
                     }
                     if (self.quit_requested) break;
                     try self.draw(size.width, size.height);

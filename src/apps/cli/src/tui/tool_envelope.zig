@@ -131,7 +131,14 @@ pub fn toolEnvelopePrimary(env: ToolEnvelope) []const u8 {
         }
     }
 
-    return env.name;
+    // Fallback — empty string (NOT the tool name). The previous
+    // behaviour returned env.name, which produced tool cards like
+    // `▶ load_memory  load_memory  ✓` — the name appeared twice.
+    // Empty keeps the header line non-redundant. A future PR
+    // joins via tool_call_id to fetch the primary from the
+    // assistant row when we want something richer than the tool
+    // name itself.
+    return "";
 }
 
 // ----------------------------------------------------------------------------
@@ -215,16 +222,30 @@ test "toolEnvelopePrimary: bash truncates to 64 chars" {
     try testing.expect(primary.len > 0);
 }
 
-test "toolEnvelopePrimary: unknown tool falls back to its name" {
+test "toolEnvelopePrimary: unknown tool returns empty (no duplicate)" {
     const env = tryParseToolEnvelope(
         "<tool><name>weird_thing</name><parameters></parameters><success>true</success><data>x</data></tool>"
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("weird_thing", toolEnvelopePrimary(env));
+    // Round-2 fix: the fallback used to return env.name, which made
+    // tool cards render as `▶ load_memory  load_memory  ✓` (the
+    // name appeared twice). Empty keeps the header non-redundant;
+    // a future PR joins via tool_call_id to fetch the primary
+    // from the assistant row when needed.
+    try testing.expectEqualStrings("", toolEnvelopePrimary(env));
 }
 
-test "toolEnvelopePrimary: empty data falls back to tool name" {
+test "toolEnvelopePrimary: whitelisted tool with no matching inner tag returns empty" {
+    // load_memory data is <results>...</results> — not in our
+    // whitelist. Should NOT fall back to the tool name.
+    const env = tryParseToolEnvelope(
+        "<tool><name>load_memory</name><parameters></parameters><success>true</success><data><results>...</results></data></tool>"
+    ) orelse return error.UnexpectedNull;
+    try testing.expectEqualStrings("", toolEnvelopePrimary(env));
+}
+
+test "toolEnvelopePrimary: empty data (error path) returns empty" {
     const env = tryParseToolEnvelope(
         "<tool><name>read_file</name><parameters></parameters><success>false</success><error>not found</error></tool>"
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("read_file", toolEnvelopePrimary(env));
+    try testing.expectEqualStrings("", toolEnvelopePrimary(env));
 }
