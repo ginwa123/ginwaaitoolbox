@@ -22,4 +22,5 @@ export type {
   ContainerInfo,
 } from "./scrollLogger";
 export { isAutoStickActive, AUTO_STICK_GATE_MS } from "./autoStickGate";
+export { renderResponse } from "./renderResponse";
 
