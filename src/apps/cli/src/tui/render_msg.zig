@@ -71,7 +71,13 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
         if (tool_envelope.tryParseToolEnvelope(msg.content)) |env| {
             const primary = tool_envelope.toolEnvelopePrimary(env);
             const badge = if (env.success) "✓" else "✗";
-            const text = try std.fmt.allocPrint(allocator, "▶ {s}  {s}  {s}", .{ env.name, primary, badge });
+            // Header shape adapts to whether the primary field is
+            // known. Empty primary → `▶ name  ✓` (no duplicated
+            // name — the round-2 fix).
+            const text = if (primary.len == 0)
+                try std.fmt.allocPrint(allocator, "▶ {s}  {s}", .{ env.name, badge })
+            else
+                try std.fmt.allocPrint(allocator, "▶ {s}  {s}  {s}", .{ env.name, primary, badge });
             const lines = try allocator.dupe(Line, &[_]Line{.{
                 .text = text,
                 .style = .{ .fg = if (env.success) .magenta else .red },
@@ -181,6 +187,23 @@ test "renderMessage: tool with malformed content falls back to raw dim" {
     defer freeLines(testing.allocator, lines);
     try testing.expectEqualStrings("some plain legacy output", lines[0].text);
     try testing.expectEqual(@as(?Color, .brightBlack), lines[0].style.fg);
+}
+
+test "renderMessage: tool with no primary field renders bare name + badge" {
+    // load_memory data is <results>...</results> — outside the
+    // whitelist. toolEnvelopePrimary returns "" — header should
+    // render as `▶ load_memory  ✓` (no duplicated name).
+    const content =
+        "<tool><name>load_memory</name><parameters></parameters><success>true</success><data><results>x</results></data></tool>";
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "tool",
+        .content = content,
+        .tool_name = "load_memory",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("▶ load_memory  ✓", lines[0].text);
+    try testing.expectEqual(@as(?Color, .magenta), lines[0].style.fg);
 }
 
 test "renderMessage: assistant strips <plain> wrapper" {
