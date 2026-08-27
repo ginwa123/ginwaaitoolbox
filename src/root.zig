@@ -511,6 +511,7 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 // The MCP call sites in `handle_mcp_tool.zig` and
 // `prompts_build_messages_for_agent_prompt.zig` were migrated to it.
 pub const loggermod = @import("modules/logger/Logger.zig");
+pub const mcp_stdio = @import("modules/agent/mcp/mcp/mcp_stdio.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");

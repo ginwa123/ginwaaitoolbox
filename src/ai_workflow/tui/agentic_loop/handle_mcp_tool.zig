@@ -6,6 +6,7 @@ const sqlite = nalar_mod.sqlite;
 const save_message = @import("llm_history.zig");
 const custom_http_client = @import("custom_http_client");
 const config_mod = nalar_mod.config;
+const mcp_stdio = nalar_mod.mcp_stdio;
 
 /// Strip SSE "data:" prefix from response body if present
 /// MCP servers may return responses in SSE format: "data: {...}\n\n"
@@ -82,18 +83,21 @@ pub fn handle_mcp_tool_run(
         },
     };
 
+    // Transport dispatch: stdio (command) or HTTP (url). stdio takes
+    // precedence when both are present (the parser already rejects that
+    // combo, but the runtime is defensive).
+    if (server_obj.get("command")) |_| {
+        return callViaStdio(allocator, logger, server_name, actual_tool_name, tool_call.function.arguments, server_obj);
+    }
+
     const url_value = server_obj.get("url") orelse {
         return error.MCPServerURLNotFound;
     };
     const url = url_value.string;
 
-    // Build JSON-RPC request for tool call
-    const request_body = try std.fmt.allocPrint(
-        allocator,
-        \\{{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{{"name":"{s}","arguments":{s}}}}}
-    ,
-        .{ actual_tool_name, tool_call.function.arguments },
-    );
+    // Build JSON-RPC request for tool call (shared shape with stdio).
+    const request_body = try buildToolCallRequestBody(allocator, actual_tool_name, tool_call.function.arguments);
+    defer allocator.free(request_body);
 
     logger.debugFmt("MCP request: {s}", .{request_body});
 
@@ -227,4 +231,150 @@ pub fn handle_mcp_tool_run(
         return try allocator.dupe(u8, clean_body);
     }
     return tool_result;
+}
+
+// ============================================================================
+// stdio transport: spawn a child process per server, send framed
+// JSON-RPC over its stdin, read the framed response from stdout.
+// ============================================================================
+
+/// Call a tool via the stdio transport. Spawns (or reuses) a child
+/// process keyed by `server_name`, sends a framed `tools/call` JSON-RPC
+/// body, and reads the framed response. Returns the extracted text
+/// content (the `result.content[0].text` field, freshly allocated).
+fn callViaStdio(
+    allocator: std.mem.Allocator,
+    logger: *logger_mod.Logger,
+    server_name: []const u8,
+    tool_name: []const u8,
+    arguments_json: []const u8,
+    server_obj: std.json.ObjectMap,
+) ![]const u8 {
+    // Build argv: [command, args...]
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(allocator);
+    if (server_obj.get("command")) |cmd_field| {
+        if (cmd_field == .string) {
+            try argv_list.append(allocator, try allocator.dupe(u8, cmd_field.string));
+        }
+    }
+    if (server_obj.get("args")) |args_v| {
+        if (args_v == .array) {
+            for (args_v.array.items) |item| {
+                if (item == .string) {
+                    try argv_list.append(allocator, try allocator.dupe(u8, item.string));
+                }
+            }
+        }
+    }
+    if (argv_list.items.len == 0) {
+        logger.errFmt("stdio MCP server '{s}' has no command", .{server_name});
+        return error.MCPServerCommandNotFound;
+    }
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer {
+        for (argv) |a| allocator.free(a);
+        allocator.free(argv);
+    }
+
+    // stdio transport: long-lived child per server, lazy spawn + respawn.
+    // We need an io handle — for now use the threaded io (same as the
+    // stdio client tests). Real wiring in main.zig will pass a real io.
+    const reg = mcp_stdio.StdioRegistry.global(allocator);
+    const client = reg.getOrSpawn(server_name, argv) catch |err| {
+        logger.errFmt("stdio MCP spawn failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+        return error.FailedToCallMCPServer;
+    };
+
+    // Build the framed request and send.
+    const req = try buildToolCallRequestBody(allocator, tool_name, arguments_json);
+    defer allocator.free(req);
+    // client.send/recv use the io stored in the StdioClient itself.
+    // TODO(wire-up): main.zig's StdioRegistry.global() should accept an
+    // io handle and pass it through to all spawned children — the test
+    // path uses std.testing.io via the registry's `global()` helper.
+    client.send(req) catch |err| {
+        logger.errFmt("stdio MCP send failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+        // Respawn on next call.
+        return error.FailedToCallMCPServer;
+    };
+    const resp = client.recv() catch |err| {
+        logger.errFmt("stdio MCP recv failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+        return error.MCPServerReturnedError;
+    };
+    errdefer allocator.free(resp);
+
+    // Same JSON extraction as the HTTP branch: pull `result.content[0].text`.
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parsed = std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), resp, .{}) catch {
+        return error.MCPJSONParseError;
+    };
+    const root = parsed.value;
+    var tool_result: []const u8 = resp;
+    var needs_copy = false;
+    if (root.object.get("result")) |result_val| {
+        if (result_val.object.get("content")) |content_val| {
+            if (content_val == .array) {
+                const arr = content_val.array;
+                if (arr.items.len > 0) {
+                    if (arr.items[0].object.get("text")) |text_val| {
+                        if (text_val == .string) {
+                            tool_result = try allocator.dupe(u8, text_val.string);
+                            needs_copy = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!needs_copy) tool_result = try allocator.dupe(u8, resp);
+    return tool_result;
+}
+
+// ============================================================================
+// Shared request-body builder (used by both HTTP and stdio transports)
+// ============================================================================
+
+/// Build a JSON-RPC `tools/call` request body for a given tool name + args.
+/// Returns a freshly-allocated slice the caller owns (frees with allocator).
+///
+/// This is the SHAPE the agent sends over the wire — same for HTTP and
+/// stdio. The transport just decides how to deliver it.
+pub fn buildToolCallRequestBody(
+    allocator: std.mem.Allocator,
+    tool_name: []const u8,
+    arguments_json: []const u8,
+) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        \\{{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{{"name":"{s}","arguments":{s}}}}}
+        ,
+        .{ tool_name, arguments_json },
+    );
+}
+
+// ============================================================================
+// Tests (inline at the bottom — project convention)
+// ============================================================================
+
+const testing = std.testing;
+
+test "buildToolCallRequestBody: emits jsonrpc tools/call envelope" {
+    // Note: arguments_json is passed through verbatim — the test uses
+    // a compact JSON to make the substring match predictable.
+    const body = try buildToolCallRequestBody(testing.allocator, "say_hello",
+        \\{"name":"world"}
+    );
+    defer testing.allocator.free(body);
+    try testing.expect(std.mem.indexOf(u8, body, "\"jsonrpc\":\"2.0\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"tools/call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"name\":\"say_hello\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"arguments\":{\"name\":\"world\"}") != null);
+}
+
+test "buildToolCallRequestBody: empty arguments is a valid empty object" {
+    const body = try buildToolCallRequestBody(testing.allocator, "ping", "{}");
+    defer testing.allocator.free(body);
+    try testing.expect(std.mem.indexOf(u8, body, "\"arguments\":{}") != null);
 }
