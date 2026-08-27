@@ -150,6 +150,19 @@ pub fn buildMessages(
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
     defer allocator.free(agentSystemPromptContent);
 
+    // Agent-Kanbans mirror (Migration 081, plan
+    // 2026-08-25-agent-kanbans-mirror): Build the "## Kanban System
+    // Prompt" + "## Kanban Knowledge" sections from the
+    // agent_kanban_system_prompt / agent_kanban_knowledges tables.
+    // Empty unless the session's item is a kanban WITH an
+    // `agent_kanbans` row — unconfigured boards are unaffected. Only
+    // ONE of the agent/kanban pairs can be non-empty per session
+    // (item_type is exclusive), so effective ordering is unchanged.
+    const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanSystemPromptContent);
+    const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanKnowledgeContent);
+
     // Build the "Kanban Status Tracking" section. Only rendered when
     // the session's parent item has item_type === 'kanban' (the
     // helper silently returns "" otherwise). Rendered right after
@@ -212,6 +225,15 @@ pub fn buildMessages(
     // Empty when item_type != 'agent' OR agent has no knowledge rows.
     if (agentKnowledgeContent.len > 0) {
         try final_system.appendSlice(allocator, agentKnowledgeContent);
+    }
+    // Agent-Kanbans mirror (Migration 081): inject the kanban persona +
+    // knowledge blocks AFTER the agent blocks (mutually exclusive by
+    // item_type, so at most one pair renders per session).
+    if (agentKanbanSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
+    }
+    if (agentKanbanKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
     }
     if (inherited_md.len > 0) {
         try final_system.appendSlice(allocator, "\n\n");

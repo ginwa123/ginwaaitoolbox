@@ -22,6 +22,7 @@ import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsView from './views/KanbanSettingsView.vue'
+import KanbanAgentSettings from './kanban/KanbanAgentSettings.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -1664,6 +1665,21 @@ const handleOpenKanbanSettings = () => {
   router.push({ path: `/app/kanban/${itemId}/settings` })
 }
 
+// ─── KanbanAgentSettings — per-board agent config (Migration 081) ──────
+//
+// Mounted as a sibling of KanbanSettingsDialog (same Teleport/animation
+// lifecycle rationale). All state lives inside the dialog component —
+// AppLayout only owns the open/close ref.
+const showKanbanAgentSettings = ref(false)
+
+const handleOpenKanbanAgentSettings = () => {
+  showKanbanAgentSettings.value = true
+}
+
+const handleCloseKanbanAgentSettings = () => {
+  showKanbanAgentSettings.value = false
+}
+
 const handleKanbanSettingsAddColumn = (name: string, description: string) => {
   if (!activeWorkspaceItem.value) return
   const ws = activeWorkspace.value
@@ -2398,6 +2414,7 @@ defineExpose({
         @run-routine="handleKanbanRunRoutine"
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
+        @open-agent-settings="handleOpenKanbanAgentSettings"
         @rename-item="handleKanbanRenameItem"
         @close-chat="handleCloseTaskView"
       />
@@ -2764,10 +2781,25 @@ defineExpose({
     />
 
     <!--
+      KanbanAgentSettings — per-board agent config (Migration 081,
+      agent-kanbans mirror). Mounted at the AppLayout level (sibling
+      of KanbanColumnEditor) so the modal's Teleport/animation
+      lifecycle works cleanly even if the KanbanView branch unmounts
+      mid-edit. State (knowledge / system-prompt / tools tabs) is
+      owned by the dialog itself — AppLayout only toggles `show`.
+    -->
+    <KanbanAgentSettings
+      :show="showKanbanAgentSettings"
+      :item="activeWorkspaceItem ?? null"
+      :workspace-id="activeWorkspace?.id ?? ''"
+      @close="handleCloseKanbanAgentSettings"
+    />
+
+    <!--
       CopyKanbanSpecDialog — source picker + Replace/Append radio for
       bulk-copying column spec from another kanban. Mounted as a SIBLING
-      of <KanbanSettingsDialog> (not nested) so a user can stack them:
-      Settings dialog under, picker over, both visible at once. The picker
+      of <KanbanSettingsView> (not nested) so a user can stack them:
+      Settings page under, picker over, both visible at once. The picker
       filters out the active kanban as a source (CopyKanbanSpecDialog's
       `availableSources` computed).
       Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md

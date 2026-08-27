@@ -316,6 +316,9 @@ const emit = defineEmits<{
   // Open the per-board KanbanSettingsDialog (host owns it). No
   // payload — the host derives the active item from its own state.
   openSettings: []
+  // Open the per-board KanbanAgentSettings dialog (Migration 081,
+  // agent-kanbans mirror — host owns the mount like openSettings).
+  openAgentSettings: []
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
@@ -573,6 +576,12 @@ const _handleAddColumn = () => {
 
 const handleOpenSettings = () => {
   emit('openSettings')
+}
+
+// Agent-Kanbans mirror (Migration 081): open the per-board agent
+// config dialog (host owns the mount, same pattern as openSettings).
+const handleOpenAgentSettings = () => {
+  emit('openAgentSettings')
 }
 
 // NEW (plan: 2026-08-06-kanban-add-task-button-placement). Open the
@@ -1136,6 +1145,25 @@ const handleCreateTaskSave = async (payload: {
       >
         <span aria-hidden="true">⚙️</span>
         <span class="ml-1">Settings</span>
+      </button>
+
+      <!-- Agent config (Migration 081, agent-kanbans mirror). Opens
+           KanbanAgentSettings — knowledge / persona / tool allowlist
+           injected into every chat on this board. -->
+      <button
+        type="button"
+        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+        style="
+          background-color: var(--semantic-sidebar-bg);
+          border: 1px solid var(--color-border);
+          color: var(--semantic-text-muted);
+        "
+        :data-testid="`kanban-view-${item.id}-open-agent-settings`"
+        @click="handleOpenAgentSettings"
+        title="Open agent config (knowledge, system prompt, tools)"
+      >
+        <span aria-hidden="true">🤖</span>
+        <span class="ml-1">Agent</span>
       </button>
 
     </header>
