@@ -1,5 +1,3 @@
-//! Key events parsed from raw terminal input.
-
 const std = @import("std");
 
 pub const Key = union(enum) {
@@ -30,20 +28,35 @@ pub const Key = union(enum) {
     ctrl_l,
 };
 
-/// Parse one key from the head of `buf`. Returns the key and how many
-/// bytes it consumed. Returns null if `buf` is empty or starts with an
-/// incomplete escape sequence (caller should read more bytes).
+/// Result of parsing one input chunk.
 ///
-/// Supported sequences:
-///   - Single-byte control codes: 0x03 Ctrl-C, 0x04 Ctrl-D, 0x08/0x7F
-///     Backspace, 0x09 Tab, 0x0A/0x0D Enter, 0x0C Ctrl-L, 0x15 Ctrl-U,
-///     0x17 Ctrl-W.
-///   - `\x1b` alone → escape.
-///   - `\x1b[A/B/C/D` → arrows; `\x1b[H` / `\x1b[F` → Home/End;
-///     `\x1b[5~` / `\x1b[6~` → PageUp/PageDown; `\x1b[3~` → Delete.
-///   - UTF-8 multi-byte runes (2–4 byte lead + continuation bytes).
-pub fn parse(buf: []const u8) !?struct { key: Key, len: usize } {
-    if (buf.len == 0) return null;
+/// Semantics:
+///   - `key != null, len > 0`   → complete, recognised sequence.
+///   - `key == null, len > 0`   → complete but unhandled (e.g. an SGR
+///                                mouse movement event with button 27).
+///                                Caller advances past `len` bytes and
+///                                continues with the next.
+///   - `key == null, len == 0`  → INCOMPLETE — the buffer starts a
+///                                sequence that needs more bytes (e.g.
+///                                read got `\x1b[<` without the
+///                                trailing `M`). Caller MUST keep the
+///                                bytes for the next read.
+///
+/// Round-3 fix (mouse-wheel bug): previously the parser returned
+/// `?struct{key, len}` with `null` meaning both "incomplete" and
+/// "complete unhandled". The dispatcher treated the second case as
+/// incomplete, broke out of the parse loop, and DROPPED every byte
+/// after the offending sequence. On the next stdin read those
+/// residual bytes (`64;14;14M`) got re-parsed as runes and typed
+/// into the input widget — visible to the user as
+/// `;14M4;48;14M;...` typed text while scrolling.
+pub const ParseResult = struct {
+    key: ?Key,
+    len: usize,
+};
+
+pub fn parse(buf: []const u8) ParseResult {
+    if (buf.len == 0) return .{ .key = null, .len = 0 };
     const b = buf[0];
     switch (b) {
         0x03 => return .{ .key = .ctrl_c, .len = 1 },
@@ -66,9 +79,9 @@ pub fn parse(buf: []const u8) !?struct { key: Key, len: usize } {
                 if (buf.len > 2 and buf[2] == '<') {
                     var i: usize = 3;
                     while (i < buf.len and (std.ascii.isDigit(buf[i]) or buf[i] == ';')) : (i += 1) {}
-                    if (i >= buf.len) return null; // incomplete
+                    if (i >= buf.len) return .{ .key = null, .len = 0 }; // incomplete
                     const final = buf[i];
-                    if (final != 'M' and final != 'm') return null; // not SGR mouse
+                    if (final != 'M' and final != 'm') return .{ .key = null, .len = i + 1 }; // not SGR mouse — consume to skip
                     const consumed = i + 1;
                     // Parse the button field (params[0]) — col/row are
                     // ignored in v1 (no click handling). button is the
@@ -76,20 +89,28 @@ pub fn parse(buf: []const u8) !?struct { key: Key, len: usize } {
                     const semicolon = std.mem.indexOfScalar(u8, buf[3..i], ';') orelse 0;
                     const button_str = buf[3 .. 3 + semicolon];
                     const button = std.fmt.parseInt(u16, button_str, 10) catch {
-                        return null;
+                        // Malformed button field — consume the bytes
+                        // anyway so the dispatcher doesn't replay them
+                        // as runes (the original bug).
+                        return .{ .key = null, .len = consumed };
                     };
                     const k: ?Key = switch (button) {
                         64 => .wheel_up,
                         65 => .wheel_down,
-                        else => null, // 0/1/2 = clicks — ignore for v1
+                        else => null, // 0/1/2 = clicks, 27 = movement — ignore for v1
                     };
                     if (k) |key| return .{ .key = key, .len = consumed };
-                    return null; // unhandled SGR mouse event — drop
+                    // Complete SGR mouse event but unhandled button.
+                    // CRITICAL: report `consumed` so the dispatcher
+                    // advances past these bytes — otherwise they
+                    // re-enter the parse loop as a sequence of runes
+                    // and leak into the input widget.
+                    return .{ .key = null, .len = consumed };
                 }
 
                 var i: usize = 2;
                 while (i < buf.len and (std.ascii.isDigit(buf[i]) or buf[i] == ';')) : (i += 1) {}
-                if (i >= buf.len) return null; // incomplete — need more bytes
+                if (i >= buf.len) return .{ .key = null, .len = 0 }; // incomplete — need more bytes
                 const final = buf[i];
                 const params = buf[2..i];
                 const consumed = i + 1;
@@ -126,7 +147,7 @@ pub fn parse(buf: []const u8) !?struct { key: Key, len: usize } {
                 // Invalid lead byte — skip it.
                 return .{ .key = .{ .rune = 0xFFFD }, .len = 1 };
             };
-            if (buf.len < seq_len) return null; // incomplete
+            if (buf.len < seq_len) return .{ .key = null, .len = 0 }; // incomplete
             const cp = std.unicode.utf8Decode(buf[0..seq_len]) catch {
                 return .{ .key = .{ .rune = 0xFFFD }, .len = seq_len };
             };
@@ -142,44 +163,66 @@ pub fn parse(buf: []const u8) !?struct { key: Key, len: usize } {
 const testing = std.testing;
 
 test "parse: ascii runes" {
-    const r = (try parse("a")).?;
-    try testing.expectEqual(Key{ .rune = 'a' }, r.key);
+    const r = parse("a");
+    try testing.expectEqual(Key{ .rune = 'a' }, r.key.?);
     try testing.expectEqual(@as(usize, 1), r.len);
 
-    const z = (try parse("Z")).?;
-    try testing.expectEqual(Key{ .rune = 'Z' }, z.key);
+    const z = parse("Z");
+    try testing.expectEqual(Key{ .rune = 'Z' }, z.key.?);
 
-    const five = (try parse("5")).?;
-    try testing.expectEqual(Key{ .rune = '5' }, five.key);
+    const five = parse("5");
+    try testing.expectEqual(Key{ .rune = '5' }, five.key.?);
 }
 
 test "parse: backspace variants" {
-    try testing.expectEqual(Key.backspace, (try parse(&.{0x7F})).?.key);
-    try testing.expectEqual(Key.backspace, (try parse(&.{0x08})).?.key);
+    try testing.expectEqual(Key.backspace, (parse(&.{0x7F})).key.?);
+    try testing.expectEqual(Key.backspace, (parse(&.{0x08})).key.?);
 }
 
 test "parse: ctrl-c" {
-    try testing.expectEqual(Key.ctrl_c, (try parse(&.{0x03})).?.key);
+    try testing.expectEqual(Key.ctrl_c, (parse(&.{0x03})).key.?);
 }
 
-test "parse: enter (CR and LF)" {
-    try testing.expectEqual(Key.enter, (try parse(&.{0x0D})).?.key);
-    try testing.expectEqual(Key.enter, (try parse(&.{0x0A})).?.key);
+test "parse: tab / enter / ctrl-l" {
+    try testing.expectEqual(Key.tab, (parse(&.{0x09})).key.?);
+    try testing.expectEqual(Key.enter, (parse(&.{0x0A})).key.?);
+    try testing.expectEqual(Key.enter, (parse(&.{0x0D})).key.?);
+    try testing.expectEqual(Key.ctrl_l, (parse(&.{0x0C})).key.?);
+}
+
+test "parse: utf-8 multi-byte (€ = E2 82 AC)" {
+    const r = parse("\xe2\x82\xac");
+    try testing.expectEqual(@as(usize, 3), r.len);
+    try testing.expectEqual(@as(u21, 0x20AC), r.key.?.rune);
+}
+
+test "parse: bare escape" {
+    try testing.expectEqual(Key.escape, (parse("\x1b")).key.?);
 }
 
 test "parse: arrow keys" {
-    try testing.expectEqual(Key.up, (try parse("\x1b[A")).?.key);
-    try testing.expectEqual(Key.down, (try parse("\x1b[B")).?.key);
-    try testing.expectEqual(Key.right, (try parse("\x1b[C")).?.key);
-    try testing.expectEqual(Key.left, (try parse("\x1b[D")).?.key);
+    try testing.expectEqual(Key.up, (parse("\x1b[A")).key.?);
+    try testing.expectEqual(Key.down, (parse("\x1b[B")).key.?);
+    try testing.expectEqual(Key.right, (parse("\x1b[C")).key.?);
+    try testing.expectEqual(Key.left, (parse("\x1b[D")).key.?);
+}
+
+test "parse: incomplete escape returns len=0 (not nil)" {
+    // Round-3 fix: an incomplete sequence now reports key=null,
+    // len=0 so the dispatcher knows to KEEP the bytes for the next
+    // read rather than dropping them (which would let residual bytes
+    // leak into the input widget as typed text).
+    const r = parse("\x1b[");
+    try testing.expect(r.key == null);
+    try testing.expectEqual(@as(usize, 0), r.len);
 }
 
 test "parse: home/end/delete/page keys" {
-    try testing.expectEqual(Key.home, (try parse("\x1b[H")).?.key);
-    try testing.expectEqual(Key.end, (try parse("\x1b[F")).?.key);
-    try testing.expectEqual(Key.delete, (try parse("\x1b[3~")).?.key);
-    try testing.expectEqual(Key.page_up, (try parse("\x1b[5~")).?.key);
-    try testing.expectEqual(Key.page_down, (try parse("\x1b[6~")).?.key);
+    try testing.expectEqual(Key.home, (parse("\x1b[H")).key.?);
+    try testing.expectEqual(Key.end, (parse("\x1b[F")).key.?);
+    try testing.expectEqual(Key.delete, (parse("\x1b[3~")).key.?);
+    try testing.expectEqual(Key.page_up, (parse("\x1b[5~")).key.?);
+    try testing.expectEqual(Key.page_down, (parse("\x1b[6~")).key.?);
 }
 
 // ----------------------------------------------------------------------------
@@ -188,8 +231,10 @@ test "parse: home/end/delete/page keys" {
 //
 // Format: \x1b[<button;col;rowM (uppercase M = press, lowercase m = release).
 //   button 64 = wheel up, 65 = wheel down (no modifier). Other buttons
-//   (clicks, drags) are ignored in v1 — parser returns null so the
-//   dispatcher drops them without entering an infinite loop.
+//   (clicks, drags, movement) are ignored in v1 — parser returns
+//   `key=null, len=consumed` so the dispatcher drops them without
+//   entering an infinite loop and WITHOUT leaking the residual bytes
+//   into the input widget (the round-3 fix).
 //
 // We enable SGR mode (CSI ? 1006 h) and basic mouse tracking (CSI ?
 // 1000 h) on program startup, so the terminal is guaranteed to send
@@ -197,46 +242,50 @@ test "parse: home/end/delete/page keys" {
 // supported in v1.
 
 test "parse: SGR mouse wheel up = button 64" {
-    const got = (try parse("\x1b[<64;12;8M")).?.key;
-    try testing.expectEqual(Key.wheel_up, got);
+    const got = parse("\x1b[<64;12;8M");
+    try testing.expectEqual(Key.wheel_up, got.key.?);
+    try testing.expectEqual(@as(usize, 11), got.len);
 }
 
 test "parse: SGR mouse wheel down = button 65" {
-    const got = (try parse("\x1b[<65;12;8M")).?.key;
-    try testing.expectEqual(Key.wheel_down, got);
+    const got = parse("\x1b[<65;12;8M");
+    try testing.expectEqual(Key.wheel_down, got.key.?);
 }
 
-test "parse: SGR mouse press (button 0) returns null, not a wheel key" {
-    // \x1b[<0;10;5M → left-button press; v1 ignores clicks.
-    const got = try parse("\x1b[<0;10;5M");
-    try testing.expect(got == null);
+test "parse: complete SGR mouse movement (button 27) reports key=null, len=consumed" {
+    // Round-3 fix: this is the sequence that previously broke scroll.
+    // The bytes must be CONSUMED (so the dispatcher advances past
+    // them) but the key is null (no scroll). Reported as key=null,
+    // len=12 — distinct from incomplete (key=null, len=0).
+    const got = parse("\x1b[<27;14;14M");
+    try testing.expect(got.key == null);
+    try testing.expectEqual(@as(usize, 12), got.len);
 }
 
-test "parse: SGR mouse release (button 0, lowercase m) returns null" {
-    // \x1b[<0;10;5m → release; same as press — ignored in v1.
-    const got = try parse("\x1b[<0;10;5m");
-    try testing.expect(got == null);
+test "parse: complete SGR click (button 0) reports key=null, len=consumed" {
+    const got = parse("\x1b[<0;10;5M");
+    try testing.expect(got.key == null);
+    try testing.expectEqual(@as(usize, 10), got.len);
 }
 
-test "parse: incomplete escape returns null" {
-    try testing.expect((try parse("\x1b")) != null); // lone ESC is valid
-    try testing.expect((try parse("\x1b[")) == null);
-    try testing.expect((try parse("\x1b[A")) != null);
+test "parse: complete SGR release (button 0, lowercase m) reports key=null, len=consumed" {
+    const got = parse("\x1b[<0;10;5m");
+    try testing.expect(got.key == null);
+    try testing.expectEqual(@as(usize, 10), got.len);
 }
 
-test "parse: utf8 two-byte rune" {
-    // é = U+00E9 = 0xC3 0xA9
-    const r = (try parse("\xc3\xa9")).?;
-    try testing.expectEqual(Key{ .rune = 0xE9 }, r.key);
-    try testing.expectEqual(@as(usize, 2), r.len);
+test "parse: incomplete SGR sequence (no M/m) reports key=null, len=0" {
+    // \x1b[<64 with no terminating M — caller MUST wait for more.
+    const got = parse("\x1b[<64");
+    try testing.expect(got.key == null);
+    try testing.expectEqual(@as(usize, 0), got.len);
 }
 
-test "parse: utf8 three-byte rune" {
-    // ✓ = U+2713 = 0xE2 0x9C 0x93
-    const r = (try parse("\xe2\x9c\x93")).?;
-    try testing.expectEqual(Key{ .rune = 0x2713 }, r.key);
-}
-
-test "parse: empty buffer returns null" {
-    try testing.expect(try parse("") == null);
+test "parse: malformed SGR button field still consumes the bytes" {
+    // Button field has no digits (just semicolons) — parseInt fails.
+    // Previously returned null and dropped the bytes; now we still
+    // consume them so the dispatcher advances.
+    const got = parse("\x1b[<;14;14M");
+    try testing.expect(got.key == null);
+    try testing.expectEqual(@as(usize, 10), got.len);
 }
