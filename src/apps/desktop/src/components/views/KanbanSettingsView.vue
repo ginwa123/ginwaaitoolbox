@@ -30,12 +30,13 @@ import { useRoute, useRouter } from 'vue-router'
 import KanbanColumnEditor from '../kanban/KanbanColumnEditor.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
-import KanbanAgentPanel from './KanbanAgentPanel.vue'
+import KanbanToolsPanel from './KanbanToolsPanel.vue'
+import KanbanKnowledgePanel from './KanbanKnowledgePanel.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 
-type SettingsMode = 'columns' | 'memories' | 'agent'
+type SettingsMode = 'columns' | 'memories' | 'tools' | 'knowledge'
 
-const VALID_TABS: readonly SettingsMode[] = ['columns', 'memories', 'agent']
+const VALID_TABS: readonly SettingsMode[] = ['columns', 'memories', 'tools', 'knowledge']
 
 const route = useRoute()
 const router = useRouter()
@@ -308,11 +309,11 @@ function sortedColumns() {
         </h1>
       </div>
 
-      <!-- Tab strip: Columns | Local Memories | Agent.
-           Always visible (even without item.path) — the Agent tab
-           doesn't depend on a folder. The Local Memories button is
-           individually gated on item.path (no memories without a
-           folder). -->
+      <!-- Tab strip: Columns | Local Memories | Tools | Knowledge.
+           Always visible (even without item.path) — the Tools +
+           Knowledge tabs don't depend on a folder. The Local Memories
+           button is individually gated on item.path (no memories
+           without a folder). -->
       <div
         class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
@@ -347,16 +348,29 @@ function sortedColumns() {
         </button>
         <button
           type="button"
-          @click="settingsMode = 'agent'"
-          data-testid="kanban-settings-page-tab-agent"
+          @click="settingsMode = 'tools'"
+          data-testid="kanban-settings-page-tab-tools"
           class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
           :style="
-            settingsMode === 'agent'
+            settingsMode === 'tools'
               ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
               : 'background-color: transparent; color: var(--semantic-text-muted);'
           "
         >
-          🤖 Agent
+          🛠 Tools
+        </button>
+        <button
+          type="button"
+          @click="settingsMode = 'knowledge'"
+          data-testid="kanban-settings-page-tab-knowledge"
+          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+          :style="
+            settingsMode === 'knowledge'
+              ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+              : 'background-color: transparent; color: var(--semantic-text-muted);'
+          "
+        >
+          🧠 Knowledge
         </button>
       </div>
 
@@ -557,13 +571,25 @@ function sortedColumns() {
         </p>
       </div>
 
-      <!-- Agent tab body (always available — no path required) -->
+      <!-- Tools tab body (always available — no path required) -->
       <div
-        v-else-if="settingsMode === 'agent'"
+        v-else-if="settingsMode === 'tools'"
         class="flex-1 min-h-0 overflow-y-auto"
-        data-testid="kanban-settings-page-agent-panel"
+        data-testid="kanban-settings-page-tools-panel"
       >
-        <KanbanAgentPanel :item="item" :workspace-id="workspaceId" />
+        <KanbanToolsPanel :item="item" :workspace-id="workspaceId" />
+      </div>
+
+      <!-- Knowledge tab body (always available — no path required).
+           Hosts both knowledge rows + system prompt blocks (merged
+           persona content). Bootstrap hint when no agent_kanbans row
+           yet (user must enable a tool on Tools tab first). -->
+      <div
+        v-else-if="settingsMode === 'knowledge'"
+        class="flex-1 min-h-0 overflow-y-auto"
+        data-testid="kanban-settings-page-knowledge-panel"
+      >
+        <KanbanKnowledgePanel :item="item" :workspace-id="workspaceId" />
       </div>
     </template>
 

@@ -161,12 +161,17 @@ describe('KanbanSettingsView', () => {
           // Stub the memories view — it's heavy (renders a full
           // memories panel) and we only test its presence/absence.
           WorkspaceItemMemoriesView: { template: '<div data-testid="stub-memories"></div>' },
-          // Stub the agent panel — same rationale. We only assert
+          // Stub the tools panel — same rationale. We only assert
           // its presence/absence here (its own spec covers
           // behaviour). The wrapper div mirrors the real panel's
           // outer testid so the page-level body assertion works.
-          KanbanAgentPanel: {
-            template: '<div data-testid="kanban-settings-page-agent-panel-stub"></div>',
+          KanbanToolsPanel: {
+            template: '<div data-testid="kanban-settings-page-tools-panel-stub"></div>',
+            props: ['item', 'workspaceId'],
+          },
+          // Stub the knowledge panel — same rationale.
+          KanbanKnowledgePanel: {
+            template: '<div data-testid="kanban-settings-page-knowledge-panel-stub"></div>',
             props: ['item', 'workspaceId'],
           },
           // Stub KanbanColumnEditor to avoid the Teleport + nested
@@ -334,41 +339,77 @@ describe('KanbanSettingsView', () => {
     expect(hint).not.toBeNull()
   })
 
-  // ─── Agent tab (plan: docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md) ───
+  // ─── Tools + Knowledge tabs (plan: docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md,
+  //    iteration 2 — split Agent into Tools + Knowledge as separate top-level tabs) ───
 
-  it('renders the Agent tab button (visible regardless of item.path)', async () => {
+  it('renders BOTH Tools and Knowledge tab buttons (visible regardless of item.path)', async () => {
     seedWorkspaces({ ...baseItem, path: null })
     mountView()
     await flushPromises()
-    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
-    expect(tab).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]'),
+    ).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]'),
+    ).not.toBeNull()
   })
 
-  it('mounts the KanbanAgentPanel as the active body when ?tab=agent is in the URL', async () => {
-    seedWorkspaces({ ...baseItem, path: null })
-    setupRoute({ tab: 'agent' })
+  it('does NOT render an Agent umbrella tab (regression — split into Tools + Knowledge)', async () => {
+    seedWorkspaces()
     mountView()
     await flushPromises()
-    // The agent tab is active and the panel mounts.
-    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
+    const agentTab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
+    expect(agentTab).toBeNull()
+  })
+
+  it('mounts the KanbanToolsPanel as the active body when ?tab=tools is in the URL', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ tab: 'tools' })
+    mountView()
+    await flushPromises()
+    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]')
     expect(tab).not.toBeNull()
-    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tools-panel"]')
     expect(panel).not.toBeNull()
     // Columns body should NOT be rendered.
-    const columnsList = findInDom<HTMLElement>(
-      '[data-testid="kanban-settings-page-column-list"]',
-    )
-    expect(columnsList).toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
   })
 
-  it('calls router.replace with {query:{tab:"agent"}} when the Agent tab is clicked', async () => {
+  it('mounts the KanbanKnowledgePanel as the active body when ?tab=knowledge is in the URL', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ tab: 'knowledge' })
+    mountView()
+    await flushPromises()
+    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]')
+    expect(tab).not.toBeNull()
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-knowledge-panel"]')
+    expect(panel).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
+  })
+
+  it('calls router.replace with {query:{tab:"tools"}} when the Tools tab is clicked', async () => {
     seedWorkspaces()
     const { router } = setupRoute({})
     mountView()
     await flushPromises()
-    clickInDom('[data-testid="kanban-settings-page-tab-agent"]')
+    clickInDom('[data-testid="kanban-settings-page-tab-tools"]')
     expect(router.replace).toHaveBeenCalledWith(
-      expect.objectContaining({ query: expect.objectContaining({ tab: 'agent' }) }),
+      expect.objectContaining({ query: expect.objectContaining({ tab: 'tools' }) }),
+    )
+  })
+
+  it('calls router.replace with {query:{tab:"knowledge"}} when the Knowledge tab is clicked', async () => {
+    seedWorkspaces()
+    const { router } = setupRoute({})
+    mountView()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-settings-page-tab-knowledge"]')
+    expect(router.replace).toHaveBeenCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ tab: 'knowledge' }) }),
     )
   })
 
@@ -379,11 +420,9 @@ describe('KanbanSettingsView', () => {
     await flushPromises()
     const stubPanel = findInDom<HTMLElement>('[data-testid="stub-memories"]')
     expect(stubPanel).not.toBeNull()
-    // Columns list should be hidden.
-    const columnsList = findInDom<HTMLElement>(
-      '[data-testid="kanban-settings-page-column-list"]',
-    )
-    expect(columnsList).toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
   })
 
   it('falls back to columns when ?tab= has an unknown value', async () => {

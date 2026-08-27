@@ -1051,7 +1051,9 @@ describe('KanbanView — header + Add task button', () => {
   })
 
   // ─── Agent button → settings page navigation (plan
-  //    docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md) ───
+  //    docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md,
+  //    iteration 2 — Agent button now lands on ?tab=tools since
+  //    the Agent umbrella tab was split into Tools + Knowledge) ───
 
   /**
    * Mount a KanbanView with a fresh vue-router installed so the
@@ -1073,7 +1075,7 @@ describe('KanbanView — header + Add task button', () => {
     return { pushSpy }
   }
 
-  it('navigates to /app/kanban/:itemId/settings?tab=agent when the Agent button is clicked', async () => {
+  it('navigates to /app/kanban/:itemId/settings?tab=tools when the Agent button is clicked', async () => {
     const { pushSpy } = await mountViewWithRouter(makeItem())
     await flushPromises()
     const btn = wrapper!.find(`[data-testid="kanban-view-${ITEM_ID}-open-agent-settings"]`)
@@ -1081,7 +1083,7 @@ describe('KanbanView — header + Add task button', () => {
     await btn.trigger('click')
     expect(pushSpy).toHaveBeenCalledWith({
       path: `/app/kanban/${ITEM_ID}/settings`,
-      query: { tab: 'agent' },
+      query: { tab: 'tools' },
     })
   })
 

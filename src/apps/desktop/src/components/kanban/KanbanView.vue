@@ -580,14 +580,14 @@ const handleOpenSettings = () => {
 }
 
 // Agent-Kanbans mirror (Migration 081): navigate to the dedicated
-// settings page with the Agent tab active. URL is the source of truth
-// — reload preserves state. The old `openAgentSettings` emit +
-// AppLayout-level dialog ref are gone; see plan
-// docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md.
+// settings page with the Tools tab active (iteration 2 — the Agent
+// umbrella tab was split into Tools + Knowledge; we land on Tools
+// since that's the more security-critical config — the access
+// allowlist). URL is the source of truth — reload preserves state.
 const handleOpenAgentSettings = () => {
   void router.push({
     path: `/app/kanban/${props.item.id}/settings`,
-    query: { tab: 'agent' },
+    query: { tab: 'tools' },
   })
 }
 
@@ -1155,9 +1155,11 @@ const handleCreateTaskSave = async (payload: {
       </button>
 
       <!-- Agent config (Migration 081, agent-kanbans mirror).
-           Navigates to /app/kanban/:itemId/settings?tab=agent — the
-           Knowledge / System Prompt / Tools panels are mounted there
-           as a tab body (KanbanAgentPanel inside KanbanSettingsView). -->
+           Navigates to /app/kanban/:itemId/settings?tab=tools — the
+           Tools allowlist is mounted there as a tab body
+           (KanbanToolsPanel inside KanbanSettingsView). User can
+           also visit ?tab=knowledge for the Knowledge + System
+           Prompt persona-content panel (KanbanKnowledgePanel). -->
       <button
         type="button"
         class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
