@@ -59,8 +59,27 @@ function maskValue(v: string): string {
       >
         <div class="flex items-center justify-between gap-3">
           <div class="flex-1 min-w-0">
-            <div class="text-sm font-medium" style="color: var(--semantic-text);">{{ server.name }}</div>
-            <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">{{ server.url }}</div>
+            <div class="text-sm font-medium flex items-center gap-2" style="color: var(--semantic-text);">
+              <span>{{ server.name }}</span>
+              <span
+                class="text-[10px] px-1.5 h-4 inline-flex items-center rounded font-medium uppercase tracking-wide"
+                :style="{
+                  color: (server.transport ?? 'http') === 'stdio' ? 'var(--color-violet)' : 'var(--semantic-text-dim)',
+                  borderColor: (server.transport ?? 'http') === 'stdio' ? 'var(--color-violet)' : 'var(--color-border)',
+                  border: '1px solid',
+                }"
+              >{{ server.transport ?? 'http' }}</span>
+            </div>
+            <div
+              v-if="(server.transport ?? 'http') === 'stdio'"
+              class="text-xs font-mono mt-0.5 truncate"
+              style="color: var(--semantic-text-dim);"
+            >$ {{ server.command }}{{ (server.args ?? []).length ? ' ' + (server.args ?? []).join(' ') : '' }}</div>
+            <div
+              v-else
+              class="text-xs font-mono mt-0.5 truncate"
+              style="color: var(--semantic-text-dim);"
+            >{{ server.url }}</div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
             <button
