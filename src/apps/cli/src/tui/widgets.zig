@@ -54,33 +54,78 @@ pub const Viewport = struct {
         self.scroll_from_bottom -= @min(n, self.scroll_from_bottom);
     }
 
-    /// Render the last `height` visible lines into a fresh Frame of
-    /// size `width x height`. Caller owns the frame.
+    /// Render the visible window into a fresh Frame of size
+    /// `width x height`. Caller owns the frame.
     ///
-    /// Long lines are word-wrapped at the last space that fits
-    /// within `width` columns (or hard-split at `width` when the
-    /// line has no spaces). The underlying `Line.text` is unchanged
-    /// — wrapping is a render-time concern only. The scroll offset
-    /// counts LOGICAL lines, not visual rows — slight inaccuracy on
-    /// very long wrapped text is accepted for v1 simplicity.
+    /// Behaviour:
+    ///   - Pinned to bottom (scroll_from_bottom == 0): always show the
+    ///     LATEST content. Walks logical lines from the END backward,
+    ///     summing each line's wrapped visual-row count, until the
+    ///     accumulated height would exceed `height`. The remaining
+    ///     older lines scroll off the top.
+    ///   - Scrolled up (scroll_from_bottom > 0): speeds up the
+    ///     compute by skipping that many visual rows from the bottom.
+    ///     The skipped rows are accounted for in `scroll_from_bottom`
+    ///     (a logical-line approximation — accepted inaccuracy under
+    ///     wrap; future improvement is per-line wrapped accounting).
+    ///
+    /// Round-3 fix: the previous implementation used LOGICAL-line
+    /// math (`start = total - height`) which broke when lines
+    /// wrapped to multiple visual rows. With height=10 and 15 lines
+    /// each wrapping to 2 visual rows (= 30 total), the old code
+    /// rendered lines [5..15) (10 logical lines × 2 chunks = 20
+    /// visual rows) and clipped the rest, leaving the LATEST lines
+    /// invisible. The new code sums wrapped heights bottom-up so the
+    /// newest content is always at the bottom.
     pub fn render(self: *const Viewport, allocator: std.mem.Allocator, width: u16, height: u16) !frame_mod.Frame {
         var f = try frame_mod.Frame.init(allocator, width, height);
         errdefer f.deinit(allocator);
 
         const total = self.lines.items.len;
-        const h: usize = height;
-        const end = total - @min(self.scroll_from_bottom, total);
-        const start = end - @min(end, h);
+        if (total == 0) return f;
 
+        // scroll_from_bottom trims the LATEST N lines off the visible
+        // window. 0 = pinned to bottom (show the newest content).
+        // The unit is LOGICAL lines (matches the round-2 PgUp/PgDn
+        // bindings); under wrap this is a slight approximation — the
+        // scroll amount in VISUAL rows depends on each line's wrapped
+        // height. Acceptable inaccuracy for the common chat case
+        // where users rarely scroll when many lines are wrapped.
+        const pinned = @min(self.scroll_from_bottom, total);
+        const end: usize = total - pinned;
+
+        // Walk from `end - 1` backwards. Accumulate wrapped heights
+        // until we exceed `height`. `start_idx` is the oldest line
+        // that fits in the viewport.
+        var visual_rows: usize = 0;
+        var start_idx: usize = end;
+        var i: usize = end;
+        while (i > 0) {
+            i -= 1;
+            const h = try self.wrappedHeightOf(allocator, width, i);
+            if (visual_rows + h > height) {
+                // This line doesn't fit. If we have nothing yet, fall
+                // back to the old "logical line" behaviour — show its
+                // first `height` chunks. Otherwise stop.
+                if (visual_rows == 0) {
+                    start_idx = i;
+                    visual_rows = h;
+                }
+                break;
+            }
+            visual_rows += h;
+            start_idx = i;
+            if (visual_rows >= height) break;
+        }
+
+        // Render top-down from start_idx. Lines whose chunks would
+        // overflow the viewport are truncated by the inner loop.
         var row: u16 = 0;
-        var i = start;
-        while (i < end and row < height) : (i += 1) {
-            const text = self.lines.items[i].text;
-            const style = self.lines.items[i].style;
+        var j: usize = start_idx;
+        while (j < total and row < height) : (j += 1) {
+            const text = self.lines.items[j].text;
+            const style = self.lines.items[j].style;
             const chunks = try wrapText(allocator, text, width);
-            // Free inner chunks AND the outer slice in the right
-            // order: inner chunks first (they're allocated per
-            // chunk), then the outer list slice.
             defer {
                 for (chunks) |c| allocator.free(c);
                 allocator.free(chunks);
@@ -146,6 +191,15 @@ fn wrapText(allocator: std.mem.Allocator, text: []const u8, width: u16) ![]const
             const chunk = std.mem.trim(u8, rest[0..sp], &std.ascii.whitespace);
             if (chunk.len > 0) try chunks.append(allocator, try allocator.dupe(u8, chunk));
             rest = rest[sp + 1 ..];
+            // Skip any run of spaces at the start of the next chunk
+            // so continuation rows don't visually indent. The
+            // naive split-at-last-space leaves the separator on the
+            // wrong side — round-3 user screenshot showed
+            // "Hai~ 👋       kabarnya hari ini" with several spaces
+            // between 👋 and kabarnya.
+            while (rest.len > 0 and rest[0] == ' ') {
+                rest = rest[1..];
+            }
         } else {
             // No space in window — hard split at width.
             try chunks.append(allocator, try allocator.dupe(u8, rest[0..width]));
@@ -412,6 +466,54 @@ test "Viewport: scroll up reveals older lines" {
     try testing.expectEqual(@as(u21, 'o'), f.get(0, 0).char);
 }
 
+test "Viewport.render pins to latest content when total > height" {
+    // Round-3 user-reported: when the chat grows beyond one screen,
+    // the viewport should auto-show the latest content (pin to bottom).
+    // Previously the render used LOGICAL-line math that broke under
+    // word-wrap — lines [total-height..total] were logical lines, not
+    // visual rows, so the LAST lines were clipped off the bottom.
+    //
+    // Setup: each line below is "line NN hello" (14 chars). At
+    // width=12 each wraps to 2 chunks ("line 14" + "hello").
+    // 15 lines × 2 = 30 visual rows; only 10 fit. With height=10 we
+    // show exactly the last 5 lines (10 visual rows).
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    var i: usize = 0;
+    while (i < 15) : (i += 1) {
+        const line = try std.fmt.allocPrint(testing.allocator, "line {d:0>2} hello", .{i});
+        defer testing.allocator.free(line);
+        try vp.appendLine(line, .{});
+    }
+
+    var f = try vp.render(testing.allocator, 12, 10);
+    defer f.deinit(testing.allocator);
+
+    // Look for "line 14" — the LATEST line's first chunk — somewhere
+    // in the viewport. Without the round-3 fix the bottom rows would
+    // show earlier lines (e.g. "line 04"), confirming the regression.
+    var found_latest = false;
+    var row: u16 = 0;
+    while (row < 10) : (row += 1) {
+        var col: u16 = 0;
+        while (col + 6 < 12) : (col += 1) {
+            if (f.get(col, row).char == 'l' and
+                f.get(col + 1, row).char == 'i' and
+                f.get(col + 2, row).char == 'n' and
+                f.get(col + 3, row).char == 'e' and
+                f.get(col + 4, row).char == ' ' and
+                f.get(col + 5, row).char == '1' and
+                f.get(col + 6, row).char == '4')
+            {
+                found_latest = true;
+                break;
+            }
+        }
+        if (found_latest) break;
+    }
+    try testing.expect(found_latest);
+}
+
 test "Viewport: scroll down clamps at bottom" {
     var vp = Viewport.init(testing.allocator);
     defer vp.deinit();
@@ -515,7 +617,37 @@ test "Viewport.render hard-splits a single word longer than width" {
     try testing.expectEqual(@as(u21, 'h'), f.get(3, 1).char);
 }
 
-test "Viewport.render trims trailing whitespace on the wrapped row" {
+test "wrapText: trims leading whitespace on continuation rows" {
+    // User-reported (round-3 follow-up): when "Hai~ 👋" wraps, the
+    // continuation row should start cleanly with the next word
+    // ("kabarnya"), not with the spaces from the wrap split. The
+    // naive split-at-last-space eats the separator cleanly for
+    // the CURRENT row, but we also have to skip any run of
+    // spaces at the start of the NEXT chunk so the row doesn't
+    // visually indent.
+    const chunks = try wrapText(testing.allocator, "Hai~ 👋 kabarnya", 10);
+    defer {
+        for (chunks) |c| testing.allocator.free(c);
+        testing.allocator.free(chunks);
+    }
+    try testing.expectEqual(@as(usize, 2), chunks.len);
+    try testing.expectEqualStrings("Hai~ 👋", chunks[0]);
+    try testing.expectEqualStrings("kabarnya", chunks[1]);
+    // Critical: continuation row must NOT start with a space.
+    try testing.expect(chunks[1].len == 0 or chunks[1][0] != ' ');
+}
+
+test "wrapText: short single word fits in one chunk (no whitespace handling needed)" {
+    const chunks = try wrapText(testing.allocator, "hello", 10);
+    defer {
+        for (chunks) |c| testing.allocator.free(c);
+        testing.allocator.free(chunks);
+    }
+    try testing.expectEqual(@as(usize, 1), chunks.len);
+    try testing.expectEqualStrings("hello", chunks[0]);
+}
+
+test "Viewport.render trims leading whitespace on continuation rows (round-3)" {
     var vp = Viewport.init(testing.allocator);
     defer vp.deinit();
     // "xx yy zzz" (9 chars) at width=5. Our wrap is "split at the
