@@ -677,6 +677,16 @@ jobs:
             [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $webview2Src)
             Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
           }
+          # Ensure the destination directory exists. PR #354's
+          # webview/webview swap deleted src/apps/desktop_app/platform/windows/
+          # (the .h files are no longer there at build-time), but the
+          # Windows webview2MissingPrereq check in build.zig still
+          # expects WebView2.h + EventToken.h + WebView2Loader.h/.lib at
+          # this path. Create the directory on demand so the
+          # Copy-Item calls below land somewhere real. The files
+          # themselves are gitignored (they're build inputs from a
+          # NuGet download, not project sources).
+          New-Item -Path $webview2Dst -ItemType Directory -Force | Out-Null
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
           # WebView2Loader.h was renamed/removed in 1.0.2651.64 — the
           # loader inline is now consolidated inside WebView2.h
