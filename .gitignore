@@ -61,6 +61,15 @@ tests/functional/__pycache__/
 # auto-created staging directory is also skipped (the directory gets
 # recreated by the CI script on every Windows run; git would otherwise
 # try to track an empty dir).
+#
+# Exception: webview_stub.c is the dev-box fallback (no MSVC + WebView2)
+# no-op C stub — see build.zig's `.windows =>` else branch + the doc
+# comment at the top of that file. We commit it so the no-stub-build
+# path always works on a fresh checkout (otherwise the
+# `zig build nalar-desktop` step on a Windows dev box without MSVC +
+# WebView2 fails with "file not found" because the .c source is
+# missing).
+!/src/apps/desktop_app/platform/windows/webview_stub.c
 
 # === Editor backup / merge resolution files ===
 *.orig

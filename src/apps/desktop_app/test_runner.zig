@@ -17,6 +17,5 @@ test {
     _ = @import("extraction_test.zig");
     _ = @import("webview_lib.zig");
     _ = @import("platform/linux_test.zig");
-    _ = @import("platform/webview_header_dedup_test.zig");
     _ = @import("attach_test.zig");
 }

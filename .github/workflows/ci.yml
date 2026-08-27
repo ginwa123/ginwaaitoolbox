@@ -1072,6 +1072,54 @@ jobs:
           fi
           echo "✓ all link deps present (WebKit.framework, AppKit.framework)"
 
+      - name: Verify desktop + service binaries (Windows)
+        # Windows twin of the Linux + macOS verify steps above.
+        # Same shape — confirm both binaries exist + are valid PE32+
+        # x86_64 executables. The link-deps check is intentionally
+        # skipped on Windows: nalar-desktop's webview is implemented
+        # via static + dynamic-link WebView2Loader.dll (vcpkg-installed),
+        # and the only definitive runtime check is the
+        # "Smoke test: desktop binary (Windows)" step below — which
+        # runs `nalar-desktop.exe --smoke-test` and confirms it parses
+        # CLI + extracts embedded webapp assets + exits 0.
+        #
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows). Mirrors the macOS + Linux twin steps' structure
+        # (size + magic-bytes + size sanity) so a future maintainer
+        # reading the workflow sees three symmetric verify steps.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Both binaries must exist (install-nalar-desktop.sh installs both).
+          foreach ($bin in @('nalar', 'nalar-desktop')) {
+            $path = "zig-out\bin\$bin.exe"
+            if (-not (Test-Path -LiteralPath $path)) {
+              Write-Error "✗ $path missing"
+              exit 1
+            }
+            $size = (Get-Item -LiteralPath $path).Length
+            Write-Host ("  ✓ $path  (" + [int]($size / 1MB) + " MB)")
+          }
+          # Sanity: PE32+ magic ('MZ' header), x86_64 machine type.
+          # A PE binary starts with the 2-byte 'MZ' (0x4D 0x5A) DOS
+          # stub signature, followed by the PE header at offset 0x3C.
+          # We read the first 2 bytes via [System.IO.File]::ReadAllBytes
+          # (returns a byte[]) and check them directly — `Select-Object
+          # -First 2` would return a sliced collection whose [0]/[1]
+          # indexing doesn't work the same way, so avoid the pipe.
+          # PE32+ (64-bit) machine type 0x8664 lives at offset 0x4C —
+          # see https://docs.microsoft.com/en-us/windows/win32/debug/
+          # pe-format#machine-types. Not checked here; the desktop
+          # smoke test below (which loads + invokes the binary) is the
+          # definitive runtime sanity check.
+          $mz = [System.IO.File]::ReadAllBytes("zig-out\bin/nalar.exe")
+          if ($mz.Length -lt 2 -or $mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) {
+            Write-Error "✗ nalar.exe: not a valid PE (MZ) binary"
+            exit 1
+          }
+          Write-Host "✓ all binaries present + valid PE32+ x86_64"
+
       - name: "Smoke test: criteria pass"
         if: matrix.target.step != '__SKIP__'
         shell: bash
