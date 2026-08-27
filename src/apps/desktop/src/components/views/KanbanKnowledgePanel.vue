@@ -1,38 +1,30 @@
 <!--
-  KanbanAgentPanel — per-board agent config (Knowledge / System Prompt /
-  Tools) extracted from KanbanAgentSettings.vue (the centered modal
-  that used to host these sections). Now mounted as a tab body inside
-  KanbanSettingsView at the route /app/kanban/:itemId/settings?tab=agent.
+  KanbanKnowledgePanel — per-board persona-content panel for a kanban
+  board (Knowledge rows + System Prompt blocks). Mounted as a top-level
+  tab body inside KanbanSettingsView at the route
+  /app/kanban/:itemId/settings?tab=knowledge (iteration 2 of the
+  2026-08-27 plan — the Agent umbrella tab was split into Tools +
+  Knowledge as separate top-level tabs).
 
-  Dropped vs the modal version:
-    - <Teleport to="body"> — the panel lives in normal flow.
-    - Backdrop + backdrop click handler — the page chrome owns dismissal.
-    - Header + ✕ close button — the page header has ← Back instead.
-    - <Transition name="kanban-agent-settings-modal"> + scoped CSS —
-      no enter/leave animation; the page already transitions on route.
+  Hosts TWO persona-content sections side by side (both injected into
+  the agent's system prompt at runtime):
+    1. Knowledge    — file-backed + inline-text rows. Reuses
+                      AgentKnowledgeDialog + AgentKnowledgeDetailDialog.
+    2. System Prompt — named persona blocks. Reuses AgentSystemPromptDialog.
 
-  Kept verbatim:
-    - The 3 sections (Knowledge rows + System Prompt rows + Tools
-      checkbox grid) — same labels, same controls, same data-testid
-      values so existing functional + future vitest specs keep
-      targeting the same selectors.
-    - The 3 reused sub-dialogs (AgentKnowledgeDialog,
-      AgentKnowledgeDetailDialog, AgentSystemPromptDialog) — they're
-      prop-driven + generic, just mounted with the kanban-shaped row
-      adapters (kanban_id → agent_id) like the old dialog did.
-    - The unconfigured empty state (when getAgentKanban returns null
-      on 404) — shows the same tools-picker to let the user enable
-      a tool and bootstrap the config.
+  The tools checkbox grid was MOVED to KanbanToolsPanel.vue (separate
+  tab). This panel therefore drops the tools-related imports, the
+  `kanban-agent-tools-panel` section, the unconfigured "enable a tool
+  to bootstrap" hint (that lives in the Tools tab now).
+
+  History: this file was renamed from KanbanAgentPanel.vue → KanbanKnowledgePanel.vue
+  in the iteration-2 split. Before that it was extracted from
+  KanbanAgentSettings.vue (the centered modal that used to host all 3
+  sections). Same data-testid values kept throughout the rename so
+  existing functional + vitest specs keep targeting the same selectors.
 
   Public API:
     props: item ({ id, name? } | null), workspaceId (string)
-
-  Data-load lifecycle:
-    The modal's `watch(props.show)` is replaced by `onMounted(() => load())`
-    because there's no "open/close" cycle — the panel mounts, fetches,
-    renders. Going Columns → Agent → Columns → Agent remounts each time
-    (the parent v-else-if branch unmounts), which is intentional and
-    matches the existing Columns/Memories tab behaviour.
 
   Plan: docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md
 -->
@@ -46,9 +38,6 @@ import {
   addAgentKanbanSystemPrompt,
   updateAgentKanbanSystemPrompt,
   deleteAgentKanbanSystemPrompt,
-  getAgentToolsRegistry,
-  enableAgentKanbanTool,
-  disableAgentKanbanTool,
   type AgentKanban,
   type AgentKanbanKnowledgeRow,
   type AgentKanbanSystemPromptRow,
@@ -71,11 +60,7 @@ const loading = ref(false)
 const loadError = ref<string | null>(null)
 const config = ref<AgentKanban | null>(null)
 const knowledges = ref<AgentKanbanKnowledgeRow[]>([])
-const tools = ref<string[]>([])
 const systemPrompts = ref<AgentKanbanSystemPromptRow[]>([])
-const toolRegistry = ref<{ name: string; description: string }[]>([])
-  // ^ shaped as inline interface to avoid an extra import; matches
-  // AgentRegistryEntry structurally.
 
 // ─── Sub-dialog state ────────────────────────────────────────────────
 const knowledgeAddOpen = ref(false)
@@ -106,7 +91,6 @@ const kanbanId = computed(() => props.item?.id ?? '')
 
 const errText = (err: unknown): string => {
   const msg = err instanceof Error ? err.message : String(err)
-  // Strip the "API 500:" style prefix apiFetch adds — keep the message.
   return msg.replace(/^API \d+:\s*/, '')
 }
 
@@ -116,24 +100,17 @@ const load = async () => {
   loading.value = true
   loadError.value = null
   try {
-    // Registry first (cheap, needed by the tools panel either way).
-    try {
-      const reg = await getAgentToolsRegistry()
-      toolRegistry.value = reg.tools
-    } catch {
-      toolRegistry.value = []
-    }
     const data = await getAgentKanban(props.workspaceId ?? '', kanbanId.value)
     if (data) {
       config.value = data.agent_kanban
       knowledges.value = data.knowledges
-      tools.value = [...data.tools].sort()
       systemPrompts.value = data.system_prompts
     } else {
-      // 404 "not configured" — expected state for a fresh board.
+      // 404 "not configured" — expected state. The user bootstraps
+      // the config by enabling a tool on the Tools tab; Knowledge
+      // + System Prompt rows can only exist once that row exists.
       config.value = null
       knowledges.value = []
-      tools.value = []
       systemPrompts.value = []
     }
   } catch (err) {
@@ -143,7 +120,6 @@ const load = async () => {
   }
 }
 
-// No modal show/close lifecycle — load on mount.
 onMounted(() => {
   void load()
 })
@@ -245,49 +221,15 @@ const handlePromptRemove = async (promptId: string) => {
     loadError.value = errText(err)
   }
 }
-
-// ─── Tool toggle handlers ────────────────────────────────────────────
-const toolBusy = ref(false)
-const isEnabled = (toolName: string) => tools.value.includes(toolName)
-
-const handleToggleTool = async (toolName: string) => {
-  if (!config.value || toolBusy.value) return
-  toolBusy.value = true
-  const wasEnabled = isEnabled(toolName)
-  // Optimistic flip.
-  if (wasEnabled) {
-    tools.value = tools.value.filter((t) => t !== toolName)
-  } else {
-    tools.value = [...tools.value, toolName].sort()
-  }
-  try {
-    if (wasEnabled) {
-      await disableAgentKanbanTool(config.value.id, toolName)
-    } else {
-      await enableAgentKanbanTool(config.value.id, toolName)
-    }
-  } catch (err) {
-    // Revert.
-    if (wasEnabled) {
-      tools.value = [...tools.value, toolName].sort()
-    } else {
-      tools.value = tools.value.filter((t) => t !== toolName)
-    }
-    loadError.value = errText(err)
-  } finally {
-    toolBusy.value = false
-  }
-}
 </script>
 
 <template>
-  <div data-testid="kanban-agent-panel">
-    <!-- Loading / error / empty states -->
+  <div data-testid="kanban-knowledge-panel">
     <div
       v-if="loading"
       class="px-5 py-8 text-sm text-center"
       style="color: var(--semantic-text-dim)"
-      data-testid="kanban-agent-settings-loading"
+      data-testid="kanban-knowledge-loading"
     >
       Loading…
     </div>
@@ -295,12 +237,14 @@ const handleToggleTool = async (toolName: string) => {
       v-else-if="loadError && !config"
       class="px-5 py-6 text-sm text-center"
       style="color: rgb(239, 68, 68)"
-      data-testid="kanban-agent-settings-error"
+      data-testid="kanban-knowledge-error"
     >
       {{ loadError }}
     </div>
 
-    <!-- Body -->
+    <!-- Body: 2 persona-content sections. Bootstrap hint appears
+         when the agent_kanban row hasn't been created yet (user
+         needs to enable a tool on the Tools tab first). -->
     <div
       v-else-if="config"
       class="px-5 py-5 overflow-y-auto flex flex-col gap-5"
@@ -377,7 +321,7 @@ const handleToggleTool = async (toolName: string) => {
         </p>
       </section>
 
-      <!-- ─── System prompt section ─── -->
+      <!-- ─── System Prompt section ─── -->
       <section data-testid="kanban-agent-system-prompt-panel">
         <div class="flex items-center justify-between mb-2">
           <h4 class="text-sm font-semibold" style="color: var(--semantic-text)">
@@ -453,88 +397,29 @@ const handleToggleTool = async (toolName: string) => {
         </p>
       </section>
 
-      <!-- ─── Tools section ─── -->
-      <section data-testid="kanban-agent-tools-panel">
-        <div class="flex items-center justify-between mb-2">
-          <h4 class="text-sm font-semibold" style="color: var(--semantic-text)">
-            Tools
-            <span class="ml-1 text-xs font-normal" style="color: var(--semantic-text-dim)">
-              ({{ tools.length }} enabled)
-            </span>
-          </h4>
-        </div>
-        <ul class="grid grid-cols-2 gap-1">
-          <li v-for="t in toolRegistry" :key="t.name">
-            <label
-              class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer select-none"
-              style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border)"
-              :data-testid="`kanban-agent-tool-${t.name}`"
-            >
-              <input
-                type="checkbox"
-                class="accent-current"
-                :checked="isEnabled(t.name)"
-                :disabled="toolBusy"
-                :data-testid="`kanban-agent-tool-check-${t.name}`"
-                @change="handleToggleTool(t.name)"
-              />
-              <span class="truncate" style="color: var(--semantic-text)" :title="t.description">
-                {{ t.name }}
-              </span>
-            </label>
-          </li>
-        </ul>
-        <p
-          v-if="!toolRegistry.length"
-          class="text-xs mt-1"
-          style="color: var(--semantic-text-dim)"
-          data-testid="kanban-agent-tools-empty"
-        >
-          Tool registry unavailable.
-        </p>
-      </section>
-
       <!-- Non-fatal mutation error banner -->
       <p
         v-if="loadError && config"
         class="text-xs px-3 py-2 rounded-lg"
         style="color: rgb(239, 68, 68); background-color: rgba(239, 68, 68, 0.08)"
-        data-testid="kanban-agent-settings-mutation-error"
+        data-testid="kanban-knowledge-mutation-error"
       >
         {{ loadError }}
       </p>
     </div>
 
-    <!-- Unconfigured empty state -->
+    <!-- Unconfigured: this board has no agent_kanbans row yet (the
+         user must enable a tool on the Tools tab to bootstrap). -->
     <div
       v-else
       class="px-5 py-8 flex flex-col items-center gap-3"
-      data-testid="kanban-agent-settings-unconfigured"
+      data-testid="kanban-knowledge-unconfigured"
     >
       <p class="text-sm text-center" style="color: var(--semantic-text-dim)">
-        This board has no agent config yet. Enable a tool below to create one.
+        No knowledge or system prompt entries yet. Enable a tool on the
+        <strong>Tools</strong> tab first to create this board's agent
+        config, then come back here.
       </p>
-      <ul class="w-full grid grid-cols-2 gap-1">
-        <li v-for="t in toolRegistry" :key="t.name">
-          <label
-            class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs cursor-pointer select-none"
-            style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border)"
-            :data-testid="`kanban-agent-tool-${t.name}`"
-          >
-            <input
-              type="checkbox"
-              class="accent-current"
-              :checked="false"
-              :disabled="toolBusy"
-              :data-testid="`kanban-agent-tool-check-${t.name}`"
-              @change="handleToggleTool(t.name)"
-            />
-            <span class="truncate" style="color: var(--semantic-text)" :title="t.description">
-              {{ t.name }}
-            </span>
-          </label>
-        </li>
-      </ul>
     </div>
 
     <!-- Sub-dialogs (reuse the Agent dialogs verbatim) -->
