@@ -100,9 +100,94 @@ pub const SseEvent = struct {
 /// next line (without the trailing `\n`) or null on EOF. This matches
 /// `custom_http_client.stream.StreamScanner.next`'s shape.
 fn readSseEvent(allocator: std.mem.Allocator, reader: anytype) !?SseEvent {
-    // STUB: impl lands in Section B green phase.
-    _ = allocator;
-    _ = reader;
+    // Per-event accumulators. Reset on every event boundary (blank
+    // line). On EOF, if we have any partial event (a `data:` line in
+    // flight), we flush it; otherwise we return null to signal clean
+    // stream end.
+    var event_buf = std.ArrayList(u8).empty;
+    var id_buf = std.ArrayList(u8).empty;
+    var data_buf = std.ArrayList(u8).empty;
+    var retry_ms: ?u64 = null;
+    var saw_data = false;
+    var in_event = false;
+    defer {
+        event_buf.deinit(allocator);
+        id_buf.deinit(allocator);
+        data_buf.deinit(allocator);
+    }
+
+    while (true) {
+        const line_opt = try reader.next();
+        const line = line_opt orelse {
+            // EOF: flush if we have a partial event, else return null.
+            break;
+        };
+
+        if (line.len == 0) {
+            // Blank line: event boundary. If we were in an event, dispatch.
+            if (in_event) {
+                if (saw_data) {
+                    return SseEvent{
+                        .event = try event_buf.toOwnedSlice(allocator),
+                        .data = try data_buf.toOwnedSlice(allocator),
+                        .id = try id_buf.toOwnedSlice(allocator),
+                        .retry_ms = retry_ms,
+                    };
+                }
+                // No data: this was a comment-only event. Per SSE spec,
+                // clients should still process id/retry but we don't
+                // have anything to return. Continue.
+                event_buf.clearRetainingCapacity();
+                id_buf.clearRetainingCapacity();
+                data_buf.clearRetainingCapacity();
+                retry_ms = null;
+                in_event = false;
+            }
+            continue;
+        }
+
+        // Comment line (SSE spec: ":..." is a comment, ignore).
+        if (line[0] == ':') continue;
+
+        in_event = true;
+
+        // Dispatch on the first colon. Field names are case-insensitive
+        // per the SSE spec — use std.ascii.startsWithIgnoreCase.
+        if (std.ascii.startsWithIgnoreCase(line, "data:")) {
+            saw_data = true;
+            // Per SSE spec, the value is everything after the first
+            // colon minus a single leading space (if present).
+            var value = line["data:".len..];
+            if (value.len > 0 and value[0] == ' ') value = value[1..];
+            if (data_buf.items.len > 0) try data_buf.append(allocator, '\n');
+            try data_buf.appendSlice(allocator, value);
+        } else if (std.ascii.startsWithIgnoreCase(line, "event:")) {
+            var value = line["event:".len..];
+            if (value.len > 0 and value[0] == ' ') value = value[1..];
+            event_buf.clearRetainingCapacity();
+            try event_buf.appendSlice(allocator, value);
+        } else if (std.ascii.startsWithIgnoreCase(line, "id:")) {
+            var value = line["id:".len..];
+            if (value.len > 0 and value[0] == ' ') value = value[1..];
+            id_buf.clearRetainingCapacity();
+            try id_buf.appendSlice(allocator, value);
+        } else if (std.ascii.startsWithIgnoreCase(line, "retry:")) {
+            var value = line["retry:".len..];
+            if (value.len > 0 and value[0] == ' ') value = value[1..];
+            retry_ms = std.fmt.parseInt(u64, value, 10) catch null;
+        }
+        // Unknown field: ignore (per SSE spec).
+    }
+
+    // EOF reached. Flush any partial event.
+    if (in_event and saw_data) {
+        return SseEvent{
+            .event = try event_buf.toOwnedSlice(allocator),
+            .data = try data_buf.toOwnedSlice(allocator),
+            .id = try id_buf.toOwnedSlice(allocator),
+            .retry_ms = retry_ms,
+        };
+    }
     return null;
 }
 
@@ -126,6 +211,17 @@ fn readSseEvent(allocator: std.mem.Allocator, reader: anytype) !?SseEvent {
 // accidental custom value of the same name. The user CANNOT override
 /// spec values, even on purpose.
 
+/// Returns true iff every byte of `s` is in the ASCII range (0..127).
+/// Used by `buildMcpHeaders` to decide whether to emit `Mcp-Name` —
+/// non-ASCII tool names are dropped (the spec's Base64-sentinel
+/// encoding for non-ASCII header values is a v2).
+fn isAllAscii(s: []const u8) bool {
+    for (s) |c| {
+        if (c > 127) return false;
+    }
+    return true;
+}
+
 /// Build the request headers for an MCP Streamable HTTP POST.
 ///
 /// `tool_name` is only used for `tools/call` — pass "" for methods
@@ -142,12 +238,35 @@ fn buildMcpHeaders(
     tool_name: []const u8,
     custom_headers: []const std.http.Header,
 ) ![]std.http.Header {
-    // STUB: impl lands in Section C green phase.
-    _ = allocator;
-    _ = method;
-    _ = tool_name;
-    _ = custom_headers;
-    return &[_]std.http.Header{};
+    // 4 spec headers always present. We MAY add a 5th (Mcp-Name) if
+    // tool_name is non-empty AND ASCII. The slice order is critical:
+    // spec headers FIRST so libcurl's first-match-wins uses the spec
+    // value, not a user's accidental custom override of the same name.
+    const include_name = tool_name.len > 0 and isAllAscii(tool_name);
+    const spec_count: usize = if (include_name) 5 else 4;
+    const total = spec_count + custom_headers.len;
+
+    const out = try allocator.alloc(std.http.Header, total);
+    errdefer allocator.free(out);
+
+    // Spec headers (FIRST in the slice).
+    out[0] = .{ .name = "Accept", .value = ACCEPT_HEADER };
+    out[1] = .{ .name = "Content-Type", .value = "application/json" };
+    out[2] = .{ .name = "MCP-Protocol-Version", .value = PROTOCOL_VERSION };
+    out[3] = .{ .name = "Mcp-Method", .value = method };
+    if (include_name) {
+        out[4] = .{ .name = "Mcp-Name", .value = tool_name };
+    }
+
+    // User-supplied custom headers (LAST in the slice, after the spec
+    // ones). Note we don't dedupe — libcurl's first-match-wins handles
+    // duplicates. The spec headers above will always be the values the
+    // server sees.
+    for (custom_headers, 0..) |h, i| {
+        out[spec_count + i] = h;
+    }
+
+    return out;
 }
 
 // ============================================================================
@@ -195,10 +314,20 @@ const MockLineReader = struct {
 
 // ── readSseEvent tests (8 tests) ───────────────────────────────────────
 
+/// All readSseEvent tests must free ALL three freshly-allocated
+/// fields of the returned event (event / data / id). Most fields are
+/// empty for most tests but the parser allocates an empty slice for
+/// each non-empty field, so we always free defensively.
+const testing_allocator = testing.allocator;
+
 test "readSseEvent: single data-only event" {
     var reader = MockLineReader{ .lines = &.{ "data: hello" } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqualStrings("hello", ev.data);
     try testing.expectEqualStrings("", ev.event);
     try testing.expectEqualStrings("", ev.id);
@@ -210,8 +339,12 @@ test "readSseEvent: event + data" {
         "event: progress",
         "data: {\"p\":50}",
     } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqualStrings("progress", ev.event);
     try testing.expectEqualStrings("{\"p\":50}", ev.data);
 }
@@ -223,8 +356,12 @@ test "readSseEvent: multi-data concatenation with \\n" {
         "data: line1",
         "data: line2",
     } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqualStrings("line1\nline2", ev.data);
 }
 
@@ -234,8 +371,12 @@ test "readSseEvent: comment line ignored" {
         ":heartbeat",
         "data: real",
     } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqualStrings("real", ev.data);
 }
 
@@ -244,8 +385,12 @@ test "readSseEvent: retry parsed as integer" {
         "retry: 3000",
         "data: ok",
     } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqual(@as(?u64, 3000), ev.retry_ms);
     try testing.expectEqualStrings("ok", ev.data);
 }
@@ -255,8 +400,12 @@ test "readSseEvent: id field captured" {
         "id: 42",
         "data: ok",
     } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqualStrings("42", ev.id);
     try testing.expectEqualStrings("ok", ev.data);
 }
@@ -270,12 +419,20 @@ test "readSseEvent: blank line mid-stream resets to a new event" {
         "", // event boundary
         "data: second",
     } };
-    const ev1 = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev1.data);
+    const ev1 = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev1.event);
+        testing_allocator.free(ev1.data);
+        testing_allocator.free(ev1.id);
+    }
     try testing.expectEqualStrings("first", ev1.data);
 
-    const ev2 = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev2.data);
+    const ev2 = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev2.event);
+        testing_allocator.free(ev2.data);
+        testing_allocator.free(ev2.id);
+    }
     try testing.expectEqualStrings("second", ev2.data);
 }
 
@@ -283,8 +440,12 @@ test "readSseEvent: case-insensitive field names" {
     // Per SSE spec, field names are case-insensitive. "DATA:" must be
     // treated the same as "data:".
     var reader = MockLineReader{ .lines = &.{ "DATA: upper" } };
-    const ev = (try readSseEvent(testing.allocator, &reader)) orelse unreachable;
-    defer testing.allocator.free(ev.data);
+    const ev = (try readSseEvent(testing_allocator, &reader)) orelse unreachable;
+    defer {
+        testing_allocator.free(ev.event);
+        testing_allocator.free(ev.data);
+        testing_allocator.free(ev.id);
+    }
     try testing.expectEqualStrings("upper", ev.data);
 }
 
