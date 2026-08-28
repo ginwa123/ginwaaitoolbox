@@ -33,9 +33,10 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
 ///
 ///   - Linux:    `faccessat(AT_FDCWD, path, mode=0)` — direct POSIX
 ///              syscall via `std.os.linux.faccessat`. Matches the
-///              inline node_modules probe at line ~700 below (same
-///              host syscall). Linux is the dev/CI primary; we
-///              don't pay a shell-out cost here.
+///              inline node_modules probe used by the pnpm install
+///              gate in the webapp chain (same host syscall). Linux
+///              is the dev/CI primary; we don't pay a shell-out
+///              cost here.
 ///   - macOS:    POSIX `faccessat` via `std.process.run` + `/bin/sh`
 ///              shelling out to `test -f`. The `std.os.linux.*`
 ///              wrappers are kernel-syscall-only — `.faccessat`'s
@@ -1025,10 +1026,14 @@ pub fn build(b: *std.Build) void {
     // === mcp-hello-world: TypeScript test MCP server ===
     // Self-test target for the MCP stdio transport. Built from
     // src/apps/mcp_hello_world/index.ts (TypeScript + @modelcontextprotocol/sdk
-    // + zod). The build chain is npm-based:
-    //   1. `npm install` if node_modules doesn't exist (cached otherwise)
-    //   2. `npm test` — TDD: vitest runs the 7 tool-handler unit tests
-    //   3. `npm run build` — tsc compiles index.ts → dist/index.js
+    // + zod). The build chain is pnpm-based (2026-08-28 — pnpm migration,
+    // previously npm; the lockfile is now pnpm-lock.yaml):
+    //   1. `pnpm install --frozen-lockfile` — installs dev + prod deps
+    //      exactly as the lockfile specifies (equivalent of `npm ci`).
+    //      `--frozen-lockfile` fails the build if the lockfile would
+    //      be modified, so a stale lockfile never silently re-resolves.
+    //   2. `pnpm test` — TDD: vitest runs the 7 tool-handler unit tests
+    //   3. `pnpm run build` — tsc compiles index.ts → dist/index.js
     //   4. Install a shell wrapper at zig-out/bin/mcp-hello-world that
     //      exec's `node dist/index.js` (the compiled binary).
     //
@@ -1038,21 +1043,24 @@ pub fn build(b: *std.Build) void {
     const mcp_hello_world_dir = "src/apps/mcp_hello_world";
     const mcp_hello_world_step = b.step("mcp-hello-world", "Build the mcp-hello-world test MCP server");
 
-    // Always run `npm install` — npm's package-lock cache makes this
-    // fast (~1s) when node_modules is already present. We avoid a
+    // Always run `pnpm install` — pnpm's content-addressed store makes
+    // this fast (~1s) when node_modules is already present. We avoid a
     // statFile check because std.fs.cwd was removed in Zig 0.16.
-    const mcp_npm_install = b.addSystemCommand(&.{ "npm", "install", "--no-audit", "--no-fund" });
-    mcp_npm_install.setCwd(b.path(mcp_hello_world_dir));
-    mcp_hello_world_step.dependOn(&mcp_npm_install.step);
+    // `--frozen-lockfile` is pnpm's equivalent of `npm ci`: fail
+    // closed if the lockfile would be touched, so a stale lockfile
+    // never silently re-resolves under CI.
+    const mcp_pnpm_install = b.addSystemCommand(&.{ "pnpm", "install", "--frozen-lockfile" });
+    mcp_pnpm_install.setCwd(b.path(mcp_hello_world_dir));
+    mcp_hello_world_step.dependOn(&mcp_pnpm_install.step);
 
     // TDD: run the unit tests first. If they fail, the build fails
     // before we waste time on the TS compile.
-    const mcp_test = b.addSystemCommand(&.{ "npm", "test" });
+    const mcp_test = b.addSystemCommand(&.{ "pnpm", "test" });
     mcp_test.setCwd(b.path(mcp_hello_world_dir));
-    mcp_test.step.dependOn(&mcp_npm_install.step);
+    mcp_test.step.dependOn(&mcp_pnpm_install.step);
     mcp_hello_world_step.dependOn(&mcp_test.step);
 
-    const mcp_build = b.addSystemCommand(&.{ "npm", "run", "build" });
+    const mcp_build = b.addSystemCommand(&.{ "pnpm", "run", "build" });
     mcp_build.setCwd(b.path(mcp_hello_world_dir));
     mcp_build.step.dependOn(&mcp_test.step);
     mcp_hello_world_step.dependOn(&mcp_build.step);
@@ -1109,21 +1117,23 @@ pub fn build(b: *std.Build) void {
     // functional tests can rely on it being present.
     b.getInstallStep().dependOn(mcp_hello_world_step);
 
-    // === Build the Vue webapp (npm) ===
+    // === Build the Vue webapp (pnpm) ===
     // Chunk 3: this step is a dependency of the desktop_exe build so the
     // embedded webapp_assets.zig is regenerated on every build. The step
-    // itself runs `npm run build` in src/apps/desktop, which is the
+    // itself runs `pnpm run build` in src/apps/desktop, which is the
     // project's standard webapp build (vue-tsc + vite in parallel — see
-    // src/apps/desktop/package.json). npm-everywhere (2026-08-25): the
-    // chain previously used bun; package-lock.json is now the canonical
-    // lockfile.
-    const build_webapp_step = b.step("build:webapp", "Build the Vue webapp with npm");
+    // src/apps/desktop/package.json). pnpm migration (2026-08-28):
+    // previously npm; the lockfile is now pnpm-lock.yaml and the
+    // workspace `.npmrc` pins `node-linker=hoisted` so node_modules
+    // is laid out the same way npm did it (vite, vue-tsc, and the
+    // eslint plugin chain all resolve sibling deps directly).
+    const build_webapp_step = b.step("build:webapp", "Build the Vue webapp with pnpm");
 
     const webapp_dir = "src/apps/desktop";
 
-    // === Pre-flight: vue-tsc needs real Node ===
+    // === Pre-flight: vue-tsc needs real Node, and pnpm must be on PATH ===
     //
-    // `npm run build` invokes `vue-tsc --build` (via the type-check
+    // `pnpm run build` invokes `vue-tsc --build` (via the type-check
     // script) + `vite build` in parallel. vue-tsc 3.x relies on
     // @volar/typescript monkey-patching `fs.readFileSync` to register
     // `.vue` as a TypeScript source-file extension and inject the Vue
@@ -1131,41 +1141,48 @@ pub fn build(b: *std.Build) void {
     // `fs.readFileSync` silently defeats that patch — no `.vue` extension
     // gets registered, and `vue-tsc --build` exits with hundreds of
     // `TS2307: Cannot find module '.../*.vue'` errors that vite never
-    // sees. (This bit us under bun; npm always uses real Node so it
-    // cannot recur.)
+    // sees. (This bit us under bun; pnpm always invokes real Node for
+    // each script so it cannot recur.)
     //
-    // node + npm must be on PATH so the developer (or CI) can invoke
+    // node + pnpm must be on PATH so the developer (or CI) can invoke
     // vue-tsc via Node's real CJS loader. We fail fast with a clear
     // error rather than letting vue-tsc's cryptic TS2307 noise leak out.
     const check_webapp_node = b.addSystemCommand(&.{
         "sh", "-c",
         \\
-        \\for tool in node npm; do
+        \\for tool in node pnpm; do
         \\    command -v "$tool" >/dev/null 2>&1 || {
         \\        echo "" >&2
         \\        echo "ERROR: '$tool' was not found on PATH." >&2
-        \\        echo "  vue-tsc (which runs inside 'npm run build' via the type-check" >&2
+        \\        echo "  vue-tsc (which runs inside 'pnpm run build' via the type-check" >&2
         \\        echo "  script) patches tsc's source via fs.readFileSync to register" >&2
         \\        echo "  .vue as a TypeScript source extension; a JS-runtime shim whose" >&2
         \\        echo "  loader bypasses fs.readFileSync breaks that patching and" >&2
         \\        echo "  fails with hundreds of TS2307 errors." >&2
+        \\        echo "  pnpm is the project's package manager (replaced npm on" >&2
+        \\        echo "  2026-08-28) — see the workspace .npmrc + build.zig." >&2
         \\        echo "" >&2
-        \\        echo "  Install nodejs + npm for your platform:" >&2
-        \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs npm" >&2
-        \\        echo "    Debian/Ubnt:  sudo apt install nodejs npm" >&2
-        \\        echo "    macOS:        brew install node" >&2
-        \\        echo "    Alpine:       apk add nodejs npm" >&2
+        \\        echo "  Install nodejs + pnpm for your platform:" >&2
+        \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs pnpm" >&2
+        \\        echo "    Debian/Ubnt:  sudo apt install nodejs && corepack enable && corepack prepare pnpm@latest --activate" >&2
+        \\        echo "    macOS:        brew install node pnpm" >&2
+        \\        echo "    Alpine:       apk add nodejs pnpm" >&2
         \\        echo "" >&2
         \\        exit 1
         \\    }
         \\done
     });
 
-    // Check if node_modules exists — if so, skip `npm ci` (saves seconds
-    // per build). Uses platform-specific syscalls: faccessat(2) on Linux,
-    // std.fs.cwd().openDir on other platforms (the build runner doesn't
-    // have libc linked, so std.fs.cwd() only works via the Io runtime
-    // path on non-Linux hosts).
+    // Check if node_modules exists — if so, skip `pnpm install` (saves
+    // seconds per build). Uses platform-specific syscalls: faccessat(2)
+    // on Linux, std.fs.cwd().openDir on other platforms (the build
+    // runner doesn't have libc linked, so std.fs.cwd() only works via
+    // the Io runtime path on non-Linux hosts).
+    //
+    // pnpm with `node-linker=hoisted` (workspace .npmrc) lays the
+    // top-level deps out at the same path npm did, so the probe's path
+    // is unchanged. The .pnpm/ store dir is created on first install
+    // but we don't gate on it — node_modules alone is the contract.
     const node_modules_path = b.pathJoin(&.{ webapp_dir, "node_modules" });
     const node_modules_exists = switch (builtin.os.tag) {
         .linux => blk: {
@@ -1176,11 +1193,11 @@ pub fn build(b: *std.Build) void {
             const rc = std.os.linux.faccessat(std.os.linux.AT.FDCWD, &buf, 0, 0);
             break :blk rc == 0;
         },
-        else => false, // On non-Linux, always run `npm ci` (safe no-op)
+        else => false, // On non-Linux, always run `pnpm install` (safe no-op)
     };
 
     if (!node_modules_exists) {
-        const install_cmd = b.addSystemCommand(&.{ "npm", "ci", "--no-audit", "--no-fund" });
+        const install_cmd = b.addSystemCommand(&.{ "pnpm", "install", "--frozen-lockfile" });
         install_cmd.setCwd(b.path(webapp_dir));
         build_webapp_step.dependOn(&install_cmd.step);
     }
@@ -1189,7 +1206,7 @@ pub fn build(b: *std.Build) void {
     // checkout → `zig build nalar-desktop` needs node_modules too).
     // Declared unconditionally; the dependency edge is attached further
     // down, after webapp_rebuild_bun exists.
-    const rebuild_install_cmd = b.addSystemCommand(&.{ "npm", "ci", "--no-audit", "--no-fund" });
+    const rebuild_install_cmd = b.addSystemCommand(&.{ "pnpm", "install", "--frozen-lockfile" });
     rebuild_install_cmd.setCwd(b.path(webapp_dir));
     if (node_modules_exists) {
         // Mirror the cached path's skip: node_modules already present,
@@ -1198,10 +1215,10 @@ pub fn build(b: *std.Build) void {
         _ = &rebuild_install_cmd;
     }
 
-    const bun_build = b.addSystemCommand(&.{ "npm", "run", "build" });
-    bun_build.setCwd(b.path(webapp_dir));
-    bun_build.step.dependOn(&check_webapp_node.step);
-    build_webapp_step.dependOn(&bun_build.step);
+    const pnpm_build = b.addSystemCommand(&.{ "pnpm", "run", "build" });
+    pnpm_build.setCwd(b.path(webapp_dir));
+    pnpm_build.step.dependOn(&check_webapp_node.step);
+    build_webapp_step.dependOn(&pnpm_build.step);
 
     // === Webapp rebuild workflow ===
     //
@@ -1218,7 +1235,7 @@ pub fn build(b: *std.Build) void {
     // The workflow is now FRESH ASSETS BY DEFAULT:
     //
     //     `zig build nalar-desktop` always runs
-    //       clean → `npm run build` → codegen → compile + link,
+    //       clean → `pnpm run build` → codegen → compile + link,
     //
     // so the embedded webapp matches the current .vue sources every
     // time. Cost: every nalar-desktop build pays the vite build
@@ -1231,13 +1248,13 @@ pub fn build(b: *std.Build) void {
     // without also compiling the desktop binary).
     //
     // Implementation: webapp_rebuild_step has its OWN copy of
-    // `npm run build` (not the cached one used by the standalone
+    // `pnpm run build` (not the cached one used by the standalone
     // codegen path), chained after a clean step. The clean step deletes
-    // the embedded file + dist/, so the rebuild's npm_build sees an
+    // the embedded file + dist/, so the rebuild's pnpm_build sees an
     // empty dist/, has actual work to do, and produces fresh output.
     const webapp_rebuild_step = b.step(
         "webapp-rebuild",
-        "Nuke stale webapp_assets.zig + dist/ and rebuild via npm run build + codegen",
+        "Nuke stale webapp_assets.zig + dist/ and rebuild via pnpm run build + codegen",
     );
 
     // Clean step — a small Zig CLI instead of `sh -c 'rm -rf ...'` so it
@@ -1254,27 +1271,28 @@ pub fn build(b: *std.Build) void {
         }),
     }));
 
-    // Separate npm_build step for the rebuild path. Has the SAME
+    // Separate pnpm_build step for the rebuild path. Has the SAME
     // command + cwd as the cached one, but chained AFTER the clean
     // step, so the cache can't serve a stale result.
-    const webapp_rebuild_bun = b.addSystemCommand(&.{ "npm", "run", "build" });
-    webapp_rebuild_bun.setCwd(b.path(webapp_dir));
-    webapp_rebuild_bun.step.dependOn(&webapp_rebuild_clean.step);
-    webapp_rebuild_bun.step.dependOn(&check_webapp_node.step);
-    // Fresh-checkout fix: the cached path gets a conditional `npm ci`
-    // via the node_modules_exists probe above, but that only attaches to
-    // build_webapp_step. Attach the same install here so a fresh checkout
-    // running straight into `zig build nalar-desktop` doesn't fail with
-    // "vite: not found" inside the rebuild's npm run build. (The
-    // rebuild_install_cmd step is declared next to install_cmd above.)
+    const webapp_rebuild_pnpm = b.addSystemCommand(&.{ "pnpm", "run", "build" });
+    webapp_rebuild_pnpm.setCwd(b.path(webapp_dir));
+    webapp_rebuild_pnpm.step.dependOn(&webapp_rebuild_clean.step);
+    webapp_rebuild_pnpm.step.dependOn(&check_webapp_node.step);
+    // Fresh-checkout fix: the cached path gets a conditional
+    // `pnpm install` via the node_modules_exists probe above, but that
+    // only attaches to build_webapp_step. Attach the same install here
+    // so a fresh checkout running straight into `zig build
+    // nalar-desktop` doesn't fail with "vite: not found" inside the
+    // rebuild's pnpm run build. (The rebuild_install_cmd step is
+    // declared next to install_cmd above.)
     if (!node_modules_exists) {
-        webapp_rebuild_bun.step.dependOn(&rebuild_install_cmd.step);
+        webapp_rebuild_pnpm.step.dependOn(&rebuild_install_cmd.step);
     }
-    webapp_rebuild_step.dependOn(&webapp_rebuild_bun.step);
+    webapp_rebuild_step.dependOn(&webapp_rebuild_pnpm.step);
 
     // The codegen step is shared with the cached path — its output
     // (webapp_assets.zig) was just deleted by the clean step, so
-    // it'll re-run to regenerate. Depend on the rebuild's npm_build
+    // it'll re-run to regenerate. Depend on the rebuild's pnpm_build
     // specifically (not the cached one).
     const webapp_rebuild_codegen = b.addRunArtifact(b.addExecutable(.{
         .name = "codegen_webapp_assets",
@@ -1296,7 +1314,7 @@ pub fn build(b: *std.Build) void {
     }));
     webapp_rebuild_codegen.addArg(b.pathJoin(&.{ webapp_dir, "dist" }));
     webapp_rebuild_codegen.addArg(b.pathJoin(&.{ "src", "apps", "desktop_app", "embedded", "webapp_assets.zig" }));
-    webapp_rebuild_codegen.step.dependOn(&webapp_rebuild_bun.step);
+    webapp_rebuild_codegen.step.dependOn(&webapp_rebuild_pnpm.step);
     webapp_rebuild_step.dependOn(&webapp_rebuild_codegen.step);
 
     // === Codegen: walk dist/, emit webapp_assets.zig ===

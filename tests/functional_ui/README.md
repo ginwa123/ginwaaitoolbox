@@ -27,7 +27,8 @@ The new dimension for the UI suite:
    the TEST backend, not the developer's always-on `:8081`.
 5. **Cross-platform isolation** (macOS, Linux, Windows):
    - `is_safe_tmp` is OS-aware (Windows uses native backslash prefix).
-   - npm is resolved via `shutil.which("npm") or shutil.which("npm.cmd")`.
+   - pnpm is resolved via `shutil.which("pnpm") or shutil.which("pnpm.cmd")`.
+     (2026-08-28 — pnpm migration: previously `npm`.)
    - Vite signal handling uses `os.killpg` on POSIX, `os.kill` on Windows.
 
 See `harness_safety_test.py` for 11 cross-platform safety tests.
@@ -129,7 +130,8 @@ When a test starts:
 1. `UIHarness.boot()` runs.
 2. `FunctionalHarness.boot()` boots nalar against an isolated tmpdir HOME.
 3. `UIHarness.boot()` then resolves the frontend source tree (default:
-   `src/apps/desktop/`) and spawns `npm run dev -- --port <vite_port>`.
+   `src/apps/desktop/`) and spawns `pnpm run dev -- --port <vite_port>`
+   (2026-08-28 — pnpm migration: previously `npm run dev`).
 4. The env var `VITE_API_PROXY_TARGET=http://127.0.0.1:<backend_port>`
    is set so Vite's `/api/*` proxy targets the test backend.
 5. Vite's HTTP root is polled until it returns 200 (~5-15s for first

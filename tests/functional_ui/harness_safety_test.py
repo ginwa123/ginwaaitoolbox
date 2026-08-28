@@ -137,27 +137,31 @@ def test_tempfile_gettempdir_is_in_allowed_prefixes() -> None:
     )
 
 
-# ─── npm binary resolution (cross-platform) ──────────────────────────────────
+# ─── pnpm binary resolution (cross-platform) ────────────────────────────────
 
 
-def test_npm_resolves_on_this_os() -> None:
-    """``shutil.which('npm')`` (or ``npm.cmd`` on Windows) finds a binary.
+def test_pnpm_resolves_on_this_os() -> None:
+    """``shutil.which('pnpm')`` (or ``pnpm.cmd`` on Windows) finds a binary.
 
     The UI harness uses this resolution so vite can be spawned on
-    Windows where ``npm`` is a batch script. If npm is not installed
+    Windows where ``pnpm`` is a batch script. If pnpm is not installed
     on the test host, this test is skipped (it documents the
     expected behaviour rather than failing the suite).
+
+    2026-08-28 — pnpm migration: this test previously asserted on
+    ``npm``. The project's package manager is now pnpm; see the
+    workspace ``.npmrc``.
     """
     import shutil
 
-    npm_bin = shutil.which("npm") or shutil.which("npm.cmd")
-    if npm_bin is None:
-        pytest.skip("npm not installed on this host")
-    assert os.path.exists(npm_bin), f"shutil.which('npm') returned {npm_bin!r} but it doesn't exist"
-    # On POSIX, npm must be executable. On Windows, .cmd files don't
+    pnpm_bin = shutil.which("pnpm") or shutil.which("pnpm.cmd")
+    if pnpm_bin is None:
+        pytest.skip("pnpm not installed on this host")
+    assert os.path.exists(pnpm_bin), f"shutil.which('pnpm') returned {pnpm_bin!r} but it doesn't exist"
+    # On POSIX, pnpm must be executable. On Windows, .cmd files don't
     # need the executable bit.
     if os.name != "nt":
-        assert os.access(npm_bin, os.X_OK), f"npm binary {npm_bin!r} is not executable on POSIX"
+        assert os.access(pnpm_bin, os.X_OK), f"pnpm binary {pnpm_bin!r} is not executable on POSIX"
 
 
 # ─── vite port range sanity ─────────────────────────────────────────────────
