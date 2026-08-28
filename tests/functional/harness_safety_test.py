@@ -163,3 +163,28 @@ def test_orig_home_must_exist_for_boot() -> None:
     finally:
         if saved is not None:
             os.environ["HOME"] = saved
+
+
+# ─── boot() signature: port default must be None (random), not 8080 ────────
+
+
+def test_boot_signature_accepts_none_port() -> None:
+    """``FunctionalHarness.boot(port=None)`` is the documented default.
+
+    Regression guard for the bug where ``port: int = DEFAULT_PORT``
+    (=8080) was the default, which then triggered the legacy
+    sequential scan even when the caller didn't ask for a port. With
+    that signature, a bare ``FunctionalHarness.boot(nalar_bin)`` call
+    would always try 8080 first — bypassing the random pool and
+    reintroducing the CI pathology the random pool was meant to fix.
+    """
+    import inspect
+
+    sig = inspect.signature(FunctionalHarness.boot)
+    port_param = sig.parameters["port"]
+    assert port_param.default is None, (
+        f"FunctionalHarness.boot(port=...) default must be None "
+        f"(→ random pick), got {port_param.default!r}. With a non-None "
+        f"default, callers using the documented `boot(nalar_bin)` shape "
+        f"would silently get the legacy sequential scan from that port."
+    )

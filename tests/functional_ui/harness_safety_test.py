@@ -189,3 +189,140 @@ def test_vite_port_range_avoids_backend_port_8081() -> None:
     assert not (VITE_PORT_START <= 8081 <= VITE_PORT_END), (
         f"vite port range [{VITE_PORT_START}, {VITE_PORT_END}] must not include 8081"
     )
+
+
+# ─── vite random-port selector ──────────────────────────────────────────────
+
+
+def test_vite_reserved_ports_includes_5173_and_8081() -> None:
+    """The UI harness's reserved-port list skips Vite's default + dev backend.
+
+    The picker is asked for ports from the wide shared range 40k-60k
+    with ``VITE_RESERVED_PORTS = (5173, 8081)`` so it never lands on
+    either of these "always-likely-to-be-busy" ports.
+    """
+    from ui_harness import VITE_RESERVED_PORTS
+
+    assert 5173 in VITE_RESERVED_PORTS, (
+        f"VITE_RESERVED_PORTS must include 5173 (Vite's default — a "
+        f"developer's running pnpm dev session would bind it); "
+        f"got {VITE_RESERVED_PORTS!r}"
+    )
+    assert 8081 in VITE_RESERVED_PORTS, (
+        f"VITE_RESERVED_PORTS must include 8081 (always-on dev backend "
+        f"per project memory); got {VITE_RESERVED_PORTS!r}"
+    )
+
+
+def test_find_free_vite_port_returns_port_in_range() -> None:
+    """``_find_free_vite_port(None)`` returns a port in the random range.
+
+    With no ``suggested`` arg, the picker falls through to the shared
+    random selector. The contract: the returned port is in the wide
+    range, not in VITE_RESERVED_PORTS, and is bindable.
+    """
+    from ui_harness import VITE_PORT_END, VITE_PORT_START, _find_free_vite_port
+    from ui_harness import VITE_RESERVED_PORTS
+    from harness import port_is_free_with_reuse
+
+    port = _find_free_vite_port(None)
+    assert VITE_PORT_START <= port <= VITE_PORT_END, (
+        f"vite port {port} fell outside the configured range "
+        f"[{VITE_PORT_START}, {VITE_PORT_END}]"
+    )
+    assert port not in VITE_RESERVED_PORTS, (
+        f"vite port {port} is in VITE_RESERVED_PORTS {VITE_RESERVED_PORTS!r}"
+    )
+    # And bindable (the picker just bound it, but closing+reopening is
+    # the cleanest "still free" assertion).
+    assert port_is_free_with_reuse(port) is True
+
+
+def test_find_free_vite_port_honours_suggested_when_free() -> None:
+    """``_find_free_vite_port(suggested)`` returns the suggested port if free.
+
+    Lets a debugging caller force a deterministic port. Returns the
+    value verbatim if ``port_is_free_with_reuse`` says yes.
+    """
+    from ui_harness import _find_free_vite_port
+    from harness import port_is_free_with_reuse
+
+    # Find a port in the wide range that nobody is listening on.
+    # (Iterate a small window; if every port is busy the test is moot.)
+    chosen = None
+    for p in range(55000, 55100):
+        if port_is_free_with_reuse(p):
+            chosen = p
+            break
+    if chosen is None:
+        # Free port probe failed — uncommon, skip rather than flake.
+        import pytest
+        pytest.skip("no free port in [55000, 55100] to seed suggested-port test")
+
+    assert _find_free_vite_port(chosen) == chosen
+
+
+def test_find_free_vite_port_raises_when_suggested_busy() -> None:
+    """``_find_free_vite_port(suggested)`` raises if the suggested port is busy.
+
+    The contract: an explicit caller-side value is honored iff the
+    port is genuinely free; otherwise the harness fails fast with a
+    clear message instead of silently picking a different port.
+    """
+    from ui_harness import _find_free_vite_port, FunctionalHarnessError
+
+    # Bind a port so it's definitely not free, then ask the picker to
+    # use it. Picker MUST raise — not silently substitute.
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        busy_port = s.getsockname()[1]
+        s.listen(1)
+        try:
+            import pytest
+            with pytest.raises(FunctionalHarnessError) as exc:
+                _find_free_vite_port(busy_port)
+            assert str(busy_port) in str(exc.value)
+        finally:
+            s.close()
+
+
+def test_find_free_vite_port_usually_varies_across_calls() -> None:
+    """Back-to-back random picks usually differ (parallel to backend test).
+
+    With a 20k-port range the collision probability is tiny — if this
+    ever flakes we'd suspect random.randint() semantics drifting.
+    """
+    from ui_harness import _find_free_vite_port
+
+    picks = {_find_free_vite_port(None) for _ in range(10)}
+    assert len(picks) > 1, (
+        f"10 random vite-port picks returned only {len(picks)} distinct "
+        f"values ({picks!r}) — randomisation is broken / seed is pinned"
+    )
+
+
+def test_ui_harness_boot_signature_accepts_none_port() -> None:
+    """``UIHarness.boot(port=None)`` is the documented default — must accept None.
+
+    Regression guard for the bug where ``port: int = DEFAULT_PORT`` was
+    the default (=8080), which then triggered the legacy sequential
+    scan even when the caller didn't pass a port. The fix: ``port:
+    int | None = None`` so a bare ``UIHarness.boot(...)`` call goes
+    through the random path.
+
+    We can't easily mock-boot the UI harness here (it spawns a real
+    Vite), so we just inspect the function signature via ``inspect`` —
+    cheaper than booting Vite just to read .port.
+    """
+    import inspect
+    from ui_harness import UIHarness
+
+    sig = inspect.signature(UIHarness.boot)
+    port_param = sig.parameters["port"]
+    assert port_param.default is None, (
+        f"UIHarness.boot(port=...) default must be None (random), got "
+        f"{port_param.default!r}. With a non-None default, callers using "
+        f"the documented `UIHarness.boot(...)` shape would silently get "
+        f"the legacy sequential scan from that port."
+    )

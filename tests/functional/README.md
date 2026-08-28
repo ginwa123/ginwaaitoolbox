@@ -133,12 +133,53 @@ When the test ends:
 Per project memory "Mandatory: Dont ever kill the process port 8081",
 the harness never uses port 8081 (the always-running dev nalar).
 
-The harness:
-- Defaults to port 8080.
-- Skips 8081 explicitly during the scan.
-- Scans 8080, 8082, 8083, ..., 8199 and binds the first one that's free.
-- Binds+closes to verify the port is free (not just that nothing
-  is listening — important for TIME_WAIT reuse).
+### Random by default
+
+The harness picks a **random** port from a wide range
+(`[40000, 60000]`, see `RANDOM_PORT_START` / `RANDOM_PORT_END` in
+`harness.py`). With 20,000 ports of headroom and 50 attempts per boot,
+the probability of collision is effectively zero for any realistic host
+occupancy.
+
+This replaced the previous sequential scan (`8080, 8082, ..., 8199`)
+that caused two recurring CI failures:
+
+  1. **Sequential consumption** — long test suites filled the narrow
+     120-port window and later tests errored with
+     "No free port found in 8080..8199".
+  2. **TIME_WAIT saturation** — even with `SO_REUSEADDR`, a CI runner
+     holding 100+ TIME_WAITs could collide with the narrow scan range.
+
+### Legacy sequential path still works
+
+The old sequential scan is preserved as `_find_free_port_sequential`
+and triggered only when a caller passes an explicit `start=` (used by
+the orphan-reap TIME_WAIT regression test in
+`harness_orphan_reap_test.py`). Production boot uses the random path.
+
+### Reserved ports
+
+The random picker skips `(8081,)` by default (the dev backend). The UI
+harness extends this to `(5173, 8081)` so vite never lands on its own
+default or the dev backend.
+
+### TIME_WAIT reuse
+
+The probe socket sets `SO_REUSEADDR` so it can bind ports in TIME_WAIT
+state. nalar's listener also sets `SO_REUSEADDR` (see
+`src/modules/custom_http_server/src/http_server.zig:201 setReuseAddr`),
+so it can subsequently bind the same port despite lingering server-side
+TIME_WAITs from prior runs.
+
+### Debugging
+
+Pass an explicit port to force a deterministic value::
+
+    FunctionalHarness.boot(nalar_bin, port=8123)
+    # Falls back to the legacy sequential scan from 8123.
+
+For tests that need a specific port, the random pick can be bypassed
+by passing `port=` to `FunctionalHarness.boot`.
 
 ## Why Python, not bash?
 
