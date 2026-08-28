@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const mcp_types = @import("mcp_types.zig");
 
 // ============================================================================
 // SECTION A — MCP spec constants (pub so the registry in Section D can read)
@@ -276,21 +277,110 @@ fn buildMcpHeaders(
 // Stubbed here so the file compiles. Task 3 adds the real impls
 // along with the 6 inline tests for these.
 
+/// One MCP Streamable HTTP client. Owns the base URL, the cached
+/// custom headers, and a `custom_http_client.Client` for connection
+/// pooling. Stateless across calls (no protocol-level session id per
+/// the 2025-11-25 spec's optional stateless mode + the 2026-07-28
+/// spec's removal of sessions). Allocated via `HttpRegistry`.
+pub const HttpClient = struct {
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    custom_headers: []const std.http.Header,
+    io: std.Io,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, url: []const u8, custom_headers: []const std.http.Header) !Self {
+        // STUB: real impl lands in Task 3 green phase.
+        _ = url;
+        _ = custom_headers;
+        return .{
+            .allocator = allocator,
+            .url = try allocator.dupe(u8, ""),
+            .custom_headers = &[_]std.http.Header{},
+            .io = io,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        // STUB
+        _ = self;
+    }
+
+    /// Send a `tools/call` JSON-RPC request and return the raw
+    /// JSON-RPC response body (freshly allocated; caller owns).
+    /// `tool_name` is the bare tool name (e.g. "say_hello", NOT
+    /// "mcp_serverName_say_hello" — the dispatcher in
+    /// `handle_mcp_tool.zig` already strips the server prefix).
+    /// `arguments_json` is the JSON-encoded arguments object
+    /// (e.g. `{"name":"world"}`).
+    ///
+    /// Handles BOTH response shapes per the Streamable HTTP spec:
+    ///   - `application/json` (single JSON object) → return parsed body
+    ///   - `text/event-stream` (SSE stream) → take the LAST event's
+    ///     `data:` field as the final response
+    ///
+    /// Error mapping:
+    ///   - 400 with HeaderMismatch error → ServerHeaderMismatch
+    ///   - 400 with UnsupportedProtocolVersion → UnsupportedProtocolVersion
+    ///   - 404 → ServerMethodNotFound
+    ///   - other 4xx/5xx → ServerReturnedError
+    pub fn callTool(self: *Self, tool_name: []const u8, arguments_json: []const u8) ![]u8 {
+        // STUB: real impl lands in Task 3 green phase.
+        _ = tool_name;
+        _ = arguments_json;
+        return try self.allocator.dupe(u8, "");
+    }
+};
+
+/// Process-global cache of `HttpClient` instances, one per server
+/// name. Mirrors `mcp_stdio.StdioRegistry`'s shape — lazy spawn,
+/// respawn on exit, clean shutdown. Threadsafe via `std.atomic.Mutex`
+/// (same pattern as `mcp_stdio.StdioRegistry`).
+pub const HttpRegistry = struct {
+    /// STUB
+    allocator: std.mem.Allocator,
+    entries: std.StringHashMap(*HttpClient),
+
+    pub fn init(allocator: std.mem.Allocator) HttpRegistry {
+        return .{
+            .allocator = allocator,
+            .entries = std.StringHashMap(*HttpClient).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *HttpRegistry) void {
+        // STUB
+        self.entries.deinit();
+    }
+
+    /// Get the cached client for `name`, or build a new one. Threadsafe.
+    pub fn getOrConnect(self: *HttpRegistry, name: []const u8, url: []const u8, custom_headers: []const std.http.Header) !*HttpClient {
+        // STUB
+        _ = name;
+        _ = url;
+        _ = custom_headers;
+        return try self.allocator.create(HttpClient);
+    }
+};
+
 // ============================================================================
 // SECTION E — ListTools helper (arrives in Task 3)
 // ============================================================================
 
+/// Send a `tools/list` request to `client`, return the parsed
+/// `McpTool[]` from `result.tools`. Each `McpTool` is freshly
+/// allocated; the caller owns the returned slice AND each tool's
+/// owned strings.
+pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types.McpTool {
+    // STUB
+    _ = client;
+    return try allocator.alloc(mcp_types.McpTool, 0);
+}
+
 // ============================================================================
 // SECTION F — Tests
 // ============================================================================
-//
-// Tests live at the bottom of the impl file per the user's "no need
-// split code for zig, just one file with test" preference.
-//
-// Test counts:
-//   - 8 tests for `readSseEvent` (Section A)
-//   - 4 tests for `buildMcpHeaders` (Section C)
-//   - 6 tests for HttpClient + HttpRegistry (Section D, arrives in Task 3)
 
 const testing = std.testing;
 
@@ -572,4 +662,82 @@ test "buildMcpHeaders: custom headers merged; spec headers win on conflict" {
         }
     }
     try testing.expect(found_trace);
+}
+
+// ── HttpClient + HttpRegistry tests (6 tests) ───────────────────────────
+//
+// These are pure in-memory tests (no network, no subprocess). The
+// wire-level integration is covered by tests/functional/mcp_http_test.py
+// (which spawns the mcp-http-hello-world binary and exercises the
+// full HTTP + SSE + JSON-RPC roundtrip against the real SDK).
+//
+// We test what we can in-process:
+//   1. HttpClient.init stores the URL + custom headers correctly
+//   2. HttpClient.init duplicate URL allocates a new client (no caching at init)
+//   3. HttpRegistry.getOrConnect returns the same client for the same name
+//   4. HttpRegistry.getOrConnect returns different clients for different names
+//   5. HttpRegistry.deinit frees the map + clients (no leak)
+//   6. listTools is a free function that takes a client pointer
+//      (we just assert the signature compiles + returns an empty
+//      slice for a stubbed client).
+
+test "HttpClient.init: stores URL and custom headers" {
+    const url = "http://127.0.0.1:1234/mcp";
+    const hdrs = [_]std.http.Header{
+        .{ .name = "Authorization", .value = "Bearer test-token" },
+    };
+    var client = try HttpClient.init(testing.allocator, testing.io, url, &hdrs);
+    defer client.deinit();
+    try testing.expectEqualStrings(url, client.url);
+    try testing.expectEqual(@as(usize, 1), client.custom_headers.len);
+    try testing.expectEqualStrings("Authorization", client.custom_headers[0].name);
+    try testing.expectEqualStrings("Bearer test-token", client.custom_headers[0].value);
+}
+
+test "HttpClient.init: different URLs create independent clients" {
+    var a = try HttpClient.init(testing.allocator, testing.io, "http://a/mcp", &.{});
+    defer a.deinit();
+    var b = try HttpClient.init(testing.allocator, testing.io, "http://b/mcp", &.{});
+    defer b.deinit();
+    try testing.expect(a.url.ptr != b.url.ptr);
+    try testing.expectEqualStrings("http://a/mcp", a.url);
+    try testing.expectEqualStrings("http://b/mcp", b.url);
+}
+
+test "HttpRegistry: getOrConnect returns same client for same name" {
+    var reg = HttpRegistry.init(testing.allocator);
+    defer reg.deinit();
+    const c1 = try reg.getOrConnect("alpha", "http://127.0.0.1:1/mcp", &.{});
+    const c2 = try reg.getOrConnect("alpha", "http://127.0.0.1:2/mcp", &.{});
+    try testing.expectEqual(@intFromPtr(c1), @intFromPtr(c2));
+}
+
+test "HttpRegistry: getOrConnect returns different clients for different names" {
+    var reg = HttpRegistry.init(testing.allocator);
+    defer reg.deinit();
+    const a = try reg.getOrConnect("a", "http://127.0.0.1:1/mcp", &.{});
+    const b = try reg.getOrConnect("b", "http://127.0.0.1:1/mcp", &.{});
+    try testing.expect(a != b);
+}
+
+test "HttpRegistry: deinit cleans up registered clients without leaking" {
+    var reg = HttpRegistry.init(testing.allocator);
+    _ = try reg.getOrConnect("a", "http://127.0.0.1:1/mcp", &.{});
+    _ = try reg.getOrConnect("b", "http://127.0.0.1:2/mcp", &.{});
+    _ = try reg.getOrConnect("c", "http://127.0.0.1:3/mcp", &.{});
+    reg.deinit();
+    // No assertion needed — the test passes if no leak is reported
+    // by zig's DebugAllocator (this is the default in debug builds).
+}
+
+test "listTools: returns an empty slice for a stubbed client (signature test)" {
+    // The full listTools behavior is covered by the functional test
+    // (tests/functional/mcp_http_test.py uses the real binary).
+    // Here we just assert the function signature compiles and the
+    // stubbed impl returns an empty slice.
+    var client = try HttpClient.init(testing.allocator, testing.io, "http://x/mcp", &.{});
+    defer client.deinit();
+    const tools = try listTools(testing.allocator, &client);
+    defer testing.allocator.free(tools);
+    try testing.expectEqual(@as(usize, 0), tools.len);
 }
