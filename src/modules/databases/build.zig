@@ -299,10 +299,23 @@ pub fn build(b: *std.Build) void {
         // default but cross-compile toolchains may not). On macOS we
         // also need the brew keg-only path because the probe accepted
         // either layout.
+        //
+        // Windows: do NOT add `/usr/include` — it doesn't exist on
+        // Windows (vcpkg headers live at C:/vcpkg/installed/x64-windows/
+        // include, which the Windows branch below adds separately via
+        // `addObjectFile` + the equivalent include path). The previous
+        // unconditional `addIncludePath("/usr/include")` made translate-c
+        // fail on Windows with `error: the following build command failed
+        // with exit code 5` because the path resolves to a non-existent
+        // UNC-style `\\usr\include` on Windows hosts (observed on the
+        // self-hosted runner after the databases probe started returning
+        // `use_system_sqlite3=true` against the vcpkg install).
         if (target.result.os.tag == .macos) {
             mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/sqlite3/include" });
         }
-        mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        if (target.result.os.tag == .linux) {
+            mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
+        }
     }
 
     // Compile flags mirror the existing project convention:
