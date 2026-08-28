@@ -3485,9 +3485,27 @@ export interface McpHeader {
 
 export interface McpServer {
   name: string
-  url: string
+  /** Transport discriminator. Defaults to 'http' on legacy entries
+   *  that predate this field. Mutually exclusive with itself — a
+   *  server is either HTTP or stdio, never both. */
+  transport?: 'http' | 'stdio'
+  /** HTTP transport — required when transport === 'http'. */
+  url?: string
   /** Optional list of HTTP headers to send with MCP requests (e.g. API keys). */
   headers?: McpHeader[]
+  /** stdio transport — required when transport === 'stdio'. The
+   *  command (executable name or absolute path) the agent will spawn
+   *  as a child process and talk MCP JSON-RPC to. */
+  command?: string
+  /** stdio transport — argv (excluding argv[0]). One entry per line in the UI. */
+  args?: string[]
+  /** stdio transport — "KEY=VALUE" per line, ADDED on top of inherited env.
+   *  v1 limitation: Zig 0.16's std.process.Child has no clean .env_map setter,
+   *  so a custom env requires a pre-fork+execve helper — not in v1.
+   *  The UI exposes this for documentation + forward-compat. */
+  env?: string[]
+  /** stdio transport — optional child working directory (absolute path). */
+  cwd?: string
 }
 
 export interface NalarConfig {
@@ -3503,7 +3521,21 @@ export interface NalarConfig {
    * Each value follows the `{"url": "...", "headers": {...}}` shape used by
    * the LLM config. Sent verbatim to the backend on save.
    */
-  mcp_servers?: Record<string, { url: string; headers?: Record<string, string> }>
+  /**
+   * Raw wire shape of a single MCP server entry (snake_case, matches
+   * `mcp_servers` in config.json). Discriminated by which top-level
+   * field is present: `command` ⇒ stdio, `url` ⇒ http.
+   *
+   * Note: this type is also re-exported and re-used by the
+   * `NalarSettings.vue` parser/serializer pair so the frontend
+   * round-trips config.json unchanged. If you add a field here, add
+   * it to the `McpServer` interface above too (camelCase).
+   */
+  mcp_servers?: Record<
+    string,
+    | { url: string; headers?: Record<string, string> }
+    | { command: string; args?: string[]; env?: string[]; cwd?: string }
+  >
   /**
    * Top-level sub-agents array. Each entry is a named sub-agent LLM
    * configuration (model + base_url + thinking + temperature + url_style

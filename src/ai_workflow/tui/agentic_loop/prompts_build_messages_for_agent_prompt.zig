@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const json = std.json;
 const nalarcore = @import("nalarcore");
+const mcp_stdio = nalarcore.mcp_stdio;
 const agent = nalarcore.agent;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
@@ -409,6 +410,18 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
             else => continue,
         };
 
+        // Transport dispatch: stdio (command) takes precedence over
+        // HTTP (url). If the entry has a `command`, route to the stdio
+        // helper; otherwise fall through to the existing HTTP path.
+        if (server_obj.get("command")) |_| {
+            const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj) catch |err| {
+                std.log.warn("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
+                continue;
+            };
+            try all_tools.appendSlice(allocator, stdio_tools);
+            continue;
+        }
+
         // Get URL
         const url_value = server_obj.get("url") orelse continue;
         const url = url_value.string;
@@ -440,6 +453,131 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
     }
 
     return try all_tools.toOwnedSlice(allocator);
+}
+
+/// Fetch tools from a single MCP server over the stdio transport.
+/// Builds argv from `server_name`'s `command` + `args` config fields,
+/// spawns (or reuses) a child via `mcp_stdio.StdioRegistry`, sends
+/// `tools/list` JSON-RPC, parses `result.tools[]` into AgentTool
+/// records (same wire shape as the HTTP branch).
+fn fetchToolsFromServerStdio(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    server_obj: std.json.ObjectMap,
+) ![]tool_models.AgentTool {
+    // Build argv from the config.
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(allocator);
+    if (server_obj.get("command")) |cmd_field| {
+        if (cmd_field == .string) {
+            try argv_list.append(allocator, try allocator.dupe(u8, cmd_field.string));
+        }
+    }
+    if (server_obj.get("args")) |args_v| {
+        if (args_v == .array) {
+            for (args_v.array.items) |item| {
+                if (item == .string) {
+                    try argv_list.append(allocator, try allocator.dupe(u8, item.string));
+                }
+            }
+        }
+    }
+    if (argv_list.items.len == 0) return error.MCPServerCommandNotFound;
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer {
+        for (argv) |a| allocator.free(a);
+        allocator.free(argv);
+    }
+
+    const reg = mcp_stdio.StdioRegistry.global(allocator);
+    const client = reg.getOrSpawn(server_name, argv) catch return error.MCPServerSpawnFailed;
+    // No defer — the registry owns the client's lifecycle. Each call
+    // reuses the same child; killing it on every fetch would be wasteful.
+
+    // Send tools/list and read the response.
+    const req = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
+    defer allocator.free(req);
+    client.send(req) catch return error.MCPServerSendFailed;
+    const resp = client.recv() catch return error.MCPServerRecvFailed;
+    defer allocator.free(resp);
+
+    // Parse result.tools[] into AgentTool records (same parser the HTTP
+    // branch uses after `body_to_parse` is read).
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parsed = json.parseFromSlice(json.Value, parse_arena.allocator(), resp, .{
+        .ignore_unknown_fields = true,
+        .duplicate_field_behavior = .use_last,
+    }) catch return error.MCPJSONParseError;
+
+    const root = parsed.value;
+    const result_value = root.object.get("result") orelse return error.MCPInvalidResponse;
+    const tools_value = result_value.object.get("tools") orelse return error.MCPInvalidResponse;
+    const tools_array = switch (tools_value) {
+        .array => |a| a,
+        else => return error.MCPInvalidResponse,
+    };
+
+    var agent_tools: std.ArrayList(tool_models.AgentTool) = .empty;
+    defer agent_tools.deinit(allocator);
+    for (tools_array.items) |tool_value| {
+        const tool_obj: ?std.json.ObjectMap = switch (tool_value) {
+            .object => |o| o,
+            else => null,
+        };
+        const tool_obj_inner = tool_obj orelse continue;
+        const name_value = tool_obj_inner.get("name") orelse continue;
+        const name: []const u8 = switch (name_value) {
+            .string => |s| s,
+            else => continue,
+        };
+        const desc_value = tool_obj_inner.get("description") orelse continue;
+        const description: []const u8 = switch (desc_value) {
+            .string => |s| s,
+            else => continue,
+        };
+        const schema_value = tool_obj_inner.get("inputSchema") orelse continue;
+        const schema_obj: ?std.json.ObjectMap = switch (schema_value) {
+            .object => |o| o,
+            else => null,
+        };
+        const schema_obj_inner = schema_obj orelse continue;
+        const props_value = schema_obj_inner.get("properties") orelse continue;
+        const properties = try parseProperties(allocator, props_value, server_name);
+        var required: []const []const u8 = &[_][]const u8{};
+        if (schema_obj_inner.get("required")) |req_value| {
+            const req_array: ?[]const json.Value = switch (req_value) {
+                .array => |a| a.items,
+                else => null,
+            };
+            if (req_array) |items| {
+                var req_list: std.ArrayList([]const u8) = .empty;
+                defer req_list.deinit(allocator);
+                for (items) |req_item| {
+                    const req_str: []const u8 = switch (req_item) {
+                        .string => |x| x,
+                        else => continue,
+                    };
+                    try req_list.append(allocator, try allocator.dupe(u8, req_str));
+                }
+                required = try req_list.toOwnedSlice(allocator);
+            }
+        }
+        const agent_tool = tool_models.AgentTool{
+            .type = "function",
+            .function = tool_models.AgentToolFunction{
+                .name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ server_name, name }),
+                .description = try allocator.dupe(u8, description),
+                .parameters = tool_models.ToolParameters{
+                    .type = "object",
+                    .properties = properties,
+                    .required = required,
+                },
+            },
+        };
+        try agent_tools.append(allocator, agent_tool);
+    }
+    return try agent_tools.toOwnedSlice(allocator);
 }
 
 /// Fetch tools from a single MCP server

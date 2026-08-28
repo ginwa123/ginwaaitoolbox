@@ -13,6 +13,8 @@ zig-out
 /src/apps/kerjabot/dist
 /src/apps/desktop/node_modules
 /src/apps/desktop/dist
+/src/apps/mcp_hello_world/node_modules
+/src/apps/mcp_hello_world/dist
 /src/apps/desktop_app/embedded          # codegen webapp_assets.zig output
 
 # === Vendored third-party sources (regenerate via scripts) ===

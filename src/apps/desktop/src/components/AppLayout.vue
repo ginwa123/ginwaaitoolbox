@@ -296,7 +296,7 @@ watch(
 //      history entries).
 watch(
   () => [workspacesStore.activeWorkspaceItemId, workspacesStore.activeDesignPageId] as const,
-  ([itemId, pageId], [oldItemId, oldPageId]) => {
+  ([itemId, pageId], [oldItemId]) => {
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
     // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
