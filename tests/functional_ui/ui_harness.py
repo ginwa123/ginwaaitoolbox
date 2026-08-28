@@ -35,10 +35,12 @@ new dimension is the **Vite process**.
    backend; the frontend is stateless from a data perspective.
 
 5. **Cross-platform isolation** (macOS, Linux, Windows):
-   - **npm resolution**: ``shutil.which('npm')`` falls back to
-     ``shutil.which('npm.cmd')`` for Windows, where ``npm`` is a batch
-     script and ``subprocess.Popen(['npm', ...])`` would otherwise fail
-     with ``FileNotFoundError``.
+   - **pnpm resolution** (2026-08-28 — pnpm migration): ``shutil.which('pnpm')``
+     falls back to ``shutil.which('pnpm.cmd')`` for Windows, where
+     ``pnpm`` is a batch script and ``subprocess.Popen(['pnpm', ...])``
+     would otherwise fail with ``FileNotFoundError``. Previously this
+     resolved ``npm``; npm was replaced by pnpm as the project's
+     package manager (see the workspace ``.npmrc``).
    - **Vite signal handling**: POSIX uses ``os.killpg(SIGTERM)`` to
      signal the whole process group; Windows falls back to ``os.kill``
      (which calls ``TerminateProcess``).
@@ -215,20 +217,23 @@ class UIHarness:
         # 3. Pick a free vite port.
         chosen_vite_port = _find_free_vite_port(vite_port)
 
-        # 4. Resolve the npm binary. On Windows, ``npm`` is a batch
-        #    script (``npm.cmd``) and ``subprocess.Popen(["npm", ...])``
+        # 4. Resolve the pnpm binary. On Windows, ``pnpm`` is a batch
+        #    script (``pnpm.cmd``) and ``subprocess.Popen(["pnpm", ...])``
         #    fails with FileNotFoundError because Windows won't
         #    auto-execute .cmd files from a list-form argv. shutil.which
         #    resolves to the correct executable for the platform.
-        npm_bin = shutil.which("npm") or shutil.which("npm.cmd")
-        if npm_bin is None:
+        #    (pnpm replaced npm as the project's package manager on
+        #    2026-08-28 — see the workspace .npmrc.)
+        pnpm_bin = shutil.which("pnpm") or shutil.which("pnpm.cmd")
+        if pnpm_bin is None:
             backend.teardown()
             raise FunctionalHarnessError(
-                "npm not found in PATH. Install Node.js (https://nodejs.org/) "
-                "or add the npm binary directory to PATH."
+                "pnpm not found in PATH. Install Node.js (https://nodejs.org/) "
+                "and pnpm (https://pnpm.io/installation) or activate via "
+                "corepack (`corepack enable && corepack prepare pnpm@latest --activate`)."
             )
 
-        # 5. Spawn vite. We use npm + --port + --strictPort so vite
+        # 5. Spawn vite. We use pnpm + --port + --strictPort so vite
         #    fails fast if it can't bind (instead of silently picking
         #    the next port and breaking our env wiring).
         env = os.environ.copy()
@@ -240,7 +245,7 @@ class UIHarness:
         vite_log_file = vite_log_path.open("wb")
         vite_proc = subprocess.Popen(
             [
-                npm_bin,
+                pnpm_bin,
                 "run",
                 "dev",
                 "--",
