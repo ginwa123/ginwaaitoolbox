@@ -116,30 +116,94 @@ async function spawnAndWaitForReady(port: number, timeoutMs = 5000): Promise<Chi
 }
 
 /** Send a JSON-RPC request via HTTP POST to the test server, return the
- * parsed JSON response. Throws on non-200 status or non-JSON body. */
+ * parsed JSON response. Handles BOTH response shapes per the Streamable
+ * HTTP spec: `application/json` (single JSON object) and
+ * `text/event-stream` (SSE stream — last `data:` event carries the
+ * final JSON-RPC response).
+ *
+ * The SSE parsing is a small subset of the spec — we read events
+ * separated by `\n\n`, take the `data:` field, concatenate multi-`data:`
+ * lines with `\n`, and use the LAST event's data as the final response.
+ * This is the same logic the nalar Zig client will implement in
+ * mcp_http.zig's SseEvent parser (Task 2 of the plan). */
 async function jsonRpcRequest(
   baseUrl: string,
   body: unknown,
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: any; contentType: string }> {
   const payload = JSON.stringify(body);
   const res = await fetch(`${baseUrl}/mcp`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Accept": "application/json, text/event-stream",
+      // MCP Streamable HTTP spec requires MCP-Protocol-Version on every
+      // POST. The server (the SDK with strict spec compliance) returns
+      // 400 Bad Request without it. We send it as a real spec-compliant
+      // client would. We target revision 2025-11-25 (the latest
+      // supported by @modelcontextprotocol/sdk v1.30.0 — the 2026-07-28
+      // revision is not yet implemented by the SDK or any other client
+      // in the ecosystem; this is the most recent spec the wire
+      // actually exercises today).
+      "MCP-Protocol-Version": "2025-11-25",
     },
     body: payload,
   });
+  const contentType = res.headers.get("content-type") ?? "";
   const text = await res.text();
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(
-      `non-JSON response (status ${res.status}): ${text.slice(0, 500)}`,
-    );
+
+  if (contentType.startsWith("application/json")) {
+    try {
+      return { status: res.status, json: JSON.parse(text), contentType };
+    } catch {
+      throw new Error(
+        `non-JSON body (status ${res.status}, content-type ${contentType}): ${text.slice(0, 500)}`,
+      );
+    }
   }
-  return { status: res.status, json };
+
+  if (contentType.startsWith("text/event-stream")) {
+    // Parse the SSE stream. Events are separated by `\n\n`. Each event
+    // is a sequence of `field: value` lines. Multi-`data:` lines are
+    // concatenated with `\n`. The final JSON-RPC response is the LAST
+    // event's `data:` field per the spec ("The final JSON-RPC response
+    // SHOULD terminate the stream").
+    const events = text.split("\n\n");
+    let lastData: string | null = null;
+    for (const rawEvent of events) {
+      if (rawEvent.trim() === "") continue;
+      const dataLines: string[] = [];
+      for (const line of rawEvent.split("\n")) {
+        if (line.startsWith(":")) continue; // SSE comment, ignore
+        if (line.startsWith("data:")) {
+          // Per SSE spec: value is everything after the first ':' minus
+          // a single leading space (if present).
+          let value = line.slice("data:".length);
+          if (value.startsWith(" ")) value = value.slice(1);
+          dataLines.push(value);
+        }
+        // ignore other fields (event:, id:, retry:) — we don't use them
+      }
+      if (dataLines.length > 0) {
+        lastData = dataLines.join("\n");
+      }
+    }
+    if (lastData === null) {
+      throw new Error(
+        `SSE stream with no data: events (status ${res.status}): ${text.slice(0, 500)}`,
+      );
+    }
+    try {
+      return { status: res.status, json: JSON.parse(lastData), contentType };
+    } catch {
+      throw new Error(
+        `non-JSON SSE data (status ${res.status}): ${lastData.slice(0, 500)}`,
+      );
+    }
+  }
+
+  throw new Error(
+    `unexpected content-type (status ${res.status}): ${contentType}\nbody: ${text.slice(0, 500)}`,
+  );
 }
 
 describe("mcp-http-hello-world wire roundtrip", () => {
