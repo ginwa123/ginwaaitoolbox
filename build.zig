@@ -546,7 +546,154 @@ fn createPlatformExe(
     return exe;
 }
 
+/// Prepend `C:\vcpkg\installed\x64-windows\bin` to the test process's
+/// PATH so the Windows DLL loader can find the runtime DLLs that the
+/// test executable depends on (`libcurl.dll`, `sqlite3.dll`,
+/// `libssl-3-x64.dll`, `libcrypto-3-x64.dll`, `libpq.dll`, …).
+///
+/// WHY: when the `databases` + `custom_http_client` packages link the
+/// system-installed copies of these libs (probed at config time),
+/// they pull in the import `.lib` from `C:\vcpkg\installed\x64-windows\
+/// lib\`, but the actual `.dll` implementations live one level up at
+/// `C:\vcpkg\installed\x64-windows\bin\`. vcpkg's installer does NOT
+/// add `bin\` to `%PATH%` — only `lib\` and `include\` are wired into
+/// the MSVC env. So a freshly-built `test.exe` runs, the Windows
+/// process loader walks its DLL search order, doesn't find
+/// `libcurl.dll`, and the process aborts with
+/// `STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139) before main() runs.
+///
+/// CI works around this in `.github/workflows/ci.yml` step
+/// `Test + build (single zig invocation, Windows)` by literally
+/// appending `C:\vcpkg\installed\x64-windows\bin;` to `$env:PATH`
+/// before the `zig build test nalar-desktop` line (see the comment
+/// block "vcpkg bin dir — libcurl.dll, libssl-3.dll, libcrypto-3.dll,
+/// sqlite3.dll live here and the test binary needs them at runtime.").
+/// Local dev boxes don't have that env setup, so without this fix the
+/// same crash happens the moment you run `zig build test` outside CI.
+///
+/// We apply the PATH prepend here at build.zig config time, so the
+/// fix is host-transparent: any dev box that has the vcpkg-installed
+/// libs (which the `system-deps probe` already required to be present)
+/// Just Works. Non-Windows targets are no-ops (`linkSystemLibrary`
+/// on Linux/macOS resolves to the system's `.so` / `.dylib` directly,
+/// which IS on the runtime search path).
+///
+/// Edge case: if vcpkg lives at a non-default path, `dirExists`
+/// returns false and the function is a no-op (PATH is left alone).
+/// Dev boxes with non-standard vcpkg layouts should add the bin dir
+/// to their system PATH manually.
+fn prependVcpkgBinToPath(b: *std.Build, run: *std.Build.Step.Run) void {
+    if (b.graph.host.result.os.tag != .windows) return;
+    const vcpkg_bin = "C:/vcpkg/installed/x64-windows/bin";
+    // Only prepend if the dir actually exists — otherwise leave PATH
+    // alone (so we don't accidentally shadow a real vcpkg on PATH with
+    // a bogus one on a host that doesn't have vcpkg installed).
+    if (!dirExists(b, vcpkg_bin)) return;
+    const env_map = run.getEnvMap();
+    const current = env_map.get("PATH") orelse "";
+    // Windows convention: separate paths with `;`, prepend the new one.
+    // If PATH is empty (rare), just use the new dir verbatim.
+    const new_path = if (current.len == 0) vcpkg_bin else b.fmt("{s};{s}", .{ vcpkg_bin, current });
+    env_map.put("PATH", new_path) catch @panic("OOM");
+}
+
+/// Detect the Zig 0.16 aarch64-windows crash bug and abort the build
+/// early with a clear, actionable message.
+///
+/// WHY: the native `zig-aarch64-windows-0.16.x` binary has a crash
+/// bug in `zig build` / `zig run` (see AGENTS.md "Recent changes" —
+/// the same issue documented in
+/// docs/superpowers/plans/2026-08-20-fix-windows-build-zig.md §"Out
+/// of scope"). When it crashes mid-write, it truncates the global ZIR
+/// cache files at `%LOCALAPPDATA%\zig\z\…`, which then surfaces on
+/// every subsequent build as:
+///
+///     warning(zcu): unexpected EOF reading cached ZIR for
+///         ...zig-aarch64-windows-0.16.0\lib\std\fs\path.zig
+///
+/// (plus similar warnings for every other stdlib file it was parsing
+/// at crash time). Clearing `%LOCALAPPDATA%\zig` only papers over the
+/// symptom — the warning reappears as soon as the next crash happens.
+///
+/// The fix is the same one used on CI: use the
+/// `zig-x86_64-windows-0.16.x` binary instead (same Zig version, no
+/// crash bug, runs natively on ARM64 Windows via emulation).
+/// `.github/workflows/ci.yml` uses `mlugg/setup-zig@v2` with the
+/// x86_64-windows-gnu variant; most dev boxes already have it
+/// installed alongside the WinGet one (WinGet's `zig.zig` package id
+/// ships both arches; the x86_64 dir usually lands at
+/// `C:\Users\<you>\zig_x64\zig-x86_64-windows-0.16.0\zig.exe` or
+/// wherever you extracted it manually).
+///
+/// Detection: WinGet names the install dir `zig-aarch64-windows-0.16.0\`
+/// (and the future `zig-aarch64-windows-0.17.0\` etc.). We match BOTH
+/// `aarch64` (binary is the wrong arch) AND `0.16` (this specific bug
+/// series) — so a hypothetical 0.17+ aarch64 fix doesn't false-positive,
+/// and a custom-dir aarch64 install that doesn't follow the WinGet
+/// naming convention is let through (the user clearly knows what
+/// they're doing in that case).
+///
+/// Returns void. On match, prints an error to stderr and `exit(1)`s
+/// the build runner before any work is done — so the global ZIR cache
+/// is left untouched (no partial writes, no `unexpected EOF` next run).
+fn detectAarch64ZigBug(b: *std.Build) void {
+    if (b.graph.host.result.os.tag != .windows) return;
+    const exe = b.graph.zig_exe;
+    const is_aarch64 = std.mem.indexOf(u8, exe, "aarch64") != null;
+    const is_0_16 = std.mem.indexOf(u8, exe, "0.16") != null;
+    if (!(is_aarch64 and is_0_16)) return;
+    std.log.err(
+        "FATAL: Zig 0.16 aarch64-windows binary detected:\n" ++
+            "    {s}\n" ++
+            "\n" ++
+            "  This binary has a known crash bug in `zig build` / `zig run`\n" ++
+            "  (see AGENTS.md 'Recent changes'). When it crashes mid-write, it\n" ++
+            "  truncates the global ZIR cache files under %LOCALAPPDATA%\\zig\\\n" ++
+            "  z\\, which surfaces on every subsequent build as:\n" ++
+            "\n" ++
+            "      warning(zcu): unexpected EOF reading cached ZIR for\n" ++
+            "          ...zig-aarch64-windows-0.16.0\\lib\\std\\fs\\path.zig\n" ++
+            "\n" ++
+            "  (and similar lines for every other stdlib file it was parsing\n" ++
+            "  at crash time). Clearing %LOCALAPPDATA%\\zig only papers over the\n" ++
+            "  symptom — the warning reappears as soon as the next crash.\n" ++
+            "\n" ++
+            "  FIX: use the x86_64-windows Zig 0.16 binary instead — same Zig\n" ++
+            "  version, no crash bug, runs natively on ARM64 Windows via\n" ++
+            "  emulation. CI uses exactly this setup (.github/workflows/ci.yml\n" ++
+            "  uses mlugg/setup-zig@v2 with the x86_64-windows-gnu variant).\n" ++
+            "\n" ++
+            "  Most dev boxes already have the x86_64 binary installed\n" ++
+            "  alongside the WinGet aarch64 one (WinGet's zig.zig package id\n" ++
+            "  ships both arches). The x86_64 dir usually lands at:\n" ++
+            "    C:\\Users\\<you>\\zig_x64\\zig-x86_64-windows-0.16.0\\\n" ++
+            "  or wherever you extracted it manually.\n" ++
+            "\n" ++
+            "  Quick test:\n" ++
+            "    C:\\Users\\<you>\\zig_x64\\zig-x86_64-windows-0.16.0\\zig.exe build --list-steps\n" ++
+            "  should list steps without this error.\n" ++
+            "\n" ++
+            "  To make it permanent, move the x86_64 install dir ahead of\n" ++
+            "  the WinGet shim dir (C:\\Users\\<you>\\AppData\\Local\\Microsoft\\\n" ++
+            "  WinGet\\Links) in your PATH environment variable.",
+        .{exe},
+    );
+    std.process.exit(1);
+}
+
 pub fn build(b: *std.Build) void {
+    // Hard-fail at config time if the active Zig binary is the
+    // known-bugged aarch64-windows 0.16.x variant. Without this, the
+    // build starts, crashes mid-write, and leaves the global ZIR cache
+    // truncated — every subsequent build then emits
+    // `warning(zcu): unexpected EOF reading cached ZIR for ...path.zig`
+    // until the cache is cleared (and the next crash re-truncates it).
+    // Calling this BEFORE standardTargetOptions / probeSystemLibs /
+    // addSystemCommand etc. means we never touch the cache when the
+    // binary is wrong — the fix has a chance to take effect on the
+    // next run.
+    detectAarch64ZigBug(b);
+
     // Target glibc 2.38 on Linux hosts — needed for vendored curl's
     // references to `__isoc23_*` (glibc 2.38+) and `arc4random`
     // (glibc 2.36+ in weak-symbol form). Older glibc versions fail to
@@ -1744,6 +1891,9 @@ pub fn build(b: *std.Build) void {
     });
     desktop_tests.root_module.linkSystemLibrary("c", .{});
     const run_desktop_tests = b.addRunArtifact(desktop_tests);
+    // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, …) is on PATH
+    // at test runtime — see `prependVcpkgBinToPath` doc comment.
+    prependVcpkgBinToPath(b, run_desktop_tests);
     test_desktop.dependOn(&run_desktop_tests.step);
 
     // =====================================================================
@@ -1819,6 +1969,9 @@ pub fn build(b: *std.Build) void {
     cli_tests.root_module.link_libc = true;
     const test_cli = b.step("test:cli", "Run nalarcli unit tests");
     const run_cli_tests = b.addRunArtifact(cli_tests);
+    // Windows: ensure vcpkg bin (libcurl.dll, …) is on PATH at test
+    // runtime — see `prependVcpkgBinToPath` doc comment.
+    prependVcpkgBinToPath(b, run_cli_tests);
     test_cli.dependOn(&run_cli_tests.step);
 
     // === nalarcli install-only (`zig build install:cli`) ===
@@ -1921,6 +2074,12 @@ pub fn build(b: *std.Build) void {
     if (test_target.result.os.tag == .windows) {
     }
     const run_mod_tests = b.addRunArtifact(mod_tests);
+    // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, libssl-3-x64.dll,
+    // libcrypto-3-x64.dll, libpq.dll, …) is on PATH at test runtime —
+    // see `prependVcpkgBinToPath` doc comment. Without this the test
+    // process aborts with STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139)
+    // before main() runs.
+    prependVcpkgBinToPath(b, run_mod_tests);
 
     const test_step = b.step("test", "Run tests");
     // Fresh checkouts need both vendor dirs populated before any
@@ -1954,6 +2113,9 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
+    // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, …) is on
+    // PATH at test runtime — see `prependVcpkgBinToPath` doc comment.
+    prependVcpkgBinToPath(b, run_ai_workflow_tui_tests);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
     // Same race-condition fix as `test_step` above — the TUI test
     // reuses `mod_tests_module` (which transitively imports the
