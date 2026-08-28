@@ -71,6 +71,15 @@ test {
     _ = @import("tools_exec_get_skill.zig");
     _ = @import("tools_exec_list_directory.zig");
 
+    // task_1787855066467_8 — bash/pwsh lenient JSON argument parser.
+    // Recover LLM XML-fragment hallucinations like
+    // `mandatory_timeout: "5</mandatory_timeout>"` into the integer 5,
+    // or surface the offending field + value + expected type when
+    // coercion fails.
+    _ = @import("tools_exec_bash_args.zig");
+    _ = @import("tools_exec_bash.zig");
+    _ = @import("tools_exec_pwsh.zig");
+
     // 2026-08-23 spawn-subagent-live-progress — `subagent_progress.zig`
     // builds the wire payload that rides the EXISTING `llm_full` SSE
     // channel with a NEW `role="subagent_progress"` value. Frontend
