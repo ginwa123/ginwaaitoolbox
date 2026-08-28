@@ -1348,6 +1348,434 @@ pub const LlmConfig = struct {
         return @intCast(self.mcp_servers.count());
     }
 
+    /// Input for `addMcpServerStdio` — the stdio-only transport variant
+    /// (HTTP follows in a sibling task). All string fields are borrowed;
+    /// the primitive deep-copies them into the live `mcp_servers` map.
+    pub const AddMcpServerStdioInput = struct {
+        /// The server name (key in `mcp_servers`). Must be non-empty and
+        /// must not collide with an existing server. Trailing whitespace is
+        /// NOT trimmed — the caller is responsible for the exact key.
+        name: []const u8,
+        /// The command to spawn. Must be non-empty (an empty command would
+        /// never reach the `parseMcpServerConfig` validity check anyway).
+        command: []const u8,
+        /// Optional argv after `command`. `null` means no args. Each entry
+        /// is deep-copied into the new `McpServerConfig.args` slice.
+        args: ?[]const []const u8 = null,
+        /// Optional working directory. `null` means inherit from the parent.
+        cwd: ?[]const u8 = null,
+    };
+
+    /// Add a new stdio MCP server to the live config in-place. Mutates
+    /// `self.mcp_servers` (typed map) AND rebuilds `self.mcpServers_parsed`
+    /// (the json.Value mirror used by `mcpServers()` + `buildMCPToolsRun`).
+    ///
+    /// The caller is responsible for persisting the change to disk (see
+    /// `persistMcpServerStdio` for the matching disk-write helper). The
+    /// two-step split lets the unit tests exercise the in-memory mutation
+    /// without touching disk; the agent-tool exec wrapper chains both.
+    ///
+    /// Errors:
+    ///   - `error.InvalidName` — `name` is empty.
+    ///   - `error.DuplicateServer` — `name` is already a key in `mcp_servers`.
+    ///   - `error.InvalidCommand` — `command` is empty.
+    ///   - propagates `OutOfMemory` from `allocator.dupe` / `ObjectMap.put`.
+    ///
+    /// Plan: docs/superpowers/plans/2026-08-28-add-mcp-server-agent-tool.md
+    pub fn addMcpServerStdio(
+        self: *LlmConfig,
+        input: AddMcpServerStdioInput,
+    ) !void {
+        // ── 1. Validate ────────────────────────────────────────────────────
+        if (input.name.len == 0) return error.InvalidName;
+        if (input.command.len == 0) return error.InvalidCommand;
+        if (self.mcp_servers.contains(input.name)) return error.DuplicateServer;
+
+        // ── 2. Build the new typed entry ───────────────────────────────────
+        var entry: McpServerConfig = .{
+            .url = null,
+            .headers = McpHeadersMap.init(self.allocator),
+            .command = try self.allocator.dupe(u8, input.command),
+            .args = null,
+            .cwd = if (input.cwd) |c| try self.allocator.dupe(u8, c) else null,
+        };
+        errdefer freeMcpServerConfig(&entry, self.allocator);
+
+        if (input.args) |src_args| {
+            const args_dup = try self.allocator.alloc([]const u8, src_args.len);
+            errdefer self.allocator.free(args_dup);
+            for (src_args, 0..) |a, i| {
+                args_dup[i] = try self.allocator.dupe(u8, a);
+            }
+            entry.args = args_dup;
+        }
+
+        // ── 3. Insert into the typed map ───────────────────────────────────
+        const key_dup = try self.allocator.dupe(u8, input.name);
+        errdefer self.allocator.free(key_dup);
+        try self.mcp_servers.put(key_dup, entry);
+
+        // Transfer ownership of the entry's heap-allocated fields to the
+        // map. `put` COPIES the struct value (which copies POINTERS — the
+        // map and the local `entry` now share the same duped strings).
+        // Reset the local entry so the outer errdefer's
+        // `freeMcpServerConfig` is a no-op for these fields; otherwise
+        // a later error in `rebuildMcpServersParsed` would double-free
+        // strings the map still owns.
+        entry = .{
+            .url = null,
+            .headers = McpHeadersMap.init(self.allocator),
+            .command = null,
+            .args = null,
+            .cwd = null,
+        };
+
+        // ── 4. Rebuild mcpServers_parsed from the typed map ───────────────
+        // The typed map is now authoritative — we serialize it back to a
+        // json.Value so `mcpServers()` + `buildMCPToolsRun` see the new
+        // entry on the next iteration. Old `mcpServers_parsed` is freed.
+        try rebuildMcpServersParsed(self);
+    }
+
+    /// Serialize the typed `mcp_servers` map back into `mcpServers_parsed`.
+    /// Called by `addMcpServerStdio` after each insert; safe to call when
+    /// `mcpServers_parsed` is null (re-builds from scratch).
+    ///
+    /// Each server becomes a JSON object with the same keys as the typed
+    /// entry. We deliberately drop the `headers` field when it's empty
+    /// (matches `parseMcpServerConfig`'s "absent = empty" convention) and
+    /// `args` / `cwd` when they're null. Mirrors the on-disk shape that
+    /// `nalar_config_put.zig` writes — `parseMcpServerConfig` accepts
+    /// either HTTP (`url` + `headers`) or stdio (`command` + `args` + `cwd`)
+    /// and rejects entries with neither or both, so we only emit the keys
+    /// the new entry actually uses.
+    fn rebuildMcpServersParsed(self: *LlmConfig) !void {
+        const allocator = self.allocator;
+        var new_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+        errdefer new_obj.deinit(allocator);
+
+        var it = self.mcp_servers.iterator();
+        while (it.next()) |entry| {
+            const server_name = entry.key_ptr.*;
+            const cfg = entry.value_ptr.*;
+            var server_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+            errdefer server_obj.deinit(allocator);
+
+            if (cfg.url) |u| {
+                try server_obj.put(allocator, "url", .{ .string = try allocator.dupe(u8, u) });
+            }
+            if (cfg.headers.count() > 0) {
+                var hdr_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+                errdefer hdr_obj.deinit(allocator);
+                var h_it = cfg.headers.iterator();
+                while (h_it.next()) |h| {
+                    const k = try allocator.dupe(u8, h.key_ptr.*);
+                    errdefer allocator.free(k);
+                    const v = try allocator.dupe(u8, h.value_ptr.*);
+                    errdefer allocator.free(v);
+                    try hdr_obj.put(allocator, k, .{ .string = v });
+                }
+                try server_obj.put(allocator, "headers", .{ .object = hdr_obj });
+            }
+            if (cfg.command) |c| {
+                try server_obj.put(allocator, "command", .{ .string = try allocator.dupe(u8, c) });
+            }
+            if (cfg.args) |a| {
+                // Transfer ownership: `args_arr` (and its duped string items)
+                // becomes part of the JSON tree. Do NOT `defer` deinit —
+                // it would fire before Stringify reads the array, freeing
+                // the items the tree still points to. Instead, free the
+                // array later in `freeServerObjValue` (which knows it's an
+                // .array variant owned by us).
+                var args_arr = json.Array.init(allocator);
+                for (a) |arg| {
+                    try args_arr.append(.{ .string = try allocator.dupe(u8, arg) });
+                }
+                try server_obj.put(allocator, "args", .{ .array = args_arr });
+            }
+            if (cfg.cwd) |c| {
+                try server_obj.put(allocator, "cwd", .{ .string = try allocator.dupe(u8, c) });
+            }
+
+            const name_dup = try allocator.dupe(u8, server_name);
+            errdefer allocator.free(name_dup);
+            try new_obj.put(allocator, name_dup, .{ .object = server_obj });
+        }
+
+        // Parse the new object map as `mcpServers_parsed`. Round-trip via
+        // string serialization is required because json.ObjectMap → json.Value
+        // isn't a direct cast — we need a Parsed wrapper. After parseFromSlice
+        // returns, the source ObjectMap + everything we put into it is
+        // orphaned (Stringify.valueAlloc deep-copied the structure into the
+        // serialized buffer; reparsed owns independent copies).
+        const serialized = try std.json.Stringify.valueAlloc(allocator, json.Value{ .object = new_obj }, .{});
+        defer allocator.free(serialized);
+        const reparsed = try json.parseFromSlice(json.Value, allocator, serialized, .{
+            .ignore_unknown_fields = true,
+        });
+        errdefer reparsed.deinit();
+
+        // Free the source tree manually. ObjectMap.deinit only frees the
+        // hash map structure — it does NOT recurse into values or free the
+        // outer keys. Our shape has duped OUTER keys (server names, owned)
+        // + literal INNER keys ("command", "args", etc., NOT owned) +
+        // json.Value values that recursively own duped strings.
+        freeNewObjDeep(allocator, &new_obj);
+
+        // Free the old mcpServers_parsed (its underlying ObjectMap is now
+        // orphaned — we own a fresh one inside `reparsed`). Matches the
+        // deinit pattern in `LlmConfig.deinit`.
+        if (self.mcpServers_parsed) |*old| old.deinit();
+        self.mcpServers_parsed = reparsed;
+    }
+
+    /// Free a `new_obj` tree built by `rebuildMcpServersParsed`. The OUTER
+    /// keys are duped server names (owned); the INNER keys ("command",
+    /// "args", "url", "cwd", "headers") are STRING LITERALS and MUST NOT
+    /// be freed. The values inside server_obj own memory (duped strings,
+    /// headers sub-map). We exploit that with a dedicated helper rather
+    /// than a generic recursive free.
+    fn freeNewObjDeep(allocator: std.mem.Allocator, new_obj: *json.ObjectMap) void {
+        var it = new_obj.iterator();
+        while (it.next()) |kv| {
+            allocator.free(kv.key_ptr.*);
+            freeServerObjDeep(allocator, &kv.value_ptr.object);
+        }
+        new_obj.deinit(allocator);
+    }
+
+    /// Free a single server's ObjectMap. The KEYS are string literals
+    /// ("command", "args", "url", "cwd", "headers") — DO NOT free them.
+    /// The VALUES own memory (duped strings, headers sub-map).
+    fn freeServerObjDeep(allocator: std.mem.Allocator, server_obj: *json.ObjectMap) void {
+        var it = server_obj.iterator();
+        while (it.next()) |kv| {
+            freeServerObjValue(allocator, &kv.value_ptr.*);
+        }
+        server_obj.deinit(allocator);
+    }
+
+    /// Free one value out of a server_obj entry. The captured pattern
+    /// `|*arr|` is fragile because switch captures are immutable, so we
+    /// pass a pointer to the Value union and dispatch on the active tag.
+    fn freeServerObjValue(allocator: std.mem.Allocator, value_ptr: *json.Value) void {
+        switch (value_ptr.*) {
+            .string => |s| allocator.free(s),
+            .array => |*arr| {
+                for (arr.items) |*item| {
+                    if (item.* == .string) {
+                        allocator.free(item.string);
+                    }
+                }
+                arr.deinit();
+            },
+            .object => freeHeadersObjDeep(allocator, &value_ptr.object),
+            else => {},
+        }
+    }
+
+    /// Free the headers sub-map. Keys + values are BOTH duped strings.
+    fn freeHeadersObjDeep(allocator: std.mem.Allocator, hdr_obj: *json.ObjectMap) void {
+        var it = hdr_obj.iterator();
+        while (it.next()) |kv| {
+            allocator.free(kv.key_ptr.*);
+            allocator.free(kv.value_ptr.string);
+        }
+        hdr_obj.deinit(allocator);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Inline tests for `addMcpServerStdio` — plan 2026-08-28-add-mcp-server-agent-tool
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// Build a minimal `LlmConfig` for the `addMcpServerStdio` tests. Only
+    /// the fields touched by the primitive are wired up; the rest are
+    /// sentinel values that `deinit()` doesn't free.
+    fn addMcpServerStdioFixture(allocator: std.mem.Allocator) !LlmConfig {
+        return .{
+            .allocator = allocator,
+            .api_key = try allocator.dupe(u8, ""),
+            .model = try allocator.dupe(u8, ""),
+            .base_url = try allocator.dupe(u8, ""),
+            .url_style = try allocator.dupe(u8, "openai"),
+            .model_compaction_size_kb = 100,
+            .retry_delay_ms = 0,
+            .max_capacity_token_model = null,
+            .compaction_threshold_percent = null,
+            .active_profile = null,
+            .mcpServers_parsed = null,
+            .mcp_servers = LlmConfig.McpServersMap.init(allocator),
+            .profiles_models = LlmConfig.ProfilesMap.init(allocator),
+            .sub_agents = &.{},
+            .random_names = &.{},
+        };
+    }
+
+    test "addMcpServerStdio: valid stdio entry persists command+args+cwd" {
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        try cfg.addMcpServerStdio(.{
+            .name = "hello",
+            .command = "mcp-hello-world",
+            .args = &.{ "--port", "3001" },
+            .cwd = "/opt/mcp",
+        });
+
+        // Typed map populated with deep-copied strings.
+        try std.testing.expect(cfg.hasMcpServer("hello"));
+        const server = cfg.mcpServerConfig("hello").?;
+        try std.testing.expectEqualStrings("mcp-hello-world", server.command.?);
+        try std.testing.expectEqualStrings("/opt/mcp", server.cwd.?);
+        try std.testing.expectEqual(@as(usize, 2), server.args.?.len);
+        try std.testing.expectEqualStrings("--port", server.args.?[0]);
+        try std.testing.expectEqualStrings("3001", server.args.?[1]);
+        try std.testing.expectEqual(LlmConfig.McpServerConfig.Transport.stdio, server.transport());
+
+        // mcpServers_parsed rebuilt — fetchable via mcpServers() accessor.
+        try std.testing.expect(cfg.mcpServers() != null);
+        const mcp_val = cfg.mcpServers().?;
+        const obj = mcp_val.object;
+        try std.testing.expect(obj.get("hello") != null);
+        const hello_obj = obj.get("hello").?.object;
+        try std.testing.expectEqualStrings("mcp-hello-world", hello_obj.get("command").?.string);
+        try std.testing.expectEqualStrings("/opt/mcp", hello_obj.get("cwd").?.string);
+    }
+
+    test "addMcpServerStdio: minimal stdio entry (command only, no args/cwd)" {
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        try cfg.addMcpServerStdio(.{
+            .name = "bare",
+            .command = "mcp-server",
+        });
+
+        const server = cfg.mcpServerConfig("bare").?;
+        try std.testing.expectEqualStrings("mcp-server", server.command.?);
+        try std.testing.expect(server.args == null);
+        try std.testing.expect(server.cwd == null);
+        // Transport discriminator returns stdio when `command` is set.
+        try std.testing.expectEqual(LlmConfig.McpServerConfig.Transport.stdio, server.transport());
+    }
+
+    test "addMcpServerStdio: empty name returns InvalidName" {
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        const result = cfg.addMcpServerStdio(.{
+            .name = "",
+            .command = "x",
+        });
+        try std.testing.expectError(error.InvalidName, result);
+        try std.testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
+    }
+
+    test "addMcpServerStdio: empty command returns InvalidCommand" {
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        const result = cfg.addMcpServerStdio(.{
+            .name = "ctx",
+            .command = "",
+        });
+        try std.testing.expectError(error.InvalidCommand, result);
+        try std.testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
+    }
+
+    test "addMcpServerStdio: duplicate name returns DuplicateServer and preserves prior entry" {
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        try cfg.addMcpServerStdio(.{
+            .name = "ctx",
+            .command = "first-cmd",
+            .args = &.{"a"},
+        });
+        // Second insert with the same name MUST fail — the typed map and
+        // mcpServers_parsed are unchanged.
+        const result = cfg.addMcpServerStdio(.{
+            .name = "ctx",
+            .command = "second-cmd",
+            .args = &.{"b"},
+        });
+        try std.testing.expectError(error.DuplicateServer, result);
+        try std.testing.expectEqual(@as(usize, 1), cfg.mcp_servers.count());
+        const server = cfg.mcpServerConfig("ctx").?;
+        try std.testing.expectEqualStrings("first-cmd", server.command.?);
+        try std.testing.expectEqualStrings("a", server.args.?[0]);
+    }
+
+    test "addMcpServerStdio: preserves existing servers after a second add" {
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        try cfg.addMcpServerStdio(.{ .name = "alpha", .command = "cmd-a" });
+        try cfg.addMcpServerStdio(.{ .name = "beta", .command = "cmd-b" });
+        try std.testing.expectEqual(@as(usize, 2), cfg.mcp_servers.count());
+
+        const alpha = cfg.mcpServerConfig("alpha").?;
+        try std.testing.expectEqualStrings("cmd-a", alpha.command.?);
+        const beta = cfg.mcpServerConfig("beta").?;
+        try std.testing.expectEqualStrings("cmd-b", beta.command.?);
+
+        // mcpServers_parsed has BOTH entries.
+        const obj = cfg.mcpServers().?.object;
+        try std.testing.expect(obj.get("alpha") != null);
+        try std.testing.expect(obj.get("beta") != null);
+    }
+
+    test "addMcpServerStdio: rebuilds mcpServers_parsed from scratch when previously null" {
+        // Guards the "first MCP server ever" path — mcpServers_parsed was
+        // never populated, so rebuildMcpServersParsed must create a fresh
+        // ObjectMap rather than dereferencing the null one.
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        try std.testing.expect(cfg.mcpServers_parsed == null);
+        try cfg.addMcpServerStdio(.{ .name = "first", .command = "cmd-1" });
+
+        try std.testing.expect(cfg.mcpServers_parsed != null);
+        try std.testing.expect(cfg.mcpServers() != null);
+        try std.testing.expectEqualStrings("cmd-1", cfg.mcpServers().?.object.get("first").?.object.get("command").?.string);
+    }
+
+    test "addMcpServerStdio: cloned strings are independent (mutating input doesn't leak)" {
+        // The primitive deep-copies every string. We mutate the source
+        // slices after the call and assert the typed map's values are
+        // unchanged — guards against accidental shallow-copy regression.
+        const allocator = std.testing.allocator;
+        var cfg = try addMcpServerStdioFixture(allocator);
+        defer cfg.deinit();
+
+        var cmd_buf: [16]u8 = undefined;
+        const cmd_src = std.fmt.bufPrint(&cmd_buf, "initial", .{}) catch unreachable;
+        var cwd_buf: [16]u8 = undefined;
+        const cwd_src = std.fmt.bufPrint(&cwd_buf, "/initial", .{}) catch unreachable;
+
+        try cfg.addMcpServerStdio(.{
+            .name = "leak-guard",
+            .command = cmd_src,
+            .cwd = cwd_src,
+        });
+
+        // Mutate the source buffers in-place — the typed map must still
+        // hold the original bytes (deep copy semantics).
+        @memcpy(cmd_buf[0.."MUTATED-MUT".len], "MUTATED-MUT");
+        @memcpy(cwd_buf[0.."/MUTATED-MU".len], "/MUTATED-MU");
+
+        const server = cfg.mcpServerConfig("leak-guard").?;
+        try std.testing.expectEqualStrings("initial", server.command.?);
+        try std.testing.expectEqualStrings("/initial", server.cwd.?);
+    }
+
     /// Look up a profile by name (the key in `profiles_models`). Returns null when
     /// not configured. The returned `LlmProfile` borrows from `self` — the lifetime
     /// is tied to this `LlmConfig` (do not outlive the config).
