@@ -204,8 +204,8 @@ fn readSseEvent(allocator: std.mem.Allocator, reader: anytype) !?SseEvent {
 //   - `Mcp-Method: <method>` (e.g. "tools/call")
 //   - `Mcp-Name: <name>` (for tools/call, resources/read, prompts/get)
 //
-// We use `std.http.Header` here for the slice. The caller passes
-// `custom_headers` (a `[]const std.http.Header` from the user's
+// We use `custom_http_client_mod.Header` here for the slice. The caller passes
+// `custom_headers` (a `[]const custom_http_client_mod.Header` from the user's
 // `mcp_servers[name].headers` config) which we MERGE with the spec
 // headers. Spec headers go FIRST in the slice because libcurl's
 // curl_slist uses the FIRST match for duplicate names, so the spec
@@ -229,17 +229,17 @@ fn isAllAscii(s: []const u8) bool {
 /// `tool_name` is only used for `tools/call` — pass "" for methods
 /// that don't take a name (initialize, ping, tools/list, etc.).
 ///
-/// `custom_headers` is a `[]const std.http.Header` slice; we only
+/// `custom_headers` is a `[]const custom_http_client_mod.Header` slice; we only
 /// read `.name` and `.value` fields. Null = no custom headers.
 ///
-/// Returns a freshly-allocated `[]std.http.Header` slice the caller
+/// Returns a freshly-allocated `[]custom_http_client_mod.Header` slice the caller
 /// owns (frees with `allocator.free`).
 fn buildMcpHeaders(
     allocator: std.mem.Allocator,
     method: []const u8,
     tool_name: []const u8,
-    custom_headers: []const std.http.Header,
-) ![]std.http.Header {
+    custom_headers: []const custom_http_client_mod.Header,
+) ![]custom_http_client_mod.Header {
     // 4 spec headers always present. We MAY add a 5th (Mcp-Name) if
     // tool_name is non-empty AND ASCII. The slice order is critical:
     // spec headers FIRST so libcurl's first-match-wins uses the spec
@@ -248,7 +248,7 @@ fn buildMcpHeaders(
     const spec_count: usize = if (include_name) 5 else 4;
     const total = spec_count + custom_headers.len;
 
-    const out = try allocator.alloc(std.http.Header, total);
+    const out = try allocator.alloc(custom_http_client_mod.Header, total);
     errdefer allocator.free(out);
 
     // Spec headers (FIRST in the slice).
@@ -286,7 +286,7 @@ fn buildMcpHeaders(
 pub const HttpClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
-    custom_headers: []const std.http.Header,
+    custom_headers: []const custom_http_client_mod.Header,
     /// Lazily-initialised on first callTool/listTools. Owned by the
     /// client; freed by deinit. NOT thread-safe; the HttpRegistry
     /// provides the mutex.
@@ -294,7 +294,7 @@ pub const HttpClient = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, url: []const u8, custom_headers: []const std.http.Header) !Self {
+    pub fn init(allocator: std.mem.Allocator, url: []const u8, custom_headers: []const custom_http_client_mod.Header) !Self {
         return .{
             .allocator = allocator,
             .url = try allocator.dupe(u8, url),
@@ -442,7 +442,7 @@ pub const HttpRegistry = struct {
 
     /// Get the cached client for `name`, or build a new one and
     /// cache it. Threadsafe.
-    pub fn getOrConnect(self: *HttpRegistry, name: []const u8, url: []const u8, custom_headers: []const std.http.Header) !*HttpClient {
+    pub fn getOrConnect(self: *HttpRegistry, name: []const u8, url: []const u8, custom_headers: []const custom_http_client_mod.Header) !*HttpClient {
         mutexLock(&self.mutex);
         defer self.mutex.unlock();
         if (self.entries.get(name)) |c| return c;
@@ -450,11 +450,39 @@ pub const HttpRegistry = struct {
         const alloc = self.arena.allocator();
         const client = try alloc.create(HttpClient);
         const key_dup = try alloc.dupe(u8, name);
-        const hdrs_dup = try alloc.alloc(std.http.Header, custom_headers.len);
+        const hdrs_dup = try alloc.alloc(custom_http_client_mod.Header, custom_headers.len);
         for (custom_headers, 0..) |h, i| hdrs_dup[i] = h;
         client.* = try HttpClient.init(alloc, url, hdrs_dup);
         try self.entries.put(key_dup, client);
         return client;
+    }
+
+    // Process-global singleton. Mirrors `mcp_stdio.StdioRegistry.global`.
+    // Lives for the whole nalar process; cleaned up via the shutdown
+    // hook in main.zig (deinitGlobal).
+    var global_registry: ?HttpRegistry = null;
+    var global_init_mutex: std.atomic.Mutex = .unlocked;
+
+    /// Get the process-global registry. Lazily initialized on first
+    /// call. `allocator` is the long-lived allocator (typically
+    /// `di.allocator` from main.zig) — NOT `std.heap.page_allocator`.
+    pub fn global(allocator: std.mem.Allocator) *HttpRegistry {
+        mutexLock(&global_init_mutex);
+        defer global_init_mutex.unlock();
+        if (global_registry == null) {
+            global_registry = HttpRegistry.init(allocator);
+        }
+        return &global_registry.?;
+    }
+
+    /// Called by main.zig shutdown hook. Frees all clients + the map.
+    pub fn deinitGlobal() void {
+        mutexLock(&global_init_mutex);
+        defer global_init_mutex.unlock();
+        if (global_registry) |*reg| {
+            reg.deinit();
+            global_registry = null;
+        }
     }
 };
 
@@ -474,14 +502,84 @@ fn mutexLock(m: *std.atomic.Mutex) void {
 /// allocated; the caller owns the returned slice AND each tool's
 /// owned strings.
 ///
-/// The full impl lands in the dispatcher refactor (Task 4); for now
-/// the stubbed client returns an empty slice. When the dispatcher
-/// refactor lands, the full wire version will be implemented (POST
-/// to /mcp with tools/list, parse the result.tools array, return
-/// []mcp_types.McpTool).
+/// POSTs a `tools/list` JSON-RPC body to the server's `/mcp`
+/// endpoint, parses the response, and returns the `result.tools`
+/// array. Returns an empty slice on a malformed/missing
+/// `result.tools`. The caller (typically
+/// `prompts_build_messages_for_agent_prompt.zig`) is responsible
+/// for converting `mcp_types.McpTool` to `AgentTool`.
 pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types.McpTool {
-    _ = client;
-    return try allocator.alloc(mcp_types.McpTool, 0);
+    // Build the tools/list body. Same _meta.io.modelcontextprotocol/protocolVersion
+    // mirror as callTool.
+    const body = try std.fmt.allocPrint(allocator,
+        \\{{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{{"_meta":{{"io.modelcontextprotocol/protocolVersion":"{s}"}}}}}}
+    , .{PROTOCOL_VERSION});
+    defer allocator.free(body);
+
+    // Headers: same spec-mandated set as callTool, minus the
+    // Mcp-Name (tools/list doesn't take a name).
+    const headers = try buildMcpHeaders(allocator, "tools/list", "", client.custom_headers);
+    defer allocator.free(headers);
+
+    // POST.
+    const result = custom_http_client_mod.post(
+        &client.http,
+        client.url,
+        body,
+        headers,
+        .{ .timeout_ms = 30_000 },
+    ) catch return &[_]mcp_types.McpTool{};
+    defer result.deinit(allocator);
+
+    if (result.status_code != 200) {
+        return &[_]mcp_types.McpTool{};
+    }
+
+    // Parse the response: extract `result.tools[]` and convert each
+    // JSON object to an McpTool. Errors are swallowed (return empty
+    // slice) — the caller logs a warning and the agent just doesn't
+    // see the server's tools.
+    return parseToolsList(allocator, result.body) catch &[_]mcp_types.McpTool{};
+}
+
+/// Internal: parse a tools/list response body into a McpTool slice.
+/// Each tool's owned strings (name, description, inputSchema) are
+/// freshly allocated via `allocator`. On any parse error returns an
+/// empty slice (caller can log + skip).
+fn parseToolsList(allocator: std.mem.Allocator, body: []const u8) ![]mcp_types.McpTool {
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+
+    const parsed = std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), body, .{}) catch {
+        return try allocator.alloc(mcp_types.McpTool, 0);
+    };
+
+    const root = parsed.value.object;
+    const result_val = root.get("result") orelse return try allocator.alloc(mcp_types.McpTool, 0);
+    const result_obj = result_val.object;
+    const tools_value = result_obj.get("tools") orelse return try allocator.alloc(mcp_types.McpTool, 0);
+    const tools_arr = tools_value.array;
+
+    const out = try allocator.alloc(mcp_types.McpTool, tools_arr.items.len);
+    errdefer allocator.free(out);
+
+    var i: usize = 0;
+    while (i < tools_arr.items.len) : (i += 1) {
+        const tool_obj = tools_arr.items[i].object;
+        const name_v = tool_obj.get("name") orelse continue;
+        const desc_v = tool_obj.get("description") orelse continue;
+        const schema_v = tool_obj.get("inputSchema") orelse continue;
+        out[i] = .{
+            .name = try allocator.dupe(u8, name_v.string),
+            .description = try allocator.dupe(u8, desc_v.string),
+            .inputSchema = .{
+                .type = "object",
+                .properties = schema_v,
+                .required = null,
+            },
+        };
+    }
+    return out;
 }
 
 // ============================================================================
@@ -652,7 +750,7 @@ test "buildMcpHeaders: required headers always present for tools/call" {
         testing.allocator,
         "tools/call",
         "say_hello",
-        &[_]std.http.Header{},
+        &[_]custom_http_client_mod.Header{},
     );
     defer testing.allocator.free(hdrs);
     // 4 spec headers (Accept, Content-Type, MCP-Protocol-Version,
@@ -695,7 +793,7 @@ test "buildMcpHeaders: no Mcp-Name for initialize" {
         testing.allocator,
         "initialize",
         "", // no tool name
-        &[_]std.http.Header{},
+        &[_]custom_http_client_mod.Header{},
     );
     defer testing.allocator.free(hdrs);
     // 4 spec headers only (no Mcp-Name when tool_name is empty).
@@ -713,7 +811,7 @@ test "buildMcpHeaders: Mcp-Name omitted for non-ASCII tool names" {
         testing.allocator,
         "tools/call",
         "\xe5\x90\x8d\xe5\xad\x97", // "名字" in UTF-8 (non-ASCII)
-        &[_]std.http.Header{},
+        &[_]custom_http_client_mod.Header{},
     );
     defer testing.allocator.free(hdrs);
     try testing.expectEqual(@as(usize, 4), hdrs.len);
@@ -727,7 +825,7 @@ test "buildMcpHeaders: custom headers merged; spec headers win on conflict" {
     // spec value `2025-11-25`. We assert this by putting spec headers
     // FIRST in the slice (so libcurl's first-match-wins sees the spec
     // value) and the malicious custom header LAST.
-    const custom = [_]std.http.Header{
+    const custom = [_]custom_http_client_mod.Header{
         .{ .name = "X-Trace-Id", .value = "abc" },
         .{ .name = "MCP-Protocol-Version", .value = "1999-01-01" },
     };
@@ -789,7 +887,7 @@ test "buildMcpHeaders: custom headers merged; spec headers win on conflict" {
 
 test "HttpClient.init: stores URL and custom headers" {
     const url = "http://127.0.0.1:1234/mcp";
-    const hdrs = [_]std.http.Header{
+    const hdrs = [_]custom_http_client_mod.Header{
         .{ .name = "Authorization", .value = "Bearer test-token" },
     };
     var client = try HttpClient.init(testing.allocator, url, &hdrs);

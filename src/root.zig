@@ -513,6 +513,7 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 pub const loggermod = @import("modules/logger/Logger.zig");
 pub const mcp_stdio = @import("modules/agent/mcp/mcp/mcp_stdio.zig");
 pub const mcp_http = @import("modules/agent/mcp/mcp/mcp_http.zig");
+pub const mcp_types = @import("modules/agent/mcp/mcp/mcp_types.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
