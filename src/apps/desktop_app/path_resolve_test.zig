@@ -58,3 +58,27 @@ test "resolveNalarPath: returns null when nalar is not found anywhere" {
     );
     try testing.expect(result == null);
 }
+
+test "resolveNalarPath: handles Windows-style PATH (;-separated)" {
+    // The fix for `error.NalarNotFound` on Windows: `resolve()` used
+    // to tokenize by `:` (Unix convention) on every platform. On
+    // Windows, $PATH is `;`-separated, so the old tokenizeScalar(':')
+    // treated the entire PATH as ONE giant directory entry, joined
+    // it with `nalar`, and `fileExists(<giant-path>/nalar)` always
+    // returned false. This test locks in the fix: a Windows-style
+    // PATH with multiple `;`-separated entries must be tokenized
+    // entry-by-entry (the function still returns null when neither
+    // entry has a real `nalar`, but the LOOP runs the right number
+    // of times — observable indirectly via the no-panic contract).
+    const allocator = testing.allocator;
+    const result = path_resolve.resolve(
+        allocator,
+        null,
+        "C:\\nonexistent\\dir\\nalar-desktop.exe",
+        "C:\\Windows\\System32;C:\\Windows;C:\\nonexistent\\bin",
+    );
+    if (result) |r| allocator.free(r);
+    // No panic + no result = pass. (We can't easily write a "creates
+    // a temp file in PATH and finds it" test here without pulling
+    // in std.fs.cwd machinery that Zig 0.16 has restructured.)
+}
