@@ -1050,28 +1050,62 @@ pub fn build(b: *std.Build) void {
     // node + npm must be on PATH so the developer (or CI) can invoke
     // vue-tsc via Node's real CJS loader. We fail fast with a clear
     // error rather than letting vue-tsc's cryptic TS2307 noise leak out.
-    const check_webapp_node = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\
-        \\for tool in node npm; do
-        \\    command -v "$tool" >/dev/null 2>&1 || {
-        \\        echo "" >&2
-        \\        echo "ERROR: '$tool' was not found on PATH." >&2
-        \\        echo "  vue-tsc (which runs inside 'npm run build' via the type-check" >&2
-        \\        echo "  script) patches tsc's source via fs.readFileSync to register" >&2
-        \\        echo "  .vue as a TypeScript source extension; a JS-runtime shim whose" >&2
-        \\        echo "  loader bypasses fs.readFileSync breaks that patching and" >&2
-        \\        echo "  fails with hundreds of TS2307 errors." >&2
-        \\        echo "" >&2
-        \\        echo "  Install nodejs + npm for your platform:" >&2
-        \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs npm" >&2
-        \\        echo "    Debian/Ubnt:  sudo apt install nodejs npm" >&2
-        \\        echo "    macOS:        brew install node" >&2
-        \\        echo "    Alpine:       apk add nodejs npm" >&2
-        \\        echo "" >&2
-        \\        exit 1
-        \\    }
-        \\done
+    const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+        // Windows: `sh` isn't on PATH (Git for Windows ships it under
+        // C:\Program Files\Git\bin\, not auto-added). Use cmd.exe with the
+        // equivalent `where` lookup + a label + goto for the same
+        // print-and-exit-1 logic. The user-facing error message is
+        // slightly shorter on Windows (no "Install for your platform"
+        // list) since CI installs Node 24 via actions/setup-node@v4 and
+        // Windows dev boxes get Node via the standard nvm-windows /
+        // winget / Chocolatey channels.
+        .windows => &.{
+            "cmd.exe", "/c",
+            \\
+            \\@echo off
+            \\for %%t in (node npm) do (
+            \\    where %%t >nul 2>&1 || (
+            \\        echo.
+            \\        echo ERROR: '%%t' was not found on PATH.
+            \\        echo   vue-tsc (which runs inside 'npm run build' via the type-check
+            \\        echo   script) patches tsc's source via fs.readFileSync to register
+            \\        echo   .vue as a TypeScript source extension; a JS-runtime shim whose
+            \\        echo   loader bypasses fs.readFileSync breaks that patching and
+            \\        echo   fails with hundreds of TS2307 errors.
+            \\        echo.
+            \\        echo   Install Node.js + npm for Windows:
+            \\        echo     winget install OpenJS.NodeJS.LTS
+            \\        echo     OR nvm-windows / Chocolatey / the official msi.
+            \\        echo.
+            \\        exit /b 1
+            \\    )
+            \\)
+        },
+        // Linux + macOS: POSIX `command -v` loop. Same error message as
+        // the original pre-Windows-fix check.
+        else => &.{
+            "sh", "-c",
+            \\
+            \\for tool in node npm; do
+            \\    command -v "$tool" >/dev/null 2>&1 || {
+            \\        echo "" >&2
+            \\        echo "ERROR: '$tool' was not found on PATH." >&2
+            \\        echo "  vue-tsc (which runs inside 'npm run build' via the type-check" >&2
+            \\        echo "  script) patches tsc's source via fs.readFileSync to register" >&2
+            \\        echo "  .vue as a TypeScript source extension; a JS-runtime shim whose" >&2
+            \\        echo "  loader bypasses fs.readFileSync breaks that patching and" >&2
+            \\        echo "  fails with hundreds of TS2307 errors." >&2
+            \\        echo "" >&2
+            \\        echo "  Install nodejs + npm for your platform:" >&2
+            \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs npm" >&2
+            \\        echo "    Debian/Ubnt:  sudo apt install nodejs npm" >&2
+            \\        echo "    macOS:        brew install node" >&2
+            \\        echo "    Alpine:       apk add nodejs npm" >&2
+            \\        echo "" >&2
+            \\        exit 1
+            \\    }
+            \\done
+        },
     });
 
     // Check if node_modules exists — if so, skip `npm ci` (saves seconds
@@ -2142,10 +2176,19 @@ pub fn build(b: *std.Build) void {
     // Probe python3 — skip the step if missing. Without a probe,
     // `addSystemCommand(&.{ "python3", ... })` would error at config
     // time on hosts that don't have python3.
-    const python_probe = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\command -v python3 >/dev/null 2>&1 || { echo 'zig build functional-test: python3 not found, skipping (install with `brew install python@3.11` or set -Dpython=...)'; exit 0; }
-    ,
+    //
+    // Shell selection (cross-platform fix): use cmd.exe with `where` on
+    // Windows (the previous `sh -c` failed because Git for Windows
+    // doesn't add its bin/ to PATH automatically).
+    const python_probe = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+        .windows => &.{
+            "cmd.exe", "/c",
+            \\@where python3 >nul 2>&1 || echo zig build functional-test: python3 not found, skipping (install Python from python.org or set -Dpython=...)
+        },
+        else => &.{
+            "sh", "-c",
+            \\command -v python3 >/dev/null 2>&1 || { echo 'zig build functional-test: python3 not found, skipping (install with `brew install python@3.11` or set -Dpython=...)'; exit 0; }
+        },
     });
     python_probe.setCwd(b.path(""));
 
