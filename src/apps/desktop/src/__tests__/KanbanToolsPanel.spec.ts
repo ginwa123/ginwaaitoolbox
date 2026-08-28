@@ -127,4 +127,132 @@ describe('KanbanToolsPanel', () => {
     expect(maybeQ('kanban-agent-knowledge-panel')).toBeNull()
     expect(maybeQ('kanban-agent-system-prompt-panel')).toBeNull()
   })
+
+  // ─── Bootstrap flow (unconfigured → configured) ─────────────────────────
+  //
+  // When the board has no agent_kanbans row yet, clicking a checkbox must
+  // still call enableAgentKanbanTool — the backend auto-seeds the row in
+  // agent_kanban_tools_create.zig. After success the panel refetches the
+  // bundle so config is populated and the unconfigured banner disappears.
+
+  it('lets the user bootstrap the config by enabling a tool from the unconfigured state', async () => {
+    // First GET resolves to null (no config yet).
+    const getSpy = vi.spyOn(api, 'getAgentKanban')
+    getSpy.mockResolvedValueOnce(null)
+    // Then, after the first enable lands, the panel refetches and gets
+    // a real bundle (mirroring what the backend auto-seeded).
+    getSpy.mockResolvedValueOnce({
+      ...configuredBundle,
+      tools: ['read_file'],
+    })
+    const enableSpy = vi
+      .spyOn(api, 'enableAgentKanbanTool')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof api.enableAgentKanbanTool>>)
+
+    mountPanel()
+    await flushPromises()
+    // Pre-fix bug would silently drop the click.
+    const readFileCheckbox = q<HTMLInputElement>(
+      'kanban-agent-tool-check-read_file',
+    ) as HTMLInputElement
+    readFileCheckbox.checked = true
+    readFileCheckbox.dispatchEvent(new Event('change'))
+    await flushPromises()
+    await flushPromises()
+
+    expect(enableSpy).toHaveBeenCalledWith('wi_kanban', 'read_file')
+    // After the refetch, the bundle is loaded → unconfigured banner is gone.
+    expect(maybeQ('kanban-tools-unconfigured')).toBeNull()
+    expect(maybeQ('kanban-agent-tools-panel')).not.toBeNull()
+  })
+
+  it('falls back to kanbanId (not config.value.id) for the first enable when unconfigured', async () => {
+    vi.spyOn(api, 'getAgentKanban').mockResolvedValue(null)
+    const enableSpy = vi
+      .spyOn(api, 'enableAgentKanbanTool')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof api.enableAgentKanbanTool>>)
+
+    mountPanel()
+    await flushPromises()
+    const bashCheckbox = q<HTMLInputElement>('kanban-agent-tool-check-bash') as HTMLInputElement
+    bashCheckbox.checked = true
+    bashCheckbox.dispatchEvent(new Event('change'))
+    await flushPromises()
+    // The first arg of enableAgentKanbanTool is the kanban id, which
+    // equals props.item.id (wi_kanban) — NOT config.value.id (null).
+    expect(enableSpy).toHaveBeenCalledWith('wi_kanban', 'bash')
+  })
+
+  it('keeps the checkbox checked after a successful enable from the unconfigured state (optimistic UI)', async () => {
+    vi.spyOn(api, 'getAgentKanban').mockResolvedValue(null)
+    vi.spyOn(api, 'enableAgentKanbanTool').mockResolvedValue(
+      {} as Awaited<ReturnType<typeof api.enableAgentKanbanTool>>,
+    )
+
+    mountPanel()
+    await flushPromises()
+    const readFileCheckbox = q<HTMLInputElement>(
+      'kanban-agent-tool-check-read_file',
+    ) as HTMLInputElement
+    readFileCheckbox.checked = true
+    readFileCheckbox.dispatchEvent(new Event('change'))
+    await flushPromises()
+
+    // After the optimistic flip + successful POST, the checkbox stays
+    // checked (no revert). The backend auto-seeded the row and the
+    // optimistic update is the source of truth in the UI.
+    expect(readFileCheckbox.checked).toBe(true)
+  })
+
+  // ─── Search filter ──────────────────────────────────────────────────────
+
+  it('filters the tools grid by name when the user types into the search box', async () => {
+    mountPanel()
+    await flushPromises()
+    const search = q<HTMLInputElement>('kanban-tools-search') as HTMLInputElement
+    search.value = 'read'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+
+    // Only `read_file` should still be in the grid.
+    const labels = Array.from(
+      document.querySelectorAll('[data-testid^="kanban-agent-tool-"]'),
+    ).filter((el) => !el.getAttribute('data-testid')?.startsWith('kanban-agent-tool-check-'))
+    expect(labels.length).toBe(1)
+    expect(labels[0]!.getAttribute('data-testid')).toBe('kanban-agent-tool-read_file')
+  })
+
+  it('shows an empty-state hint when the search has zero matches', async () => {
+    mountPanel()
+    await flushPromises()
+    const search = q<HTMLInputElement>('kanban-tools-search') as HTMLInputElement
+    search.value = 'totally-not-a-tool-xyz'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(maybeQ('kanban-tools-empty')).not.toBeNull()
+  })
+
+  // ─── Recommended starter set ───────────────────────────────────────────
+
+  it('enables the recommended starter set when the user clicks the preset button', async () => {
+    // Use an empty-tools bundle so preset has clean work to do.
+    vi.spyOn(api, 'getAgentKanban').mockResolvedValue({
+      ...configuredBundle,
+      tools: [],
+    })
+    const enableSpy = vi
+      .spyOn(api, 'enableAgentKanbanTool')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof api.enableAgentKanbanTool>>)
+
+    mountPanel()
+    await flushPromises()
+    const preset = q<HTMLButtonElement>('kanban-tools-preset-recommended')
+    preset.click()
+    await flushPromises()
+
+    expect(enableSpy).toHaveBeenCalled()
+    // Every preset tool got an enable call (RECOMMENDED_TOOLS list).
+    const calledTools = enableSpy.mock.calls.map((c) => c[1]).sort()
+    expect(calledTools).toEqual(['bash', 'read_file', 'write_file'])
+  })
 })
