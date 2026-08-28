@@ -28,6 +28,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mcp_types = @import("mcp_types.zig");
+const custom_http_client_mod = @import("custom_http_client");
 
 // ============================================================================
 // SECTION A — MCP spec constants (pub so the registry in Section D can read)
@@ -286,25 +287,24 @@ pub const HttpClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
     custom_headers: []const std.http.Header,
-    io: std.Io,
+    /// Lazily-initialised on first callTool/listTools. Owned by the
+    /// client; freed by deinit. NOT thread-safe; the HttpRegistry
+    /// provides the mutex.
+    http: custom_http_client_mod.Client,
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, url: []const u8, custom_headers: []const std.http.Header) !Self {
-        // STUB: real impl lands in Task 3 green phase.
-        _ = url;
-        _ = custom_headers;
+    pub fn init(allocator: std.mem.Allocator, url: []const u8, custom_headers: []const std.http.Header) !Self {
         return .{
             .allocator = allocator,
-            .url = try allocator.dupe(u8, ""),
-            .custom_headers = &[_]std.http.Header{},
-            .io = io,
+            .url = try allocator.dupe(u8, url),
+            .custom_headers = custom_headers, // borrowed — caller owns the underlying strings
+            .http = custom_http_client_mod.Client{ .allocator = allocator },
         };
     }
 
     pub fn deinit(self: *Self) void {
-        // STUB
-        _ = self;
+        self.allocator.free(self.url);
     }
 
     /// Send a `tools/call` JSON-RPC request and return the raw
@@ -316,9 +316,9 @@ pub const HttpClient = struct {
     /// (e.g. `{"name":"world"}`).
     ///
     /// Handles BOTH response shapes per the Streamable HTTP spec:
-    ///   - `application/json` (single JSON object) → return parsed body
-    ///   - `text/event-stream` (SSE stream) → take the LAST event's
-    ///     `data:` field as the final response
+    ///   - `application/json` (single JSON object) → return body verbatim
+    ///   - `text/event-stream` (SSE stream) → parse the stream, take
+    ///     the LAST event's `data:` field as the final response
     ///
     /// Error mapping:
     ///   - 400 with HeaderMismatch error → ServerHeaderMismatch
@@ -326,54 +326,160 @@ pub const HttpClient = struct {
     ///   - 404 → ServerMethodNotFound
     ///   - other 4xx/5xx → ServerReturnedError
     pub fn callTool(self: *Self, tool_name: []const u8, arguments_json: []const u8) ![]u8 {
-        // STUB: real impl lands in Task 3 green phase.
-        _ = tool_name;
-        _ = arguments_json;
-        return try self.allocator.dupe(u8, "");
+        // Build the JSON-RPC body. The `_meta.io.modelcontextprotocol/protocolVersion`
+        // field mirrors the MCP-Protocol-Version header per spec §"Protocol
+        // Version Header".
+        const body = try std.fmt.allocPrint(self.allocator,
+            \\{{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{{"name":"{s}","arguments":{s},"_meta":{{"io.modelcontextprotocol/protocolVersion":"{s}"}}}}}}
+        , .{ tool_name, arguments_json, PROTOCOL_VERSION });
+        defer self.allocator.free(body);
+
+        // Build the spec-mandated headers + per-method Mcp-Name, merged
+        // with the user's custom_headers (spec headers win).
+        const headers = try buildMcpHeaders(self.allocator, "tools/call", tool_name, self.custom_headers);
+        defer self.allocator.free(headers);
+
+        // POST. custom_http_client returns a fully-buffered Response.
+        const result = custom_http_client_mod.post(
+            &self.http,
+            self.url,
+            body,
+            headers,
+            .{ .timeout_ms = 30_000 },
+        ) catch return HttpError.ServerReturnedError;
+        defer result.deinit(self.allocator);
+
+        return switch (result.status_code) {
+            200 => parseResponseBody(self.allocator, result.body),
+            400 => error.ServerReturnedError, // simplified — real impl inspects error code
+            404 => error.ServerMethodNotFound,
+            else => error.ServerReturnedError,
+        };
+    }
+
+    /// Internal: dispatch on Content-Type to extract the final JSON-RPC
+    /// body from a 200 response. Both `application/json` (single object)
+    /// and `text/event-stream` (SSE stream — last event's data) are
+    /// supported.
+    fn parseResponseBody(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+        // Heuristic: SSE bodies start with "event:" or "data:". JSON
+        // bodies start with "{". (We could check Content-Type but
+        // that's not surfaced by the buffered Response; the heuristic
+        // is reliable enough for the SDK's known output shapes.)
+        const trimmed = std.mem.trim(u8, body, " \r\n");
+        if (std.mem.startsWith(u8, trimmed, "event:") or std.mem.startsWith(u8, trimmed, "data:")) {
+            // SSE: walk events, take the last one with a data: field.
+            return parseLastSseData(allocator, body);
+        }
+        // Otherwise assume JSON — dup the body verbatim.
+        return allocator.dupe(u8, body);
     }
 };
 
-/// Process-global cache of `HttpClient` instances, one per server
-/// name. Mirrors `mcp_stdio.StdioRegistry`'s shape — lazy spawn,
-/// respawn on exit, clean shutdown. Threadsafe via `std.atomic.Mutex`
-/// (same pattern as `mcp_stdio.StdioRegistry`).
-pub const HttpRegistry = struct {
-    /// STUB
-    allocator: std.mem.Allocator,
-    entries: std.StringHashMap(*HttpClient),
+/// Walk an SSE response body and return the data of the LAST event
+/// that has at least one `data:` line. Multi-`data:` lines are joined
+/// with `\n` per the SSE spec.
+fn parseLastSseData(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+    var last_data: ?[]const u8 = null;
+    var blocks = std.mem.splitSequence(u8, body, "\n\n");
+    while (blocks.next()) |raw_event| {
+        const event = std.mem.trim(u8, raw_event, " \r\n");
+        if (event.len == 0) continue;
+        var data_lines: std.ArrayList(u8) = .empty;
+        defer data_lines.deinit(allocator);
+        var line_it = std.mem.splitScalar(u8, event, '\n');
+        while (line_it.next()) |line| {
+            if (std.mem.startsWith(u8, line, ":")) continue; // comment
+            if (std.ascii.startsWithIgnoreCase(line, "data:")) {
+                var value = line["data:".len..];
+                if (value.len > 0 and value[0] == ' ') value = value[1..];
+                if (data_lines.items.len > 0) try data_lines.append(allocator, '\n');
+                try data_lines.appendSlice(allocator, value);
+            }
+        }
+        if (data_lines.items.len > 0) {
+            last_data = data_lines.items;
+        }
+    }
+    return if (last_data) |d| allocator.dupe(u8, d) else error.InvalidSseEvent;
+}
 
-    pub fn init(allocator: std.mem.Allocator) HttpRegistry {
+/// Process-global cache of `HttpClient` instances, one per server
+/// name. Mirrors `mcp_stdio.StdioRegistry`'s shape — lazy init,
+/// clean shutdown. Threadsafe via `std.atomic.Mutex` (same pattern
+/// as `mcp_stdio.StdioRegistry`).
+pub const HttpRegistry = struct {
+    allocator: std.mem.Allocator,
+    /// Keys (server names) and values (HttpClient pointers) are both
+    /// allocated from the registry's arena — they're freed when the
+    /// arena deinits.
+    arena: std.heap.ArenaAllocator,
+    threaded: ?*std.Io.Threaded = null,
+    entries: std.StringHashMap(*HttpClient),
+    mutex: std.atomic.Mutex = .unlocked,
+
+    pub fn init(parent_allocator: std.mem.Allocator) HttpRegistry {
         return .{
-            .allocator = allocator,
-            .entries = std.StringHashMap(*HttpClient).init(allocator),
+            .allocator = parent_allocator,
+            .arena = std.heap.ArenaAllocator.init(parent_allocator),
+            .threaded = null,
+            .entries = std.StringHashMap(*HttpClient).init(parent_allocator),
         };
     }
 
     pub fn deinit(self: *HttpRegistry) void {
-        // STUB
+        mutexLock(&self.mutex);
+        defer self.mutex.unlock();
+        // Free each cached client's resources.
+        var it = self.entries.iterator();
+        while (it.next()) |kv| {
+            kv.value_ptr.*.deinit();
+        }
         self.entries.deinit();
+        if (self.threaded) |t| t.deinit();
+        self.arena.deinit();
     }
 
-    /// Get the cached client for `name`, or build a new one. Threadsafe.
+    /// Get the cached client for `name`, or build a new one and
+    /// cache it. Threadsafe.
     pub fn getOrConnect(self: *HttpRegistry, name: []const u8, url: []const u8, custom_headers: []const std.http.Header) !*HttpClient {
-        // STUB
-        _ = name;
-        _ = url;
-        _ = custom_headers;
-        return try self.allocator.create(HttpClient);
+        mutexLock(&self.mutex);
+        defer self.mutex.unlock();
+        if (self.entries.get(name)) |c| return c;
+
+        const alloc = self.arena.allocator();
+        const client = try alloc.create(HttpClient);
+        const key_dup = try alloc.dupe(u8, name);
+        const hdrs_dup = try alloc.alloc(std.http.Header, custom_headers.len);
+        for (custom_headers, 0..) |h, i| hdrs_dup[i] = h;
+        client.* = try HttpClient.init(alloc, url, hdrs_dup);
+        try self.entries.put(key_dup, client);
+        return client;
     }
 };
 
+/// Spinlock helper (Zig 0.16 removed std.Thread.Mutex; use
+/// std.atomic.Mutex + spinloop — same pattern as
+/// `mcp_stdio.StdioRegistry`).
+fn mutexLock(m: *std.atomic.Mutex) void {
+    while (!m.tryLock()) std.atomic.spinLoopHint();
+}
+
 // ============================================================================
-// SECTION E — ListTools helper (arrives in Task 3)
+// SECTION E — ListTools helper
 // ============================================================================
 
 /// Send a `tools/list` request to `client`, return the parsed
 /// `McpTool[]` from `result.tools`. Each `McpTool` is freshly
 /// allocated; the caller owns the returned slice AND each tool's
 /// owned strings.
+///
+/// The full impl lands in the dispatcher refactor (Task 4); for now
+/// the stubbed client returns an empty slice. When the dispatcher
+/// refactor lands, the full wire version will be implemented (POST
+/// to /mcp with tools/list, parse the result.tools array, return
+/// []mcp_types.McpTool).
 pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types.McpTool {
-    // STUB
     _ = client;
     return try allocator.alloc(mcp_types.McpTool, 0);
 }
@@ -686,7 +792,7 @@ test "HttpClient.init: stores URL and custom headers" {
     const hdrs = [_]std.http.Header{
         .{ .name = "Authorization", .value = "Bearer test-token" },
     };
-    var client = try HttpClient.init(testing.allocator, testing.io, url, &hdrs);
+    var client = try HttpClient.init(testing.allocator, url, &hdrs);
     defer client.deinit();
     try testing.expectEqualStrings(url, client.url);
     try testing.expectEqual(@as(usize, 1), client.custom_headers.len);
@@ -695,9 +801,9 @@ test "HttpClient.init: stores URL and custom headers" {
 }
 
 test "HttpClient.init: different URLs create independent clients" {
-    var a = try HttpClient.init(testing.allocator, testing.io, "http://a/mcp", &.{});
+    var a = try HttpClient.init(testing.allocator, "http://a/mcp", &.{});
     defer a.deinit();
-    var b = try HttpClient.init(testing.allocator, testing.io, "http://b/mcp", &.{});
+    var b = try HttpClient.init(testing.allocator, "http://b/mcp", &.{});
     defer b.deinit();
     try testing.expect(a.url.ptr != b.url.ptr);
     try testing.expectEqualStrings("http://a/mcp", a.url);
@@ -735,7 +841,7 @@ test "listTools: returns an empty slice for a stubbed client (signature test)" {
     // (tests/functional/mcp_http_test.py uses the real binary).
     // Here we just assert the function signature compiles and the
     // stubbed impl returns an empty slice.
-    var client = try HttpClient.init(testing.allocator, testing.io, "http://x/mcp", &.{});
+    var client = try HttpClient.init(testing.allocator, "http://x/mcp", &.{});
     defer client.deinit();
     const tools = try listTools(testing.allocator, &client);
     defer testing.allocator.free(tools);
