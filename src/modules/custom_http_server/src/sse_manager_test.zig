@@ -4,56 +4,14 @@ const sse_manager = @import("sse_manager.zig");
 const SseManager = sse_manager.SseManager;
 const SseClient = sse_manager.SseClient;
 const builtin = @import("builtin");
+const helpers = @import("test_helpers.zig");
 
-// Cross-platform fd plumbing. All branches are `comptime if`-gated so
-// the runtime path for each host stays identical to the prior POSIX
-// code (no behavioral change on Linux/macOS).
-//
-// Linux/macOS: socketpair(AF_UNIX, SOCK_STREAM) creates a connected pair
-// of sockets — std.c.fd_t = i32 on those platforms.
-//
-// Windows: no socketpair(2). Use a pipe instead (std.c.pipe resolves
-// to libc pipe on POSIX and to MSVCRT _pipe on Windows). std.c.fd_t =
-// windows.HANDLE = *anyopaque on Windows.
-//
-// Both paths return `[2]std.c.fd_t` so the same close-pair helper
-// (std.c.close) works on every host. Tests that pass the fd into the
-// production SseManager API (which still takes `i32` everywhere) need
-// to cast to i32 — see `toI32` below.
-fn createSocketPair() ![2]std.c.fd_t {
-    if (comptime builtin.os.tag == .windows) {
-        var fds: [2]std.c.fd_t = undefined;
-        const rc = std.c.pipe(&fds);
-        if (rc != 0) return error.PipeFailed;
-        return fds;
-    } else {
-        var fds: [2]std.c.fd_t = undefined;
-        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-        if (rc < 0) return error.SocketPairFailed;
-        return fds;
-    }
-}
-
-// Close both ends of a pair created by createSocketPair. Cross-platform
-// via std.c.close (POSIX close on Linux/macOS, MSVCRT _close on Windows).
-fn closeSocketPair(pair: [2]std.c.fd_t) void {
-    _ = std.c.close(pair[0]);
-    _ = std.c.close(pair[1]);
-}
-
-// Cast an fd_t to the i32 that the production SseManager API still
-// expects. On Linux/macOS this is a no-op (fd_t is i32). On Windows
-// HANDLE values are small integers assigned sequentially by the kernel
-// (typically < 2^31) so @intCast is safe for testing; if Windows ever
-// returns a >2^31 handle the test would crash here, which is the
-// correct signal that the production API needs an fd_t migration.
-fn toI32(fd: std.c.fd_t) i32 {
-    if (comptime builtin.os.tag == .windows) {
-        return @intCast(@intFromPtr(fd));
-    } else {
-        return @intCast(fd);
-    }
-}
+// Cross-platform fd plumbing — shared with the rest of the suite via
+// test_helpers.zig. See that file for the comptime if dispatch and the
+// kernel32 CreatePipe shim details.
+const createSocketPair = helpers.createSocketPair;
+const closeSocketPair = helpers.closeSocketPair;
+const toI32 = helpers.toI32;
 
 // ============================================================================
 // SSE Manager Tests - Client Registration and Removal

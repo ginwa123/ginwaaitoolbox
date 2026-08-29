@@ -20,18 +20,11 @@ const router = @import("router.zig");
 const sse_manager = @import("sse_manager.zig");
 const builtin = @import("builtin");
 const linux = std.posix.system;
+const helpers = @import("test_helpers.zig");
+const toI32 = helpers.toI32;
+const closeSocketPair = helpers.closeSocketPair;
+const closeI32Fd = helpers.closeI32Fd;
 
-// Cast an fd_t to the i32 that the production SseManager API still
-// expects. On Linux/macOS this is a no-op (fd_t is i32). On Windows
-// HANDLE values are small integers assigned sequentially by the kernel
-// (typically < 2^31) so @intCast is safe for testing.
-fn toI32(fd: std.c.fd_t) i32 {
-    if (comptime builtin.os.tag == .windows) {
-        return @intCast(@intFromPtr(fd));
-    } else {
-        return @intCast(fd);
-    }
-}
 const posix = std.posix;
 
 const allocator = std.testing.allocator;
@@ -926,31 +919,35 @@ test "requestBuffer: getContentLength with bogus non-numeric value" {
 // ============================================================================
 
 fn createSocketPair() ![2]std.c.fd_t {
+    // Windows: kernel32 CreatePipe via the shared helper. POSIX:
+    // socketpair with the macOS/BSD SO_SNDBUF bump. Dispatched at
+    // comptime so each host's branch is dead-code-eliminated.
     if (comptime builtin.os.tag == .windows) {
-        // No socketpair(2) on Windows. Use a pipe — same shape as the
-        // cross-platform helper in sse_manager_test.zig / sse_chunked_test.zig.
-        var fds: [2]std.c.fd_t = undefined;
-        const rc = std.c.pipe(&fds);
-        if (rc != 0) return error.PipeFailed;
-        return fds;
-    } else {
-        var fds: [2]std.c.fd_t = undefined;
-        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-        if (rc < 0) return error.SocketFailed;
-        // macOS (and BSD) defaults SO_SNDBUF to ~8 KB on AF_UNIX SOCK_STREAM
-        // pairs — far smaller than Linux (~208 KB). Tests that write 16 KB or
-        // more would block forever waiting for the reader to drain. Bump to
-        // 256 KB explicitly so SSE write-path tests stay portable.
-        var size: c_int = 256 * 1024;
-        _ = posix.system.setsockopt(
-            fds[0],
-            posix.SOL.SOCKET,
-            posix.SO.SNDBUF,
-            &size,
-            @sizeOf(@TypeOf(size)),
-        );
-        return fds;
+        return helpers.createSocketPair();
     }
+    return createBsdSocketPair();
+}
+
+fn createBsdSocketPair() ![2]std.c.fd_t {
+    // POSIX-only: socketpair + bump SO_SNDBUF for macOS/BSD portability.
+    // Windows is handled by the shared helpers.createSocketPair (which
+    // uses kernel32 CreatePipe — no SO_SNDBUF tuning applies to pipes).
+    var fds: [2]std.c.fd_t = undefined;
+    const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+    if (rc < 0) return error.SocketFailed;
+    // macOS (and BSD) defaults SO_SNDBUF to ~8 KB on AF_UNIX SOCK_STREAM
+    // pairs — far smaller than Linux (~208 KB). Tests that write 16 KB or
+    // more would block forever waiting for the reader to drain. Bump to
+    // 256 KB explicitly so SSE write-path tests stay portable.
+    var size: c_int = 256 * 1024;
+    _ = posix.system.setsockopt(
+        fds[0],
+        posix.SOL.SOCKET,
+        posix.SO.SNDBUF,
+        &size,
+        @sizeOf(@TypeOf(size)),
+    );
+    return fds;
 }
 
 test "sse: writeChunkedFrame handles empty event (terminator chunk)" {

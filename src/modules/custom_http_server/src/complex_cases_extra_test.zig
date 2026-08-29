@@ -35,6 +35,7 @@ const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const expectError = std.testing.expectError;
 const expectEqualSlices = std.testing.expectEqualSlices;
+const helpers = @import("test_helpers.zig");
 
 // ============================================================================
 // SECTION A: SSE Broadcasting and Heartbeat Edge Cases
@@ -42,12 +43,8 @@ const expectEqualSlices = std.testing.expectEqualSlices;
 
 fn createSocketPair() ![2]std.c.fd_t {
     if (comptime builtin.os.tag == .windows) {
-        // No socketpair(2) on Windows. Use a pipe — same shape as the
-        // cross-platform helper in sse_manager_test.zig.
-        var fds: [2]std.c.fd_t = undefined;
-        const rc = std.c.pipe(&fds);
-        if (rc != 0) return error.PipeFailed;
-        return fds;
+        // Use the shared helper (kernel32 CreatePipe on Windows).
+        return helpers.createSocketPair();
     } else {
         var fds: [2]std.c.fd_t = undefined;
         const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);

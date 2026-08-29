@@ -25,6 +25,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 test {
+    _ = @import("test_helpers.zig"); // Compile-only — ensures the cross-platform helpers stay in sync.
     _ = @import("http_server_test.zig");
     _ = @import("sse_manager_test.zig");
     _ = @import("router_test.zig");
