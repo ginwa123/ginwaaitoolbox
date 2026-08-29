@@ -22,10 +22,25 @@
 //
 // (the parent project's `zig build test` skips them — see src/root.zig).
 const std = @import("std");
+const builtin = @import("builtin");
 
 test {
-    _ = @import("http_server_test.zig");
-    _ = @import("sse_manager_test.zig");
+    // sse_manager_test.zig, http_server_test.zig (socket-pair paths),
+    // and security_test.zig all call posix.system.socketpair /
+    // linux.read / linux.close with i32 file descriptors. Zig 0.16
+    // doesn't expose those on Windows (where sockets are HANDLE =
+    // *anyopaque and posix.system.close is `void`), so the tests
+    // fail to COMPILE on Windows even though the test bodies would
+    // correctly skip via `if (is_windows) return;`. We exclude the
+    // whole files here rather than individually guarding every test
+    // — Windows CI coverage of these is intentionally nil until the
+    // underlying SseManager / HttpServer APIs are ported to use
+    // cross-platform fd_t (tracked in src/main.zig's "Out of scope"
+    // pre-existing Windows bugs list).
+    if (builtin.os.tag != .windows) {
+        _ = @import("http_server_test.zig");
+        _ = @import("sse_manager_test.zig");
+    }
     _ = @import("router_test.zig");
     _ = @import("http_parser_test.zig");
     // sse_chunked_test.zig is excluded because its static-contract tests
@@ -34,20 +49,36 @@ test {
     // the parent project's `zig build test` instead.
     // _ = @import("sse_chunked_test.zig");
     _ = @import("test_session_lifecycle.zig");
-    _ = @import("complex_cases_test.zig");
-    _ = @import("complex_cases_extra_test.zig");
+    // complex_cases_*.zig use POSIX-only syscalls (`posix.system.socketpair`,
+    // `linux.read`/`linux.close`/`linux.write`) that Zig 0.16 doesn't
+    // expose on Windows (where sockets are HANDLE = *anyopaque, and
+    // `posix.system.close` is `void`). Tests that need them are
+    // guarded with `if (is_windows) return;` inside each file. On
+    // Windows we still skip the FILE-level compile by guarding the
+    // @import — that keeps the build green without each test having
+    // to rediscover the same Windows workarounds.
+    if (builtin.os.tag != .windows) {
+        _ = @import("complex_cases_test.zig");
+        _ = @import("complex_cases_extra_test.zig");
+        _ = @import("security_test.zig");
+        _ = @import("sse_keepalive_test.zig");
+    }
     _ = @import("main_static_html_test.zig");
-    // 60s soak test for the SSE-keepalive bug — intentionally ONLY
-    // here, not in the parent's `zig build test` (see header comment).
-    _ = @import("sse_keepalive_test.zig");
-    // WebSocket support (RFC 6455) — frames, handshake, manager
+    // WebSocket support (RFC 6455) — frames, handshake, manager.
+    // websocket_manager_test.zig uses `std.posix.system.socket` /
+    // `.pipe` / `.close`, which require linking ws2_32 on Windows (the
+    // build.zig here only links `c`, not `ws2_32`, and `std.c.socket`
+    // has the same 32-bit-handle truncation problem the parent build
+    // works around in `build.zig`). Skip on Windows to keep the build
+    // green; frame/handshake tests are pure parsers so they run
+    // everywhere.
     _ = @import("websocket_frames_test.zig");
     _ = @import("websocket_handshake_test.zig");
-    _ = @import("websocket_manager_test.zig");
+    if (builtin.os.tag != .windows) {
+        _ = @import("websocket_manager_test.zig");
+    }
     // Jinja-style template engine — tokenizer, parser, renderer, inheritance
     _ = @import("template_test.zig");
-    // Security primitives — CSRF, rate limit, security headers, origin, body size
-    _ = @import("security_test.zig");
     // readHtml helper — read template file with embedded-source fallback.
     // Excluded from the module's own build because it imports
     // ../../../root.zig (parent only). The parent project re-imports it
