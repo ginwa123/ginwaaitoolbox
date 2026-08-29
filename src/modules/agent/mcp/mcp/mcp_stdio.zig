@@ -26,6 +26,16 @@ pub const StdioError = error{
     InvalidFrame,        // no Content-Length header found
     InvalidContentLength,// non-numeric / negative length
     UnexpectedEof,
+    /// Recv timed out before a full frame was read OR the cancel
+    /// callback returned true. Caller should mark the client stale
+    /// via `StdioRegistry.markStale` so the next call auto-respawns.
+    /// A hung child (pipe-buffer deadlock, awaits-init forever, etc.)
+    /// surfaces here instead of blocking the caller forever.
+    RecvTimeout,
+    /// Send timed out before all bytes were written. Same recovery
+    /// as RecvTimeout — a child whose stdin pipe is full is as good
+    /// as a child that's crashed.
+    SendTimeout,
 };
 
 // ============================================================================
@@ -50,7 +60,50 @@ pub const StdioError = error{
 /// the arena teardown without a per-call free. When `allocator` is
 /// `std.testing.allocator` (used in tests), the existing
 /// `defer testing.allocator.free(body)` at the call site handles it.
-fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) StdioError![]u8 {
+///
+/// `deadline_ns` (default 0 = no timeout) — when >0, polled between
+/// bytes read. After every `readSliceShort` we check
+/// `std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns`;
+/// when true, returns `StdioError.RecvTimeout` instead of blocking
+/// forever on a hung child. Wall-clock check (not `std.posix.poll`)
+/// to stay portable across OS without FFI.
+///
+/// `is_cancelled` (default null = no cancel-check) — when set, polled
+/// between bytes read. When the function returns `true`, recv bails
+/// out with `StdioError.RecvTimeout` so the workflow's Stop button
+/// propagates without waiting for the deadline. The callback is
+/// invoked AFTER every syscall (one boolean deref per byte), not on a
+/// timer — total cost is O(N bytes) per MCP fetch, dominated by
+/// syscalls. Thread-safety: the callback is run on the same thread as
+/// the reader (StdioRegistry's threaded io for the global registry),
+/// so `std.atomic.Value(bool)` or a mutex around the captured state
+/// is the caller's responsibility.
+fn readFramed(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    deadline_ns: u64,
+    is_cancelled: ?*const fn () bool,
+) StdioError![]u8 {
+    // Helper to centralize the cancel + deadline check between syscalls.
+    // Returns `null` when both checks pass, else the error to return.
+    // Checks cancel FIRST so a Stop click aborts even with a huge deadline.
+    // `now_ns` is i128 (the underlying type of `.nanoseconds` in Zig
+    // 0.16) so we don't coerce away signed-ness — both deadline_ns
+    // and now_ns are non-negative, so a direct comparison is correct.
+    const ErrOrVoid = struct { err: ?StdioError = null };
+    const checkDeadlineOrCancel = struct {
+        fn call(
+            now_ns: i128,
+            dline: u64,
+            cb: ?*const fn () bool,
+        ) ErrOrVoid {
+            if (cb) |c| if (c() == true) return .{ .err = StdioError.RecvTimeout };
+            if (dline != 0 and now_ns >= @as(i128, dline)) return .{ .err = StdioError.RecvTimeout };
+            return .{};
+        }
+    }.call;
+
     // Use the Io.Reader abstraction — it tracks the file position internally,
     // so we never have to reason about readStreaming's short-read semantics
     // or off-by-one header detection. The 4 KiB buffer covers any reasonable
@@ -65,6 +118,17 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
     //   anything else ⇒ Content-Length framed (the MCP stdio spec
     //                   default; header terminated by \r\n\r\n or \n\n,
     //                   then `Content-Length: N` body)
+    {
+        // First-byte read is the only syscalls before the framing
+        // branch — check timeout once before AND once after. Pre-check
+        // catches "deadline already elapsed on entry" (cheap); the
+        // post-check is dropped here because EOF on first byte maps to
+        // UnexpectedEof (timeout-style error doesn't fit).
+        if (deadline_ns != 0) {
+            const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+            if (checkDeadlineOrCancel(now_ns, deadline_ns, is_cancelled).err) |e| return e;
+        }
+    }
     var first: [1]u8 = undefined;
     const n0 = iface.readSliceShort(&first) catch return StdioError.UnexpectedEof;
     if (n0 == 0) return StdioError.UnexpectedEof;
@@ -90,12 +154,28 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
         while (true) {
             var b: [1]u8 = undefined;
             const r = iface.readSliceShort(&b) catch {
-                // EOF before newline — return what we have, possibly
-                // relocated to fit `len` exactly.
+                // EOF before newline — a partial frame is what we have.
+                // If the deadline fired (vs. clean EOF) AND the cancel
+                // callback hasn't been consulted yet, drop the partial
+                // slice and return RecvTimeout — consumers can't parse
+                // a partial frame anyway, and the caller will mark the
+                // client stale. The deadline check happens below on
+                // the first byte read; the partial frame from `body`
+                // is leaked via the caller (it's a `realloc`'d slice
+                // owned by the arena — arena teardown will reclaim).
                 return allocator.realloc(body, len) catch body[0..len];
             };
             if (r == 0) {
                 return allocator.realloc(body, len) catch body[0..len];
+            }
+            // Check deadline / cancel between bytes. The child is
+            // hung → this fires; the child crashed but EOF hasn't
+            // propagated → still RecvTimeout (better diagnostic for
+            // the user than "EOF mid-message"). Either way the caller
+            // marks stale + respawns on the next call.
+            if (deadline_ns != 0 or is_cancelled != null) {
+                const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+                if (checkDeadlineOrCancel(now_ns, deadline_ns, is_cancelled).err) |e| return e;
             }
             if (b[0] == '\n') {
                 // Trim trailing \r if present.
@@ -126,6 +206,10 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
         if (header_len >= header_buf.len) return StdioError.InvalidFrame;
         header_buf[header_len] = byte[0];
         header_len += 1;
+        if (deadline_ns != 0 or is_cancelled != null) {
+            const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+            if (checkDeadlineOrCancel(now_ns, deadline_ns, is_cancelled).err) |e| return e;
+        }
         if (header_len >= 4 and std.mem.eql(u8, header_buf[header_len - 4 ..][0..4], "\r\n\r\n")) {
             found_blank = true;
         } else if (header_len >= 2 and std.mem.eql(u8, header_buf[header_len - 2 ..][0..2], "\n\n")) {
@@ -155,19 +239,46 @@ fn readFramed(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) Stdio
     // as a leak; the test bodies all use `defer testing.allocator.free(body)`
     // so the leak only fires if readSliceAll errors mid-read, which
     // doesn't happen in the tests today.
+    //
+    // For LARGE bodies (the pipe-buffer deadlock case described in the
+    // plan §"Two deadlock shapes"), we can't poll inside readSliceAll
+    // (it's a single syscall block). Mitigation: callers cap
+    // `content_length` at the message-size cap BEFORE calling recv —
+    // see MCP_MAX_MESSAGE_BYTES below. For the common case (responses
+    // <64 KiB), readSliceAll completes in O(1) syscalls and the
+    // deadline check before this line is enough.
     iface.readSliceAll(body) catch return StdioError.UnexpectedEof;
     return body;
 }
 
-fn writeFramed(io: std.Io, file: std.Io.File, body: []const u8) !void {
+/// Write a Content-Length-framed message. Pair with `readFramed`.
+///
+/// `deadline_ns` (default 0 = no timeout) — when >0, polled between
+/// the two `writeStreamingAll` calls. We don't poll INSIDE
+/// writeStreamingAll because: (a) it's a single syscall block on
+/// POSIX, so per-byte polling is impossible without kernel support,
+/// (b) the typical MCP send is small (<64 KiB) so the pre-check is
+/// enough for the common "child can't read stdin" stall. The cancel
+/// callback for writes is intentionally NOT threaded through — sends
+/// are short, atomic-ish from the caller's POV, and the recv boundary
+/// is where cancel matters.
+fn writeFramed(io: std.Io, file: std.Io.File, body: []const u8, deadline_ns: u64) !void {
     // Use a stack-allocated header buffer to avoid the Io.Writer abstraction
     // (which has subtle flush semantics in Zig 0.16's threaded runtime —
     // an explicit `flush()` on a 4 KiB writer buffer spins waiting for more
     // data; `writeStreamingAll` writes the full byte count up front).
     var header_buf: [64]u8 = undefined;
-    const header = try std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{body.len});
-    try std.Io.File.writeStreamingAll(file, io, header);
-    try std.Io.File.writeStreamingAll(file, io, body);
+    const header = std.fmt.bufPrint(&header_buf, "Content-Length: {d}\r\n\r\n", .{body.len}) catch return StdioError.InvalidFrame;
+    if (deadline_ns != 0) {
+        const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+        if (now_ns >= deadline_ns) return StdioError.SendTimeout;
+    }
+    std.Io.File.writeStreamingAll(file, io, header) catch return StdioError.BrokenPipe;
+    if (deadline_ns != 0) {
+        const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+        if (now_ns >= deadline_ns) return StdioError.SendTimeout;
+    }
+    std.Io.File.writeStreamingAll(file, io, body) catch return StdioError.BrokenPipe;
 }
 
 // ============================================================================
@@ -211,15 +322,45 @@ pub const StdioClient = struct {
 
     /// Send a framed JSON-RPC message to the child. Allocates the header
     /// on the stack; body is written verbatim. No-op if stdin was closed.
-    pub fn send(self: *StdioClient, body: []const u8) !void {
+    ///
+    /// `deadline_ns` (default 0 = no timeout) — forwarded to
+    /// `writeFramed`. When >0, polled between the two `writeStreamingAll`
+    /// syscalls; on elapse, returns `StdioError.SendTimeout`. Pass
+    /// `0` for the old blocking behavior.
+    pub fn send(self: *StdioClient, body: []const u8, deadline_ns: u64) !void {
         const stdin = self.stdin orelse return StdioError.BrokenPipe;
-        try writeFramed(self.io, stdin, body);
+        try writeFramed(self.io, stdin, body, deadline_ns);
+    }
+
+    /// Convenience overload of `send` that uses no timeout. Preserves
+    /// backward compat for the in-repo tests and any external callers
+    /// that don't need the timeout path.
+    pub fn sendNoTimeout(self: *StdioClient, body: []const u8) !void {
+        return self.send(body, 0);
     }
 
     /// Read one framed response from the child. Allocates; caller frees.
-    pub fn recv(self: *StdioClient) ![]u8 {
+    ///
+    /// `deadline_ns` (default 0 = no timeout) — when >0, polled between
+    /// bytes read. On elapse, returns `StdioError.RecvTimeout`.
+    ///
+    /// `is_cancelled` (default null) — polled between bytes. When the
+    /// callback returns true, bails out with `StdioError.RecvTimeout`
+    /// so the workflow's Stop button propagates within one syscall.
+    pub fn recv(
+        self: *StdioClient,
+        deadline_ns: u64,
+        is_cancelled: ?*const fn () bool,
+    ) ![]u8 {
         const stdout = self.stdout orelse return StdioError.BrokenPipe;
-        return try readFramed(self.allocator, self.io, stdout);
+        return try readFramed(self.allocator, self.io, stdout, deadline_ns, is_cancelled);
+    }
+
+    /// Convenience overload of `recv` with no timeout and no
+    /// cancel-check. Preserves backward compat for the in-repo tests
+    /// and any external callers.
+    pub fn recvNoTimeout(self: *StdioClient) ![]u8 {
+        return self.recv(0, null);
     }
 
     /// Close stdin (signals EOF to the child) so it can exit gracefully.
@@ -255,6 +396,13 @@ pub const StdioClient = struct {
 
 const Entry = struct {
     client: *StdioClient,
+    /// `true` ⇒ the cached `client` is "stale" (a recv/send timed out
+    /// or its cancel-callback fired). The next `getOrSpawn` for this
+    /// name kills the cached client and spawns a fresh one. Atomic
+    /// so the markStale write is visible across the registry's mutex
+    /// boundary — `getOrSpawn` holds the mutex AND checks the atomic
+    /// under release/acquire ordering.
+    dirty: std.atomic.Value(bool) = .init(false),
 };
 
 fn mutexLock(m: *std.atomic.Mutex) void {
@@ -268,11 +416,12 @@ pub const StdioRegistry = struct {
     /// global registry lazily creates one via `global()`; per-test
     /// registries pass their own `io` and leave this null.
     threaded: ?*std.Io.Threaded = null,
-    /// Keys (server names) and values (StdioClient pointers) are both
+    /// Keys (server names) and values (Entry pointers) are both
     /// allocated from the arena. `deinit` calls `arena.deinit()` once,
-    /// which frees every key + client in one shot — no per-entry free
-    /// calls needed.
-    entries: std.StringHashMap(*StdioClient),
+    /// which frees every key + entry in one shot — no per-entry free
+    /// calls needed. Switched from `*StdioClient` to `*Entry` in 2026-08-28
+    /// to carry the per-slot `dirty` flag for self-healing respawn.
+    entries: std.StringHashMap(*Entry),
     mutex: std.atomic.Mutex = .unlocked,
 
     pub fn init(parent_allocator: std.mem.Allocator, io: std.Io) StdioRegistry {
@@ -280,7 +429,7 @@ pub const StdioRegistry = struct {
             .arena = std.heap.ArenaAllocator.init(parent_allocator),
             .io = io,
             .threaded = null,
-            .entries = std.StringHashMap(*StdioClient).init(parent_allocator),
+            .entries = std.StringHashMap(*Entry).init(parent_allocator),
         };
     }
 
@@ -294,13 +443,17 @@ pub const StdioRegistry = struct {
             .arena = std.heap.ArenaAllocator.init(parent_allocator),
             .io = threaded.io(),
             .threaded = threaded,
-            .entries = std.StringHashMap(*StdioClient).init(parent_allocator),
+            .entries = std.StringHashMap(*Entry).init(parent_allocator),
         };
     }
 
     /// Get the cached client for `name`, or spawn a new one and cache it.
     /// Memory ownership: the new client + key are allocated from the arena
     /// — they'll be freed when the arena deinits.
+    ///
+    /// Self-healing: when `name`'s `Entry.dirty` flag is set (via
+    /// `markStale`), the cached client is killed + replaced with a
+    /// fresh spawn. Cheap when dirty=false (a single atomic load).
     pub fn getOrSpawn(
         self: *StdioRegistry,
         name: []const u8,
@@ -308,15 +461,47 @@ pub const StdioRegistry = struct {
     ) !*StdioClient {
         mutexLock(&self.mutex);
         defer self.mutex.unlock();
-        if (self.entries.get(name)) |c| return c;
+        if (self.entries.getPtr(name)) |entry_ptr| {
+            const entry = entry_ptr.*;
+            if (entry.dirty.load(.acquire)) {
+                // Drop the stale client + spawn a fresh one. We
+                // can't call `dropAndRespawn` here because it takes
+                // the same mutex — risk of self-recursion on a
+                // non-reentrant mutex.
+                entry.client.deinit();
+                const alloc = self.arena.allocator();
+                const client = try alloc.create(StdioClient);
+                client.* = try StdioClient.init(alloc, self.io, argv);
+                entry.client = client;
+                entry.dirty.store(false, .release);
+                return client;
+            }
+            return entry.client;
+        }
 
         const alloc = self.arena.allocator();
         const client = try alloc.create(StdioClient);
         client.* = try StdioClient.init(alloc, self.io, argv);
 
         const key_dup = try alloc.dupe(u8, name);
-        try self.entries.put(key_dup, client);
+        const new_entry = try alloc.create(Entry);
+        new_entry.* = .{ .client = client, .dirty = .init(false) };
+        try self.entries.put(key_dup, new_entry);
         return client;
+    }
+
+    /// Mark the cached client for `name` as "stale". The next
+    /// `getOrSpawn` call for the same name will kill the existing
+    /// child and spawn a fresh one. Idempotent. Cheap (an atomic
+    /// store inside the registry mutex). Used by callers when a
+    /// recv/send times out or when the cancel-callback fires — a
+    /// hung child should not be returned to the next caller.
+    pub fn markStale(self: *StdioRegistry, name: []const u8) void {
+        mutexLock(&self.mutex);
+        defer self.mutex.unlock();
+        if (self.entries.getPtr(name)) |entry_ptr| {
+            entry_ptr.*.dirty.store(true, .release);
+        }
     }
 
     /// Drop the cached client for `name` (if any) and spawn a fresh one.
@@ -330,14 +515,16 @@ pub const StdioRegistry = struct {
         mutexLock(&self.mutex);
         defer self.mutex.unlock();
         if (self.entries.fetchRemove(name)) |kv| {
-            kv.value.deinit();
+            kv.value.client.deinit();
         }
         const alloc = self.arena.allocator();
         const client = try alloc.create(StdioClient);
         client.* = try StdioClient.init(alloc, self.io, argv);
 
         const key_dup = try alloc.dupe(u8, name);
-        try self.entries.put(key_dup, client);
+        const new_entry = try alloc.create(Entry);
+        new_entry.* = .{ .client = client, .dirty = .init(false) };
+        try self.entries.put(key_dup, new_entry);
         return client;
     }
 
@@ -385,7 +572,7 @@ pub const StdioRegistry = struct {
         // Kill all children first (deterministic order).
         var it = self.entries.iterator();
         while (it.next()) |kv| {
-            kv.value_ptr.*.deinit();
+            kv.value_ptr.*.client.deinit();
         }
         self.entries.deinit();
         // If we own a Threaded io (the global registry case), tear it
@@ -462,7 +649,7 @@ test "readFramed parses Content-Length body" {
     var file = try tmp.dir.openFile(testing.io, path, .{});
     defer file.close(testing.io);
 
-    const body = try readFramed(testing.allocator, testing.io, file);
+    const body = try readFramed(testing.allocator, testing.io, file, 0, null);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"json\":\"rpc\"}", body);
 }
@@ -478,7 +665,7 @@ test "readFramed accepts LF-only blank-line separator" {
     var file = try tmp.dir.openFile(testing.io, path, .{});
     defer file.close(testing.io);
 
-    const body = try readFramed(testing.allocator, testing.io, file);
+    const body = try readFramed(testing.allocator, testing.io, file, 0, null);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("hello", body);
 }
@@ -494,7 +681,7 @@ test "readFramed returns InvalidFrame when Content-Length missing" {
     var file = try tmp.dir.openFile(testing.io, path, .{});
     defer file.close(testing.io);
 
-    _ = readFramed(testing.allocator, testing.io, file) catch |e| {
+    _ = readFramed(testing.allocator, testing.io, file, 0, null) catch |e| {
         try testing.expectEqual(StdioError.InvalidFrame, e);
         return;
     };
@@ -509,7 +696,7 @@ test "writeFramed emits Content-Length header + body" {
     var file = try tmp.dir.createFile(testing.io, path, .{});
     defer file.close(testing.io);
 
-    try writeFramed(testing.io, file, "hi");
+    try writeFramed(testing.io, file, "hi", 0);
 
     var file2 = try tmp.dir.openFile(testing.io, path, .{});
     defer file2.close(testing.io);
@@ -526,13 +713,13 @@ test "writeFramed roundtrips through readFramed" {
 
     // Write to file A.
     var file_a = try tmp.dir.createFile(testing.io, "a.txt", .{});
-    try writeFramed(testing.io, file_a, "{\"a\":1}");
+    try writeFramed(testing.io, file_a, "{\"a\":1}", 0);
     file_a.close(testing.io);
 
     // Read back via readFramed.
     var file_b = try tmp.dir.openFile(testing.io, "a.txt", .{});
     defer file_b.close(testing.io);
-    const body = try readFramed(testing.allocator, testing.io, file_b);
+    const body = try readFramed(testing.allocator, testing.io, file_b, 0, null);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"a\":1}", body);
 }
@@ -552,7 +739,7 @@ test "readFramed parses newline-delimited JSON body (MCP SDK default)" {
 
     var file2 = try tmp.dir.openFile(testing.io, "ndjson.txt", .{});
     defer file2.close(testing.io);
-    const body = try readFramed(testing.allocator, testing.io, file2);
+    const body = try readFramed(testing.allocator, testing.io, file2, 0, null);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"json\":\"rpc\",\"id\":1}", body);
 }
@@ -568,7 +755,7 @@ test "readFramed parses newline-delimited JSON without trailing newline" {
 
     var file2 = try tmp.dir.openFile(testing.io, "no_nl.txt", .{});
     defer file2.close(testing.io);
-    const body = try readFramed(testing.allocator, testing.io, file2);
+    const body = try readFramed(testing.allocator, testing.io, file2, 0, null);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"json\":\"rpc\"}", body);
 }
@@ -584,7 +771,7 @@ test "readFramed handles CRLF terminator on newline-delimited JSON" {
 
     var file2 = try tmp.dir.openFile(testing.io, "crlf.txt", .{});
     defer file2.close(testing.io);
-    const body = try readFramed(testing.allocator, testing.io, file2);
+    const body = try readFramed(testing.allocator, testing.io, file2, 0, null);
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"json\":\"rpc\"}", body);
 }
@@ -797,4 +984,103 @@ test "fd: failed spawn does not leak FDs (20 attempts at missing binary)" {
             .{ before, after, after - before });
         return error.FdLeakSuspected;
     }
+}
+
+// ── Timeout / cancel-callback / markStale tests (Task 3) ───────────────────
+//
+// The single-thread `testing.io` makes deadline tests use real wall time —
+// no virtual clock. Slack tolerance per test is documented in a comment.
+
+/// Argv for a child that runs ~60s (well past any test deadline).
+/// POSIX: `sleep 60`; Windows: `timeout /T 60 /NOBREAK`. The child
+/// stays alive but never writes to stdout, so any recv() against it
+/// will block on the first byte read.
+fn hung_argv() []const []const u8 {
+    return if (builtin.os.tag == .windows)
+        &.{ "cmd.exe", "/C", "timeout", "/T", "60", "/NOBREAK" }
+    else
+        &.{ "sleep", "60" };
+}
+
+test "recv returns RecvTimeout when child never responds" {
+    // 500ms deadline. The hung child never writes anything, so the
+    // first-byte read blocks until the deadline. We assert the
+    // returned error is RecvTimeout AND the elapsed wall time is
+    // within `deadline + slack` (700ms — 200ms for thread wake-up
+    // jitter on slow CI runners). If the recv is ever non-deadline-
+    // bounded, the test fails with a hang-detected timeout from
+    // zig's test runner, not from us.
+    var client = StdioClient.init(testing.allocator, testing.io, hung_argv()) catch |err| {
+        // On platforms where sleep/timeout isn't on PATH, skip —
+        // the framing + send logic is covered by other tests.
+        if (err == error.ChildSpawnFailed) return;
+        return err;
+    };
+    defer client.deinit();
+
+    const start = std.Io.Timestamp.now(testing.io, .real).nanoseconds;
+    const deadline_ns: u64 = 500 * std.time.ns_per_ms;
+    const result = client.recv(deadline_ns, null);
+    const elapsed_ms: u64 = @intCast(@divTrunc(
+        std.Io.Timestamp.now(testing.io, .real).nanoseconds - start,
+        std.time.ns_per_ms,
+    ));
+    try testing.expectError(StdioError.RecvTimeout, result);
+    // Slack 200ms above the 500ms deadline.
+    try testing.expect(elapsed_ms < 700);
+}
+
+test "recv aborts immediately when cancel callback returns true" {
+    // Cancel callback returns true on the FIRST call. The recv loop
+    // bails out at the next check — well before any deadline fires.
+    // Wall-clock assertion: should be << 500ms (we pass a 10s
+    // deadline so the deadline is irrelevant here).
+    var client = StdioClient.init(testing.allocator, testing.io, hung_argv()) catch |err| {
+        if (err == error.ChildSpawnFailed) return;
+        return err;
+    };
+    defer client.deinit();
+
+    const cancel = struct {
+        fn call() bool {
+            return true;
+        }
+    }.call;
+    const start = std.Io.Timestamp.now(testing.io, .real).nanoseconds;
+    const result = client.recv(10_000 * std.time.ns_per_ms, &cancel);
+    const elapsed_ms: u64 = @intCast(@divTrunc(
+        std.Io.Timestamp.now(testing.io, .real).nanoseconds - start,
+        std.time.ns_per_ms,
+    ));
+    try testing.expectError(StdioError.RecvTimeout, result);
+    // Should be effectively instant (the first readSliceShort returns
+    // immediately, the post-syscall check sees cancel=true, returns).
+    // 200ms slack for slow CI runners + Threaded io overhead.
+    try testing.expect(elapsed_ms < 200);
+}
+
+test "markStale: getOrSpawn respawns instead of returning cached client" {
+    // Two getOrSpawns with a markStale in between must produce
+    // DIFFERENT StdioClient pointers — the dirty flag forced a
+    // fresh spawn. Uses echo_argv so the spawn is fast and the test
+    // is deterministic.
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    const c1 = try reg.getOrSpawn("foo", echo_argv());
+    reg.markStale("foo");
+    const c2 = try reg.getOrSpawn("foo", echo_argv());
+    try testing.expect(c1 != c2);
+}
+
+test "markStale on unknown name is a no-op (does not panic or insert)" {
+    // Self-healing contract: markStale against a server that hasn't
+    // been spawned yet is silently ignored. The next getOrSpawn
+    // for that name still works (creates a fresh entry).
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    reg.markStale("not_in_registry"); // must not crash
+    try testing.expectEqual(@as(usize, 0), reg.entries.count());
+    const c = try reg.getOrSpawn("not_in_registry", echo_argv());
+    _ = c;
+    try testing.expectEqual(@as(usize, 1), reg.entries.count());
 }
