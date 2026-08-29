@@ -1,0 +1,18 @@
+# pnpm 11 auto-creates this file when it sees a postinstall script it
+# wants the user to explicitly approve (security hardening — the legacy
+# `pnpm.onlyBuiltDependencies` field in package.json is no longer read
+# as of pnpm 11). The single entry covers vitest's transitive esbuild
+# dep; without it pnpm refuses to run esbuild's postinstall that
+# downloads the platform-native binary, and `pnpm test` aborts with
+# `[ERR_PNPM_IGNORED_BUILDS]` + exit 1.
+#
+# Equivalent to the (deprecated) `onlyBuiltDependencies=esbuild` line
+# in the workspace .npmrc — but pnpm 11 reads the YAML form, NOT the
+# .npmrc form, for the approved-builds allowlist.
+#
+# Mirrors src/apps/mcp_hello_world/pnpm-workspace.yaml — same pattern,
+# same rationale. We migrated to pnpm (alongside the rest of the
+# project, PR #370) so this binary's build chain matches the webapp's
+# and so the CI's pnpm-action step doesn't have to special-case npm.
+allowBuilds:
+  esbuild: true

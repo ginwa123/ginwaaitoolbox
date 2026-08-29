@@ -512,6 +512,8 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 // `prompts_build_messages_for_agent_prompt.zig` were migrated to it.
 pub const loggermod = @import("modules/logger/Logger.zig");
 pub const mcp_stdio = @import("modules/agent/mcp/mcp/mcp_stdio.zig");
+pub const mcp_http = @import("modules/agent/mcp/mcp/mcp_http.zig");
+pub const mcp_types = @import("modules/agent/mcp/mcp/mcp_types.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
@@ -655,5 +657,13 @@ test {
     // (mirrors cleanup_stale_worker pattern). Re-imported here for the
     // same reason — see plan 2026-08-19-cleanup-stale-background-process.
     _ = @import("schedulers/cleanup_stale_background_process.zig");
+    // modules/agent/mcp/mcp/mcp_http.zig has inline tests for the
+    // SSE parser + spec-compliant header builder. The `pub const
+    // mcp_http = @import(...)` above re-exports the module, but Zig's
+    // lazy compilation doesn't pull the file into the test binary
+    // unless something references the namespace. Same workaround as
+    // cleanup_stale_worker above — see plan
+    // 2026-08-28-mcp-streamable-http.md (Task 2).
+    _ = @import("modules/agent/mcp/mcp/mcp_http.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }
