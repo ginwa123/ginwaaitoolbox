@@ -48,7 +48,15 @@ const isCurrentChat = (sessionId: string): boolean =>
 const isStale = (human: string | undefined, updated: string | undefined): boolean => {
   if (!human) return false
   if (!updated) return false
-  return Number(updated) > Number(human)
+  // Both fields are SQLite datetime UTC strings ('YYYY-MM-DD HH:MM:SS')
+  // - identical format - so lexicographic string comparison is the
+  // most accurate (and fastest) way to detect 'updated_at > human_time'.
+  // String comparison matches the SELECT layer's
+  // `needs_human_review` predicate (llm_history.zig), which compares
+  // `t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) * 1000)`
+  // - also a unix-vs-datetime comparison that resolves to the same
+  // truth (newer string > older string).
+  return updated > human
 }
 
 // Inject processingState from App.vue

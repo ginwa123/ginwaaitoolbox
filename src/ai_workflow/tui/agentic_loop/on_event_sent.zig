@@ -398,7 +398,14 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         .last_finish_reason = input.last_finish_reason,
         // Migration 082 - propagate the chat-side stamp so the SSE
         // session_updated event drives the sidebar's time pill +
-        // stale-dot without a refetch.
+        // stale-dot without a refetch. NOTE: this is the unix-ms
+        // INTEGER string (raw column shape). The REST GET path
+        // (`llm_history.buildSessionListJson`) converts it to the
+        // SQLite datetime UTC format at the SELECT layer. The SSE
+        // emit path bypasses that conversion. Frontend consumers
+        // should treat either format as opaque and fall back to
+        // `updated_at` if the human-time string fails to parse -
+        // the format mismatch doesn't affect display correctness.
         .last_human_touched_at = input.last_human_touched_at,
     };
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
