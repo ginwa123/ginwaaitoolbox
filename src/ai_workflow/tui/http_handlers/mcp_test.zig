@@ -71,6 +71,26 @@ const TEST_HTTP_TIMEOUT_MS: u32 = 10_000;
 /// slow process spawn + IPC roundtrip on a busy host.
 const TEST_STDIO_TIMEOUT_MS: u64 = 10_000;
 
+/// Maximum attempts for the stdio probe. The first attempt covers
+/// the happy path; the retry handles the macOS cold-start race
+/// where `process.spawn` returns BEFORE the child (sh wrapper → exec
+/// node → SDK connect → `_stdin.on('data', ...)`) has attached its
+/// stdin listener. On macOS the race window is wider than on Linux,
+/// so the request sits in the kernel pipe buffer unread and the SDK
+/// `tools/list` response never fires before our deadline — instead
+/// we see `UnexpectedEof` from `readSliceShort`. Linux passes 10/10
+/// in a tight loop; macOS CI fails ~once per CI run without this
+/// retry. Two attempts is enough — covers the cold-start race
+/// without doubling worst-case latency for the user.
+const TEST_STDIO_MAX_ATTEMPTS: u8 = 2;
+
+/// Sleep between cold-start retries. 100 ms gives the SDK enough
+/// time to finish `mcp.connect(transport)` + attach its `'data'`
+/// listener; small enough that the worst-case user latency is
+/// ~1.2s (cold spawn + 100ms sleep + second spawn), well inside
+/// the 10s deadline budget.
+const TEST_STDIO_RETRY_DELAY_MS: i64 = 100;
+
 /// Tagged request body. Mirrors the frontend's `McpServerModalValue`
 /// shape minus the `name` field (we don't persist anything here).
 const TestRequest = struct {
@@ -184,17 +204,9 @@ fn testStdio(
     defer allocator.free(preview_name);
 
     const reg = mcp_stdio.StdioRegistry.global(allocator);
-    const client = reg.getOrSpawn(preview_name, argv) catch |err| {
-        logger.warnFmt("[mcp_test] stdio spawn failed for command '{s}': {s}", .{ req.command, @errorName(err) });
-        return TestError.SpawnFailed;
-    };
 
-    // Send `tools/list` as raw NDJSON (not Content-Length framed).
-    // The @modelcontextprotocol/sdk reads stdin via a line-based
-    // stream reader and parses each line as JSON; a Content-Length
-    // header before the JSON makes the first "line" un-parseable
-    // and the SDK silently drops the request. This is a v1.x SDK
-    // quirk — the spec allows both formats.
+    // Build the NDJSON body once — same on every attempt. The SDK
+    // parses one JSON-RPC request per `\n`-terminated line.
     const body = std.fmt.allocPrint(
         allocator,
         "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{{}}}}\n",
@@ -202,40 +214,71 @@ fn testStdio(
     ) catch return TestError.OutOfMemory;
     defer allocator.free(body);
 
-    // Direct write to stdin — bypass the Content-Length framing in
-    // `client.send` (per the SDK quirk comment above).
-    const stdin_file = client.stdin orelse return TestError.SendFailed;
-    std.Io.File.writeStreamingAll(stdin_file, io, body) catch |err| {
-        logger.warnFmt("[mcp_test] stdio send failed: {s}", .{@errorName(err)});
-        return TestError.SendFailed;
-    };
+    // Cold-start race retry: macOS ARM64 CI sees ~once-per-run
+    // `UnexpectedEof` because `process.spawn` returns BEFORE the
+    // child (sh wrapper → exec node → SDK connect → attach
+    // `_stdin.on('data')`) has finished bootstrapping. The request
+    // sits in the kernel pipe buffer unread, the SDK never sees
+    // it, and our deadline fires on an empty stdout → EOF.
+    //
+    // Fix: try once, and on `UnexpectedEof` specifically, drop the
+    // (now-dead) cached client via `markStale` + sleep briefly +
+    // retry. Two attempts covers the cold-start race; three+
+    // would just trade reliability for latency.
+    var attempt: u8 = 1;
+    while (true) : (attempt += 1) {
+        const client = reg.getOrSpawn(preview_name, argv) catch |err| {
+            logger.warnFmt("[mcp_test] stdio spawn failed for command '{s}': {s}", .{ req.command, @errorName(err) });
+            return TestError.SpawnFailed;
+        };
 
-    // 10s deadline per the /api/mcp/test probe's contract (we want
-    // fast failure for the user, not a 30s default). The cancel
-    // callback is null — the HTTP request can be cancelled by the
-    // client closing the connection (handled by the http server's
-    // own teardown). On RecvTimeout we mark the preview stale so
-    // a second /api/mcp/test with a responsive server doesn't reuse
-    // the hung child. See mcp_stdio.zig's markStale for the
-    // self-healing contract.
-    const deadline_ns: u64 = TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms;
-    const resp = client.recv(deadline_ns, null) catch |err| {
-        // Mark the preview entry stale so the next test doesn't
-        // reuse the (now-dead) cached client. Surface the concrete
-        // StdioError in the response.
-        reg.markStale(preview_name);
-        out_err_detail.* = allocator.dupe(u8, @errorName(err)) catch null;
-        return TestError.RecvFailed;
-    };
-    defer allocator.free(resp);
+        // Direct write to stdin — bypass the Content-Length framing
+        // in `client.send`. The @modelcontextprotocol/sdk reads
+        // stdin via a line-based stream reader and parses each line
+        // as JSON; a Content-Length header before the JSON makes the
+        // first "line" un-parseable and the SDK silently drops the
+        // request. This is a v1.x SDK quirk — the spec allows both
+        // formats.
+        const stdin_file = client.stdin orelse return TestError.SendFailed;
+        std.Io.File.writeStreamingAll(stdin_file, io, body) catch |err| {
+            logger.warnFmt("[mcp_test] stdio send failed: {s}", .{@errorName(err)});
+            return TestError.SendFailed;
+        };
 
-    // Parse result.tools[] into a lean preview.
-    const tools = parseToolsList(allocator, resp) catch |err| {
-        logger.warnFmt("[mcp_test] stdio response parse failed: {s}", .{@errorName(err)});
-        return TestError.JsonParseFailed;
-    };
+        // 10s deadline per the /api/mcp/test probe's contract.
+        const deadline_ns: u64 = TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms;
+        const resp = client.recv(deadline_ns, null) catch |err| {
+            // Surface the concrete StdioError on the final attempt.
+            if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
+                reg.markStale(preview_name);
+                out_err_detail.* = allocator.dupe(u8, @errorName(err)) catch null;
+                return TestError.RecvFailed;
+            }
+            // Cold-start race: mark the cached client stale so the
+            // next getOrSpawn below spawns a fresh child, then
+            // sleep briefly to let the OS finish cleaning up the
+            // dead process before we fork again.
+            logger.warnFmt(
+                "[mcp_test] stdio recv got {s} on attempt {d}/{d} — likely cold-start race; retrying",
+                .{ @errorName(err), attempt, TEST_STDIO_MAX_ATTEMPTS },
+            );
+            reg.markStale(preview_name);
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
+                io,
+            ) catch {};
+            continue;
+        };
+        defer allocator.free(resp);
 
-    return .{ .transport = "stdio", .tools = tools };
+        // Parse result.tools[] into a lean preview.
+        const tools = parseToolsList(allocator, resp) catch |err| {
+            logger.warnFmt("[mcp_test] stdio response parse failed: {s}", .{@errorName(err)});
+            return TestError.JsonParseFailed;
+        };
+
+        return .{ .transport = "stdio", .tools = tools };
+    }
 }
 
 /// Try an HTTP candidate: POST `tools/list` to the URL with the
@@ -512,4 +555,29 @@ test "mcp_test.zig http timeout is 10_000 ms" {
     );
     defer testing.allocator.free(raw);
     try testing.expect(std.mem.indexOf(u8, raw, "TEST_HTTP_TIMEOUT_MS: u32 = 10_000") != null);
+}
+
+test "mcp_test.zig stdio probe has cold-start retry guard (macOS ARM64 race fix)" {
+    // CI macOS sees ~once-per-run UnexpectedEof because process.spawn
+    // returns BEFORE the SDK child finishes `mcp.connect(transport)`
+    // (which is where _stdin.on('data', ...) is attached). This test
+    // fails closed if a future refactor drops the retry constants or
+    // the retry-on-UnexpectedEof branch from testStdio().
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/ai_workflow/tui/http_handlers/mcp_test.zig",
+        testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer testing.allocator.free(raw);
+
+    // Constants must exist.
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 2") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_RETRY_DELAY_MS: i64 = 100") != null);
+
+    // Retry branch must be wired: only `UnexpectedEof` triggers
+    // respawn — every other error returns immediately. Search for
+    // the exact retry pattern; if a refactor drops the
+    // `err != error.UnexpectedEof` guard, this test fails.
+    try testing.expect(std.mem.indexOf(u8, raw, "err != error.UnexpectedEof") != null);
 }
