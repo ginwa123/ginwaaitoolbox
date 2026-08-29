@@ -552,27 +552,6 @@ pub const StdioRegistry = struct {
         return client;
     }
 
-    /// Mark the cached client for `name` as "stale" — kill it and evict
-    /// the entry. The next `getOrSpawn` call for the same name will
-    /// spawn a fresh child. Used by callers when a recv/send timed
-    /// out: a hung child shouldn't be returned to the next caller,
-    /// even though it's still in our cache.
-    ///
-    /// Idempotent (no-op when the name isn't in the cache). Cheap
-    /// (one mutex acquire + one deinit + one fetchRemove).
-    pub fn markStale(self: *StdioRegistry, name: []const u8) void {
-        mutexLock(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.entries.getPtr(name)) |entry_ptr| {
-            const client = entry_ptr.*;
-            client.deinit();
-            // Drop the entry. The arena owns `kv.key` and `kv.value`
-            // — do NOT free them here; arena.deinit() frees them
-            // when the registry is torn down.
-            _ = self.entries.fetchRemove(name);
-        }
-    }
-
     /// Snapshot the current set of keys under the registry lock.
     /// Used by callers that need to iterate keys without holding the
     /// lock for long (the lock is dropped before `markStale` re-
