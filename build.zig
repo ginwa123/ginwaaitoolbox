@@ -1137,17 +1137,24 @@ pub fn build(b: *std.Build) void {
     mcp_http_npm_install.setCwd(b.path(mcp_http_hello_world_dir));
     mcp_http_hello_world_step.dependOn(&mcp_http_npm_install.step);
 
-    // TDD: run the unit tests first. If they fail, the build fails
-    // before we waste time on the TS compile.
-    const mcp_http_test = b.addSystemCommand(&.{ "pnpm", "test" });
-    mcp_http_test.setCwd(b.path(mcp_http_hello_world_dir));
-    mcp_http_test.step.dependOn(&mcp_http_npm_install.step);
-    mcp_http_hello_world_step.dependOn(&mcp_http_test.step);
-
+    // Build first (tsc → dist/index.js), THEN run the tests. The test
+    // imports from `./index.js` (NodeNext module resolution) and
+    // readsFileSync(BINARY_PATH) where BINARY_PATH = `dist/index.js`
+    // — the test FAILS with 'binary not found' if dist/ doesn't
+    // exist yet. The build must precede the test, not the other way
+    // around. The earlier 'test before build' order worked locally
+    // only because dist/ happened to exist from a previous build;
+    // CI starts clean and breaks.
     const mcp_http_build = b.addSystemCommand(&.{ "pnpm", "run", "build" });
     mcp_http_build.setCwd(b.path(mcp_http_hello_world_dir));
-    mcp_http_build.step.dependOn(&mcp_http_test.step);
+    mcp_http_build.step.dependOn(&mcp_http_npm_install.step);
     mcp_http_hello_world_step.dependOn(&mcp_http_build.step);
+
+    // Now run the unit tests — the build output (dist/index.js) is in place.
+    const mcp_http_test = b.addSystemCommand(&.{ "pnpm", "test" });
+    mcp_http_test.setCwd(b.path(mcp_http_hello_world_dir));
+    mcp_http_test.step.dependOn(&mcp_http_build.step);
+    mcp_http_hello_world_step.dependOn(&mcp_http_test.step);
 
     // Install the shell wrapper. Mirrors the mcp-hello-world pattern:
     // write the wrapper to .zig-cache, install it to bin/, chmod 0755.
