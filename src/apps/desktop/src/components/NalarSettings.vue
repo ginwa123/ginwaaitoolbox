@@ -170,17 +170,56 @@ function profilesToRecord(list: ProfileRow[]): Record<string, NalarProfile> {
   return out
 }
 
+/**
+ * Raw wire shape of a single MCP server entry as it appears in
+ * config.json's `mcp_servers` map. Discriminated union matching the
+ * type on `NalarConfig.mcp_servers` (api/index.ts):
+ * - presence of `command` ⇒ stdio
+ * - presence of `url` ⇒ http
+ * We use the union form (not a struct with all-optional fields) so
+ * TypeScript can discriminate `command: string` from `command: undefined`
+ * when we type-narrow on `typeof server.command === 'string'`.
+ */
+type RawMcpServerEntry =
+  | { url: string; headers?: Record<string, string> }
+  | { command: string; args?: string[]; env?: string[]; cwd?: string }
+
 function parseMcpServers(
-  raw: Record<string, { url: string; headers?: Record<string, string> }> | undefined,
+  raw: Record<string, RawMcpServerEntry> | undefined,
 ): McpServer[] {
   if (!raw) return []
   const out: McpServer[] = []
   for (const [name, server] of Object.entries(raw)) {
-    if (!server || typeof server.url !== 'string' || !server.url) continue
-    const headers = server.headers
-      ? Object.entries(server.headers).map(([key, value]) => ({ key, value: String(value ?? '') }))
-      : []
-    out.push({ name, url: server.url, headers })
+    if (!server) continue
+    // Transport discriminator: presence of `command` ⇒ stdio,
+    // presence of `url` ⇒ http. Legacy entries (url-only) hydrate as
+    // http. Entries with neither are silently dropped.
+    if ('command' in server && typeof server.command === 'string' && server.command.length > 0) {
+      out.push({
+        name,
+        transport: 'stdio',
+        command: server.command,
+        args: Array.isArray(server.args) ? server.args.map((a: string) => a) : [],
+        env: Array.isArray(server.env) ? server.env.map((e: string) => e) : [],
+        cwd: typeof server.cwd === 'string' ? server.cwd : '',
+        url: '',
+        headers: [],
+      })
+    } else if ('url' in server && typeof server.url === 'string' && server.url.length > 0) {
+      const headers = server.headers
+        ? Object.entries(server.headers).map(([key, value]) => ({ key, value: String(value ?? '') }))
+        : []
+      out.push({
+        name,
+        transport: 'http',
+        url: server.url,
+        headers,
+        command: '',
+        args: [],
+        env: [],
+        cwd: '',
+      })
+    }
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
   return out
@@ -188,14 +227,27 @@ function parseMcpServers(
 
 function serializeMcpServers(
   list: McpServer[],
-): Record<string, { url: string; headers?: Record<string, string> }> | undefined {
+): Record<string, RawMcpServerEntry> | undefined {
   if (list.length === 0) return undefined
-  const out: Record<string, { url: string; headers?: Record<string, string> }> = {}
+  const out: Record<string, RawMcpServerEntry> = {}
   for (const server of list) {
-    if (!server.name || !server.url) continue
-    const headers: Record<string, string> = {}
-    for (const h of (server.headers ?? [])) if (h.key) headers[h.key] = h.value
-    out[server.name] = { url: server.url, ...(Object.keys(headers).length ? { headers } : {}) }
+    if (!server.name) continue
+    if (server.transport === 'stdio') {
+      if (!server.command) continue
+      const entry: RawMcpServerEntry = { command: server.command }
+      if (server.args && server.args.length) entry.args = server.args
+      if (server.env && server.env.length) entry.env = server.env
+      if (server.cwd && server.cwd.length) entry.cwd = server.cwd
+      out[server.name] = entry
+    } else {
+      // Default to http for legacy entries that lack an explicit
+      // transport field.
+      const url = server.url ?? ''
+      if (!url) continue
+      const headers: Record<string, string> = {}
+      for (const h of (server.headers ?? [])) if (h.key) headers[h.key] = h.value
+      out[server.name] = { url, ...(Object.keys(headers).length ? { headers } : {}) }
+    }
   }
   return Object.keys(out).length ? out : undefined
 }
@@ -237,7 +289,7 @@ const mcpServerModal = ref<McpServerModalState>(null)
 
 const profileErrors = ref<{ name?: string; model?: string; base_url?: string; api_key?: string }>({})
 const subAgentErrors = ref<{ name?: string; model?: string; base_url?: string; api_key?: string }>({})
-const mcpServerErrors = ref<{ name?: string; url?: string }>({})
+const mcpServerErrors = ref<{ name?: string; url?: string; command?: string }>({})
 
 // ─── Section event handlers ──────────────────────────────────────────────
 function startAddProfile() {
@@ -403,13 +455,34 @@ function deleteSubAgentInProfile(profileName: string, subAgentName: string) {
 function startAddMcpServer() {
   mcpServerModal.value = {
     mode: 'add',
-    value: { name: '', url: '', headers: [] },
+    value: {
+      name: '',
+      transport: 'stdio', // default for new entries — stdio is the
+      // canonical MCP transport and the user added it specifically for
+      // that. Legacy callers can pass `initialTransport='http'` if
+      // they need the old behaviour.
+      url: '',
+      headers: [],
+      command: '',
+      args: [],
+      env: [],
+      cwd: '',
+    },
   }
 }
 function startEditMcpServer(server: McpServer) {
   mcpServerModal.value = {
     mode: 'edit',
-    value: { name: server.name, url: server.url, headers: (server.headers ?? []).map(h => ({ ...h })) },
+    value: {
+      name: server.name,
+      transport: server.transport ?? 'http',
+      url: server.url ?? '',
+      headers: (server.headers ?? []).map(h => ({ ...h })),
+      command: server.command ?? '',
+      args: (server.args ?? []).slice(),
+      env: (server.env ?? []).slice(),
+      cwd: server.cwd ?? '',
+    },
   }
 }
 function closeMcpServerModal() { mcpServerModal.value = null; mcpServerErrors.value = {} }
@@ -417,14 +490,41 @@ function saveMcpServer() {
   if (!mcpServerModal.value) return
   const v = mcpServerModal.value.value
   const name = v.name.trim()
-  const url = v.url.trim()
   if (!name) { mcpServerErrors.value = { name: 'Name is required' }; return }
-  if (!url) { mcpServerErrors.value = { url: 'URL is required' }; return }
-  const next: McpServer = { name, url, headers: v.headers.filter(h => h.key.length > 0) }
-  if (mcpServerModal.value.mode === 'add') {
-    mcpServersList.value = [...mcpServersList.value, next]
+  const isStdio = v.transport === 'stdio'
+  if (isStdio) {
+    if (!v.command.trim()) {
+      mcpServerErrors.value = { command: 'Command is required' }
+      return
+    }
+    const next: McpServer = {
+      name,
+      transport: 'stdio',
+      command: v.command.trim(),
+      args: v.args,
+      env: v.env,
+      cwd: v.cwd.trim(),
+      headers: [],
+    }
+    if (mcpServerModal.value.mode === 'add') {
+      mcpServersList.value = [...mcpServersList.value, next]
+    } else {
+      mcpServersList.value = mcpServersList.value.map(s => s.name === name ? next : s)
+    }
   } else {
-    mcpServersList.value = mcpServersList.value.map(s => s.name === name ? next : s)
+    const url = v.url.trim()
+    if (!url) { mcpServerErrors.value = { url: 'URL is required' }; return }
+    const next: McpServer = {
+      name,
+      transport: 'http',
+      url,
+      headers: v.headers.filter(h => h.key.length > 0),
+    }
+    if (mcpServerModal.value.mode === 'add') {
+      mcpServersList.value = [...mcpServersList.value, next]
+    } else {
+      mcpServersList.value = mcpServersList.value.map(s => s.name === name ? next : s)
+    }
   }
   closeMcpServerModal()
 }

@@ -17,9 +17,12 @@ permissions:
 
 env:
   ZIG_VERSION: 0.16.0
-  # npm-everywhere (2026-08-25): BUN_VERSION removed — bun is no longer
-  # used anywhere in CI or in build.zig's webapp chain. package-lock.json
-  # is the canonical lockfile; Node 24 + npm come from actions/setup-node.
+  # pnpm migration (2026-08-28): npm (and the prior bun) are gone from CI
+  # and build.zig. pnpm/action-setup pins pnpm 11; Node 24 + pnpm are the
+  # only JS toolchain bits CI needs. The canonical lockfile is now
+  # pnpm-lock.yaml (replaces package-lock.json from the npm-everywhere
+  # era, 2026-08-25). The workspace .npmrc pins node-linker=hoisted so
+  # node_modules is laid out flat (matches the old npm layout).
 
 jobs:
   backend:
@@ -103,14 +106,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Node.js 24 + npm (functional-test-ui needs npm for Vite)
-        # The UIHarness spawns `npm run dev` to start the Vite dev server
-        # during Playwright tests. The harness's shutil.which('npm') /
-        # shutil.which('npm.cmd') resolution needs a literal `npm` on
-        # PATH. Same Node version as the frontend job for reproducibility.
+      - name: Install Node.js 24
+        # pnpm migration (2026-08-28): the UIHarness now spawns `pnpm run dev`
+        # to start the Vite dev server during Playwright tests. The harness
+        # resolves pnpm via shutil.which('pnpm') / shutil.which('pnpm.cmd'),
+        # so a literal `pnpm` on PATH is what we need. Same Node version as
+        # the frontend job for reproducibility.
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      - name: Install pnpm 11
+        # pnpm/action-setup is the canonical way to install pnpm on
+        # self-hosted runners. It downloads the pnpm binary directly
+        # (faster than corepack's per-job shim build) and is maintained
+        # by the pnpm team. Version pinned to 11.x to match the dev box
+        # and the workspace's existing toolchain. workspace .npmrc lives
+        # in the repo root, NOT in $HOME, so this action does not need
+        # any config_file input.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
 
       - name: Install Zig ${{ env.ZIG_VERSION }}
         uses: mlugg/setup-zig@v2
@@ -931,13 +947,15 @@ jobs:
       # missing); on subsequent runs the script's idempotent skip makes
       # it a no-op.
 
-      # PERF + CONSISTENCY (2026-08-25): setup-bun and the bun-keyed
-      # node_modules cache were removed from this job. The backend's
-      # only webapp need is the Vite dev server for functional-test-ui,
-      # served by the "Install npm + webapp dependencies" step below,
-      # which keys off package-lock.json (the canonical lockfile).
-      # Duplicating that with a second bun-based mechanism meant two
-      # caches racing to populate the same src/apps/desktop/node_modules.
+      # PERF + CONSISTENCY (2026-08-28 — pnpm migration): setup-bun
+      # (removed 2026-08-25) and the npm-keyed node_modules cache are
+      # both gone. The backend's only webapp need is the Vite dev
+      # server for functional-test-ui, served by the "Install pnpm +
+      # webapp dependencies" step above, which keys off pnpm-lock.yaml
+      # (the canonical lockfile) and uses pnpm install --frozen-lockfile.
+      # Duplicating that with a second bun/npm-based mechanism meant
+      # two caches racing to populate the same
+      # src/apps/desktop/node_modules.
 
       - name: Cache Zig build artifacts
         uses: actions/cache@v4
@@ -1341,12 +1359,13 @@ jobs:
           fi
           rm -f /tmp/functional-test-start.$$
 
-      - name: Install npm + webapp dependencies (UI tests need Vite)
+      - name: Install pnpm + webapp dependencies (UI tests need Vite)
         # The Vite dev server is spawned by UIHarness during the
-        # functional-test-ui step via `npm run dev`. The webapp's
-        # node_modules is gitignored; cache it keyed by package-lock
-        # hash + restore + npm ci on cache miss. Without this step,
-        # vite isn't on PATH and the UI tests fail with
+        # functional-test-ui step via `pnpm run dev` (2026-08-28 — pnpm
+        # migration, previously `npm run dev`). The webapp's node_modules
+        # is gitignored; cache it keyed by pnpm-lock.yaml hash + restore +
+        # `pnpm install --frozen-lockfile` on cache miss. Without this
+        # step, vite isn't on PATH and the UI tests fail with
         # `vite: command not found` (PR #293 feedback).
         if: |
           runner.os != 'Windows' &&
@@ -1354,27 +1373,38 @@ jobs:
         shell: bash
         run: |
           set -u
-          # Install Node.js + npm via actions/setup-node (we rely on
-          # the action having run earlier in this job — see
-          # `setup-node` invocation near the top of backend).
-          if ! command -v npm >/dev/null 2>&1; then
-            echo "✗ npm not on PATH — setup-node step must have failed"
+          # pnpm is on PATH from the pnpm/action-setup step earlier in
+          # this job; node is on PATH from setup-node. Both must resolve.
+          if ! command -v pnpm >/dev/null 2>&1; then
+            echo "✗ pnpm not on PATH — pnpm/action-setup step must have failed"
             exit 1
           fi
-          # Restore node_modules from cache (if hit). package-lock.json
-          # is the canonical lockfile (npm-everywhere, 2026-08-25) — the
-          # old bun.lock fallback line was removed with the bun migration.
-          CACHE_DIR="$HOME/.cache/nalar-npm-node-modules"
+          if ! command -v node >/dev/null 2>&1; then
+            echo "✗ node not on PATH — setup-node step must have failed"
+            exit 1
+          fi
+          # Restore node_modules from cache (if hit). pnpm-lock.yaml is
+          # the canonical lockfile (2026-08-28 — pnpm migration). The
+          # cache key prefix is `pnpm-` so old npm-cached tarballs from
+          # the npm-everywhere era (2026-08-25) don't shadow the new
+          # pnpm-cached ones.
+          CACHE_DIR="$HOME/.cache/nalar-pnpm-node-modules"
           mkdir -p "$CACHE_DIR"
-          HASH=$(sha256sum src/apps/desktop/package-lock.json)
+          HASH=$(sha256sum src/apps/desktop/pnpm-lock.yaml)
           CACHE_TARBALL="$CACHE_DIR/node_modules-${HASH}.tar.gz"
           if [[ -f "$CACHE_TARBALL" ]]; then
             echo "→ cache HIT ($HASH); restoring node_modules"
             tar -xzf "$CACHE_TARBALL" -C src/apps/desktop
           else
-            echo "→ cache MISS ($HASH); running npm ci"
-            cd src/apps/desktop && npm ci --no-audit --no-fund && cd -
+            echo "→ cache MISS ($HASH); running pnpm install"
+            cd src/apps/desktop && pnpm install --frozen-lockfile && cd -
             echo "→ saving node_modules to cache"
+            # pnpm with `node-linker=hoisted` (workspace .npmrc) lays
+            # the deps flat at node_modules/, so archiving that single
+            # dir is enough — no need to also archive .pnpm/ (the
+            # content-addressed store is rebuilt by the pnpm install
+            # on a cache miss; or by Vite's own resolution via
+            # node_modules/ on a cache hit).
             tar -czf "$CACHE_TARBALL.tmp" -C src/apps/desktop node_modules \
               && mv "$CACHE_TARBALL.tmp" "$CACHE_TARBALL"
           fi
@@ -1405,7 +1435,7 @@ jobs:
           NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
         run: |
           set -u
-          # npm is already on PATH from setup-node.
+          # pnpm is already on PATH from pnpm/action-setup.
           echo "→ functional-test-ui: starting"
           date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
           # zig build functional-test-ui installs playwright into the
@@ -1564,64 +1594,74 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Node.js 24
-        # npm-everywhere (2026-08-25): this job previously needed BOTH
-        # setup-node AND setup-bun — setup-bun put bun on PATH but no
-        # real Node, and bash's `node` lookup would find Bun's runtime
-        # shim (which reports process.version v24.x for compatibility)
-        # instead of a real Node binary. That shim can't resolve `.vue`
-        # imports under `moduleResolution: bundler`, so vue-tsc failed
-        # with TS2307 errors on every .ts entry point importing a .vue
-        # file. With bun gone, setup-node alone provides the real
-        # `node` + `npm` pair; all script invocations go through
-        # `npm run` so the same node binary is used consistently.
+        # pnpm migration (2026-08-28): setup-node provides real Node;
+        # pnpm/action-setup (next step) provides real pnpm 11. The pair
+        # is the same JS toolchain shape as the npm-everywhere era
+        # (2026-08-25) but with pnpm replacing npm — pnpm always invokes
+        # real Node for each script, so the vue-tsc + bundler resolution
+        # stays correct.
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
-      - name: Cache npm node_modules
-        # Keyed by package-lock.json (the canonical lockfile). A cache
-        # hit skips the npm ci below entirely.
-        id: npm-cache
+      - name: Install pnpm 11
+        # pnpm/action-setup is the canonical pnpm installer maintained
+        # by the pnpm team. Faster than corepack's per-job shim build
+        # and a single `pnpm` binary on PATH for every subsequent step.
+        # Version pinned to 11 to match the dev box and the workspace's
+        # existing toolchain.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Cache pnpm node_modules
+        # Keyed by pnpm-lock.yaml (the canonical lockfile, 2026-08-28
+        # pnpm migration). The cache key prefix is `pnpm-` so old
+        # npm-cached dirs from the npm-everywhere era don't shadow
+        # the new pnpm-cached ones. A cache hit skips the
+        # `pnpm install --frozen-lockfile` below entirely.
+        id: pnpm-cache
         uses: actions/cache@v4
         with:
           path: src/apps/desktop/node_modules
-          key: npm-${{ runner.os }}-${{ hashFiles('src/apps/desktop/package-lock.json') }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml') }}
           restore-keys: |
-            npm-${{ runner.os }}-
+            pnpm-${{ runner.os }}-
 
       - name: Install dependencies (cache miss only)
         # On a cache HIT the node_modules dir is already populated and
-        # this is skipped by the `if`. On a MISS, npm ci installs from
-        # package-lock.json exactly.
-        if: steps.npm-cache.outputs.cache-hit != 'true'
+        # this is skipped by the `if`. On a MISS, pnpm install runs
+        # with --frozen-lockfile so a stale lockfile never silently
+        # re-resolves (equivalent of `npm ci` for the old toolchain).
+        if: steps.pnpm-cache.outputs.cache-hit != 'true'
         working-directory: src/apps/desktop
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Lint (oxlint + eslint, fail-on-issue mode)
-        # `npm run lint:check` runs WITHOUT --fix (the dev `lint`
+        # `pnpm run lint:check` runs WITHOUT --fix (the dev `lint`
         # script auto-fixes in place - that would silently mutate files
-        # in CI and exit 0, defeating the gate). `npm run` invokes the
+        # in CI and exit 0, defeating the gate). `pnpm run` invokes the
         # scripts under real Node.
         working-directory: src/apps/desktop
-        run: npm run lint:check
+        run: pnpm run lint:check
 
       - name: Test (vitest, non-watch)
         # `--run` is already baked into the `test` package.json script.
         # vitest's default watch mode hangs CI on exit, so we use the
         # CI-safe script (NOT `test:unit` which preserves watch mode
-        # for local dev). `npm run` invokes it under real Node.
+        # for local dev). `pnpm run` invokes it under real Node.
         working-directory: src/apps/desktop
-        run: npm run test
+        run: pnpm run test
 
       - name: Build (vue-tsc + vite)
-        # `npm run build` chains `vue-tsc && vite build` in parallel
+        # `pnpm run build` chains `vue-tsc && vite build` in parallel
         # via run-p. Both must succeed; the backend job's codegen
         # step picks up the resulting `dist/` and embeds it as
-        # webapp_assets.zig. `npm run` invokes the `type-check`
+        # webapp_assets.zig. `pnpm run` invokes the `type-check`
         # script under the real Node.js binary installed by the
         # `Install Node.js 24` step earlier in this job.
         working-directory: src/apps/desktop
-        run: npm run build
+        run: pnpm run build
 
   # Windows frontend cell — a SEPARATE job rather than a third matrix
   # entry in `frontend` because the `shell:` step key accepts NO ${{ }}
@@ -1656,41 +1696,52 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Node.js 24
-        # npm-everywhere (2026-08-25): setup-node alone provides the real
-        # `node` + `npm` pair (setup-bun removed). All package.json
-        # scripts that invoke `node` resolve to real Node.js.
+        # pnpm migration (2026-08-28): setup-node provides real Node;
+        # pnpm/action-setup (next step) provides real pnpm 11. Same
+        # JS toolchain shape as the npm-everywhere era, but with pnpm
+        # replacing npm — pnpm always invokes real Node for each script.
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
-      - name: Cache npm node_modules
-        # Keyed by package-lock.json (the canonical lockfile); runner.os
-        # isolates the Windows entry from the other jobs' caches.
-        id: npm-cache
+      - name: Install pnpm 11
+        # pnpm/action-setup is the canonical pnpm installer maintained
+        # by the pnpm team. On Windows self-hosted runners the action
+        # drops pnpm.cmd into the runner's PATH the same way it does on
+        # Linux/macOS — no manual winget/choco install needed.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Cache pnpm node_modules
+        # Keyed by pnpm-lock.yaml (the canonical lockfile, 2026-08-28
+        # pnpm migration). runner.os isolates the Windows entry from
+        # the other jobs' caches.
+        id: pnpm-cache
         uses: actions/cache@v4
         with:
           path: src/apps/desktop/node_modules
-          key: npm-${{ runner.os }}-${{ hashFiles('src/apps/desktop/package-lock.json') }}
+          key: pnpm-${{ runner.os }}-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml') }}
           restore-keys: |
-            npm-${{ runner.os }}-
+            pnpm-${{ runner.os }}-
 
       - name: Install dependencies (cache miss only)
-        if: steps.npm-cache.outputs.cache-hit != 'true'
+        if: steps.pnpm-cache.outputs.cache-hit != 'true'
         working-directory: src/apps/desktop
         shell: powershell
-        run: npm ci --no-audit --no-fund
+        run: pnpm install --frozen-lockfile
 
       - name: Lint (oxlint + eslint, fail-on-issue mode)
         working-directory: src/apps/desktop
         shell: powershell
-        run: npm run lint:check
+        run: pnpm run lint:check
 
       - name: Test (vitest, non-watch)
         working-directory: src/apps/desktop
         shell: powershell
-        run: npm run test
+        run: pnpm run test
 
       - name: Build (vue-tsc + vite)
         working-directory: src/apps/desktop
         shell: powershell
-        run: npm run build
+        run: pnpm run build

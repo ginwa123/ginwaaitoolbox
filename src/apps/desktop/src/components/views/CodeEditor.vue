@@ -68,7 +68,8 @@ type MonacoNs = any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const g = globalThis as any
 g.MonacoEnvironment = g.MonacoEnvironment || {}
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// No eslint-disable needed here — the function body itself doesn't
+// declare an `any` type (the cast is on `g` two lines above).
 g.MonacoEnvironment.getWorker = function (_moduleId: string, label: string) {
   const getWorkerModule = (moduleUrl: string) => {
     return new Worker(g.MonacoEnvironment.getWorkerUrl(moduleUrl, label), {

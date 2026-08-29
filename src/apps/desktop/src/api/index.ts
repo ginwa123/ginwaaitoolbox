@@ -3485,9 +3485,27 @@ export interface McpHeader {
 
 export interface McpServer {
   name: string
-  url: string
+  /** Transport discriminator. Defaults to 'http' on legacy entries
+   *  that predate this field. Mutually exclusive with itself — a
+   *  server is either HTTP or stdio, never both. */
+  transport?: 'http' | 'stdio'
+  /** HTTP transport — required when transport === 'http'. */
+  url?: string
   /** Optional list of HTTP headers to send with MCP requests (e.g. API keys). */
   headers?: McpHeader[]
+  /** stdio transport — required when transport === 'stdio'. The
+   *  command (executable name or absolute path) the agent will spawn
+   *  as a child process and talk MCP JSON-RPC to. */
+  command?: string
+  /** stdio transport — argv (excluding argv[0]). One entry per line in the UI. */
+  args?: string[]
+  /** stdio transport — "KEY=VALUE" per line, ADDED on top of inherited env.
+   *  v1 limitation: Zig 0.16's std.process.Child has no clean .env_map setter,
+   *  so a custom env requires a pre-fork+execve helper — not in v1.
+   *  The UI exposes this for documentation + forward-compat. */
+  env?: string[]
+  /** stdio transport — optional child working directory (absolute path). */
+  cwd?: string
 }
 
 export interface NalarConfig {
@@ -3503,7 +3521,21 @@ export interface NalarConfig {
    * Each value follows the `{"url": "...", "headers": {...}}` shape used by
    * the LLM config. Sent verbatim to the backend on save.
    */
-  mcp_servers?: Record<string, { url: string; headers?: Record<string, string> }>
+  /**
+   * Raw wire shape of a single MCP server entry (snake_case, matches
+   * `mcp_servers` in config.json). Discriminated by which top-level
+   * field is present: `command` ⇒ stdio, `url` ⇒ http.
+   *
+   * Note: this type is also re-exported and re-used by the
+   * `NalarSettings.vue` parser/serializer pair so the frontend
+   * round-trips config.json unchanged. If you add a field here, add
+   * it to the `McpServer` interface above too (camelCase).
+   */
+  mcp_servers?: Record<
+    string,
+    | { url: string; headers?: Record<string, string> }
+    | { command: string; args?: string[]; env?: string[]; cwd?: string }
+  >
   /**
    * Top-level sub-agents array. Each entry is a named sub-agent LLM
    * configuration (model + base_url + thinking + temperature + url_style
@@ -3964,6 +3996,235 @@ export async function disableAgentTool(
 ): Promise<{ ok: true }> {
   return await apiFetch<{ ok: true }>(
     `/agents/${agentId}/tools/${toolName}`,
+    { method: 'DELETE' },
+  )
+}
+
+// ─── Agent-Kanbans Mirror (Migration 081) ───────────────────────────────
+//
+// Mirrors the Agent Mode block above onto kanban boards. The config row
+// (`agent_kanbans`) is OPT-IN — `getAgentKanban` resolves to `null`
+// (silently, no error toast) when the board has no config yet.
+
+export interface AgentKanban {
+  id: string
+  workspace_item_id: string
+  description: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentKanbanKnowledgeRow {
+  id: string
+  kanban_id: string
+  file_path: string
+  label: string
+  /** Inline manual text ('' = file-backed row). */
+  content: string
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentKanbanSystemPromptRow {
+  id: string
+  kanban_id: string
+  title: string
+  content: string
+  position: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AgentKanbanToolRow {
+  id: string
+  kanban_id: string
+  tool_name: string
+  enabled: number
+  created_at: string
+}
+
+/**
+ * Get the agent-kanbans config + children for a kanban workspace_item.
+ * Returns null (silent) on 404 "not configured" — an unconfigured board
+ * is an expected state, not an error worth surfacing.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/agent_kanban
+ */
+export async function getAgentKanban(
+  workspaceId: string,
+  itemId: string,
+): Promise<{
+  agent_kanban: AgentKanban
+  knowledges: AgentKanbanKnowledgeRow[]
+  tools: string[]
+  system_prompts: AgentKanbanSystemPromptRow[]
+} | null> {
+  try {
+    return await apiFetch<{
+      agent_kanban: AgentKanban
+      knowledges: AgentKanbanKnowledgeRow[]
+      tools: string[]
+      system_prompts: AgentKanbanSystemPromptRow[]
+    }>(`/workspaces/${workspaceId}/items/${itemId}/agent_kanban`, { silent: true })
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
+/**
+ * Update the agent-kanbans config's description.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/agent_kanban
+ */
+export async function updateAgentKanban(
+  workspaceId: string,
+  itemId: string,
+  description: string,
+): Promise<{ agent_kanban: AgentKanban }> {
+  return await apiFetch<{ agent_kanban: AgentKanban }>(
+    `/workspaces/${workspaceId}/items/${itemId}/agent_kanban`,
+    { method: 'PATCH', body: { description } },
+  )
+}
+
+/**
+ * Add a knowledge entry to a board's config — file path XOR inline text.
+ *
+ * POST /api/agent-kanbans/:kanbanId/knowledge
+ */
+export async function addAgentKanbanKnowledge(
+  kanbanId: string,
+  filePath: string,
+  label?: string,
+  content?: string,
+): Promise<AgentKanbanKnowledgeRow> {
+  return await apiFetch<AgentKanbanKnowledgeRow>(
+    `/agent-kanbans/${kanbanId}/knowledge`,
+    {
+      method: 'POST',
+      body: { file_path: filePath, label: label ?? '', content: content ?? '' },
+    },
+  )
+}
+
+export async function updateAgentKanbanKnowledge(
+  kanbanId: string,
+  knowledgeId: string,
+  updates: { file_path?: string; label?: string; content?: string },
+): Promise<AgentKanbanKnowledgeRow> {
+  return await apiFetch<AgentKanbanKnowledgeRow>(
+    `/agent-kanbans/${kanbanId}/knowledge/${knowledgeId}`,
+    { method: 'PATCH', body: updates },
+  )
+}
+
+export async function deleteAgentKanbanKnowledge(
+  kanbanId: string,
+  knowledgeId: string,
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agent-kanbans/${kanbanId}/knowledge/${knowledgeId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function reorderAgentKanbanKnowledge(
+  kanbanId: string,
+  orderedIds: string[],
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agent-kanbans/${kanbanId}/knowledge/reorder`,
+    { method: 'PATCH', body: { ordered_ids: orderedIds } },
+  )
+}
+
+/**
+ * Add a named system-prompt block to a board's config. `content`
+ * required; `title` optional.
+ *
+ * POST /api/agent-kanbans/:kanbanId/system_prompt
+ */
+export async function addAgentKanbanSystemPrompt(
+  kanbanId: string,
+  title: string,
+  content: string,
+): Promise<AgentKanbanSystemPromptRow> {
+  return await apiFetch<AgentKanbanSystemPromptRow>(
+    `/agent-kanbans/${kanbanId}/system_prompt`,
+    { method: 'POST', body: { title, content } },
+  )
+}
+
+export async function updateAgentKanbanSystemPrompt(
+  kanbanId: string,
+  promptId: string,
+  updates: { title?: string; content?: string },
+): Promise<AgentKanbanSystemPromptRow> {
+  return await apiFetch<AgentKanbanSystemPromptRow>(
+    `/agent-kanbans/${kanbanId}/system_prompt/${promptId}`,
+    { method: 'PATCH', body: updates },
+  )
+}
+
+export async function deleteAgentKanbanSystemPrompt(
+  kanbanId: string,
+  promptId: string,
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agent-kanbans/${kanbanId}/system_prompt/${promptId}`,
+    { method: 'DELETE' },
+  )
+}
+
+export async function reorderAgentKanbanSystemPrompts(
+  kanbanId: string,
+  orderedIds: string[],
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agent-kanbans/${kanbanId}/system_prompt/reorder`,
+    { method: 'PATCH', body: { ordered_ids: orderedIds } },
+  )
+}
+
+/**
+ * Get the enabled tool names for a board's config. Empty array = no
+ * tools configured for this board.
+ *
+ * GET /api/agent-kanbans/:kanbanId/tools
+ */
+export async function getAgentKanbanTools(kanbanId: string): Promise<{ tools: string[] }> {
+  return await apiFetch<{ tools: string[] }>(`/agent-kanbans/${kanbanId}/tools`)
+}
+
+/**
+ * Enable a tool for the board. Backend validates against the registry
+ * (400 if unknown) and returns 409 on duplicate.
+ *
+ * POST /api/agent-kanbans/:kanbanId/tools
+ */
+export async function enableAgentKanbanTool(
+  kanbanId: string,
+  toolName: string,
+): Promise<AgentKanbanToolRow> {
+  return await apiFetch<AgentKanbanToolRow>(`/agent-kanbans/${kanbanId}/tools`, {
+    method: 'POST',
+    body: { tool_name: toolName },
+  })
+}
+
+/**
+ * Disable a tool for the board (deletes the row).
+ *
+ * DELETE /api/agent-kanbans/:kanbanId/tools/:toolName
+ */
+export async function disableAgentKanbanTool(
+  kanbanId: string,
+  toolName: string,
+): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(
+    `/agent-kanbans/${kanbanId}/tools/${toolName}`,
     { method: 'DELETE' },
   )
 }

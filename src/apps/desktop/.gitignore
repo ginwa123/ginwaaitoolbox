@@ -12,10 +12,6 @@ node_modules
 .pnp
 .pnp.js
 
-# Bun
-bun.lockb
-*.bun.lock
-
 # Build outputs
 dist
 dist-ssr

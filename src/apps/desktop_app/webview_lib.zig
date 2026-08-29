@@ -93,6 +93,19 @@ pub fn runWindow(
     height: c_int,
     debug: bool,
 ) !void {
+    // Pin WebKitGTK hardware compositing before WebKit initialises
+    // (task_1787761084050_0). The vendored webview library only sets
+    // `WEBKIT_DISABLE_DMABUF_RENDERER=1` for the narrow NVIDIA + X11
+    // case (`apply_webkit_dmabuf_workaround` in vendor/webview/webview.h
+    // line 1673). The broader `WEBKIT_FORCE_COMPOSITING_MODE=1` is
+    // what tells WebKit to ALWAYS use its GPU compositor — without it,
+    // many drivers silently fall back to software compositing → slow
+    // scrolling. We pin it here, before webview_create, and respect
+    // any user override (`setEnvIfUnset` returns false and skips the
+    // call if the user already set the variable, so a "0" opt-out
+    // survives). See `setEnvIfUnset` below for the rationale.
+    _ = setEnvIfUnset("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+
     const w = webview_create(if (debug) 1 else 0, null) orelse
         return error.WebviewCreateFailed;
     defer _ = webview_destroy(w);
@@ -210,4 +223,123 @@ test "Error.succeeded mirrors WEBVIEW_SUCCEEDED semantics" {
     try testing.expect(Error.not_found.succeeded());
     try testing.expect(!Error.unspecified.succeeded());
     try testing.expect(!Error.missing_dependency.succeeded());
+}
+
+// ---------------------------------------------------------------------------
+// runWindow() must pin WebKitGTK env vars BEFORE webview_create
+// (task_1787761084050_0 / desktop scroll-perf cross-platform plan).
+//
+// The vendored webview/webview library only sets
+// `WEBKIT_DISABLE_DMABUF_RENDERER=1` for the narrow NVIDIA + X11 case
+// (vendor/webview/webview.h `apply_webkit_dmabuf_workaround`). The
+// broader `WEBKIT_FORCE_COMPOSITING_MODE=1` is what tells WebKit to
+// always use its GPU compositor (not just on NVIDIA+X11) — without it,
+// many drivers silently fall back to software compositing → slow
+// scrolling. We pin it ourselves, in `runWindow`, before the vendored
+// library runs, and we respect the user's override if they already
+// set it.
+// ---------------------------------------------------------------------------
+
+/// Idempotent env-var pin: set `key=value` in the process environment,
+/// but only if the variable is NOT already set. Returns `true` when
+/// the call actually wrote to the environment (i.e. the variable was
+/// unset), `false` when the user had already set it (their value is
+/// preserved unchanged).
+///
+/// Why "if unset" not "always overwrite": the user knows their driver
+/// better than we do. If they set `WEBKIT_FORCE_COMPOSITING_MODE=0`
+/// to opt out of compositing (e.g. for a bug investigation), we must
+/// not clobber that on launch.
+///
+/// `setenv` is POSIX (libc on Linux + macOS); Windows uses
+/// `_putenv_s` and is not supported here. The desktop app's Linux +
+/// macOS targets link libc, so `extern "c"` resolves there; on
+/// Windows this code is unreachable because the desktop app currently
+/// only compiles for Linux + macOS.
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+
+fn setEnvIfUnset(key: [*:0]const u8, value: [*:0]const u8) bool {
+    if (std.c.getenv(key) != null) return false;
+    // overwrite=0 is irrelevant here (the var is unset) but we pass 0
+    // to make the "no overwrite" intent explicit at the libc call site.
+    return setenv(key, value, 0) == 0;
+}
+
+test "setEnvIfUnset sets the variable on first call and reports true" {
+    // Use a per-test unique name so concurrent test runs in the same
+    // process don't collide. NALAR_TEST_SETENV_FRESH_VAR is unlikely to
+    // exist in the wild.
+    const key = "NALAR_TEST_SETENV_FRESH_VAR";
+    // Defensive: clear any leftover from a prior failed run.
+    _ = unsetenv(key);
+    try testing.expect(std.c.getenv(key) == null);
+
+    const wrote = setEnvIfUnset(key, "1");
+    try testing.expect(wrote);
+    try testing.expectEqualStrings("1", std.mem.span(std.c.getenv(key).?));
+
+    // Cleanup.
+    _ = unsetenv(key);
+}
+
+test "setEnvIfUnset preserves existing user override and reports false" {
+    const key = "NALAR_TEST_SETENV_PRESERVE_VAR";
+    // Seed: user has explicitly set the variable to "0" (a hypothetical
+    // opt-out). setEnvIfUnset must not change it.
+    try testing.expectEqual(@as(c_int, 0), setenv(key, "0", 1));
+    try testing.expectEqualStrings("0", std.mem.span(std.c.getenv(key).?));
+
+    const wrote = setEnvIfUnset(key, "1");
+    try testing.expect(!wrote);
+    // The user's "0" must still be there — we did NOT overwrite.
+    try testing.expectEqualStrings("0", std.mem.span(std.c.getenv(key).?));
+
+    // Cleanup.
+    _ = unsetenv(key);
+}
+
+test "runWindow pins WEBKIT_FORCE_COMPOSITING_MODE before webview_create" {
+    // Static-contract test: the env-var pin must be set up BEFORE
+    // `webview_create` is called (WebKit reads env vars once during
+    // its first init). We grep the source for the specific call site
+    // (`setEnvIfUnset("WEBKIT_FORCE_COMPOSITING_MODE"`) and check it
+    // appears before the `webview_create(` call.
+    //
+    // Why the function-call needle, not the bare string: the bare
+    // string `WEBKIT_FORCE_COMPOSITING_MODE` also appears in helper
+    // doc comments (above `setEnvIfUnset`'s definition), so a naive
+    // first-occurrence check would always pass. The needle below
+    // only matches the actual call site.
+    const allocator = testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/apps/desktop_app/webview_lib.zig",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(source);
+
+    const pin_needle = "setEnvIfUnset(\"WEBKIT_FORCE_COMPOSITING_MODE\"";
+    const pin_idx = std.mem.indexOf(u8, source, pin_needle) orelse {
+        std.debug.print(
+            "!! webview_lib.zig does not call setEnvIfUnset(\"WEBKIT_FORCE_COMPOSITING_MODE\" !!\n",
+            .{},
+        );
+        return error.WebkitCompositingPinMissing;
+    };
+    const create_idx = std.mem.indexOf(u8, source, "const w = webview_create(") orelse {
+        std.debug.print(
+            "!! webview_lib.zig does not call `const w = webview_create(...)` in runWindow !!\n",
+            .{},
+        );
+        return error.WebviewCreateCallMissing;
+    };
+    if (pin_idx >= create_idx) {
+        std.debug.print(
+            "!! setEnvIfUnset(\"WEBKIT_FORCE_COMPOSITING_MODE\") appears AFTER webview_create — must be set BEFORE !!\n",
+            .{},
+        );
+        return error.WebkitCompositingPinOrderWrong;
+    }
 }

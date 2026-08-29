@@ -296,7 +296,7 @@ watch(
 //      history entries).
 watch(
   () => [workspacesStore.activeWorkspaceItemId, workspacesStore.activeDesignPageId] as const,
-  ([itemId, pageId]) => {
+  ([itemId, pageId], [oldItemId]) => {
     const wsId = workspacesStore.activeWorkspace?.id ?? ''
     const currentView = route.query.view as string | undefined
     // FIX (task-url-overwrite, task_1785959660154, 2026-08-06):
@@ -336,6 +336,21 @@ watch(
     // was removed from handleNavigate — the flag now guards the
     // chat-open (view=workspace + /chat/<taskId>) navigation too.
     if (workspacesStore.isNavigatingToTask) return
+    // FIX (chat-click-url-overwrite, task_1787844892180_2, 2026-08-27):
+    // Inverse of the task_1785959660154 race. When the user navigates
+    // AWAY from a workspace item (e.g. Sidebar.handleChatsNavigate
+    // clearing activeWorkspaceItemId before its own router.replace
+    // applies), this watcher fires with itemId = null while
+    // route.query.view is still 'workspace' from the previous page.
+    // The currentView guard does NOT return early in that window and
+    // the watcher would clobber the destination's URL with
+    // router.replace({view: 'workspace'}). The fix: skip the mirror
+    // when itemId is being cleared from a previously-truthy value —
+    // the destination's router call wins, this watcher must not race.
+    // The mirror still fires for the truthy → truthy and null → truthy
+    // transitions (regression-guarded by
+    // AppLayout.chatClickUrlOverwrite.spec.ts Test 2).
+    if (!itemId && oldItemId) return
     // Only sync when we're on the workspace view — all other views
     // (chat, settings, gitfile, skill, code-editor) have their
     // own URL contract and should be preserved.
@@ -2766,8 +2781,8 @@ defineExpose({
     <!--
       CopyKanbanSpecDialog — source picker + Replace/Append radio for
       bulk-copying column spec from another kanban. Mounted as a SIBLING
-      of <KanbanSettingsDialog> (not nested) so a user can stack them:
-      Settings dialog under, picker over, both visible at once. The picker
+      of <KanbanSettingsView> (not nested) so a user can stack them:
+      Settings page under, picker over, both visible at once. The picker
       filters out the active kanban as a source (CopyKanbanSpecDialog's
       `availableSources` computed).
       Plan: docs/superpowers/plans/2026-07-04-copy-kanban-spec.md

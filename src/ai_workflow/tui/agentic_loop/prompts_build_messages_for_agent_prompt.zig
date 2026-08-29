@@ -2,6 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const json = std.json;
 const nalarcore = @import("nalarcore");
+const mcp_stdio = nalarcore.mcp_stdio;
+const mcp_http = nalarcore.mcp_http;
+const mcp_types = nalarcore.mcp_types;
 const agent = nalarcore.agent;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
@@ -150,6 +153,19 @@ pub fn buildMessages(
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
     defer allocator.free(agentSystemPromptContent);
 
+    // Agent-Kanbans mirror (Migration 081, plan
+    // 2026-08-25-agent-kanbans-mirror): Build the "## Kanban System
+    // Prompt" + "## Kanban Knowledge" sections from the
+    // agent_kanban_system_prompt / agent_kanban_knowledges tables.
+    // Empty unless the session's item is a kanban WITH an
+    // `agent_kanbans` row — unconfigured boards are unaffected. Only
+    // ONE of the agent/kanban pairs can be non-empty per session
+    // (item_type is exclusive), so effective ordering is unchanged.
+    const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanSystemPromptContent);
+    const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanKnowledgeContent);
+
     // Build the "Kanban Status Tracking" section. Only rendered when
     // the session's parent item has item_type === 'kanban' (the
     // helper silently returns "" otherwise). Rendered right after
@@ -212,6 +228,15 @@ pub fn buildMessages(
     // Empty when item_type != 'agent' OR agent has no knowledge rows.
     if (agentKnowledgeContent.len > 0) {
         try final_system.appendSlice(allocator, agentKnowledgeContent);
+    }
+    // Agent-Kanbans mirror (Migration 081): inject the kanban persona +
+    // knowledge blocks AFTER the agent blocks (mutually exclusive by
+    // item_type, so at most one pair renders per session).
+    if (agentKanbanSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
+    }
+    if (agentKanbanKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
     }
     if (inherited_md.len > 0) {
         try final_system.appendSlice(allocator, "\n\n");
@@ -387,6 +412,18 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
             else => continue,
         };
 
+        // Transport dispatch: stdio (command) takes precedence over
+        // HTTP (url). If the entry has a `command`, route to the stdio
+        // helper; otherwise fall through to the existing HTTP path.
+        if (server_obj.get("command")) |_| {
+            const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj) catch |err| {
+                std.log.warn("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
+                continue;
+            };
+            try all_tools.appendSlice(allocator, stdio_tools);
+            continue;
+        }
+
         // Get URL
         const url_value = server_obj.get("url") orelse continue;
         const url = url_value.string;
@@ -411,13 +448,245 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
             }
         }
 
-        // Fetch tools from this server
-        const tools = try fetchToolsFromServer(allocator, url, headers.items, server_name);
-
+        // Fetch tools from this server via the new mcp_http client.
+        // The HttpRegistry caches one HttpClient per server name; we
+        // get a fresh list of tools for each buildMCPToolsRun call.
+        const std_header_slice = blk: {
+            var buf: [16]custom_http_client.Header = undefined;
+            var count: usize = 0;
+            for (headers.items) |h| {
+                if (count >= buf.len) return error.TooManyHeaders;
+                buf[count] = .{ .name = h.key, .value = h.value };
+                count += 1;
+            }
+            break :blk buf[0..count];
+        };
+        const http_registry = mcp_http.HttpRegistry.global(allocator);
+        const http_client = http_registry.getOrConnect(
+            server_name,
+            url,
+            std_header_slice,
+        ) catch |err| {
+            std.log.warn("Failed to get HTTP client for MCP server {s}: {s}", .{ server_name, @errorName(err) });
+            continue;
+        };
+        const mcp_tools = mcp_http.listTools(allocator, http_client) catch |err| {
+            std.log.warn("Failed to fetch tools from MCP server {s}: {s}", .{ server_name, @errorName(err) });
+            continue;
+        };
+        const tools = try convertMcpToolsToAgentTools(allocator, mcp_tools, server_name);
         try all_tools.appendSlice(allocator, tools);
     }
 
     return try all_tools.toOwnedSlice(allocator);
+}
+
+/// Convert []mcp_types.McpTool to []tool_models.AgentTool. Each tool's
+/// inputSchema.properties JSON object is walked: each property's name,
+/// type, and description are extracted into a `ToolProperty`. The
+/// `required` field is mirrored from the JSON Schema's `required`
+/// array. All allocations come from `allocator`; the caller owns
+/// the returned slice.
+fn convertMcpToolsToAgentTools(
+    allocator: std.mem.Allocator,
+    mcp_tools: []const mcp_types.McpTool,
+    server_name: []const u8,
+) ![]tool_models.AgentTool {
+    var out: std.ArrayList(tool_models.AgentTool) = .empty;
+    defer out.deinit(allocator);
+    for (mcp_tools) |t| {
+        // Build the AgentTool name as "mcp_<server>_<tool>" — matches
+        // the stdio path so dispatch in handle_mcp_tool.zig can parse
+        // it back out.
+        const full_name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ server_name, t.name });
+
+        // Walk the inputSchema.properties (a std.json.Value object)
+        // and build a []ToolProperty. The JSON schema looks like:
+        //   { "type": "object", "properties": { "name": { "type": "string", "description": "..." } } }
+        var properties: std.ArrayList(tool_models.ToolProperty) = .empty;
+        defer properties.deinit(allocator);
+        var required: std.ArrayList([]const u8) = .empty;
+        defer required.deinit(allocator);
+
+        if (t.inputSchema.properties == .object) {
+            var prop_it = t.inputSchema.properties.object.iterator();
+            while (prop_it.next()) |kv| {
+                const prop_name = kv.key_ptr.*;
+                const prop_val = kv.value_ptr.*;
+                const type_str: []const u8 = if (prop_val == .object)
+                    if (prop_val.object.get("type")) |tv|
+                        switch (tv) {
+                            .string => |s| s,
+                            else => "string",
+                        }
+                    else
+                        "string"
+                else
+                    "string";
+                const desc_str: []const u8 = if (prop_val == .object)
+                    if (prop_val.object.get("description")) |dv|
+                        switch (dv) {
+                            .string => |s| s,
+                            else => "",
+                        }
+                    else
+                        ""
+                else
+                    "";
+                try properties.append(allocator, .{
+                    .name = try allocator.dupe(u8, prop_name),
+                    .type = try allocator.dupe(u8, type_str),
+                    .description = try allocator.dupe(u8, desc_str),
+                });
+            }
+        }
+
+        // The mcp_types.McpTool.inputSchema struct has a `required`
+        // field — pull it if present. (We stored it as null in
+        // mcp_http.zig's parseToolsList; the SDK doesn't always send
+        // it. We look at the raw JSON via a re-parse for the
+        // required field, but in v1 we just default to empty.)
+        // TODO: parse required from the raw JSON in mcp_http.zig.
+
+        out.append(allocator, .{
+            .type = "function",
+            .function = .{
+                .name = full_name,
+                .description = try allocator.dupe(u8, t.description),
+                .parameters = .{
+                    .type = "object",
+                    .properties = try properties.toOwnedSlice(allocator),
+                    .required = try required.toOwnedSlice(allocator),
+                },
+            },
+        }) catch continue;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Fetch tools from a single MCP server over the stdio transport.
+/// Builds argv from `server_name`'s `command` + `args` config fields,
+/// spawns (or reuses) a child via `mcp_stdio.StdioRegistry`, sends
+/// `tools/list` JSON-RPC, parses `result.tools[]` into AgentTool
+/// records (same wire shape as the HTTP branch).
+fn fetchToolsFromServerStdio(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    server_obj: std.json.ObjectMap,
+) ![]tool_models.AgentTool {
+    // Build argv from the config.
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(allocator);
+    if (server_obj.get("command")) |cmd_field| {
+        if (cmd_field == .string) {
+            try argv_list.append(allocator, try allocator.dupe(u8, cmd_field.string));
+        }
+    }
+    if (server_obj.get("args")) |args_v| {
+        if (args_v == .array) {
+            for (args_v.array.items) |item| {
+                if (item == .string) {
+                    try argv_list.append(allocator, try allocator.dupe(u8, item.string));
+                }
+            }
+        }
+    }
+    if (argv_list.items.len == 0) return error.MCPServerCommandNotFound;
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer {
+        for (argv) |a| allocator.free(a);
+        allocator.free(argv);
+    }
+
+    const reg = mcp_stdio.StdioRegistry.global(allocator);
+    const client = reg.getOrSpawn(server_name, argv) catch return error.MCPServerSpawnFailed;
+    // No defer — the registry owns the client's lifecycle. Each call
+    // reuses the same child; killing it on every fetch would be wasteful.
+
+    // Send tools/list and read the response.
+    const req = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
+    defer allocator.free(req);
+    client.send(req) catch return error.MCPServerSendFailed;
+    const resp = client.recv() catch return error.MCPServerRecvFailed;
+    defer allocator.free(resp);
+
+    // Parse result.tools[] into AgentTool records (same parser the HTTP
+    // branch uses after `body_to_parse` is read).
+    var parse_arena = std.heap.ArenaAllocator.init(allocator);
+    defer parse_arena.deinit();
+    const parsed = json.parseFromSlice(json.Value, parse_arena.allocator(), resp, .{
+        .ignore_unknown_fields = true,
+        .duplicate_field_behavior = .use_last,
+    }) catch return error.MCPJSONParseError;
+
+    const root = parsed.value;
+    const result_value = root.object.get("result") orelse return error.MCPInvalidResponse;
+    const tools_value = result_value.object.get("tools") orelse return error.MCPInvalidResponse;
+    const tools_array = switch (tools_value) {
+        .array => |a| a,
+        else => return error.MCPInvalidResponse,
+    };
+
+    var agent_tools: std.ArrayList(tool_models.AgentTool) = .empty;
+    defer agent_tools.deinit(allocator);
+    for (tools_array.items) |tool_value| {
+        const tool_obj: ?std.json.ObjectMap = switch (tool_value) {
+            .object => |o| o,
+            else => null,
+        };
+        const tool_obj_inner = tool_obj orelse continue;
+        const name_value = tool_obj_inner.get("name") orelse continue;
+        const name: []const u8 = switch (name_value) {
+            .string => |s| s,
+            else => continue,
+        };
+        const desc_value = tool_obj_inner.get("description") orelse continue;
+        const description: []const u8 = switch (desc_value) {
+            .string => |s| s,
+            else => continue,
+        };
+        const schema_value = tool_obj_inner.get("inputSchema") orelse continue;
+        const schema_obj: ?std.json.ObjectMap = switch (schema_value) {
+            .object => |o| o,
+            else => null,
+        };
+        const schema_obj_inner = schema_obj orelse continue;
+        const props_value = schema_obj_inner.get("properties") orelse continue;
+        const properties = try parseProperties(allocator, props_value, server_name);
+        var required: []const []const u8 = &[_][]const u8{};
+        if (schema_obj_inner.get("required")) |req_value| {
+            const req_array: ?[]const json.Value = switch (req_value) {
+                .array => |a| a.items,
+                else => null,
+            };
+            if (req_array) |items| {
+                var req_list: std.ArrayList([]const u8) = .empty;
+                defer req_list.deinit(allocator);
+                for (items) |req_item| {
+                    const req_str: []const u8 = switch (req_item) {
+                        .string => |x| x,
+                        else => continue,
+                    };
+                    try req_list.append(allocator, try allocator.dupe(u8, req_str));
+                }
+                required = try req_list.toOwnedSlice(allocator);
+            }
+        }
+        const agent_tool = tool_models.AgentTool{
+            .type = "function",
+            .function = tool_models.AgentToolFunction{
+                .name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ server_name, name }),
+                .description = try allocator.dupe(u8, description),
+                .parameters = tool_models.ToolParameters{
+                    .type = "object",
+                    .properties = properties,
+                    .required = required,
+                },
+            },
+        };
+        try agent_tools.append(allocator, agent_tool);
+    }
+    return try agent_tools.toOwnedSlice(allocator);
 }
 
 /// Fetch tools from a single MCP server

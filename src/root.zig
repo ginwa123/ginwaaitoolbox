@@ -498,6 +498,7 @@ pub const list_memory_tool = @import("modules/agent/tools/list_memory.zig");
 pub const save_memory = @import("modules/agent/tools/save_memory.zig");
 pub const load_memory = @import("modules/agent/tools/load_memory.zig");
 pub const delete_memory = @import("modules/agent/tools/delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool
+pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const search_history_tool = @import("modules/agent/tools/search_history.zig");
 pub const view_skill_tool = @import("modules/agent/tools/view_skill.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
@@ -511,6 +512,9 @@ pub const set_agent_properties = @import("modules/agent/tools/set_agent_properti
 // The MCP call sites in `handle_mcp_tool.zig` and
 // `prompts_build_messages_for_agent_prompt.zig` were migrated to it.
 pub const loggermod = @import("modules/logger/Logger.zig");
+pub const mcp_stdio = @import("modules/agent/mcp/mcp/mcp_stdio.zig");
+pub const mcp_http = @import("modules/agent/mcp/mcp/mcp_http.zig");
+pub const mcp_types = @import("modules/agent/mcp/mcp/mcp_types.zig");
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
@@ -612,6 +616,10 @@ test {
     _ = @import("ai_workflow/tui/agentic_loop/agent_tools_allowed.zig");
     _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_knowledge.zig");
     _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_system_prompt.zig");
+    // Agent-Kanbans mirror (Migration 081): impl + tests in one file.
+    _ = @import("ai_workflow/tui/agentic_loop/agent_kanban_tools_allowed.zig");
+    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_kanban_knowledge.zig");
+    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
     // `databases` package tests run via its own `zig build test`
     // (cd src/modules/databases && zig build test) — see the
     // package's build.zig. The main test step doesn't import them
@@ -650,5 +658,13 @@ test {
     // (mirrors cleanup_stale_worker pattern). Re-imported here for the
     // same reason — see plan 2026-08-19-cleanup-stale-background-process.
     _ = @import("schedulers/cleanup_stale_background_process.zig");
+    // modules/agent/mcp/mcp/mcp_http.zig has inline tests for the
+    // SSE parser + spec-compliant header builder. The `pub const
+    // mcp_http = @import(...)` above re-exports the module, but Zig's
+    // lazy compilation doesn't pull the file into the test binary
+    // unless something references the namespace. Same workaround as
+    // cleanup_stale_worker above — see plan
+    // 2026-08-28-mcp-streamable-http.md (Task 2).
+    _ = @import("modules/agent/mcp/mcp/mcp_http.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }

@@ -10,10 +10,21 @@ const tool_models = nalarcore.tool_models;
 const bash_tool_mod = nalarcore.bash_tool;
 const background_process = @import("background_process.zig");
 const wrapToolOutput = tools.wrapToolOutput;
+const bash_args = @import("tools_exec_bash_args.zig");
 
 /// Run with database context for background process tracking.
 /// Lives alongside execBash because it's a file-private helper used
 /// only by execBash.
+///
+/// task_1787855066467_8 — argument parsing now uses
+/// `tools_exec_bash_args.parseShellArgs` instead of a strict direct
+/// typed parse into BashInput. The lenient parser:
+///   1. Recovers the common LLM-hallucinated XML-fragment case
+///      (`mandatory_timeout: "5</mandatory_timeout>"` → 5) so the bash
+///      tool keeps working through the leak.
+///   2. Surfaces structured InvalidField info (field + verbatim value
+///      + expected type) on real coercion failures, so the LLM can
+///      self-correct on the next turn.
 pub fn runWithContext(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -21,18 +32,26 @@ pub fn runWithContext(
     db: ?*sqlite.SqliteBackend,
     session_id: ?[]const u8,
 ) ![]const u8 {
-    // Parse arguments JSON to BashInput
-    const parsed = try std.json.parseFromSlice(
-        tool_models.BashInput,
-        allocator,
-        tool_call.function.arguments,
-        .{ .allocate = .alloc_always },
-    );
-    defer parsed.deinit();
+    const input = switch (bash_args.parseShellArgs(allocator, tool_call.function.arguments)) {
+        .success => |in| in,
+        .failure => |info| {
+            const err_msg = try bash_args.formatInvalidField(allocator, info);
+            const output = try wrapToolOutput(allocator, "bash", tool_call.function.arguments, false, err_msg, "");
+            return output;
+        },
+    };
+    // parseShellArgs dups every string field it produces (command / cwd /
+    // stdin_data) so the caller can hold the slice past the JSON value's
+    // lifetime. Free them once execute_bash returns.
+    defer {
+        allocator.free(input.command);
+        if (input.cwd) |c| allocator.free(c);
+        if (input.stdin_data) |s| allocator.free(s);
+    }
 
-    const is_background = parsed.value.background;
+    const is_background = input.background;
 
-    const bash_output = try bash_tool_mod.execute_bash(allocator, io, parsed.value);
+    const bash_output = try bash_tool_mod.execute_bash(allocator, io, input);
 
     // If background mode and DB is available, save the process info
     if (is_background and db != null and session_id != null) {
@@ -67,7 +86,7 @@ pub fn runWithContext(
                         // Save to database
                         const ts = std.Io.Clock.now(.real, io);
                         const started_at: i64 = ts.toSeconds();
-                        background_process.save(db_ptr, allocator, sess_id, pid, parsed.value.command, log_path, started_at) catch {
+                        background_process.save(db_ptr, allocator, sess_id, pid, input.command, log_path, started_at) catch {
                             // Log error but don't fail the tool execution
                         };
                     }
@@ -82,7 +101,31 @@ pub fn runWithContext(
 }
 
 pub fn execBash(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const inner = try runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id);
+    // Catch ANY remaining error from the run path (e.g. from
+    // `execute_bash` itself — fork failures, permission errors, etc.)
+    // and wrap it in the standard tool-error envelope, matching
+    // execReadFile / execWriteFile / etc.
+    const inner = runWithContext(ctx.allocator, ctx.io, tc, ctx.db, ctx.session_id) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "bash failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
     const output = try wrapToolOutput(ctx.allocator, "bash", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+//
+// The argument-parser logic itself (XML-fragment recovery + structured
+// failure envelope) is covered by 24 unit tests in
+// `tools_exec_bash_args.zig` — those exercise the exact wire payloads
+// from the user's bug. This file's contract is just the import + the
+// error-path wiring, both of which are verified by Zig's compiler
+// (the import fails if the helper isn't wired) and by the executor
+// tests in `tools_exec_bash_test.zig` (which exercise real bash runs).
+//
+// No additional static-contract tests here — `@embedFile`-based
+// self-reference patterns are fragile and the actual unit tests in
+// the helper cover the bug end-to-end.

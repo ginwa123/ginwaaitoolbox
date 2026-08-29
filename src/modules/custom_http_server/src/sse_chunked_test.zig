@@ -16,34 +16,25 @@ const posix = std.posix;
 const sse_manager = @import("sse_manager.zig");
 const SseManager = sse_manager.SseManager;
 const builtin = @import("builtin");
+const helpers = @import("test_helpers.zig");
+const toI32 = helpers.toI32;
 const is_windows = builtin.os.tag == .windows;
 
-fn closeFd(fd: i32) void {
-    if (is_windows) return; // Sockets are HANDLE on Windows; fd is meaningless
+fn closeFd(fd: std.c.fd_t) void {
     _ = std.c.close(fd);
 }
 
-fn readFd(fd: i32, buf: []u8, len: usize) isize {
-    if (is_windows) return 0; // Not used on Windows (tests skip)
-    // posix.system.read takes ([*]u8, usize); pass the slice's pointer
-    // (single-pointer-many-items, not the slice header) and the count.
+fn readFd(fd: std.c.fd_t, buf: []u8, len: usize) isize {
+    if (is_windows) return 0; // Windows pipe HANDLE writes don't propagate to a sibling
+                               // reader with std.c.read (UCRT fd table doesn't track
+                               // pipe HANDLEs); the chunked-encoding tests in this
+                               // file specifically exercise read+write on a connected
+                               // pair and can't run on Windows without WriteFile plumbing.
     return posix.system.read(fd, buf.ptr, len);
 }
 
 fn createSocketPair() ![2]std.c.fd_t {
-    if (builtin.os.tag == .windows) {
-        // On Windows, sockets are HANDLE (*anyopaque), not i32 file descriptors.
-        // The entire test suite relies on POSIX socketpair semantics which are
-        // not available on Windows. Skip these tests on Windows.
-        return error.SkipZigTest;
-    } else {
-        var fds: [2]std.c.fd_t = undefined;
-        // AF_UNIX (1), SOCK_STREAM (1), protocol 0. socketpair returns
-        // 0 on success, -1 on failure.
-        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-        if (rc != 0) return error.SocketPairFailed;
-        return fds;
-    }
+    return helpers.createSocketPair();
 }
 
 // ============================================================================
@@ -55,7 +46,7 @@ test "writeChunkedFrame: writes <hex len>\\r\\n<data>\\r\\n" {
     defer _ = closeFd(pair[0]);
     defer _ = closeFd(pair[1]);
 
-    try sse_manager.writeChunkedFrame(pair[0], "event: ping\ndata: 1\n\n");
+    try sse_manager.writeChunkedFrame(toI32(pair[0]), "event: ping\ndata: 1\n\n");
 
     // Read on the OTHER end of the socketpair and assert the chunked frame.
     // Data is 21 bytes → hex len "15" → "15\r\n" (4) + data (21) + "\r\n" (2) = 27.
@@ -70,7 +61,7 @@ test "writeChunkedFrame: empty data writes 0\\r\\n\\r\\n (chunked terminator)" {
     defer _ = closeFd(pair[0]);
     defer _ = closeFd(pair[1]);
 
-    try sse_manager.writeChunkedFrame(pair[0], "");
+    try sse_manager.writeChunkedFrame(toI32(pair[0]), "");
 
     var buf: [16]u8 = undefined;
     const n = readFd(pair[1], &buf, buf.len);
@@ -87,7 +78,7 @@ test "SseClient: sendEvent writes <hex len>\\r\\n<data>\\r\\n" {
     defer threaded.deinit();
 
     const id: [16]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
-    var client: sse_manager.SseClient = .init(id, pair[0], std.testing.allocator, threaded.io());
+    var client: sse_manager.SseClient = .init(id, toI32(pair[0]), std.testing.allocator, threaded.io());
     // Suppress the per-client arena cleanup on scope-exit (it would
     // double-free the fd that `closeFd(pair[0])` above
     // also closes). The test only needs `client.sendEvent` to write
@@ -146,7 +137,7 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
 
     // Use registerClientForTest so the random-id path (which requires
     // being on the Io thread) is bypassed.
-    const id = try mgr.registerClientForTest(pair[0], .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const id = try mgr.registerClientForTest(toI32(pair[0]), .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
 
     // Send one event so the peer has a chunked frame on the wire.
     try mgr.sendChunked(id, "event: ping\ndata: 1\n\n");
@@ -468,7 +459,7 @@ test "SseManager: sweepStaleClients removes clients whose last_heartbeat is stal
     // The sweep closes pair[0] for us; we close the other end.
     defer _ = closeFd(pair[1]);
     const id: [16]u8 = .{ 0x42 } ** 16;
-    _ = try mgr.registerClientForTest(pair[0], id);
+    _ = try mgr.registerClientForTest(toI32(pair[0]), id);
     try std.testing.expect(mgr.clientCount() == 1);
 
     // The client's `last_heartbeat` was set to `timestamp()` at register
@@ -504,10 +495,10 @@ test "SseManager: sweepStaleClients respects max_per_call cap" {
     defer _ = closeFd(pair3[1]);
     defer _ = closeFd(pair4[1]);
 
-    _ = try mgr.registerClientForTest(pair1[0], .{ 0x11 } ** 16);
-    _ = try mgr.registerClientForTest(pair2[0], .{ 0x22 } ** 16);
-    _ = try mgr.registerClientForTest(pair3[0], .{ 0x33 } ** 16);
-    _ = try mgr.registerClientForTest(pair4[0], .{ 0x44 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair1[0]), .{ 0x11 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair2[0]), .{ 0x22 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair3[0]), .{ 0x33 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair4[0]), .{ 0x44 } ** 16);
     try std.testing.expect(mgr.clientCount() == 4);
 
     // Make all 4 stale.
@@ -569,7 +560,7 @@ test "SseManager: sendToClient removes the client on a failed write (behavioural
     defer closeFd(pair[1]);
 
     const id: [16]u8 = .{ 0xAA, 0xBB, 0xCC, 0xDD } ++ .{0} ** 12;
-    _ = try mgr.registerClientForTest(pair[0], id);
+    _ = try mgr.registerClientForTest(toI32(pair[0]), id);
     try std.testing.expect(mgr.clientCount() == 1);
 
     // sendToClient should observe the failed write, remove the client,

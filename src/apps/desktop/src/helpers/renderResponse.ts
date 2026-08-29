@@ -1,0 +1,374 @@
+import { marked } from 'marked'
+import { isThinkingTags, getThinkingTags, stripThinkingTags } from './stripTags'
+import { tryUnwrapToolOutput } from './unwrapToolOutput'
+
+/**
+ * Render a chat message's content to HTML.
+ *
+ * Extracted from ChatView.vue (2026-08-27, task_1787761084050_0) and
+ * memoized: the previous in-component implementation called
+ * `marked.parse` synchronously inside `v-html`, so every re-render of
+ * ChatView re-parsed every visible message's markdown. For a long
+ * chat (50+ messages) with SSE chunks landing every ~100ms, that's
+ * O(visible_messages × renders_per_second) parse calls per second.
+ * The cache collapses that to O(unique_messages) per content mutation
+ * — the per-render parse loop goes away.
+ *
+ * Cache key is `${role}|${tool_name}|${trimmedContent}`. The
+ * function trims `content` at the top, so leading/trailing whitespace
+ * variants share an entry (otherwise a streaming assistant message
+ * would fill the cache with every chunk that happened to have a
+ * trailing newline).
+ *
+ * The cache is bounded to `MAX_CACHE_ENTRIES`; when it fills up, the
+ * entire cache is cleared. A long chat with thousands of distinct
+ * message variants will see periodic cache misses after each clear,
+ * but the typical pattern is "100s of renders over the same 50
+ * messages" — the clear never fires.
+ *
+ * The 4 trailing `diffview_*` / `finish_reason` / `tool_calls_json`
+ * parameters are kept for diff readability with the original Vue
+ * call sites. They are NOT used by the function body — the visible
+ * return value depends only on `(content, role, tool_name)`, which is
+ * also what the cache keys on.
+ */
+const escapeHtml = (text: string): string => {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
+const MAX_CACHE_ENTRIES = 200
+
+// Map is module-scoped so the cache survives across component
+// re-renders and even across mount/unmount (the hot path is the
+// long-lived chat, where the same messages re-render dozens of
+// times). Tests reset via `_resetRenderResponseCache`.
+const cache = new Map<string, string>()
+
+/**
+ * Test-only cache reset. Not exported through the helpers barrel
+ * (helpers/index.ts) so production callers can't accidentally
+ * clobber the cache.
+ */
+export const _resetRenderResponseCache = (): void => {
+  cache.clear()
+}
+
+const computeKey = (
+  content: string,
+  role: string,
+  toolName: string | undefined,
+): string => {
+  // Pipe delimiter is safe: none of the inputs contain `|` (markdown
+  // and tool envelopes are user/LLM text, not pipes).
+  return `${role}|${toolName ?? ''}|${content.trim()}`
+}
+
+export const renderResponse = (
+  content: string,
+  role: string,
+  tool_name?: string,
+  // 4 trailing parameters kept for diff readability with the original
+  // Vue call sites. They are not used by the function body — the
+  // return value depends only on (content, role, tool_name), which is
+  // also what the cache keys on. Underscored to make the
+  // "intentionally unused" intent explicit to linters.
+  _diffviewBefore?: string,
+  _diffviewAfter?: string,
+  _finish_reason?: string,
+  _tool_calls_json?: string,
+): string => {
+  // Cache check BEFORE the trim() so a miss on the raw input doesn't
+  // allocate a new trimmed string. The computeKey() inside is cheap
+  // (one .trim() + concat).
+  const key = computeKey(content, role, tool_name)
+  const cached = cache.get(key)
+  if (cached !== undefined) return cached
+
+  // Bounded cache: if we exceed the limit, clear and start over.
+  // Clearing is simpler than LRU and good enough — typical chats
+  // have far fewer than 200 distinct content variants.
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    cache.clear()
+  }
+
+  const trimmed = content.trim()
+  if (!trimmed) {
+    cache.set(key, '')
+    return ''
+  }
+
+  let result: string
+  try {
+    if (role === 'assistant') {
+      if (isThinkingTags(trimmed)) {
+        result = getThinkingTags(trimmed)
+      } else {
+        const cleanContent = stripThinkingTags(trimmed)
+        result = marked.parse(cleanContent, { async: false }) as string
+      }
+    } else if (role === 'tool') {
+      result = renderTool(trimmed, tool_name)
+    } else {
+      result = escapeHtml(trimmed)
+    }
+  } catch {
+    result = escapeHtml(trimmed)
+  }
+
+  cache.set(key, result)
+  return result
+}
+
+// Tool branch — extracted from renderResponse so the assistant cache
+// path stays short and the file is easier to scan.
+const renderTool = (content: string, tool_name: string | undefined): string => {
+  if (tool_name === 'read_file') {
+    const mathPath = content.match(/<path>(.*?)<\/path>/)
+    const path = mathPath ? mathPath[1] : null
+    const errorArr = content.match(/<error>(.*?)<\/error>/)
+    if (errorArr) {
+      const errorQuery = errorArr[0]
+      return `<span class="tool-inline">${tool_name} → ${path} ${errorQuery}</span>`
+    }
+    return `<span class="tool-inline">${tool_name} → ${path}</span>`
+  }
+
+  if (tool_name === 'search') {
+    const fileMatch = content.match(/<file path="([^"]+)" total="(\d+)" count="(\d+)">/)
+    if (fileMatch) {
+      const matchCount = fileMatch[3]
+      return `<span class="tool-inline">search → ${matchCount} matches</span>`
+    }
+    const warningMatch = content.match(/<warning>(.*?)<\/warning>/)
+    if (warningMatch) {
+      return `<span class="tool-inline">search → ${warningMatch[1]}</span>`
+    }
+    const errorMatch = content.match(/<error>(.*?)<\/error>/)
+    return `<span class="tool-inline">search → ${errorMatch?.[1] || 'unknown'}</span>`
+  }
+
+  if (tool_name === 'glob') {
+    const patternMatch = content.match(/pattern="([^"]+)"/)
+    const totalMatch = content.match(/total="(\d+)"/)
+    const returnedMatch = content.match(/returned="(\d+)"/)
+    const warningMatch = content.match(/<warning>(.*?)<\/warning>/)
+    if (warningMatch) {
+      return `<span class="tool-inline">glob → ${warningMatch[1]}</span>`
+    }
+    const pattern = patternMatch ? patternMatch[1] : 'unknown'
+    const total = totalMatch ? totalMatch[1] : '0'
+    const returned = returnedMatch ? returnedMatch[1] : total
+    const resultsText = total !== '0' ? ` (${returned} files)` : ''
+    return `<span class="tool-inline">glob → "${pattern}"${resultsText}</span>`
+  }
+
+  // Collapsed-bubble summary for the inline tool pill in ChatView.
+  // Mirrors the structured ListDirectory.vue card so users see the
+  // same info (path + entry count) whether they look at the
+  // collapsed bubble or the expanded body. The wire shape is
+  // `<directory_listing path="..." count="N">...</directory_listing>`
+  // (see src/modules/agent/tools/list_directory.zig).
+  if (tool_name === 'list_directory') {
+    const errorMatch = content.match(/<error>([\s\S]*?)<\/error>/)
+    if (errorMatch) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml(errorMatch[1]?.trim() || 'error')}</span>`
+    }
+    const pathMatch = content.match(/<directory_listing\s[^>]*\bpath="([^"]+)"/)
+    const countMatch = content.match(/<directory_listing\s[^>]*\bcount="(\d+)"/)
+    const dirPath = pathMatch?.[1] ?? 'unknown'
+    const dirCount = countMatch?.[1] ?? '0'
+    const plural = dirCount === '1' ? 'entry' : 'entries'
+    return `<span class="tool-inline">${tool_name} → ${escapeHtml(dirPath)} (${dirCount} ${plural})</span>`
+  }
+
+  if (tool_name === 'web_search') {
+    const mathQuery = content.match(/<query>(.*?)<\/query>/) || content.match(/"(.*?)"/)
+    const query = mathQuery ? mathQuery[1] : null
+    return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`
+  }
+
+  if (tool_name === 'mcp_context7_query-docs' || tool_name === 'context7') {
+    const mathQuery = content.match(/<query>(.*?)<\/query>/)
+    const query = mathQuery ? mathQuery[1] : null
+    return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`
+  }
+
+  if (
+    tool_name === 'list_skills' ||
+    tool_name === 'get_skill' ||
+    tool_name === 'add_skill' ||
+    tool_name === 'edit_skill' ||
+    tool_name === 'view_skill'
+  ) {
+    return `<span class="tool-inline">${tool_name}</span>`
+  }
+
+  if (tool_name === 'set_git_worktree') {
+    // SET success: <created>true</created><path>...</path>
+    const pathMatch = content.match(/<path>([\s\S]*?)<\/path>/)
+    if (pathMatch) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml(pathMatch[1]?.trim() || '')}</span>`
+    }
+    // CLEAR success: <cleared>true</cleared>
+    if (/<cleared>\s*true\s*<\/cleared>/.test(content)) {
+      return `<span class="tool-inline">${tool_name} → cleared</span>`
+    }
+    // Error: <created>false</created><error>...</error>
+    const errMatch = content.match(/<error>([\s\S]*?)<\/error>/)
+    return `<span class="tool-inline">${tool_name} → ${escapeHtml(errMatch?.[1]?.trim() || 'error')}</span>`
+  }
+
+  if (tool_name === 'read_compacted_messages') {
+    // Collapsed-bubble summary for the inline tool pill in ChatView.
+    // Mirrors the structured ReadCompactedMessages.vue card so users
+    // see the same info (mode + count + session) whether they look
+    // at the collapsed bubble or the expanded body.
+    const errorMatch = content.match(/<error>([\s\S]*?)<\/error>/)
+    if (errorMatch) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml(errorMatch[1]?.trim() || 'error')}</span>`
+    }
+    const modeMatch = content.match(/<read_compacted_messages\s+mode="([^"]+)"/)
+    const countMatch = content.match(/<count>(\d+)<\/count>/)
+    const sessionMatch = content.match(/<session_id>([\s\S]*?)<\/session_id>/)
+    const mode = modeMatch?.[1] ?? 'index'
+    const count = countMatch?.[1] ?? '?'
+    const session = sessionMatch?.[1]?.trim() ?? ''
+    return `<span class="tool-inline">${tool_name} → ${escapeHtml(mode)} mode · ${count} ${count === '1' ? 'message' : 'messages'}${session ? ' · ' + escapeHtml(session) : ''}</span>`
+  }
+
+  if (tool_name === 'update_plan') {
+    // Collapsed-bubble summary for the inline tool pill in ChatView.
+    // Mirrors the structured UpdatePlan.vue card so users see "wrote
+    // N bytes" whether they look at the collapsed bubble or expand
+    // the structured card. We approximate the byte count from the
+    // envelope's `<updated_at>` timestamp + the presence of
+    // `<session_id>` — the raw `content` argument isn't the LLM's
+    // input, so we can't show the exact byte count without
+    // threading the tool-call params through; the byte count from
+    // the plan body would require re-unwrapping, so we settle for
+    // a length-derived estimate from the inner envelope.
+    const updateError = content.match(/<error>([\s\S]*?)<\/error>/)
+    if (updateError && updateError[1]) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml(updateError[1].trim()) || 'error'}</span>`
+    }
+    // Estimate byte count from the inner envelope length as a
+    // rough "how big was this plan write" signal. We pull the
+    // inner envelope (stripping both <tool> and <update_plan>
+    // wrappers) so the number reflects the actual content, not
+    // the XML envelope chrome.
+    const innerPlanMatch = content.match(/<update_plan>([\s\S]*?)<\/update_plan>/)
+    const innerBytes = innerPlanMatch?.[1]?.length ?? 0
+    return `<span class="tool-inline">${tool_name} → wrote ${innerBytes}b of plan</span>`
+  }
+
+  if (tool_name === 'get_plan') {
+    // Collapsed-bubble summary for the inline tool pill in ChatView.
+    // Mirrors the structured GetPlan.vue card so users see "fetched
+    // current plan · N items" whether they look at the collapsed
+    // bubble or expand the structured card.
+    const getError = content.match(/<error>([\s\S]*?)<\/error>/)
+    if (getError && getError[1]) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml(getError[1].trim()) || 'error'}</span>`
+    }
+    // No-plan sentinel: <get_plan><empty/></get_plan>
+    if (/<empty\s*\/?>/.test(content)) {
+      return `<span class="tool-inline">${tool_name} → no plan set</span>`
+    }
+    // Count `- [ ]` / `- [x]` items in the CDATA-wrapped body for
+    // the "N items" hint. We strip the CDATA wrappers first so we
+    // only match checklist markers, not any literal `[ ]` text
+    // inside non-checklist prose.
+    const cdataMatch = content.match(/<!\[CDATA\[([\s\S]*?)\]\]>/)
+    const cdata = cdataMatch?.[1] ?? ''
+    const itemMatches = cdata.match(/^- \[(x| )\]\s+/gim)
+    const itemCount = itemMatches?.length ?? 0
+    const itemLabel = itemCount === 1 ? 'item' : 'items'
+    return `<span class="tool-inline">${tool_name} → fetched current plan${itemCount > 0 ? ` · ${itemCount} ${itemLabel}` : ''}</span>`
+  }
+
+  if (tool_name === 'nalar_browser') {
+    // Use the same action-aware summariser the standalone component uses,
+    // so the collapsed preview ("nalar_browser · open_page · Example Domain")
+    // matches what the user will see in the expanded body.
+    const nalarUnwrapped = tryUnwrapToolOutput(content)
+    if (nalarUnwrapped === null) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml(content)}</span>`
+    }
+    const a = nalarUnwrapped.parameters
+    let action = 'unknown'
+    try {
+      const parsed = JSON.parse(a)
+      if (parsed && typeof parsed === 'object' && typeof parsed.action === 'string') {
+        action = parsed.action
+      }
+    } catch {
+      /* fall through */
+    }
+    // The `<tag>...</tag>` patterns below use new RegExp() with a
+    // string source instead of regex literals. The Vite OXC parser
+    // auto-detects JSX in .ts files when it sees a literal
+    // `</tagname>` pattern in source — even inside a regex literal
+    // — and bails with "Unterminated regular expression". Building
+    // the regex from a string sidesteps the JSX detector entirely
+    // (the parser only inspects literal `</` tokens, not runtime
+    // string contents). Functionally equivalent for matching.
+    const label = (() => {
+      if (nalarUnwrapped.error) return nalarUnwrapped.error
+      const data = nalarUnwrapped.data ?? ''
+      const tagMatch = (tag: string): string | undefined =>
+        new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(data)?.[1]
+      switch (action) {
+        case 'launch':
+          return tagMatch('browser_id') ?? action
+        case 'open_page':
+          return tagMatch('title') ?? tagMatch('url') ?? action
+        case 'snapshot': {
+          const tree = tagMatch('tree')
+          if (!tree) return action
+          try {
+            const arr = JSON.parse(tree)
+            return Array.isArray(arr)
+              ? `snapshot · ${arr.length} element${arr.length !== 1 ? 's' : ''}`
+              : action
+          } catch {
+            return action
+          }
+        }
+        case 'click':
+        case 'fill':
+        case 'press':
+        case 'close_page':
+        case 'close_browser':
+          return action
+        default:
+          return action
+      }
+    })()
+    return `<span class="tool-inline">${tool_name} · ${escapeHtml(action)} · ${escapeHtml(label)}</span>`
+  }
+
+  if (tool_name === 'spawn_sub_agent') {
+    const agentMatches = content.match(/<agent name="([^"]*)" success="([^"]*)">/g)
+    const agentCount = agentMatches ? agentMatches.length : 0
+    const summaryMatch = content.match(/<summary succeeded="(\d+)" failed="(\d+)" \/>/)
+    const succeeded = summaryMatch ? summaryMatch[1] : '0'
+    const failed = summaryMatch ? summaryMatch[2] : '0'
+    return `<span class="tool-inline">${tool_name} → ${agentCount} agents (${succeeded} succeeded, ${failed} failed)</span>`
+  }
+
+  // Fallback: render a concise summary from the <tool> envelope.
+  // If the content doesn't match the envelope (legacy), fall back to
+  // the raw text (existing behavior).
+  const unwrapped = tryUnwrapToolOutput(content)
+  if (unwrapped === null) {
+    return `<span class="tool-inline">${tool_name || 'tool'} → ${escapeHtml(content)}</span>`
+  }
+  const statusIcon = unwrapped.success ? '✓' : '✗'
+  const statusClass = unwrapped.success ? 'tool-inline-success' : 'tool-inline-error'
+  const preview = unwrapped.success
+    ? unwrapped.data?.slice(0, 80) ?? ''
+    : unwrapped.error ?? 'unknown error'
+  return `<span class="tool-inline">${tool_name || unwrapped.name} → <span class="${statusClass}">${statusIcon}</span> ${escapeHtml(preview)}${preview.length >= 80 ? '…' : ''}</span>`
+}

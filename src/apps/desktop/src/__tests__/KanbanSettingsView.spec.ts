@@ -73,8 +73,18 @@ function setupRoute(
   const obj = reactive({ query, path, params, fullPath: path })
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouteMock.mockReturnValue(obj as any)
-  const push = vi.fn()
-  const replace = vi.fn()
+  // Mocked router methods apply their `query` argument to the reactive
+  // route object (mirrors what a real router does) so URL-backed
+  // computed refs in the page re-evaluate after `router.replace`.
+  const apply = (target: { query?: Record<string, string> }) => {
+    if (target.query) {
+      // Reactive replacement — triggers computed re-eval.
+      Object.keys(obj.query).forEach((k) => delete obj.query[k])
+      Object.assign(obj.query, target.query)
+    }
+  }
+  const push = vi.fn((target: { query?: Record<string, string> }) => apply(target))
+  const replace = vi.fn((target: { query?: Record<string, string> }) => apply(target))
   const back = vi.fn()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouterMock.mockReturnValue({ push, replace, back, currentRoute: obj } as any)
@@ -151,6 +161,19 @@ describe('KanbanSettingsView', () => {
           // Stub the memories view — it's heavy (renders a full
           // memories panel) and we only test its presence/absence.
           WorkspaceItemMemoriesView: { template: '<div data-testid="stub-memories"></div>' },
+          // Stub the tools panel — same rationale. We only assert
+          // its presence/absence here (its own spec covers
+          // behaviour). The wrapper div mirrors the real panel's
+          // outer testid so the page-level body assertion works.
+          KanbanToolsPanel: {
+            template: '<div data-testid="kanban-settings-page-tools-panel-stub"></div>',
+            props: ['item', 'workspaceId'],
+          },
+          // Stub the knowledge panel — same rationale.
+          KanbanKnowledgePanel: {
+            template: '<div data-testid="kanban-settings-page-knowledge-panel-stub"></div>',
+            props: ['item', 'workspaceId'],
+          },
           // Stub KanbanColumnEditor to avoid the Teleport + nested
           // dialog complexity in the rename/delete tests. Mirrors the
           // real editor's `kanban-column-editor-<mode>-submit`
@@ -314,5 +337,102 @@ describe('KanbanSettingsView', () => {
       '[data-testid="kanban-settings-page-not-found"]',
     )
     expect(hint).not.toBeNull()
+  })
+
+  // ─── Tools + Knowledge tabs (plan: docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md,
+  //    iteration 2 — split Agent into Tools + Knowledge as separate top-level tabs) ───
+
+  it('renders BOTH Tools and Knowledge tab buttons (visible regardless of item.path)', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    mountView()
+    await flushPromises()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]'),
+    ).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]'),
+    ).not.toBeNull()
+  })
+
+  it('does NOT render an Agent umbrella tab (regression — split into Tools + Knowledge)', async () => {
+    seedWorkspaces()
+    mountView()
+    await flushPromises()
+    const agentTab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
+    expect(agentTab).toBeNull()
+  })
+
+  it('mounts the KanbanToolsPanel as the active body when ?tab=tools is in the URL', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ tab: 'tools' })
+    mountView()
+    await flushPromises()
+    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]')
+    expect(tab).not.toBeNull()
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tools-panel"]')
+    expect(panel).not.toBeNull()
+    // Columns body should NOT be rendered.
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
+  })
+
+  it('mounts the KanbanKnowledgePanel as the active body when ?tab=knowledge is in the URL', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ tab: 'knowledge' })
+    mountView()
+    await flushPromises()
+    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]')
+    expect(tab).not.toBeNull()
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-knowledge-panel"]')
+    expect(panel).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
+  })
+
+  it('calls router.replace with {query:{tab:"tools"}} when the Tools tab is clicked', async () => {
+    seedWorkspaces()
+    const { router } = setupRoute({})
+    mountView()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-settings-page-tab-tools"]')
+    expect(router.replace).toHaveBeenCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ tab: 'tools' }) }),
+    )
+  })
+
+  it('calls router.replace with {query:{tab:"knowledge"}} when the Knowledge tab is clicked', async () => {
+    seedWorkspaces()
+    const { router } = setupRoute({})
+    mountView()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-settings-page-tab-knowledge"]')
+    expect(router.replace).toHaveBeenCalledWith(
+      expect.objectContaining({ query: expect.objectContaining({ tab: 'knowledge' }) }),
+    )
+  })
+
+  it('still honours ?tab=memories as the active tab (regression for URL-backed setter)', async () => {
+    seedWorkspaces({ ...baseItem, path: '/tmp/some-folder' })
+    setupRoute({ tab: 'memories' })
+    mountView()
+    await flushPromises()
+    const stubPanel = findInDom<HTMLElement>('[data-testid="stub-memories"]')
+    expect(stubPanel).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
+  })
+
+  it('falls back to columns when ?tab= has an unknown value', async () => {
+    seedWorkspaces()
+    setupRoute({ tab: 'totally-bogus' })
+    mountView()
+    await flushPromises()
+    const columnsList = findInDom<HTMLElement>(
+      '[data-testid="kanban-settings-page-column-list"]',
+    )
+    expect(columnsList).not.toBeNull()
   })
 })

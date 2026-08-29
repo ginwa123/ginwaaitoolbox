@@ -27,7 +27,8 @@ The new dimension for the UI suite:
    the TEST backend, not the developer's always-on `:8081`.
 5. **Cross-platform isolation** (macOS, Linux, Windows):
    - `is_safe_tmp` is OS-aware (Windows uses native backslash prefix).
-   - npm is resolved via `shutil.which("npm") or shutil.which("npm.cmd")`.
+   - pnpm is resolved via `shutil.which("pnpm") or shutil.which("pnpm.cmd")`.
+     (2026-08-28 — pnpm migration: previously `npm`.)
    - Vite signal handling uses `os.killpg` on POSIX, `os.kill` on Windows.
 
 See `harness_safety_test.py` for 11 cross-platform safety tests.
@@ -129,7 +130,11 @@ When a test starts:
 1. `UIHarness.boot()` runs.
 2. `FunctionalHarness.boot()` boots nalar against an isolated tmpdir HOME.
 3. `UIHarness.boot()` then resolves the frontend source tree (default:
-   `src/apps/desktop/`) and spawns `npm run dev -- --port <vite_port>`.
+   `src/apps/desktop/`) and spawns `pnpm run dev --port <vite_port>
+   --strictPort --host 127.0.0.1` (2026-08-28 — pnpm migration:
+   previously `npm run dev`; `--` separator dropped because vite 8
+   silently dropped `--port` when it was forwarded as a positional
+   arg).
 4. The env var `VITE_API_PROXY_TARGET=http://127.0.0.1:<backend_port>`
    is set so Vite's `/api/*` proxy targets the test backend.
 5. Vite's HTTP root is polled until it returns 200 (~5-15s for first
@@ -152,14 +157,43 @@ When the test ends:
 
 Per project memory "Don't ever kill the process port 8081":
 
-| Service  | Range      | Notes                                    |
-|----------|------------|------------------------------------------|
-| Backend  | 8080, 8082–8199 | Skips 8081 (dev port)                |
-| Vite     | 5180–5299  | Skips 5173 (Vite's default) and 8081     |
+| Service  | Strategy         | Range / constraints    |
+|----------|------------------|-----------------------|
+| Backend  | random pick      | `[40000, 60000]`, reserved `(8081,)`         |
+| Vite     | random pick      | `[40000, 60000]`, reserved `(5173, 8081)`    |
 
-The harness scans each range and binds+closes to verify the port is
-free (not just that nothing is listening — important for TIME_WAIT
-reuse).
+The harness picks a **random** port from a wide shared range (see
+`find_free_port_random` + `RANDOM_PORT_START` / `RANDOM_PORT_END` in
+`harness.py`). With 20,000 ports of headroom and 50 attempts per
+boot, the probability of collision is effectively zero for any
+realistic host occupancy.
+
+This replaced the previous sequential scans (`8080, 8082..8199` for
+the backend, `5180..5299` for vite) that caused two recurring CI
+failures:
+
+  1. **Sequential consumption** — long test suites filled the narrow
+     120- or 5199-port windows and errored with "No free port found".
+  2. **TIME_WAIT saturation** — even with `SO_REUSEADDR`, a CI runner
+     holding 100+ TIME_WAITs could collide with the narrow scan ranges.
+
+### Vite CLI quirk fixed in tandem
+
+Vite 8 silently drops `--port` / `--strictPort` if `pnpm run dev`
+forwards the argv with a literal `--` separator (vite treats `--` as
+"end of named options", then takes the rest as positional args and
+falls back to its default port 5173). The harness previously used
+`pnpm run dev -- --port <port>` and observed in the CI log that vite
+ignored the chosen port — it ended up on a sequential-scan fallback
+instead. We now pass the flags directly to vite via
+`pnpm run dev --port <port> --strictPort --host 127.0.0.1` (no `--`).
+
+### TIME_WAIT reuse
+
+The probe socket sets `SO_REUSEADDR` so it can bind ports in TIME_WAIT
+state. nalar's listener also sets `SO_REUSEADDR`, so it can bind the
+same port despite lingering server-side TIME_WAITs from prior runs.
+Vite's listener honors `SO_REUSEADDR` too.
 
 ## Why Playwright, not just HTTP?
 
