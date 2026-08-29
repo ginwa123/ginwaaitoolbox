@@ -214,7 +214,12 @@ describe('PreviewContentRenderer', () => {
       expect(iframe.attributes('style')).toContain('min-height: 200px')
     })
 
-    it('caps iframe width at the chat-bubble width (max-w-full)', () => {
+    it('inline container does NOT use max-w-full (iframe is allowed to exceed chat column — 2026-08-29 followup #3)', () => {
+      // Earlier revisions constrained the iframe container to max-w-full
+      // so wide content was CROPPED. The followup removed that cap so
+      // wide content can render at its natural width (the container
+      // has overflow-x: auto for horizontal scrolling). This test
+      // locks in the new behaviour so a future revert is caught.
       const wrapper = mount(PreviewContentRenderer, {
         props: {
           contentType: 'html',
@@ -224,41 +229,26 @@ describe('PreviewContentRenderer', () => {
       })
       const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
       const classes = iframeContainer.attributes('class') ?? ''
-      expect(classes).toContain('max-w-full')
+      expect(classes).not.toContain('max-w-full')
     })
 
-    // ─── Auto-escalate on overflow (2026-08-29) ───────────────────────
+    // ─── Iframe at natural content width (2026-08-29 followup #3) ──────
     //
-    // When the inline iframe detects its inner content is wider than
-    // the chat column (via the postMessage `width` field), we
-    // automatically:
-    //   1. Emit `open-in-side-panel` once (the watcher in <script
-    //      setup> handles this — once: true so the postMessage
-    //      load/resize/MutationObserver triggers don't keep firing).
-    //   2. Hide the iframe body (the v-else-if guard becomes false).
-    //   3. Render an in-chat pointer ("↗ Preview is wider than this
-    //      chat — viewing in the side panel") with a jump-to-panel
-    //      button for users who closed the panel.
+    // The previous revision (#379) auto-escalated wide content to the
+    // side panel. The user pushed back: "inline keep in the chat
+    // messages, no need popup side". So instead of escalating, we
+    // render the iframe at its CONTENT'S natural width (reported via
+    // the postMessage `width` field) and let the user scroll horizontally
+    // within the iframe container (which has overflow-x: auto).
     //
-    // The user ends up looking at the side panel with the full
-    // content — no more cropped iframe in the chat.
-    //
-    // Narrow content (e.g. <h1>x</h1>) does NOT trigger overflow,
-    // so the iframe renders normally and no pointer is shown.
-    describe('auto-escalate to side panel when content overflows', () => {
-      it('renders the iframe normally for narrow content (no overflow detected)', () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        expect(wrapper.find('iframe[data-testid="preview-html-iframe"]').exists()).toBe(true)
-        expect(wrapper.find('[data-testid="preview-inline-escalated"]').exists()).toBe(false)
-      })
-
-      it('HIDES the iframe when overflow is detected (the postMessage fires scrollWidth > clientWidth)', async () => {
+    // Result: wide content stays inline. The chat bubble gets a
+    // horizontal scrollbar on the iframe container so the user can
+    // swipe through the full content. They can also click the CTA
+    // strip's "↗ Open in side panel" button to manually open the side
+    // panel if they prefer — that's the only way the side panel
+    // appears now.
+    describe('iframe renders at natural content width (no more cropping)', () => {
+      it('starts with no explicit width on the iframe (waits for the postMessage protocol)', () => {
         const wrapper = mount(PreviewContentRenderer, {
           props: {
             contentType: 'html',
@@ -267,24 +257,92 @@ describe('PreviewContentRenderer', () => {
           },
         })
         const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        // Simulate the iframe reporting its content is wider than the
-        // chat column (scrollWidth 999 > clientWidth 500).
-        // jsdom doesn't lay out iframes, so we set clientWidth manually
-        // before posting — see the comment in onIframeMessage about the
-        // `iframe.clientWidth > 0` guard.
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
+        // No width set yet — the iframe has its natural width until
+        // the postMessage arrives.
+        expect(iframe.style.width).toBe('')
+      })
+
+      it('sets iframe width to the reported content width when postMessage fires', async () => {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: 'html',
+            args: { content: '<h1>x</h1>' },
+            variant: 'inline',
+          },
+        })
+        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+        // Simulate the iframe reporting a 1200px-wide content.
         window.dispatchEvent(
           new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
+            data: { source: 'show-preview-auto-resize', height: 700, width: 1200 },
           }),
         )
         await wrapper.vm.$nextTick()
-        // The iframe is now hidden — the escalated pointer shows instead.
-        expect(wrapper.find('iframe[data-testid="preview-html-iframe"]').exists()).toBe(false)
-        expect(wrapper.find('[data-testid="preview-inline-escalated"]').exists()).toBe(true)
+        // The iframe's width is now 1200px — wider than the chat column,
+        // so the container's overflow-x: auto will show a scrollbar.
+        expect(iframe.style.width).toBe('1200px')
       })
 
-      it('auto-emits "open-in-side-panel" exactly once when overflow is first detected', async () => {
+      it('clamps iframe width to MAX (1600px) so runaway content does not break horizontal scrolling', async () => {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: 'html',
+            args: { content: '<h1>x</h1>' },
+            variant: 'inline',
+          },
+        })
+        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { source: 'show-preview-auto-resize', height: 9999, width: 9999 },
+          }),
+        )
+        await wrapper.vm.$nextTick()
+        // 9999px would create a horizontal scrollbar from hell.
+        // Capped at 1600px.
+        expect(iframe.style.width).toBe('1600px')
+      })
+
+      it('clamps iframe width to MIN (320px) so too-narrow content still fills the chat column', async () => {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: 'html',
+            args: { content: '<h1>x</h1>' },
+            variant: 'inline',
+          },
+        })
+        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { source: 'show-preview-auto-resize', height: 100, width: 100 },
+          }),
+        )
+        await wrapper.vm.$nextTick()
+        // 100px is too narrow — clamped up to 320px so the iframe
+        // fills the chat column instead of sitting in a corner.
+        expect(iframe.style.width).toBe('320px')
+      })
+
+      it('iframe container has overflow-x: auto so wide content shows a horizontal scrollbar', () => {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: 'html',
+            args: { content: '<h1>x</h1>' },
+            variant: 'inline',
+          },
+        })
+        const container = wrapper.find('[data-testid="preview-html-container"]')
+        const classes = container.attributes('class') ?? ''
+        expect(classes).toContain('overflow-x-auto')
+        // Crucially: NOT `overflow-hidden` (which would clip the wider
+        // iframe). The container should scroll horizontally instead.
+        expect(classes).not.toContain('overflow-hidden')
+      })
+
+      it('does NOT auto-emit "open-in-side-panel" when iframe reports wide content (user feedback: no popup)', async () => {
+        // The user explicitly said "inline keep in the chat messages,
+        // no need popup side". So no auto-escalation — wide content
+        // stays inline, the user scrolls horizontally.
         const wrapper = mount(PreviewContentRenderer, {
           props: {
             contentType: 'html',
@@ -294,90 +352,63 @@ describe('PreviewContentRenderer', () => {
         })
         const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
         Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        // Fire overflow multiple times (load + resize + MutationObserver
-        // all dispatch — see AUTO_RESIZE_SCRIPT). The watcher is
-        // `once: true`, so we should see exactly ONE emit.
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 10; i++) {
           window.dispatchEvent(
             new MessageEvent('message', {
-              data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
+              data: { source: 'show-preview-auto-resize', height: 999, width: 9999 },
             }),
           )
         }
         await wrapper.vm.$nextTick()
-        const events = wrapper.emitted('open-in-side-panel')
-        expect(events).toBeTruthy()
-        expect(events!.length).toBe(1)
-      })
-
-      it('does NOT auto-escalate when iframe reports width but no overflow', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 800, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 300, width: 400 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
+        // No auto-escalation: zero emits, even though the content is
+        // 9999px wide (the iframe just gets clamped to 1600px and
+        // overflows horizontally within its container).
         expect(wrapper.emitted('open-in-side-panel')).toBeFalsy()
-        // Iframe stays visible (no overflow).
-        expect(wrapper.find('iframe[data-testid="preview-html-iframe"]').exists()).toBe(true)
-      })
-
-      it('does NOT auto-escalate in side variant (panel is already wide enough — overflow is the panel user\'s choice)', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'side',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
-        expect(wrapper.emitted('open-in-side-panel')).toBeFalsy()
-      })
-
-      it('the escalated pointer\'s "Open" button re-emits open-in-side-panel on click (fallback for users who dismissed the panel)', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
-        // The watcher already emitted once automatically. Click the
-        // jump-to-panel button — expect the event count to grow.
-        const beforeClick = (wrapper.emitted('open-in-side-panel') ?? []).length
-        const jumpBtn = wrapper.find('[data-testid="preview-escalated-jump-to-panel"]')
-        expect(jumpBtn.exists()).toBe(true)
-        await jumpBtn.trigger('click')
-        const afterClick = (wrapper.emitted('open-in-side-panel') ?? []).length
-        expect(afterClick).toBeGreaterThan(beforeClick)
       })
     })
 
-    it('default variant is "side" (no max-w-full, no inline-only CTA)', () => {
+    // ─── CTA strip below iframe (manual escape hatch to side panel) ───
+    //
+    // Restored after #379's auto-escalate removal. The user CAN still
+    // open the preview in the side panel manually — they just don't get
+    // forced to.
+    it('renders the "Open in side panel" button below the iframe (inline + html only)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const cta = wrapper.find('[data-testid="preview-inline-cta"]')
+      expect(cta.exists()).toBe(true)
+      expect(cta.find('[data-testid="preview-open-full-button"]').exists()).toBe(true)
+    })
+
+    it('emits "open-in-side-panel" when the CTA button is clicked (manual escape hatch)', async () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      await wrapper.find('[data-testid="preview-open-full-button"]').trigger('click')
+      expect(wrapper.emitted('open-in-side-panel')?.length).toBe(1)
+    })
+
+    it('does NOT render the CTA strip in side variant (panel already shows content full-width)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'side',
+        },
+      })
+      expect(wrapper.find('[data-testid="preview-inline-cta"]').exists()).toBe(false)
+    })
+
+    it('default variant is "side" (no overflow-x-auto, no inline-only CTA)', () => {
       const wrapper = mount(PreviewContentRenderer, {
         props: {
           contentType: 'html',
@@ -387,10 +418,11 @@ describe('PreviewContentRenderer', () => {
       // No variant passed → defaults to 'side' (back-compat).
       const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
       const classes = iframeContainer.attributes('class') ?? ''
-      // Side variant uses h-full (fills panel), not max-w-full (chat column)
-      expect(classes).not.toContain('max-w-full')
-      // No inline-only affordances in side variant.
-      expect(wrapper.find('[data-testid="preview-inline-escalated"]').exists()).toBe(false)
+      // Side variant uses h-full (fills panel), not overflow-x-auto
+      // (chat column).
+      expect(classes).not.toContain('overflow-x-auto')
+      // No inline-only CTA in side variant.
+      expect(wrapper.find('[data-testid="preview-inline-cta"]').exists()).toBe(false)
     })
   })
 
