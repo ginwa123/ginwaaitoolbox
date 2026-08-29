@@ -11,6 +11,15 @@
  * localStorage is undefined — never throws).
  *
  * Plan: docs/superpowers/specs/2026-08-06-show-preview-display-mode-design.md
+ *
+ * 2026-08-29: default flipped back from 'inline' to 'side'. The 2026-08-06
+ * spec said 'side', someone flipped the default to 'inline' after that
+ * spec merged without updating it. The inline iframe was crushing wide
+ * HTML previews in the narrow chat column. Existing inline users keep
+ * their localStorage value (no migration) — only the FALLBACK (new user
+ * with empty/invalid localStorage) changed. Plan:
+ * docs/superpowers/plans/2026-08-29-show-preview-inline-default-and-ux.md
+ * (kanban: task_1787988286635_2).
  */
 
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
@@ -46,9 +55,9 @@ describe('usePreviewDisplayMode', () => {
     vi.restoreAllMocks()
   })
 
-  it('defaults to "inline" when localStorage is empty (matches other tool outputs)', () => {
+  it('defaults to "side" when localStorage is empty (side panel is the better home for show_preview)', () => {
     const { mode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('inline')
+    expect(mode.value).toBe('side')
   })
 
   it('reads existing "side" value from localStorage (survives reload)', () => {
@@ -59,7 +68,7 @@ describe('usePreviewDisplayMode', () => {
 
   it('setMode("side") flips the reactive ref AND writes to localStorage', async () => {
     const { mode, setMode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('inline')
+    expect(mode.value).toBe('side')
     setMode('side')
     await nextTick()
     expect(mode.value).toBe('side')
@@ -76,19 +85,19 @@ describe('usePreviewDisplayMode', () => {
     expect(localStorage.getItem(STORAGE_KEY)).toBe('inline')
   })
 
-  it('falls back to "inline" when localStorage contains an invalid value (e.g. "sidebar")', () => {
+  it('falls back to "side" when localStorage contains an invalid value (e.g. "sidebar")', () => {
     localStorage.setItem(STORAGE_KEY, 'sidebar')
     const { mode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('inline')
+    expect(mode.value).toBe('side')
   })
 
-  it('falls back to "inline" when localStorage contains an empty string', () => {
+  it('falls back to "side" when localStorage contains an empty string', () => {
     localStorage.setItem(STORAGE_KEY, '')
     const { mode } = usePreviewDisplayMode()
-    expect(mode.value).toBe('inline')
+    expect(mode.value).toBe('side')
   })
 
-  it('SSR-safe: returns "inline" without throwing when localStorage is undefined', () => {
+  it('SSR-safe: returns "side" without throwing when localStorage is undefined', () => {
     // Simulate a non-browser environment by REPLACING localStorage
     // with `undefined` via a configurable property descriptor. We
     // can't `delete globalThis.localStorage` because jsdom installs
@@ -102,11 +111,11 @@ describe('usePreviewDisplayMode', () => {
 
     try {
       const { mode, setMode } = usePreviewDisplayMode()
-      expect(mode.value).toBe('inline')
-      // setMode should also work (in-memory flip) even though it
-      // can't persist anywhere.
-      setMode('side')
       expect(mode.value).toBe('side')
+      // setMode should also work (in-memory flip) even though it
+      // can't persist anywhere. Flip back to inline and assert.
+      setMode('inline')
+      expect(mode.value).toBe('inline')
     } finally {
       // Restore the stub for subsequent tests via beforeEach — but
       // do it eagerly here too, in case vitest runs the next test
