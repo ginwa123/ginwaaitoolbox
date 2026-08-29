@@ -16,7 +16,8 @@
     "lint:oxlint": "oxlint . --fix",
     "lint:eslint": "eslint . --fix --cache",
     "format": "prettier --write --experimental-cli src/",
-    "prepare": "node ./scripts/husky-init.mjs"
+    "postinstall": "node ./scripts/patch-arm64-bindings.mjs",
+    "prepare": "node ./scripts/patch-arm64-bindings.mjs && node ./scripts/husky-init.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",
