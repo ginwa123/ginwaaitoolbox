@@ -125,6 +125,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // resolveNameFromTask helper + the useCase call site. Importing
     // the file surfaces them to zig build test (mirrors start_agent.zig).
     _ = @import("http_handlers/session_create.zig");
+    // NEW (2026-08-29-chat-sidebar-last-human-touched, Task 4):
+    // session_update.zig stamps sessions.last_human_touched_at_nano when
+    // the user edits a field. The static-contract test guards the call site.
+    _ = @import("http_handlers/session_update_test.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/kanban_tags_list.zig"); // 2026-07-30-kanban-task-tags-autocomplete — inline useCase tests
