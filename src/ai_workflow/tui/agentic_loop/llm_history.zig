@@ -29,6 +29,14 @@ pub const SessionInfo = struct {
     /// the workflow observed for this session. Empty string until the
     /// first successful turn; never NULL at the API edge.
     last_finish_reason: []const u8,
+    /// Migration 082 - unix-ms of the last time a HUMAN (not the AI
+    /// agent) interacted with this session. Empty string when no human
+    /// touch yet - the frontend treats that as "fall back to updated_at".
+    /// Stamped by `llm_history.updateSessionLastHumanTouchedAt` from 3
+    /// sites: emit_run_agent (user sends a message), session_update
+    /// (user edits a field), workflow.zig::saveRetryAttemptMessage
+    /// (agent emits an error - "also when error too").
+    last_human_touched_at: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -41,6 +49,7 @@ pub const SessionInfo = struct {
         allocator.free(self.selected_profile_model);
         allocator.free(self.is_auto_retry_until_stop);
         allocator.free(self.last_finish_reason);
+        allocator.free(self.last_human_touched_at);
     }
 };
 
@@ -261,7 +270,8 @@ pub fn getSessionListWithCursor(
         \\COALESCE(h.agent, 'Agent'),
         \\COALESCE(s.selected_profile_model, ''),
         \\COALESCE(s.is_auto_retry_until_stop, '0'),
-        \\COALESCE(s.last_finish_reason, '')
+        \\COALESCE(s.last_finish_reason, ''),
+        \\COALESCE(s.last_human_touched_at_nano, '')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -293,6 +303,10 @@ pub fn getSessionListWithCursor(
             // row.values[9] = last_finish_reason.
             .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
             .last_finish_reason = try allocator.dupe(u8, row.values[9]),
+            // Migration 082 - row.values[10] = last_human_touched_at_nano.
+            // Aliased to last_human_touched_at on the wire (D3 - SQL
+            // column keeps the _nano suffix, the wire field is bare).
+            .last_human_touched_at = try allocator.dupe(u8, row.values[10]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -341,6 +355,11 @@ pub const SessionInfoJson = struct {
     is_auto_retry_until_stop: []const u8 = "",
     /// Migration 063 — most recent finish_reason (Migration 063).
     last_finish_reason: []const u8 = "",
+    /// Migration 082 - unix-ms of the last human touch. Empty string
+    /// for legacy rows (frontend falls back to updated_at). Aliased from
+    /// the SQL column `last_human_touched_at_nano` at the SELECT layer
+    /// so the wire field is bare per Migration 075 project convention.
+    last_human_touched_at: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -370,6 +389,10 @@ pub fn buildSessionListJson(
             // carries them to the frontend.
             .is_auto_retry_until_stop = sess.is_auto_retry_until_stop,
             .last_finish_reason = sess.last_finish_reason,
+            // Migration 082 - forward the chat-side stamp value to the
+            // wire. Empty string for legacy rows means the frontend
+            // falls back to updated_at (per ChatsList.vue display logic).
+            .last_human_touched_at = sess.last_human_touched_at,
         });
     }
 
@@ -7685,6 +7708,65 @@ test "updateSessionLastHumanTouchedAt skips empty session_id (no SQL bind)" {
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("0", row.values[0]);
+}
+
+
+// Wire format - Migration 082: last_human_touched_at on the JSON wire.
+
+test "buildSessionListJson emits last_human_touched_at when the row has a value (Migration 082 wire format)" {
+    const alloc = testing.allocator;
+
+    // Construct a SessionInfo with a known last_human_touched_at value.
+    // All fields are heap-allocated so the deinit in buildSessionListJson's
+    // caller doesn't trip the leak detector.
+    const sess = SessionInfo{
+        .session_id = try alloc.dupe(u8, "sess_1"),
+        .session_name = try alloc.dupe(u8, "Test chat"),
+        .status = try alloc.dupe(u8, "active"),
+        .cwd = try alloc.dupe(u8, "/tmp"),
+        .created_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .updated_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .agent = try alloc.dupe(u8, "Agent"),
+        .selected_profile_model = try alloc.dupe(u8, ""),
+        .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
+        .last_finish_reason = try alloc.dupe(u8, ""),
+        .last_human_touched_at = try alloc.dupe(u8, "1786500000000"),
+    };
+    defer sess.deinit(alloc);
+
+    const json = try buildSessionListJson(alloc, &[_]SessionInfo{sess}, 1, false, null);
+    defer alloc.free(json);
+
+    // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3.
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"1786500000000\"") != null);
+}
+
+test "buildSessionListJson emits last_human_touched_at as empty string for legacy NULL rows (Migration 082 fallback)" {
+    const alloc = testing.allocator;
+
+    // Legacy row: last_human_touched_at is the SQL default '' (NULL row).
+    const sess = SessionInfo{
+        .session_id = try alloc.dupe(u8, "sess_legacy"),
+        .session_name = try alloc.dupe(u8, "Legacy chat"),
+        .status = try alloc.dupe(u8, "active"),
+        .cwd = try alloc.dupe(u8, "/tmp"),
+        .created_at = try alloc.dupe(u8, "2026-08-01 10:00:00"),
+        .updated_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .agent = try alloc.dupe(u8, "Agent"),
+        .selected_profile_model = try alloc.dupe(u8, ""),
+        .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
+        .last_finish_reason = try alloc.dupe(u8, ""),
+        .last_human_touched_at = try alloc.dupe(u8, ""),
+    };
+    defer sess.deinit(alloc);
+
+    const json = try buildSessionListJson(alloc, &[_]SessionInfo{sess}, 1, false, null);
+    defer alloc.free(json);
+
+    // Empty-string value (frontend treats empty as "fall back to updated_at").
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"\"") != null);
 }
 
 // ───────────────────────────────────────────────────────────────────────

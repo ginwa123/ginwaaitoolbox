@@ -136,6 +136,11 @@ pub const OnEventInputSessions = struct {
     is_auto_retry_until_stop: []const u8 = "",
     /// Migration 063 — most recent finish_reason observed by the workflow.
     last_finish_reason: []const u8 = "",
+    /// Migration 082 - unix-ms of the last human touch, surfaced on
+    /// the SSE session_updated/created events so the ChatsList badge
+    /// and stale-dot update without a refetch. Empty default = no
+    /// human touch yet (frontend falls back to updated_at).
+    last_human_touched_at: []const u8 = "",
 };
 
 /// JSON event payload for SSE session events
@@ -391,6 +396,10 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         .git_worktree_cwd = input.git_worktree_cwd,
         .is_auto_retry_until_stop = input.is_auto_retry_until_stop,
         .last_finish_reason = input.last_finish_reason,
+        // Migration 082 - propagate the chat-side stamp so the SSE
+        // session_updated event drives the sidebar's time pill +
+        // stale-dot without a refetch.
+        .last_human_touched_at = input.last_human_touched_at,
     };
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
         .whitespace = .indent_4,
