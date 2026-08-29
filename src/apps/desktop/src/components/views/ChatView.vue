@@ -60,6 +60,8 @@ import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
 import SubAgentPeekPanel from '../nalar/SubAgentPeekPanel.vue'
 import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import { useNavigationStore } from '../../stores/navigation'
+import { useAgentErrorStore } from '../../stores/agentError'
+import type { AgentErrorEntry } from '../../stores/agentError'
 import { useSubAgentPeek } from '../../composables/useSubAgentPeek'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 import { useRouter } from 'vue-router'
@@ -891,8 +893,9 @@ const subAgentProgressMap = ref<SubAgentProgressMap>({})
 // agentic-loop error/retry diagnostics. Fed by `full` SSE events with
 // is_error=true (workflow.zig's 3 diagnostic sites — never persisted,
 // is_skip_db=true). Rendered OUTSIDE the VirtualScroller (below it) so
-// the scroller's height-estimate model never sees these rows; cleared
-// on session switch / fresh history load since they're transient.
+// the scroller's height-estimate model never sees these rows; state
+// lives in the agentError store (keyed by session_id) so the card
+// survives ChatView remounts on session switches.
 //
 // 2026-08-25 task_1787668954023_2: SINGLE-LATEST semantics — only the most
 // recent error is rendered. New error events overwrite the previous entry
@@ -901,11 +904,20 @@ const subAgentProgressMap = ref<SubAgentProgressMap>({})
 // screenshot. The card is also cleared as soon as ANY non-error `full`
 // SSE event arrives for this session (handled in the SSE listener below)
 /// — meaning the moment the agent recovers, the error card disappears.
-interface AgentErrorEntry {
-  id: string
-  content: string
-}
-const agentError = ref<AgentErrorEntry | null>(null)
+//
+// 2026-08-29 agent-error-persistent: state moved into the
+// `useAgentErrorStore` Pinia store so the card survives
+// AppLayout's `:key="activeChatId"` remounts on sidebar
+// navigation. The interface now lives in the store module;
+// here we read the per-session entry via a computed.
+const agentErrorStore = useAgentErrorStore()
+// Per-session derived read. Reads from the store (keyed by
+// sessionId) so the card survives ChatView remounts caused by
+// AppLayout's :key="activeChatId" or StandardTaskChatView's
+// :key="chat-${task.id}" on session/task switches. A user
+// visiting session A, switching to session B, then returning to
+// session A still sees the most recent error diagnostic for A.
+const agentError = computed<AgentErrorEntry | null>(() => agentErrorStore.errorFor(sessionId.value))
 
 // Image preview state
 const previewImageUrl = ref<string | null>(null)
@@ -2044,9 +2056,6 @@ const connectSse = () => {
   disconnectSse()
 
   streamingContent.value = ''
-  // 2026-08-25 agent-error-card: diagnostics are live-only per-session —
-  // a fresh session starts with no error card.
-  agentError.value = null
 
   const bus = useSseBus()
   // Subscribe FIRST so we don't miss any bus events that arrive between
@@ -2100,10 +2109,7 @@ const connectSse = () => {
     // arrives below in this handler — i.e. the moment the agent
     // recovers from the retry chain, the error disappears.
     if (event.type === 'full' && event.is_error) {
-      agentError.value = {
-        id: event.id || `agent-error-${Date.now()}`,
-        content: event.content || '',
-      }
+      agentErrorStore.setError(sid, event.content || '', event.id || undefined)
       nextTick(() => scrollToBottom(false, 'agent-error-card'))
       return
     }
@@ -2151,9 +2157,9 @@ const connectSse = () => {
       // passes the renderable gate means the agent is alive and
       // producing output — clear the error card so it disappears the
       // moment the agent recovers from the retry chain.
-      if (agentError.value) {
+      if (agentErrorStore.bySession[sid]) {
         console.log('[SSE ChatView] clearing agent error card on non-error full event')
-        agentError.value = null
+        agentErrorStore.clearForSession(sid)
       }
       messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
