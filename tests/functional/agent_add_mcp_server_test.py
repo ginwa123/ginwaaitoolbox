@@ -47,11 +47,40 @@ Run:
 from __future__ import annotations
 
 import json
+import os
+import platform
+import sys
 from pathlib import Path
 
 import pytest
 
 from harness import FunctionalHarness, mcp_hello_world_bin
+
+
+def _platform_config_dir(home: Path) -> Path:
+    """Mirror `LlmConfig.getDefaultConfigDir` (Config.zig) per-OS layout:
+
+      - macOS   → <HOME>/Library/Application Support/nalar/
+      - Windows → <APPDATA>/nalar/
+      - else    → <XDG_CONFIG_HOME or HOME/.config>/nalar/
+
+    Used to locate the on-disk config.json that nalar writes via
+    `LlmConfig.getDefaultConfigPath`. Mirrors the helper in
+    config_simplify_test.py.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        return home / "Library" / "Application Support" / "nalar"
+    if system == "Windows":
+        # The harness shadows HOME; APPDATA resolves relative to home
+        # when set, otherwise we synthesize an AppData/Roaming tree
+        # under home (Windows tests run in a CI container with no
+        # APPDATA env set).
+        appdata = sys.platform == "win32" and os.environ.get("APPDATA")
+        if appdata and appdata.startswith(str(home)):
+            return Path(appdata) / "nalar"
+        return home / "AppData" / "Roaming" / "nalar"
+    return home / ".config" / "nalar"
 
 
 def _mcp_hello_world_bin_or_skip() -> Path:
@@ -127,7 +156,7 @@ def test_add_mcp_server_persists_stdio_server_via_put_round_trip() -> None:
         # $XDG_CONFIG_HOME / $HOME — the harness sets HOME to an
         # isolated tmpdir, so we read from there.
         home = Path(harness.temp_dir)
-        cfg_path = home / ".config" / "nalar" / "config.json"
+        cfg_path = _platform_config_dir(home) / "config.json"
         assert cfg_path.exists(), f"config.json not written at {cfg_path}"
         on_disk = json.loads(cfg_path.read_text())
         disk_servers = on_disk.get("mcp_servers") or {}
