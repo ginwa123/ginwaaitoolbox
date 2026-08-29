@@ -227,7 +227,12 @@ describe('PreviewContentRenderer', () => {
       expect(classes).toContain('max-w-full')
     })
 
-    it('renders an "Open full preview" button next to the html iframe (inline only)', () => {
+    it('renders an "Open full preview" button BELOW the html iframe (inline only, outside the iframe corner)', () => {
+      // 2026-08-29: button moved out of the iframe's absolute top-right
+      // corner (where it overlapped the preview content) into a CTA
+      // strip below the iframe. Same data-testid, same handler — just a
+      // new DOM position. The test asserts the button exists; the
+      // position itself is locked by the next two tests.
       const wrapper = mount(PreviewContentRenderer, {
         props: {
           contentType: 'html',
@@ -264,6 +269,56 @@ describe('PreviewContentRenderer', () => {
         })
         expect(wrapper.find('[data-testid="preview-open-full-button"]').exists()).toBe(false)
       }
+    })
+
+    // ─── CTA strip below iframe (2026-08-29) ─────────────────────────
+    //
+    // The "Open full preview" button used to be absolute-positioned at
+    // the top-right INSIDE the iframe's bounding box, where it
+    // overlapped the preview content (especially pages with their own
+    // top-right UI). Move it OUT of the iframe — render a small CTA
+    // strip BELOW the iframe container. Same handler (opens the
+    // preview in the side panel via the existing @open event path).
+    it('places the "Open full preview" button OUTSIDE the iframe (not a child of the iframe element)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
+      const button = wrapper.find('[data-testid="preview-open-full-button"]').element as HTMLElement
+      // The button must NOT be a child of the iframe (it was, as
+      // absolute top-right inside the iframe container). The CTA strip
+      // lives BELOW the iframe container, so iframe.contains(button)
+      // must be false.
+      expect(iframe.contains(button)).toBe(false)
+    })
+
+    it('renders a CTA strip wrapper ([data-testid="preview-inline-cta"]) around the button (inline + html only)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'inline',
+        },
+      })
+      const cta = wrapper.find('[data-testid="preview-inline-cta"]')
+      expect(cta.exists()).toBe(true)
+      // Button is inside the CTA strip.
+      expect(cta.find('[data-testid="preview-open-full-button"]').exists()).toBe(true)
+    })
+
+    it('does NOT render the CTA strip in side variant (panel already shows the content full-width)', () => {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>x</h1>' },
+          variant: 'side',
+        },
+      })
+      expect(wrapper.find('[data-testid="preview-inline-cta"]').exists()).toBe(false)
     })
 
     it('default variant is "side" (no max-w-full, no "Open full" button)', () => {

@@ -42,9 +42,19 @@
 <script setup lang="ts">
 import { computed, inject, ref, type Ref } from 'vue'
 
-const props = defineProps<{
-  sessionId: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    sessionId: string
+    /**
+     * `data-testid` attribute for the root element. Defaults to
+     * `'session-slider'`; consumers mounting the component at different
+     * DOM levels (workspace row vs. workspace-item row vs. task row)
+     * pass distinct ids so existing selector-based tests keep working.
+     */
+    testId?: string
+  }>(),
+  { testId: 'session-slider' },
+)
 
 // `App.vue:10-11` provides a `processingState: Ref<Record<string,
 // boolean>>` keyed by sessionId. The injected ref defaults to an
@@ -63,7 +73,7 @@ const isVisible = computed(() => !!processingState.value[props.sessionId])
   <div
     class="session-slider"
     :class="{ 'session-slider--visible': isVisible }"
-    data-testid="session-slider"
+    :data-testid="testId"
     role="progressbar"
     :aria-busy="isVisible"
     aria-live="polite"
@@ -77,16 +87,29 @@ const isVisible = computed(() => !!processingState.value[props.sessionId])
 
 <style scoped>
 .session-slider {
-  /* Lives wherever its parent puts it. Width 100% so it spans the
-     full row when mounted in ChatsList; the full messages-wrapper
-     width when mounted in ChatView. */
-  position: relative;
-  width: 100%;
+  /* Self-positioning: pins itself to the bottom edge of whatever
+     `position: relative` parent it's dropped into, inset to match
+     the parent's left/right padding (`--row-px`) so the bar starts
+     and ends at the same x-position as the row's text content. The
+     consumer doesn't need to set any positioning classes — just put
+     it as the LAST child of the parent (any subsequent siblings
+     would render on top of the slider because z-index defaults to
+     auto and the slider is taken out of the flex flow). */
+  position: absolute;
+  /* `--row-px` mirrors the parent's `px-3` (Tailwind = 0.75rem = 12px)
+     so the bar's left/right edge aligns with the row's text content.
+     Override per-mount via style="--row-px: 1.5rem" if the consumer
+     uses different horizontal padding. */
+  left: var(--row-px, 0.75rem);
+  right: var(--row-px, 0.75rem);
+  bottom: 0;
   height: 2px;
   overflow: hidden;
   background: rgb(0 0 0 / 0.06);
+  border-radius: 1px;
   opacity: 0;
   transition: opacity 200ms ease-out;
+  pointer-events: none;
 }
 
 .session-slider--visible {

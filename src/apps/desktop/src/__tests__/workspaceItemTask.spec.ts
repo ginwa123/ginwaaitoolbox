@@ -88,7 +88,11 @@ describe('WorkspaceItemTaskRow per-task row', () => {
   it('renders the task name and a bullet by default (no spinner, no active styling)', async () => {
     const { wrapper } = mountTask()
     expect(wrapper.text()).toContain('Alpha task')
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    // Updated 2026-08-29: the per-task yellow spinner was replaced by
+    // a SessionSlider that always renders the DOM element but is
+    // hidden (opacity 0, aria-busy="false") when no worker is
+    // running. Count VISIBLE sliders only.
+    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(0)
     // Lock in the row-variant contract (post-2026-07-02 split):
     // the Row component always carries data-task-row and never
     // data-task-card. A future refactor that re-introduces a
@@ -101,24 +105,25 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(1)
   })
 
-  it('renders the spinner and hides the bullet when processingState[task.id] is true', async () => {
+  it('renders the slider and hides the bullet when processingState[task.id] is true', async () => {
     const { wrapper } = mountTask({ processing: true })
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(1)
-    // Bullet must NOT render while the spinner is shown (single
+    // Count VISIBLE sliders only (aria-busy="true").
+    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(1)
+    // Bullet must NOT render while the slider is visible (single
     // visual marker per row). The bullet selector is w-1.5.h-1.5; the
-    // spinner uses w-4.h-4, so the w-1.5 selector catches only the
-    // bullet.
+    // slider track sits below the row, so the w-1.5 selector catches
+    // only the bullet.
     expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(0)
   })
 
-  it('hides the spinner and restores the bullet when processingState[task.id] flips back to false', async () => {
+  it('hides the slider and restores the bullet when processingState[task.id] flips back to false', async () => {
     const { wrapper, processingState } = mountTask({ processing: true })
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(1)
     processingState.value = {}
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(0)
     expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(1)
   })
 

@@ -32,6 +32,7 @@
 import { inject, ref, computed, type Ref } from 'vue'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
+import SessionSlider from '../SessionSlider.vue'
 
 // Re-inject processingState from App.vue (same key WorkspaceItem and
 // ChatsList consume). Keyed by task.id == session_id. Reading it
@@ -100,7 +101,7 @@ const {
 
 <template>
   <button
-    class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
+    class="relative flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
     data-task-row
@@ -113,22 +114,14 @@ const {
   >
     <!-- ───── ROUTINE branch ───── -->
     <template v-if="isRoutine">
-      <!-- Spinner while worker is processing this task (mirrors ChatsList). -->
+      <!-- (Processing spinner removed — replaced by SessionSlider at
+           the bottom of the button. Visible iff processingState[task.id]
+           === true; hidden otherwise. Self-positions absolutely.) -->
+      <!-- Clock icon (with next-run tooltip). Always visible for
+           routine rows — was v-else to the spinner (mutually
+           exclusive), but with the spinner gone the clock always
+           renders now. -->
       <span
-        v-if="processingState[task.id]"
-        class="w-4 h-4 flex items-center justify-center shrink-0"
-        data-testid="task-spinner"
-      >
-        <div
-          class="w-3 h-3 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-yellow); border-top-color: transparent"
-        ></div>
-      </span>
-      <!-- Clock icon (with next-run tooltip). Mutually exclusive
-           with the spinner above (v-else) — when the worker is
-           processing this task, only the spinner renders. -->
-      <span
-        v-else
         class="shrink-0"
         :title="nextRunTooltip"
         data-testid="routine-clock"
@@ -211,21 +204,17 @@ const {
 
     <!-- ───── STANDARD branch (existing behavior) ───── -->
     <template v-else>
-      <span
-        v-if="processingState[task.id]"
-        class="w-4 h-4 flex items-center justify-center shrink-0"
-        data-testid="task-spinner"
-      >
-        <div
-          class="w-3 h-3 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-yellow); border-top-color: transparent"
-        ></div>
-      </span>
+      <!-- (Processing spinner removed — replaced by SessionSlider at
+           the bottom of the button.) -->
       <!-- Row variant: bullet renders as before for the sidebar's
-           compact list. Mutually exclusive with the spinner above
-           (v-else-if) — never both at once. -->
+           compact list. Hidden while the LLM slider is visible so
+           the row shows a SINGLE visual marker (either the bullet
+           when idle, or the slider when processing) — same
+           mutually-exclusive contract the old spinner/bullet pair
+           had, just with the indicator relocated to the bottom of
+           the row. -->
       <span
-        v-else-if="!isRoutine"
+        v-if="!isRoutine && !processingState[task.id]"
         class="w-1.5 h-1.5 rounded-full shrink-0"
         :style="{ backgroundColor: isActive ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
       />
@@ -276,5 +265,16 @@ const {
         </svg>
       </button>
     </template>
+
+    <!-- Per-session LLM slider at the bottom edge of this row.
+         Self-positions absolutely (the button has `relative`).
+         Visible iff processingState[task.id] === true; hidden
+         otherwise. Replaces the per-row yellow spinner circle that
+         used to live in the leftmost slot (was lines 116-126 and
+         214-223 in this file). Same signal as the workspace-item
+         level slider in <WorkspaceItem> — the workspace-item
+         level covers "any task on this item is busy"; this covers
+         "this specific task is busy". Both can render at once. -->
+    <SessionSlider :session-id="task.id" test-id="task-spinner" />
   </button>
 </template>
