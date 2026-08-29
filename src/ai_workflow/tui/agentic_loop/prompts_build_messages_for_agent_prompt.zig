@@ -389,7 +389,17 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value) !?[]tool_models.AgentTool {
+///
+/// `cancel_fn` (default null) — when set, polled between bytes read
+/// from each MCP stdio child. The workflow's `isWorkerCancelled`
+/// predicate is the canonical caller (see workflow.zig's
+/// `mcp_cancel_thunk` helper that adapts it). When null, the
+/// deadline becomes the only termination signal.
+pub fn buildMCPToolsRun(
+    allocator: std.mem.Allocator,
+    mcpServers: std.json.Value,
+    cancel_fn: ?*const fn () bool,
+) !?[]tool_models.AgentTool {
     // Check if mcpServers is configured
     const mcp_servers = switch (mcpServers) {
         .object => |obj| obj,
@@ -414,7 +424,12 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
         // HTTP (url). If the entry has a `command`, route to the stdio
         // helper; otherwise fall through to the existing HTTP path.
         if (server_obj.get("command")) |_| {
-            const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj) catch |err| {
+            // 30s default for tools/list — see mcp_stdio.zig's plan
+            // for the per-call timeouts. We forward the workflow's
+            // cancel-callback so the Stop button propagates within
+            // one syscall of the cancel.
+            const deadline_ns: u64 = 30 * std.time.ns_per_s;
+            const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj, deadline_ns, cancel_fn) catch |err| {
                 std.log.warn("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
                 continue;
             };
@@ -460,10 +475,19 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
 /// spawns (or reuses) a child via `mcp_stdio.StdioRegistry`, sends
 /// `tools/list` JSON-RPC, parses `result.tools[]` into AgentTool
 /// records (same wire shape as the HTTP branch).
+///
+/// `deadline_ns` is forwarded to both the send and the recv — a
+/// hung child (pipe-buffer deadlock, awaits-init forever) returns
+/// `MCPServerSendFailed` / `MCPServerRecvFailed` instead of blocking
+/// the workflow start indefinitely. `cancel_fn` (optional) is
+/// forwarded to the recv cancel-callback so the workflow's Stop
+/// button propagates within one syscall.
 fn fetchToolsFromServerStdio(
     allocator: std.mem.Allocator,
     server_name: []const u8,
     server_obj: std.json.ObjectMap,
+    deadline_ns: u64,
+    cancel_fn: ?*const fn () bool,
 ) ![]tool_models.AgentTool {
     // Build argv from the config.
     var argv_list: std.ArrayList([]const u8) = .empty;
@@ -493,12 +517,16 @@ fn fetchToolsFromServerStdio(
     const client = reg.getOrSpawn(server_name, argv) catch return error.MCPServerSpawnFailed;
     // No defer — the registry owns the client's lifecycle. Each call
     // reuses the same child; killing it on every fetch would be wasteful.
+    // markStale on timeout: a hung child must NOT be returned to the
+    // next caller. Self-healing happens at the registry boundary
+    // (getOrSpawn checks the dirty flag on entry).
+    errdefer reg.markStale(server_name);
 
     // Send tools/list and read the response.
     const req = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
     defer allocator.free(req);
-    client.send(req) catch return error.MCPServerSendFailed;
-    const resp = client.recv() catch return error.MCPServerRecvFailed;
+    client.send(req, deadline_ns) catch return error.MCPServerSendFailed;
+    const resp = client.recv(deadline_ns, cancel_fn) catch return error.MCPServerRecvFailed;
     defer allocator.free(resp);
 
     // Parse result.tools[] into AgentTool records (same parser the HTTP
