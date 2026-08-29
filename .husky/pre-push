@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+# Pre-push hook — mirror CI's `backend` + `functional-test` +
+# `functional-test-ui` gates exactly so pushes can't slip past locally
+# with failures CI would catch.
+#
+# CI runs the same three steps via .github/workflows/ci.yml:
+#   - "Backend"  (line 935):  zig build test nalar-desktop --summary all
+#   - "Functional tests"   (line 1229): zig build functional-test --summary all
+#   - "UI tests"           (line 1331): zig build functional-test-ui --summary all
+# We run the three commands without `--summary all` for terser local
+# output (full log is not the point here — the exit code is).
+#
+# Husky runs this script from the worktree root (per core.hooksPath),
+# which is the repo root that contains build.zig — so no `cd` needed.
+# `zig build` resolves paths from CWD and build.zig sits at the repo
+# root, so a bare `zig build test` works.
+#
+# Bypass for emergencies: `git push --no-verify`.
+
+set -e
+
+echo "→ zig build test"
+zig build test
+
+echo "→ zig build functional-test"
+zig build functional-test
+
+echo "→ zig build functional-test-ui"
+zig build functional-test-ui
+
+echo "✓ pre-push: all gates passed"
