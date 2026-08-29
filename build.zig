@@ -1122,32 +1122,29 @@ pub fn build(b: *std.Build) void {
     // Self-test target for the nalar MCP Streamable HTTP client.
     // Built from src/apps/mcp_http_hello_world/index.ts (TypeScript +
     // @modelcontextprotocol/sdk + zod). The build chain mirrors the
-    // mcp-hello-world chain: npm install → npm test → npm run build →
-    // install shell wrapper. Per the user's "one binary per transport"
-    // preference, this is a SEPARATE binary, not a --http flag on
-    // mcp-hello-world. See plan: docs/superpowers/plans/2026-08-28-mcp-streamable-http.md.
-    //
-    // We use `npm` (not pnpm) here because the mcp-hello-world and
-    // mcp-http-hello-world test fixtures predate the pnpm migration
-    // (2026-08-28) and their `package.json` / `package-lock.json` are
-    // the npm-based shape. Migrating them is a follow-up; the
-    // webapp (src/apps/desktop) is on pnpm because it was migrated
-    // in PR #370.
+    // mcp-hello-world chain: pnpm install → pnpm test → pnpm run build
+    // → install shell wrapper. Migrated to pnpm (2026-08-28) to match
+    // the rest of the project (see PR #370) — `pnpm-workspace.yaml`
+    // in this dir approves esbuild's postinstall (pnpm 11 requires
+    // explicit approval for build scripts). Per the user's "one binary
+    // per transport" preference, this is a SEPARATE binary, not a
+    // --http flag on mcp-hello-world. See plan:
+    // docs/superpowers/plans/2026-08-28-mcp-streamable-http.md.
     const mcp_http_hello_world_dir = "src/apps/mcp_http_hello_world";
     const mcp_http_hello_world_step = b.step("mcp-http-hello-world", "Build the mcp-http-hello-world Streamable HTTP test MCP server");
 
-    const mcp_http_npm_install = b.addSystemCommand(&.{ "npm", "install", "--no-audit", "--no-fund" });
+    const mcp_http_npm_install = b.addSystemCommand(&.{ "pnpm", "install", "--no-frozen-lockfile" });
     mcp_http_npm_install.setCwd(b.path(mcp_http_hello_world_dir));
     mcp_http_hello_world_step.dependOn(&mcp_http_npm_install.step);
 
     // TDD: run the unit tests first. If they fail, the build fails
     // before we waste time on the TS compile.
-    const mcp_http_test = b.addSystemCommand(&.{ "npm", "test" });
+    const mcp_http_test = b.addSystemCommand(&.{ "pnpm", "test" });
     mcp_http_test.setCwd(b.path(mcp_http_hello_world_dir));
     mcp_http_test.step.dependOn(&mcp_http_npm_install.step);
     mcp_http_hello_world_step.dependOn(&mcp_http_test.step);
 
-    const mcp_http_build = b.addSystemCommand(&.{ "npm", "run", "build" });
+    const mcp_http_build = b.addSystemCommand(&.{ "pnpm", "run", "build" });
     mcp_http_build.setCwd(b.path(mcp_http_hello_world_dir));
     mcp_http_build.step.dependOn(&mcp_http_test.step);
     mcp_http_hello_world_step.dependOn(&mcp_http_build.step);
