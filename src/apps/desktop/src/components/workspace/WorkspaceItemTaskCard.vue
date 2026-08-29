@@ -28,7 +28,9 @@
 // row, Jira-style type accent).
 import { inject, ref, computed, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import { useAgentErrorStore } from '../../stores/agentError'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
+import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 
 // Kanban task tags palette (Migration 067 — plan
@@ -67,6 +69,21 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 )
 
 const workspacesStore = useWorkspacesStore()
+
+// 2026-08-29 (task_1787985074550_0): agent-error indicator surfaces
+// the latest diagnostic for this task on the kanban card. The store
+// outlives ChatView remounts (Plan §1 — same Pinia store the
+// ChatView writes to via SSE `is_error` full events), so the
+// indicator stays in sync with the chat card across session switches.
+// task.id === session_id (migration 052 invariant) is the lookup key.
+const agentErrorStore = useAgentErrorStore()
+const agentError = computed(() => agentErrorStore.bySession[props.task.id] ?? null)
+const errorHeadline = computed(() =>
+  agentError.value ? parseAgentErrorHeadline(agentError.value.content).headline : null,
+)
+const errorRetryLabel = computed(() =>
+  agentError.value ? parseAgentErrorHeadline(agentError.value.content).retryLabel : null,
+)
 
 const props = withDefaults(defineProps<TaskComponentProps>(), {
   cwd: '',
@@ -305,6 +322,7 @@ const gitBranchBadge = computed<string | null>(() => {
     class="flex flex-col gap-2 p-3 w-full rounded-lg text-xs group/task cursor-pointer transition-shadow duration-200"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
+    :data-has-agent-error="agentError ? 'true' : undefined"
     data-task-card
     :style="{
       color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text)',
@@ -490,6 +508,50 @@ const gitBranchBadge = computed<string | null>(() => {
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         </span>
+        <!-- 2026-08-29 agent-error-indicator (task_1787985074550_0):
+             additive to spinner / pulse / checkmark because retry chains
+             fire WHILE the worker is still active. Tooltip shows the
+             same headline + retry chip the ChatView's AgentErrorCard
+             parses, so users see the same information regardless of
+             which surface they're on. Respects prefers-reduced-motion
+             (no animation when requested — see the `agent-error-pulse`
+             keyframes in the scoped <style> block). -->
+        <span
+          v-if="agentError"
+          class="relative shrink-0 error-icon-wrap"
+          data-testid="task-agent-error"
+        >
+          <span
+            class="error-pulse w-3.5 h-3.5 rounded-full flex items-center justify-center"
+            style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red);"
+            aria-label="Agent error — click card to view detail"
+          >
+            <span style="color: var(--color-red); font-size: 10px; line-height: 1;" aria-hidden="true">⚠</span>
+          </span>
+          <!-- Hover tooltip — same parsing as AgentErrorCard but trimmed
+               (no server-detail block; the kanban-tooltip is too small
+               for the raw body — the full detail lives in ChatView). -->
+          <div
+            class="error-tooltip absolute left-0 top-full mt-1.5 w-[280px] z-50 rounded-lg p-2 pointer-events-none opacity-0 invisible transition-opacity duration-150"
+            style="background: #0e0e0c; border: 1px solid rgba(196, 116, 110, 0.45); box-shadow: 0 4px 16px rgba(0,0,0,0.4);"
+            role="tooltip"
+            data-testid="task-agent-error-tooltip"
+          >
+            <div class="flex items-center gap-2 mb-1.5">
+              <span style="color: var(--color-red); font-size: 11px;" aria-hidden="true">⚠</span>
+              <span class="text-[11px] font-medium" style="color: var(--color-red);">Agent error</span>
+              <span
+                v-if="errorRetryLabel"
+                class="text-[10px] px-1.5 py-0.5 rounded-full"
+                style="background: rgba(196, 116, 110, 0.18); color: #e8928c;"
+                data-testid="task-agent-error-retry"
+              >retry {{ errorRetryLabel }}</span>
+            </div>
+            <div class="text-[11px] leading-snug" style="color: var(--semantic-text-muted);" data-testid="task-agent-error-headline">
+              {{ errorHeadline }}
+            </div>
+          </div>
+        </span>
         <!-- Card variant: bullet is HIDDEN (the card itself signals
              a task — the dot is visual noise in the modern-
              minimalist design). The v-else-if is mutually exclusive
@@ -637,7 +699,7 @@ const gitBranchBadge = computed<string | null>(() => {
          keeps the row pinned to the left edge if a future flex parent
          defaults to centered alignment. -->
     <div
-      v-if="lastUpdatedLabel || typeBadge || gitBranchBadge"
+      v-if="lastUpdatedLabel || typeBadge || gitBranchBadge || agentError"
       class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap self-start w-full"
       style="color: var(--semantic-text-dim);"
       data-testid="task-meta"
@@ -700,6 +762,20 @@ const gitBranchBadge = computed<string | null>(() => {
         </svg>
         <span class="truncate">{{ gitBranchBadge }}</span>
       </span>
+      <!-- 2026-08-29 agent-error-meta-pill (task_1787985074550_0) —
+           same data as the icon, in the meta row where users
+           naturally scan for status. Shows `3/10 retries` while
+           retrying, swaps to `workflow halted` on the TooManyRetries
+           bail (when the content has no [Retry N/M] prefix). -->
+      <span
+        v-if="agentError"
+        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+        style="background: rgba(196,116,110,0.12); color: var(--color-red);"
+        data-testid="task-meta-agent-error"
+      >
+        <span aria-hidden="true">⚠</span>
+        <span>{{ errorRetryLabel ? `${errorRetryLabel} retries` : 'workflow halted' }}</span>
+      </span>
     </div>
   </button>
 </template>
@@ -731,5 +807,41 @@ const gitBranchBadge = computed<string | null>(() => {
   100% {
     box-shadow: 0 0 0 0 rgba(251, 146, 60, 0);
   }
+}
+
+/* 2026-08-29 agent-error-indicator (task_1787985074550_0) — red ⚠
+   pulse on first appearance (3 cycles then settles to a steady
+   ring). The keyframes live inside
+   @media (prefers-reduced-motion: no-preference) so the
+   `.error-pulse` class becomes a no-op when the user has reduced-
+   motion enabled (the icon stays as a steady ring without
+   animation — same pattern as `needs-review-pulse` above). */
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes agent-error-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(196, 116, 110, 0.7); }
+    70%  { box-shadow: 0 0 0 8px rgba(196, 116, 110, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(196, 116, 110, 0); }
+  }
+  .error-pulse {
+    animation: agent-error-pulse 1.8s ease-out 3 forwards;
+    border-radius: 50%;
+  }
+}
+
+/* Hover-tooltip visibility: default hidden, visible on the parent
+   icon wrap hover. Sibling classes share the same visibility
+   pattern used by the tooltips in <WorkspaceItemTaskRow> (Task 6). */
+.error-icon-wrap:hover .error-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Red-tinted card border + box-shadow ring when the task has an
+   active agent error. The data-attribute is bound on the root
+   <button> by the script section above; the selector targets the
+   attribute value so it never leaks outside this card. */
+button[data-has-agent-error="true"] {
+  border-color: rgba(196, 116, 110, 0.55);
+  box-shadow: 0 0 0 1px rgba(196, 116, 110, 0.25);
 }
 </style>
