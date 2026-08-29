@@ -16,12 +16,11 @@
 //!
 //! **Timeout model**: HTTP probes use `custom_http_client`'s
 //! `timeout_ms` (libcurl handles cancellation at the OS level).
-//! stdio probes have NO deadline — the underlying `read(2)` syscall
-//! blocks at the OS level and Zig 0.16 has no portable deadline
-//! abstraction. **A hung stdio child will hang the test endpoint
-//! indefinitely.** This is the same blocking behaviour the workflow
-//! has today; the proper fix (per-process deadline on every
-//! blocking I/O call) is tracked in the separate
+//! stdio probes have a 10s deadline (see `TEST_STDIO_TIMEOUT_MS`),
+//! implemented via the deadline plumbing in `mcp_stdio.StdioClient`
+//! (plan 2026-08-28-fix-mcp-stdio-blocking). On deadline, the recv
+//! returns `StdioError.RecvTimeout` and the preview entry is marked
+//! stale so the next /api/mcp/test doesn't reuse the hung child.
 //! `2026-08-28-fix-mcp-stdio-blocking` plan.
 //!
 //! Wire (request):
@@ -63,9 +62,14 @@ const tool_models = nalarcore.tool_models;
 const custom_http_client = @import("custom_http_client");
 
 /// Per-call deadline for HTTP probes (libcurl has OS-level timeout
-/// support). stdio probes use no deadline for now — see the
-/// "Timeout model" comment at the top.
+/// support). See the "Timeout model" comment at the top.
 const TEST_HTTP_TIMEOUT_MS: u32 = 10_000;
+
+/// Per-call deadline for stdio probes (mcp_stdio.zig polls this
+/// between bytes read). Tight enough to fail fast for the user
+/// without burning a long test budget; long enough to absorb
+/// slow process spawn + IPC roundtrip on a busy host.
+const TEST_STDIO_TIMEOUT_MS: u64 = 10_000;
 
 /// Tagged request body. Mirrors the frontend's `McpServerModalValue`
 /// shape minus the `name` field (we don't persist anything here).
@@ -139,9 +143,11 @@ fn useCase(
 /// Try a stdio candidate: spawn the child, send `tools/list` as
 /// raw NDJSON, parse the response.
 ///
-/// **Known limitation**: no deadline. A hung child (waiting on
-/// stdin forever, deadlock, etc.) hangs the handler forever. The
-/// proper fix is tracked separately.
+/// **Deadline**: 10s via `TEST_STDIO_TIMEOUT_MS`, plumbed into
+/// `client.recv(deadline_ns, null)`. A hung child returns
+/// `StdioError.RecvTimeout` instead of blocking the handler; the
+/// preview entry is marked stale so the next test doesn't reuse
+/// the dead client. See plan 2026-08-28-fix-mcp-stdio-blocking.
 fn testStdio(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -204,9 +210,16 @@ fn testStdio(
         return TestError.SendFailed;
     };
 
-    // No deadline on this recv. See the module docstring for why
-    // (Zig 0.16 has no portable deadline for blocking I/O).
-    const resp = client.recv() catch |err| {
+    // 10s deadline per the /api/mcp/test probe's contract (we want
+    // fast failure for the user, not a 30s default). The cancel
+    // callback is null — the HTTP request can be cancelled by the
+    // client closing the connection (handled by the http server's
+    // own teardown). On RecvTimeout we mark the preview stale so
+    // a second /api/mcp/test with a responsive server doesn't reuse
+    // the hung child. See mcp_stdio.zig's markStale for the
+    // self-healing contract.
+    const deadline_ns: u64 = TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms;
+    const resp = client.recv(deadline_ns, null) catch |err| {
         // Mark the preview entry stale so the next test doesn't
         // reuse the (now-dead) cached client. Surface the concrete
         // StdioError in the response.
