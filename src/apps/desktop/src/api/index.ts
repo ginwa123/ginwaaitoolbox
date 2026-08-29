@@ -3641,6 +3641,62 @@ export async function deleteProfile(name: string): Promise<ProfileDeleteResponse
   )
 }
 
+// ─── MCP server test probe ──────────────────────────────────────────────────
+// Wire shape mirrors the backend `POST /api/mcp/test` handler in
+// src/ai_workflow/tui/http_handlers/mcp_test.zig. The probe fires a
+// `tools/list` request against the candidate config without persisting
+// anything — used by the "Test" button in McpServerModal so the user
+// can verify command / args / env / cwd (or URL + headers) actually
+// work before clicking Save.
+//
+// Success: `{ ok: true, transport: 'stdio' | 'http', tools: McpToolPreview[] }`
+// Failure: `{ ok: false, error: <message>, details: <error-name> }`
+// Always HTTP 200 — failure is carried in the `ok` field, not the status.
+export interface McpToolPreview {
+  name: string
+  description: string
+}
+export type McpTestResult =
+  | { ok: true; transport: 'http' | 'stdio'; tools: McpToolPreview[] }
+  | { ok: false; error: string; details?: string }
+
+export async function testMcpServer(body: {
+  transport: 'http' | 'stdio'
+  command?: string
+  args?: string[]
+  env?: string[]
+  cwd?: string
+  url?: string
+  headers?: Record<string, string>
+}): Promise<McpTestResult> {
+  // We deliberately DON'T use the shared `apiFetch` wrapper here
+  // because (a) the endpoint always returns HTTP 200 with a payload
+  // that may carry `{ ok: false, ... }`, and (b) we want the modal's
+  // inline result panel to render the error message rather than
+  // firing a toast notification. Direct fetch + manual JSON parse
+  // gives us that without bypassing the API base constant.
+  const res = await fetch(`${API_BASE}/mcp/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text().catch(() => '')
+  let parsed: unknown = null
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : null
+  } catch {
+    // Non-JSON response — fall through to the generic error shape.
+  }
+  if (parsed && typeof parsed === 'object') {
+    return parsed as McpTestResult
+  }
+  return {
+    ok: false,
+    error: `Unexpected response (HTTP ${res.status})`,
+    details: text.slice(0, 200),
+  }
+}
+
 // Git File Diff API
 export interface GitFileDiff {
   path: string

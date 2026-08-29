@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+import { testMcpServer, type McpTestResult } from '../../api'
 import LlmConfigModal, { type LlmConfigModalValue } from './LlmConfigModal.vue'
 import McpHeadersEditor, { type McpHeader } from './McpHeadersEditor.vue'
 
@@ -56,6 +57,11 @@ watch(
     argsText.value = (v.args ?? []).join('\n')
     envText.value = (v.env ?? []).join('\n')
     cwdLocal.value = v.cwd ?? ''
+    // Editing any field invalidates a previous test result — the
+    // server may now be misconfigured even though the prior probe
+    // succeeded. Clearing prevents stale "looks good!" badges from
+    // lulling the user into saving a broken config.
+    testResult.value = null
   },
 )
 
@@ -92,6 +98,60 @@ const errorForModal = computed(() => ({
 
 // True iff a stdio entry's required fields are present.
 const stdioValid = computed(() => props.modelValue.command.trim().length > 0)
+
+// ─── Test button state ─────────────────────────────────────────────────────
+// `testResult` carries the last probe response (or null = "no probe
+// yet"). `testing` is the loading flag — true while the HTTP call is
+// in-flight so the button shows a spinner + "Testing…" label. The
+// button itself is only enabled when `stdioValid` is true (we can't
+// test a missing command) AND `!testing` (don't fire concurrent
+// probes).
+const testResult = ref<McpTestResult | null>(null)
+const testing = ref(false)
+
+// Re-derive whether Test is enabled from the local textareas too —
+// the v-model value of `argsText` / `envText` / `cwdLocal` is what
+// gets sent on Test, not `modelValue.args` (which the parent only
+// refreshes on Save).
+const stdioTestValid = computed(() => {
+  if (transport.value !== 'stdio') return false
+  if (props.modelValue.command.trim().length === 0) return false
+  return true
+})
+
+async function onTest() {
+  if (!stdioTestValid.value || testing.value) return
+  testing.value = true
+  testResult.value = null
+  try {
+    // Send the CURRENT textarea contents (not modelValue.args, which
+    // is only updated on Save) so the user tests what they see.
+    const args = argsText.value
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+    const env = envText.value
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+    testResult.value = await testMcpServer({
+      transport: 'stdio',
+      command: props.modelValue.command.trim(),
+      args,
+      env,
+      cwd: cwdLocal.value.trim(),
+    })
+  } catch (err) {
+    // `testMcpServer` always returns a `McpTestResult`; this catch
+    // only fires for unexpected exceptions (network down, etc.).
+    testResult.value = {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  } finally {
+    testing.value = false
+  }
+}
 
 function setTransport(next: 'http' | 'stdio') {
   transport.value = next
@@ -322,9 +382,104 @@ defineExpose({ onSave })
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
             />
           </div>
+
+          <!-- Test result panel. Shows green pill + tool list on
+               success, red banner with the server's error message
+               on failure, and a "not yet tested" hint before the
+               user clicks Test. Cleared whenever any form field
+               changes (watch on modelValue) so stale results don't
+               survive a re-edit. -->
+          <div
+            v-if="testResult"
+            data-testid="test-result"
+            class="px-3 py-2 rounded-md text-xs border"
+            :style="testResult.ok
+              ? {
+                  borderColor: 'var(--color-green)',
+                  backgroundColor: 'rgba(34, 197, 94, 0.08)',
+                  color: 'var(--semantic-text)',
+                }
+              : {
+                  borderColor: 'var(--color-red)',
+                  backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                  color: 'var(--semantic-text)',
+                }"
+          >
+            <div class="flex items-center gap-1.5 font-medium">
+              <span v-if="testResult.ok" style="color: var(--color-green);">✓</span>
+              <span v-else style="color: var(--color-red);">✗</span>
+              <span v-if="testResult.ok">
+                Connected — {{ testResult.tools.length }} tool{{ testResult.tools.length === 1 ? '' : 's' }} discovered
+              </span>
+              <span v-else>Connection failed</span>
+            </div>
+            <div
+              v-if="!testResult.ok"
+              data-testid="test-error"
+              class="mt-1 font-mono text-[11px]"
+              style="color: var(--semantic-text-muted);"
+            >{{ testResult.error }}</div>
+            <ul
+              v-if="testResult.ok && testResult.tools.length > 0"
+              data-testid="test-tools"
+              class="mt-1.5 font-mono text-[11px] space-y-0.5"
+            >
+              <li
+                v-for="tool in testResult.tools"
+                :key="tool.name"
+                style="color: var(--semantic-text-muted);"
+              >• {{ tool.name }}</li>
+            </ul>
+          </div>
         </div>
 
-        <!-- Footer: Cancel + Save. -->
+        <!-- Footer: Test + Cancel + Save.
+             The Test button is on the LEFT so the primary action
+             (Save) stays anchored at the bottom-right. Test is
+             disabled when command is empty OR a probe is already
+             in flight, so the user can't fire concurrent probes. -->
+        <div
+          class="flex justify-between gap-2 px-5 h-14 border-t shrink-0 items-center"
+          style="border-color: var(--color-border);"
+        >
+          <button
+            type="button"
+            data-testid="test-btn"
+            class="px-3 h-8 rounded-md text-xs border transition-colors duration-150"
+            :style="{
+              borderColor: 'var(--color-border)',
+              color: testing ? 'var(--semantic-text-dim)' : 'var(--semantic-text)',
+              backgroundColor: 'transparent',
+              opacity: stdioTestValid && !testing ? 1 : 0.5,
+              cursor: stdioTestValid && !testing ? 'pointer' : 'not-allowed',
+            }"
+            :disabled="!stdioTestValid || testing"
+            @click="onTest"
+          >{{ testing ? 'Testing…' : 'Test' }}</button>
+          <div class="flex gap-2">
+            <button
+              type="button"
+              data-testid="cancel-btn"
+              class="px-3 h-8 rounded-md text-xs border"
+              style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
+              @click="emit('cancel')"
+            >Cancel</button>
+            <button
+              type="button"
+              data-testid="save-btn"
+              class="px-3 h-8 rounded-md text-xs font-medium border"
+              :style="{
+                borderColor: 'var(--color-violet)',
+                backgroundColor: 'var(--color-violet)',
+                color: 'var(--semantic-bg)',
+                opacity: stdioValid ? 1 : 0.5,
+                cursor: stdioValid ? 'pointer' : 'not-allowed',
+              }"
+              :disabled="!stdioValid"
+              @click="onSave"
+            >Save</button>
+          </div>
+        </div>
         <div
           class="flex justify-end gap-2 px-5 h-14 border-t shrink-0 items-center"
           style="border-color: var(--color-border);"
