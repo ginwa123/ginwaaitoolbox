@@ -13,6 +13,24 @@ const is_bsd = switch (builtin.os.tag) {
     else => false,
 };
 
+/// Windows-only Winsock 2 externs. `send()` is the only function we
+/// actually call from sse_manager.zig on Windows (see `sendAll` below),
+/// but the surrounding struct mirrors the convention in
+/// `http_server.zig` so future Windows-specific call sites can extend
+/// it (recv, setsockopt, etc.) without re-declaring the DLL imports.
+/// `kernel32.dll` and `ws2_32.dll` import libraries are shipped with
+/// Zig's MinGW toolchain, so this just-works without a manual
+/// `linkSystemLibrary` call. The struct is empty on non-Windows so
+/// non-Windows builds don't link ws2_32.
+const winsock = if (is_windows) struct {
+    extern "ws2_32" fn send(
+        sockfd: c_int,
+        buf: [*]const u8,
+        len: c_int,
+        flags: c_int,
+    ) callconv(.c) c_int;
+} else struct {};
+
 const LOOP_COUNT = 4;
 
 /// Scoped logger for all SSE-manager diagnostics. Output goes to stderr.
@@ -880,13 +898,23 @@ fn sendAll(fd: i32, data: []const u8) isize {
         }
         return @intCast(sent);
     } else if (is_windows) {
-        // On Windows, sockets are HANDLE (*anyopaque), not i32.
-        // Use std.c.write which goes through the C runtime and handles
-        // the fd translation. The C runtime on Windows (UCRT/MinGW)
-        // translates fd-based writes to HANDLE-based WriteFile calls.
+        // On Windows, SSE fds are winsock SOCKET values (small positive
+        // ints truncated from the pointer-sized handle). MSVCRT's
+        // `write()` is for file/console HANDLEs (it calls `WriteFile`
+        // which fails on sockets); the only correct way to send on a
+        // winsock socket from a fd-shaped value is `winsock.send()`
+        // (which corresponds to libc's send(2)). The winsock API takes
+        // `c_int` (the same shape as the SOCKET), so we pass the i32
+        // `fd` straight through after the same sign-extension that
+        // `http_server.zig`'s `sendToClient` applies.
         var sent: usize = 0;
         while (sent < data.len) {
-            const rc = std.c.write(@ptrFromInt(@as(usize, @bitCast(@as(isize, fd)))), data[sent..].ptr, data.len - sent);
+            const rc = winsock.send(
+                fd,
+                data[sent..].ptr,
+                @intCast(data.len - sent),
+                0,
+            );
             if (rc < 0) return -1;
             if (rc == 0) return -1;
             sent += @as(usize, @intCast(rc));

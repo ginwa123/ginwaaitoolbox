@@ -20,17 +20,45 @@ const helpers = @import("test_helpers.zig");
 const toI32 = helpers.toI32;
 const is_windows = builtin.os.tag == .windows;
 
+/// Windows-only Winsock extern for recv + closesocket. The test
+/// fixture creates raw winsock SOCKETS (not registered with UCRT via
+/// `_open_osfhandle`), so MSVCRT's `read()` / `close()` don't work on
+/// them (they call `ReadFile` / `_close()` which fail on sockets).
+/// Winsock APIs (`recv`, `closesocket`) take the SOCKET value as c_int
+/// — recovered via `toI32(fd)` — and bypass UCRT entirely. Empty
+/// struct on non-Windows so non-Windows builds don't link ws2_32.
+const winsock = if (is_windows) struct {
+    extern "ws2_32" fn recv(
+        sockfd: c_int,
+        buf: [*]u8,
+        len: c_int,
+        flags: c_int,
+    ) callconv(.c) c_int;
+    extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+} else struct {};
+
 fn closeFd(fd: std.c.fd_t) void {
-    _ = std.c.close(fd);
+    // Windows: std.c.close on a raw winsock SOCKET fails (UCRT's
+    // _close looks up the fd in its table — raw SOCKETs aren't there).
+    // Use closesocket directly. On POSIX, std.c.close works fine on
+    // socketpair fds.
+    if (is_windows) {
+        _ = winsock.closesocket(toI32(fd));
+    } else {
+        _ = std.c.close(fd);
+    }
 }
 
 fn readFd(fd: std.c.fd_t, buf: []u8, len: usize) isize {
-    if (is_windows) return 0; // Windows pipe HANDLE writes don't propagate to a sibling
-                               // reader with std.c.read (UCRT fd table doesn't track
-                               // pipe HANDLEs); the chunked-encoding tests in this
-                               // file specifically exercise read+write on a connected
-                               // pair and can't run on Windows without WriteFile plumbing.
-    return posix.system.read(fd, buf.ptr, len);
+    // Same reasoning as closeFd above: std.c.read on a raw winsock
+    // SOCKET fails on Windows (UCRT's _read uses ReadFile, which
+    // doesn't work on sockets). Use winsock.recv directly — same
+    // ABI as libc's recv(2) on POSIX, so the POSIX path is a no-op.
+    if (is_windows) {
+        return winsock.recv(toI32(fd), buf.ptr, @intCast(len), 0);
+    } else {
+        return posix.system.read(fd, buf.ptr, len);
+    }
 }
 
 fn createSocketPair() ![2]std.c.fd_t {
@@ -196,11 +224,20 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
 const HTTP_SERVER_PATH = "src/modules/custom_http_server/src/http_server.zig";
 
 fn readHttpServerSource(allocator: std.mem.Allocator) ![]u8 {
+    // `.unlimited` so the static source-check tests don't break when
+    // http_server.zig grows past the previous 64 KiB cap (currently
+    // ~65.8 KiB on `worktree/fix-ci-windows-webview2`). The previous
+    // `.limited(64 * 1024)` surfaced as `error.StreamTooLong` on Windows
+    // and caused 4 of the source-check tests to fail there while passing
+    // on Linux/macOS (the failure was OS-independent — purely a file-
+    // size limit). `.unlimited` matches the contract of every other
+    // test that does source-grep; the read still goes through the
+    // arena-allocator and the file is freed by the caller.
     return std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         HTTP_SERVER_PATH,
         allocator,
-        .limited(64 * 1024),
+        .unlimited,
     );
 }
 
@@ -288,11 +325,15 @@ test "HTTP server: SSE response says Connection: close (NOT keep-alive)" {
 const SSE_MANAGER_PATH = "src/modules/custom_http_server/src/sse_manager.zig";
 
 fn readSseManagerSource(allocator: std.mem.Allocator) ![]u8 {
+    // See `readHttpServerSource` for the rationale on `.unlimited`.
+    // sse_manager.zig is currently ~43 KiB (under the old 64 KiB cap)
+    // but we use `.unlimited` here too so future growth doesn't break
+    // these tests asymmetrically.
     return std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         SSE_MANAGER_PATH,
         allocator,
-        .limited(64 * 1024),
+        .unlimited,
     );
 }
 
