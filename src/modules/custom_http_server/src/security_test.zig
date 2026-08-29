@@ -1853,7 +1853,7 @@ test "GinwaServer.max_body_bytes defaults to UNLIMITED (opt-in cap)" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45688);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
 
     var server = try http_server.GinwaServer.init(arena.allocator(), undefined, addr);
     defer server.destroy(arena.allocator());

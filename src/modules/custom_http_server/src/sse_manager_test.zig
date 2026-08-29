@@ -5,17 +5,59 @@ const SseManager = sse_manager.SseManager;
 const SseClient = sse_manager.SseClient;
 const builtin = @import("builtin");
 
-// Helper to create a pair of connected sockets for testing
-// Windows is not supported here (socketpair is POSIX-only); callers must
-// guard with `if (builtin.os.tag != .windows)` when running on Windows.
-fn createSocketPair() ![2]i32 {
-    var fds: [2]i32 = undefined;
-    // AF_UNIX (1), SOCK_STREAM (1), protocol 0. socketpair returns 0 on
-    // success, -1 on failure (we check < 0).
-    const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-    if (rc < 0) return error.SocketPairFailed;
-    return fds;
+// Cross-platform fd plumbing. All branches are `comptime if`-gated so
+// the runtime path for each host stays identical to the prior POSIX
+// code (no behavioral change on Linux/macOS).
+//
+// Linux/macOS: socketpair(AF_UNIX, SOCK_STREAM) creates a connected pair
+// of sockets — std.c.fd_t = i32 on those platforms.
+//
+// Windows: no socketpair(2). Use a pipe instead (std.c.pipe resolves
+// to libc pipe on POSIX and to MSVCRT _pipe on Windows). std.c.fd_t =
+// windows.HANDLE = *anyopaque on Windows.
+//
+// Both paths return `[2]std.c.fd_t` so the same close-pair helper
+// (std.c.close) works on every host. Tests that pass the fd into the
+// production SseManager API (which still takes `i32` everywhere) need
+// to cast to i32 — see `toI32` below.
+fn createSocketPair() ![2]std.c.fd_t {
+    if (comptime builtin.os.tag == .windows) {
+        var fds: [2]std.c.fd_t = undefined;
+        const rc = std.c.pipe(&fds);
+        if (rc != 0) return error.PipeFailed;
+        return fds;
+    } else {
+        var fds: [2]std.c.fd_t = undefined;
+        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+        if (rc < 0) return error.SocketPairFailed;
+        return fds;
+    }
 }
+
+// Close both ends of a pair created by createSocketPair. Cross-platform
+// via std.c.close (POSIX close on Linux/macOS, MSVCRT _close on Windows).
+fn closeSocketPair(pair: [2]std.c.fd_t) void {
+    _ = std.c.close(pair[0]);
+    _ = std.c.close(pair[1]);
+}
+
+// Cast an fd_t to the i32 that the production SseManager API still
+// expects. On Linux/macOS this is a no-op (fd_t is i32). On Windows
+// HANDLE values are small integers assigned sequentially by the kernel
+// (typically < 2^31) so @intCast is safe for testing; if Windows ever
+// returns a >2^31 handle the test would crash here, which is the
+// correct signal that the production API needs an fd_t migration.
+fn toI32(fd: std.c.fd_t) i32 {
+    if (comptime builtin.os.tag == .windows) {
+        return @intCast(@intFromPtr(fd));
+    } else {
+        return @intCast(fd);
+    }
+}
+
+// ============================================================================
+// SSE Manager Tests - Client Registration and Removal
+// ============================================================================
 
 // ============================================================================
 // SSE Manager Tests - Client Registration and Removal
@@ -41,16 +83,16 @@ test "SseManager: register and remove single client" {
     // Create a socket pair for testing
     const pair = try createSocketPair();
     defer {
-        _ = posix.system.close(pair[0]);
-        _ = posix.system.close(pair[1]);
+        _ = std.c.close(pair[0]);
+        _ = std.c.close(pair[1]);
     }
 
     // Register a client
-    _ = try mgr.registerClient(pair[0]);
+    _ = try mgr.registerClient(toI32(pair[0]));
     try std.testing.expect(mgr.clientCount() == 1);
 
     // Remove client by fd
-    const removed_id = mgr.removeClientByFd(pair[0], .test_only);
+    const removed_id = mgr.removeClientByFd(toI32(pair[0]), .test_only);
     try std.testing.expect(removed_id != null);
     try std.testing.expect(mgr.clientCount() == 0);
 }
@@ -77,28 +119,28 @@ test "SseManager: register and remove multiple clients" {
     const pair2 = try createSocketPair();
     const pair3 = try createSocketPair();
     defer {
-        _ = posix.system.close(pair1[0]);
-        _ = posix.system.close(pair1[1]);
-        _ = posix.system.close(pair2[0]);
-        _ = posix.system.close(pair2[1]);
-        _ = posix.system.close(pair3[0]);
-        _ = posix.system.close(pair3[1]);
+        _ = std.c.close(pair1[0]);
+        _ = std.c.close(pair1[1]);
+        _ = std.c.close(pair2[0]);
+        _ = std.c.close(pair2[1]);
+        _ = std.c.close(pair3[0]);
+        _ = std.c.close(pair3[1]);
     }
 
     // Register multiple clients
-    _ = try mgr.registerClient(pair1[0]);
-    _ = try mgr.registerClient(pair2[0]);
-    _ = try mgr.registerClient(pair3[0]);
+    _ = try mgr.registerClient(toI32(pair1[0]));
+    _ = try mgr.registerClient(toI32(pair2[0]));
+    _ = try mgr.registerClient(toI32(pair3[0]));
     try std.testing.expect(mgr.clientCount() == 3);
 
     // Remove each client one by one
-    _ = mgr.removeClientByFd(pair2[0], .test_only);
+    _ = mgr.removeClientByFd(toI32(pair2[0]), .test_only);
     try std.testing.expect(mgr.clientCount() == 2);
 
-    _ = mgr.removeClientByFd(pair1[0], .test_only);
+    _ = mgr.removeClientByFd(toI32(pair1[0]), .test_only);
     try std.testing.expect(mgr.clientCount() == 1);
 
-    _ = mgr.removeClientByFd(pair3[0], .test_only);
+    _ = mgr.removeClientByFd(toI32(pair3[0]), .test_only);
     try std.testing.expect(mgr.clientCount() == 0);
 }
 
@@ -121,11 +163,11 @@ test "SseManager: remove by ID works correctly" {
 
     const pair = try createSocketPair();
     defer {
-        _ = posix.system.close(pair[0]);
-        _ = posix.system.close(pair[1]);
+        _ = std.c.close(pair[0]);
+        _ = std.c.close(pair[1]);
     }
 
-    const id = try mgr.registerClient(pair[0]);
+    const id = try mgr.registerClient(toI32(pair[0]));
     try std.testing.expect(mgr.clientCount() == 1);
 
     // Remove by ID
@@ -172,11 +214,11 @@ test "SseManager: deinit cleans up all clients" {
     var mgr = try SseManager.init(allocator, server_allocator, io);
 
     // Create and register multiple clients
-    var socket_pairs = std.ArrayListUnmanaged([2]i32){ .items = &.{}, .capacity = 0 };
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t){ .items = &.{}, .capacity = 0 };
     defer {
         // Note: manager already closed read ends, only close write ends
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(allocator);
     }
@@ -184,7 +226,7 @@ test "SseManager: deinit cleans up all clients" {
     for (0..5) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(allocator, fds);
-        _ = try mgr.registerClient(fds[0]);
+        _ = try mgr.registerClient(toI32(fds[0]));
     }
 
     try std.testing.expect(mgr.clientCount() == 5);
@@ -194,7 +236,7 @@ test "SseManager: deinit cleans up all clients" {
 
     // Close the other ends of socket pairs
     for (socket_pairs.items) |fds| {
-        _ = posix.system.close(fds[1]);
+        _ = std.c.close(fds[1]);
     }
 }
 
@@ -217,14 +259,14 @@ test "SseManager: removeClientByFd then removeClient (race condition test)" {
 
     const pair = try createSocketPair();
     defer {
-        _ = posix.system.close(pair[0]);
-        _ = posix.system.close(pair[1]);
+        _ = std.c.close(pair[0]);
+        _ = std.c.close(pair[1]);
     }
 
-    _ = try mgr.registerClient(pair[0]);
+    _ = try mgr.registerClient(toI32(pair[0]));
 
     // First removal by fd
-    const removed = mgr.removeClientByFd(pair[0], .test_only);
+    const removed = mgr.removeClientByFd(toI32(pair[0]), .test_only);
     try std.testing.expect(removed != null);
     try std.testing.expect(mgr.clientCount() == 0);
 
@@ -252,18 +294,18 @@ test "SseManager: removeClient then removeClientByFd (race condition test)" {
 
     const pair = try createSocketPair();
     defer {
-        _ = posix.system.close(pair[0]);
-        _ = posix.system.close(pair[1]);
+        _ = std.c.close(pair[0]);
+        _ = std.c.close(pair[1]);
     }
 
-    const id = try mgr.registerClient(pair[0]);
+    const id = try mgr.registerClient(toI32(pair[0]));
 
     // First removal by id
     mgr.removeClient(id, .test_only);
     try std.testing.expect(mgr.clientCount() == 0);
 
     // Second removal by fd should be a no-op
-    const removed = mgr.removeClientByFd(pair[0], .test_only);
+    const removed = mgr.removeClientByFd(toI32(pair[0]), .test_only);
     try std.testing.expect(removed == null);
     try std.testing.expect(mgr.clientCount() == 0);
 }
@@ -287,12 +329,12 @@ test "SseManager: register same fd twice returns same id" {
 
     const pair = try createSocketPair();
     defer {
-        _ = posix.system.close(pair[0]);
-        _ = posix.system.close(pair[1]);
+        _ = std.c.close(pair[0]);
+        _ = std.c.close(pair[1]);
     }
 
-    const id1 = try mgr.registerClient(pair[0]);
-    const id2 = try mgr.registerClient(pair[0]);
+    const id1 = try mgr.registerClient(toI32(pair[0]));
+    const id2 = try mgr.registerClient(toI32(pair[0]));
 
     // Should return the same id (no duplicate registration)
     try std.testing.expectEqualSlices(u8, &id1, &id2);
@@ -312,17 +354,17 @@ test "SseClient: deinit doesn't crash on closed fd" {
     // Create an invalid socket fd by closing immediately
     const pair = try createSocketPair();
     // Close the first socket
-    _ = posix.system.close(pair[0]);
+    _ = std.c.close(pair[0]);
 
     var id: [16]u8 = undefined;
     @memset(&id, 0);
 
     // Create client with already-closed fd
-    var client = SseClient.init(id, pair[0], allocator, io);
+    var client = SseClient.init(id, toI32(pair[0]), allocator, io);
 
     // deinit should not crash even though fd is invalid
     client.deinit();
-    _ = posix.system.close(pair[1]);
+    _ = std.c.close(pair[1]);
 }
 
 test "SseManager: stress test - rapid add/remove" {
@@ -343,11 +385,11 @@ test "SseManager: stress test - rapid add/remove" {
     defer mgr.deinit();
 
     // Rapidly add and remove clients
-    var socket_pairs = std.ArrayListUnmanaged([2]i32){ .items = &.{}, .capacity = 0 };
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t){ .items = &.{}, .capacity = 0 };
     defer {
         // Close write ends (read ends were closed by mgr.deinit)
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(allocator);
     }
@@ -355,7 +397,7 @@ test "SseManager: stress test - rapid add/remove" {
     for (0..10) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(allocator, fds);
-        _ = try mgr.registerClient(fds[0]);
+        _ = try mgr.registerClient(toI32(fds[0]));
     }
 
     try std.testing.expect(mgr.clientCount() == 10);
@@ -363,14 +405,14 @@ test "SseManager: stress test - rapid add/remove" {
     // Remove all in reverse order
     for (0..10) |i| {
         const idx = 10 - 1 - i;
-        _ = mgr.removeClientByFd(socket_pairs.items[idx][0], .test_only);
+        _ = mgr.removeClientByFd(toI32(socket_pairs.items[idx][0]), .test_only);
     }
 
     try std.testing.expect(mgr.clientCount() == 0);
 
     // Clean up other ends
     for (socket_pairs.items) |fds| {
-        _ = posix.system.close(fds[1]);
+        _ = std.c.close(fds[1]);
     }
 }
 
@@ -396,10 +438,10 @@ test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
     var mgr = try SseManager.init(allocator, server_allocator, io);
 
     // Create and register multiple clients
-    var socket_pairs = std.ArrayListUnmanaged([2]i32){ .items = &.{}, .capacity = 0 };
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t){ .items = &.{}, .capacity = 0 };
     defer {
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(allocator);
     }
@@ -407,7 +449,7 @@ test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
     for (0..5) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(allocator, fds);
-        _ = try mgr.registerClient(fds[0]);
+        _ = try mgr.registerClient(toI32(fds[0]));
     }
 
     try std.testing.expect(mgr.clientCount() == 5);
@@ -420,7 +462,7 @@ test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
 
     // Clean up other ends after gracefulShutdown closed them
     for (socket_pairs.items) |fds| {
-        _ = posix.system.close(fds[1]);
+        _ = std.c.close(fds[1]);
     }
 
     // Final deinit should be clean

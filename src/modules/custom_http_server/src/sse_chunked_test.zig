@@ -20,7 +20,7 @@ const is_windows = builtin.os.tag == .windows;
 
 fn closeFd(fd: i32) void {
     if (is_windows) return; // Sockets are HANDLE on Windows; fd is meaningless
-    _ = posix.system.close(fd);
+    _ = std.c.close(fd);
 }
 
 fn readFd(fd: i32, buf: []u8, len: usize) isize {
@@ -30,14 +30,14 @@ fn readFd(fd: i32, buf: []u8, len: usize) isize {
     return posix.system.read(fd, buf.ptr, len);
 }
 
-fn createSocketPair() ![2]i32 {
+fn createSocketPair() ![2]std.c.fd_t {
     if (builtin.os.tag == .windows) {
         // On Windows, sockets are HANDLE (*anyopaque), not i32 file descriptors.
         // The entire test suite relies on POSIX socketpair semantics which are
         // not available on Windows. Skip these tests on Windows.
         return error.SkipZigTest;
     } else {
-        var fds: [2]i32 = undefined;
+        var fds: [2]std.c.fd_t = undefined;
         // AF_UNIX (1), SOCK_STREAM (1), protocol 0. socketpair returns
         // 0 on success, -1 on failure.
         const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);

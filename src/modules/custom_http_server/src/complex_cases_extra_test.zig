@@ -17,6 +17,18 @@ const builtin = @import("builtin");
 const linux = std.posix.system;
 const posix = std.posix;
 
+// Cast an fd_t to the i32 that the production SseManager API still
+// expects. On Linux/macOS this is a no-op (fd_t is i32). On Windows
+// HANDLE values are small integers assigned sequentially by the kernel
+// (typically < 2^31) so @intCast is safe for testing.
+fn toI32(fd: std.c.fd_t) i32 {
+    if (comptime builtin.os.tag == .windows) {
+        return @intCast(@intFromPtr(fd));
+    } else {
+        return @intCast(fd);
+    }
+}
+
 const allocator = std.testing.allocator;
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
@@ -28,12 +40,20 @@ const expectEqualSlices = std.testing.expectEqualSlices;
 // SECTION A: SSE Broadcasting and Heartbeat Edge Cases
 // ============================================================================
 
-fn createSocketPair() ![2]i32 {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    var fds: [2]i32 = undefined;
-    const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-    if (rc < 0) return error.SocketPairFailed;
-    return fds;
+fn createSocketPair() ![2]std.c.fd_t {
+    if (comptime builtin.os.tag == .windows) {
+        // No socketpair(2) on Windows. Use a pipe — same shape as the
+        // cross-platform helper in sse_manager_test.zig.
+        var fds: [2]std.c.fd_t = undefined;
+        const rc = std.c.pipe(&fds);
+        if (rc != 0) return error.PipeFailed;
+        return fds;
+    } else {
+        var fds: [2]std.c.fd_t = undefined;
+        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+        if (rc < 0) return error.SocketFailed;
+        return fds;
+    }
 }
 
 /// Open-file-descriptor limit for the current process. Read via
@@ -75,10 +95,10 @@ test "sse: SseManager broadcast to multiple clients delivers all messages" {
     var mgr = try sse_manager.SseManager.init(a, a, io);
     defer mgr.deinit();
 
-    var socket_pairs = std.ArrayListUnmanaged([2]i32).empty;
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t).empty;
     defer {
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(a);
     }
@@ -87,7 +107,7 @@ test "sse: SseManager broadcast to multiple clients delivers all messages" {
     for (0..5) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(a, fds);
-        _ = try mgr.registerClient(fds[0]);
+        _ = try mgr.registerClient(toI32(fds[0]));
     }
 
     try expectEqual(@as(usize, 5), mgr.clientCount());
@@ -106,15 +126,15 @@ test "sse: SseManager broadcast to multiple clients delivers all messages" {
 
 test "sse: SseClient.sendEvent writes chunked-encoded frame with hex length" {
     const pair = try createSocketPair();
-    defer _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
 
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
     const id: [16]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
-    var client: sse_manager.SseClient = .init(id, pair[0], allocator, io);
+    var client: sse_manager.SseClient = .init(id, toI32(pair[0]), allocator, io);
     defer client.forceDestroy();
 
     // Send an event with known content. The frame should be:
@@ -129,15 +149,15 @@ test "sse: SseClient.sendEvent writes chunked-encoded frame with hex length" {
 
 test "sse: SseClient.sendEvent with empty event writes terminator chunk" {
     const pair = try createSocketPair();
-    defer _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
 
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
     const id: [16]u8 = .{ 0 } ** 16;
-    var client: sse_manager.SseClient = .init(id, pair[0], allocator, io);
+    var client: sse_manager.SseClient = .init(id, toI32(pair[0]), allocator, io);
     defer client.forceDestroy();
 
     try client.sendEvent("");
@@ -151,15 +171,15 @@ test "sse: SseClient.sendEvent with empty event writes terminator chunk" {
 test "sse: SseClient.sendEvent with disconnected fd returns ClientDisconnected" {
     const pair = try createSocketPair();
     // Close the read end first to simulate disconnection
-    _ = posix.system.close(pair[1]);
-    defer _ = posix.system.close(pair[0]);
+    _ = std.c.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
 
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
 
     const id: [16]u8 = .{ 0 } ** 16;
-    var client: sse_manager.SseClient = .init(id, pair[0], allocator, io);
+    var client: sse_manager.SseClient = .init(id, toI32(pair[0]), allocator, io);
     defer client.forceDestroy();
 
     // Sending to a disconnected fd should fail with ClientDisconnected.
@@ -179,10 +199,10 @@ test "sse: 1000 concurrent client registrations produce 1000 unique IDs" {
     var mgr = try sse_manager.SseManager.init(a, a, io);
     defer mgr.deinit();
 
-    var socket_pairs = std.ArrayListUnmanaged([2]i32).empty;
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t).empty;
     defer {
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(a);
     }
@@ -202,7 +222,7 @@ test "sse: 1000 concurrent client registrations produce 1000 unique IDs" {
     for (0..stress_count) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(a, fds);
-        const id = try mgr.registerClient(fds[0]);
+        const id = try mgr.registerClient(toI32(fds[0]));
         try ids.append(a, id);
     }
 
@@ -619,10 +639,10 @@ test "stress: register and remove 1000 clients in mixed order" {
     var mgr = try sse_manager.SseManager.init(a, a, io);
     defer mgr.deinit();
 
-    var socket_pairs = std.ArrayListUnmanaged([2]i32).empty;
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t).empty;
     defer {
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(a);
     }
@@ -639,7 +659,7 @@ test "stress: register and remove 1000 clients in mixed order" {
     for (0..stress_count) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(a, fds);
-        _ = try mgr.registerClient(fds[0]);
+        _ = try mgr.registerClient(toI32(fds[0]));
     }
 
     try expectEqual(@as(usize, stress_count), mgr.clientCount());
@@ -650,10 +670,10 @@ test "stress: register and remove 1000 clients in mixed order" {
     var front = true;
     while (i <= j) {
         if (front) {
-            _ = mgr.removeClientByFd(socket_pairs.items[i][0], .test_only);
+            _ = mgr.removeClientByFd(toI32(socket_pairs.items[i][0]), .test_only);
             i += 1;
         } else {
-            _ = mgr.removeClientByFd(socket_pairs.items[j][0], .test_only);
+            _ = mgr.removeClientByFd(toI32(socket_pairs.items[j][0]), .test_only);
             j -= 1;
         }
         front = !front;
@@ -695,7 +715,7 @@ test "stress: 500 sequential Address.init/destroy cycles" {
     while (i < 500) : (i += 1) {
         const port: u16 = 46000 + @as(u16, @intCast(i % 500));
         const addr = try http_server.Address.init("127.0.0.1", port);
-        _ = linux.close(addr.sock_fd);
+        _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
     }
 }
 
@@ -759,7 +779,7 @@ test "contract: HttpResponse.init produces a valid empty response" {
 test "contract: GinwaServer.init preserves the address" {
     const a = allocator;
     const addr = try http_server.Address.init("127.0.0.1", 45900);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
 
     var server = try http_server.GinwaServer.init(a, undefined, addr);
     defer server.destroy(a);

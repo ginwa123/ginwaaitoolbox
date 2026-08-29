@@ -29,8 +29,8 @@ const sse_manager = @import("sse_manager.zig");
 const SseManager = sse_manager.SseManager;
 const builtin = @import("builtin");
 
-fn createSocketPair() ![2]i32 {
-    var fds: [2]i32 = undefined;
+fn createSocketPair() ![2]std.c.fd_t {
+    var fds: [2]std.c.fd_t = undefined;
     const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
     if (rc < 0) return error.SocketPairFailed;
     return fds;
@@ -71,8 +71,8 @@ test "sse keepalive: server does NOT mis-remove a healthy client under 60s" {
     // socketpair: [0] = server side, [1] = client side
     const pair = try createSocketPair();
     defer {
-        _ = posix.system.close(pair[0]);
-        _ = posix.system.close(pair[1]);
+        _ = std.c.close(pair[0]);
+        _ = std.c.close(pair[1]);
     }
 
     // Register the server-side fd with the SSE manager
@@ -117,8 +117,8 @@ test "sse keepalive: server does NOT mis-remove a healthy client under 60s" {
     const total_periods: usize = 120; // 120 * 500ms = 60s
     var iter: usize = 0;
     while (iter < total_periods) : (iter += 1) {
-        var ts: posix.system.timespec = .{ .sec = 0, .nsec = period_ns };
-        _ = posix.system.nanosleep(&ts, null);
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = period_ns };
+        _ = std.c.nanosleep(&ts, null);
         const count = mgr.clientCount();
         const elapsed_s = iter / 2;
         std.debug.print("    t={d}s clientCount={d}\n", .{ elapsed_s, count });
@@ -166,10 +166,10 @@ test "sse keepalive: server does NOT mis-remove 2 healthy clients under 60s" {
     const pair_a = try createSocketPair();
     const pair_b = try createSocketPair();
     defer {
-        _ = posix.system.close(pair_a[0]);
-        _ = posix.system.close(pair_a[1]);
-        _ = posix.system.close(pair_b[0]);
-        _ = posix.system.close(pair_b[1]);
+        _ = std.c.close(pair_a[0]);
+        _ = std.c.close(pair_a[1]);
+        _ = std.c.close(pair_b[0]);
+        _ = std.c.close(pair_b[1]);
     }
 
     const id_a = try mgr.registerClient(pair_a[0]);
@@ -204,8 +204,8 @@ test "sse keepalive: server does NOT mis-remove 2 healthy clients under 60s" {
     const total_periods: usize = 120;
     var iter: usize = 0;
     while (iter < total_periods) : (iter += 1) {
-        var ts: posix.system.timespec = .{ .sec = 0, .nsec = period_ns };
-        _ = posix.system.nanosleep(&ts, null);
+        var ts: std.c.timespec = .{ .sec = 0, .nsec = period_ns };
+        _ = std.c.nanosleep(&ts, null);
         const count = mgr.clientCount();
         const elapsed_s = iter / 2;
         std.debug.print("    t={d}s clientCount={d}\n", .{ elapsed_s, count });

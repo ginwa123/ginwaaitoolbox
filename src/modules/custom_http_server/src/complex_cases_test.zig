@@ -20,6 +20,18 @@ const router = @import("router.zig");
 const sse_manager = @import("sse_manager.zig");
 const builtin = @import("builtin");
 const linux = std.posix.system;
+
+// Cast an fd_t to the i32 that the production SseManager API still
+// expects. On Linux/macOS this is a no-op (fd_t is i32). On Windows
+// HANDLE values are small integers assigned sequentially by the kernel
+// (typically < 2^31) so @intCast is safe for testing.
+fn toI32(fd: std.c.fd_t) i32 {
+    if (comptime builtin.os.tag == .windows) {
+        return @intCast(@intFromPtr(fd));
+    } else {
+        return @intCast(fd);
+    }
+}
 const posix = std.posix;
 
 const allocator = std.testing.allocator;
@@ -746,7 +758,7 @@ test "address: invalid port (0) is accepted by kernel (port 0 = ephemeral)" {
     // Port 0 is valid — it asks the kernel to pick an ephemeral port.
     // The Address struct must accept it without error.
     const addr = try http_server.Address.init("127.0.0.1", 0);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
     try expect(addr.sock_fd >= 0);
     try expectEqual(@as(u16, 0), addr.port);
 }
@@ -754,7 +766,7 @@ test "address: invalid port (0) is accepted by kernel (port 0 = ephemeral)" {
 test "address: maximum u16 port (65535) is accepted" {
     // Port 65535 is the top of the u16 range — must not overflow.
     const addr = try http_server.Address.init("127.0.0.1", 65535);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
     try expectEqual(@as(u16, 65535), addr.port);
 }
 
@@ -768,7 +780,7 @@ test "address: SO_REUSEADDR is set (verifiable by getsockopt)" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const addr = try http_server.Address.init("127.0.0.1", 0);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
 
     // Read SO_REUSEADDR back and confirm it's set to a non-zero value.
     var optval: c_int = 0;
@@ -798,13 +810,13 @@ const GetSockNameFailed = error{GetSockNameFailed};
 test "ginwa: destroy then re-init works (no global state leak)" {
     const a = allocator;
     const addr1 = try http_server.Address.init("127.0.0.1", 45710);
-    defer _ = linux.close(addr1.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr1.sock_fd)))) else @intCast(addr1.sock_fd));
 
     var server1 = try http_server.GinwaServer.init(a, undefined, addr1);
     defer server1.destroy(a);
 
     const addr2 = try http_server.Address.init("127.0.0.1", 45711);
-    defer _ = linux.close(addr2.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr2.sock_fd)))) else @intCast(addr2.sock_fd));
 
     var server2 = try http_server.GinwaServer.init(a, undefined, addr2);
     defer server2.destroy(a);
@@ -819,7 +831,7 @@ test "ginwa: destroy releases router routes (no leak via destroy alone)" {
     // first, so a single destroy() should clean up everything.
     const a = allocator;
     const addr = try http_server.Address.init("127.0.0.1", 45712);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
 
     var server = try http_server.GinwaServer.init(a, undefined, addr);
     // Intentionally do NOT call server.deinit() — destroy() should handle it.
@@ -847,11 +859,12 @@ test "address: closeFd on Address fd closes it (kernel returns EBADF on next op)
     const addr = try http_server.Address.init("127.0.0.1", 45713);
     const fd = addr.sock_fd;
 
-    _ = linux.close(fd);
+    _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, fd)))) else @intCast(fd));
 
     // After close, a recv on this fd should fail (the socket is no longer valid).
     var buf: [16]u8 = undefined;
-    const rc = linux.read(fd, &buf, buf.len);
+    const fd_for_read: std.c.fd_t = if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, fd)))) else @intCast(fd);
+    const rc = std.c.read(fd_for_read, &buf, buf.len);
     try expect(rc < 0);
 }
 
@@ -912,54 +925,62 @@ test "requestBuffer: getContentLength with bogus non-numeric value" {
 // SECTION 7: SSE Manager Edge Cases
 // ============================================================================
 
-fn createSocketPair() ![2]i32 {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    var fds: [2]i32 = undefined;
-    const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-    if (rc < 0) return error.SocketPairFailed;
-    // macOS (and BSD) defaults SO_SNDBUF to ~8 KB on AF_UNIX SOCK_STREAM
-    // pairs — far smaller than Linux (~208 KB). Tests that write 16 KB or
-    // more would block forever waiting for the reader to drain. Bump to
-    // 256 KB explicitly so SSE write-path tests stay portable.
-    var size: i32 = 256 * 1024;
-    _ = posix.system.setsockopt(
-        fds[0],
-        posix.SOL.SOCKET,
-        posix.SO.SNDBUF,
-        &size,
-        @sizeOf(@TypeOf(size)),
-    );
-    return fds;
+fn createSocketPair() ![2]std.c.fd_t {
+    if (comptime builtin.os.tag == .windows) {
+        // No socketpair(2) on Windows. Use a pipe — same shape as the
+        // cross-platform helper in sse_manager_test.zig / sse_chunked_test.zig.
+        var fds: [2]std.c.fd_t = undefined;
+        const rc = std.c.pipe(&fds);
+        if (rc != 0) return error.PipeFailed;
+        return fds;
+    } else {
+        var fds: [2]std.c.fd_t = undefined;
+        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
+        if (rc < 0) return error.SocketFailed;
+        // macOS (and BSD) defaults SO_SNDBUF to ~8 KB on AF_UNIX SOCK_STREAM
+        // pairs — far smaller than Linux (~208 KB). Tests that write 16 KB or
+        // more would block forever waiting for the reader to drain. Bump to
+        // 256 KB explicitly so SSE write-path tests stay portable.
+        var size: c_int = 256 * 1024;
+        _ = posix.system.setsockopt(
+            fds[0],
+            posix.SOL.SOCKET,
+            posix.SO.SNDBUF,
+            &size,
+            @sizeOf(@TypeOf(size)),
+        );
+        return fds;
+    }
 }
 
 test "sse: writeChunkedFrame handles empty event (terminator chunk)" {
     const pair = try createSocketPair();
-    defer _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
 
-    try sse_manager.writeChunkedFrame(pair[0], "");
+    try sse_manager.writeChunkedFrame(toI32(pair[0]), "");
 
     var buf: [16]u8 = undefined;
-    const n = linux.read(pair[1], &buf, buf.len);
+    const n = std.c.read(pair[1], &buf, buf.len);
     try expect(n == 5); // "0\r\n\r\n"
     try expectEqualSlices(u8, "0\r\n\r\n", buf[0..@intCast(n)]);
 }
 
 test "sse: writeChunkedFrame handles large event (16 KB)" {
     const pair = try createSocketPair();
-    defer _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
 
     var large = std.ArrayList(u8).empty;
     defer large.deinit(allocator);
     var i: usize = 0;
     while (i < 16384) : (i += 1) try large.append(allocator, 'A');
 
-    try sse_manager.writeChunkedFrame(pair[0], large.items);
+    try sse_manager.writeChunkedFrame(toI32(pair[0]), large.items);
 
     // Read the hex header "4000\r\n" (6 bytes) + 16384 data + "\r\n" (2 bytes) = 16392
     var header_buf: [32]u8 = undefined;
-    const n = linux.read(pair[1], &header_buf, header_buf.len);
+    const n = std.c.read(pair[1], &header_buf, header_buf.len);
     try expect(n > 0);
     // Hex length of 16384 is "4000"
     try expectEqualStrings("4000\r\n", header_buf[0..6]);
@@ -977,10 +998,10 @@ test "sse: register 100 clients then remove all — no FD leaks" {
     var mgr = try sse_manager.SseManager.init(a, a, io);
     defer mgr.deinit();
 
-    var socket_pairs = std.ArrayListUnmanaged([2]i32).empty;
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t).empty;
     defer {
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(a);
     }
@@ -988,14 +1009,14 @@ test "sse: register 100 clients then remove all — no FD leaks" {
     for (0..100) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(a, fds);
-        _ = try mgr.registerClient(fds[0]);
+        _ = try mgr.registerClient(toI32(fds[0]));
     }
 
     try expectEqual(@as(usize, 100), mgr.clientCount());
 
     // Remove all clients — verify count drops to 0 with no leak.
     for (socket_pairs.items) |fds| {
-        _ = mgr.removeClientByFd(fds[0], .test_only);
+        _ = mgr.removeClientByFd(toI32(fds[0]), .test_only);
     }
 
     try expectEqual(@as(usize, 0), mgr.clientCount());
@@ -1013,10 +1034,10 @@ test "sse: client IDs are unique (no collisions across 50 registrations)" {
     var mgr = try sse_manager.SseManager.init(a, a, io);
     defer mgr.deinit();
 
-    var socket_pairs = std.ArrayListUnmanaged([2]i32).empty;
+    var socket_pairs = std.ArrayListUnmanaged([2]std.c.fd_t).empty;
     defer {
         for (socket_pairs.items) |fds| {
-            _ = posix.system.close(fds[1]);
+            _ = std.c.close(fds[1]);
         }
         socket_pairs.deinit(a);
     }
@@ -1027,7 +1048,7 @@ test "sse: client IDs are unique (no collisions across 50 registrations)" {
     for (0..50) |_| {
         const fds = try createSocketPair();
         try socket_pairs.append(a, fds);
-        const id = try mgr.registerClient(fds[0]);
+        const id = try mgr.registerClient(toI32(fds[0]));
         try ids.append(a, id);
     }
 
@@ -1052,15 +1073,15 @@ test "sse: remove same fd twice returns null on second call" {
     defer mgr.deinit();
 
     const pair = try createSocketPair();
-    defer _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
 
-    _ = try mgr.registerClient(pair[0]);
+    _ = try mgr.registerClient(toI32(pair[0]));
 
-    const first = mgr.removeClientByFd(pair[0], .test_only);
+    const first = mgr.removeClientByFd(toI32(pair[0]), .test_only);
     try expect(first != null);
 
-    const second = mgr.removeClientByFd(pair[0], .test_only);
+    const second = mgr.removeClientByFd(toI32(pair[0]), .test_only);
     try expect(second == null);
 }
 
@@ -1072,8 +1093,8 @@ test "integration: parse 100 sequential requests from socket pair" {
     // Simulates a server parsing multiple HTTP requests from one
     // persistent connection. The parser is called once per request.
     const pair = try createSocketPair();
-    defer _ = posix.system.close(pair[0]);
-    defer _ = posix.system.close(pair[1]);
+    defer _ = std.c.close(pair[0]);
+    defer _ = std.c.close(pair[1]);
 
     var i: usize = 0;
     while (i < 100) : (i += 1) {
@@ -1085,13 +1106,13 @@ test "integration: parse 100 sequential requests from socket pair" {
         );
 
         // Write to client end of pair (server reads from pair[0]).
-        const written = linux.write(pair[1], req_str.ptr, req_str.len);
+        const written = std.c.write(pair[1], req_str.ptr, req_str.len);
         try expect(written == @as(isize, @intCast(req_str.len)));
 
         var rb = http_server.RequestBuffer.init(allocator);
         defer rb.deinit();
 
-        const data = try rb.readFullRequest(pair[0]);
+        const data = try rb.readFullRequest(toI32(pair[0]));
         defer allocator.free(data);
 
         var req = try http_parser.parseRequest(data, allocator, undefined, 0);
@@ -1148,7 +1169,7 @@ test "stress: 50 sequential server init/destroy cycles" {
     while (i < 50) : (i += 1) {
         const port: u16 = 45800 + @as(u16, @intCast(i % 50)); // stay within test range
         const addr = try http_server.Address.init("127.0.0.1", port);
-        const _close_fd = linux.close(addr.sock_fd);
+        const _close_fd = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
         _ = _close_fd;
 
         var server = try http_server.GinwaServer.init(allocator, undefined, addr);
