@@ -7,22 +7,7 @@ const save_message = @import("llm_history.zig");
 const custom_http_client = @import("custom_http_client");
 const config_mod = nalar_mod.config;
 const mcp_stdio = nalar_mod.mcp_stdio;
-
-/// Strip SSE "data:" prefix from response body if present
-/// MCP servers may return responses in SSE format: "data: {...}\n\n"
-fn stripSsePrefix(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
-    // Check if body starts with "data:" (possibly with leading whitespace)
-    const trimmed = std.mem.trim(u8, body, " \t\r\n");
-    if (std.mem.startsWith(u8, trimmed, "data:")) {
-        // Extract the JSON part after "data:"
-        const json_start = trimmed["data:".len..];
-        const json_trimmed = std.mem.trim(u8, json_start, " \t");
-        // Return a copy since the original body will be freed
-        return try allocator.dupe(u8, json_trimmed);
-    }
-    // No SSE prefix, return the original
-    return body;
-}
+const mcp_http = nalar_mod.mcp_http;
 
 /// Handle an MCP tool call by forwarding it to the MCP server
 ///
@@ -95,19 +80,13 @@ pub fn handle_mcp_tool_run(
     };
     const url = url_value.string;
 
-    // Build JSON-RPC request for tool call (shared shape with stdio).
-    const request_body = try buildToolCallRequestBody(allocator, actual_tool_name, tool_call.function.arguments);
-    defer allocator.free(request_body);
+    logger.debugFmt("MCP HTTP dispatch to {s}", .{url});
 
-    logger.debugFmt("MCP request: {s}", .{request_body});
-
-    // Build headers
-    var headers = std.StringHashMap([]const u8).init(allocator);
-    defer headers.deinit();
-    _ = try headers.put("Accept", "application/json, text/event-stream");
-    _ = try headers.put("Content-Type", "application/json");
-
-    // Add custom headers from config
+    // Build the custom_headers slice from the JSON object. MCP headers
+    // are a small bounded set; we use a stack buffer (max 16) to avoid
+    // a heap allocation on the hot path.
+    var std_header_buf: [16]custom_http_client.Header = undefined;
+    var header_count: usize = 0;
     if (server_obj.get("headers")) |headers_value| {
         const headers_obj = switch (headers_value) {
             .object => |obj| obj,
@@ -117,120 +96,75 @@ pub fn handle_mcp_tool_run(
         };
         var header_iter = headers_obj.iterator();
         while (header_iter.next()) |h_entry| {
-            const key = h_entry.key_ptr.*;
+            if (header_count >= std_header_buf.len) return error.InvalidMCPServerHeadersConfig;
             const value = switch (h_entry.value_ptr.*) {
                 .string => |s| s,
                 else => continue,
             };
-            _ = try headers.put(key, value);
+            std_header_buf[header_count] = .{
+                .name = h_entry.key_ptr.*,
+                .value = value,
+            };
+            header_count += 1;
         }
     }
+    const custom_headers = std_header_buf[0..header_count];
 
-    // Make HTTP request
-    var client = custom_http_client.Client.init(allocator);
-    defer client.deinit();
-
-    // custom_http_client.post() takes a `[]const Header` slice, not a
-    // StringHashMap. Flatten the hash map into a stack-allocated slice
-    // (MCP headers are a small bounded set; allocate an upper bound and
-    // slice down to the actual count).
-    var header_buf: [16]custom_http_client.Header = undefined;
-    var header_count: usize = 0;
-    var header_it = headers.iterator();
-    while (header_it.next()) |entry| {
-        if (header_count >= header_buf.len) return error.InvalidMCPServerHeadersConfig;
-        header_buf[header_count] = .{
-            .name = entry.key_ptr.*,
-            .value = entry.value_ptr.*,
-        };
-        header_count += 1;
-    }
-    const header_slice = header_buf[0..header_count];
-
-    const result = custom_http_client.post(
-        &client,
+    // Get or build a cached HTTP client for this server. The process-
+    // global registry keeps the client alive for the process lifetime
+    // (the arena memory is freed at process exit). A future v2 may
+    // wire main.zig's shutdown hook to call HttpRegistry.deinitGlobal() —
+    // for now, same pattern as mcp_stdio.StdioRegistry.
+    const http_registry = mcp_http.HttpRegistry.global(allocator);
+    const http_client = http_registry.getOrConnect(
+        server_name,
         url,
-        request_body,
-        header_slice,
-        .{ .timeout_ms = 30_000 },
+        custom_headers,
     ) catch |err| {
-        logger.errFmt("MCP HTTP error: {s}", .{@errorName(err)});
-        allocator.free(request_body);
+        logger.errFmt("MCP HTTP client build failed: {s}", .{@errorName(err)});
         return error.FailedToCallMCPServer;
     };
-    defer result.deinit(allocator);
 
-    logger.debugFmt("MCP response status: {d}", .{result.status_code});
+    // Send the request. callTool returns the raw JSON-RPC response body
+    // (the SSE parser inside the client has already extracted the final
+    // event's data: field if the server returned SSE).
+    const response_body = http_client.callTool(actual_tool_name, tool_call.function.arguments) catch |err| {
+        logger.errFmt("MCP HTTP call failed: {s}", .{@errorName(err)});
+        return error.FailedToCallMCPServer;
+    };
+    defer allocator.free(response_body);
 
-    if (result.status_code != 200) {
-        // Log status without raw body to prevent crashes from non-null-terminated data
-        logger.errFmt("MCP server returned status {d}, body length: {d}", .{ result.status_code, result.body.len });
-        return error.MCPServerReturnedError;
-    }
-
-    // Strip SSE "data:" prefix if present - MCP may return SSE responses
-    const clean_body = try stripSsePrefix(allocator, result.body);
-    const is_copy = @intFromPtr(clean_body.ptr) != @intFromPtr(result.body.ptr);
-    errdefer if (is_copy) allocator.free(clean_body);
-
+    // Extract `result.content[0].text` (this function's contract: the
+    // agent sees the text content, not the raw JSON-RPC envelope).
     var parse_arena = std.heap.ArenaAllocator.init(allocator);
     defer parse_arena.deinit();
-    const parse_alloc = parse_arena.allocator();
-
-    const parsed = std.json.parseFromSlice(std.json.Value, parse_alloc, clean_body, .{}) catch |err| {
-        // Log error without raw body to prevent crashes from non-null-terminated data
-        logger.errFmt("MCP JSON parse error: {s}, body length: {d}", .{ @errorName(err), clean_body.len });
-        if (is_copy) allocator.free(clean_body);
-        allocator.free(request_body);
+    const parsed = std.json.parseFromSlice(std.json.Value, parse_arena.allocator(), response_body, .{}) catch {
+        logger.errFmt("MCP HTTP response not valid JSON: len={d}", .{response_body.len});
         return error.MCPJSONParseError;
     };
 
-    // Extract result content from MCP response BEFORE deinit
-    const root = parsed.value;
-    var tool_result: []const u8 = clean_body;
-    var needs_copy = false;
-
-    if (root.object.get("result")) |result_val| {
+    if (parsed.value.object.get("result")) |result_val| {
         if (result_val.object.get("content")) |content_val| {
-            switch (content_val) {
-                .array => |arr| {
-                    // MCP returns content as array of content blocks
-                    if (arr.items.len > 0) {
-                        const first_content = arr.items[0];
-                        if (first_content.object.get("text")) |text_val| {
-                            switch (text_val) {
-                                .string => |s| {
-                                    tool_result = try allocator.dupe(u8, s);
-                                    needs_copy = true;
-                                },
-                                else => {},
-                            }
+            // Most common shape: {content: [{type: "text", text: "..."}]}
+            if (content_val == .array) {
+                if (content_val.array.items.len > 0) {
+                    if (content_val.array.items[0].object.get("text")) |text_val| {
+                        if (text_val == .string) {
+                            return try allocator.dupe(u8, text_val.string);
                         }
                     }
-                },
-                .string => |s| {
-                    tool_result = try allocator.dupe(u8, s);
-                    needs_copy = true;
-                },
-                else => {},
+                }
+            }
+            // Fallback shape: {content: "string"}
+            if (content_val == .string) {
+                return try allocator.dupe(u8, content_val.string);
             }
         }
     }
 
-    // Now safe to deinit the parse arena
-    parsed.deinit();
-
-    // Free intermediate allocations before returning. Note: `result`'s
-    // body is freed by `result.deinit(allocator)` below — do NOT
-    // `allocator.free(result.body)` here (that would double-free).
-    if (is_copy) allocator.free(clean_body);
-
-    // If we extracted a specific result, it was already duplicated
-    // Otherwise, return a copy of clean_body
-    if (!needs_copy) {
-        return try allocator.dupe(u8, clean_body);
-    }
-    return tool_result;
+    // No content extractable — return the raw response body (caller
+    // may want to inspect the JSON-RPC error envelope if any).
+    return try allocator.dupe(u8, response_body);
 }
 
 // ============================================================================

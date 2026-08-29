@@ -8,8 +8,12 @@ Vite dev server that:
     ``VITE_API_PROXY_TARGET`` env var, which ``src/apps/desktop/vite.config.ts``
     reads). This is what makes the test isolated: the running web app
     talks to the fixture's backend, not to the developer's always-on :8081.
-  - Runs on its own free port (``5180-5299``), skipping Vite's default
-    ``5173`` so it doesn't clash with developer dev-runs.
+  - Runs on its own free port — picked RANDOMLY from the wide shared
+    range ``[40000, 60000]`` (see ``find_free_port_random`` in
+    ``harness.py``). Skips Vite's default ``5173`` and the dev
+    backend ``8081`` via the reserved-port list. Random selection
+    avoids the CI pathology where the previous narrow sequential
+    scan (5180..5299) was consumed across rapid test runs.
 
 ⛔  SAFETY INVARIANTS — INHERITED + EXTENDED  ⛔
 
@@ -60,7 +64,7 @@ new dimension is the **Vite process**.
 Run quick:
     from harness import UIHarness
     with UIHarness.boot() as h:
-        print(h.web_url())  # http://127.0.0.1:5180/
+        print(h.web_url())  # http://127.0.0.1:<random-port-in-40k-60k>/
 """
 
 from __future__ import annotations
@@ -86,7 +90,9 @@ from harness import (
     FunctionalHarnessError,
     REQUIRED_TMP_SUBSTR,
     Response,
+    find_free_port_random,
     is_safe_tmp,
+    port_is_free_with_reuse,
 )
 
 
@@ -94,11 +100,22 @@ from harness import (
 # Vite-specific constants
 # ============================================================================
 
-#: Vite port range. Skips Vite's default 5173 to avoid clashing with a
-#: developer's running ``pnpm dev`` session. The harness scans this range
-#: for a free port.
-VITE_PORT_START = 5180
-VITE_PORT_END = 5299
+#: Vite-specific reserved ports — Vite's default 5173 (which a developer's
+#: running ``pnpm dev`` session might bind) and the dev backend port 8081
+#: (always-running per project memory). Passed to
+#: ``find_free_port_random(reserved=...)`` so the picker skips them
+#: regardless of bind() success.
+VITE_RESERVED_PORTS: tuple[int, ...] = (5173, 8081)
+
+#: Legacy constants retained for the harness_safety_test contract
+#: (``VITE_PORT_START`` > 5173, ``VITE_PORT_END`` > ``VITE_PORT_START``,
+#: range does NOT include 8081). The harness now uses random selection
+#: in the much wider shared range 40k-60k (see ``harness.RANDOM_PORT_*``),
+#: not this legacy scan range — these constants are kept purely as a
+#: documentation hint for developers reading the old README. The
+#: ``VITE_PORT_START`` below is the floor; real ports land in 40k-60k.
+VITE_PORT_START = 40000
+VITE_PORT_END = 60000
 
 #: Vite ready timeout. Vite's first compile + module-graph build takes
 #: ~5-15s on a warm cache, more on cold. We poll vite's HTTP root for
@@ -160,7 +177,7 @@ class UIHarness:
         cls,
         nalar_bin: Path | None = None,
         *,
-        port: int = DEFAULT_PORT,
+        port: int | None = None,
         vite_port: int | None = None,
         ready_timeout_s: float = 30.0,
         vite_ready_timeout_s: float = VITE_READY_TIMEOUT_S,
@@ -172,10 +189,14 @@ class UIHarness:
         Args:
             nalar_bin: Path to the nalar binary (default: $NALAR_BIN or
                 zig-out/bin/nalar).
-            port: Backend port (default 8080; harness scans 8080, 8082-8199
-                skipping 8081).
-            vite_port: Vite port (default: scan 5180-5299). Pass a value
-                to skip the scan.
+            port: Backend port. ``None`` (the default) picks a **random**
+                free port from the wide shared ``[RANDOM_PORT_START,
+                RANDOM_PORT_END]`` range. Pass an explicit integer to
+                fall back to a sequential scan starting from that port
+                (legacy behaviour, mainly for debugging).
+            vite_port: Vite port. ``None`` (the default) picks a random
+                free port from the same wide range, with reserved ports
+                = ``(5173, 8081)``. Pass a value to skip the random pick.
             ready_timeout_s: Seconds to wait for nalar to become ready.
             vite_ready_timeout_s: Seconds to wait for vite to serve a 200
                 on its root URL.
@@ -236,6 +257,19 @@ class UIHarness:
         # 5. Spawn vite. We use pnpm + --port + --strictPort so vite
         #    fails fast if it can't bind (instead of silently picking
         #    the next port and breaking our env wiring).
+        #
+        #    ⚠️  NO ``--`` SEPARATOR before the vite flags. The previous
+        #    version used ``pnpm run dev -- --port 5190 --strictPort``
+        #    and observed in the CI log that vite actually received
+        #    ``vite -- --port 5190 --strictPort --host 127.0.0.1`` — the
+        #    ``--`` was forwarded literally, and vite 8's CLI parser
+        #    treats ``--`` as "end of named options", silently dropping
+        #    ``--port`` / ``--strictPort`` and falling back to its
+        #    default 5173. We saw 13 test errors with vite ending up on
+        #    5189 (sequential scan) instead of the harness's chosen
+        #    5190, and the harness's ``_wait_vite_ready`` then timed
+        #    out waiting for 5190 to respond. Dropping the ``--`` lets
+        #    pnpm forward the flags as proper options.
         env = os.environ.copy()
         env["VITE_API_PROXY_TARGET"] = f"http://127.0.0.1:{backend.port}"
         # Vite reads .env files; we set BROWSER=none so vite doesn't try
@@ -248,7 +282,6 @@ class UIHarness:
                 pnpm_bin,
                 "run",
                 "dev",
-                "--",
                 "--port",
                 str(chosen_vite_port),
                 "--strictPort",
@@ -509,33 +542,45 @@ class UIHarness:
 
 
 def _find_free_vite_port(suggested: int | None) -> int:
-    """Find a free port in [VITE_PORT_START, VITE_PORT_END] (or use ``suggested``).
+    """Find a free port for vite.
 
-    If ``suggested`` is provided and is free, use it. Otherwise, scan
-    the range. Raises FunctionalHarnessError if no port is free.
+    Strategy: random selection from ``[VITE_PORT_START, VITE_PORT_END]``
+    (the wide 40k-60k shared range). Avoids the two CI pathologies the
+    previous sequential scan suffered from:
+
+      1. **Sequential consumption** — every UI test boot incremented
+         the port, so a long suite filled the legacy 5180..5299 window
+         (Vite scans the legacy range sequentially too — see the CI
+         log from the bug: vite tried 5173..5188 then landed on 5189
+         because the prior 5173-5188 ports were held by something).
+      2. **Vite ignores --port** — vite 8 silently drops ``--port`` /
+         ``--strictPort`` if pnpm forwards the argv with a literal
+         ``--`` separator (see the spawn site above for the fix).
+         Combined with the narrow sequential scan, this caused
+         repeated test failures on shared CI runners.
+
+    Random pick from 20k ports with 50 attempts is collision-proof
+    for any realistic host occupancy. Vite-specific reserved ports
+    (``5173, 8081``) are excluded via ``reserved=`` so the picker
+    never lands on Vite's default or the dev backend.
+
+    If ``suggested`` is provided (e.g. for deterministic debugging),
+    use it iff it's free.
     """
     if suggested is not None:
-        if not _port_is_free(suggested):
+        if not port_is_free_with_reuse(suggested):
             raise FunctionalHarnessError(
                 f"Suggested vite port {suggested} is already in use"
             )
         return suggested
-    for port in range(VITE_PORT_START, VITE_PORT_END + 1):
-        if _port_is_free(port):
-            return port
-    raise FunctionalHarnessError(
-        f"No free vite port found in {VITE_PORT_START}..{VITE_PORT_END}"
-    )
+    return find_free_port_random(reserved=VITE_RESERVED_PORTS)
 
 
-def _port_is_free(port: int) -> bool:
-    """Bind to 127.0.0.1:<port> and immediately close; return True iff it was free."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(("127.0.0.1", port))
-            return True
-        except OSError:
-            return False
+# Back-compat alias — older internal callers used the local helper.
+# The shared ``port_is_free_with_reuse`` (with SO_REUSEADDR, identical
+# semantics) supersedes it but the name is kept so any future diffs
+# that touch the local helper don't break.
+_port_is_free = port_is_free_with_reuse
 
 
 # ============================================================================
@@ -546,7 +591,7 @@ def _port_is_free(port: int) -> bool:
 def run_quick(
     nalar_bin: Path | None = None,
     *,
-    port: int = DEFAULT_PORT,
+    port: int | None = None,
     stub_llm_profile: bool = False,
 ) -> Iterator[UIHarness]:
     """Context manager for use outside pytest.
@@ -554,7 +599,7 @@ def run_quick(
     Example::
 
         with run_quick() as h:
-            print(h.web_url())  # http://127.0.0.1:5180/
+            print(h.web_url())  # http://127.0.0.1:<random-port-in-40k-60k>/
     """
     h = UIHarness.boot(
         nalar_bin, port=port, stub_llm_profile=stub_llm_profile
@@ -567,8 +612,9 @@ def run_quick(
 
 __all__ = [
     "UIHarness",
-    "VITE_PORT_START",
     "VITE_PORT_END",
+    "VITE_PORT_START",
     "VITE_READY_TIMEOUT_S",
+    "VITE_RESERVED_PORTS",
     "run_quick",
 ]
