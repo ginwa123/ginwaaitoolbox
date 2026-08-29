@@ -649,6 +649,7 @@ The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by
 | `2026-07-04-preview-panel-resize-design.md` | ✅ | Companion design |
 | `2026-07-01-agent-show-preview.md` | ✅ | `show_preview` Zig tool + `<PreviewSidePanel>` + `<ShowPreview>` card (#55, #56) |
 | `2026-07-01-agent-show-preview-design.md` | ✅ | Companion design |
+| `2026-08-29-show-preview-inline-default-and-ux.md` | ✅ | Flip `show_preview` default back to `'side'` (was `'inline'` — the inline iframe was crushed in the chat column with a horizontal scrollbar overlapping content). Move the floating "Open full" button out of the iframe's top-right corner into a CTA strip BELOW the iframe; extend the auto-resize postMessage protocol to also report `width` so the strip can show a "Preview wider than chat" hint. 4 file edits, 0 new files, +3 new tests, no backend/migration/Zig changes. Kanban `task_1787988286635_2`. Branch `worktree/show-preview-inline-default`. |
 | `2026-06-19-file-input-microphone.md` | ✅ | MicButton in FileInput + `/api/transcribe` |
 | `2026-06-18-fix-glob-duplicate-results.md` | ✅ | `walkDir` dual-recursion 2^N fix |
 | `2026-06-18-add-show-file-tool.md` | ❌ | Replaced by `show_preview` (2026-07-01) |
