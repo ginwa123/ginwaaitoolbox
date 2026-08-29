@@ -1411,24 +1411,41 @@ pub const LlmConfig = struct {
         }
 
         // ── 3. Insert into the typed map ───────────────────────────────────
-        const key_dup = try self.allocator.dupe(u8, input.name);
-        errdefer self.allocator.free(key_dup);
-        try self.mcp_servers.put(key_dup, entry);
-
-        // Transfer ownership of the entry's heap-allocated fields to the
-        // map. `put` COPIES the struct value (which copies POINTERS — the
-        // map and the local `entry` now share the same duped strings).
-        // Reset the local entry so the outer errdefer's
-        // `freeMcpServerConfig` is a no-op for these fields; otherwise
-        // a later error in `rebuildMcpServersParsed` would double-free
-        // strings the map still owns.
-        entry = .{
-            .url = null,
-            .headers = McpHeadersMap.init(self.allocator),
-            .command = null,
-            .args = null,
-            .cwd = null,
+        // F8 fix: scope the `key_dup` + `entry` ownership transfer inside
+        // a labeled block so the `errdefer` only fires on the actual
+        // failure path (dupe + put). Once `put` succeeds, the block
+        // exits and the errdefer no longer applies — the map owns the
+        // key. A later error in `rebuildMcpServersParsed` (OOM etc.)
+        // therefore can't double-free `key_dup` via the outer scope's
+        // errdefer.
+        // The block's only purpose is to scope the `key_dup` + `entry`
+        // ownership transfer so the `errdefer self.allocator.free(k)`
+        // is dormant after the successful `put`. The map now owns
+        // `k`; the constant is captured here only to give Zig a
+        // binding for the errdefer (which requires `k` to be a
+        // declaration in scope). We mark it `_` because we don't
+        // reference it again — the map is the owner.
+        const _key_dup = blk: {
+            const k = try self.allocator.dupe(u8, input.name);
+            errdefer self.allocator.free(k);
+            try self.mcp_servers.put(k, entry);
+            // Transfer ownership of the entry's heap-allocated fields to
+            // the map. `put` COPIES the struct value (which copies
+            // POINTERS — the map and the local `entry` now share the
+            // same duped strings). Reset the local `entry` so the outer
+            // scope's `freeMcpServerConfig` errdefer (declared earlier)
+            // is a no-op for these fields; otherwise a later error
+            // would double-free strings the map still owns.
+            entry = .{
+                .url = null,
+                .headers = McpHeadersMap.init(self.allocator),
+                .command = null,
+                .args = null,
+                .cwd = null,
+            };
+            break :blk k;
         };
+        _ = _key_dup; // owned by the map now; suppress unused-constant warning
 
         // ── 4. Rebuild mcpServers_parsed from the typed map ───────────────
         // The typed map is now authoritative — we serialize it back to a

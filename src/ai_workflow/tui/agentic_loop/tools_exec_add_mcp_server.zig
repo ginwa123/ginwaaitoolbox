@@ -29,6 +29,7 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
+const helpers = @import("helpers");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
@@ -40,10 +41,11 @@ const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // ── 1. Parse the LLM JSON args ──────────────────────────────────────
-    // The `?[]const Header` field (HTTP reserved) uses a struct that the
-    // default parser can't fill, so we parse without it and reattach it
-    // manually when present. For stdio entries (the v1 case) the field
-    // stays null — the primitive ignores it.
+    // AddMcpServerInput has a ?[]const Header field reserved for the HTTP
+    // sibling task; the default parser handles it fine (Header is a plain
+    // {name, value} struct). For stdio entries (the v1 case) the field
+    // stays null — the primitive ignores it via its own
+    // addMcpServerStdio branch.
     const parsed = std.json.parseFromSlice(
         AddMcpServerInput,
         ctx.allocator,
@@ -105,66 +107,142 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     // ── 4. Persist to disk + hot-reload `di.llm_config` ────────────────
     //
     // On any failure here the in-memory config is already updated (the
-    // agent's iteration will see the new server's tools regardless), so we
-    // log + continue rather than failing the whole tool call.
-    const persist_msg = persistAndReload(ctx, parsed.value.name) catch |err| blk: {
-        const msg = std.fmt.allocPrint(
-            ctx.allocator,
-            "config persisted to memory but disk write failed: {s}",
+    // agent's iteration will see the new server's tools regardless), so
+    // we capture the failure reason + log + continue rather than
+    // failing the whole tool call. The status string flows into the
+    // `<persisted>` block via `substitutePersistedStatus` below.
+    //
+    // `persistAndReload` ALWAYS returns an owned slice on `ctx.allocator`
+    // (allocated via `dupe` or `allocPrint`) so the caller can defer
+    // free without branching on which path produced the value.
+    const persist_status_owned = persistAndReloadStatus(ctx) catch |err| blk: {
+        std.log.warn(
+            "add_mcp_server: in-memory mutation succeeded but disk write failed: {s}",
             .{@errorName(err)},
-        ) catch "config persisted to memory but disk write failed";
-        break :blk msg;
+        );
+        break :blk ctx.allocator.dupe(u8, "false") catch @as([]u8, &[_]u8{});
     };
-    defer ctx.allocator.free(persist_msg);
+    defer ctx.allocator.free(persist_status_owned);
+    const persist_status: []const u8 = persist_status_owned;
 
-    // ── 5. Best-effort tools listing (process-level registry is OK here)
+    // ── 5. Inject the persisted status into the inner XML. ─────────────
+    //
+    // The pure-fn envelope hard-codes `<persisted>false</persisted>` as a
+    // placeholder (it doesn't know whether persistence will happen —
+    // that's the exec wrapper's responsibility). We substitute the
+    // placeholder with the actual outcome. We assume the placeholder
+    // appears EXACTLY once — the inner XML comes from
+    // `successXml` in tools/add_mcp_server.zig which builds it via a
+    // single string concatenation (no duplication).
+    //
+    // We can do a more precise substitution than "true"/"false": the
+    // placeholder is literal `<persisted>false</persisted>`. We replace
+    // it with the full `<persisted>{status}</persisted>`. When the
+    // status is just "true" or "false" this preserves the LLM-friendly
+    // exact shape; when it's "false: <reason>" it carries the failure
+    // mode so the LLM can self-correct on retry.
+    const inner_with_status = try substitutePersistedStatus(
+        ctx.allocator,
+        inner,
+        persist_status,
+    );
+    defer ctx.allocator.free(inner_with_status);
+
+    // ── 6. Best-effort tools listing (process-level registry is OK here)
     //
     // SKIP when the exec context has no environment — that's our signal
     // that we're in a unit test, where calling `StdioRegistry.global`
     // would leak arena memory through the test allocator (the global
     // registry's arena is only cleaned up in `deinitGlobal`, which the
     // test process never calls). Production callers always have an env.
-    const inner_with_tools = if (ctx.environment == null)
-        inner
+    const inner_with_status_and_tools = if (ctx.environment == null)
+        inner_with_status
     else
-        listAndAppendTools(ctx, inner, parsed.value.name) catch inner;
+        listAndAppendTools(ctx, inner_with_status, parsed.value.name) catch inner_with_status;
 
-    // ── 6. Wrap the final envelope ─────────────────────────────────────
-    const output = try wrapToolOutput(ctx.allocator, "add_mcp_server", tc.function.arguments, true, null, inner_with_tools);
+    // ── 7. Wrap the final envelope ─────────────────────────────────────
+    const output = try wrapToolOutput(ctx.allocator, "add_mcp_server", tc.function.arguments, true, null, inner_with_status_and_tools);
     return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+/// Substitute the `<persisted>false</persisted>` placeholder in the
+/// pure-fn envelope with the actual disk-write + live-reload status.
+///
+/// `inner_xml` is the pure-fn output (built by `add_mcp_server.executeAddMcpServerToString`).
+/// The placeholder appears exactly once — emitted by `successXml` via a
+/// single string concatenation. We swap the placeholder `<persisted>...</persisted>`
+/// shell with `<persisted>{status}</persisted>` where `status` is the
+/// caller-provided persist_status (typically `"true"`, `"false"`, or
+/// `"false: <reason>"`). The `status` argument is escaped via
+/// `xmlEscape` so any embedded `<` or `&` doesn't corrupt the envelope
+/// shape — the caller passes a single line of text from `persistAndReload`
+/// and we keep the whole envelope well-formed.
+///
+/// Returns a freshly-allocated slice; caller frees.
+fn substitutePersistedStatus(
+    allocator: std.mem.Allocator,
+    inner_xml: []const u8,
+    status: []const u8,
+) ![]u8 {
+    const placeholder = "<persisted>false</persisted>";
+
+    const idx = std.mem.indexOf(u8, inner_xml, placeholder) orelse {
+        // Defensive: if the pure-fn envelope shape ever drifts and the
+        // placeholder is missing, surface a clear error rather than
+        // return the unmodified XML (which would lie to the LLM by
+        // saying "persisted=false" when actually unknown).
+        return error.MissingPersistedPlaceholder;
+    };
+
+    const status_e = try helpers.xml_escape(allocator, status);
+    defer allocator.free(status_e);
+    const replacement = try std.fmt.allocPrint(allocator, "<persisted>{s}</persisted>", .{status_e});
+    defer allocator.free(replacement);
+
+    const prefix = inner_xml[0..idx];
+    const suffix_start = idx + placeholder.len;
+    const suffix = inner_xml[suffix_start..];
+    const result_len = prefix.len + replacement.len + suffix.len;
+    const result = try allocator.alloc(u8, result_len);
+    @memcpy(result[0..prefix.len], prefix);
+    @memcpy(result[prefix.len ..][0..replacement.len], replacement);
+    @memcpy(result[prefix.len + replacement.len ..][0..suffix.len], suffix);
+    return result;
 }
 
 // ───────────────────────────────────────────────────────────────────────
 // Disk persistence + live-reload helper
 // ───────────────────────────────────────────────────────────────────────
 
-/// Persist the just-added MCP server to `~/.config/nalar/config.json` and
-/// hot-reload `di.llm_config` via `setLlmConfig` so subsequent agent
-/// iterations see the new server through `buildMCPToolsRun`. Mirrors the
-/// write sequence in `nalar_config_put.zig` (PUT /api/config/nalar):
+/// Persist the live config to `~/.config/nalar/config.json` and hot-reload
+/// `di.llm_config` via `setLlmConfig` so subsequent agent iterations see
+/// the new server through `buildMCPToolsRun`. Mirrors the write sequence
+/// in `nalar_config_put.zig` (PUT /api/config/nalar):
 /// read → mutate `mcp_servers` → write → re-parse + swap `llm_config`.
 ///
-/// Returns the status string the agent sees in the `<persisted>` field
-/// (`"true"` on success, `"false: <reason>"` on failure).
-fn persistAndReload(ctx: ToolExecContext, server_name: []const u8) ![]u8 {
-    const di = nalarcore.getSingleton() catch return try ctx.allocator.dupe(u8, "false: getSingleton failed");
-    const env_ptr = di.environment orelse return try std.fmt.allocPrint(ctx.allocator, "false: environment unavailable", .{});
+/// Returns the status string the agent sees in the `<persisted>` field.
+/// The returned slice is owned by `ctx.allocator` — caller frees via
+/// `defer`. On success the slice contains `"true"`; on any failure path
+/// it contains `"false: <reason>"` (allocated via `allocPrint`).
+fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
+    const di = nalarcore.getSingleton() catch return ctx.allocator.dupe(u8, "false: getSingleton failed") catch return ctx.allocator.dupe(u8, "false") catch unreachable;
+    const env_ptr = di.environment orelse return std.fmt.allocPrint(ctx.allocator, "false: environment unavailable", .{}) catch ctx.allocator.dupe(u8, "false") catch unreachable;
     // getDefaultConfigDir takes a non-const pointer but doesn't mutate.
     const environment: *std.process.Environ.Map = @constCast(@ptrCast(env_ptr));
 
     const config_dir = config_mod.getDefaultConfigDir(ctx.allocator, environment) catch |err| {
-        return try std.fmt.allocPrint(ctx.allocator, "false: getDefaultConfigDir {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "getDefaultConfigDir", @errorName(err));
     };
     defer ctx.allocator.free(config_dir);
 
     const config_path = std.fs.path.join(ctx.allocator, &[_][]const u8{ config_dir, "config.json" }) catch |err| {
-        return try std.fmt.allocPrint(ctx.allocator, "false: path.join {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "path.join", @errorName(err));
     };
     defer ctx.allocator.free(config_path);
 
     // Ensure config dir exists.
     std.Io.Dir.cwd().createDirPath(ctx.io, config_dir) catch |err| {
-        return try std.fmt.allocPrint(ctx.allocator, "false: createDirPath {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "createDirPath", @errorName(err));
     };
 
     // Read existing on-disk config (if any) so we don't clobber siblings.
@@ -188,86 +266,106 @@ fn persistAndReload(ctx: ToolExecContext, server_name: []const u8) ![]u8 {
     // update only the `mcp_servers` field. If no existing file, write
     // a fresh JSON containing just the mcp_servers map.
     const new_body = try buildUpdatedConfigJson(ctx, existing);
+    defer ctx.allocator.free(new_body);
 
     // Write back atomically (truncate + write).
     const wfile = std.Io.Dir.createFileAbsolute(ctx.io, config_path, .{ .truncate = true }) catch |err| {
-        return try std.fmt.allocPrint(ctx.allocator, "false: createFileAbsolute {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "createFileAbsolute", @errorName(err));
     };
     var wbuf: [4096]u8 = undefined;
     {
         defer wfile.close(ctx.io);
         var writer = wfile.writer(ctx.io, &wbuf);
         writer.interface.writeAll(new_body) catch |err| {
-            return try std.fmt.allocPrint(ctx.allocator, "false: writeAll {s}", .{@errorName(err)});
+            return failStatus(ctx.allocator, "writeAll", @errorName(err));
         };
         writer.flush() catch |err| {
-            return try std.fmt.allocPrint(ctx.allocator, "false: flush {s}", .{@errorName(err)});
+            return failStatus(ctx.allocator, "flush", @errorName(err));
         };
     }
 
     // Hot-reload: re-parse + atomically swap di.llm_config.
     const env_for_reload: *std.process.Environ.Map = @constCast(@ptrCast(di.environment orelse environment));
     var new_cfg = config_mod.LlmConfig.init(di.allocator, ctx.io, null, env_for_reload) catch |err| {
-        return try std.fmt.allocPrint(ctx.allocator, "false: live reload parse {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "live reload parse", @errorName(err));
     };
     new_cfg.validate() catch |err| {
         var mut: *config_mod.LlmConfig = &new_cfg;
         mut.deinit();
-        return try std.fmt.allocPrint(ctx.allocator, "false: live reload validate {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "live reload validate", @errorName(err));
     };
     const new_ptr = di.allocator.create(config_mod.LlmConfig) catch |err| {
         var mut: *config_mod.LlmConfig = &new_cfg;
         mut.deinit();
-        return try std.fmt.allocPrint(ctx.allocator, "false: OOM {s}", .{@errorName(err)});
+        return failStatus(ctx.allocator, "OOM", @errorName(err));
     };
     new_ptr.* = new_cfg;
     nalarcore.setLlmConfig(di, new_ptr);
 
-    _ = server_name; // (used implicitly via mcp_servers in the JSON)
-    return try ctx.allocator.dupe(u8, "true");
+    return ctx.allocator.dupe(u8, "true") catch ctx.allocator.dupe(u8, "false") catch unreachable;
+}
+
+/// Build a `<persisted>false: <op> <reason></persisted>`-shaped
+/// failure status. The result is owned by `allocator` — caller frees.
+/// Falls back to a literal "false" copy on OOM (allocPrint failure) so
+/// the caller doesn't have to handle the inner failure.
+fn failStatus(allocator: std.mem.Allocator, op: []const u8, reason: []const u8) []u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "false: {s} {s}",
+        .{ op, reason },
+    ) catch allocator.dupe(u8, "false") catch unreachable;
 }
 
 /// Build the on-disk JSON body for the new config. Strategy:
 ///   - If `existing` is non-null, parse it as a generic `std.json.Value`,
-///     replace its `mcp_servers` field with the LIVE `LlmConfig.mcpServers()`,
-///     and re-serialize.
+///     copy each (key, value) pair into a fresh ObjectMap (skipping the
+///     stale `mcp_servers` entry), put the LIVE `LlmConfig.mcpServers()`
+///     under `mcp_servers`, then serialize the fresh map.
 ///   - If `existing` is null, serialize just `{"mcp_servers": ...}`.
+///
+/// Ownership rules (D2 in the plan):
+///   - The keys in the fresh map are duped strings — we free them after
+///     Stringify.valueAlloc deep-copies the structure into a serialized
+///     buffer.
+///   - The values in the fresh map are **borrowed** from either
+///     `parsed.value` (existing config) or `ctx.config.mcpServers()`
+///     (live config). ObjectMap.deinit does NOT free values, so the
+///     borrowed ObjectMap entries survive — when we serialize, the
+///     output is independent.
+///   - The borrowed source values' lifetimes are managed by the
+///     `defer parsed.deinit()` and the live-config's mirror. Neither is
+///     freed by `new_obj.deinit()`, so no use-after-free.
+///
+/// Why this avoids the F2 leak (the previous version's deep-copy-
+/// through-Stringify→parseFromSlice wasted an arena allocation +
+/// orphaned the source tree on the success path).
 fn buildUpdatedConfigJson(ctx: ToolExecContext, existing: ?[]const u8) ![]u8 {
     const allocator = ctx.allocator;
     const live_mcp_servers = ctx.config.mcpServers() orelse .null;
 
     if (existing) |body| {
-        // Parse existing as a generic Value so we can mutate just the
-        // mcp_servers key without losing siblings (active_profile,
-        // sub_agents, profiles_models, …).
+        // Parse existing as a generic Value so we can carry siblings
+        // (active_profile, sub_agents, profiles_models, …) into the
+        // new file without re-listing them by hand.
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{
             .ignore_unknown_fields = true,
         }) catch {
             // Fallback: malformed JSON → just emit mcp_servers alone.
-            return try std.json.Stringify.valueAlloc(allocator, .{
+            const serialized = try std.json.Stringify.valueAlloc(allocator, .{
                 .mcp_servers = live_mcp_servers,
             }, .{ .whitespace = .indent_tab });
+            return serialized;
         };
         defer parsed.deinit();
-
-        // Serialize + re-parse the live mcp_servers value so the new
-        // ObjectMap owns independent copies of every nested string.
-        const mcp_str = try std.json.Stringify.valueAlloc(allocator, live_mcp_servers, .{});
-        defer allocator.free(mcp_str);
-        var mcp_owned = try std.json.parseFromSlice(std.json.Value, allocator, mcp_str, .{
-            .ignore_unknown_fields = true,
-        });
-        defer mcp_owned.deinit();
 
         const root = parsed.value;
         switch (root) {
             .object => |root_obj| {
-                // Build a fresh ObjectMap by walking the existing root,
-                // replacing mcp_servers with the live copy. The original
-                // root_obj's values are borrowed from `parsed` so we
-                // must NOT free them directly — `parsed.deinit()` handles
-                // it when the scope exits. We transfer ownership of the
-                // keys (duped) into the new map; the values stay borrowed.
+                // Build the new map. Keys are duped; values are borrowed
+                // from `parsed.value` (the existing on-disk shape) or
+                // from `live_mcp_servers` (the just-updated typed map's
+                // JSON mirror — owned by ctx.config).
                 var new_obj = try std.json.ObjectMap.init(allocator, &.{}, &.{});
                 errdefer new_obj.deinit(allocator);
                 var it = root_obj.iterator();
@@ -280,13 +378,30 @@ fn buildUpdatedConfigJson(ctx: ToolExecContext, existing: ?[]const u8) ![]u8 {
                     errdefer allocator.free(key_dup);
                     try new_obj.put(allocator, key_dup, kv.value_ptr.*);
                 }
-                // Put the fresh mcp_servers entry.
-                try new_obj.put(allocator, try allocator.dupe(u8, "mcp_servers"), mcp_owned.value);
-                mcp_owned.value = .null; // ownership transferred to new_obj
+                // Live mcp_servers overrides whatever was on disk.
+                // Value is borrowed from ctx.config — no deep copy
+                // needed; Stringify.valueAlloc reads it on serialize.
+                try new_obj.put(allocator, try allocator.dupe(u8, "mcp_servers"), live_mcp_servers);
 
-                return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = new_obj }, .{
+                // Serialize FIRST (deep-copies the structure into
+                // a flat string buffer), THEN free the source map.
+                // F2 fix: the previous version's deep-copy-
+                // through-parseFromSlice orphaned new_obj + all its
+                // duped keys on the success path.
+                const serialized = try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = new_obj }, .{
                     .whitespace = .indent_tab,
                 });
+                errdefer allocator.free(serialized);
+
+                // Free the duped keys (ObjectMap.deinit doesn't).
+                // Values stay borrowed — their owners are ctx.config
+                // (mcp_servers) and parsed.value (siblings).
+                var free_it = new_obj.iterator();
+                while (free_it.next()) |kv| {
+                    allocator.free(kv.key_ptr.*);
+                }
+                new_obj.deinit(allocator);
+                return serialized;
             },
             else => {
                 // Root wasn't an object — emit a minimal config.
@@ -567,3 +682,58 @@ test "execAddMcpServer: empty name → wrapped error envelope (success=false)" {
     // No server added.
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
 }
+
+// ─── Test 4: substitutePersistedStatus replaces the placeholder correctly ─
+//
+// F1 fix regression guard. The pure-fn envelope hard-codes
+// `<persisted>false</persisted>` as a placeholder (it doesn't know the
+// disk-write outcome). This test pins the substitution contract so a
+// future drift in `successXml` (e.g., renaming the placeholder, removing
+// it, or duplicating it) gets caught here rather than silently returning
+// the wrong status to the LLM.
+test "substitutePersistedStatus: replaces placeholder with success status" {
+    const alloc = testing.allocator;
+    const inner =
+        "<add_mcp_server>" ++
+        "<name>ctx7</name>" ++
+        "<persisted>false</persisted>" ++
+        "</add_mcp_server>";
+    const result = try substitutePersistedStatus(alloc, inner, "true");
+    defer alloc.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "<persisted>true</persisted>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "<persisted>false</persisted>") == null);
+    // Sibling tags are preserved byte-for-byte.
+    try testing.expect(std.mem.indexOf(u8, result, "<name>ctx7</name>") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "</add_mcp_server>") != null);
+}
+
+test "substitutePersistedStatus: replaces placeholder with failure reason" {
+    const alloc = testing.allocator;
+    const inner =
+        "<add_mcp_server><persisted>false</persisted></add_mcp_server>";
+    const result = try substitutePersistedStatus(alloc, inner, "false: createDirPath FileNotFound");
+    defer alloc.free(result);
+
+    // `<` and `&` in the status are XML-escaped so the envelope stays
+    // well-formed even if the failure message contains reserved chars.
+    try testing.expect(std.mem.indexOf(u8, result, "<persisted>false: createDirPath FileNotFound</persisted>") != null);
+}
+
+test "substitutePersistedStatus: missing placeholder returns error" {
+    // F1 defense-in-depth: if the pure-fn envelope ever drops the
+    // `<persisted>false</persisted>` placeholder, the exec wrapper
+    // refuses to substitute a lie and surfaces an error instead.
+    const alloc = testing.allocator;
+    const inner = "<add_mcp_server><name>ctx7</name></add_mcp_server>";
+    const result = substitutePersistedStatus(alloc, inner, "true");
+    try testing.expectError(error.MissingPersistedPlaceholder, result);
+}
+
+// F6 caveat: `persistAndReloadStatus` requires `nalarcore.getSingleton()`
+// (the live ContextIPCTui) so it can't be unit-tested in isolation —
+// the path is exercised end-to-end when an LLM actually calls
+// `add_mcp_server` in production. The functional harness boots nalar
+// with a stub LLM that never responds to chat completions, so a
+// chat-driven test would have to add a fake LLM harness of its own.
+// Out of scope for this PR.

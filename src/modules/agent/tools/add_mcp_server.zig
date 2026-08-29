@@ -49,7 +49,6 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const config_mod = nalarcore.config;
 const LlmConfig = config_mod.LlmConfig;
-const McpServerConfig = LlmConfig.McpServerConfig;
 
 const helpers = @import("helpers");
 const xmlEscape = helpers.xml_escape;
@@ -241,96 +240,16 @@ pub fn executeAddMcpServerToString(
     return successXml(allocator, input, null);
 }
 
-/// Inner helper: best-effort spawn + `tools/list` roundtrip on the just-
-/// added server. Returns `null` on any failure (so the caller doesn't
-/// surface the error to the LLM — the server IS registered, the list-
-/// call is just a courtesy).
-fn listServerToolsBestEffort(
-    allocator: std.mem.Allocator,
-    config: *LlmConfig,
-    server_name: []const u8,
-) ?[]const u8 {
-    // Pull the server's typed config via the existing accessor.
-    const server: McpServerConfig = config.mcpServerConfig(server_name) orelse return null;
-
-    // Reuse the stdio client's argv builder by routing through
-    // `prompts_build_messages_for_agent_prompt.zig`'s helper. The same
-    // shape is used by `handle_mcp_tool.zig`; we keep the local copy
-    // minimal to avoid pulling the whole prompts module into this
-    // tool module (and avoid a circular dep).
-    var argv_list: std.ArrayList([]const u8) = .empty;
-    defer argv_list.deinit(allocator);
-    if (server.command) |cmd| {
-        argv_list.append(allocator, allocator.dupe(u8, cmd) catch return null) catch return null;
-    } else {
-        return null;
-    }
-    if (server.args) |a| {
-        for (a) |arg| {
-            argv_list.append(allocator, allocator.dupe(u8, arg) catch return null) catch return null;
-        }
-    }
-    const argv = argv_list.toOwnedSlice(allocator) catch return null;
-    defer {
-        for (argv) |a| allocator.free(a);
-        allocator.free(argv);
-    }
-
-    // Spawn + tools/list. Mirrors `prompts_build_messages_for_agent_prompt.zig`
-    // `fetchToolsFromServerStdio` but condensed + alloc-resilient.
-    const nalar_mod = nalarcore;
-    const mcp_stdio = nalar_mod.mcp_stdio;
-    const reg = mcp_stdio.StdioRegistry.global(allocator);
-    const client = reg.getOrSpawn(server_name, argv) catch return null;
-    const req = allocator.dupe(u8,
-        \\{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}
-    ) catch return null;
-    defer allocator.free(req);
-    client.send(req) catch return null;
-    const resp = client.recv() catch return null;
-    defer allocator.free(resp);
-
-    // Parse `result.tools[].name` and join with newlines. Best-effort
-    // — on any parse error we return null and the success envelope
-    // omits the <tools> block.
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), resp, .{
-        .ignore_unknown_fields = true,
-    }) catch return null;
-    const root = parsed.value;
-    const result_val = root.object.get("result") orelse return null;
-    const tools_val = result_val.object.get("tools") orelse return null;
-    const arr = switch (tools_val) {
-        .array => |a| a,
-        else => return null,
-    };
-
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    for (arr.items) |tool_value| {
-        const obj = switch (tool_value) {
-            .object => |o| o,
-            else => continue,
-        };
-        const name_val = obj.get("name") orelse continue;
-        const name = switch (name_val) {
-            .string => |s| s,
-            else => continue,
-        };
-        // Emit `mcp_<server>_<tool>` (matches the runtime tool name
-        // built by `buildMCPToolsRun`).
-        const line = std.fmt.allocPrint(allocator, "mcp_{s}_{s}\n", .{ server_name, name }) catch continue;
-        defer allocator.free(line);
-        buf.appendSlice(allocator, line) catch return null;
-    }
-    if (buf.items.len == 0) return null;
-    return buf.toOwnedSlice(allocator) catch null;
-}
-
 // ───────────────────────────────────────────────────────────────────────
 // XML envelopes
 // ───────────────────────────────────────────────────────────────────────
+
+// Note on the best-effort `tools/list` listing: it lives in the exec
+// wrapper (see `tools_exec_add_mcp_server.zig::listAndAppendTools`),
+// NOT the pure fn. Doing it here would call `StdioRegistry.global()`
+// from the pure fn's unit tests, polluting the global registry's
+// arena with no cleanup path (the global arena is freed only in
+// `deinitGlobal`, which tests never call).
 
 fn successXml(
     allocator: std.mem.Allocator,
@@ -405,29 +324,11 @@ fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
 // ───────────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
-const migration = @import("../../../migrations/migration.zig");
-
 const add_mcp_server_mod = @import("add_mcp_server.zig");
 
-const TestCtx = struct {
-    db: nalarcore.sqlite.SqliteBackend,
-    threaded: std.Io.Threaded,
-};
-
-fn setupTestDb() !TestCtx {
-    const alloc = testing.allocator;
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    errdefer threaded.deinit();
-    const io = threaded.io();
-    var db: nalarcore.sqlite.SqliteBackend = .{};
-    errdefer db.deinit();
-    try db.init(io, ":memory:");
-    var manager = migration.MigrationManager.init(alloc, &db);
-    defer manager.deinit();
-    try migration.registerAllMigrations(&manager);
-    try manager.runMigrations();
-    return .{ .db = db, .threaded = threaded };
-}
+// Note: no DB fixture needed — `LlmConfig.addMcpServerStdio` is a
+// pure in-memory mutation; tests construct a fresh `LlmConfig` via
+// `fixtureConfig` and never touch the database.
 
 fn fixtureConfig(allocator: std.mem.Allocator) !LlmConfig {
     return .{
