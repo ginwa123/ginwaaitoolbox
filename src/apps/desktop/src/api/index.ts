@@ -1118,6 +1118,12 @@ export interface Chat {
   session_name?: string
   status?: string
   selected_profile_model?: string
+  /// Backend wall-clock timestamp of the last `sessions.UPDATE` —
+  /// bumped by everything (agent loop, profile change, error, etc).
+  /// `ChatsList.vue` renders this as the time pill's fallback when
+  /// `last_human_touched_at` is empty (pre-Migration-082 legacy rows).
+  /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+  updated_at?: string
   /// Migration 063 — "0" / "1" opt-in for unattended mode. Always
   /// present in the GET /api/sessions response (ChatsList uses this
   /// to render the `🔁 unattended` badge).
