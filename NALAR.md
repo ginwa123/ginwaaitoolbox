@@ -11,6 +11,15 @@
 **Plan:** docs/superpowers/plans/2026-08-28-add-mcp-server-agent-tool.md
 **Branch:** worktree/add-mcp-agent-tool
 **Task:** task_1787929165057_9
+### 2026-08-29: Per-session LLM loading slider
+
+**What landed.** Each LLM session now surfaces its "still working" state as a thin yellow sliding bar at the **bottom edge of its sidebar chat row** — replacing the 9-line yellow spinner circle that used to float next to each chat name when that session's worker was running. New `SessionSlider.vue` component (one prop: `sessionId: string`; reads the existing `processingState` map via Vue inject from `App.vue:10-11`; hidden iff `!processingState[sessionId]`). CSS-only animation (`@keyframes session-slider-slide`, 1.4 s loop), respects `prefers-reduced-motion`. **Sessions are independent**: three concurrent running chats show three separate sliders in three separate rows — the sidebar is the glance view for "which sessions are alive". NOT mounted in `ChatView` or `SubAgentPeekPanel` — the sidebar row IS the one indicator for "this session is busy"; adding a duplicate slider in another surface would double-deal the same signal (design memory `design-no-redundant-loading-indicators`).
+
+**Files.** 4 files: 2 NEW (`SessionSlider.vue`, `SessionSlider.spec.ts`), 1 EDIT (`ChatsList.vue` — replaced the per-row spinner block at lines 467-475 with a single `<SessionSlider>` and added `relative overflow-hidden` to the chat-row button so the absolutely-positioned slider stays inside the rounded row boundaries), 1 doc (`docs/SPEC.md` §10.1 entry). No backend, no migration, no Zig changes, no new dependencies.
+
+**Plan:** docs/superpowers/plans/2026-08-29-bottom-loading-slider.md
+**Branch:** worktree/bottom-loading-slider
+**Task:** task_1787973036360_2
 ### 2026-08-28: MCP Streamable HTTP transport for the agent AI
 
 **What landed.** nalar's agent can now talk to MCP servers that expose a single HTTP endpoint accepting POST ([MCP Streamable HTTP spec](https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http)). The server is free to answer each request as either a single `application/json` object or a `text/event-stream` (SSE) stream carrying progress notifications + the final JSON-RPC response — the client handles both. Required request metadata headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) are emitted on every POST. stdio is untouched (backward compat). For self-testing we ship a separate **`mcp-http-hello-world`** Node binary (sibling of the existing stdio `mcp-hello-world`) per the user's "one binary per transport" preference — no `--http` flag dispatch, single-purpose, easier to reason about. Built via `zig build mcp-http-hello-world` → `zig-out/bin/mcp-http-hello-world`. Functional harness runs it as a subprocess, points `mcp_servers.url` at it, asserts the spec-compliant wire.
