@@ -326,10 +326,21 @@ const copyPreviewId = async (e: Event) => {
       data-testid="show-preview-inline-content"
       @click.stop
     >
+      <!--
+        2026-08-29: PreviewContentRenderer now emits a dedicated
+        'open-in-side-panel' event when the inline CTA strip's
+        '↗ Open in side panel' button is clicked. We re-emit the
+        existing 'open' event with our messageId so ChatView.vue's
+        `@open="openPreviewForMessage"` handler at line 3093 keeps
+        working unchanged. The renderer is also free to drop the
+        event in the future (a "click to expand" pattern, etc.) —
+        we don't depend on it.
+      -->
       <PreviewContentRenderer
         :content-type="resolvedContentType"
         :args="rendererArgs"
         variant="inline"
+        @open-in-side-panel="emit('open', messageId)"
       />
     </div>
 
