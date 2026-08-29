@@ -1189,8 +1189,9 @@ pub fn build(b: *std.Build) void {
 
     // Don't include mcp-http-hello-world in the default `zig build` —
     // it's not needed by the desktop binary. Users invoke it explicitly
-    // via `zig build mcp-http-hello-world` (or the functional test
-    // harness does so when running mcp_http_test.py).
+    // via `zig build mcp-http-hello-world`. The functional-test step
+    // picks it up via the explicit `dependOn` added further down (see
+    // where run_functional is constructed).
 
     // === Build the Vue webapp (pnpm) ===
     // Chunk 3: this step is a dependency of the desktop_exe build so the
@@ -2319,6 +2320,12 @@ pub fn build(b: *std.Build) void {
     // additionally tries to `cp` to /usr/local/bin/nalar and fails
     // on systems without write perms to /usr/local.
     run_functional.step.dependOn(b.getInstallStep());
+    // Depend on the mcp-http-hello-world build step so the HTTP
+    // test server is at zig-out/bin/mcp-http-hello-world when the
+    // functional tests run. Without this, mcp_http_test.py fails
+    // to spawn the binary. (The mcp-hello-world stdio fixture is
+    // already in the default install via line ~1116.)
+    run_functional.step.dependOn(mcp_http_hello_world_step);
 
     const functional_test_step = b.step("functional-test", "Run functional tests against a real nalar with isolated tmpdir data");
     functional_test_step.dependOn(&run_functional.step);
