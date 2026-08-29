@@ -7,6 +7,7 @@ import { useSidebarStore } from '../../stores/sidebar'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
+import SessionSlider from '../SessionSlider.vue'
 
 const router = useRouter()
 
@@ -456,7 +457,7 @@ defineExpose({
         <template #default="{ item }">
           <button
             @click="setActive(item.id)"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent"
+            class="relative w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent overflow-hidden"
             :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="
               isCurrentChat(item.id)
@@ -464,15 +465,6 @@ defineExpose({
                 : 'color: var(--semantic-text-muted);'
             "
           >
-            <span
-              v-if="item.processing === true"
-              class="w-5 h-5 flex items-center justify-center shrink-0"
-            >
-              <div
-                class="w-4 h-4 border-2 rounded-full animate-spin"
-                style="border-color: var(--color-yellow); border-top-color: transparent"
-              ></div>
-            </span>
             <span class="flex-1 text-left truncate">
               {{ item.name }}
               <span
@@ -499,6 +491,16 @@ defineExpose({
             >
               ×
             </button>
+            <!-- Per-session LLM slider at the bottom edge of this row.
+                 Hidden when this session is idle; slides while
+                 processingState[item.id] is true. Replaces the old
+                 yellow spinner (was: 16-line <span>/<div> animate-spin
+                 block). Reads processingState via Vue inject from
+                 App.vue — no prop drilling needed. -->
+            <SessionSlider
+              :session-id="item.id"
+              class="absolute left-0 right-0 bottom-0"
+            />
           </button>
         </template>
       </VirtualScroller>
