@@ -932,6 +932,43 @@ def mcp_hello_world_bin() -> Path:
     )
 
 
+def mcp_http_hello_world_bin() -> Path:
+    """Resolve the mcp-http-hello-world test MCP server binary.
+
+    Sibling of mcp_hello_world_bin() (the stdio binary). Built by
+    `zig build mcp-http-hello-world`. Same sibling-binary resolution
+    pattern — the wrapper lives at zig-out/bin/mcp-http-hello-world
+    next to mcp-hello-world-* and nalarcore-*.
+
+    Per the project convention "one binary per transport" (the HTTP
+    transport is NOT a `--http` flag on the stdio binary; it's a
+    separate sibling), this is a distinct binary with its own
+    install step.
+
+    Resolution order:
+      1. ``$MCP_HTTP_HELLO_WORLD_BIN`` env var
+      2. ``./zig-out/bin/mcp-http-hello-world`` (sibling of nalar binary)
+      3. ``./zig-out/bin/mcp-http-hello-world-linux-x86_64`` (cross-target)
+
+    Raises FunctionalHarnessError if no binary is found.
+    """
+    candidates: list[Path] = []
+    env_bin = os.environ.get("MCP_HTTP_HELLO_WORLD_BIN")
+    if env_bin:
+        candidates.append(Path(env_bin))
+    candidates.extend([
+        Path("./zig-out/bin/mcp-http-hello-world"),
+        Path("./zig-out/bin/mcp-http-hello-world-linux-x86_64"),
+    ])
+    for c in candidates:
+        if c.exists() and os.access(c, os.X_OK):
+            return c.resolve()
+    raise FunctionalHarnessError(
+        "mcp-http-hello-world binary not found; set MCP_HTTP_HELLO_WORLD_BIN "
+        "or run `zig build mcp-http-hello-world` first."
+    )
+
+
 def _wait_ready(
     port: int, timeout_s: float, proc: subprocess.Popen[bytes], log_path: Path
 ) -> None:
