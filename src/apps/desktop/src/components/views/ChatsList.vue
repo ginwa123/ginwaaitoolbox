@@ -494,13 +494,12 @@ defineExpose({
             <!-- Per-session LLM slider at the bottom edge of this row.
                  Hidden when this session is idle; slides while
                  processingState[item.id] is true. Replaces the old
-                 yellow spinner (was: 16-line <span>/<div> animate-spin
+                 yellow spinner (was: 9-line <span>/<div> animate-spin
                  block). Reads processingState via Vue inject from
-                 App.vue — no prop drilling needed. -->
-            <SessionSlider
-              :session-id="item.id"
-              class="absolute left-0 right-0 bottom-0"
-            />
+                 App.vue — no prop drilling needed. The component
+                 self-positions (absolute bottom-0), so this row's
+                 button just needs `position: relative`. -->
+            <SessionSlider :session-id="item.id" />
           </button>
         </template>
       </VirtualScroller>

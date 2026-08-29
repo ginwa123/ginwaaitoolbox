@@ -6,6 +6,7 @@ import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 import DesignPageRow from './DesignPageRow.vue'
 import type { DesignPage } from '../../api'
+import SessionSlider from '../SessionSlider.vue'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -112,19 +113,21 @@ const isCurrentMainView = computed(() => {
 })
 
 // Computed: true if any of this item's tasks is currently being processed
-// by a worker. Drives the right-side yellow spinner on the item row so
-// the user can see "this project is busy" even when the task list is
-// collapsed. Mirrors the same processingState ref the per-task spinner
-// and ChatsList already consume (App.vue provides it; key = task.id ==
-// session_id).
-const hasProcessingTask = computed(() => {
+// First processing task's id (= session_id per Migration 052 convention,
+// so it's the same key `processingState` uses). The SessionSlider reads
+// this — when null, the slider is hidden (its computed `isVisible`
+// evaluates `!!processingState[sessionId]` and falls back to false for
+// the default inject). Used to mount ONE slider at the workspace-item
+// row level when ANY task is running, replacing the old yellow spinner
+// circle.
+const firstProcessingTaskId = computed<string | null>(() => {
   const tasks = props.item.tasks
-  if (!tasks || tasks.length === 0) return false
+  if (!tasks || tasks.length === 0) return null
   const state = processingState.value
   for (const task of tasks) {
-    if (state[task.id]) return true
+    if (state[task.id]) return task.id
   }
-  return false
+  return null
 })
 
 const handleClick = () => {
@@ -529,29 +532,18 @@ const handlePinnedDrop = (event: DragEvent) => {
       <div class="flex items-center group/item">
         <button
           @click="handleClick"
-          class="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
+          class="relative flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
           :style="isCurrentMainView
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`
             : `color: var(--semantic-text-muted);`"
         >
-          <!-- Processing spinner (LLM worker is running on one of this
-               item's tasks). Sits in the LEFTMOST slot — the same
-               position the per-task row's bullet/spinner and the
-               ChatsList's processing spinner occupy — so all three
-               "busy" indicators in the sidebar live in the same
-               visual lane and a glance across the sidebar reveals
-               what's running. Same yellow ring, scaled to 4×4 to
-               match the item row's text-sm font. -->
-          <span
-            v-if="hasProcessingTask"
-            class="w-4 h-4 flex items-center justify-center shrink-0"
-            data-testid="item-processing-spinner"
-          >
-            <div
-              class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-              style="border-color: var(--color-yellow); border-top-color: transparent"
-            ></div>
-          </span>
+          <!-- Processing slider (LLM worker is running on one of this
+               item's tasks). Mounted at the bottom edge of the row,
+               self-positioning (absolute bottom-0). Replaces the old
+               yellow spinner circle that used to float on the left.
+               The slider reads processingState via the same Vue inject
+               the spinner used; visible iff firstProcessingTaskId is
+               truthy AND processingState[that id] === true. -->
           <!-- Chevron glyph (expand/collapse). Unicode right-pointing
                caret rotated -90° when expanded, matching the
                WorkspaceList chevron style for visual consistency.
@@ -602,6 +594,18 @@ const handlePinnedDrop = (event: DragEvent) => {
             class="ml-auto w-1.5 h-1.5 rounded-full"
             style="background-color: var(--color-aqua);"
             data-testid="item-active-dot"
+          />
+          <!-- Per-session LLM slider at the bottom edge of this row.
+               Self-positions (absolute bottom-0); the parent button
+               already has `position: relative` (added in the same
+               edit as the slider). Visible iff firstProcessingTaskId
+               is truthy AND processingState[that id] === true.
+               Replaces the 9-line yellow spinner circle that used to
+               occupy the leftmost slot (was lines 545-554). -->
+          <SessionSlider
+            v-if="firstProcessingTaskId"
+            :session-id="firstProcessingTaskId"
+            test-id="item-processing-spinner"
           />
         </button>
         <!-- Add Task + Delete Item buttons (show on hover). Previously
