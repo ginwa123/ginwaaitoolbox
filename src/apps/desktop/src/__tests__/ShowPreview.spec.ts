@@ -95,7 +95,16 @@ describe('ShowPreview card', () => {
     setActivePinia(createPinia())
   })
 
-  describe('inline mode (default — matches other tool outputs)', () => {
+  describe('inline mode (opt-in alternative — user toggled via PreviewSidePanel header)', () => {
+    // 2026-08-29: the DEFAULT flipped back to 'side' (was incorrectly
+    // 'inline' after the 2026-08-06 spec merged). These tests now opt INTO
+    // inline via localStorage to exercise the inline renderer. Mirror
+    // image of the side-mode describe block below. Plan:
+    // docs/superpowers/plans/2026-08-29-show-preview-inline-default-and-ux.md
+    beforeEach(() => {
+      localStorage.setItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY, 'inline')
+    })
+
     it('renders the header + inline content body with the markdown via <h1>', () => {
       const msg = makeShowPreviewMessage({
         id: 'msg-inline-1',
@@ -238,9 +247,11 @@ describe('ShowPreview card', () => {
     })
   })
 
-  describe('side mode (opt-in alternative — user toggled via PreviewSidePanel header)', () => {
+  describe('side mode (default — matches 2026-08-06 spec)', () => {
+    // 2026-08-29: 'side' is now the DEFAULT again. The beforeEach pins
+    // localStorage explicitly so the test is independent of any
+    // previous-test localStorage residue.
     beforeEach(() => {
-      // Opt into side mode for these tests (default is inline).
       localStorage.setItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY, 'side')
     })
 
@@ -362,6 +373,11 @@ describe('ShowPreview card', () => {
   // updated, so chat-bubble HTML previews render blank while the
   // same preview in the side panel renders correctly. THE BUG.
   describe('production-shape parameters (XML from jsonArgsToXml)', () => {
+    // 2026-08-29: opt into inline rendering (was the default before
+    // the show_preview default flip).
+    beforeEach(() => {
+      localStorage.setItem(PREVIEW_DISPLAY_MODE_STORAGE_KEY, 'inline')
+    })
     /**
      * Build the production-shape parameters string. This mirrors what
      * `tryUnwrapToolOutput(msg.content)?.parameters` returns AFTER one

@@ -27,6 +27,45 @@
 **Plan:** docs/superpowers/plans/2026-08-28-fix-mcp-stdio-blocking.md
 **Branch:** worktree/fix-mcp-stdio-blocking
 **Task:** task_1787930150605_0
+### 2026-08-28: `add_mcp_server` agent tool — runtime MCP registration (stdio in v1)
+
+**What landed.** nalar's agent can now **add new MCP servers at runtime** via the new `add_mcp_server` agent tool (LLM-callable, mirrors the frontend `McpServerModal` wire shape). The LLM passes `{name, transport, command, args?, cwd?}` and the tool validates the input, mutates the live `LlmConfig.mcp_servers` typed map + `mcpServers_parsed` JSON mirror (so `buildMCPToolsRun` picks up the new server's tools on the NEXT iteration's system prompt), then persists to `~/.config/nalar/config.json` and atomically swaps `di.llm_config` via `setLlmConfig` — the same write+reload sequence `PUT /api/config/nalar` already uses, just triggered by the agent instead of the settings UI. v1 covers the **stdio** transport only (per the user's "handle mcp stdio first" scope); HTTP lands in a sibling task (`task_1787928601804_8`) without changing the wire shape — the input struct already has `url` + `headers` fields reserved, gated to a clear "transport must be stdio in v1" error today. On success the tool returns the just-added server's tools via a best-effort `tools/list` JSON-RPC roundtrip (production-only — test path skips it to avoid polluting the global `StdioRegistry`); failures there DON'T fail the call (the server IS registered; the next iteration's prompt reflects the new tools regardless).
+
+**Wire shape.** `<add_mcp_server>...<persisted>true|false</persisted><tools>...</tools></add_mcp_server>` — `<persisted>` reports the disk-write outcome (separate from the in-memory mutation, which already succeeded); `<tools>` is a newline-separated list of `mcp_<server>_<tool>` names the server exposed. Errors return `<add_mcp_server><error>...</error></add_mcp_server>` for: empty name (InvalidName), empty command (InvalidCommand), duplicate name (DuplicateServer — message includes the conflicting key), or non-stdio transport (HTTP deferred to sibling task). All string fields are deep-copied; mutating the input slices after the call leaves the typed map's values untouched (regression test guards against shallow-copy).
+
+**Files.** 5 NEW + 4 EDIT (1 storage primitive in Config.zig, 1 tool module, 1 exec wrapper, 1 functional test, `root.zig` module export, `tools.zig` re-export, `tools_equipped.zig` registry entry, two test_runner.zig registrations).
+
+**Tests.** `zig build test --summary all`: 2875/2881 pass (6 skipped, 0 fail) — up from 2863/2869 baseline (+12 net new tests across 3 layers: 7 storage-primitive + 9 tool-module + 3 exec-wrapper; 0 leaks, 0 crashes). `pytest tests/functional/agent_add_mcp_server_test.py -v`: 1 new functional test passes (persistence + live-reload via the same write path the tool uses). `pytest tests/functional/mcp_stdio_test.py -v`: 6 existing pass, no regressions. `zig build nalar-desktop --summary all`: 22/22 steps succeed.
+
+**Plan:** docs/superpowers/plans/2026-08-28-add-mcp-server-agent-tool.md
+**Branch:** worktree/add-mcp-agent-tool
+**Task:** task_1787929165057_9
+### 2026-08-29: Per-session LLM loading slider
+
+**What landed.** Each LLM session now surfaces its "still working" state as a thin yellow sliding bar at the **bottom edge of its sidebar chat row** — replacing the 9-line yellow spinner circle that used to float next to each chat name when that session's worker was running. New `SessionSlider.vue` component (one prop: `sessionId: string`; reads the existing `processingState` map via Vue inject from `App.vue:10-11`; hidden iff `!processingState[sessionId]`). CSS-only animation (`@keyframes session-slider-slide`, 1.4 s loop), respects `prefers-reduced-motion`. **Sessions are independent**: three concurrent running chats show three separate sliders in three separate rows — the sidebar is the glance view for "which sessions are alive". NOT mounted in `ChatView` or `SubAgentPeekPanel` — the sidebar row IS the one indicator for "this session is busy"; adding a duplicate slider in another surface would double-deal the same signal (design memory `design-no-redundant-loading-indicators`).
+
+**Files.** 4 files: 2 NEW (`SessionSlider.vue`, `SessionSlider.spec.ts`), 1 EDIT (`ChatsList.vue` — replaced the per-row spinner block at lines 467-475 with a single `<SessionSlider>` and added `relative overflow-hidden` to the chat-row button so the absolutely-positioned slider stays inside the rounded row boundaries), 1 doc (`docs/SPEC.md` §10.1 entry). No backend, no migration, no Zig changes, no new dependencies.
+
+**Plan:** docs/superpowers/plans/2026-08-29-bottom-loading-slider.md
+**Branch:** worktree/bottom-loading-slider
+**Task:** task_1787973036360_2
+### 2026-08-28: MCP Streamable HTTP transport for the agent AI
+
+**What landed.** nalar's agent can now talk to MCP servers that expose a single HTTP endpoint accepting POST ([MCP Streamable HTTP spec](https://modelcontextprotocol.io/specification/draft/basic/transports/streamable-http)). The server is free to answer each request as either a single `application/json` object or a `text/event-stream` (SSE) stream carrying progress notifications + the final JSON-RPC response — the client handles both. Required request metadata headers (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) are emitted on every POST. stdio is untouched (backward compat). For self-testing we ship a separate **`mcp-http-hello-world`** Node binary (sibling of the existing stdio `mcp-hello-world`) per the user's "one binary per transport" preference — no `--http` flag dispatch, single-purpose, easier to reason about. Built via `zig build mcp-http-hello-world` → `zig-out/bin/mcp-http-hello-world`. Functional harness runs it as a subprocess, points `mcp_servers.url` at it, asserts the spec-compliant wire.
+
+**Wire shape.** Each MCP HTTP server maps to one cached `HttpClient` (URL + custom headers + connection pool), stored in a process-global `HttpRegistry` keyed by server name (same shape as `mcp_stdio.StdioRegistry`). All HTTP-specific code lives in **one zig file** (`src/modules/agent/mcp/mcp/mcp_http.zig`, ~750 lines with inline tests): the SSE event parser (`readSseEvent` — multi-`data:` join with `\n`, case-insensitive field names, comment-line skipping, per-spec value-strip-one-leading-space), the spec-compliant header builder (`buildMcpHeaders` — 4 always-emitted spec headers FIRST in the slice so libcurl's first-match-wins uses the spec value over a user's accidental custom override), the `HttpClient` (one POST, JSON-or-SSE response dispatch), the `HttpRegistry` (process-global, thread-safe, lazy init, arena-backed), and the `listTools` helper for the session-start tool enumeration. `handle_mcp_tool.zig` and `prompts_build_messages_for_agent_prompt.zig` lose ~140 lines of inline HTTP plumbing each and delegate to `mcp_http.HttpRegistry.getOrConnect + HttpClient.callTool/listTools`.
+
+**Spec revision target.** `2025-11-25` — the latest revision `@modelcontextprotocol/sdk` v1.30.0 actually implements. The spec page's "current" `2026-07-28` revision is not yet implemented by any SDK or client in the ecosystem; targeting it would mean our HTTP client can't talk to ANY real server today. When an SDK ships `2026-07-28`, the bump is a 1-line constant change.
+
+**Wire details discovered during TDD.** The SDK takes the spec's "MAY" (lenient) path for missing `MCP-Protocol-Version` headers — treats them as `2025-03-26`. We document this in `test_http_mcp_missing_protocol_version_is_lenient` so future client code knows the server is lenient BUT the client should still always send the header (spec-required for revisions ≥ 2025-06-18). The SDK always streams via SSE for our request shapes (not `application/json`); both shapes are supported by the client.
+
+**Files.** 15 (1 NEW backend module, 5 NEW test fixture, 1 NEW functional test, 1 NEW plan, 5 EDIT backend/build/test, 1 changelog entry). No new migration, no new config schema column, no new PUT endpoint.
+
+**Tests.** `zig build test --summary all` adds 18 new tests in `mcp_http.zig` (8 SSE parser + 4 header builder + 2 HttpClient + 3 HttpRegistry + 1 listTools) — 2873/2879 pass (6 skipped, 0 fail, 0 leak; was 2855/2861 baseline). `zig build nalar-desktop --summary all`: full desktop build succeeds. `zig build mcp-http-hello-world --summary all`: 7/7 build steps. `npm test` in `src/apps/mcp_http_hello_world`: 1/1 vitest pass. `pytest tests/functional/mcp_http_test.py -v`: 5/5 functional tests pass (direct wire roundtrip + lenient-missing-version + bogus-version-400 + nalar-config-roundtrip + nalar-http-client-against-real-server).
+
+**Plan:** docs/superpowers/plans/2026-08-28-mcp-streamable-http.md
+**Branch:** worktree/mcp-streamable-http
+**Task:** task_1787928601804_8
 
 ### 2026-08-27: MCP stdio transport for the agent AI
 

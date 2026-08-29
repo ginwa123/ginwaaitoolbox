@@ -18,35 +18,27 @@
  *   Server said: {detail}
  *
  * Purely presentational — parses props.content, no store/API access.
+ *
+ * 2026-08-29 (task_1787985074550_0): the `[Retry N/M]` prefix parse
+ * and the headline regex were extracted to
+ * `helpers/parseAgentErrorHeadline.ts` so the kanban card's hover
+ * tooltip and this card parse the same string identically. The
+ * retry-delay and server-detail regexes are still local to this
+ * component — they're only used here, no need to share.
  */
 import { computed } from 'vue'
+import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 
 const props = defineProps<{ content: string }>()
 
-// "[Retry 1/10]" → "1/10". Absent on bail diagnostics.
-const retryLabel = computed((): string | null => {
-  const m = props.content.match(/\[Retry (\d+\/\d+)\]/)
-  return m ? m[1]! : null
-})
+const parsed = computed(() => parseAgentErrorHeadline(props.content))
+const retryLabel = computed(() => parsed.value.retryLabel)
+const headline = computed(() => parsed.value.headline ?? '')
 
 // "Retrying in 10000ms" → "10000ms". Absent when formatting failed.
 const delayMs = computed((): string | null => {
   const m = props.content.match(/Retrying in (\d+ms)/)
   return m ? m[1]! : null
-})
-
-// Headline = error name + source. Handles both shapes:
-//   "... StreamInterrupted (callDynamicAgentNew). Retrying in ..."
-//   "Reason for last retry: StreamInterrupted (source: callDynamicAgentNew)."
-const headline = computed((): string => {
-  const reason = props.content.match(/Reason for last retry:\s*(.+?)\.?\s*$/m)
-  if (reason) return reason[1]!.trim()
-  // Strip the [Retry n/m] prefix and trailing sentences; keep
-  // "{error_name} ({source})".
-  const stripped = props.content.replace(/\[Retry \d+\/\d+\]\s*/, '')
-  const firstLine = stripped.split('\n')[0] ?? stripped
-  const m = firstLine.match(/^(.*?)\.\s*(Retrying|$)/)
-  return (m ? m[1]! : firstLine).trim()
 })
 
 // Everything after "Server said:" — the raw server detail (HTTP body,

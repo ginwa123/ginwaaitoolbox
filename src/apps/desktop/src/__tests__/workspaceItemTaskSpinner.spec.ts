@@ -1,7 +1,15 @@
 /**
- * Regression tests for the "task row shows no spinner while worker is
+ * Regression tests for the "task row shows no slider while worker is
  * processing" gap. WorkspaceItem must read from the same processingState
- * ref App.vue provides and show a yellow spinner on the matching row.
+ * ref App.vue provides and show a visible SessionSlider on the matching
+ * row.
+ *
+ * Updated 2026-08-29: the per-task yellow spinner circle was replaced
+ * by a SessionSlider that always renders the DOM element but toggles
+ * `aria-busy="true"` + the `session-slider--visible` class when the
+ * task is processing. These tests assert on the VISIBLE state — the
+ * hidden state renders but is `opacity: 0`, so the user can't see it
+ * and tests should count the visible ones.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -49,7 +57,13 @@ function expandItem(): void {
   ws.expandedItemIds = { ...ws.expandedItemIds }
 }
 
-describe('WorkspaceItem task spinner', () => {
+// Filter helper: only count VISIBLE sliders (those with
+// `aria-busy="true"`). The SessionSlider component renders the DOM
+// element always but toggles aria-busy + opacity to show/hide.
+const visibleSpinners = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')
+
+describe('WorkspaceItem task slider', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -63,54 +77,55 @@ describe('WorkspaceItem task spinner', () => {
     // Pinia is torn down by the next beforeEach's setActivePinia.
   })
 
-  it('shows no spinner when no task is in processingState', async () => {
+  it('shows no slider when no task is in processingState', async () => {
     const { wrapper } = mountWorkspaceItem()
     expandItem()
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    expect(visibleSpinners(wrapper)).toHaveLength(0)
   })
 
-  it('shows a spinner on the matching task when processingState[task.id] is true', async () => {
+  it('shows a slider on the matching task when processingState[task.id] is true', async () => {
     const { wrapper, processingState } = mountWorkspaceItem()
     expandItem()
     processingState.value = { task_alpha: true }
     await nextTick()
-    const spinners = wrapper.findAll('[data-testid="task-spinner"]')
-    expect(spinners).toHaveLength(1)
-    // The alpha row is the one with the spinner; the alpha name is still
-    // rendered in the row (spinner sits before the name, not in place of it).
+    expect(visibleSpinners(wrapper)).toHaveLength(1)
+    // The alpha row is the one with the slider; the alpha name is
+    // still rendered in the row (slider sits at the bottom of the
+    // row, not in place of the name).
     expect(wrapper.text()).toContain('Alpha task')
   })
 
-  it('shows spinners on multiple tasks when several are processing', async () => {
+  it('shows sliders on multiple tasks when several are processing', async () => {
     const { wrapper, processingState } = mountWorkspaceItem()
     expandItem()
     processingState.value = { task_alpha: true, task_beta: true }
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(2)
+    expect(visibleSpinners(wrapper)).toHaveLength(2)
   })
 
-  it('hides the spinner when the task is removed from processingState', async () => {
+  it('hides the slider when the task is removed from processingState', async () => {
     const { wrapper, processingState } = mountWorkspaceItem()
     expandItem()
     processingState.value = { task_alpha: true }
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(1)
+    expect(visibleSpinners(wrapper)).toHaveLength(1)
     // Worker SSE emits a 'deleted' event → App.vue clears
-    // processingState[task_alpha]. The spinner should disappear.
+    // processingState[task_alpha]. The slider should become
+    // invisible (aria-busy flips back to false).
     processingState.value = {}
     await nextTick()
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(0)
+    expect(visibleSpinners(wrapper)).toHaveLength(0)
   })
 
-  it('shows no spinner for tasks that are not in processingState', async () => {
+  it('shows no slider for tasks that are not in processingState', async () => {
     const { wrapper, processingState } = mountWorkspaceItem()
     expandItem()
     processingState.value = { task_beta: true }
     await nextTick()
-    // Alpha is not in processingState → no spinner for it, even though
-    // it sits in the list and would normally be visible.
-    expect(wrapper.findAll('[data-testid="task-spinner"]')).toHaveLength(1)
+    // Alpha is not in processingState → no visible slider for it,
+    // even though it sits in the list and would normally be visible.
+    expect(visibleSpinners(wrapper)).toHaveLength(1)
     expect(wrapper.text()).toContain('Alpha task')
     expect(wrapper.text()).toContain('Beta task')
   })

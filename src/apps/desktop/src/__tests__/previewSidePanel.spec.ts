@@ -586,14 +586,14 @@ describe('PreviewSidePanel', () => {
       expect(wrapper.find('[data-testid="preview-display-mode-inline"]').exists()).toBe(true)
     })
 
-    it('marks "Inline" as the active mode by default (matches other tool outputs)', () => {
+    it('marks "Side" as the active mode by default (matches 2026-08-06 spec; flipped back from inline on 2026-08-29)', () => {
       const wrapper = mount(PreviewSidePanel, {
         props: { previews: [makePreview()] },
       })
       const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
       const inlineBtn = wrapper.find('[data-testid="preview-display-mode-inline"]')
-      expect(sideBtn.attributes('aria-pressed')).toBe('false')
-      expect(inlineBtn.attributes('aria-pressed')).toBe('true')
+      expect(sideBtn.attributes('aria-pressed')).toBe('true')
+      expect(inlineBtn.attributes('aria-pressed')).toBe('false')
     })
 
     it('marks "Side" as the active mode when localStorage was set to "side"', () => {
@@ -608,6 +608,9 @@ describe('PreviewSidePanel', () => {
     })
 
     it('clicking "Side" flips the active mode AND persists to localStorage', async () => {
+      // 2026-08-29: pre-set localStorage to 'inline' so clicking Side
+      // is a real flip (not a no-op — Side is now the default).
+      localStorage.setItem('nalar-preview-display-mode', 'inline')
       const wrapper = mount(PreviewSidePanel, {
         props: { previews: [makePreview()] },
       })
@@ -643,16 +646,16 @@ describe('PreviewSidePanel', () => {
     })
 
     it('clicking the already-active mode is a no-op (no write storm)', async () => {
+      // 2026-08-29: 'side' is now the default (was 'inline'). Click
+      // the already-active 'Side' button — no flip, no localStorage write.
       const wrapper = mount(PreviewSidePanel, {
         props: { previews: [makePreview()] },
       })
-      const inlineBtn = wrapper.find('[data-testid="preview-display-mode-inline"]')
-      // Already 'inline' (the default) — clicking again should not
-      // change anything.
-      await inlineBtn.trigger('click')
+      const sideBtn = wrapper.find('[data-testid="preview-display-mode-side"]')
+      await sideBtn.trigger('click')
       await wrapper.vm.$nextTick()
-      expect(inlineBtn.attributes('aria-pressed')).toBe('true')
-      expect(localStorage.getItem('nalar-preview-display-mode')).not.toBe('side')
+      expect(sideBtn.attributes('aria-pressed')).toBe('true')
+      expect(localStorage.getItem('nalar-preview-display-mode')).not.toBe('inline')
     })
   })
 })

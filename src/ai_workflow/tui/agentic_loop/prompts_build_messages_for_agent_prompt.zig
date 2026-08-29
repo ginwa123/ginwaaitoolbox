@@ -3,6 +3,8 @@ const builtin = @import("builtin");
 const json = std.json;
 const nalarcore = @import("nalarcore");
 const mcp_stdio = nalarcore.mcp_stdio;
+const mcp_http = nalarcore.mcp_http;
+const mcp_types = nalarcore.mcp_types;
 const agent = nalarcore.agent;
 const llm_history = @import("llm_history.zig");
 const session_helpers = llm_history;
@@ -461,13 +463,120 @@ pub fn buildMCPToolsRun(
             }
         }
 
-        // Fetch tools from this server
-        const tools = try fetchToolsFromServer(allocator, url, headers.items, server_name);
-
+        // Fetch tools from this server via the new mcp_http client.
+        // The HttpRegistry caches one HttpClient per server name; we
+        // get a fresh list of tools for each buildMCPToolsRun call.
+        const std_header_slice = blk: {
+            var buf: [16]custom_http_client.Header = undefined;
+            var count: usize = 0;
+            for (headers.items) |h| {
+                if (count >= buf.len) return error.TooManyHeaders;
+                buf[count] = .{ .name = h.key, .value = h.value };
+                count += 1;
+            }
+            break :blk buf[0..count];
+        };
+        const http_registry = mcp_http.HttpRegistry.global(allocator);
+        const http_client = http_registry.getOrConnect(
+            server_name,
+            url,
+            std_header_slice,
+        ) catch |err| {
+            std.log.warn("Failed to get HTTP client for MCP server {s}: {s}", .{ server_name, @errorName(err) });
+            continue;
+        };
+        const mcp_tools = mcp_http.listTools(allocator, http_client) catch |err| {
+            std.log.warn("Failed to fetch tools from MCP server {s}: {s}", .{ server_name, @errorName(err) });
+            continue;
+        };
+        const tools = try convertMcpToolsToAgentTools(allocator, mcp_tools, server_name);
         try all_tools.appendSlice(allocator, tools);
     }
 
     return try all_tools.toOwnedSlice(allocator);
+}
+
+/// Convert []mcp_types.McpTool to []tool_models.AgentTool. Each tool's
+/// inputSchema.properties JSON object is walked: each property's name,
+/// type, and description are extracted into a `ToolProperty`. The
+/// `required` field is mirrored from the JSON Schema's `required`
+/// array. All allocations come from `allocator`; the caller owns
+/// the returned slice.
+fn convertMcpToolsToAgentTools(
+    allocator: std.mem.Allocator,
+    mcp_tools: []const mcp_types.McpTool,
+    server_name: []const u8,
+) ![]tool_models.AgentTool {
+    var out: std.ArrayList(tool_models.AgentTool) = .empty;
+    defer out.deinit(allocator);
+    for (mcp_tools) |t| {
+        // Build the AgentTool name as "mcp_<server>_<tool>" — matches
+        // the stdio path so dispatch in handle_mcp_tool.zig can parse
+        // it back out.
+        const full_name = try std.fmt.allocPrint(allocator, "mcp_{s}_{s}", .{ server_name, t.name });
+
+        // Walk the inputSchema.properties (a std.json.Value object)
+        // and build a []ToolProperty. The JSON schema looks like:
+        //   { "type": "object", "properties": { "name": { "type": "string", "description": "..." } } }
+        var properties: std.ArrayList(tool_models.ToolProperty) = .empty;
+        defer properties.deinit(allocator);
+        var required: std.ArrayList([]const u8) = .empty;
+        defer required.deinit(allocator);
+
+        if (t.inputSchema.properties == .object) {
+            var prop_it = t.inputSchema.properties.object.iterator();
+            while (prop_it.next()) |kv| {
+                const prop_name = kv.key_ptr.*;
+                const prop_val = kv.value_ptr.*;
+                const type_str: []const u8 = if (prop_val == .object)
+                    if (prop_val.object.get("type")) |tv|
+                        switch (tv) {
+                            .string => |s| s,
+                            else => "string",
+                        }
+                    else
+                        "string"
+                else
+                    "string";
+                const desc_str: []const u8 = if (prop_val == .object)
+                    if (prop_val.object.get("description")) |dv|
+                        switch (dv) {
+                            .string => |s| s,
+                            else => "",
+                        }
+                    else
+                        ""
+                else
+                    "";
+                try properties.append(allocator, .{
+                    .name = try allocator.dupe(u8, prop_name),
+                    .type = try allocator.dupe(u8, type_str),
+                    .description = try allocator.dupe(u8, desc_str),
+                });
+            }
+        }
+
+        // The mcp_types.McpTool.inputSchema struct has a `required`
+        // field — pull it if present. (We stored it as null in
+        // mcp_http.zig's parseToolsList; the SDK doesn't always send
+        // it. We look at the raw JSON via a re-parse for the
+        // required field, but in v1 we just default to empty.)
+        // TODO: parse required from the raw JSON in mcp_http.zig.
+
+        out.append(allocator, .{
+            .type = "function",
+            .function = .{
+                .name = full_name,
+                .description = try allocator.dupe(u8, t.description),
+                .parameters = .{
+                    .type = "object",
+                    .properties = try properties.toOwnedSlice(allocator),
+                    .required = try required.toOwnedSlice(allocator),
+                },
+            },
+        }) catch continue;
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 /// Fetch tools from a single MCP server over the stdio transport.

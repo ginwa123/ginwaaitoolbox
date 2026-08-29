@@ -36,6 +36,7 @@ import contextlib
 import dataclasses
 import json
 import os
+import random
 import shlex
 import shutil
 import signal
@@ -80,9 +81,36 @@ ALLOWED_TMP_PREFIXES: tuple[str, ...] = (
 REQUIRED_TMP_SUBSTR = "nalar-func-"
 
 #: Port range the harness will scan for a free port. Skip 8081 (the
-#: always-running dev port per project memory).
+#: always-running dev port per project memory). Used by the legacy
+#: sequential picker (``_find_free_port_sequential``); the modern
+#: ``_find_free_port`` defaults to random selection in the much larger
+#: range below.
 DEFAULT_PORT = 8080
 PORT_SCAN_END = 8199
+
+#: Random-port range used by ``_find_free_port`` (no args) and
+#: ``find_free_port_random``. IANA's "dynamic/private" port range is
+#: 49152-65535, but we extend slightly downward to 40000 to give 20,000
+#: ports of headroom. CI runners routinely hold thousands of ephemeral
+#: ports in TIME_WAIT; 20k picks with 50 random attempts gives
+#: effectively-zero collision probability for any realistic host
+#: occupancy.
+RANDOM_PORT_START = 40000
+RANDOM_PORT_END = 60000
+
+#: Number of random attempts before giving up. With 20,000 ports and
+#: ~1000 ephemeral ports in TIME_WAIT on a busy CI runner, the chance
+#: of 50 consecutive collisions is ~(1000/20000)^50 ≈ 10�⁷⁹ — safely
+#: "never happens". If a host is so loaded that this raises, the
+#: harness surfaces the failure with the actionable hint to widen the
+#: range.
+RANDOM_PORT_ATTEMPTS = 50
+
+#: Ports that the random picker MUST skip regardless of bind() success.
+#: 8081 is the always-running dev backend per project memory. The
+#: ``UIHarness`` adds 5173 (Vite's default) when calling
+#: ``find_free_port_random(reserved=...)``.
+RESERVED_PORTS: tuple[int, ...] = (8081,)
 
 
 # ============================================================================
@@ -184,11 +212,26 @@ class FunctionalHarness:
         cls,
         nalar_bin: Path | None = None,
         *,
-        port: int = DEFAULT_PORT,
+        port: int | None = None,
         ready_timeout_s: float = 30.0,
         stub_llm_profile: bool = False,
     ) -> "FunctionalHarness":
         """Boot a fresh nalar binary against an isolated tmpdir HOME.
+
+        Args:
+            nalar_bin: Path to the nalar binary. Defaults to ``$NALAR_BIN``
+                or a known zig-out path.
+            port: Backend port. ``None`` (the default) picks a **random**
+                free port from the wide ``[RANDOM_PORT_START,
+                RANDOM_PORT_END]`` range via ``find_free_port_random`` —
+                see the Port Allocation section of
+                ``tests/functional/README.md`` for why this replaced the
+                previous sequential scan. Pass an explicit integer (e.g.
+                ``port=8123``) to fall back to a sequential scan from
+                that port for backwards compat / debugging.
+            ready_timeout_s: Seconds to wait for nalar to become ready.
+            stub_llm_profile: Pre-create a stub LLM profile so the
+                backend boots without a real API key.
 
         Raises:
             FunctionalHarnessError: if HOME is unset, the tmpdir fails
@@ -204,19 +247,23 @@ class FunctionalHarness:
             )
 
         # 1.5. Reap orphan nalar pids from prior aborted runs. This MUST
-        #      run BEFORE _find_free_port() so the 8080..8199 scan sees a
+        #      run BEFORE _find_free_port() so the random pick sees a
         #      clean slate. Without this, a prior `kill -9` of the pytest
         #      worker leaves nalar children alive in their own pgids,
-        #      holding their ports — and after ~120 such incidents the
-        #      scan window is exhausted. Failures here are non-fatal: if
-        #      reap raises, print a warning and continue (a slightly
-        #      leakier state is strictly better than aborting).
+        #      holding their ports — and over time those zombies consume
+        #      random picks in the 20k window. Failures here are
+        #      non-fatal: if reap raises, print a warning and continue
+        #      (a slightly leakier state is strictly better than
+        #      aborting).
         try:
             _reap_orphan_test_pids()
         except Exception as e:
             print(f"warning: orphan reap failed: {e}", file=sys.stderr)
 
-        # 2. Pick a free port. Default 8080 per project memory (NOT 8081).
+        # 2. Pick a free port. None / no arg → random pick from the
+        #    20k-port range (see RANDOM_PORT_START..END). Explicit
+        #    int → sequential scan from that port for backward compat
+        #    with tests that want a deterministic value.
         chosen_port = _find_free_port(port)
 
         # 3. mkdtemp. Atomic, fresh, mode 0700.
@@ -583,11 +630,55 @@ class FunctionalHarness:
 # ============================================================================
 
 
-def _find_free_port(start: int = DEFAULT_PORT) -> int:
-    """Bind to 127.0.0.1:<port> and immediately close; return the port.
+def _find_free_port(start: int | None = None) -> int:
+    """Find a free port for the nalar backend.
 
-    Scans [start, PORT_SCAN_END]. Never returns 8081 (the always-running
-    dev port per project memory). Raises if no port is free.
+    Default behaviour (no ``start``): pick a random port from the wide
+    range ``[RANDOM_PORT_START, RANDOM_PORT_END]`` (40k-60k). Random
+    selection avoids the two pathologies the previous sequential scan
+    suffered in CI:
+
+      1. **Sequential consumption** — every test boot increments the
+         port number, so a long suite fills the 8080..8199 window and
+         later tests fail with "No free port found".
+      2. **TIME_WAIT saturation** — even with ``SO_REUSEADDR``, a CI
+         runner holding 100+ ports in TIME_WAIT could collide with the
+         narrow 120-port scan window.
+
+    Random selection from 20,000 ports with 50 attempts is collision-
+    proof for any realistic host occupancy (see ``RANDOM_PORT_ATTEMPTS``
+    comment).
+
+    With an explicit ``start`` (used by the orphan-reap TIME_WAIT
+    regression test): falls back to the legacy sequential scan from
+    ``start`` to ``PORT_SCAN_END``. This keeps the historical test
+    contract intact while production boots use the new random path.
+
+    Args:
+        start: If given, scan sequentially from this port to
+            ``PORT_SCAN_END`` (legacy behaviour). If ``None``, pick
+            a random port from the wide range.
+
+    Returns:
+        A free port number (never 8081).
+
+    Raises:
+        FunctionalHarnessError: If no free port can be found within
+            the configured budget.
+    """
+    if start is not None:
+        return _find_free_port_sequential(start)
+    return find_free_port_random()
+
+
+def _find_free_port_sequential(start: int) -> int:
+    """Sequential port scan from ``start`` to ``PORT_SCAN_END``. Legacy.
+
+    Kept as the explicit-call path used by
+    ``harness_orphan_reap_test.py::test_find_free_port_picks_time_wait_port``
+    which depends on the deterministic "first free port = target_port"
+    behaviour. Production boot uses ``_find_free_port()`` with no args
+    which delegates to ``find_free_port_random()``.
 
     Uses ``SO_REUSEADDR`` so the scan can pick ports in TIME_WAIT state.
     After the harness closes its probe socket, nalar (which also sets
@@ -604,15 +695,86 @@ def _find_free_port(start: int = DEFAULT_PORT) -> int:
     for port in range(start, PORT_SCAN_END + 1):
         if port == 8081:
             continue
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
+        if port_is_free_with_reuse(port):
+            return port
     raise FunctionalHarnessError(
         f"No free port found in {start}..{PORT_SCAN_END} (excluding 8081)"
+    )
+
+
+def port_is_free_with_reuse(port: int) -> bool:
+    """Return True iff ``port`` can be bound on 127.0.0.1 with SO_REUSEADDR.
+
+    Used as the atomic-free primitive by both the random picker and
+    the sequential scan. SO_REUSEADDR lets the probe bind TIME_WAIT
+    ports; the subsequent nalar/vite listener sets the same flag so
+    it can also bind the port despite lingering server-side TIME_WAITs.
+
+    Public so the ``UIHarness`` can share it without duplicating the
+    SO_REUSEADDR + bind() dance.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def find_free_port_random(
+    *,
+    reserved: tuple[int, ...] = RESERVED_PORTS,
+    attempts: int = RANDOM_PORT_ATTEMPTS,
+    range_start: int = RANDOM_PORT_START,
+    range_end: int = RANDOM_PORT_END,
+) -> int:
+    """Pick a random free port from a wide range, avoiding reserved ports.
+
+    Used by both ``FunctionalHarness.boot()`` (no args — default
+    reserved = (8081,)) and ``UIHarness`` (passes
+    ``reserved=(5173, 8081)`` to also skip Vite's default port and
+    the dev backend port).
+
+    Strategy: ``attempts`` independent random picks within
+    ``[range_start, range_end]``; the first one that binds without
+    error and isn't in ``reserved`` wins. Raises
+    ``FunctionalHarnessError`` if all attempts fail.
+
+    Args:
+        reserved: Ports the picker MUST skip even if bind() succeeds.
+            Default: ``(8081,)`` — the always-running dev backend.
+        attempts: Number of random picks before giving up. Default 50.
+        range_start: Inclusive low end of the random range. Default 40000.
+        range_end: Inclusive high end of the random range. Default 60000.
+
+    Returns:
+        A free port in ``[range_start, range_end]`` not in ``reserved``.
+
+    Raises:
+        FunctionalHarnessError: If no free port is found within
+            ``attempts`` picks. Practically unreachable on any sane host
+            (see ``RANDOM_PORT_ATTEMPTS`` docstring).
+    """
+    if range_end < range_start:
+        raise ValueError(
+            f"range_end ({range_end}) must be >= range_start ({range_start})"
+        )
+    if attempts <= 0:
+        raise ValueError(f"attempts must be > 0, got {attempts}")
+    range_size = range_end - range_start + 1
+    for _ in range(attempts):
+        port = range_start + random.randint(0, range_size - 1)
+        if port in reserved:
+            continue
+        if port_is_free_with_reuse(port):
+            return port
+    raise FunctionalHarnessError(
+        f"No free port found after {attempts} random picks in "
+        f"[{range_start}, {range_end}] (excluding reserved={reserved}). "
+        f"This host's port occupancy is pathological; widen the random "
+        f"range via find_free_port_random(range_start=, range_end=) "
+        f"or check `ss -tlnp | wc -l` for runaway listeners."
     )
 
 
@@ -770,6 +932,43 @@ def mcp_hello_world_bin() -> Path:
     )
 
 
+def mcp_http_hello_world_bin() -> Path:
+    """Resolve the mcp-http-hello-world test MCP server binary.
+
+    Sibling of mcp_hello_world_bin() (the stdio binary). Built by
+    `zig build mcp-http-hello-world`. Same sibling-binary resolution
+    pattern — the wrapper lives at zig-out/bin/mcp-http-hello-world
+    next to mcp-hello-world-* and nalarcore-*.
+
+    Per the project convention "one binary per transport" (the HTTP
+    transport is NOT a `--http` flag on the stdio binary; it's a
+    separate sibling), this is a distinct binary with its own
+    install step.
+
+    Resolution order:
+      1. ``$MCP_HTTP_HELLO_WORLD_BIN`` env var
+      2. ``./zig-out/bin/mcp-http-hello-world`` (sibling of nalar binary)
+      3. ``./zig-out/bin/mcp-http-hello-world-linux-x86_64`` (cross-target)
+
+    Raises FunctionalHarnessError if no binary is found.
+    """
+    candidates: list[Path] = []
+    env_bin = os.environ.get("MCP_HTTP_HELLO_WORLD_BIN")
+    if env_bin:
+        candidates.append(Path(env_bin))
+    candidates.extend([
+        Path("./zig-out/bin/mcp-http-hello-world"),
+        Path("./zig-out/bin/mcp-http-hello-world-linux-x86_64"),
+    ])
+    for c in candidates:
+        if c.exists() and os.access(c, os.X_OK):
+            return c.resolve()
+    raise FunctionalHarnessError(
+        "mcp-http-hello-world binary not found; set MCP_HTTP_HELLO_WORLD_BIN "
+        "or run `zig build mcp-http-hello-world` first."
+    )
+
+
 def _wait_ready(
     port: int, timeout_s: float, proc: subprocess.Popen[bytes], log_path: Path
 ) -> None:
@@ -859,8 +1058,14 @@ __all__ = [
     "FunctionalHarness",
     "FunctionalHarnessError",
     "PORT_SCAN_END",
+    "RANDOM_PORT_ATTEMPTS",
+    "RANDOM_PORT_END",
+    "RANDOM_PORT_START",
     "REQUIRED_TMP_SUBSTR",
+    "RESERVED_PORTS",
     "Response",
+    "find_free_port_random",
     "is_safe_tmp",
+    "port_is_free_with_reuse",
     "run_quick",
 ]

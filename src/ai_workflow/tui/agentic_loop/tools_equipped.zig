@@ -53,6 +53,12 @@ const update_activity_mod = nalarcore.update_activity;
 // Markdown task plan with - [ ] / - [x] checklist, persisted across iterations.
 const update_plan_mod = nalarcore.update_plan;
 const get_plan_mod = nalarcore.get_plan;
+// 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
+// LLM-callable tool that registers a new MCP server in the live config +
+// persists to disk + hot-reloads `di.llm_config` so the new server's tools
+// appear on the next iteration's system prompt. v1 is stdio-only (HTTP lands
+// in task_1787928601804_8 without changing the wire shape).
+const add_mcp_server_mod = nalarcore.add_mcp_server;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
 // 2026-08-14 — list_directory tool (Task 5 of ban-absolute-paths plan).
@@ -76,6 +82,8 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // get_plan is the read-side.
         update_plan_mod.update_plan_tool,
         get_plan_mod.get_plan_tool,
+        // 2026-08-28 — add_mcp_server agent tool (Task 5).
+        add_mcp_server_mod.add_mcp_server_tool,
         list_skills_mod.list_skills_tool,
         // list_memory_mod.list_memory_tool,
         save_memory_mod.save_memory_tool,
@@ -148,6 +156,14 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // get_plan is mostly for explicit verification.
         .{ .name = "update_plan", .exec = tools.execUpdatePlan, .tool_def = update_plan_mod.update_plan_tool },
         .{ .name = "get_plan", .exec = tools.execGetPlan, .tool_def = get_plan_mod.get_plan_tool },
+
+        // === MCP MANAGEMENT ===
+        // 2026-08-28 — add_mcp_server (Task 5 of 2026-08-28-add-mcp-server-agent-tool.md).
+        // Registers a new MCP server in the live config + persists to disk +
+        // hot-reloads `di.llm_config` so the new server's tools appear on
+        // the next iteration's system prompt. v1 supports the `stdio`
+        // transport only (HTTP lands in task_1787928601804_8).
+        .{ .name = "add_mcp_server", .exec = tools.execAddMcpServer, .tool_def = add_mcp_server_mod.add_mcp_server_tool },
 
         // === AGENT MANAGEMENT (auto-save) ===
 

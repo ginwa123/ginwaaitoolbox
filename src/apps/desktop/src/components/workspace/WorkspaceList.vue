@@ -8,6 +8,7 @@ import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
+import SessionSlider from '../SessionSlider.vue'
 
 // Bind the workspaces prop so the drag-and-drop handler can read it.
 // In <script setup>, defineProps returns a `props` object that you
@@ -172,22 +173,24 @@ const handleWorkspaceClick = (workspaceId: string) => {
   emit('toggleWorkspace', workspaceId)
 }
 
-// Pure helper: true if any task belonging to any item in this workspace
-// is currently in the global processingState map. Used by the template
-// to decide whether the workspace row's right-side slot should render
-// a yellow spinner (work in flight) or the regular item-count badge
-// (idle). O(items × tasks) per workspace per render — fine for the
-// realistic sidebar size (a few dozen items at most).
-const workspaceHasProcessingItem = (workspace: Workspace): boolean => {
+// First processing task's id across all items in this workspace
+// (= session_id per Migration 052 convention, same key `processingState`
+// uses). Returns null when nothing is running. Used to mount ONE slider
+// at the workspace-row level when ANY task is busy — replaces the
+// old yellow spinner circle that used to float on the leftmost slot.
+// Mirrors `firstProcessingTaskId` in <WorkspaceItem>.
+const firstProcessingTaskIdInWorkspace = (
+  workspace: Workspace,
+): string | null => {
   const state = processingState.value
   for (const item of workspace.items) {
     const tasks = item.tasks
     if (!tasks || tasks.length === 0) continue
     for (const task of tasks) {
-      if (state[task.id]) return true
+      if (state[task.id]) return task.id
     }
   }
-  return false
+  return null
 }
 
 const handleItemClick = (workspaceId: string, itemId: string) => {
@@ -579,7 +582,7 @@ const handleItemDragEnd = () => {
           >
         <button
           @click="handleWorkspaceClick(workspace.id)"
-          class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200"
+          class="relative flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-200"
           :style="{
             backgroundColor: 'transparent',
             color: 'var(--semantic-text-muted)',
@@ -595,23 +598,8 @@ const handleItemDragEnd = () => {
             :style="{ color: 'var(--semantic-text-dim)' }"
             aria-hidden="true"
           >≡</span>
-          <!-- Processing spinner (one of this workspace's items has a
-               task currently being run by a worker). Sits in the
-               LEFTMOST slot — the same position the per-task and
-               per-item row spinners and the ChatsList processing
-               spinner occupy — so all "busy" indicators in the
-               sidebar live in the same visual lane. Same yellow
-               ring, sized to fit the workspace row's text-sm font. -->
-          <span
-            v-if="workspaceHasProcessingItem(workspace)"
-            class="w-4 h-4 flex items-center justify-center shrink-0"
-            data-testid="workspace-processing-spinner"
-          >
-            <div
-              class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-              style="border-color: var(--color-yellow); border-top-color: transparent"
-            ></div>
-          </span>
+          <!-- (Processing spinner removed — replaced by SessionSlider
+               at the bottom of this row.) -->
           <!-- Expand/Collapse Icon -->
           <span
             class="text-xs transition-transform duration-200 w-4 flex justify-center"
@@ -629,6 +617,19 @@ const handleItemDragEnd = () => {
           >
             {{ workspace.items.length }}
           </span>
+          <!-- Per-session LLM slider at the bottom edge of this row.
+               Self-positions (the button has `relative`). Visible iff
+               firstProcessingTaskIdInWorkspace(workspace) is truthy
+               AND processingState[that id] === true. Replaces the
+               9-line yellow spinner circle that used to live at the
+               leftmost slot (was lines 605-614 in this file). Same
+               pattern as WorkspaceItem.vue's slider — just at the
+               workspace level instead of the item level. -->
+          <SessionSlider
+            v-if="firstProcessingTaskIdInWorkspace(workspace)"
+            :session-id="firstProcessingTaskIdInWorkspace(workspace)!"
+            test-id="workspace-processing-spinner"
+          />
         </button>
         <!-- Rename Workspace Button. Unicode pencil glyph (✎) instead
              of an SVG path. Still a tiny hover-only control. -->
