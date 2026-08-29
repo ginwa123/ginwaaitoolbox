@@ -38,6 +38,14 @@ const win = if (builtin.os.tag == .windows) struct {
 /// on Windows. Tests that need to pass these into the production
 /// SseManager API (which still takes `i32` everywhere) cast via
 /// `toI32` below.
+///
+/// Convention: `fds[0]` is the WRITE end (write here, read from the
+/// other side); `fds[1]` is the READ end. POSIX socketpair returns
+/// bidirectional sockets so the convention is enforced by the caller;
+/// Windows CreatePipe is unidirectional (fds[0] = read end of the
+/// returned handle), so we SWAP them here to match the POSIX caller
+/// convention. Without the swap, tests that do `write(fds[0]); read(fds[1])`
+/// would block on Windows because they're writing to a read-only end.
 pub fn createSocketPair() ![2]std.c.fd_t {
     if (comptime builtin.os.tag == .windows) {
         var fds: [2]std.c.fd_t = undefined;
@@ -45,8 +53,8 @@ pub fn createSocketPair() ![2]std.c.fd_t {
         var write_h: std.os.windows.HANDLE = undefined;
         const ok = win.CreatePipe(&read_h, &write_h, null, 4096);
         if (ok == 0) return error.PipeFailed;
-        fds[0] = @ptrCast(read_h);
-        fds[1] = @ptrCast(write_h);
+        fds[0] = @ptrCast(write_h); // Write end first (POSIX convention)
+        fds[1] = @ptrCast(read_h);  // Read end second
         return fds;
     } else {
         var fds: [2]std.c.fd_t = undefined;
