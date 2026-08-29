@@ -3371,6 +3371,60 @@ pub fn updateTaskLastHumanTouchedAt(
     try db.exec(allocator, sql, &.{ touched_at_str, task_id });
 }
 
+/// Stamp `sessions.last_human_touched_at_nano = <unix_ms>`. Sibling of
+/// `updateTaskLastHumanTouchedAt` (which targets `workspace_item_tasks`).
+/// Drives the chat sidebar's `last_human_touched_at` time pill — see
+/// `docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md`.
+///
+/// Called by every HTTP handler / workflow site that mutates a chat on
+/// behalf of a human user:
+///   - `root.zig::emit_run_agent` — the single funnel for every
+///     "user sends a message" path (chat send, kanban "create & run",
+///     kanban "Start agent", `+ Chat`). Stamps before the workflow
+///     kicks off so even an immediate agent bail leaves the stamp in
+///     place.
+///   - `session_update.zig::useCase` — when the user renames the
+///     chat, switches its profile, or toggles unattended mode.
+///   - `workflow.zig::saveRetryAttemptMessage` — "also when error
+///     too": every retry-catch / unexpected finish_reason /
+///     TooManyRetries bail sites funnel through this helper, so a
+///     single call covers all error emits.
+///
+/// Schema: `sessions.last_human_touched_at_nano INTEGER NULL`
+/// (Migration 082). We format the unix-ms integer to a string and
+/// bind via `?` per the project's SqliteBackend convention
+/// (`db.exec` only binds TEXT; see memory
+/// `sqlite-backend-exec-binds-text-only`).
+///
+/// The `now_unix_ms` arg lets callers override the stamp time (useful
+/// for tests). When null, we read the real current time via libc
+/// `gettimeofday` (Zig 0.16 removed `std.time.timestamp` per project
+/// memory `zig-0.16-stdlib-changes`).
+///
+/// `session_id.len == 0` is a no-op (returns success without touching
+/// the DB) — matches the empty-slice-as-NULL rule and protects against
+/// accidentally binding `""` as SQL NULL when a handler has a stub
+/// session_id in tests.
+pub fn updateSessionLastHumanTouchedAt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    now_unix_ms: ?i64,
+) !void {
+    if (session_id.len == 0) return;
+    const now_ms = now_unix_ms orelse unixMillisNow();
+    const touched_at_str = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{now_ms},
+    );
+    defer allocator.free(touched_at_str);
+
+    const sql =
+        "UPDATE sessions SET last_human_touched_at_nano = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ touched_at_str, session_id });
+}
+
 /// Current Unix epoch time in milliseconds. Used by
 /// `updateTaskLastHumanTouchedAt` as the default timestamp; can also
 /// be called directly by handlers that need a unix-ms stamp.
@@ -7420,6 +7474,217 @@ test "updateTaskLastHumanTouchedAt overwrites on repeated calls" {
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("500", row.values[0]);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// updateSessionLastHumanTouchedAt (Migration 082 / chat sidebar)
+// ───────────────────────────────────────────────────────────────────────
+
+test "updateSessionLastHumanTouchedAt stamps the unix-ms value on the session" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal sessions table that already declares the Migration 082
+    // column (so the writer doesn't have to run migrations in tests).
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_1', 'Hello')",
+        &.{});
+
+    const now_ms: i64 = 1_786_500_000_000;
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_1", now_ms);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1786500000000", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt with now_unix_ms=null reads the real clock" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_real', 'Real')",
+        &.{});
+
+    // Stamp with null — should read real clock and produce a recent
+    // unix-ms value (not 0, not NULL).
+    const before_ms = unixMillisNow();
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_real", null);
+    const after_ms = unixMillisNow();
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_real'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    const stamped_ms = try std.fmt.parseInt(i64, row.values[0], 10);
+    // Real-clock stamp must be within the [before, after] window
+    // (allows for clock noise — both bounds are observed times).
+    try testing.expect(stamped_ms >= before_ms);
+    try testing.expect(stamped_ms <= after_ms);
+    // And reasonably close to now — must not be 0 or null.
+    try testing.expect(stamped_ms > 1_700_000_000_000); // year 2023+
+}
+
+test "updateSessionLastHumanTouchedAt is a no-op for unknown session_id" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // No rows inserted.
+
+    // Stamping an unknown id must NOT raise — the UPDATE affects 0
+    // rows and returns success. Defensive against handler code paths
+    // where a session_id might not yet have a row (race with the
+    // INSERT in emit_run_agent).
+    try updateSessionLastHumanTouchedAt(alloc, &db, "unknown_id", 12345);
+
+    // Sanity: still zero rows.
+    var q = try db.query(alloc,
+        "SELECT COUNT(*) FROM sessions",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt is idempotent on repeated calls with the same arg" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_idem', 'Idem')",
+        &.{});
+
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_idem", 999);
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_idem", 999);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_idem'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("999", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt overwrites on repeated calls with a newer arg" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_overwrite', 'Overwrite')",
+        &.{});
+
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_overwrite", 100);
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_overwrite", 500);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_overwrite'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("500", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt skips empty session_id (no SQL bind)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+
+    // Empty session_id must be a no-op (no DB write attempted).
+    // Without this guard, `db.exec` would bind "" as SQL NULL — and
+    // since SQLite's WHERE id = NULL is always false, this would
+    // silently no-op anyway. But the guard is cheaper and clearer.
+    try updateSessionLastHumanTouchedAt(alloc, &db, "", 999);
+
+    // No row was affected. The session table is empty.
+    var q = try db.query(alloc,
+        "SELECT COUNT(*) FROM sessions",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
 }
 
 // ───────────────────────────────────────────────────────────────────────
