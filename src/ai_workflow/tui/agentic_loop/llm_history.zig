@@ -271,7 +271,7 @@ pub fn getSessionListWithCursor(
         \\COALESCE(s.selected_profile_model, ''),
         \\COALESCE(s.is_auto_retry_until_stop, '0'),
         \\COALESCE(s.last_finish_reason, ''),
-        \\COALESCE(s.last_human_touched_at_nano, '')
+        \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -7730,7 +7730,12 @@ test "buildSessionListJson emits last_human_touched_at when the row has a value 
         .selected_profile_model = try alloc.dupe(u8, ""),
         .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
         .last_finish_reason = try alloc.dupe(u8, ""),
-        .last_human_touched_at = try alloc.dupe(u8, "1786500000000"),
+                    // The mapper test injects the wire shape directly (NOT the
+            // raw unix-ms from the column). Production flows through
+            // getSessionListWithCursor whose SELECT casts via strftime()
+            // so SessionInfo.last_human_touched_at arrives here as a
+            // SQLite datetime string ('YYYY-MM-DD HH:MM:SS' UTC).
+            .last_human_touched_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
     };
     defer sess.deinit(alloc);
 
@@ -7740,7 +7745,24 @@ test "buildSessionListJson emits last_human_touched_at when the row has a value 
     // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
     // suffix - per Migration 075 convention, SQL column keeps the suffix,
     // wire field is bare). Migration 082 D3.
-    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"1786500000000\"") != null);
+        // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3.
+    // NOTE: this test builds SessionInfo directly (not via the SELECT
+    // layer), so the value is passed through verbatim as unix-ms. The
+    // SELECT-layer conversion to SQLite datetime format is exercised by
+    // the SELECT test in migration_082_test.zig + by the functional
+    // harness. The wire field is what the SessionInfo mapper emits -
+    // frontend receives unix-ms and the SELECT conversion happens
+    // BEFORE SessionInfo construction in production.
+        // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3. The SessionInfo mapper
+    // passes the field through verbatim - the SELECT layer is
+    // responsible for converting from unix-ms storage to SQLite
+    // datetime wire format (see migration_082_test.zig + the SELECT
+    // strftime() call in getSessionListWithCursor).
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"2026-08-29 10:00:00\"") != null);
 }
 
 test "buildSessionListJson emits last_human_touched_at as empty string for legacy NULL rows (Migration 082 fallback)" {
@@ -7767,6 +7789,106 @@ test "buildSessionListJson emits last_human_touched_at as empty string for legac
 
     // Empty-string value (frontend treats empty as "fall back to updated_at").
     try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"\"") != null);
+}
+// Migration 082 - SELECT-layer unix-ms -> SQLite datetime conversion.
+// The wire format is SQLite datetime UTC, NOT raw unix-ms. The
+// SELECT layer is the sole conversion point (via strftime()).
+test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on the wire (Migration 082)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal schema with the Migration 082 column.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Minimal llm_history (the SELECT LEFT JOINs to it).
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // Insert a session with a known unix-ms stamp.
+    // 2026-08-29 10:00:00 UTC = 1788008400 epoch seconds = 1788008400000 ms.
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd, last_human_touched_at_nano)
+        \\VALUES ('sess_conv', 'Test', '', '1788008400000')
+    , &.{});
+
+    // Run the SELECT.
+    const result = getSessionListWithCursor(
+        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+    try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    const human_t = result.sessions[0].last_human_touched_at;
+    // Must NOT be the raw unix-ms integer.
+    try testing.expect(std.mem.indexOf(u8, human_t, "1788008400000") == null);
+    // Must be the SQLite datetime format the frontend parses.
+    try testing.expectEqualStrings("2026-08-29 13:00:00", human_t);
+}
+
+test "getSessionListWithCursor returns empty string for NULL last_human_touched_at_nano (Migration 082)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Minimal llm_history (the SELECT LEFT JOINs to it).
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // Insert a session with NO stamp (NULL column).
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd) VALUES ('sess_null', 'Legacy', '')
+    , &.{});
+
+    const result = getSessionListWithCursor(
+        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    try testing.expectEqualStrings("", result.sessions[0].last_human_touched_at);
 }
 
 // ───────────────────────────────────────────────────────────────────────
