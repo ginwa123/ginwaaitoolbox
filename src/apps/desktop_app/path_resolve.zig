@@ -55,7 +55,32 @@ pub fn resolve(
     //    the absolute case is useful.
     if (std.fs.path.isAbsolute(self_exe_path)) {
         const self_dir = std.fs.path.dirname(self_exe_path) orelse ".";
-        const candidate = std.fs.path.join(allocator, &.{ self_dir, "nalar" }) catch return null;
+        // On Windows, the actual on-disk name has the `.exe` suffix
+        // — `std.c.access("...\nalar", F_OK)` returns ENOENT even
+        // though `...\nalar.exe` exists, because the UCRT `access`
+        // call does NOT auto-append `.exe` the way CreateProcessW
+        // does. Linux/macOS have no extension to worry about, so we
+        // hardcode the suffix per-platform rather than probing both.
+        //
+        // Build the candidate as a SINGLE `[]const u8` rather than
+        // passing the suffix as a separate component to `path.join`:
+        // `std.fs.path.join` uses `/` as the separator on every
+        // platform (including Windows — see Zig issue #16589), which
+        // would split the joined segments into
+        // `dir/nalar/.exe` → `dir\nalar\.exe` after the OS rewrites
+        // the slashes, which is interpreted as a subdirectory `nalar`
+        // containing a file named `.exe`. That file doesn't exist, so
+        // the fileExists probe returns false even though
+        // `dir\nalar.exe` is sitting right there. Concatenating
+        // `nalar` + `.exe` ourselves and passing the single
+        // `dir\nalar.exe` to `path.join` sidesteps the bug.
+        const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+        const base_name = if (exe_suffix.len > 0)
+            std.fmt.allocPrint(allocator, "nalar{s}", .{exe_suffix}) catch return null
+        else
+            allocator.dupe(u8, "nalar") catch return null;
+        defer allocator.free(base_name);
+        const candidate = std.fs.path.join(allocator, &.{ self_dir, base_name }) catch return null;
         if (fileExists(candidate)) {
             return candidate; // hand off ownership
         }
@@ -70,10 +95,27 @@ pub fn resolve(
     //    by `:` treated the whole PATH as ONE giant directory and
     //    `fileExists(<giant-path>/nalar)` always returned false,
     //    surfacing as `error.NalarNotFound` in attach.zig).
+    //
+    // Same `.exe` caveat as the next-to-self branch above: on
+    // Windows the binary on disk has the suffix, but `std.c.access`
+    // doesn't auto-append it. Without this, even a correctly
+    // tokenized PATH like `C:\vcpkg\installed\x64-windows\bin` fails
+    // its fileExists probe for `nalar` when the real file is
+    // `nalar.exe`.
+    //
+    // Same single-segment caveat as above: concatenate `nalar` +
+    // `.exe` ourselves before passing to `path.join`, otherwise
+    // `path.join` splits on `/` and produces `dir/nalar/.exe`.
     const path_separator: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+    const base_name = if (exe_suffix.len > 0)
+        std.fmt.allocPrint(allocator, "nalar{s}", .{exe_suffix}) catch return null
+    else
+        allocator.dupe(u8, "nalar") catch return null;
+    defer allocator.free(base_name);
     var it = std.mem.tokenizeScalar(u8, path_env, path_separator);
     while (it.next()) |dir| {
-        const candidate = std.fs.path.join(allocator, &.{ dir, "nalar" }) catch continue;
+        const candidate = std.fs.path.join(allocator, &.{ dir, base_name }) catch continue;
         if (fileExists(candidate)) {
             return candidate;
         }
