@@ -348,20 +348,27 @@ function emitOpenInSidePanel() {
         inline: auto-sized via the postMessage protocol in AUTO_RESIZE_SCRIPT (see <script setup>).
                  The script reports BOTH scrollHeight AND scrollWidth; the parent clamps height
                  (200-2000px) and width (320-1600px) and sets iframe.style.{height,width}
-                 accordingly. The iframe therefore renders at its CONTENT NATURAL width, even
-                 when wider than the chat column. The container has overflow-x: auto so the
-                 user gets a horizontal scrollbar to swipe through the full content inline.
+                 accordingly. The iframe renders at its CONTENT NATURAL width.
 
-                 (2026-08-29 followup: the auto-escalate-to-side-panel approach from #379 was
-                 rejected - the user wants inline rendering to actually work in the chat, no
-                 popup. See Kanban task_1787988286635_2.)
+                 2026-08-29 followup #4 (user feedback after natural-width landed):
+                 user said "cannot strect like yellow line?" — referring to the
+                 chat bubble's top edge that spans the full window. The
+                 iframe was still clipped to the chat column (~750px).
+                 The iframe-container uses the `breakout-full-viewport`
+                 utility (scoped style below) to escape ALL parent
+                 padding — chat column margins, inline content `px-3`
+                 padding, everything — and span the full viewport. The
+                 iframe is at its content width (clamped 320-1600px) with
+                 `max-w-full` so it caps at the viewport; container has
+                 `overflow-x: auto` so users scroll horizontally if the
+                 content exceeds the viewport.
     -->
 
     <div
       v-else-if="contentType === 'html' && htmlSrcDoc"
       data-testid="preview-html-container"
       :class="isInline
-        ? 'w-full rounded overflow-x-auto overflow-y-hidden border border-[var(--color-border)] bg-white'
+        ? 'breakout-full-viewport rounded overflow-x-auto overflow-y-hidden border border-[var(--color-border)] bg-white'
         : 'h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'"
     >
       <iframe
@@ -370,7 +377,7 @@ function emitOpenInSidePanel() {
         :srcdoc="htmlSrcDoc"
         :style="isInline ? iframeStyle : ''"
         :class="isInline
-          ? 'border-0 block'
+          ? 'block max-w-full border-0'
           : 'w-full h-full min-h-[480px] border-0 block'"
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
@@ -422,6 +429,34 @@ function emitOpenInSidePanel() {
 </template>
 
 <style scoped>
+/*
+ * breakout-full-viewport — 2026-08-29 followup #4.
+ *
+ * Inline HTML previews use this class on the iframe-container so the
+ * iframe escapes ALL parent padding (chat column margins, inline
+ * content `px-3` padding, etc.) and spans the FULL viewport width.
+ * Why: `show_preview` content is typically designed for ~1200-1600px
+ * wide displays; the chat column is only ~750px wide; the iframe was
+ * being clipped to the chat column. User feedback: "cannot strect
+ * like yellow line?" — referring to the chat bubble's top edge (which
+ * spans the full window). Now the iframe stretches that wide too.
+ *
+ * The classic CSS trick: set width to 100vw, then use a negative
+ * `margin-left` of half-the-difference to center the element on the
+ * viewport regardless of how deeply nested the element is.
+ *
+ * `position: relative` is defensive — some ancestor might have
+ * `overflow: hidden` (e.g. the chat column) which would clip the
+ * breakout; we can't always fix that without invasive layout changes,
+ * so this is the best-effort approach.
+ */
+.breakout-full-viewport {
+  width: 100vw;
+  margin-left: calc(50% - 50vw);
+  margin-right: calc(50% - 50vw);
+  position: relative;
+}
+
 .markdown-content :deep(pre) {
   background: var(--color-code-bg, rgba(0, 0, 0, 0.05));
   padding: 0.5rem;

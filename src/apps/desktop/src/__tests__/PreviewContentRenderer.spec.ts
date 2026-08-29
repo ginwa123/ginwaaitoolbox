@@ -339,6 +339,39 @@ describe('PreviewContentRenderer', () => {
         expect(classes).not.toContain('overflow-hidden')
       })
 
+      it('iframe container has "breakout-full-viewport" class so it spans the full viewport width', () => {
+        // 2026-08-29 followup #4 (user feedback after natural-width
+        // landed): user said "cannot strect like yellow line?" — the
+        // yellow line is the chat bubble's top edge spanning the full
+        // window. The iframe was still clipped to the chat column
+        // (~750px). The `breakout-full-viewport` class uses the classic
+        // 100vw + negative-margin trick to span the full viewport
+        // regardless of parent padding.
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: 'html',
+            args: { content: '<h1>x</h1>' },
+            variant: 'inline',
+          },
+        })
+        const container = wrapper.find('[data-testid="preview-html-container"]')
+        const classes = container.attributes('class') ?? ''
+        expect(classes).toContain('breakout-full-viewport')
+      })
+
+      it('side variant does NOT use breakout (panel is already full-width)', () => {
+        const wrapper = mount(PreviewContentRenderer, {
+          props: {
+            contentType: 'html',
+            args: { content: '<h1>x</h1>' },
+            variant: 'side',
+          },
+        })
+        const container = wrapper.find('[data-testid="preview-html-container"]')
+        const classes = container.attributes('class') ?? ''
+        expect(classes).not.toContain('breakout-full-viewport')
+      })
+
       it('does NOT auto-emit "open-in-side-panel" when iframe reports wide content (user feedback: no popup)', async () => {
         // The user explicitly said "inline keep in the chat messages,
         // no need popup side". So no auto-escalation — wide content
