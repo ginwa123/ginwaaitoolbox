@@ -219,6 +219,41 @@ jobs:
           & $pwshExe -NoProfile -Command ('$PSVersionTable.PSVersion.ToString()') | Write-Host
           $global:LASTEXITCODE = 0
 
+      - name: "Install Git for Windows (provides bash) for shell: bash steps"
+        if: runner.os == 'Windows'
+        # The `shell: bash` directive on Windows resolves to
+        # `C:\Program Files\Git\bin\bash.exe`. If Git for Windows
+        # isn't installed at that exact path, every Windows step
+        # with `shell: bash` fails immediately with
+        # `bash: command not found`.
+        #
+        # We use winget's Git.Git package (same source the rest of
+        # the workflow uses for ripgrep / MSVC Build Tools) instead
+        # of downloading from git-scm.com directly so the install
+        # goes through the runner service's package DB. The default
+        # install path is `C:\Program Files\Git\` -- the canonical
+        # location that the `shell: bash` directive looks at.
+        #
+        # Idempotent: if Git is already installed at the canonical
+        # path, we just add it to PATH and skip the install. The
+        # step uses `shell: powershell` (5.1, always on PATH) so
+        # the bootstrap ordering is independent of the pwsh
+        # bootstrap step above.
+        shell: powershell
+        run: |
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (Test-Path -LiteralPath $gitBash) {
+            Write-Host "ok Git Bash already at $gitBash"
+          } else {
+            Write-Host "Installing Git for Windows..."
+            winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
+          }
+          $gitBin = Split-Path -Parent $gitBash
+          $env:PATH = $gitBin + ';' + $env:PATH
+          Add-Content -Path $env:GITHUB_PATH -Value $gitBin
+          & $gitBash --version | Write-Host
+          $global:LASTEXITCODE = 0
+
       - name: Install system dependencies (Arch)
         if: runner.os == 'Linux'
         # Arch self-hosted runner: the package set is pre-installed on the
