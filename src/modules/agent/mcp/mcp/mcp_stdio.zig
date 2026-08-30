@@ -994,38 +994,54 @@ test "fd: failed spawn does not leak FDs (20 attempts at missing binary)" {
 // The single-thread `testing.io` makes deadline tests use real wall time —
 // no virtual clock. Slack tolerance per test is documented in a comment.
 
-/// Argv for a child that runs ~60s (well past any test deadline).
-/// POSIX: `sleep 60`; Windows: `timeout /T 60 /NOBREAK`. The child
-/// stays alive but never writes to stdout, so any recv() against it
-/// will block on the first byte read.
-fn hung_argv() []const []const u8 {
+/// Argv for a child that exits (closes stdout) AFTER a bounded delay
+/// longer than the test's recv deadline but shorter than the test's
+/// slack window. POSIX: `sh -c "sleep 0.6"`; Windows:
+/// `cmd.exe /C "timeout /T 1 /NOBREAK"`. Use this for tests that
+/// assert `recv` returns within `deadline + slack` — see
+/// `"recv returns RecvTimeout when child never responds"` for the
+/// full rationale (truly-hung children block forever on the
+/// first-byte read because Zig 0.16's readSliceShort has no
+/// portable deadline integration).
+fn eventually_closes_argv() []const []const u8 {
     return if (builtin.os.tag == .windows)
-        &.{ "cmd.exe", "/C", "timeout", "/T", "60", "/NOBREAK" }
+        &.{ "cmd.exe", "/C", "timeout", "/T", "1", "/NOBREAK" }
     else
-        &.{ "sleep", "60" };
+        &.{ "sh", "-c", "sleep 0.6" };
 }
 
 test "recv returns RecvTimeout when child never responds" {
-    // 500ms deadline. The hung child never writes anything, so the
+    // 500ms deadline. The child never writes anything, so the
     // first-byte read either blocks until the deadline (the path
-    // we want to test) or returns EOF if the child closes stdout.
-    // Either is a valid timeout-bounded outcome — we accept both.
-    //
-    // The test asserts that the recv completes within
+    // we want to test) or returns EOF when the child finally exits
+    // and closes stdout. Either is a valid timeout-bounded outcome —
+    // we accept both. The test asserts that the recv completes within
     // `deadline + slack` (700ms — 200ms for thread wake-up jitter
     // on slow CI runners). A NON-bounded recv (hanging past the
     // deadline) fails this test via the zig test runner's hang
     // detector.
     //
-    // `cat` is the test's "hung child" — it spawns, holds the pipe
-    // open, but doesn't write anything. Confirmed empirically to keep
-    // stdout open (vs. `sleep 60` which on some kernels closes
-    // stdout due to a libc-init quirk). See plan 2026-08-28 for
-    // the original `sleep` discussion.
+    // WHY NOT A TRULY-HUNG CHILD: Zig 0.16's `readSliceShort` is a
+    // single blocking syscall with no portable deadline integration
+    // (see readFramed's known-limitation note above). A child that
+    // never closes stdout (e.g. `cat`, `pause` on Windows, `sleep 60`
+    // on most kernels) leaves the parent blocked on the first byte
+    // forever — there's no way to recover without a watchdog thread
+    // or platform-specific `posix.poll` / `WaitForSingleObject`. The
+    // proper bounded first-byte fix is tracked in a follow-up plan.
+    //
+    // WORKAROUND: use a child that exits (and closes stdout) AFTER
+    // the deadline elapses, but BEFORE the test's 700ms slack window.
+    // POSIX: `sh -c "sleep 0.6"` — sh owns the pipe, so even if
+    // sleep's libc-init prematurely closes its inherited stdout ref
+    // (the kernel quirk that killed `sleep 60`), sh still holds a ref
+    // and the pipe stays open until sh exits ~600ms later.
+    // Windows: `cmd /C "timeout /T 1"` — Windows `timeout` waits 1s
+    // then exits; it's a CMD builtin so no spawn-arg quoting issues.
     const argv: []const []const u8 = if (builtin.os.tag == .windows)
-        &.{ "cmd.exe", "/C", "pause" }
+        &.{ "cmd.exe", "/C", "timeout", "/T", "1", "/NOBREAK" }
     else
-        &.{ "sh", "-c", "exec cat" };
+        &.{ "sh", "-c", "sleep 0.6" };
     var client = StdioClient.init(testing.allocator, testing.io, argv) catch |err| {
         if (err == error.ChildSpawnFailed) return;
         return err;
@@ -1042,7 +1058,7 @@ test "recv returns RecvTimeout when child never responds" {
     // Either error is acceptable — both prove the recv is bounded.
     // RecvTimeout: the deadline check fired (preferred).
     // UnexpectedEof: the kernel saw the child close stdout first
-    //   (acceptable, just means the test child isn't perfectly hung).
+    //   (~600ms via `sleep 0.6`, well within the 700ms slack).
     try testing.expect(result == error.RecvTimeout or result == error.UnexpectedEof);
     // Slack 200ms above the 500ms deadline.
     try testing.expect(elapsed_ms < 700);
