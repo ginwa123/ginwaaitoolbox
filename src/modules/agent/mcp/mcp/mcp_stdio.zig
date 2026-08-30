@@ -318,6 +318,11 @@ pub const StdioClient = struct {
     child: std.process.Child,
     stdin: ?std.Io.File,
     stdout: ?std.Io.File,
+    /// stderr pipe — captured so diagnostic callers (e.g. mcp_test.zig's
+    /// cold-start probe) can read the child's crash/exit messages. Most
+    /// production callers ignore this. Read with non-blocking recv semantics
+    /// when used.
+    stderr: ?std.Io.File,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -328,11 +333,16 @@ pub const StdioClient = struct {
         // env override — Zig 0.16's std.process.spawn has no clean .env_map
         // setter. v1 inherits the parent's env; a future v2 can pre-fork +
         // execve with a custom env_map. (Pitfall #6 in plan.)
+        //
+        // stderr is .pipe (was .ignore) so the cold-start diagnostic probe
+        // in mcp_test.zig can surface the child's error output when the
+        // SDK crashes during bootstrap on slow CI. Cost: one extra pipe FD
+        // per cached child until the registry cleans up; ~0 overhead.
         const child = std.process.spawn(io, .{
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
-            .stderr = .pipe, // ignore stderr for v1 (Pitfall #3 in plan)
+            .stderr = .pipe,
         }) catch return StdioError.ChildSpawnFailed;
 
         return .{
@@ -341,6 +351,7 @@ pub const StdioClient = struct {
             .child = child,
             .stdin = child.stdin,
             .stdout = child.stdout,
+            .stderr = child.stderr,
         };
     }
 

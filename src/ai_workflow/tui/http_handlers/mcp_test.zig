@@ -257,14 +257,48 @@ fn testStdio(
     // cold start), 1s on retries (SDK bootstrap is done by now).
     // Worst-case latency:
     //   ~10s + 19 × (500ms sleep + 1s deadline) ≈ 38.5s.
+    //
+    // Diagnostic capture: each attempt's stderr is drained
+    // (non-blocking) so when the test fails the response body
+    // includes the SDK's actual error message. CI runners swallow
+    // server stderr; we surface it through the JSON wire.
+    //
+    // Storage: `stderrs_buf[i]` holds heap-allocated slices from
+    // drainStderr (the @errorName(err) case uses allocator.dupe too,
+    // so the buffer is uniformly heap-allocated). `freeStderrs`
+    // releases them before the diagnostic string is copied into
+    // `out_err_detail` (which is allocated via the testStdio
+    // allocator param and freed by the caller).
+    var attempts_codes: [20 * 8]u8 = undefined;
+    var stderrs_buf: [20][]const u8 = .{""} ** 20;
+    var attempts_used: usize = 0;
+
+    // `recordAttempt` appends the attempt's outcome to the diagnostic
+    // buffers. Called from each `catch` block; heap-allocates the
+    // stderr slice if drainStderr captured any bytes.
+    // Helper to append one attempt's outcome to the diagnostic
+    // buffers. Returns false if the buffer is full (20 cap).
+    const freeStderrs = struct {
+        fn call(a: std.mem.Allocator, stderrs: []const []const u8, count: usize) void {
+            for (stderrs[0..count]) |s| a.free(s);
+        }
+    }.call;
+
     var attempt: u8 = 1;
     while (true) : (attempt += 1) {
         const client = reg.getOrSpawn(preview_name, argv) catch |err| {
             logger.warnFmt("[mcp_test] stdio spawn failed for command '{s}': {s}", .{ req.command, @errorName(err) });
+            const msg = std.fmt.allocPrint(allocator, "spawn:{s}", .{@errorName(err)}) catch null;
+            freeStderrs(allocator, &stderrs_buf, attempts_used);
+            out_err_detail.* = msg;
             return TestError.SpawnFailed;
         };
 
-        const stdin_file = client.stdin orelse return TestError.SendFailed;
+        const stdin_file = client.stdin orelse {
+            freeStderrs(allocator, &stderrs_buf, attempts_used);
+            out_err_detail.* = std.fmt.allocPrint(allocator, "no_stdin", .{}) catch null;
+            return TestError.SendFailed;
+        };
 
         // Send the full MCP handshake in ONE write. The SDK reads
         // stdin as line-delimited JSON — each `\n` ends a message.
@@ -275,11 +309,40 @@ fn testStdio(
             allocator,
             "{s}{s}{s}",
             .{ init_body, initialized_body, tools_list_body },
-        ) catch return TestError.OutOfMemory;
+        ) catch {
+            freeStderrs(allocator, &stderrs_buf, attempts_used);
+            return TestError.OutOfMemory;
+        };
         defer allocator.free(full_payload);
         std.Io.File.writeStreamingAll(stdin_file, io, full_payload) catch |err| {
             logger.warnFmt("[mcp_test] stdio send failed: {s}", .{@errorName(err)});
-            return TestError.SendFailed;
+            if (attempts_used < 20) {
+                const stderr_dup = allocator.dupe(u8, @errorName(err)) catch
+                    allocator.dupe(u8, "OOM") catch unreachable;
+                @memcpy(attempts_codes[attempts_used * 8 ..][0..2], "SF");
+                @memset(attempts_codes[attempts_used * 8 + 2 ..][0..6], ' ');
+                stderrs_buf[attempts_used] = stderr_dup;
+                attempts_used += 1;
+            }
+            if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.SendFailed) {
+                reg.markStale(preview_name);
+                const detail = formatAttemptsDetail(
+                    allocator,
+                    @errorName(err),
+                    attempts_used,
+                    &attempts_codes,
+                    &stderrs_buf,
+                ) catch null;
+                freeStderrs(allocator, &stderrs_buf, attempts_used);
+                out_err_detail.* = detail;
+                return TestError.SendFailed;
+            }
+            reg.markStale(preview_name);
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
+                io,
+            ) catch {};
+            continue;
         };
 
         // Read the initialize response (1st response). If we get
@@ -289,9 +352,29 @@ fn testStdio(
         else
             1_000 * std.time.ns_per_ms;
         const init_resp = client.recv(init_deadline_ns, null) catch |err| {
+            if (attempts_used < 20) {
+                const code: []const u8 = switch (err) {
+                    error.UnexpectedEof => "EOF",
+                    error.RecvTimeout => "TO",
+                    else => "ERR",
+                };
+                const stderr_msg = drainStderr(allocator, io, client.stderr);
+                @memcpy(attempts_codes[attempts_used * 8 ..][0..code.len], code);
+                @memset(attempts_codes[attempts_used * 8 + code.len ..][0..8 - code.len], ' ');
+                stderrs_buf[attempts_used] = stderr_msg;
+                attempts_used += 1;
+            }
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
                 reg.markStale(preview_name);
-                out_err_detail.* = allocator.dupe(u8, @errorName(err)) catch null;
+                const detail = formatAttemptsDetail(
+                    allocator,
+                    @errorName(err),
+                    attempts_used,
+                    &attempts_codes,
+                    &stderrs_buf,
+                ) catch null;
+                freeStderrs(allocator, &stderrs_buf, attempts_used);
+                out_err_detail.* = detail;
                 return TestError.RecvFailed;
             }
             logger.warnFmt(
@@ -314,9 +397,29 @@ fn testStdio(
         else
             1_000 * std.time.ns_per_ms;
         const tools_resp = client.recv(tools_deadline_ns, null) catch |err| {
+            if (attempts_used < 20) {
+                const code: []const u8 = switch (err) {
+                    error.UnexpectedEof => "EOF",
+                    error.RecvTimeout => "TO",
+                    else => "ERR",
+                };
+                const stderr_msg = drainStderr(allocator, io, client.stderr);
+                @memcpy(attempts_codes[attempts_used * 8 ..][0..code.len], code);
+                @memset(attempts_codes[attempts_used * 8 + code.len ..][0..8 - code.len], ' ');
+                stderrs_buf[attempts_used] = stderr_msg;
+                attempts_used += 1;
+            }
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
                 reg.markStale(preview_name);
-                out_err_detail.* = allocator.dupe(u8, @errorName(err)) catch null;
+                const detail = formatAttemptsDetail(
+                    allocator,
+                    @errorName(err),
+                    attempts_used,
+                    &attempts_codes,
+                    &stderrs_buf,
+                ) catch null;
+                freeStderrs(allocator, &stderrs_buf, attempts_used);
+                out_err_detail.* = detail;
                 return TestError.RecvFailed;
             }
             logger.warnFmt(
@@ -335,11 +438,78 @@ fn testStdio(
         // Parse result.tools[] from the 2nd response.
         const tools = parseToolsList(allocator, tools_resp) catch |err| {
             logger.warnFmt("[mcp_test] stdio response parse failed: {s}", .{@errorName(err)});
+            freeStderrs(allocator, &stderrs_buf, attempts_used);
             return TestError.JsonParseFailed;
         };
 
+        // Success — free the collected stderrs (diagnostic only).
+        freeStderrs(allocator, &stderrs_buf, attempts_used);
         return .{ .transport = "stdio", .tools = tools };
     }
+}
+
+/// Drain whatever is available on the child's stderr pipe.
+/// ALWAYS returns a HEAP-allocated slice (caller frees),
+/// even when the pipe is empty or the read failed. Truncated at 4
+/// KiB to keep the response body small.
+fn drainStderr(allocator: std.mem.Allocator, io: std.Io, stderr: ?std.Io.File) []u8 {
+    // Always heap-allocate so the caller can uniformly `free` the
+    // returned slice. The empty fallback is also heap so `free` is
+    // safe even when no bytes were captured.
+    const empty = allocator.dupe(u8, "") catch allocator.dupe(u8, "") catch unreachable;
+    const f = stderr orelse return empty;
+    var buf: [4096]u8 = undefined;
+    var reader = std.Io.File.reader(f, io, &buf);
+    // Single-shot non-blocking-ish read: read whatever is in the
+    // kernel pipe buffer RIGHT NOW. If the child crashed, we get
+    // whatever was in flight (1-2 lines of error message). If the
+    // child is alive and writing, we may block briefly — but at
+    // the point we call this the cold-start probe has already
+    // detected the child is dead (EOF on stdout), so blocking on
+    // stderr is bounded by the kernel pipe buffer (~64 KiB).
+    const n = std.Io.Reader.readSliceShort(&reader.interface, &buf) catch return empty;
+    if (n == 0) return empty;
+    return allocator.dupe(u8, buf[0..n]) catch empty;
+}
+
+/// Build a JSON-formatted diagnostic string for the failed
+/// response body. Format:
+///   "<last-error>|attempt N/M codes=[<8-char codes>]|stderr=[<last stderr>]"
+/// Compact, single-line, escaped for JSON embedding. Truncated
+/// to keep the response body under 8 KiB.
+fn formatAttemptsDetail(
+    allocator: std.mem.Allocator,
+    last_err: []const u8,
+    attempts_used: usize,
+    attempts_codes: []const u8,
+    stderrs: []const []const u8,
+) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, last_err);
+    try buf.appendSlice(allocator, "|attempts=");
+    var n_buf: [16]u8 = undefined;
+    const n_str = std.fmt.bufPrint(&n_buf, "{d}", .{attempts_used}) catch "?";
+    try buf.appendSlice(allocator, n_str);
+    try buf.appendSlice(allocator, "/");
+    const m_buf: [16]u8 = undefined;
+    _ = m_buf;
+    const m_str = std.fmt.bufPrint(&n_buf, "{d}", .{attempts_codes.len / 8}) catch "?";
+    try buf.appendSlice(allocator, m_str);
+    try buf.appendSlice(allocator, " codes=[");
+    const codes_text = attempts_codes[0 .. attempts_used * 8];
+    for (codes_text, 0..) |c, i| {
+        if (i > 0 and i % 8 == 0) try buf.append(allocator, ' ');
+        try buf.append(allocator, c);
+    }
+    try buf.appendSlice(allocator, "]");
+    if (attempts_used > 0) {
+        try buf.appendSlice(allocator, "|last_stderr=");
+        const last = stderrs[attempts_used - 1];
+        const truncated = if (last.len > 512) last[0..512] else last;
+        try buf.appendSlice(allocator, truncated);
+    }
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Try an HTTP candidate: POST `tools/list` to the URL with the

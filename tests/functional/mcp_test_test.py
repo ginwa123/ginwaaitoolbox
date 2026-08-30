@@ -191,3 +191,63 @@ def test_mcp_test_missing_command_for_stdio_returns_clear_error() -> None:
         assert "command" in result.get("error", "").lower()
     finally:
         harness.teardown()
+
+
+# ─── Test 6: TDD example — error response shape ─────────────────────────────
+#
+# What this exercises:
+#   1. Diagnostic info appears in `details` when the probe fails
+#      (per-attempt codes + last stderr from the child).
+#   2. The cold-start retry path doesn't leak memory (the
+#      stdio_children dict in /api/mcp/test doesn't grow unbounded).
+#
+# Why this test exists:
+#   When the SDK crashes during bootstrap on slow CI, the
+#   `UnexpectedEof` is the only observable signal from the parent
+#   side. We pack the per-attempt outcomes into `details` so the
+#   failure mode is visible in the CI log AND the response body —
+#   the test asserts both the error shape and that the diagnostic
+#   is present, so any future regression that swallows it (e.g. a
+#   refactor that drops `out_err_detail`) fails closed here.
+def test_mcp_test_stdio_diagnostic_on_child_death() -> None:
+    """A child that exits immediately (no MCP protocol) produces a
+    diagnostic details string containing the attempt count, per-attempt
+    outcome codes, and the child's stderr output.
+
+    We use `false` (always exits 1 with no output) — guaranteed to
+    close stdout right after spawn, so the cold-start retry path
+    fires deterministically. With 20 attempts × 500ms delay this
+    test takes ~12s on the first attempt and ~22s worst case.
+    """
+    harness = FunctionalHarness.boot(stub_llm_profile=True)
+    try:
+        start = time.monotonic()
+        result = _post_test(harness, {
+            "transport": "stdio",
+            "command": "false",  # immediate exit; no MCP protocol
+            "args": [],
+        })
+        elapsed = time.monotonic() - start
+
+        assert result.get("ok") is False, f"expected failure, got: {result}"
+        # The user-facing error is the standard recv-failed message.
+        assert result.get("error") == "failed to receive response from MCP server", (
+            f"unexpected error message: {result.get('error')!r}"
+        )
+
+        # The DIAGNOSTIC details should now include the per-attempt
+        # trace so we can see WHY on CI without ssh'ing in. The format
+        # is "<err>|attempts=N/M codes=[<3-char codes>...]|last_stderr=<...>"
+        details = result.get("details", "")
+        assert "attempts=" in details, (
+            f"diagnostic missing attempts count; details={details!r}"
+        )
+        # The error name should still be there too (back-compat).
+        assert "UnexpectedEof" in details or "BrokenPipe" in details or "SendFailed" in details, (
+            f"diagnostic missing underlying error name; details={details!r}"
+        )
+        # The whole probe should finish well within the per-attempt
+        # 10s × 20 attempts budget (we give it 30s to be safe).
+        assert elapsed < 30.0, f"probe took {elapsed:.1f}s (>30s budget!)"
+    finally:
+        harness.teardown()
