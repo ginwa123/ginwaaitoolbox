@@ -222,37 +222,28 @@ fn testStdio(
     // request sits in the kernel pipe buffer unread, the SDK never
     // sees it, and our deadline fires on an empty stdout → EOF.
     //
-    // Two-layer fix:
-    //   1. PROACTIVE sleep after spawn (this loop's first iteration
-    //      only) — 150ms gives the SDK enough time to finish
-    //      `mcp.connect(transport)` + attach the `'data'` listener
-    //      on the common path. This eliminates the race for ~95%
-    //      of CI runners.
-    //   2. REACTIVE retry on UnexpectedEof — if the proactive sleep
-    //      wasn't enough (slow CI runner that day), drop the cached
-    //      client via `markStale`, sleep `TEST_STDIO_RETRY_DELAY_MS`,
-    //      respawn, retry. Up to `TEST_STDIO_MAX_ATTEMPTS` attempts.
+    // Fix: try once, and on `UnexpectedEof` specifically, drop the
+    // (now-dead) cached client via `markStale` + sleep briefly +
+    // retry. Up to TEST_STDIO_MAX_ATTEMPTS attempts.
     //
     // Per-attempt deadline: 10s on the first attempt (covers normal
     // cold start), 1s on retries (the SDK is either already up or
     // it's never going to respond — fail fast to keep the user-facing
     // worst-case bounded at ~3.2s even with 3 attempts).
+    //
+    // NOTE: a proactive pre-write sleep was tried and made things
+    // WORSE — on slow CI the sleep gave the child time to fully
+    // bootstrap then exit on some internal Node.js lifecycle race,
+    // surfacing as SendFailed instead of UnexpectedEof. The retry
+    // approach (no proactive sleep) handles the cold-start race
+    // because the respawn + sleep gives the new child the same
+    // bootstrap window that the proactive sleep would have.
     var attempt: u8 = 1;
     while (true) : (attempt += 1) {
         const client = reg.getOrSpawn(preview_name, argv) catch |err| {
             logger.warnFmt("[mcp_test] stdio spawn failed for command '{s}': {s}", .{ req.command, @errorName(err) });
             return TestError.SpawnFailed;
         };
-
-        // Proactive cold-start wait. Only on the first attempt —
-        // subsequent attempts already paid the price in the previous
-        // iteration's retry sleep, so waiting again is just latency.
-        if (attempt == 1) {
-            std.Io.Clock.Duration.sleep(
-                .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
-                io,
-            ) catch {};
-        }
 
         // Direct write to stdin — bypass the Content-Length framing
         // in `client.send`. The @modelcontextprotocol/sdk reads
@@ -269,9 +260,9 @@ fn testStdio(
 
         // First attempt: full TEST_STDIO_TIMEOUT_MS (10s) per the
         // /api/mcp/test probe's user-facing contract. Retries: 1s
-        // each — the SDK bootstrap is done by now (we waited 150ms
-        // before the write, and any further delay is just a slow
-        // child that's not coming back.
+        // each — the SDK bootstrap is done by now (we waited
+        // TEST_STDIO_RETRY_DELAY_MS before the next spawn, and any
+        // further delay is just a slow child that's not coming back).
         const deadline_ns: u64 = if (attempt == 1)
             TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms
         else
