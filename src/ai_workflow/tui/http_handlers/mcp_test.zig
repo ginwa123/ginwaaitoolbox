@@ -78,19 +78,20 @@ const TEST_STDIO_TIMEOUT_MS: u64 = 10_000;
 /// stdin listener. On macOS the race window is wider than on Linux;
 /// on slow CI runners (Linux, Windows, macOS) the SDK bootstrap
 /// can occasionally take longer than the inter-attempt sleep, so
-/// each spawn has the race independently. Three covers the
+/// each spawn has the race independently. Five covers the
 /// observed ~once-per-100-runs CI failure rate on all three
 /// platforms without exploding worst-case latency for genuine
 /// failures (the per-attempt deadline is 10s, but cold-start
 /// retries use a 1s deadline — see testStdio's attempt loop).
-const TEST_STDIO_MAX_ATTEMPTS: u8 = 3;
+/// Worst-case latency: ~10s + 4 * (500ms sleep + 1s deadline) = ~15s.
+const TEST_STDIO_MAX_ATTEMPTS: u8 = 5;
 
-/// Sleep between cold-start retries. 150 ms gives the SDK enough
+/// Sleep between cold-start retries. 500 ms gives the SDK enough
 /// time to finish `mcp.connect(transport)` + attach its `'data'`
 /// listener on the fresh spawn; small enough that the worst-case
-/// user latency is ~1.5s (cold spawn + 150ms sleep + 2 retries),
+/// user latency is ~2s (cold spawn + 500ms sleep + 4 retries),
 /// well inside the 10s deadline budget.
-const TEST_STDIO_RETRY_DELAY_MS: i64 = 150;
+const TEST_STDIO_RETRY_DELAY_MS: i64 = 500;
 
 /// Tagged request body. Mirrors the frontend's `McpServerModalValue`
 /// shape minus the `name` field (we don't persist anything here).
@@ -222,22 +223,17 @@ fn testStdio(
     // request sits in the kernel pipe buffer unread, the SDK never
     // sees it, and our deadline fires on an empty stdout → EOF.
     //
-    // Fix: try once, and on `UnexpectedEof` specifically, drop the
-    // (now-dead) cached client via `markStale` + sleep briefly +
-    // retry. Up to TEST_STDIO_MAX_ATTEMPTS attempts.
+    // Each spawn has the race independently — the inter-attempt
+    // sleep alone doesn't help if the SDK bootstrap on the new
+    // child happens to take longer than the sleep. We compensate
+    // with more attempts and a longer sleep. On slow CI we
+    // typically see EOF within 200ms of spawn (SDK crashed during
+    // bootstrap), so 500ms × 4 retries gives a generous window.
     //
     // Per-attempt deadline: 10s on the first attempt (covers normal
     // cold start), 1s on retries (the SDK is either already up or
     // it's never going to respond — fail fast to keep the user-facing
-    // worst-case bounded at ~3.2s even with 3 attempts).
-    //
-    // NOTE: a proactive pre-write sleep was tried and made things
-    // WORSE — on slow CI the sleep gave the child time to fully
-    // bootstrap then exit on some internal Node.js lifecycle race,
-    // surfacing as SendFailed instead of UnexpectedEof. The retry
-    // approach (no proactive sleep) handles the cold-start race
-    // because the respawn + sleep gives the new child the same
-    // bootstrap window that the proactive sleep would have.
+    // worst-case bounded at ~15s even with 5 attempts).
     var attempt: u8 = 1;
     while (true) : (attempt += 1) {
         const client = reg.getOrSpawn(preview_name, argv) catch |err| {
@@ -592,8 +588,8 @@ test "mcp_test.zig stdio probe has cold-start retry guard (macOS ARM64 race fix)
     defer testing.allocator.free(raw);
 
     // Constants must exist.
-    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 3") != null);
-    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_RETRY_DELAY_MS: i64 = 150") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 5") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_RETRY_DELAY_MS: i64 = 500") != null);
 
     // Retry branch must be wired: only `UnexpectedEof` triggers
     // respawn — every other error returns immediately. Search for
