@@ -1118,10 +1118,21 @@ export interface Chat {
   session_name?: string
   status?: string
   selected_profile_model?: string
+  /// Backend wall-clock timestamp of the last `sessions.UPDATE` —
+  /// bumped by everything (agent loop, profile change, error, etc).
+  /// `ChatsList.vue` renders this as the time pill's fallback when
+  /// `last_human_touched_at` is empty (pre-Migration-082 legacy rows).
+  /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+  updated_at?: string
   /// Migration 063 — "0" / "1" opt-in for unattended mode. Always
   /// present in the GET /api/sessions response (ChatsList uses this
   /// to render the `🔁 unattended` badge).
   is_auto_retry_until_stop?: string
+  /// Migration 082 — unix-ms string of the last time a HUMAN interacted
+  /// with this session. Empty string (NOT undefined) for legacy rows so
+  /// the ChatsList time pill can fall back to `updated_at` predictably.
+  /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+  last_human_touched_at?: string
 }
 
 export interface Message {
@@ -1472,6 +1483,10 @@ export async function getChats(
           // ChatsList badge condition `=== '1'` is a defined check.
           // Matches the SQL COALESCE default in llm_history.zig.
           is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
+          // Migration 082 — forward the chat-side stamp. Empty string
+          // when absent so the ChatsList `?? updated_at` fallback is
+          // a defined check (NOT undefined).
+          last_human_touched_at: session.last_human_touched_at || '',
         }
       })
     }

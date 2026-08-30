@@ -136,6 +136,27 @@ pub const ContextIPCTui = struct {
         // flag is a `bool` (no string dupe needed) — pass through the
         // Io group directly.
 
+        // NEW (plan 2026-08-29-chat-sidebar-last-human-touched, Task 3):
+        // Stamp `sessions.last_human_touched_at_nano` BEFORE the concurrent
+        // task spawns — this is the single funnel for every user-sends-a-
+        // message path (chat send button, kanban "create & run", kanban
+        // "Start agent", `+ Chat`). `session_create.useCase` calls into
+        // here (line 229) so this stamp covers BOTH create + send in one
+        // site, with no duplicate in the chat-create handler. The stamp
+        // is best-effort (log + continue on transient DB blip) so a stamp
+        // failure can't block message delivery. Plan D1.
+        ai_mod.llm_history.updateSessionLastHumanTouchedAt(
+            self.allocator,
+            self.db,
+            owned_session_id,
+            null,
+        ) catch |stamp_err| {
+            std.log.warn(
+                "emit_run_agent: stamp session last_human_touched_at failed (non-fatal): {s}",
+                .{@errorName(stamp_err)},
+            );
+        };
+
         try self.group_emit_session_create.concurrent(
             self.io,
             struct {
