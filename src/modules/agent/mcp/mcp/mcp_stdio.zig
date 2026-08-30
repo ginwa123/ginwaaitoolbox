@@ -332,7 +332,7 @@ pub const StdioClient = struct {
             .argv = argv,
             .stdin = .pipe,
             .stdout = .pipe,
-            .stderr = .ignore, // ignore stderr for v1 (Pitfall #3 in plan)
+            .stderr = .pipe, // ignore stderr for v1 (Pitfall #3 in plan)
         }) catch return StdioError.ChildSpawnFailed;
 
         return .{
@@ -897,7 +897,7 @@ fn countOpenFds() usize {
         .argv = &.{ "sh", "-c", "ls /proc/self/fd 2>/dev/null | wc -l" },
         .stdin = .ignore,
         .stdout = .pipe,
-        .stderr = .ignore,
+        .stderr = .pipe,
     }) catch return 0;
     // `child.kill` in Zig 0.16 closes stdin/stdout/stderr pipes internally
     // (via `childCleanupPosix`) and nulls child.id. We must NOT manually
