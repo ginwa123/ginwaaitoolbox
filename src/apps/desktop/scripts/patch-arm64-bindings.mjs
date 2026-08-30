@@ -116,14 +116,6 @@ const cacheRoot = join(tmpdir(), 'arm64-bindings-patch');
 
 // ---- helpers ----------------------------------------------------------
 
-function npmCmd() {
-  // npm on Windows is `npm.cmd` (a batch file) which cmd.exe must
-  // invoke — Node's child_process can't directly spawn `.cmd` files
-  // (returns EINVAL on Win32 CreateProcess). On macOS/Linux it's just
-  // `npm` on PATH.
-  return process.platform === 'win32' ? 'npm' : 'npm';
-}
-
 function tarCmd() {
   // macOS / Linux: GNU tar. Windows: bsdtar in C:\Windows\System32.
   // Both accept the same `-xzf <tarball> -C <dest>` invocation for
