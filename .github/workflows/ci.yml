@@ -1029,8 +1029,9 @@ jobs:
           # the cache. Key bumped v2→v3 to avoid collisions with stale
           # v2 entries that still contain zig-out.
           key: v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}
-          restore-keys: |
-            v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-
+          # No restore-keys: when build.zig changes, the exact key won't
+          # match and no cache is restored. This prevents a stale build.exe
+          # (from an older build.zig) from being used.
 
       - name: Test (zig build test only — no nalar-desktop install)
         # PERF (2026-08-25): the original step merged `zig build test`
