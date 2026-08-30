@@ -1027,6 +1027,15 @@ jobs:
             # is where libcurl.dll + libssl-3-x64.dll + libcrypto-3-x64.dll
             # + sqlite3.dll + libpq.dll live.
             export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            # Windows 11 ships the api-ms-win-crt-* forwarder DLLs in
+            # C:\Windows\System32\downlevel\ rather than System32\.
+            # MinGW-built test/nalar binaries dlopen by exact filename
+            # and don't understand API set virtual resolution, so they
+            # STATUS_DLL_NOT_FOUND without the downlevel\ dir on PATH.
+            # Verified locally on Windows 11 24H2 (build 26200): the
+            # api-ms-win-crt-convert-l1-1-0.dll + sibling UCRT forwarders
+            # all live in C:\Windows\System32\downlevel\.
+            export PATH="/c/Windows/System32/downlevel:$PATH"
           fi
           zig build test nalar-desktop --summary all
 
@@ -1158,6 +1167,16 @@ jobs:
         # and migration_009_test.zig for the canonical regression).
         run: |
           set -u
+          # On Windows runners, MinGW-built nalar.exe dlopens the
+          # api-ms-win-crt-* UCRT forwarder DLLs by exact filename.
+          # Windows 11 ships them in C:\Windows\System32\downlevel\
+          # (not in System32\) and MinGW's dlopen doesn't understand
+          # API set virtual resolution. Without downlevel\ on PATH
+          # the binary STATUS_DLL_NOT_FOUNDs at process-load time.
+          # See the matching comment in the "Test + build" step.
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+          fi
           # On Windows runners the binary has a .exe suffix; on Linux/macOS
           # the build.zig host_binary_name switch (build.zig:1223) drops the
           # suffix. Probe for both shapes so the criterion check works on
