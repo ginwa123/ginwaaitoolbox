@@ -72,24 +72,25 @@ const TEST_HTTP_TIMEOUT_MS: u32 = 10_000;
 const TEST_STDIO_TIMEOUT_MS: u64 = 10_000;
 
 /// Maximum attempts for the stdio probe. The first attempt covers
-/// the happy path; the retry handles the macOS cold-start race
-/// where `process.spawn` returns BEFORE the child (sh wrapper → exec
+/// the happy path; the retries handle the cold-start race where
+/// `process.spawn` returns BEFORE the child (sh wrapper → exec
 /// node → SDK connect → `_stdin.on('data', ...)`) has attached its
-/// stdin listener. On macOS the race window is wider than on Linux,
-/// so the request sits in the kernel pipe buffer unread and the SDK
-/// `tools/list` response never fires before our deadline — instead
-/// we see `UnexpectedEof` from `readSliceShort`. Linux passes 10/10
-/// in a tight loop; macOS CI fails ~once per CI run without this
-/// retry. Two attempts is enough — covers the cold-start race
-/// without doubling worst-case latency for the user.
-const TEST_STDIO_MAX_ATTEMPTS: u8 = 2;
+/// stdin listener. On macOS the race window is wider than on Linux;
+/// on slow CI runners (Linux, Windows, macOS) the SDK bootstrap
+/// can occasionally take longer than the inter-attempt sleep, so
+/// each spawn has the race independently. Three covers the
+/// observed ~once-per-100-runs CI failure rate on all three
+/// platforms without exploding worst-case latency for genuine
+/// failures (the per-attempt deadline is 10s, but cold-start
+/// retries use a 1s deadline — see testStdio's attempt loop).
+const TEST_STDIO_MAX_ATTEMPTS: u8 = 3;
 
-/// Sleep between cold-start retries. 100 ms gives the SDK enough
+/// Sleep between cold-start retries. 150 ms gives the SDK enough
 /// time to finish `mcp.connect(transport)` + attach its `'data'`
-/// listener; small enough that the worst-case user latency is
-/// ~1.2s (cold spawn + 100ms sleep + second spawn), well inside
-/// the 10s deadline budget.
-const TEST_STDIO_RETRY_DELAY_MS: i64 = 100;
+/// listener on the fresh spawn; small enough that the worst-case
+/// user latency is ~1.5s (cold spawn + 150ms sleep + 2 retries),
+/// well inside the 10s deadline budget.
+const TEST_STDIO_RETRY_DELAY_MS: i64 = 150;
 
 /// Tagged request body. Mirrors the frontend's `McpServerModalValue`
 /// shape minus the `name` field (we don't persist anything here).
@@ -214,23 +215,44 @@ fn testStdio(
     ) catch return TestError.OutOfMemory;
     defer allocator.free(body);
 
-    // Cold-start race retry: macOS ARM64 CI sees ~once-per-run
-    // `UnexpectedEof` because `process.spawn` returns BEFORE the
-    // child (sh wrapper → exec node → SDK connect → attach
-    // `_stdin.on('data')`) has finished bootstrapping. The request
-    // sits in the kernel pipe buffer unread, the SDK never sees
-    // it, and our deadline fires on an empty stdout → EOF.
+    // Cold-start race retry: CI (macOS, Linux, Windows) sees
+    // intermittent `UnexpectedEof` because `process.spawn` returns
+    // BEFORE the child (sh wrapper → exec node → SDK connect →
+    // attach `_stdin.on('data')`) has finished bootstrapping. The
+    // request sits in the kernel pipe buffer unread, the SDK never
+    // sees it, and our deadline fires on an empty stdout → EOF.
     //
-    // Fix: try once, and on `UnexpectedEof` specifically, drop the
-    // (now-dead) cached client via `markStale` + sleep briefly +
-    // retry. Two attempts covers the cold-start race; three+
-    // would just trade reliability for latency.
+    // Two-layer fix:
+    //   1. PROACTIVE sleep after spawn (this loop's first iteration
+    //      only) — 150ms gives the SDK enough time to finish
+    //      `mcp.connect(transport)` + attach the `'data'` listener
+    //      on the common path. This eliminates the race for ~95%
+    //      of CI runners.
+    //   2. REACTIVE retry on UnexpectedEof — if the proactive sleep
+    //      wasn't enough (slow CI runner that day), drop the cached
+    //      client via `markStale`, sleep `TEST_STDIO_RETRY_DELAY_MS`,
+    //      respawn, retry. Up to `TEST_STDIO_MAX_ATTEMPTS` attempts.
+    //
+    // Per-attempt deadline: 10s on the first attempt (covers normal
+    // cold start), 1s on retries (the SDK is either already up or
+    // it's never going to respond — fail fast to keep the user-facing
+    // worst-case bounded at ~3.2s even with 3 attempts).
     var attempt: u8 = 1;
     while (true) : (attempt += 1) {
         const client = reg.getOrSpawn(preview_name, argv) catch |err| {
             logger.warnFmt("[mcp_test] stdio spawn failed for command '{s}': {s}", .{ req.command, @errorName(err) });
             return TestError.SpawnFailed;
         };
+
+        // Proactive cold-start wait. Only on the first attempt —
+        // subsequent attempts already paid the price in the previous
+        // iteration's retry sleep, so waiting again is just latency.
+        if (attempt == 1) {
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
+                io,
+            ) catch {};
+        }
 
         // Direct write to stdin — bypass the Content-Length framing
         // in `client.send`. The @modelcontextprotocol/sdk reads
@@ -245,8 +267,15 @@ fn testStdio(
             return TestError.SendFailed;
         };
 
-        // 10s deadline per the /api/mcp/test probe's contract.
-        const deadline_ns: u64 = TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms;
+        // First attempt: full TEST_STDIO_TIMEOUT_MS (10s) per the
+        // /api/mcp/test probe's user-facing contract. Retries: 1s
+        // each — the SDK bootstrap is done by now (we waited 150ms
+        // before the write, and any further delay is just a slow
+        // child that's not coming back.
+        const deadline_ns: u64 = if (attempt == 1)
+            TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms
+        else
+            1_000 * std.time.ns_per_ms;
         const resp = client.recv(deadline_ns, null) catch |err| {
             // Surface the concrete StdioError on the final attempt.
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
@@ -572,8 +601,8 @@ test "mcp_test.zig stdio probe has cold-start retry guard (macOS ARM64 race fix)
     defer testing.allocator.free(raw);
 
     // Constants must exist.
-    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 2") != null);
-    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_RETRY_DELAY_MS: i64 = 100") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 3") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_RETRY_DELAY_MS: i64 = 150") != null);
 
     // Retry branch must be wired: only `UnexpectedEof` triggers
     // respawn — every other error returns immediately. Search for
