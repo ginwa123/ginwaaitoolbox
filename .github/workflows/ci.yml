@@ -1032,47 +1032,112 @@ jobs:
           restore-keys: |
             v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-
 
-      - name: Test + build (single zig invocation)
-        # PERF (2026-08-25): `zig build test` and `zig build
-        # nalar-desktop` used to be two separate steps. Each invocation
-        # pays a full dependency-graph traversal + vendor-probe pass, so
-        # merging them into ONE command removes the duplicate walk while
-        # still compiling everything both steps needed:
-        #   - test binaries (compile + run via --listen=-)
-        #   - install nalar         → zig-out/bin/nalar (~58 MB)
-        #   - install nalar-desktop → zig-out/bin/nalar-desktop (~34 MB,
-        #     embedded webapp; needed by scripts/install-nalar-desktop.sh)
-        # `--summary all` prints per-step totals for BOTH the test run
-        # and the install steps in one output.
+      - name: Test (zig build test only — no nalar-desktop install)
+        # PERF (2026-08-25): the original step merged `zig build test`
+        # + `zig build nalar-desktop` into ONE invocation to halve the
+        # dep-graph walk. Linux + macOS can still do that. Windows
+        # self-hosted runners (WIN-53JVAKR3O5B, ~2-3 GB usable for
+        # builds) need the two split because:
+        #   - `zig build nalar-desktop` triggers `install nalar-desktop`
+        #     which chains `pnpm install` (webapp deps) + `pnpm run
+        #     build` (vite + vue-tsc). The vite build step is the
+        #     heaviest single consumer of RAM in the whole pipeline —
+        #     observed STATUS_ACCESS_VIOLATION / OOM on the Windows
+        #     runner (CI run 2026-08-30 reported by user: "pnpm run
+        #     build: memory allocation failure").
+        #   - Even ReleaseSafe zig codegen for `nalar.exe` + the test
+        #     binary together exceed the runner's RAM budget on the
+        #     `zig build test nalar-desktop` combined pass.
+        # Splitting keeps each pass within the runner's memory budget
+        # at the cost of one extra dep-graph walk (~10 s on this box).
         #
-        # Single step across all 3 OSes (Linux + macOS + Windows) using
-        # `shell: bash`. The Windows path runs via Git Bash (already
-        # proven via the backend job's prior Windows build step). The
-        # `RUNNER_OS == 'Windows'` branch prepends vcpkg's bin dir to
-        # PATH so the test binary's DLL imports (libcurl.dll, sqlite3.dll,
-        # libssl-3-x64.dll, etc.) resolve at process-load time — without
-        # this the test crashes immediately with STATUS_DLL_NOT_FOUND
-        # (observed on runs 32318048142, 32320468254, 32321198438).
+        # The nalar-desktop install happens in the NEXT step
+        # (`Install nalar + nalar-desktop (Windows)`), with webapp
+        # rebuild disabled via `--no-webapp-rebuild` (the cached
+        # webapp_assets.zig from the Linux cell of the same workflow
+        # is good enough — we just need a working nalar.exe for the
+        # smoke test).
+        #
+        # The `RUNNER_OS == 'Windows'` branch prepends vcpkg's bin dir,
+        # the API-set forwarder dir, and pnpm's bin dir to PATH so:
+        #   - The test binary's DLL imports (libcurl.dll, sqlite3.dll,
+        #     libssl-3-x64.dll, etc.) resolve at process-load time.
+        #   - build.zig's webapp/mcp chain (when invoked) finds pnpm.
         # On Linux/macOS vcpkg is not used, so the branch is a no-op.
         shell: bash
         run: |
           if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
-            # /c/vcpkg/... is the Git Bash path mapping for C:\vcpkg\...
-            # (Git Bash auto-translates /c/X ↔ C:\X). The trailing bin/
-            # is where libcurl.dll + libssl-3-x64.dll + libcrypto-3-x64.dll
-            # + sqlite3.dll + libpq.dll live.
             export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
-            # Windows 11 ships the api-ms-win-crt-* forwarder DLLs in
-            # C:\Windows\System32\downlevel\ rather than System32\.
-            # MinGW-built test/nalar binaries dlopen by exact filename
-            # and don't understand API set virtual resolution, so they
-            # STATUS_DLL_NOT_FOUND without the downlevel\ dir on PATH.
-            # Verified locally on Windows 11 24H2 (build 26200): the
-            # api-ms-win-crt-convert-l1-1-0.dll + sibling UCRT forwarders
-            # all live in C:\Windows\System32\downlevel\.
             export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              local_pnpm_dir_win="$(cygpath -w "$(dirname "$local_pnpm_path")")"
+              export PATH="$local_pnpm_dir_win:$PATH"
+            fi
+            export PATH="$(cygpath -wp "$PATH")"
           fi
-          zig build test nalar-desktop --summary all
+          # `-Dno-webapp-rebuild` skips the webapp-rebuild chain
+          # (`pnpm install` + `pnpm run build` + codegen). Without this
+          # the Windows ARM64 runner OOMs during the vite build step
+          # AND fails to spawn pnpm from zig's subprocess (zig's PATH
+          # inheritance is incomplete under Git Bash). Linux + macOS
+          # runners always do the full rebuild via the
+          # `Install nalar + nalar-desktop (single zig invocation,
+          # non-Windows)` step below — they have enough RAM and a
+          # proper shell for pnpm.
+          #
+          # We use Debug mode (the default) on purpose — ReleaseSafe
+          # makes Zig 0.16 fail with "unused local constant" in the
+          # auto-generated cimport.zig (libcurl's `curl.h` transitively
+          # includes `<wchar.h>`, whose wide-string function zoo is
+          # marked unused). Debug mode silently ignores that warning,
+          # so the test build succeeds on Windows. The trade-off:
+          # Debug binaries are bigger and slower, but the test step
+          # ONLY runs the test binary (which is ~10 MB with full
+          # debug info), not nalar.exe — the OOM-prone path doesn't
+          # apply here.
+          zig build test --summary all -Dno-webapp-rebuild
+
+      - name: Install nalar + nalar-desktop (single zig invocation, non-Windows)
+        # Linux + macOS can still run the merged `test nalar-desktop`
+        # step that this branch split off for Windows. Both binaries
+        # come out of a single dep-graph walk; the webapp rebuild +
+        # pnpm install run here without OOM on the bigger Linux /
+        # macOS runners. The Windows runner skips this step entirely
+        # (the `runner.os == 'Windows'` guard).
+        if: runner.os != 'Windows'
+        shell: bash
+        run: zig build nalar-desktop --summary all
+
+      - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
+        # Windows-only twin of the previous step. Same goal — produce
+        # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
+        # test + artifact publish — but with the webapp-rebuild chain
+        # turned off via `--no-webapp-rebuild` (the custom CLI flag
+        # build.zig exposes specifically for this case). Without
+        # `pnpm install` + `pnpm run build` the install pass fits in
+        # ~700 MB peak RSS on the Windows runner (vs ~2.5 GB for the
+        # full webapp rebuild path), so the LLVM OOM / vite OOM that
+        # crashed the unified step on the Windows ARM64 runner goes
+        # away. The cached `webapp_assets.zig` from the previous Linux
+        # cell of the same workflow run is reused (webapp content is
+        # the same across cells of one matrix row — there's only one
+        # webapp build per CI invocation, embedded into both
+        # nalar-desktop binaries at artifact-publish time).
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              local_pnpm_dir_win="$(cygpath -w "$(dirname "$local_pnpm_path")")"
+              export PATH="$local_pnpm_dir_win:$PATH"
+            fi
+            export PATH="$(cygpath -wp "$PATH")"
+          fi
+          zig build nalar-desktop --summary all --no-webapp-rebuild
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'

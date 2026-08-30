@@ -1251,14 +1251,23 @@ pub fn build(b: *std.Build) void {
     mcp_wrapper_install.step.dependOn(&mcp_wrapper_write.step);
 
     // chmod 0755 on the installed path so `node dist/index.js` actually
-    // runs when invoked as `zig-out/bin/mcp-hello-world`.
-    const mcp_wrapper_chmod = b.addSystemCommand(&.{
-        "chmod",
-        "755",
-        b.pathJoin(&.{ b.install_path, "bin", "mcp-hello-world" }),
-    });
-    mcp_wrapper_chmod.step.dependOn(&mcp_wrapper_install.step);
-    mcp_hello_world_step.dependOn(&mcp_wrapper_chmod.step);
+    // runs when invoked as `zig-out/bin/mcp-hello-world`. POSIX-only —
+    // Windows has no `chmod` on PATH (chmod lives at `/usr/bin/chmod`
+    // inside Git Bash, which isn't guaranteed to be on PATH for zig's
+    // `addSystemCommand` spawn). Windows file permissions are a no-op
+    // anyway (every .exe / .cmd / .bat is executable by default), so
+    // skipping the chmod step on Windows is the right behavior.
+    if (target.result.os.tag != .windows) {
+        const mcp_wrapper_chmod = b.addSystemCommand(&.{
+            "chmod",
+            "755",
+            b.pathJoin(&.{ b.install_path, "bin", "mcp-hello-world" }),
+        });
+        mcp_wrapper_chmod.step.dependOn(&mcp_wrapper_install.step);
+        mcp_hello_world_step.dependOn(&mcp_wrapper_chmod.step);
+    } else {
+        mcp_hello_world_step.dependOn(&mcp_wrapper_install.step);
+    }
 
     // Make `zig build` (the default) include mcp-hello-world so
     // functional tests can rely on it being present.
@@ -2041,13 +2050,26 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
 
+    // CLI flag: `--no-webapp-rebuild` skips the webapp-rebuild chain
+    // (pnpm install + pnpm run build + codegen). Used by Windows CI
+    // runners with ~2-3 GB usable RAM where the vite build step
+    // STATUS_ACCESS_VIOLATION / OOMs the process. The webapp_assets.zig
+    // is consumed as-is (whatever's on disk from a previous build, or
+    // an empty stub for the first CI run on a fresh checkout — nalar-
+    // desktop will still link and run, it just won't have current
+    // webapp content). Linux + macOS runners always do the full
+    // rebuild.
+    const no_webapp_rebuild = b.option(bool, "no-webapp-rebuild", "Skip the webapp-rebuild + mcp-hello-world chains (Windows CI OOM / no-pnpm workaround)") != null;
+
     // Make the desktop binary depend on the FRESH-ASSETS codegen chain:
     // clean → `bun run build` → codegen. Every nalar-desktop build
     // rebuilds the webapp from current sources and re-embeds it, so the
     // binary always matches the .vue files on disk (user-requested
     // behavior; see the "Webapp rebuild workflow" comment above for the
     // cost trade-off).
-    desktop_exe.step.dependOn(&webapp_rebuild_codegen.step);
+    if (!no_webapp_rebuild) {
+        desktop_exe.step.dependOn(&webapp_rebuild_codegen.step);
+    }
 
     // `zig build nalar-desktop` alias — depends on:
     //   - the install step (which includes `nalar` via b.installArtifact
