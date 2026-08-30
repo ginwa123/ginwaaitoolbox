@@ -207,14 +207,40 @@ fn testStdio(
 
     const reg = mcp_stdio.StdioRegistry.global(allocator);
 
-    // Build the NDJSON body once — same on every attempt. The SDK
-    // parses one JSON-RPC request per `\n`-terminated line.
-    const body = std.fmt.allocPrint(
+    // Build the MCP handshake + tools/list bodies once. The SDK
+    // expects line-delimited JSON on stdin.
+    //
+    // Wire sequence (per MCP spec):
+    //   1. `initialize` request  → server responds with capabilities
+    //   2. `initialized` notification (no response expected)
+    //   3. `tools/list` request  → server responds with tool list
+    //
+    // We use the proper handshake because on slow CI runners the
+    // SDK's stdio bootstrap sometimes fails to attach the `'data'`
+    // listener before the request is processed, surfacing as
+    // UnexpectedEof. The handshake doubles the wire roundtrips but
+    // makes the first read a guaranteed probe: if `initialize`
+    // returns a response, the SDK is alive and `tools/list` will
+    // succeed; if `initialize` returns EOF, the SDK is dead and we
+    // retry with a fresh spawn.
+    const init_body = std.fmt.allocPrint(
         allocator,
-        "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{{}}}}\n",
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"initialize\",\"params\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"nalar-mcp-test\",\"version\":\"0.0.1\"}}}}}}\n",
         .{},
     ) catch return TestError.OutOfMemory;
-    defer allocator.free(body);
+    defer allocator.free(init_body);
+    const initialized_body = std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}\n",
+        .{},
+    ) catch return TestError.OutOfMemory;
+    defer allocator.free(initialized_body);
+    const tools_list_body = std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":\"2\",\"method\":\"tools/list\",\"params\":{{}}}}\n",
+        .{},
+    ) catch return TestError.OutOfMemory;
+    defer allocator.free(tools_list_body);
 
     // Cold-start race retry: CI (macOS, Linux, Windows) sees
     // intermittent `UnexpectedEof` because `process.spawn` returns
@@ -223,17 +249,14 @@ fn testStdio(
     // request sits in the kernel pipe buffer unread, the SDK never
     // sees it, and our deadline fires on an empty stdout → EOF.
     //
-    // Each spawn has the race independently — the inter-attempt
-    // sleep alone doesn't help if the SDK bootstrap on the new
-    // child happens to take longer than the sleep. We compensate
-    // with more attempts and a longer sleep. On slow CI we
-    // typically see EOF within 200ms of spawn (SDK crashed during
-    // bootstrap), so 500ms × 4 retries gives a generous window.
+    // Twenty attempts covers the observed CI failure rate (every
+    // spawn has the race independently; we need enough attempts to
+    // land on a runner moment where the SDK bootstrap succeeds).
     //
     // Per-attempt deadline: 10s on the first attempt (covers normal
-    // cold start), 1s on retries (the SDK is either already up or
-    // it's never going to respond — fail fast to keep the user-facing
-    // worst-case bounded at ~15s even with 5 attempts).
+    // cold start), 1s on retries (SDK bootstrap is done by now).
+    // Worst-case latency:
+    //   ~10s + 19 × (500ms sleep + 1s deadline) ≈ 38.5s.
     var attempt: u8 = 1;
     while (true) : (attempt += 1) {
         const client = reg.getOrSpawn(preview_name, argv) catch |err| {
@@ -241,41 +264,38 @@ fn testStdio(
             return TestError.SpawnFailed;
         };
 
-        // Direct write to stdin — bypass the Content-Length framing
-        // in `client.send`. The @modelcontextprotocol/sdk reads
-        // stdin via a line-based stream reader and parses each line
-        // as JSON; a Content-Length header before the JSON makes the
-        // first "line" un-parseable and the SDK silently drops the
-        // request. This is a v1.x SDK quirk — the spec allows both
-        // formats.
         const stdin_file = client.stdin orelse return TestError.SendFailed;
-        std.Io.File.writeStreamingAll(stdin_file, io, body) catch |err| {
+
+        // Send the full MCP handshake in ONE write. The SDK reads
+        // stdin as line-delimited JSON — each `\n` ends a message.
+        // Sending all three lines in one writeStreamingAll means
+        // they all land in the kernel pipe buffer together; the SDK
+        // processes them in order when it attaches its listener.
+        const full_payload = std.fmt.allocPrint(
+            allocator,
+            "{s}{s}{s}",
+            .{ init_body, initialized_body, tools_list_body },
+        ) catch return TestError.OutOfMemory;
+        defer allocator.free(full_payload);
+        std.Io.File.writeStreamingAll(stdin_file, io, full_payload) catch |err| {
             logger.warnFmt("[mcp_test] stdio send failed: {s}", .{@errorName(err)});
             return TestError.SendFailed;
         };
 
-        // First attempt: full TEST_STDIO_TIMEOUT_MS (10s) per the
-        // /api/mcp/test probe's user-facing contract. Retries: 1s
-        // each — the SDK bootstrap is done by now (we waited
-        // TEST_STDIO_RETRY_DELAY_MS before the next spawn, and any
-        // further delay is just a slow child that's not coming back).
-        const deadline_ns: u64 = if (attempt == 1)
+        // Read the initialize response (1st response). If we get
+        // EOF, the SDK is dead → cold-start race → retry.
+        const init_deadline_ns: u64 = if (attempt == 1)
             TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms
         else
             1_000 * std.time.ns_per_ms;
-        const resp = client.recv(deadline_ns, null) catch |err| {
-            // Surface the concrete StdioError on the final attempt.
+        const init_resp = client.recv(init_deadline_ns, null) catch |err| {
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
                 reg.markStale(preview_name);
                 out_err_detail.* = allocator.dupe(u8, @errorName(err)) catch null;
                 return TestError.RecvFailed;
             }
-            // Cold-start race: mark the cached client stale so the
-            // next getOrSpawn below spawns a fresh child, then
-            // sleep briefly to let the OS finish cleaning up the
-            // dead process before we fork again.
             logger.warnFmt(
-                "[mcp_test] stdio recv got {s} on attempt {d}/{d} — likely cold-start race; retrying",
+                "[mcp_test] stdio initialize got {s} on attempt {d}/{d} — likely cold-start race; retrying",
                 .{ @errorName(err), attempt, TEST_STDIO_MAX_ATTEMPTS },
             );
             reg.markStale(preview_name);
@@ -285,10 +305,35 @@ fn testStdio(
             ) catch {};
             continue;
         };
-        defer allocator.free(resp);
+        defer allocator.free(init_resp);
 
-        // Parse result.tools[] into a lean preview.
-        const tools = parseToolsList(allocator, resp) catch |err| {
+        // We got the initialize response — SDK is alive. Read the
+        // tools/list response (2nd response). Same retry semantics.
+        const tools_deadline_ns: u64 = if (attempt == 1)
+            TEST_STDIO_TIMEOUT_MS * std.time.ns_per_ms
+        else
+            1_000 * std.time.ns_per_ms;
+        const tools_resp = client.recv(tools_deadline_ns, null) catch |err| {
+            if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
+                reg.markStale(preview_name);
+                out_err_detail.* = allocator.dupe(u8, @errorName(err)) catch null;
+                return TestError.RecvFailed;
+            }
+            logger.warnFmt(
+                "[mcp_test] stdio tools/list got {s} on attempt {d}/{d} — cold-start race; retrying",
+                .{ @errorName(err), attempt, TEST_STDIO_MAX_ATTEMPTS },
+            );
+            reg.markStale(preview_name);
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
+                io,
+            ) catch {};
+            continue;
+        };
+        defer allocator.free(tools_resp);
+
+        // Parse result.tools[] from the 2nd response.
+        const tools = parseToolsList(allocator, tools_resp) catch |err| {
             logger.warnFmt("[mcp_test] stdio response parse failed: {s}", .{@errorName(err)});
             return TestError.JsonParseFailed;
         };
