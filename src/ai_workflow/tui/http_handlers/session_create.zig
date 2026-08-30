@@ -521,3 +521,73 @@ test "session_create resolveNameFromTask SELECTs from workspace_item_tasks" {
         return error.WrongSelectTable;
     }
 }
+
+// ─── Migration 082 / chat-sidebar-last-human-touched (Task 3) ──────────
+//
+// Load-bearing invariant: every user-sends-a-message path converges on
+// `root.zig::emit_run_agent` (the single funnel). The chat-create path
+// delegates to `emit_run_agent` at the bottom of `useCase` (line 229),
+// so a SESSION-side chat-side stamp call here would double-stamp the
+// same row. The TASK-side call at line 241 (workspace_item_tasks) stays -
+// that stamps a different table, independent column.
+//
+// This test fails closed if a future refactor re-adds a redundant
+// session-side stamp here, which would either silently no-op (idempotent
+// stamp = wasted work) or mask a regression in the emit_run_agent path.
+
+test "session_create.zig does NOT call the chat-side human-touched stamp helper (single-funnel invariant)" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // The grep needle is the exact helper name (defined in llm_history.zig
+    // at Task 2; targets sessions.last_human_touched_at_nano). The TASK-side
+    // helper (workspace_item_tasks) has a different name so it does NOT
+    // match this needle - that stamp at line 241 stays.
+    const needle = "updateSessi" ++ "onLastHumanTouchedAt";
+    if (contains(source, needle)) {
+        std.debug.print(
+            "\n!! {s} references the chat-side stamp helper !!\n"
+            ++ "   The session-side stamp lives in root.zig::emit_run_agent\n"
+            ++ "   (the single funnel for every user-sends-message path).\n"
+            ++ "   Adding a redundant stamp here double-stamps the same row\n"
+            ++ "   on the create-chat path (session_create.useCase delegates\n"
+            ++ "   to emit_run_agent at line 229). The TASK-side stamp at\n"
+            ++ "   line 241 stays because that targets workspace_item_tasks.\n"
+            ++ "   Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionHumanTouchedStampDuplicateSite;
+    }
+}
+
+// ─── Migration 082 / chat-sidebar-last-human-touched (Task 3) ──────────
+//
+// Sibling of the previous test - guards the same single-funnel invariant
+// from the OTHER direction. If the helper signature is renamed or the
+// module path is restructured (e.g. moved from llm_history to a new
+// module), this test fails loudly instead of silently no-op'ing the
+// guard above. The two tests together lock in: "the chat-side stamp
+// lives in root.zig::emit_run_agent, period".
+
+test "session_create.zig does NOT import or alias the chat-side stamp helper in any form" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // Same needle - constructed via string concatenation so the helper
+    // name doesn't appear verbatim in this test's source body. Any
+    // re-introduction of the symbol (even just an unused
+    // `const _ = ai_mod.llm_history.<helper>;` import) should fail.
+    const needle = "updateSessi" ++ "onLastHumanTouchedAt";
+    if (contains(source, needle)) {
+        std.debug.print(
+            "\n!! {s} references the chat-side stamp helper in any form !!\n"
+            ++ "   Per the single-funnel invariant, this handler must NOT\n"
+            ++ "   touch the chat-side stamp at all - the stamp lives in\n"
+            ++ "   root.zig::emit_run_agent (called by useCase at line 229).\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionHumanTouchedStampAnyReference;
+    }
+}

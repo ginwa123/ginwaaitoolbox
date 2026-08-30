@@ -29,6 +29,14 @@ pub const SessionInfo = struct {
     /// the workflow observed for this session. Empty string until the
     /// first successful turn; never NULL at the API edge.
     last_finish_reason: []const u8,
+    /// Migration 082 - unix-ms of the last time a HUMAN (not the AI
+    /// agent) interacted with this session. Empty string when no human
+    /// touch yet - the frontend treats that as "fall back to updated_at".
+    /// Stamped by `llm_history.updateSessionLastHumanTouchedAt` from 3
+    /// sites: emit_run_agent (user sends a message), session_update
+    /// (user edits a field), workflow.zig::saveRetryAttemptMessage
+    /// (agent emits an error - "also when error too").
+    last_human_touched_at: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -41,6 +49,7 @@ pub const SessionInfo = struct {
         allocator.free(self.selected_profile_model);
         allocator.free(self.is_auto_retry_until_stop);
         allocator.free(self.last_finish_reason);
+        allocator.free(self.last_human_touched_at);
     }
 };
 
@@ -261,7 +270,8 @@ pub fn getSessionListWithCursor(
         \\COALESCE(h.agent, 'Agent'),
         \\COALESCE(s.selected_profile_model, ''),
         \\COALESCE(s.is_auto_retry_until_stop, '0'),
-        \\COALESCE(s.last_finish_reason, '')
+        \\COALESCE(s.last_finish_reason, ''),
+        \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -293,6 +303,10 @@ pub fn getSessionListWithCursor(
             // row.values[9] = last_finish_reason.
             .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
             .last_finish_reason = try allocator.dupe(u8, row.values[9]),
+            // Migration 082 - row.values[10] = last_human_touched_at_nano.
+            // Aliased to last_human_touched_at on the wire (D3 - SQL
+            // column keeps the _nano suffix, the wire field is bare).
+            .last_human_touched_at = try allocator.dupe(u8, row.values[10]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -341,6 +355,11 @@ pub const SessionInfoJson = struct {
     is_auto_retry_until_stop: []const u8 = "",
     /// Migration 063 — most recent finish_reason (Migration 063).
     last_finish_reason: []const u8 = "",
+    /// Migration 082 - unix-ms of the last human touch. Empty string
+    /// for legacy rows (frontend falls back to updated_at). Aliased from
+    /// the SQL column `last_human_touched_at_nano` at the SELECT layer
+    /// so the wire field is bare per Migration 075 project convention.
+    last_human_touched_at: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -370,6 +389,10 @@ pub fn buildSessionListJson(
             // carries them to the frontend.
             .is_auto_retry_until_stop = sess.is_auto_retry_until_stop,
             .last_finish_reason = sess.last_finish_reason,
+            // Migration 082 - forward the chat-side stamp value to the
+            // wire. Empty string for legacy rows means the frontend
+            // falls back to updated_at (per ChatsList.vue display logic).
+            .last_human_touched_at = sess.last_human_touched_at,
         });
     }
 
@@ -3369,6 +3392,60 @@ pub fn updateTaskLastHumanTouchedAt(
     const sql =
         "UPDATE workspace_item_tasks SET last_human_touched_at_nano = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ touched_at_str, task_id });
+}
+
+/// Stamp `sessions.last_human_touched_at_nano = <unix_ms>`. Sibling of
+/// `updateTaskLastHumanTouchedAt` (which targets `workspace_item_tasks`).
+/// Drives the chat sidebar's `last_human_touched_at` time pill — see
+/// `docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md`.
+///
+/// Called by every HTTP handler / workflow site that mutates a chat on
+/// behalf of a human user:
+///   - `root.zig::emit_run_agent` — the single funnel for every
+///     "user sends a message" path (chat send, kanban "create & run",
+///     kanban "Start agent", `+ Chat`). Stamps before the workflow
+///     kicks off so even an immediate agent bail leaves the stamp in
+///     place.
+///   - `session_update.zig::useCase` — when the user renames the
+///     chat, switches its profile, or toggles unattended mode.
+///   - `workflow.zig::saveRetryAttemptMessage` — "also when error
+///     too": every retry-catch / unexpected finish_reason /
+///     TooManyRetries bail sites funnel through this helper, so a
+///     single call covers all error emits.
+///
+/// Schema: `sessions.last_human_touched_at_nano INTEGER NULL`
+/// (Migration 082). We format the unix-ms integer to a string and
+/// bind via `?` per the project's SqliteBackend convention
+/// (`db.exec` only binds TEXT; see memory
+/// `sqlite-backend-exec-binds-text-only`).
+///
+/// The `now_unix_ms` arg lets callers override the stamp time (useful
+/// for tests). When null, we read the real current time via libc
+/// `gettimeofday` (Zig 0.16 removed `std.time.timestamp` per project
+/// memory `zig-0.16-stdlib-changes`).
+///
+/// `session_id.len == 0` is a no-op (returns success without touching
+/// the DB) — matches the empty-slice-as-NULL rule and protects against
+/// accidentally binding `""` as SQL NULL when a handler has a stub
+/// session_id in tests.
+pub fn updateSessionLastHumanTouchedAt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    now_unix_ms: ?i64,
+) !void {
+    if (session_id.len == 0) return;
+    const now_ms = now_unix_ms orelse unixMillisNow();
+    const touched_at_str = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{now_ms},
+    );
+    defer allocator.free(touched_at_str);
+
+    const sql =
+        "UPDATE sessions SET last_human_touched_at_nano = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ touched_at_str, session_id });
 }
 
 /// Current Unix epoch time in milliseconds. Used by
@@ -7420,6 +7497,398 @@ test "updateTaskLastHumanTouchedAt overwrites on repeated calls" {
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("500", row.values[0]);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// updateSessionLastHumanTouchedAt (Migration 082 / chat sidebar)
+// ───────────────────────────────────────────────────────────────────────
+
+test "updateSessionLastHumanTouchedAt stamps the unix-ms value on the session" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal sessions table that already declares the Migration 082
+    // column (so the writer doesn't have to run migrations in tests).
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_1', 'Hello')",
+        &.{});
+
+    const now_ms: i64 = 1_786_500_000_000;
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_1", now_ms);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1786500000000", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt with now_unix_ms=null reads the real clock" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_real', 'Real')",
+        &.{});
+
+    // Stamp with null — should read real clock and produce a recent
+    // unix-ms value (not 0, not NULL).
+    const before_ms = unixMillisNow();
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_real", null);
+    const after_ms = unixMillisNow();
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_real'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    const stamped_ms = try std.fmt.parseInt(i64, row.values[0], 10);
+    // Real-clock stamp must be within the [before, after] window
+    // (allows for clock noise — both bounds are observed times).
+    try testing.expect(stamped_ms >= before_ms);
+    try testing.expect(stamped_ms <= after_ms);
+    // And reasonably close to now — must not be 0 or null.
+    try testing.expect(stamped_ms > 1_700_000_000_000); // year 2023+
+}
+
+test "updateSessionLastHumanTouchedAt is a no-op for unknown session_id" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // No rows inserted.
+
+    // Stamping an unknown id must NOT raise — the UPDATE affects 0
+    // rows and returns success. Defensive against handler code paths
+    // where a session_id might not yet have a row (race with the
+    // INSERT in emit_run_agent).
+    try updateSessionLastHumanTouchedAt(alloc, &db, "unknown_id", 12345);
+
+    // Sanity: still zero rows.
+    var q = try db.query(alloc,
+        "SELECT COUNT(*) FROM sessions",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt is idempotent on repeated calls with the same arg" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_idem', 'Idem')",
+        &.{});
+
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_idem", 999);
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_idem", 999);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_idem'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("999", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt overwrites on repeated calls with a newer arg" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_overwrite', 'Overwrite')",
+        &.{});
+
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_overwrite", 100);
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_overwrite", 500);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_overwrite'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("500", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt skips empty session_id (no SQL bind)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+
+    // Empty session_id must be a no-op (no DB write attempted).
+    // Without this guard, `db.exec` would bind "" as SQL NULL — and
+    // since SQLite's WHERE id = NULL is always false, this would
+    // silently no-op anyway. But the guard is cheaper and clearer.
+    try updateSessionLastHumanTouchedAt(alloc, &db, "", 999);
+
+    // No row was affected. The session table is empty.
+    var q = try db.query(alloc,
+        "SELECT COUNT(*) FROM sessions",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+
+// Wire format - Migration 082: last_human_touched_at on the JSON wire.
+
+test "buildSessionListJson emits last_human_touched_at when the row has a value (Migration 082 wire format)" {
+    const alloc = testing.allocator;
+
+    // Construct a SessionInfo with a known last_human_touched_at value.
+    // All fields are heap-allocated so the deinit in buildSessionListJson's
+    // caller doesn't trip the leak detector.
+    const sess = SessionInfo{
+        .session_id = try alloc.dupe(u8, "sess_1"),
+        .session_name = try alloc.dupe(u8, "Test chat"),
+        .status = try alloc.dupe(u8, "active"),
+        .cwd = try alloc.dupe(u8, "/tmp"),
+        .created_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .updated_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .agent = try alloc.dupe(u8, "Agent"),
+        .selected_profile_model = try alloc.dupe(u8, ""),
+        .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
+        .last_finish_reason = try alloc.dupe(u8, ""),
+                    // The mapper test injects the wire shape directly (NOT the
+            // raw unix-ms from the column). Production flows through
+            // getSessionListWithCursor whose SELECT casts via strftime()
+            // so SessionInfo.last_human_touched_at arrives here as a
+            // SQLite datetime string ('YYYY-MM-DD HH:MM:SS' UTC).
+            .last_human_touched_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+    };
+    defer sess.deinit(alloc);
+
+    const json = try buildSessionListJson(alloc, &[_]SessionInfo{sess}, 1, false, null);
+    defer alloc.free(json);
+
+    // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3.
+        // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3.
+    // NOTE: this test builds SessionInfo directly (not via the SELECT
+    // layer), so the value is passed through verbatim as unix-ms. The
+    // SELECT-layer conversion to SQLite datetime format is exercised by
+    // the SELECT test in migration_082_test.zig + by the functional
+    // harness. The wire field is what the SessionInfo mapper emits -
+    // frontend receives unix-ms and the SELECT conversion happens
+    // BEFORE SessionInfo construction in production.
+        // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3. The SessionInfo mapper
+    // passes the field through verbatim - the SELECT layer is
+    // responsible for converting from unix-ms storage to SQLite
+    // datetime wire format (see migration_082_test.zig + the SELECT
+    // strftime() call in getSessionListWithCursor).
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"2026-08-29 10:00:00\"") != null);
+}
+
+test "buildSessionListJson emits last_human_touched_at as empty string for legacy NULL rows (Migration 082 fallback)" {
+    const alloc = testing.allocator;
+
+    // Legacy row: last_human_touched_at is the SQL default '' (NULL row).
+    const sess = SessionInfo{
+        .session_id = try alloc.dupe(u8, "sess_legacy"),
+        .session_name = try alloc.dupe(u8, "Legacy chat"),
+        .status = try alloc.dupe(u8, "active"),
+        .cwd = try alloc.dupe(u8, "/tmp"),
+        .created_at = try alloc.dupe(u8, "2026-08-01 10:00:00"),
+        .updated_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .agent = try alloc.dupe(u8, "Agent"),
+        .selected_profile_model = try alloc.dupe(u8, ""),
+        .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
+        .last_finish_reason = try alloc.dupe(u8, ""),
+        .last_human_touched_at = try alloc.dupe(u8, ""),
+    };
+    defer sess.deinit(alloc);
+
+    const json = try buildSessionListJson(alloc, &[_]SessionInfo{sess}, 1, false, null);
+    defer alloc.free(json);
+
+    // Empty-string value (frontend treats empty as "fall back to updated_at").
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"\"") != null);
+}
+// Migration 082 - SELECT-layer unix-ms -> SQLite datetime conversion.
+// The wire format is SQLite datetime UTC, NOT raw unix-ms. The
+// SELECT layer is the sole conversion point (via strftime()).
+test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on the wire (Migration 082)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal schema with the Migration 082 column.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Minimal llm_history (the SELECT LEFT JOINs to it).
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // Insert a session with a known unix-ms stamp.
+    // 2026-08-29 10:00:00 UTC = 1788008400 epoch seconds = 1788008400000 ms.
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd, last_human_touched_at_nano)
+        \\VALUES ('sess_conv', 'Test', '', '1788008400000')
+    , &.{});
+
+    // Run the SELECT.
+    const result = getSessionListWithCursor(
+        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+    try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    const human_t = result.sessions[0].last_human_touched_at;
+    // Must NOT be the raw unix-ms integer.
+    try testing.expect(std.mem.indexOf(u8, human_t, "1788008400000") == null);
+    // Must be the SQLite datetime format the frontend parses.
+    try testing.expectEqualStrings("2026-08-29 13:00:00", human_t);
+}
+
+test "getSessionListWithCursor returns empty string for NULL last_human_touched_at_nano (Migration 082)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Minimal llm_history (the SELECT LEFT JOINs to it).
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // Insert a session with NO stamp (NULL column).
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd) VALUES ('sess_null', 'Legacy', '')
+    , &.{});
+
+    const result = getSessionListWithCursor(
+        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    try testing.expectEqualStrings("", result.sessions[0].last_human_touched_at);
 }
 
 // ───────────────────────────────────────────────────────────────────────
