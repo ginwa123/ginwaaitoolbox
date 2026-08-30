@@ -78,13 +78,13 @@ const TEST_STDIO_TIMEOUT_MS: u64 = 10_000;
 /// stdin listener. On macOS the race window is wider than on Linux;
 /// on slow CI runners (Linux, Windows, macOS) the SDK bootstrap
 /// can occasionally take longer than the inter-attempt sleep, so
-/// each spawn has the race independently. Five covers the
+/// each spawn has the race independently. Twenty covers the
 /// observed ~once-per-100-runs CI failure rate on all three
-/// platforms without exploding worst-case latency for genuine
-/// failures (the per-attempt deadline is 10s, but cold-start
-/// retries use a 1s deadline — see testStdio's attempt loop).
-/// Worst-case latency: ~10s + 4 * (500ms sleep + 1s deadline) = ~15s.
-const TEST_STDIO_MAX_ATTEMPTS: u8 = 5;
+/// platforms. Worst-case latency:
+///   ~10s (first attempt) + 19 * (500ms sleep + 1s deadline) ≈ 38.5s.
+/// On the happy path the first attempt succeeds in ~50ms so the
+/// retry loop never executes.
+const TEST_STDIO_MAX_ATTEMPTS: u8 = 20;
 
 /// Sleep between cold-start retries. 500 ms gives the SDK enough
 /// time to finish `mcp.connect(transport)` + attach its `'data'`
@@ -588,7 +588,7 @@ test "mcp_test.zig stdio probe has cold-start retry guard (macOS ARM64 race fix)
     defer testing.allocator.free(raw);
 
     // Constants must exist.
-    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 5") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_MAX_ATTEMPTS: u8 = 20") != null);
     try testing.expect(std.mem.indexOf(u8, raw, "TEST_STDIO_RETRY_DELAY_MS: i64 = 500") != null);
 
     // Retry branch must be wired: only `UnexpectedEof` triggers
