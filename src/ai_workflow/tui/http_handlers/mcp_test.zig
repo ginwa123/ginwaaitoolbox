@@ -474,9 +474,16 @@ fn drainStderr(allocator: std.mem.Allocator, io: std.Io, stderr: ?std.Io.File) [
 
 /// Build a JSON-formatted diagnostic string for the failed
 /// response body. Format:
-///   "<last-error>|attempt N/M codes=[<8-char codes>]|stderr=[<last stderr>]"
-/// Compact, single-line, escaped for JSON embedding. Truncated
-/// to keep the response body under 8 KiB.
+///   "<last-error>|attempts=N/M codes=[<8-char codes>]|last_stderr=<escaped>"
+/// Compact, single-line, escaped for JSON embedding. The stderr
+/// portion is sanitized — control characters are replaced with
+/// `\\n`/`\\r`/`\\t` escape sequences (or stripped if non-printable)
+/// so a child that writes a multi-line error with embedded TTY
+/// control codes doesn't break the response body's JSON parser
+/// (observed on macOS ARM64 CI: Node SDK's `mcp.connect` failure
+/// path writes an ANSI-coloured stack trace to stderr, which
+/// contains \\x1b ESC bytes that make `json.loads` raise
+/// "Invalid control character").
 fn formatAttemptsDetail(
     allocator: std.mem.Allocator,
     last_err: []const u8,
@@ -492,8 +499,6 @@ fn formatAttemptsDetail(
     const n_str = std.fmt.bufPrint(&n_buf, "{d}", .{attempts_used}) catch "?";
     try buf.appendSlice(allocator, n_str);
     try buf.appendSlice(allocator, "/");
-    const m_buf: [16]u8 = undefined;
-    _ = m_buf;
     const m_str = std.fmt.bufPrint(&n_buf, "{d}", .{attempts_codes.len / 8}) catch "?";
     try buf.appendSlice(allocator, m_str);
     try buf.appendSlice(allocator, " codes=[");
@@ -507,7 +512,29 @@ fn formatAttemptsDetail(
         try buf.appendSlice(allocator, "|last_stderr=");
         const last = stderrs[attempts_used - 1];
         const truncated = if (last.len > 512) last[0..512] else last;
-        try buf.appendSlice(allocator, truncated);
+        // Sanitize: replace control chars with their backslash-escaped
+        // form so the resulting JSON is parseable. Other bytes (high
+        // UTF-8, ANSI ESC, etc.) pass through — Python's json.loads
+        // accepts them as long as they're not C0 control chars
+        // (< 0x20 except \t \n \r).
+        var i: usize = 0;
+        while (i < truncated.len) : (i += 1) {
+            const c = truncated[i];
+            switch (c) {
+                0x08 => try buf.appendSlice(allocator, "\\b"), // backspace
+                0x09 => try buf.appendSlice(allocator, "\\t"), // tab
+                0x0A => try buf.appendSlice(allocator, "\\n"),
+                0x0C => try buf.appendSlice(allocator, "\\f"), // form feed
+                0x0D => try buf.appendSlice(allocator, "\\r"),
+                0x22 => try buf.appendSlice(allocator, "\\\""), // quote
+                0x5C => try buf.appendSlice(allocator, "\\\\"), // backslash
+                0x00...0x07, 0x0B, 0x0E...0x1F => {
+                    // Other C0 control chars: strip (they break JSON).
+                    // Includes 0x1B (ESC), 0x07 (BEL), etc.
+                },
+                else => try buf.append(allocator, c),
+            }
+        }
     }
     return buf.toOwnedSlice(allocator);
 }
@@ -722,11 +749,17 @@ fn sourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []cons
 }
 
 test "mcpTestHandler: registers the POST route with /api/mcp/test" {
-    const found = try sourceContains(testing.allocator, "../../../../../main.zig", "/api/mcp/test");
+    const found = try sourceContains(testing.allocator, "src/main.zig", "/api/mcp/test");
     try testing.expect(found);
 }
 
 test "mcpTestHandler: returns ok:true with tools on stdio success" {
+    // Static-grep guard: confirms the success-path response builder
+    // emits the canonical {ok:true, transport:..., tools:[...]} JSON
+    // shape. The source literal is the Zig format string with `{{`
+    // (escaped `{`) and `\"` (escaped `"`), so the rendered output is
+    // `{"ok":true,...}` even though the source bytes are
+    // `{{\"ok\":true,...}`. Search for the literal source form.
     const raw = try std.Io.Dir.cwd().readFileAlloc(
         testing.io,
         "src/ai_workflow/tui/http_handlers/mcp_test.zig",
@@ -735,9 +768,9 @@ test "mcpTestHandler: returns ok:true with tools on stdio success" {
     );
     defer testing.allocator.free(raw);
 
-    try testing.expect(std.mem.indexOf(u8, raw, "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, raw, "\"transport\":") != null);
-    try testing.expect(std.mem.indexOf(u8, raw, "\"tools\":[") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "{{\\\"ok\\\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "\\\"transport\\\":") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "\\\"tools\\\":[") != null);
 }
 
 test "mcpTestHandler: maps TestError variants to readable error messages" {
@@ -753,7 +786,11 @@ test "mcpTestHandler: maps TestError variants to readable error messages" {
         return error.CatchBlockMissing;
     const switch_start = std.mem.indexOfPos(u8, raw, catch_start, "switch (err) {") orelse
         return error.SwitchMissing;
-    const switch_end = std.mem.indexOfPos(u8, raw, switch_start, "};\n        }\n;") orelse
+    // Locate the switch terminator: `};` ends the switch, then a blank
+    // line separates it from the next statement. The file is
+    // well-known + small enough that `};\n\n` after `switch (err) {`
+    // uniquely identifies the closing brace of the switch body.
+    const switch_end = std.mem.indexOfPos(u8, raw, switch_start, "};\n\n") orelse
         return error.SwitchEndMissing;
     const switch_body = raw[switch_start..switch_end];
 
@@ -811,4 +848,67 @@ test "mcp_test.zig stdio probe has cold-start retry guard (macOS ARM64 race fix)
     // the exact retry pattern; if a refactor drops the
     // `err != error.UnexpectedEof` guard, this test fails.
     try testing.expect(std.mem.indexOf(u8, raw, "err != error.UnexpectedEof") != null);
+}
+
+test "formatAttemptsDetail: sanitizes C0 control chars from stderr (JSON-safe)" {
+    // Regression guard for CI macOS ARM64 (commit 76d03d6d + this fix):
+    // the SDK's mcp.connect failure path writes ANSI-coloured stack
+    // traces to stderr containing \\x1b (ESC) and \\n bytes. If those
+    // reach the JSON response body verbatim, `json.loads` on the
+    // client raises "Invalid control character". The sanitizer must
+    // \\n -> \\\\n, strip \\x1b, leave printable bytes alone.
+    const allocator = testing.allocator;
+
+    // Build a stderr blob with: ESC, newline, NUL, BEL, printable.
+    const dirty_stderr = "\x1b[31mfatal\x1b[0m: \nmcp.connect failed\n\x00\x07";
+    var stderrs = [_][]const u8{ dirty_stderr };
+    // Mirror production code: codes buffer is 8 bytes per attempt,
+    // padded with SPACE (0x20) after the short code. Using NUL (0x00)
+    // here would break the sanitizer's invariant that codes_text is
+    // printable — the formatAttemptsDetail loop appends every byte,
+    // so trailing NULs would land in the response body.
+    var codes = [_]u8{' '} ** (1 * 8);
+    @memcpy(codes[0..3], "EOF");
+
+    const detail = try formatAttemptsDetail(
+        allocator,
+        "UnexpectedEof",
+        1,
+        &codes,
+        &stderrs,
+    );
+    defer allocator.free(detail);
+
+    // formatAttemptsDetail returns a custom format string, NOT JSON:
+    //   "<err>|attempts=N/M codes=[<codes>]|last_stderr=<sanitized>"
+    // The response handler then embeds this into the JSON response body
+    // via `{s}`. Verify the sanitizer produced output that, once
+    // embedded into a JSON document, parses cleanly.
+    //
+    // Verify specific sanitization: \\n appears as literal \\\\n, not raw \\n.
+    try testing.expect(std.mem.indexOf(u8, detail, "\\n") != null);
+    // ESC (0x1b) was stripped entirely (not even present in escape form).
+    try testing.expect(std.mem.indexOf(u8, detail, "\x1b") == null);
+    // Printable text preserved.
+    try testing.expect(std.mem.indexOf(u8, detail, "fatal") != null);
+
+    // CRITICAL: embed `detail` into a JSON document and parse it back.
+    // If any control char survived, std.json will raise SyntaxError
+    // (which on the Python test client is `json.loads: Invalid
+    // control character`). This is the regression guard for the
+    // commit-76d03d6d macOS CI failure.
+    const wrapped = try std.fmt.allocPrint(
+        allocator,
+        "{{\"details\":\"{s}\"}}",
+        .{detail},
+    );
+    defer allocator.free(wrapped);
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        wrapped,
+        .{},
+    );
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("details") != null);
 }
