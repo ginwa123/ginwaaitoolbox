@@ -1071,10 +1071,8 @@ jobs:
             export PATH="/c/Windows/System32/downlevel:$PATH"
             local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
             if [[ -n "$local_pnpm_path" ]]; then
-              local_pnpm_dir_win="$(cygpath -w "$(dirname "$local_pnpm_path")")"
-              export PATH="$local_pnpm_dir_win:$PATH"
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
             fi
-            export PATH="$(cygpath -wp "$PATH")"
           fi
           # `-Dno-webapp-rebuild` skips the webapp-rebuild chain
           # (`pnpm install` + `pnpm run build` + codegen). Without this
@@ -1132,10 +1130,8 @@ jobs:
             export PATH="/c/Windows/System32/downlevel:$PATH"
             local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
             if [[ -n "$local_pnpm_path" ]]; then
-              local_pnpm_dir_win="$(cygpath -w "$(dirname "$local_pnpm_path")")"
-              export PATH="$local_pnpm_dir_win:$PATH"
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
             fi
-            export PATH="$(cygpath -wp "$PATH")"
           fi
           zig build nalar-desktop --summary all --no-webapp-rebuild
 
