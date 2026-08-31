@@ -173,7 +173,7 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, knowledge);
     }
 
-      // Agent-Kanbans mirror (Migration 081, plan
+    // Agent-Kanbans mirror (Migration 081, plan
     // 2026-08-25-agent-kanbans-mirror): Build the "## Kanban System
     // Prompt" + "## Kanban Knowledge" sections from the
     // agent_kanban_system_prompt / agent_kanban_knowledges tables.
@@ -182,9 +182,10 @@ pub fn buildMessages(
     // ONE of the agent/kanban pairs can be non-empty per session
     // (item_type is exclusive), so effective ordering is unchanged.
     const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
-    defer allocator.free(agentKanbanSystemPromptContent);
+    try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
+
     const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
-    defer allocator.free(agentKanbanKnowledgeContent);
+    try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
 
     const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
     try final_system.appendSlice(allocator, agentKnowledgeContent);
