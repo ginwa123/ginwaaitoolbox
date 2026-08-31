@@ -61,9 +61,6 @@ pub fn makeKanbanContext(
 ) ![]const u8 {
     if (session_id.len == 0) return allocator.dupe(u8, "");
 
-    // 1. Re-use the workspace-context anchor to read the parent's
-    //    item_type without a second JOIN. Bail out when the parent
-    //    isn't a kanban.
     const ctx = (getWorkspaceContext(allocator, db, session_id) catch |err| {
         std.log.warn("BuildKanbanStatusPrompt: getWorkspaceContext failed: {}", .{err});
         return allocator.dupe(u8, "");
@@ -74,41 +71,14 @@ pub fn makeKanbanContext(
         return allocator.dupe(u8, "");
     }
 
-    // Capture the equipped-tool check up front so step 4d can use
-    // it. Avoids re-scanning the tools slice in the hot path.
     const follow_up_tool_equipped = hasToolByName(tools, "create_kanban_task");
 
-    // 2. Read the columns. Same graceful-skip pattern as
-    //    BuildWorkspaceContext — any DB failure returns "".
     const cols = listColumns(allocator, db, ctx.self_item_id) catch |err| {
         std.log.warn("BuildKanbanStatusPrompt: listColumns failed: {}", .{err});
         return allocator.dupe(u8, "");
     };
     defer freeColumns(allocator, cols);
 
-    // 3. Read the task's current kanban_column_id (may be NULL when
-    //    unassigned — i.e. no kanban row exists for the task). One-row
-    //    query — task.id == session_id per the workspace-context
-    //    convention. After Migration 072, the current column lives in
-    //    the `kanban` join table (a row exists IFF the task is on a
-    //    column); LEFT JOIN preserves the unassigned case (NULL).
-    const current_column_id: ?[]const u8 = blk: {
-        var q = try db.query(allocator,
-            \\SELECT COALESCE(k.kanban_column_id, '')
-            \\FROM workspace_item_tasks t
-            \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
-            \\WHERE t.id = ?
-        , &.{session_id});
-        defer q.deinit();
-        const row = (try q.next()) orelse break :blk null;
-        defer row.deinit(allocator);
-        const cid = row.values[0];
-        if (cid.len == 0) break :blk null;
-        break :blk try allocator.dupe(u8, cid);
-    };
-    defer if (current_column_id) |c| allocator.free(c);
-
-    // 4. Render the markdown block.
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
@@ -123,67 +93,6 @@ pub fn makeKanbanContext(
         \\
     );
 
-    // 4a. Current column line.
-    if (current_column_id) |cid| {
-        const col_name = blk: {
-            for (cols) |c| {
-                if (std.mem.eql(u8, c.id, cid)) break :blk c.name;
-            }
-            break :blk "<unknown>";
-        };
-        try out.appendSlice(allocator, "**Current column:** `");
-        try out.appendSlice(allocator, col_name);
-        try out.appendSlice(allocator, "` (`");
-        try out.appendSlice(allocator, cid);
-        try out.appendSlice(allocator, "`)\n\n");
-    } else {
-        try out.appendSlice(allocator,
-            \\**Current column:** _unassigned_ — the task has no column yet.
-            \\Your first move will assign it.
-            \\
-        );
-    }
-
-    // 4b. Column listing (cap: 10, with footer).
-    try out.appendSlice(allocator, "**Columns on this board** (in flow order):\n");
-    if (cols.len == 0) {
-        try out.appendSlice(allocator,
-            \\_No columns configured yet._ Ask the user to add columns before
-            \\moving the task.
-            \\
-        );
-    } else {
-        const shown = @min(cols.len, MAX_KANBAN_COLUMNS);
-        for (cols[0..shown]) |c| {
-            try out.appendSlice(allocator, "- `");
-            try out.appendSlice(allocator, c.name);
-            try out.appendSlice(allocator, "` (`");
-            try out.appendSlice(allocator, c.id);
-            const pos_str = try std.fmt.allocPrint(allocator, "`, position {d})\n", .{c.position});
-            defer allocator.free(pos_str);
-            try out.appendSlice(allocator, pos_str);
-
-            // Inject the column's free-text description (Migration 053)
-            // as an indented sub-line. Skip when empty so the prompt
-            // stays quiet for un-described columns.
-            if (c.description.len > 0) {
-                try out.appendSlice(allocator, "  Description: ");
-                try out.appendSlice(allocator, c.description);
-                try out.appendSlice(allocator, "\n");
-            }
-        }
-        if (cols.len > MAX_KANBAN_COLUMNS) {
-            const footer = try std.fmt.allocPrint(
-                allocator,
-                "… and {d} more columns (cap: {d} shown).\n",
-                .{ cols.len - MAX_KANBAN_COLUMNS, MAX_KANBAN_COLUMNS },
-            );
-            defer allocator.free(footer);
-            try out.appendSlice(allocator, footer);
-        }
-    }
-
-    // 4c. Status transitions.
     try out.appendSlice(allocator, "\n**Status transitions** (call `kanban_move_task`):\n");
     try out.appendSlice(allocator,
         \\
@@ -203,13 +112,6 @@ pub fn makeKanbanContext(
         \\
     );
 
-    // 4d. Optional follow-up suggestion. Only rendered when the
-    // `create_kanban_task` agent tool is equipped for this session.
-    // The agent should suggest creating a new task on this kanban
-    // when it discovers follow-up work — bugs found during
-    // implementation, dependencies on other teams, multi-step
-    // follow-ups, etc. Without this hint, the agent often
-    // completes the current task and "forgets" the follow-ups.
     if (follow_up_tool_equipped) {
         try out.appendSlice(allocator,
             \\
