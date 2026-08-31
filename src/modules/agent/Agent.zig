@@ -1741,7 +1741,7 @@ pub const Agent = struct {
                 const has_c = c != null and c.?.len > 0;
                 const has_rc = rc != null and rc.?.len > 0;
                 if (has_c or has_rc) {
-                    const count: usize = @as(usize, @intFromBool(has_c)) + @as(usize, @intFromBool(has_rc));
+                    const count: usize = @intFromBool(has_c) + @intFromBool(has_rc);
                     var contents = try arena_alloc.alloc(ResponsesInputContent, count);
                     var idx: usize = 0;
                     if (has_rc) {
@@ -2513,13 +2513,12 @@ pub const Agent = struct {
         self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         // 2. Compose URL: baseUrl + endpoint.
-        const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
-            "/v1/messages"
-        else if (std.mem.eql(u8, self.UrlStyle, "openai-response"))
-            "/responses"
-        else
-            "/chat/completions";
-        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, endpoint }) catch |err| {
+        // Anthropic's correct API path is /v1/messages.
+        // const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
+        //     "/v1/messages"
+        // else
+        //     "/chat/completions";
+        const uri_str = std.mem.concat(self.allocator, u8, &.{self.baseUrl}) catch |err| {
             self.log_error("concat URI", err, null);
             return error.OutOfMemory;
         };
