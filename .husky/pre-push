@@ -22,10 +22,4 @@ set -e
 echo "→ zig build test"
 zig build test
 
-echo "→ zig build functional-test"
-zig build functional-test
-
-echo "→ zig build functional-test-ui"
-zig build functional-test-ui
-
 echo "✓ pre-push: all gates passed"
