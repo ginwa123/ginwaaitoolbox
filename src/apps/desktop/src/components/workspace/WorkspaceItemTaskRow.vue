@@ -32,6 +32,13 @@
 import { inject, ref, computed, type Ref } from 'vue'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
+import SessionSlider from '../SessionSlider.vue'
+// 2026-08-29 agent-error-row (task_1787985074550_0) — sidebar
+// variant of the kanban-card indicator. Same store + helper as the
+// kanban card (Task 5); single source of truth so the indicator
+// stays in sync with the chat card across session switches.
+import { useAgentErrorStore } from '../../stores/agentError'
+import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 
 // Re-inject processingState from App.vue (same key WorkspaceItem and
 // ChatsList consume). Keyed by task.id == session_id. Reading it
@@ -96,11 +103,25 @@ const {
   handleRunRoutine,
   handlePinToggle,
 } = useTaskActions(props, emit)
+
+// 2026-08-29 agent-error-row — reactive read of the latest agent
+// error keyed by task.id == session_id (migration 052 invariant).
+// Same store + helper as the kanban card and ChatView's
+// AgentErrorCard — see stores/agentError.ts and
+// helpers/parseAgentErrorHeadline.ts.
+const agentErrorStore = useAgentErrorStore()
+const agentError = computed(() => agentErrorStore.bySession[props.task.id] ?? null)
+const errorHeadline = computed(() =>
+  agentError.value ? parseAgentErrorHeadline(agentError.value.content).headline : null,
+)
+const errorRetryLabel = computed(() =>
+  agentError.value ? parseAgentErrorHeadline(agentError.value.content).retryLabel : null,
+)
 </script>
 
 <template>
   <button
-    class="flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
+    class="relative flex items-center gap-2 px-3 py-1 rounded text-xs group/task cursor-pointer transition-all duration-200"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
     data-task-row
@@ -113,22 +134,14 @@ const {
   >
     <!-- ───── ROUTINE branch ───── -->
     <template v-if="isRoutine">
-      <!-- Spinner while worker is processing this task (mirrors ChatsList). -->
+      <!-- (Processing spinner removed — replaced by SessionSlider at
+           the bottom of the button. Visible iff processingState[task.id]
+           === true; hidden otherwise. Self-positions absolutely.) -->
+      <!-- Clock icon (with next-run tooltip). Always visible for
+           routine rows — was v-else to the spinner (mutually
+           exclusive), but with the spinner gone the clock always
+           renders now. -->
       <span
-        v-if="processingState[task.id]"
-        class="w-4 h-4 flex items-center justify-center shrink-0"
-        data-testid="task-spinner"
-      >
-        <div
-          class="w-3 h-3 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-yellow); border-top-color: transparent"
-        ></div>
-      </span>
-      <!-- Clock icon (with next-run tooltip). Mutually exclusive
-           with the spinner above (v-else) — when the worker is
-           processing this task, only the spinner renders. -->
-      <span
-        v-else
         class="shrink-0"
         :title="nextRunTooltip"
         data-testid="routine-clock"
@@ -211,24 +224,68 @@ const {
 
     <!-- ───── STANDARD branch (existing behavior) ───── -->
     <template v-else>
-      <span
-        v-if="processingState[task.id]"
-        class="w-4 h-4 flex items-center justify-center shrink-0"
-        data-testid="task-spinner"
-      >
-        <div
-          class="w-3 h-3 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-yellow); border-top-color: transparent"
-        ></div>
-      </span>
+      <!-- (Processing spinner removed — replaced by SessionSlider at
+           the bottom of the button.) -->
       <!-- Row variant: bullet renders as before for the sidebar's
-           compact list. Mutually exclusive with the spinner above
-           (v-else-if) — never both at once. -->
+           compact list. Hidden while the LLM slider is visible so
+           the row shows a SINGLE visual marker (either the bullet
+           when idle, or the slider when processing) — same
+           mutually-exclusive contract the old spinner/bullet pair
+           had, just with the indicator relocated to the bottom of
+           the row. -->
       <span
-        v-else-if="!isRoutine"
+        v-if="!isRoutine && !processingState[task.id]"
         class="w-1.5 h-1.5 rounded-full shrink-0"
         :style="{ backgroundColor: isActive ? 'var(--color-aqua)' : 'var(--semantic-text-dim)' }"
       />
+      <!-- 2026-08-29 agent-error-row (task_1787985074550_0) — sidebar
+           variant of the kanban-card indicator. No border ring (no
+           row-level border exists); no meta pill (the row has no
+           meta row). Just the icon with the same hover-tooltip so
+           users see "this chat has an error" in the chat list
+           regardless of which surface they're on. Smaller than the
+           kanban variant because the row's vertical real estate is
+           ~28px vs the card's ~80px. Additive v-if (sibling to the
+           bullet above, NOT a v-else-if) because retry attempts
+           fire WHILE the worker is still active and the indicator
+           must coexist with the spinner. Routines don't get the
+           icon — they don't run the agent loop. -->
+      <span
+        v-if="!isRoutine && agentError"
+        class="relative shrink-0 error-icon-wrap"
+        data-testid="task-agent-error-row"
+      >
+        <span
+          class="w-3 h-3 rounded-full flex items-center justify-center"
+          style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red);"
+          aria-label="Agent error"
+        >
+          <span style="color: var(--color-red); font-size: 8px; line-height: 1;" aria-hidden="true">⚠</span>
+        </span>
+        <!-- Same tooltip markup as the kanban card, but 240px wide
+             (the card uses 280px); sidebar rows are denser so the
+             narrower tooltip feels less obtrusive. -->
+        <div
+          class="error-tooltip absolute left-0 top-full mt-1.5 w-[240px] z-50 rounded-lg p-2 pointer-events-none opacity-0 invisible transition-opacity duration-150"
+          style="background: #0e0e0c; border: 1px solid rgba(196, 116, 110, 0.45); box-shadow: 0 4px 16px rgba(0,0,0,0.4);"
+          role="tooltip"
+          data-testid="task-agent-error-row-tooltip"
+        >
+          <div class="flex items-center gap-2 mb-1.5">
+            <span style="color: var(--color-red); font-size: 11px;" aria-hidden="true">⚠</span>
+            <span class="text-[11px] font-medium" style="color: var(--color-red);">Agent error</span>
+            <span
+              v-if="errorRetryLabel"
+              class="text-[10px] px-1.5 py-0.5 rounded-full"
+              style="background: rgba(196, 116, 110, 0.18); color: #e8928c;"
+              data-testid="task-agent-error-row-retry"
+            >retry {{ errorRetryLabel }}</span>
+          </div>
+          <div class="text-[11px] leading-snug" style="color: var(--semantic-text-muted);" data-testid="task-agent-error-row-headline">
+            {{ errorHeadline }}
+          </div>
+        </div>
+      </span>
       <!-- Pin indicator (always visible when pinned). -->
       <span
         v-if="task.is_pinned"
@@ -276,5 +333,33 @@ const {
         </svg>
       </button>
     </template>
+
+    <!-- Per-session LLM slider at the bottom edge of this row.
+         Self-positions absolutely (the button has `relative`).
+         Visible iff processingState[task.id] === true; hidden
+         otherwise. Replaces the per-row yellow spinner circle that
+         used to live in the leftmost slot (was lines 116-126 and
+         214-223 in this file). Same signal as the workspace-item
+         level slider in <WorkspaceItem> — the workspace-item
+         level covers "any task on this item is busy"; this covers
+         "this specific task is busy". Both can render at once. -->
+    <SessionSlider :session-id="task.id" test-id="task-spinner" />
   </button>
 </template>
+
+<!-- 2026-08-29 agent-error-row (task_1787985074550_0) — scoped
+     style for the hover-tooltip visibility. WorkspaceItemTaskCard
+     has its own scoped rule with the same selector; Vue's scoped
+     CSS does NOT cross component boundaries, so this row needs its
+     own mirror here. Same shape as the kanban card variant
+     (WorkspaceItemTaskCard.vue line ~834) — hover the wrap to
+     reveal the tooltip. The opacity/visibility transition lives
+     inline on the tooltip div itself (`opacity-0 invisible ...
+     transition-opacity duration-150`); this rule just flips the
+     final state on hover. -->
+<style scoped>
+.error-icon-wrap:hover .error-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+</style>

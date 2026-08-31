@@ -5,6 +5,49 @@ libcurl-backed `custom_http_client` module the rest of the project
 uses, so libcurl paths are reused (no duplicate `-Dcurl-prefix` /
 `-Dcurl-vcpkg-root` wiring).
 
+## `nalar-tui` — interactive chat TUI
+
+Alongside `nalarcli`, this package ships **`nalar-tui`**: a
+Claude-Code-style interactive chat client powered by a from-scratch
+Bubble-Tea-inspired `tui` module (`src/apps/cli/src/tui/`).
+
+| Step | Command |
+|---|---|
+| Build & install | `zig build install:tui` → `zig-out/bin/nalar-tui` |
+| Run | `zig build run:tui -- [flags]` |
+| Test | `zig build test:tui --summary all` |
+
+```bash
+nalar-tui --server http://localhost:8081            # new session
+nalar-tui --session session-1724580000000           # resume a session
+```
+
+Keys: **Enter** sends, **Ctrl-C / Ctrl-D** quits, **↑/↓** input
+history. The status bar shows the active session id; on exit the
+session id is printed so it can be resumed with `--session`.
+
+### Architecture (the `tui` module)
+
+```
+src/apps/cli/src/tui/
+├── root.zig        # public re-exports
+├── program.zig     # Program(Model) event loop: raw mode + alt-screen + frame diffing
+├── terminal.zig    # termios raw mode, TIOCGWINSZ size, tty detection
+├── key.zig         # key decoder (runes, arrows, Ctrl-*, escape seqs)
+├── frame.zig       # Frame/Cell grid + minimal-diff renderer
+├── style.zig       # ANSI SGR helpers (bold/dim/fg/bg)
+├── color.zig       # 16-color palette
+├── msg.zig         # Msg union + Cmd side-effects
+├── widgets.zig     # Viewport, Input (history), Spinner, StatusBar
+├── app.zig         # chat Model: send/poll state machine
+├── transport.zig   # HTTP glue over custom_http_client
+└── sse.zig         # SSE frame parser (for the streaming follow-up)
+```
+
+The pattern is Bubble Tea's: your model implements
+`update(Msg) -> Cmd` and `view(alloc, w, h) -> Frame`; `Program.run()`
+drives raw mode, key decoding, ticks, and paints only changed cells.
+
 ## Build wiring
 
 The CLI is integrated into the **parent** `build.zig` (not a

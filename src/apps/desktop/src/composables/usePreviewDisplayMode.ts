@@ -34,7 +34,13 @@ export type PreviewDisplayMode = 'side' | 'inline'
 export const PREVIEW_DISPLAY_MODE_STORAGE_KEY = 'nalar-preview-display-mode'
 
 const VALID_MODES: ReadonlySet<PreviewDisplayMode> = new Set(['side', 'inline'])
-const DEFAULT_MODE: PreviewDisplayMode = 'inline'
+// 2026-08-29: flipped from 'inline' back to 'side' (matches the original
+// 2026-08-06 spec decision). Inline rendering was crushing the iframe
+// in the narrow chat column — users had to click "Open preview panel"
+// anyway. New users land on the side panel; existing inline users keep
+// their localStorage value. Kanban: task_1787988286635_2. Plan:
+// docs/superpowers/plans/2026-08-29-show-preview-inline-default-and-ux.md.
+const DEFAULT_MODE: PreviewDisplayMode = 'side'
 
 function isPreviewDisplayMode(value: unknown): value is PreviewDisplayMode {
   return typeof value === 'string' && VALID_MODES.has(value as PreviewDisplayMode)

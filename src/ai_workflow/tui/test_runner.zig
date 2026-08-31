@@ -102,6 +102,20 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/agent_system_prompt_update.zig"); // PATCH /agents/:id/system_prompt/:id (Migration 080)
     _ = @import("http_handlers/agent_system_prompt_delete.zig"); // DELETE /agents/:id/system_prompt/:id (Migration 080)
     _ = @import("http_handlers/agent_system_prompt_reorder.zig"); // PATCH /agents/:id/system_prompt/reorder (Migration 080)
+    // Agent-Kanbans mirror (Migration 081, plan 2026-08-25-agent-kanbans-mirror)
+    _ = @import("http_handlers/agent_kanbans_get.zig"); // GET /items/:id/agent_kanban
+    _ = @import("http_handlers/agent_kanbans_update.zig"); // PATCH /items/:id/agent_kanban
+    _ = @import("http_handlers/agent_kanban_knowledge_create.zig"); // POST /agent-kanbans/:id/knowledge
+    _ = @import("http_handlers/agent_kanban_knowledge_update.zig"); // PATCH /agent-kanbans/:id/knowledge/:id
+    _ = @import("http_handlers/agent_kanban_knowledge_delete.zig"); // DELETE /agent-kanbans/:id/knowledge/:id
+    _ = @import("http_handlers/agent_kanban_knowledge_reorder.zig"); // PATCH /agent-kanbans/:id/knowledge/reorder
+    _ = @import("http_handlers/agent_kanban_system_prompt_create.zig"); // POST /agent-kanbans/:id/system_prompt
+    _ = @import("http_handlers/agent_kanban_system_prompt_update.zig"); // PATCH /agent-kanbans/:id/system_prompt/:id
+    _ = @import("http_handlers/agent_kanban_system_prompt_delete.zig"); // DELETE /agent-kanbans/:id/system_prompt/:id
+    _ = @import("http_handlers/agent_kanban_system_prompt_reorder.zig"); // PATCH /agent-kanbans/:id/system_prompt/reorder
+    _ = @import("http_handlers/agent_kanban_tools_list.zig"); // GET /agent-kanbans/:id/tools
+    _ = @import("http_handlers/agent_kanban_tools_create.zig"); // POST /agent-kanbans/:id/tools
+    _ = @import("http_handlers/agent_kanban_tools_delete.zig"); // DELETE /agent-kanbans/:id/tools/:tool_name
     _ = @import("http_handlers/workspace_items_create_empty_name_test.zig");
     _ = @import("http_handlers/kanban_columns_list_test.zig");
     _ = @import("http_handlers/kanban_columns_create_test.zig");
@@ -111,6 +125,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // resolveNameFromTask helper + the useCase call site. Importing
     // the file surfaces them to zig build test (mirrors start_agent.zig).
     _ = @import("http_handlers/session_create.zig");
+    // NEW (2026-08-29-chat-sidebar-last-human-touched, Task 4):
+    // session_update.zig stamps sessions.last_human_touched_at_nano when
+    // the user edits a field. The static-contract test guards the call site.
+    _ = @import("http_handlers/session_update_test.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/kanban_tags_list.zig"); // 2026-07-30-kanban-task-tags-autocomplete — inline useCase tests

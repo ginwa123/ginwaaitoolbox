@@ -41,6 +41,7 @@ test {
     _ = @import("tools_exec_get_plan.zig"); // inlined 2 tests from tools_exec_get_plan_test.zig
     _ = @import("tools_exec_update_plan.zig"); // inlined 3 tests from tools_exec_update_plan_test.zig
     _ = @import("tools_exec_delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool — inlined 2 tests
+    _ = @import("tools_exec_add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool — Step 3 (exec wrapper)
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
@@ -70,6 +71,15 @@ test {
     _ = @import("tools_exec_search.zig");
     _ = @import("tools_exec_get_skill.zig");
     _ = @import("tools_exec_list_directory.zig");
+
+    // task_1787855066467_8 — bash/pwsh lenient JSON argument parser.
+    // Recover LLM XML-fragment hallucinations like
+    // `mandatory_timeout: "5</mandatory_timeout>"` into the integer 5,
+    // or surface the offending field + value + expected type when
+    // coercion fails.
+    _ = @import("tools_exec_bash_args.zig");
+    _ = @import("tools_exec_bash.zig");
+    _ = @import("tools_exec_pwsh.zig");
 
     // 2026-08-23 spawn-subagent-live-progress — `subagent_progress.zig`
     // builds the wire payload that rides the EXISTING `llm_full` SSE

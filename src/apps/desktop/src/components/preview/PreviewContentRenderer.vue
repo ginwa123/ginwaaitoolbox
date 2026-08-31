@@ -76,6 +76,17 @@ const props = withDefaults(
   { variant: 'side' },
 )
 
+// 2026-08-29: emit `'open-in-side-panel'` when the CTA-strip "Open in
+// side panel" button is clicked. ShowPreview.vue listens for this event
+// and re-emits the existing `'open'` event so ChatView.vue's
+// `openPreviewForMessage` handler is unchanged — the new event is just
+// a parallel path to the same handler. We use a distinct event name
+// (rather than reusing `'open'`) so a future caller can distinguish
+// "open in new tab" from "open in side panel" if needed.
+const emit = defineEmits<{
+  'open-in-side-panel': []
+}>()
+
 const isInline = computed(() => props.variant === 'inline')
 
 // ─── Iframe ref + auto-resize message handling ──────────────────────
@@ -95,6 +106,14 @@ const iframeRef = ref<HTMLIFrameElement | null>(null)
 const MIN_IFRAME_HEIGHT = 200
 const MAX_IFRAME_HEIGHT = 2000
 
+// 2026-08-29: when the iframe's inner content is wider than the iframe
+// itself (the chat column), show a dim "Preview wider than chat — scroll
+// for full content" hint in the CTA strip below the iframe. The
+// iframe's content reports its scrollWidth via the postMessage protocol
+// (see AUTO_RESIZE_SCRIPT). We track it as a ref so the CTA strip's
+// `:v-if` reactivity picks it up.
+const overflowsHorizontally = ref(false)
+
 function onIframeMessage(e: MessageEvent) {
   // Filter by source — only messages from our own auto-resize script.
   if (
@@ -107,9 +126,50 @@ function onIframeMessage(e: MessageEvent) {
   }
   const iframe = iframeRef.value
   if (!iframe) return
-  const clamped = Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_IFRAME_HEIGHT, e.data.height))
-  iframe.style.height = `${clamped}px`
+  const clampedH = Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_IFRAME_HEIGHT, e.data.height))
+  iframe.style.height = `${clampedH}px`
+  // Width hint (2026-08-29) — only show if the iframe's own clientWidth
+  // is the bottleneck (chat column). Guard against the iframe reporting
+  // 0 before it has laid out (initial postMessage can race the first
+  // layout pass). Older srcdocs that don't post `width` are handled by
+  // the `typeof e.data.width === 'number'` gate below — the existing
+  // auto-resize tests dispatch `{source, height}` only and stay green.
+  if (typeof e.data.width === 'number' && iframe.clientWidth > 0) {
+    overflowsHorizontally.value = e.data.width > iframe.clientWidth + 1
+  }
 }
+
+// ─── Auto-escalate to side panel on overflow (2026-08-29) ────────────
+//
+// When the inline iframe detects its inner content is wider than the
+// chat column, the iframe is cropped (horizontal scrollbar overlaps
+// content, user sees "half" the preview). The CTA strip's "↗ Open in
+// side panel" button is helpful but the user still sees the cropped
+// iframe by default — most users won't notice the small button.
+//
+// Fix: when overflow is first detected, automatically emit
+// `'open-in-side-panel'` (which ShowPreview.vue re-emits as `'open'`
+// → ChatView.vue opens the right-side panel for this preview) AND
+// hide the iframe body in the chat bubble (replace it with a small
+// "Viewing in side panel →" pointer). The user ends up looking at the
+// side panel with the full content — no more cropped iframe.
+//
+// `once: true` because the overflow state can flip back and forth
+// during initial layout (the postMessage fires on load + resize +
+// MutationObserver). We only want to escalate once per mount.
+//
+// `inline` variant only: side variant never has this problem (the
+// panel is wide enough; the resize handle lets the user go wider).
+import { watch } from 'vue'
+watch(
+  () => overflowsHorizontally.value,
+  (nowOverflow) => {
+    if (nowOverflow && props.variant === 'inline') {
+      emit('open-in-side-panel')
+    }
+  },
+  { once: true },
+)
 
 onMounted(() => {
   if (typeof window !== 'undefined') {
@@ -148,7 +208,15 @@ function report(){
       de ? de.offsetHeight : 0,
       body ? body.offsetHeight : 0
     );
-    parent.postMessage({ source: REPORT_SOURCE, height: h }, '*');
+    // 2026-08-29: also report scrollWidth so the parent can show a
+    // hint when the preview content is wider than the chat column.
+    var w = Math.max(
+      de ? de.scrollWidth : 0,
+      body ? body.scrollWidth : 0,
+      de ? de.offsetWidth : 0,
+      body ? body.offsetWidth : 0
+    );
+    parent.postMessage({ source: REPORT_SOURCE, height: h, width: w }, '*');
   } catch(e) {}
 }
 function init(){
@@ -238,36 +306,22 @@ const htmlSrcDoc = computed<string | null>(() => {
   return `${AUTO_RESIZE_SCRIPT}<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
 })
 
-// ─── Open full preview (inline variant only) ─────────────────────────
+// ─── Open in side panel (inline CTA strip) ─────────────────────────
 //
-// In inline mode the iframe is auto-sized to its content, but the chat
-// column may still be narrower than the user's HTML page (e.g. a
-// dashboard designed for 1440px wide). The "Open full preview" button
-// gives the user a one-click path to see the page at full window width
-// without leaving the chat.
+// 2026-08-29: the inline CTA strip below the iframe emits
+// `'open-in-side-panel'` when clicked. ShowPreview.vue listens and
+// re-emits the existing `'open'` event with the message id, so
+// ChatView.vue's `openPreviewForMessage` handler is unchanged.
 //
-// Implementation: build a Blob URL from the SAME srcdoc value the iframe
-// uses (so what they see inline matches what they see in the new tab),
-// then `window.open(url, '_blank', 'noopener,noreferrer')`.
-//
-// We construct the Blob at click-time (not at computed-time) so the URL
-// is only created when the user actually wants to open it.
-function openFullPreview() {
-  if (!htmlSrcDoc.value) return
-  if (typeof window === 'undefined' || typeof URL === 'undefined' || typeof Blob === 'undefined') {
-    return
-  }
-  const blob = new Blob([htmlSrcDoc.value], { type: 'text/html;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const win = window.open(url, '_blank', 'noopener,noreferrer')
-  // Revoke the blob URL after a short delay so the new tab has time
-  // to load it. defer-style: schedule via setTimeout so the click
-  // handler returns immediately.
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  // No-op if window.open was blocked (returns null). Caller can
-  // inspect via tooltip, but we don't surface a toast — the
-  // browser's pop-up block hint is enough.
-  void win
+// We replaced the old "open in new tab" behaviour (which built a Blob
+// URL + window.open) with this side-panel emit. Reasoning: the side
+// panel is one click away, the user stays in the chat, and the panel
+// is now the DEFAULT destination for show_preview — so routing the
+// inline-fallback click back to the panel matches user mental model.
+// The Blob-URL-in-new-tab path is no longer reachable from the UI but
+// the helper could be re-introduced if a future caller needs it.
+function emitOpenInSidePanel() {
+  emit('open-in-side-panel')
 }
 </script>
 
@@ -308,15 +362,26 @@ function openFullPreview() {
                  The script reports the iframe's content height to the
                  parent, which sets `iframe.style.height` accordingly
                  (clamped 200-2000px). Result: every inline HTML preview
-                 fits its content with NO SCROLLBAR. The "↗ Open full"
-                 button covers the long-content case (full window
-                 width in a new tab via Blob URL).
+                 fits its content with NO SCROLLBAR. The CTA strip
+                 BELOW the iframe carries the "� Open in side panel"
+                 affordance — see the comment block above the strip
+                 for the 2026-08-29 redesign rationale.
+
+      2026-08-29 (auto-escalate): when `overflowsHorizontally` flips true
+      (iframe's inner content wider than the chat column), we DON'T
+      render the iframe — instead we show the "Viewing in side panel"
+      pointer below. The watcher in <script setup> auto-emits
+      `open-in-side-panel` so the side panel opens simultaneously.
+      The user ends up looking at the side panel with the full content
+      instead of a cropped iframe. The iframe element is mounted briefly
+      during the postMessage round-trip but never reaches the visible
+      state because `overflowsHorizontally` flips before paint.
     -->
     <div
-      v-else-if="contentType === 'html' && htmlSrcDoc"
+      v-else-if="contentType === 'html' && htmlSrcDoc && !overflowsHorizontally"
       data-testid="preview-html-container"
       :class="isInline
-        ? 'relative max-w-full rounded overflow-hidden border border-[var(--color-border)] bg-white'
+        ? 'max-w-full rounded overflow-hidden border border-[var(--color-border)] bg-white'
         : 'h-full min-h-[480px] rounded overflow-hidden border border-[var(--color-border)] bg-white'"
     >
       <iframe
@@ -330,23 +395,45 @@ function openFullPreview() {
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
       />
-      <!--
-        Floating "Open full preview" button — only in inline mode.
-        Positioned at the top-right of the iframe so it never overlaps
-        the HTML content (which typically has its own header). The
-        iframe's sandbox="allow-scripts" doesn't apply to the parent
-        window's window.open — the new tab is OUTSIDE the iframe.
-      -->
-      <button
-        v-if="isInline"
-        type="button"
-        class="absolute top-1 right-1 px-1.5 py-0.5 text-[0.65rem] font-mono rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)]/90 backdrop-blur hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text-muted)] transition-colors"
-        data-testid="preview-open-full-button"
-        title="Open this HTML in a new browser tab at full width"
-        @click.stop="openFullPreview"
-      >↗ Open full</button>
     </div>
 
+    <!--
+      Auto-escalate pointer (2026-08-29) — replaces the iframe body
+      when `overflowsHorizontally` is true in inline mode. The watcher
+      above already auto-emitted `open-in-side-panel` (which opens the
+      right-side panel via ChatView.vue's `openPreviewForMessage`),
+      so this pointer is purely an in-chat acknowledgement + a clickable
+      jump-to-panel for users who closed the panel.
+    -->
+    <div
+      v-else-if="isInline && contentType === 'html' && htmlSrcDoc && overflowsHorizontally"
+      class="flex items-center justify-between gap-2 px-3 py-2 text-xs text-[var(--semantic-text-muted)] border border-dashed border-[var(--color-border)] rounded bg-black/[0.04]"
+      data-testid="preview-inline-escalated"
+    >
+      <span>↗ Preview is wider than this chat — viewing in the side panel</span>
+      <button
+        type="button"
+        class="px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text)] cursor-pointer transition-colors"
+        data-testid="preview-escalated-jump-to-panel"
+        title="Focus the side panel on this preview"
+        @click.stop="emitOpenInSidePanel"
+      >Open</button>
+    </div>
+
+    <!--
+      2026-08-29 (auto-escalate followup): the CTA strip below the
+      iframe is REMOVED in this revision. The watcher in <script setup>
+      now auto-emits `open-in-side-panel` the moment overflow is
+      detected, which (a) opens the side panel AND (b) hides the iframe
+      via the `!overflowsHorizontally` guard above. The user sees the
+      side panel with the full content + a small "↗ Preview is wider
+      than this chat — viewing in the side panel" pointer in the chat
+      bubble — no CTA button to discover, no cropped iframe to scroll.
+
+      Markdown / text / code / image content (non-html) flow through
+      the v-else branch below — never had the iframe problem to begin
+      with.
+    -->
     <div
       v-else
       class="text-xs text-[var(--semantic-text)] markdown-content"

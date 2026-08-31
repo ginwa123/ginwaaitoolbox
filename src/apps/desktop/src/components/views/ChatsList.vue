@@ -7,6 +7,7 @@ import { useSidebarStore } from '../../stores/sidebar'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
+import SessionSlider from '../SessionSlider.vue'
 
 const router = useRouter()
 
@@ -38,6 +39,26 @@ const currentMainView = useCurrentMainView()
 const isCurrentChat = (sessionId: string): boolean =>
   currentMainView.value.kind === 'chat' && currentMainView.value.sessionId === sessionId
 
+// Migration 082 - "AI is ahead of you" stale-dot check.
+// True when the AI has touched the chat since the human's last touch
+// (updated_at > last_human_touched_at). Empty / null human-time means
+// "never touched" - no comparison to make, no dot.
+// Both come from the backend as unix-ms strings (Migration 075
+// convention) - we compare as numbers.
+const isStale = (human: string | undefined, updated: string | undefined): boolean => {
+  if (!human) return false
+  if (!updated) return false
+  // Both fields are SQLite datetime UTC strings ('YYYY-MM-DD HH:MM:SS')
+  // - identical format - so lexicographic string comparison is the
+  // most accurate (and fastest) way to detect 'updated_at > human_time'.
+  // String comparison matches the SELECT layer's
+  // `needs_human_review` predicate (llm_history.zig), which compares
+  // `t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) * 1000)`
+  // - also a unix-vs-datetime comparison that resolves to the same
+  // truth (newer string > older string).
+  return updated > human
+}
+
 // Inject processingState from App.vue
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
 
@@ -45,7 +66,7 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string; is_auto_retry_until_stop?: string }[]>([])
+const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string; is_auto_retry_until_stop?: string; last_human_touched_at?: string; updated_at?: string }[]>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -158,12 +179,18 @@ const loadChats = async () => {
       // leave stale `active: true` after navigation away from chat.
       active: false,
       processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
-      relativeTime: formatRelativeTime(session.updated_at),
+      // Migration 082 — prefer human-touched timestamp when present.
+      relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
       git_worktree_cwd: session.git_worktree_cwd || '',
       // Migration 063 — defaulted to "0" in getChats mapping so the
       // `=== '1'` badge check below is well-defined.
       is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
+        // Migration 082 — captured separately for the stale-dot check
+        // (compares updated_at vs last_human_touched_at to render the
+        // amber "AI is ahead of you" indicator).
+        last_human_touched_at: session.last_human_touched_at || '',
+        updated_at: session.updated_at || '',
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -206,7 +233,11 @@ const loadMoreChats = async () => {
       name: session.session_name || 'New Chat',
       active: false,
       processing: false,
-      relativeTime: formatRelativeTime(session.updated_at),
+      // Migration 082 — prefer human-touched timestamp when present.
+      relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
+      // Migration 082 — captured for the stale-dot check (same as loadChats).
+      last_human_touched_at: session.last_human_touched_at || '',
+      updated_at: session.updated_at || '',
     }))
     navItems.value.push(...newItems)
     chatsHasMore.value = data.has_more
@@ -456,7 +487,7 @@ defineExpose({
         <template #default="{ item }">
           <button
             @click="setActive(item.id)"
-            class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent"
+            class="relative w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent overflow-hidden"
             :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="
               isCurrentChat(item.id)
@@ -464,15 +495,6 @@ defineExpose({
                 : 'color: var(--semantic-text-muted);'
             "
           >
-            <span
-              v-if="item.processing === true"
-              class="w-5 h-5 flex items-center justify-center shrink-0"
-            >
-              <div
-                class="w-4 h-4 border-2 rounded-full animate-spin"
-                style="border-color: var(--color-yellow); border-top-color: transparent"
-              ></div>
-            </span>
             <span class="flex-1 text-left truncate">
               {{ item.name }}
               <span
@@ -489,7 +511,28 @@ defineExpose({
                 >🌳 worktree</span
               >
             </span>
-            <span class="text-xs opacity-60 shrink-0 ml-2">{{ item.relativeTime || 'now' }}</span>
+            <!-- Migration 082 - replace AI-tainted updated_at with the human
+                 time (last_human_touched_at ?? updated_at). Stale dot
+                 appears when the AI has touched since the human's
+                 last touch ("AI is ahead of you"). Hover tooltips
+                 distinguish "Last human activity" vs "Last activity
+                 (never touched by you yet)" so the source of the
+                 timestamp is discoverable without a comment.
+                 Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md (Task 8) -->
+            <span class="text-xs opacity-60 shrink-0 ml-2 flex items-center gap-1">
+              <span
+                v-if="isStale(item.last_human_touched_at, item.updated_at)"
+                class="w-1 h-1 rounded-full bg-amber-400"
+                title="AI is still working — your last touch was earlier"
+                data-testid="chat-stale-dot"
+              />
+              <span
+                :title="item.last_human_touched_at
+                  ? 'Last human activity'
+                  : 'Last activity (never touched by you yet)'"
+                data-testid="chat-time-pill"
+              >{{ item.relativeTime || 'now' }}</span>
+            </span>
             <button
               v-if="item.id !== 'chat'"
               @click.stop="confirmDeleteChat(item.id)"
@@ -499,6 +542,15 @@ defineExpose({
             >
               ×
             </button>
+            <!-- Per-session LLM slider at the bottom edge of this row.
+                 Hidden when this session is idle; slides while
+                 processingState[item.id] is true. Replaces the old
+                 yellow spinner (was: 9-line <span>/<div> animate-spin
+                 block). Reads processingState via Vue inject from
+                 App.vue — no prop drilling needed. The component
+                 self-positions (absolute bottom-0), so this row's
+                 button just needs `position: relative`. -->
+            <SessionSlider :session-id="item.id" />
           </button>
         </template>
       </VirtualScroller>

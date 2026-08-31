@@ -1049,4 +1049,51 @@ describe('KanbanView — header + Add task button', () => {
       0,
     )
   })
+
+  // ─── Agent button → settings page navigation (plan
+  //    docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md,
+  //    iteration 2 — Agent button now lands on ?tab=tools since
+  //    the Agent umbrella tab was split into Tools + Knowledge) ───
+
+  /**
+   * Mount a KanbanView with a fresh vue-router installed so the
+   * Agent button's `router.push(...)` doesn't crash against the
+   * missing global plugin. Returns the spy on `push` for assertions.
+   */
+  async function mountViewWithRouter(item: WorkspaceItem) {
+    const { createRouter, createMemoryHistory } = await import('vue-router')
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', name: 'catch-all', component: { template: '<div/>' } }],
+    })
+    const pushSpy = vi.spyOn(router, 'push')
+    const processingState: Ref<Record<string, boolean>> = ref({})
+    wrapper = mount(KanbanView, {
+      props: { item, workspaceId: WS_ID },
+      global: { provide: { processingState }, plugins: [router] },
+    })
+    return { pushSpy }
+  }
+
+  it('navigates to /app/kanban/:itemId/settings?tab=tools when the Agent button is clicked', async () => {
+    const { pushSpy } = await mountViewWithRouter(makeItem())
+    await flushPromises()
+    const btn = wrapper!.find(`[data-testid="kanban-view-${ITEM_ID}-open-agent-settings"]`)
+    expect(btn.exists()).toBe(true)
+    await btn.trigger('click')
+    expect(pushSpy).toHaveBeenCalledWith({
+      path: `/app/kanban/${ITEM_ID}/settings`,
+      query: { tab: 'tools' },
+    })
+  })
+
+  it('does NOT emit `openAgentSettings` anymore (replaced by direct router.push)', async () => {
+    await mountViewWithRouter(makeItem())
+    await flushPromises()
+    const btn = wrapper!.find(`[data-testid="kanban-view-${ITEM_ID}-open-agent-settings"]`)
+    await btn.trigger('click')
+    // The event no longer exists on defineEmits — wrapper.emitted()
+    // returns undefined for unknown events.
+    expect(wrapper!.emitted('openAgentSettings')).toBeUndefined()
+  })
 })

@@ -76,6 +76,21 @@ pub const agentSystemPromptUpdateHandler = @import("agent_system_prompt_update.z
 pub const agentSystemPromptDeleteHandler = @import("agent_system_prompt_delete.zig").agentSystemPromptDeleteHandler;
 pub const agentSystemPromptReorderHandler = @import("agent_system_prompt_reorder.zig").agentSystemPromptReorderHandler;
 
+// Agent-Kanbans mirror (Migration 081, plan 2026-08-25-agent-kanbans-mirror)
+pub const agentKanbansGetHandler = @import("agent_kanbans_get.zig").agentKanbansGetHandler;
+pub const agentKanbansUpdateHandler = @import("agent_kanbans_update.zig").agentKanbansUpdateHandler;
+pub const agentKanbanKnowledgeCreateHandler = @import("agent_kanban_knowledge_create.zig").agentKanbanKnowledgeCreateHandler;
+pub const agentKanbanKnowledgeUpdateHandler = @import("agent_kanban_knowledge_update.zig").agentKanbanKnowledgeUpdateHandler;
+pub const agentKanbanKnowledgeDeleteHandler = @import("agent_kanban_knowledge_delete.zig").agentKanbanKnowledgeDeleteHandler;
+pub const agentKanbanKnowledgeReorderHandler = @import("agent_kanban_knowledge_reorder.zig").agentKanbanKnowledgeReorderHandler;
+pub const agentKanbanSystemPromptCreateHandler = @import("agent_kanban_system_prompt_create.zig").agentKanbanSystemPromptCreateHandler;
+pub const agentKanbanSystemPromptUpdateHandler = @import("agent_kanban_system_prompt_update.zig").agentKanbanSystemPromptUpdateHandler;
+pub const agentKanbanSystemPromptDeleteHandler = @import("agent_kanban_system_prompt_delete.zig").agentKanbanSystemPromptDeleteHandler;
+pub const agentKanbanSystemPromptReorderHandler = @import("agent_kanban_system_prompt_reorder.zig").agentKanbanSystemPromptReorderHandler;
+pub const agentKanbanToolsListHandler = @import("agent_kanban_tools_list.zig").agentKanbanToolsListHandler;
+pub const agentKanbanToolsCreateHandler = @import("agent_kanban_tools_create.zig").agentKanbanToolsCreateHandler;
+pub const agentKanbanToolsDeleteHandler = @import("agent_kanban_tools_delete.zig").agentKanbanToolsDeleteHandler;
+
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
 pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;

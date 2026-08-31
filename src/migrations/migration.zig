@@ -1953,6 +1953,18 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-08-21-agent-system-prompt.md.
     // Task: task_1787408958280_1.
     .{ .version = Migration080AddAgentSystemPrompt.version, .name = Migration080AddAgentSystemPrompt.name, .up = Migration080AddAgentSystemPrompt.up },
+    // Migration 081 — Agent-Kanbans mirror: agent_kanbans (1-1 with kanban
+    // workspace_items) + knowledges + system_prompt + tools children.
+    // Plan: docs/superpowers/plans/2026-08-25-agent-kanbans-mirror.md.
+    // Task: task_1787597624259_2.
+    .{ .version = Migration081CreateAgentKanbans.version, .name = Migration081CreateAgentKanbans.name, .up = Migration081CreateAgentKanbans.up },
+    // Migration 082 — sessions.last_human_touched_at_nano column. Sibling
+    // of Migration 065's task-side column. Drives the chat sidebar's
+    // "last human touched" time pill (replacing the AI-tainted updated_at)
+    // and the amber stale-dot when AI has touched since the user's last
+    // touch. Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md.
+    // Task: task_1788004921757_1.
+    .{ .version = Migration082AddSessionHumanTouchedAt.version, .name = Migration082AddSessionHumanTouchedAt.name, .up = Migration082AddSessionHumanTouchedAt.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4397,4 +4409,297 @@ test "Migration080 ON DELETE CASCADE removes prompts when agent row deleted" {
     const r = (try q.next()) orelse return error.RowMissing;
     defer r.deinit(alloc);
     try testing.expectEqualStrings("0", r.values[0]);
+}
+
+// ============================================================================
+// Migration 081 — Agent-Kanbans mirror: `agent_kanbans` +
+// `agent_kanban_knowledges` + `agent_kanban_system_prompt` +
+// `agent_kanban_tools`.
+//
+// Mirrors the agent-menu tables (Migration 078/079/080) onto kanban boards:
+//   - agent_kanbans: 1-1 with workspace_items where item_type == 'kanban'.
+//     Same identity convention as agents (spec D3): id == workspace_item_id.
+//   - children keyed by kanban_id FK → agent_kanbans(id) ON DELETE CASCADE.
+//
+// Differences vs the agent tables (intentional):
+//   - agent_kanban_knowledges.file_path is NOT NULL DEFAULT '' from day one
+//     (file XOR inline content supported natively — no repeat of the
+//     078→079 add-column dance).
+//
+// Idempotency: CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS.
+// One statement per db.exec (sqlite3_prepare_v2 compiles only the first).
+//
+// Plan: docs/superpowers/plans/2026-08-25-agent-kanbans-mirror.md
+// Task: task_1787597624259_2
+pub const Migration081CreateAgentKanbans = struct {
+    pub const version: u32 = 81;
+    pub const name = "create_agent_kanbans_mirror";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_kanbans (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_kanbans_workspace_item_id ON agent_kanbans(workspace_item_id)",
+            &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_kanban_knowledges (
+            \\    id TEXT PRIMARY KEY,
+            \\    kanban_id TEXT NOT NULL,
+            \\    file_path TEXT NOT NULL DEFAULT '',
+            \\    label TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (kanban_id) REFERENCES agent_kanbans(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_knowledges_kanban_id ON agent_kanban_knowledges(kanban_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_knowledges_kanban_position ON agent_kanban_knowledges(kanban_id, position DESC)",
+            &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_kanban_system_prompt (
+            \\    id TEXT PRIMARY KEY,
+            \\    kanban_id TEXT NOT NULL,
+            \\    title TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (kanban_id) REFERENCES agent_kanbans(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_system_prompt_kanban_id ON agent_kanban_system_prompt(kanban_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_system_prompt_kanban_position ON agent_kanban_system_prompt(kanban_id, position DESC)",
+            &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_kanban_tools (
+            \\    id TEXT PRIMARY KEY,
+            \\    kanban_id TEXT NOT NULL,
+            \\    tool_name TEXT NOT NULL,
+            \\    enabled INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (kanban_id) REFERENCES agent_kanbans(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_kanban_tools_kanban_id ON agent_kanban_tools(kanban_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_kanban_tools_kanban_tool ON agent_kanban_tools(kanban_id, tool_name)",
+            &[_][]const u8{});
+    }
+};
+
+
+/// Migration 082 - Add `sessions.last_human_touched_at_nano`.
+///
+/// Sibling of Migration 065 (which added the same column shape to
+/// `workspace_item_tasks`). Used by the chat sidebar to render the
+/// "last human touched" time pill instead of the AI-tainted
+/// `updated_at`. Stamped by:
+///   - `root.zig::emit_run_agent` - every user-sends-a-message path
+///     (chat send, kanban "create & run", kanban "Start agent", `+ Chat`)
+///   - `session_update.zig::useCase` - user renames / changes profile /
+///     toggles unattended mode
+///   - `workflow.zig::saveRetryAttemptMessage` - "also when error too":
+///     agent retry-catch / unexpected finish_reason / TooManyRetries bail
+///
+/// Schema (nullable INTEGER, no DEFAULT): NULL is the canonical
+/// "never touched by a human" state - the frontend falls back to
+/// `updated_at` for these rows so pre-migration sessions keep
+/// displaying their existing time without a regression.
+///
+/// Column name uses the `_nano` suffix per the project-wide
+/// convention from Migration 075 (uniform across 5 timestamp
+/// columns; actual stored unit is unix-ms - see Migration 075
+/// docstring). The wire / struct / JSON field
+/// is the bare `last_human_touched_at` (no `_nano`) - the SELECT
+/// aliases back via `... AS last_human_touched_at`.
+///
+/// The `addColumnIfMissing` helper handles both upgrade-from-v1
+/// and fresh-DB-already-declares-it paths gracefully (see memory
+/// `nalar-data-and-routines.md` "Migration #009-#052 fresh-DB
+/// cascade is fragile" for the failure mode this avoids).
+///
+/// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+/// Task: task_1788004921757_1.
+pub const Migration082AddSessionHumanTouchedAt = struct {
+    pub const version: u32 = 82;
+    pub const name = "add_session_human_touched_at";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "sessions",
+            // The SQL column name and the `column` probe arg must match
+            // exactly - `addColumnIfMissing` issues
+            // `SELECT 1 FROM pragma_table_info('sessions') WHERE name = '<column>'`
+            // first to decide whether to skip. The wire / struct / JSON
+            // field is the bare `last_human_touched_at` (no `_nano`
+            // suffix) - the SELECT in buildSessionListJson aliases the
+            // SQL column back via `... AS last_human_touched_at`.
+            "last_human_touched_at_nano",
+            // name + type - `addColumnIfMissing` uses this verbatim as
+            // `ALTER TABLE {table} ADD COLUMN {definition}`, so omitting
+            // the column name would create a column literally named
+            // "INTEGER". See memory `addColumnIfMissing-requires-name-type`.
+            "last_human_touched_at_nano INTEGER",
+        );
+    }
+};
+
+// ============================================================================
+// Migration 081 — agent-kanbans mirror — inline tests
+// ============================================================================
+
+const Migration081 = Migration081CreateAgentKanbans;
+
+test "Migration081 creates agent_kanbans with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration081.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "agent_kanbans");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "workspace_item_id", "description", "created_at", "updated_at",
+    });
+}
+
+test "Migration081 creates agent_kanban_knowledges with content column" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration081.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "agent_kanban_knowledges");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "kanban_id", "file_path", "label", "content", "position", "created_at", "updated_at",
+    });
+}
+
+test "Migration081 creates agent_kanban_system_prompt and agent_kanban_tools with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration081.up(&ctx.db, alloc);
+
+    const sp_cols = try columnsOf(&ctx, "agent_kanban_system_prompt");
+    defer {
+        for (sp_cols) |c| alloc.free(c);
+        alloc.free(sp_cols);
+    }
+    try expectColumnsEqual(sp_cols, &[_][]const u8{
+        "id", "kanban_id", "title", "content", "position", "created_at", "updated_at",
+    });
+
+    const tool_cols = try columnsOf(&ctx, "agent_kanban_tools");
+    defer {
+        for (tool_cols) |c| alloc.free(c);
+        alloc.free(tool_cols);
+    }
+    try expectColumnsEqual(tool_cols, &[_][]const u8{
+        "id", "kanban_id", "tool_name", "enabled", "created_at",
+    });
+}
+
+test "Migration081 is registered in allMigrations" {
+    const all = @import("migration.zig").allMigrations;
+    for (all) |m| {
+        if (m.version == Migration081.version) return;
+    }
+    return error.Migration081NotRegistered;
+}
+
+test "Migration081 UNIQUE workspace_item_id rejects second agent_kanbans row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration081.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_kanbans (id, workspace_item_id) VALUES ('ak_1', 'item_1')",
+        &.{});
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO agent_kanbans (id, workspace_item_id) VALUES ('ak_2', 'item_1')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+}
+
+test "Migration081 ON DELETE CASCADE removes all children when workspace_item deleted" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+    // Production order: parent tables first (agents), then the new tables.
+    try Migration078.up(&ctx.db, alloc);
+    try Migration081.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'kanban', 'Cascade Test', '/tmp/cascade', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_kanbans (id, workspace_item_id) VALUES ('ak_1', 'ws_item_1')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_kanban_knowledges (id, kanban_id, file_path, label, content) VALUES ('k_1', 'ak_1', '', 'Note', 'inline body')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_kanban_system_prompt (id, kanban_id, title, content) VALUES ('sp_1', 'ak_1', 'Persona', 'You are X')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_kanban_tools (id, kanban_id, tool_name) VALUES ('t_1', 'ak_1', 'bash')",
+        &.{});
+
+    // Delete the workspace_item row directly.
+    try ctx.db.exec(alloc, "DELETE FROM workspace_items WHERE id = 'ws_item_1'", &.{});
+
+    // The agent_kanbans row and ALL children should be CASCADE-deleted.
+    inline for (.{ "agent_kanbans", "agent_kanban_knowledges", "agent_kanban_system_prompt", "agent_kanban_tools" }) |table| {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM " ++ table, &.{});
+        defer q.deinit();
+        const r = (try q.next()) orelse return error.RowMissing;
+        defer r.deinit(alloc);
+        try testing.expectEqualStrings("0", r.values[0]);
+    }
 }

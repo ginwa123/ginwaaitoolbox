@@ -132,6 +132,17 @@ pub const bash_tool = AgentTool{
         \\If bash is not on PATH, the tool will fail with `FileNotFound` at
         \\spawn time. macOS users: stock macOS ships bash 3.2; install
         \\bash 4+ via Homebrew (`brew install bash`) for modern syntax.
+        \\
+        \\## Argument Type Coercion (lenient)
+        \\Numeric fields (`mandatory_timeout`, `max_output`, `max_lines`)
+        \\accept either a JSON number or a numeric string. A stray
+        \\trailing `</fieldname>` is auto-stripped (e.g.
+        \\`"5</mandatory_timeout>"` → 5) — this commonly happens when
+        \\the model accidentally echoes back a fragment of a previous
+        \\tool envelope. On a real type mismatch the tool returns
+        \\`invalid field '<name>': got JSON value "<verbatim>", expected <type>`
+        \\so you can self-correct on the next turn. Boolean fields
+        \\accept JSON bool or the strings `"true"` / `"false"`.
         ,
         .parameters = .{
             .type = "object",
