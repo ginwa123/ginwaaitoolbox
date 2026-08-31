@@ -1134,6 +1134,12 @@ jobs:
               export PATH="$(dirname "$local_pnpm_path"):$PATH"
             fi
           fi
+          # Force zig to recompile build.exe from the current build.zig.
+          # Self-hosted runners persist .zig-cache on disk between runs,
+          # so a stale build.exe from an older build.zig (without
+          # --no-webapp-rebuild) can survive even when the GH Actions
+          # cache misses.
+          rm -rf .zig-cache/o/
           zig build nalar-desktop --summary all --no-webapp-rebuild
 
       - name: Verify desktop + service binaries (Linux)
