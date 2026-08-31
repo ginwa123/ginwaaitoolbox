@@ -1835,6 +1835,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             // the symbols as no-ops so `zig build nalar-desktop` still
             // succeeds on dev boxes without MSVC + NuGet extraction.
             const use_real_webview = blk: {
+                if (no_webapp_rebuild) break :blk false; // Windows CI OOM/fast path — use stub
                 if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
                 if (webview2MissingPrereq(b)) |missing| {
                     std.log.warn(
