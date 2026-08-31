@@ -468,12 +468,56 @@ pub const StdioRegistry = struct {
         };
     }
 
+    /// Live, process-backed environment for spawned children.
+    ///
+    /// WHY THIS IS REQUIRED: `Std.Io.Threaded.init` defaults its
+    /// `.environ` option to `.empty`. A Threaded with an empty environ
+    /// makes `std.process.spawn` (the path taken by `StdioClient.init`
+    /// below) exec children with an EMPTY environment — no `PATH`. A child
+    /// shell that resolves a command by name (e.g. the `mcp-hello-world`
+    /// wrapper doing `exec node "$SCRIPT_DIR/../../.../index.js"`) then
+    /// falls back to libc's hard-coded default path (`/bin:/usr/bin`) and
+    /// can't find the `node` binary that the build placed on PATH via
+    /// actions/setup-node in CI (or that a real user has in
+    /// `~/.nvm`/`/opt/homebrew/bin` via nvm/homebrew). Observed in CI as:
+    ///
+    ///   mcp-hello-world: line 11: exec: node: not found
+    ///
+    /// even though `node` IS reachable from the build process (the
+    /// pnpm invocations in the mcp build chain succeed). It only happens
+    /// at the nalar→child boundary because the GLOBAL registry builds its
+    /// own Threaded (see `initThreaded`), whereas direct-from-pytest
+    /// spawns use the harness's full environment and pass. Local dev
+    /// boxes typically have node at `/usr/bin/node` (on the default
+    /// fallback path) so the bug stays hidden.
+    ///
+    /// `std.start` constructs the main io the same way (capture the live
+    /// environ block), so we mirror it here. `std.c.environ` links because
+    /// nalar always links libc — the vendored curl/sqlite/openssl/libc++
+    /// stacks all pull it in.
+    fn processEnviron() std.process.Environ {
+        const block: std.process.Environ.Block = switch (builtin.os.tag) {
+            .windows => .global,
+            else => posix: {
+                const e = std.c.environ;
+                var n: usize = 0;
+                while (e[n] != null) : (n += 1) {}
+                break :posix .{ .slice = e[0..n :null] };
+            },
+        };
+        return .{ .block = block };
+    }
+
     /// Lazy-init helper for the global registry: creates the Threaded
     /// io backing the registry. Per-instance callers should pass an
     /// existing `io` via `init` and leave `threaded` null.
     fn initThreaded(parent_allocator: std.mem.Allocator) !StdioRegistry {
         const threaded = try parent_allocator.create(std.Io.Threaded);
-        threaded.* = std.Io.Threaded.init(parent_allocator, .{});
+        // Pass `.processEnviron()` so spawned MCP children inherit PATH
+        // (and the rest of the process env) — see processEnviron docs.
+        threaded.* = std.Io.Threaded.init(parent_allocator, .{
+            .environ = processEnviron(),
+        });
         return .{
             .arena = std.heap.ArenaAllocator.init(parent_allocator),
             .io = threaded.io(),

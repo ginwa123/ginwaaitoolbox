@@ -32,6 +32,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -189,6 +190,85 @@ def test_mcp_test_missing_command_for_stdio_returns_clear_error() -> None:
         })
         assert result.get("ok") is False
         assert "command" in result.get("error", "").lower()
+    finally:
+        harness.teardown()
+
+
+# ─── Regression: spawned MCP children must inherit the parent environment ──
+#
+# Background (2026-08-31, PR #373): the process-global `StdioRegistry`
+# lazily builds its own `std.Io.Threaded` with DEFAULT options. In Zig
+# 0.16 the default `InitOptions.environ` is `.empty`, so the `StdioClient`
+# spawned via the global registry inherited an EMPTY environment — no
+# PATH. A child that resolves its executable by name then fell back to
+# libc's hard-coded default path (`/bin:/usr/bin`) and, in CI, could not
+# find `node` (actions/setup-node installs it outside that default path),
+# surfacing as:
+#
+#   mcp-hello-world: line 11: exec: node: not found
+#
+# The fix gives that Threaded the live process environment, but a plain
+# "ok:true" assertion can't prove the difference ON A DEV BOX where node
+# happens to live on the default fallback path (/usr/bin/node). So this
+# test uses a shim command that is reachable ONLY via a non-default PATH
+# entry: with the bug the spawned child can't resolve it (empty env →
+# default path → not found → SpawnFailed → ok:false); with the fix it
+# inherits PATH → resolves → ok:true. It therefore fails closed on any
+# future regression that strips the spawned child's environment again.
+#
+
+# Minimal in-shell MCP stdio shim (newline-delimited JSON, which
+# readFramed auto-detects). Reads & discards the probe's 3 handshake
+# requests, then emits an initialize response + a tools/list response
+# with one tool ("shim_tool"). Lives at a custom PATH entry NOT on the
+# libc default fallback, so it is only resolvable when PATH is inherited.
+SHIM_SERVER = """\
+#!/bin/sh
+# Drain up to 3 incoming request lines (initialize, notifications/initialized,
+# tools/list) sent by the probe in a single write. `read` returns false on
+# EOF, so this also tolerates the case where the child exited early.
+i=0
+while [ "$i" -lt 3 ] && IFS= read -r _line; do i=$((i + 1)); done
+# Respond. NDJSON — readFramed peeks for '{' and treats each \\n-delimited
+# object as one frame.
+printf '%s\\n' '{"jsonrpc":"2.0","id":"1","result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"shim","version":"1.0"}}}'
+printf '%s\\n' '{"jsonrpc":"2.0","id":"2","result":{"tools":[{"name":"shim_tool","description":"env-inheritance regression guard"}]}}'
+"""
+
+SHIM_COMMAND = "mcp-test-env-shim-server"  # unique name, not present in /bin:/usr/bin
+
+
+def test_mcp_test_stdio_child_inherits_parent_path(tmp_path, monkeypatch) -> None:
+    """Children spawned through the global StdioRegistry must inherit the
+    parent environment (PATH in particular). The shim command is resolvable
+    only via a custom PATH entry outside libc's default fallback, so this
+    fails on the empty-env bug and passes once PATH is inherited.
+    """
+    # Place the shim on a PATH entry that is NOT on the glibc default
+    # fallback (`/bin:/usr/bin`). Keep the rest of PATH so nalar's own
+    # boot (git rev-parse, etc.) still resolves.
+    shim_dir = tmp_path / "mcp-shim-bin"
+    shim_dir.mkdir()
+    shim_file = shim_dir / SHIM_COMMAND
+    shim_file.write_text(SHIM_SERVER)
+    os.chmod(shim_file, 0o755)
+
+    orig_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", f"{shim_dir}:{orig_path}")
+
+    harness = FunctionalHarness.boot(stub_llm_profile=True)
+    try:
+        result = _post_test(harness, {
+            "transport": "stdio",
+            "command": SHIM_COMMAND,  # bare name → PATH resolution by the child
+            "args": [],
+        }, timeout_s=20.0)
+        assert result.get("ok") is True, (
+            f"spawned child did not inherit PATH (empty-env regression): {result}"
+        )
+        assert result["transport"] == "stdio"
+        names = {t["name"] for t in result["tools"]}
+        assert names == {"shim_tool"}, f"expected shim_tool, got: {names}"
     finally:
         harness.teardown()
 
