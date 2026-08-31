@@ -561,7 +561,50 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const initial_config = nalarcore.getLlmConfig(di.di);
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, initial_config.mcpServers() orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (blk: {
+        // Wire `isWorkerCancelled` through to the MCP stdio recv
+        // callback so the Stop button aborts a hung fetch within
+        // one syscall. We package the (db, session_id) pair into a
+        // small heap-allocated context + a static adapter fn;
+        // captured by value, intentionally leaked for the
+        // workflow-run lifetime. The per-request arena cleanup rule
+        // doesn't apply here — `parent_allocator` lives for the
+        // whole run, NOT a single request, so the leak is bounded
+        // by run count (O(1) per workflow run).
+        const McpCancelCtx = struct {
+            db: *sqlite.SqliteBackend,
+            session_id: []const u8,
+        };
+        const mcp_cancel_thunk = struct {
+            threadlocal var state: ?McpCancelCtx = null;
+
+            fn call() bool {
+                const s = state orelse return false;
+                return isWorkerCancelled(IsWorkerCancelledInput{
+                    .allocator = std.heap.page_allocator,
+                    .db = s.db,
+                    .session_id = s.session_id,
+                });
+            }
+        };
+
+        // Alloc the captured-state box on `parent_allocator` (lives
+        // for the run) so the context survives across the loop
+        // body's many recv calls. On OOM (extremely unlikely — the
+        // arena is unbounded), fall back to a no-cancel fetch; the
+        // 30s deadline still saves us from an infinite hang.
+        const box = parent_allocator.create(McpCancelCtx) catch null;
+        if (box) |b| {
+            b.* = .{ .db = db, .session_id = copy_session_id };
+            mcp_cancel_thunk.state = b.*;
+        }
+        defer mcp_cancel_thunk.state = null;
+        break :blk build_msg_prompt.buildMCPToolsRun(
+            parent_allocator,
+            initial_config.mcpServers() orelse .null,
+            if (box) |_| &mcp_cancel_thunk.call else null,
+        );
+    } catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};

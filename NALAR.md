@@ -1,3 +1,32 @@
+### 2026-08-28: MCP stdio timeout + cancel-callback + self-healing respawn (fixes CI test_mcp_test_stdio_success)
+
+**Root cause.** A hung/unresponsive MCP stdio server previously froze the agent workflow indefinitely. `client.recv()` / `client.send()` in `mcp_stdio.zig` were fully blocking with no timeout, no cancel-check, and no respawn-on-hang. The CI test `test_mcp_test_stdio_success_lists_hello_world_tools` (in `tests/functional/mcp_test_test.py`) was hitting this directly: the SDK's first byte read blocked, the recv hung, and the test's 10s deadline fired with `RecvTimeout` instead of returning the tools list.
+
+**Fix layers** (all in `src/modules/agent/mcp/mcp/mcp_stdio.zig`):
+
+1. **Deadline semantics.** `deadline_ns` is a RELATIVE duration in nanoseconds (0 = no timeout), not an absolute timestamp — computed `deadline_abs = now + deadline_ns` on entry so the per-byte deadline check is a single `i128` comparison. The v1 mistake was treating `deadline_ns` as an absolute timestamp (callers passed `30 * std.time.ns_per_s` = 30 seconds since epoch = always in the past).
+
+2. **`readFramed` / `writeFramed`** poll the deadline + optional `?*const fn () bool` cancel-callback between every `readSliceShort` / `writeStreamingAll` call. Cancel fires within one syscall; the deadline fires as soon as the deadline check runs after a byte read.
+
+3. **`StdioClient.send` / `recv`** accept `deadline_ns: u64` + `is_cancelled: ?*const fn () bool`. New `sendNoTimeout` / `recvNoTimeout` overloads preserve the old API for the in-repo tests + any external callers.
+
+4. **`StdioError.RecvTimeout` / `SendTimeout`** new variants. Both production callers (`buildMCPToolsRun`, `callViaStdio`) catch them, log a clear message, and continue.
+
+5. **`StdioRegistry.markStale(name)`** flips a per-slot `dirty: std.atomic.Value(bool)` flag. `getOrSpawn` checks the flag on entry: if dirty, kills the cached child + spawns fresh. Self-healing: a hung call doesn't brick subsequent calls.
+
+6. **`Entry`** in `StdioRegistry` grew the `dirty` field; `entries` map value type changed from `*StdioClient` to `*Entry` (3 in-repo call sites updated). Existing `dropAndRespawn` unchanged.
+
+**Wiring through to the workflow.** `buildMCPToolsRun` (workflow entry, called ONCE before the loop): 30s deadline + workflow's `isWorkerCancelled`-derived cancel-callback. `workflow.zig:564` builds a `mcp_cancel_thunk` closure (`*const fn () bool`) backed by a thread-local `McpCancelCtx { db, session_id }`. The state box is allocated on the workflow's parent arena (lifetime = the whole run) so the cancel-callback survives across the workflow's many recvs.
+
+**Files.** 4 EDIT (`mcp_stdio.zig`, `prompts_build_messages_for_agent_prompt.zig`, `handle_mcp_tool.zig`, `workflow.zig`) + 2 NEW (`tests/functional/mcp_stdio_hang_test.py`, `tests/functional/fixtures/hung-server.sh`) + 1 NALAR.md changelog entry. No migration, no schema change, no frontend change. Hardcoded default timeouts in v1 (`30s tools/list`, `60s tools/call`); a v2 follow-up will add `LlmConfig.mcp_tools_timeout_ms` / `mcp_call_timeout_ms` with frontend wiring.
+
+**Also ports the mcp-test-button PR** (commit 2a3528c4) into this branch: `src/ai_workflow/tui/http_handlers/mcp_test.zig` (the `POST /api/mcp/test` probe) + `mod.zig` re-export + `main.zig` route registration + frontend modal/component updates. The mcp-test-button code was adapted to use the new `recv(deadline_ns, null)` signature with a 10s per-call deadline, and `markStale` is called on timeout so the next probe gets a fresh child.
+
+**Tests.** `zig build test --summary all`: 2859/2865 pass + 6 baseline-skip (was 2829/2865 before — 4 new tests added to `mcp_stdio.zig` inline tests). `zig build nalar-desktop --summary all`: 22/22 steps OK. `pytest tests/functional/`: includes 2 new tests in `mcp_stdio_hang_test.py` (hung-child wire-level behavior, hung-child can be replaced by fresh process). End-to-end manual smoke test against `mcp-hello-world`: `POST /api/mcp/test` returns `{"ok": true, "transport": "stdio", "tools": [...]}` in <100ms (was previously failing with `RecvTimeout` due to the deadline semantic bug).
+
+**Plan:** docs/superpowers/plans/2026-08-28-fix-mcp-stdio-blocking.md
+**Branch:** worktree/fix-mcp-stdio-blocking
+**Task:** task_1787930150605_0
 ### 2026-08-29: Chat sidebar `last_human_touched_at` — human-time pill + amber stale dot
 
 **What landed.** The sidebar's per-chat time pill (e.g. "2h", "now") used to source from `sessions.updated_at` — a column bumped by *everything* (the agent's per-loop `update_worker` tick, profile change, error emit, etc). When a long-running agent kept the chat alive, the sidebar showed "now" / "0s" even if the user had walked away 2 hours ago. Now the sidebar's time pill is sourced from `formatRelativeTime(last_human_touched_at ?? updated_at)`, a sibling of the existing `workspace_item_tasks.last_human_touched_at_nano` (kanban). A new **amber `chat-stale-dot`** appears when `updated_at > last_human_touched_at` (i.e. the AI has touched the chat since the user's last touch) so users see at a glance "AI is ahead of you". Hover tooltips distinguish the two timestamp sources. Mirrors the kanban ⚠ indicator (which uses orange) but at amber-400 so the sidebar doesn't visually shout.

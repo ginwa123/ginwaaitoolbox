@@ -370,6 +370,13 @@ pub fn main(init: std.process.Init) !void {
     // the user can verify their system can display them.
     try gs.router.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);
 
+    // MCP server "Test" probe — fires a tools/list request against a
+    // candidate config without persisting anything. Used by the
+    // Add/Edit MCP server modal's "Test" button so the user can
+    // verify command + args + env + cwd (or URL + headers) actually
+    // work before clicking Save.
+    try gs.router.post("/api/mcp/test", ai_mod.http_handlers.mcpTestHandler);
+
     // Frontend error log endpoints — capture unhandled JS exceptions,
     // unhandled promise rejections, and existing console.error / console.warn
     // calls from the nalar-desktop webapp. See

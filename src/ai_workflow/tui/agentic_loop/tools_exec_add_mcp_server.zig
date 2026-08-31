@@ -459,8 +459,22 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
         \\{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}
     ) catch return inner_xml;
     defer ctx.allocator.free(req);
-    client.send(req) catch return inner_xml;
-    const resp = client.recv() catch return inner_xml;
+    // 60s deadline matches `handle_mcp_tool.zig:79` and
+    // `prompts_build_messages_for_agent_prompt.zig:637`. Without a
+    // deadline, a hung child (deadlock, waiting on stdin forever)
+    // blocks the tool-exec handler indefinitely — same blocking
+    // behaviour the stdio transport had before PR #373. On
+    // SendTimeout / RecvTimeout the stale child is killed so the next
+    // `getOrSpawn` respawns a fresh process.
+    const deadline_ns: u64 = 60 * std.time.ns_per_s;
+    client.send(req, deadline_ns) catch |err| {
+        if (err == error.SendTimeout) reg.markStale(server_name);
+        return inner_xml;
+    };
+    const resp = client.recv(deadline_ns, null) catch |err| {
+        if (err == error.RecvTimeout) reg.markStale(server_name);
+        return inner_xml;
+    };
     defer ctx.allocator.free(resp);
 
     var arena = std.heap.ArenaAllocator.init(ctx.allocator);

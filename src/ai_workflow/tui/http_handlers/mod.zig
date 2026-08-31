@@ -65,6 +65,11 @@ pub const agentKnowledgeReorderHandler = @import("agent_knowledge_reorder.zig").
 // returns 404 when the gate is off. Used by functional UI tests to drive
 // the chatview's SSE streaming path without a real LLM.
 pub const devSseEmitLlmHandler = @import("dev_sse_emit.zig").emitLlmHandler;
+// MCP server "Test" probe — fires a tools/list request against a
+// candidate config (without persisting anything) so the user can
+// verify their command / args / env / cwd (or URL + headers) before
+// clicking Save in the MCP server modal.
+pub const mcpTestHandler = @import("mcp_test.zig").mcpTestHandler;
 // Agent Mode tools CRUD (Tasks 7-8)
 pub const agentToolsRegistryHandler = @import("agent_tools_registry.zig").agentToolsRegistryHandler;
 pub const agentToolsListHandler = @import("agent_tools_list.zig").agentToolsListHandler;
