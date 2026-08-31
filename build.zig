@@ -760,6 +760,12 @@ pub fn build(b: *std.Build) void {
     } });
     const optimize = b.standardOptimizeOption(.{});
 
+    // CLI flag: `--no-webapp-rebuild` / `-Dno-webapp-rebuild` skips the
+    // webapp-rebuild + mcp-hello-world chains. Used by Windows CI runners
+    // with ~2-3 GB usable RAM where the vite build and pnpm installs OOM.
+    // Defined EARLY so the mcp and webapp sections below can be gated.
+    const no_webapp_rebuild = b.option(bool, "no-webapp-rebuild", "Skip the webapp-rebuild + mcp-hello-world chains (Windows CI OOM / no-pnpm workaround)") orelse false;
+
     // `helpers` package (`src/helpers/`): project-wide portable sleep /
     // time / file-existence helpers. Created EARLY (before any
     // `b.addExecutable(...)` or `b.createModule(...)` calls below) so
@@ -1270,8 +1276,11 @@ pub fn build(b: *std.Build) void {
     }
 
     // Make `zig build` (the default) include mcp-hello-world so
-    // functional tests can rely on it being present.
-    b.getInstallStep().dependOn(mcp_hello_world_step);
+    // functional tests can rely on it being present. Skipped when
+    // -Dno-webapp-rebuild (Windows CI: pnpm FileNotFound + OOM).
+    if (!no_webapp_rebuild) {
+        b.getInstallStep().dependOn(mcp_hello_world_step);
+    }
 
     // === mcp-http-hello-world: TypeScript test MCP server (Streamable HTTP) ===
     // Sibling of mcp-hello-world: same 3 tools, different transport.
@@ -2050,16 +2059,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
 
-    // CLI flag: `--no-webapp-rebuild` skips the webapp-rebuild chain
-    // (pnpm install + pnpm run build + codegen). Used by Windows CI
-    // runners with ~2-3 GB usable RAM where the vite build step
-    // STATUS_ACCESS_VIOLATION / OOMs the process. The webapp_assets.zig
-    // is consumed as-is (whatever's on disk from a previous build, or
-    // an empty stub for the first CI run on a fresh checkout — nalar-
-    // desktop will still link and run, it just won't have current
-    // webapp content). Linux + macOS runners always do the full
-    // rebuild.
-    const no_webapp_rebuild = b.option(bool, "no-webapp-rebuild", "Skip the webapp-rebuild + mcp-hello-world chains (Windows CI OOM / no-pnpm workaround)") != null;
+    // Late alias kept for comment continuity — actual flag is defined
+    // early (near target/optimize) so mcp/webapp sections could be gated.
+    // Reuse the early `no_webapp_rebuild` value here; do not re-parse.
 
     // Make the desktop binary depend on the FRESH-ASSETS codegen chain:
     // clean → `bun run build` → codegen. Every nalar-desktop build
@@ -2069,6 +2071,35 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // cost trade-off).
     if (!no_webapp_rebuild) {
         desktop_exe.step.dependOn(&webapp_rebuild_codegen.step);
+    } else {
+        // When skipping the webapp rebuild, ensure a stub exists so the
+        // @import("embedded/webapp_assets.zig") in main.zig doesn't fail
+        // with FileNotFound on a fresh checkout (gitignored file).
+        // Do it synchronously at configure time — b.addWriteFiles would
+        // only place the file in .zig-cache, not in the source tree where
+        // the import resolves.
+        const stub_path = "src/apps/desktop_app/embedded/webapp_assets.zig";
+        if (!fileExists(stub_path)) {
+            const stub_content =
+                \\// GENERATED stub — webapp rebuild skipped (-Dno-webapp-rebuild)
+                \\const std = @import("std");
+                \\pub const Asset = struct { path: []const u8, content: []const u8, mime: []const u8 };
+                \\pub const assets: []const Asset = &.{};
+                \\
+            ;
+            // Use std.Io (Zig 0.16) — create parent dirs + file.
+            const io = b.graph.io;
+            // Ensure parent dir exists.
+            std.Io.Dir.cwd().createDirPath(io, "src/apps/desktop_app/embedded") catch {};
+            if (std.Io.Dir.cwd().createFile(io, stub_path, .{ .truncate = true })) |file| {
+                defer file.close(io);
+                std.Io.File.writeStreamingAll(file, io, stub_content) catch |err| {
+                    std.log.warn("failed to write stub {s}: {any}", .{ stub_path, err });
+                };
+            } else |err| {
+                std.log.warn("failed to create stub {s}: {any}", .{ stub_path, err });
+            }
+        }
     }
 
     // `zig build nalar-desktop` alias — depends on:

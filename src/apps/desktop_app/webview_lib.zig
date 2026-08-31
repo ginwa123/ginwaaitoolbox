@@ -251,18 +251,15 @@ test "Error.succeeded mirrors WEBVIEW_SUCCEEDED semantics" {
 /// to opt out of compositing (e.g. for a bug investigation), we must
 /// not clobber that on launch.
 ///
-/// `setenv` is POSIX (libc on Linux + macOS); Windows uses
-/// `_putenv_s` and is not supported here. The desktop app's Linux +
-/// macOS targets link libc, so `extern "c"` resolves there; on
-/// Windows this code is unreachable because the desktop app currently
-/// only compiles for Linux + macOS.
-extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+/// `setenv` is POSIX (libc on Linux + macOS); Windows has no setenv
+/// in msvcrt — use a no-op there (env-var workaround is Linux-only).
+const builtin = @import("builtin");
 extern "c" fn unsetenv(name: [*:0]const u8) c_int;
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 fn setEnvIfUnset(key: [*:0]const u8, value: [*:0]const u8) bool {
+    if (builtin.os.tag == .windows) return false;
     if (std.c.getenv(key) != null) return false;
-    // overwrite=0 is irrelevant here (the var is unset) but we pass 0
-    // to make the "no overwrite" intent explicit at the libc call site.
     return setenv(key, value, 0) == 0;
 }
 
