@@ -5,7 +5,6 @@ const sqlite = nalarcore.sqlite;
 
 const MAX_SIBLING_ITEMS: u32 = 20;
 const MAX_TASKS_PER_ITEM: u32 = 5;
-const MAX_KANBAN_COLUMNS: u32 = 10;
 
 /// Build a "## Kanban Status Tracking" section that instructs the
 /// agent to call `kanban_move_task` at every meaningful workflow
@@ -20,10 +19,9 @@ const MAX_KANBAN_COLUMNS: u32 = 10;
 ///   1. Resolves the anchor (task → item → workspace) via
 ///      `getWorkspaceContext` and reads `ctx.self_item_type`.
 ///   2. Bails out if the parent is not a kanban.
-///   3. Reads the columns via `kanban_model.listColumns` (cap: 10).
-///   4. Reads the task's current `kanban_column_id` via a single
-///      `SELECT` (the column id may be NULL when unassigned).
-///   5. Renders the section.
+///   3. Reads the columns via `listColumns` (no cap — all columns).
+///   4. Renders the section (columns list only — no per-task current
+///      column, which would be dynamic and break prefix cache).
 ///
 /// Block shape (omitted when parent is not a kanban, or session is
 /// not bound to any task):
@@ -35,11 +33,9 @@ const MAX_KANBAN_COLUMNS: u32 = 10;
 /// call `kanban_move_task` at every meaningful workflow checkpoint.**
 /// The tool description (in the tool listing) shows the exact argument shape.
 ///
-/// **Current column:** `<col_name>` (`<col_id>`)
-///
 /// **Columns on this board** (in flow order):
-/// - `<name>` (`<id>`) — position 0
-/// - `<name>` (`<id>`) — position 1
+/// - `<name>` (`<id>`) — position 0 — <description>
+/// - `<name>` (`<id>`) — position 1 — <description>
 /// - ...
 ///
 /// **Status transitions:**
@@ -92,6 +88,34 @@ pub fn makeKanbanContext(
         \\your own session_id (per the `task.id == session_id` convention).
         \\
     );
+
+    // Render full column list (no cap, no per-task current column) so the
+    // agent can call `kanban_move_task` in 1 call without a prior
+    // `kanban_list`. Columns are board-static (same for every task on the
+    // board), so this tail is prefix-cache friendly — it only changes when
+    // the board's column config changes, not on every task move.
+    // Description is also board-static (kanban_columns.description), so
+    // including it does not break prefix cache.
+    if (cols.len > 0) {
+        try out.appendSlice(allocator, "\n**Columns on this board** (in flow order):\n");
+        for (cols) |c| {
+            try out.appendSlice(allocator, "- `");
+            try out.appendSlice(allocator, c.name);
+            try out.appendSlice(allocator, "` (`");
+            try out.appendSlice(allocator, c.id);
+            try out.appendSlice(allocator, "`) — position ");
+            const pos_str = try std.fmt.allocPrint(allocator, "{d}", .{c.position});
+            defer allocator.free(pos_str);
+            try out.appendSlice(allocator, pos_str);
+            const trimmed_desc = std.mem.trim(u8, c.description, " \t\r\n");
+            if (trimmed_desc.len > 0) {
+                try out.appendSlice(allocator, " — ");
+                try out.appendSlice(allocator, trimmed_desc);
+            }
+            try out.appendSlice(allocator, "\n");
+        }
+        try out.appendSlice(allocator, "\n");
+    }
 
     try out.appendSlice(allocator, "\n**Status transitions** (call `kanban_move_task`):\n");
     try out.appendSlice(allocator,
@@ -486,4 +510,260 @@ fn hasToolByName(tools: []const nalarcore.tool_models.AgentTool, name: []const u
         if (std.mem.eql(u8, t.function.name, name)) return true;
     }
     return false;
+}
+
+// ─── Tests (in-memory DB, no cap) ───────────────────────────────────────
+
+const testing = std.testing;
+const test_sqlite = @import("nalarcore").sqlite;
+
+const TestCtx = struct {
+    db: test_sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: test_sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER
+        \\)
+    , &[_][]const u8{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, created_at DATETIME, updated_at DATETIME, task_type TEXT
+        \\)
+    , &[_][]const u8{});
+    try db.exec(alloc,
+        \\CREATE TABLE kanban_columns (
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT, name TEXT, description TEXT NOT NULL DEFAULT '', position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &[_][]const u8{});
+    try db.exec(alloc,
+        \\CREATE TABLE kanban (
+        \\    workspace_item_task_id TEXT PRIMARY KEY, kanban_column_id TEXT NOT NULL, kanban_position INTEGER NOT NULL DEFAULT 0
+        \\)
+    , &[_][]const u8{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn insertWorkspaceItem(ctx: *TestCtx, id: []const u8, ws_id: []const u8, item_type: []const u8) !void {
+    const alloc = testing.allocator;
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES (?, ?, ?, 'Test', '/tmp', 0)",
+        &[_][]const u8{ id, ws_id, item_type },
+    );
+}
+
+fn insertTask(ctx: *TestCtx, task_id: []const u8, item_id: []const u8) !void {
+    const alloc = testing.allocator;
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, created_at, updated_at, task_type) VALUES (?, 'T', ?, datetime('now'), datetime('now'), 'standard')",
+        &[_][]const u8{ task_id, item_id },
+    );
+}
+
+fn insertColumn(ctx: *TestCtx, col_id: []const u8, item_id: []const u8, name: []const u8, pos: i64) !void {
+    try insertColumnWithDescription(ctx, col_id, item_id, name, "", pos);
+}
+
+fn insertColumnWithDescription(ctx: *TestCtx, col_id: []const u8, item_id: []const u8, name: []const u8, desc: []const u8, pos: i64) !void {
+    const alloc = testing.allocator;
+    const pos_str = try std.fmt.allocPrint(alloc, "{d}", .{pos});
+    defer alloc.free(pos_str);
+    // SqliteBackend.exec binds "" as NULL (empty-slice-as-NULL pitfall),
+    // which violates NOT NULL on description. Omit the column when empty
+    // so DEFAULT '' applies — mirrors production's INSERT without description.
+    if (desc.len == 0) {
+        try ctx.db.exec(alloc,
+            "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES (?, ?, ?, ?)",
+            &[_][]const u8{ col_id, item_id, name, pos_str },
+        );
+    } else {
+        try ctx.db.exec(alloc,
+            "INSERT INTO kanban_columns (id, workspace_item_id, name, description, position) VALUES (?, ?, ?, ?, ?)",
+            &[_][]const u8{ col_id, item_id, name, desc, pos_str },
+        );
+    }
+}
+
+fn insertKanban(ctx: *TestCtx, task_id: []const u8, col_id: []const u8, pos: i64) !void {
+    const alloc = testing.allocator;
+    const pos_str = try std.fmt.allocPrint(alloc, "{d}", .{pos});
+    defer alloc.free(pos_str);
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
+        &[_][]const u8{ task_id, col_id, pos_str },
+    );
+}
+
+test "makeKanbanContext: returns empty when session_id empty" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const out = try makeKanbanContext(alloc, &ctx.db, "", &.{});
+    defer alloc.free(out);
+    try testing.expectEqual(@as(usize, 0), out.len);
+}
+
+test "makeKanbanContext: returns empty when not a kanban" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "chat");
+    try insertTask(&ctx, "sess_1", "item_1");
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    try testing.expectEqual(@as(usize, 0), out.len);
+}
+
+test "makeKanbanContext: renders all columns without cap (15 columns)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    // Insert 15 columns — old cap was 10, now all must appear.
+    for (0..15) |i| {
+        const col_id = try std.fmt.allocPrint(alloc, "col_{d}", .{i});
+        defer alloc.free(col_id);
+        const name = try std.fmt.allocPrint(alloc, "colname_{d}", .{i});
+        defer alloc.free(name);
+        try insertColumn(&ctx, col_id, "item_1", name, @intCast(i));
+    }
+    try insertKanban(&ctx, "sess_1", "col_0", 0);
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "## Kanban Status Tracking") != null);
+    // No per-task Current column — cache-friendly (board-static only).
+    try testing.expect(std.mem.indexOf(u8, out, "**Current column:**") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "**Columns on this board**") != null);
+    // All 15 must be present — no truncation.
+    for (0..15) |i| {
+        const needle = try std.fmt.allocPrint(alloc, "colname_{d}", .{i});
+        defer alloc.free(needle);
+        try testing.expect(std.mem.indexOf(u8, out, needle) != null);
+    }
+    // Verify no cap footer like "and N more" — we render all.
+    try testing.expect(std.mem.indexOf(u8, out, "more") == null or std.mem.indexOf(u8, out, "Columns on this board") != null);
+}
+
+test "makeKanbanContext: renders columns correctly (no current column, cache-friendly)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    try insertColumn(&ctx, "c_todo", "item_1", "todo", 0);
+    try insertColumn(&ctx, "c_prog", "item_1", "in progress", 1);
+    try insertColumn(&ctx, "c_done", "item_1", "done", 2);
+    try insertKanban(&ctx, "sess_1", "c_prog", 0);
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    // No per-task current column — would break prefix cache.
+    try testing.expect(std.mem.indexOf(u8, out, "**Current column:**") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "- `todo` (`c_todo`) — position 0") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- `in progress` (`c_prog`) — position 1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- `done` (`c_done`) — position 2") != null);
+}
+
+test "makeKanbanContext: no current column even when no kanban row (cache-friendly)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    try insertColumn(&ctx, "c1", "item_1", "todo", 0);
+    // No kanban row for sess_1 — still no Current column (board-static only).
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "**Current column:**") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "**Columns on this board**") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- `todo` (`c1`) — position 0") != null);
+}
+
+test "makeKanbanContext: columns ordered by position ASC" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    // Insert out of order
+    try insertColumn(&ctx, "c_done", "item_1", "done", 2);
+    try insertColumn(&ctx, "c_todo", "item_1", "todo", 0);
+    try insertColumn(&ctx, "c_prog", "item_1", "in progress", 1);
+    try insertKanban(&ctx, "sess_1", "c_todo", 0);
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    const todo_idx = std.mem.indexOf(u8, out, "`todo`") orelse return error.NotFound;
+    const prog_idx = std.mem.indexOf(u8, out, "`in progress`") orelse return error.NotFound;
+    const done_idx = std.mem.indexOf(u8, out, "`done`") orelse return error.NotFound;
+    try testing.expect(todo_idx < prog_idx);
+    try testing.expect(prog_idx < done_idx);
+}
+
+test "makeKanbanContext: 1-call hint — target_column_id present without kanban_list" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    try insertColumn(&ctx, "col_1b40fb0ea07f0000", "item_1", "todo", 0);
+    try insertColumn(&ctx, "col_1c40fb0ea07f0000", "item_1", "in progress", 1);
+    try insertKanban(&ctx, "sess_1", "col_1b40fb0ea07f0000", 0);
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    // The prompt must contain the exact ids so kanban_move_task can be called directly.
+    try testing.expect(std.mem.indexOf(u8, out, "col_1c40fb0ea07f0000") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "col_1b40fb0ea07f0000") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "kanban_move_task") != null);
+}
+
+test "makeKanbanContext: renders description when present (board-static, cache-friendly)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    try insertColumnWithDescription(&ctx, "c_todo", "item_1", "todo", "Backlog — not started", 0);
+    try insertColumnWithDescription(&ctx, "c_prog", "item_1", "in progress", "", 1);
+    try insertColumnWithDescription(&ctx, "c_done", "item_1", "done", "Shipped", 2);
+    try insertKanban(&ctx, "sess_1", "c_todo", 0);
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    // Description is board-static, so cache stays hot.
+    try testing.expect(std.mem.indexOf(u8, out, "- `todo` (`c_todo`) — position 0 — Backlog") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- `in progress` (`c_prog`) — position 1\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "- `done` (`c_done`) — position 2 — Shipped") != null);
+    // Empty description must not emit trailing " — ".
+    try testing.expect(std.mem.indexOf(u8, out, "position 1 — \n") == null);
+}
+
+test "makeKanbanContext: trims whitespace-only description (no trailing dash)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try insertWorkspaceItem(&ctx, "item_1", "ws_1", "kanban");
+    try insertTask(&ctx, "sess_1", "item_1");
+    try insertColumnWithDescription(&ctx, "c1", "item_1", "todo", "   \n\t  ", 0);
+    try insertKanban(&ctx, "sess_1", "c1", 0);
+    const out = try makeKanbanContext(alloc, &ctx.db, "sess_1", &.{});
+    defer alloc.free(out);
+    try testing.expect(std.mem.indexOf(u8, out, "- `todo` (`c1`) — position 0\n") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "position 0 — ") == null or std.mem.indexOf(u8, out, "position 0\n") != null);
 }

@@ -1004,12 +1004,6 @@ pub fn BuildDynamicAgentContent(
 /// decide which sub-agent to dispatch to.
 const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
 
-/// Maximum number of kanban columns rendered in the `## Kanban Status
-/// Tracking` section. Boards with more columns truncate to the first
-/// N by `position ASC` and add an `… and M more` footer. 10 is well
-/// above any realistic kanban (typical N ≤ 7).
-const MAX_KANBAN_COLUMNS: u32 = 10;
-
 /// Build the "Available Sub-Agents" listing for the current
 /// session. Reads `selected_profile_model` from the `sessions`
 /// table, then resolves the sub-agents list with the per-profile
@@ -1107,9 +1101,8 @@ fn BuildSubAgentsListing(
 }
 
 // Cap for how many design pages to enumerate in the Design Canvas status
-// prompt. Pages beyond the cap are listed as a count footer. Mirrors
-// `MAX_KANBAN_COLUMNS` (10) — small enough to keep the prompt compact,
-// large enough to cover most multi-page designs.
+// prompt. Pages beyond the cap are listed as a count footer. Small enough
+// to keep the prompt compact, large enough to cover most multi-page designs.
 const MAX_DESIGN_PAGES: u32 = 10;
 
 fn removeTools(tools: []tool_models.AgentTool, names: []const []const u8) []tool_models.AgentTool {
