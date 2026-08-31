@@ -555,6 +555,216 @@ const AnthropicRequest = struct {
     }
 };
 
+/// --- OpenAI Responses API (url_style = "openai-response") -----------------
+/// Request shape for POST /v1/responses  (https://developers.openai.com/api/reference/resources/responses)
+/// Mirrors the chat completions feature set: model, input (messages), instructions (system),
+/// max_output_tokens, stream, temperature, reasoning.effort, tools, tool_choice, user.
+
+const ResponsesInputContent = struct {
+    /// "input_text" | "input_image"
+    content_type: []const u8,
+    text: ?[]const u8 = null,
+    image_url: ?[]const u8 = null,
+    detail: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.content_type);
+        if (std.mem.eql(u8, self.content_type, "input_text")) {
+            if (self.text) |t| {
+                try stringify.objectField("text");
+                try stringify.write(t);
+            }
+        } else if (std.mem.eql(u8, self.content_type, "input_image")) {
+            if (self.image_url) |u| {
+                try stringify.objectField("image_url");
+                try stringify.write(u);
+            }
+            if (self.detail) |d| {
+                try stringify.objectField("detail");
+                try stringify.write(d);
+            }
+        } else {
+            if (self.text) |t| {
+                try stringify.objectField("text");
+                try stringify.write(t);
+            }
+        }
+        try stringify.endObject();
+    }
+};
+
+const ResponsesInputItem = struct {
+    /// "message" | "function_call" | "function_call_output"
+    item_type: []const u8,
+    role: ?[]const u8 = null,
+    content: ?[]const ResponsesInputContent = null,
+    call_id: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    arguments: ?[]const u8 = null,
+    output: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.item_type);
+        if (std.mem.eql(u8, self.item_type, "message")) {
+            if (self.role) |r| {
+                try stringify.objectField("role");
+                try stringify.write(r);
+            }
+            if (self.content) |c| {
+                try stringify.objectField("content");
+                try stringify.write(c);
+            }
+        } else if (std.mem.eql(u8, self.item_type, "function_call")) {
+            if (self.call_id) |cid| {
+                try stringify.objectField("call_id");
+                try stringify.write(cid);
+            }
+            if (self.name) |n| {
+                try stringify.objectField("name");
+                try stringify.write(n);
+            }
+            if (self.arguments) |a| {
+                try stringify.objectField("arguments");
+                try stringify.write(a);
+            }
+        } else if (std.mem.eql(u8, self.item_type, "function_call_output")) {
+            if (self.call_id) |cid| {
+                try stringify.objectField("call_id");
+                try stringify.write(cid);
+            }
+            if (self.output) |o| {
+                try stringify.objectField("output");
+                try stringify.write(o);
+            }
+        }
+        try stringify.endObject();
+    }
+};
+
+const ResponsesToolParameters = struct {
+    properties: []const ToolProperty,
+    required: []const []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write("object");
+        try stringify.objectField("properties");
+        try stringify.beginObject();
+        for (self.properties) |prop| {
+            try stringify.objectField(prop.name);
+            try stringify.beginObject();
+            try stringify.objectField("type");
+            try stringify.write(prop.type);
+            try stringify.objectField("description");
+            try stringify.write(prop.description);
+            try stringify.endObject();
+        }
+        try stringify.endObject();
+        try stringify.objectField("required");
+        try stringify.write(self.required);
+        try stringify.endObject();
+    }
+};
+
+const ResponsesTool = struct {
+    type: []const u8 = "function",
+    name: []const u8,
+    description: []const u8,
+    parameters: ResponsesToolParameters,
+    strict: ?bool = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.type);
+        try stringify.objectField("name");
+        try stringify.write(self.name);
+        try stringify.objectField("description");
+        try stringify.write(self.description);
+        try stringify.objectField("parameters");
+        try stringify.write(self.parameters);
+        if (self.strict) |s| {
+            try stringify.objectField("strict");
+            try stringify.write(s);
+        }
+        try stringify.endObject();
+    }
+};
+
+const ResponsesReasoning = struct {
+    effort: []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("effort");
+        try stringify.write(self.effort);
+        try stringify.endObject();
+    }
+};
+
+const ResponsesRequest = struct {
+    model: []const u8,
+    input: []const ResponsesInputItem,
+    instructions: ?[]const u8 = null,
+    max_output_tokens: usize,
+    stream: bool,
+    temperature: ?f32 = null,
+    reasoning: ?ResponsesReasoning = null,
+    tools: ?[]const ResponsesTool = null,
+    tool_choice: ?[]const u8 = null,
+    store: bool = false,
+    user: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("model");
+        try stringify.write(self.model);
+        if (self.instructions) |ins| {
+            try stringify.objectField("instructions");
+            try stringify.write(ins);
+        }
+        try stringify.objectField("input");
+        try stringify.write(self.input);
+        try stringify.objectField("max_output_tokens");
+        try stringify.write(self.max_output_tokens);
+        if (self.temperature) |t| {
+            try stringify.objectField("temperature");
+            try stringify.write(t);
+        }
+        if (self.reasoning) |r| {
+            try stringify.objectField("reasoning");
+            try stringify.write(r);
+        }
+        if (self.tools) |t| {
+            try stringify.objectField("tools");
+            try stringify.write(t);
+            if (self.tool_choice) |tc| {
+                try stringify.objectField("tool_choice");
+                try stringify.write(tc);
+            }
+        }
+        if (self.stream) {
+            try stringify.objectField("stream");
+            try stringify.write(true);
+        }
+        // store=false keeps the API stateless like chat/completions (no previous_response_id)
+        try stringify.objectField("store");
+        try stringify.write(self.store);
+        if (self.user) |u| {
+            if (u.len > 0) {
+                try stringify.objectField("user");
+                try stringify.write(u);
+            }
+        }
+        try stringify.endObject();
+    }
+};
+
 pub const AgentResponse = struct {
     choices: []Choice,
 };
@@ -1010,7 +1220,6 @@ pub const Agent = struct {
         self.log_fmt(.debug, "HTTP {s} {s} (body: {} bytes)", .{ method, url, body_len });
     }
 
-
     pub fn buildJsonAnthropicRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
         const allocator = self.allocator;
 
@@ -1437,6 +1646,209 @@ pub const Agent = struct {
         return aw.toOwnedSlice();
     }
 
+    /// Build JSON body for OpenAI Responses API (`url_style = "openai-response"`).
+    /// POST /v1/responses — see https://developers.openai.com/api/reference/resources/responses
+    /// Feature parity with `buildJsonOpenAIRequest`: model, instructions (system),
+    /// input (user/assistant/tool messages + vision content_parts), max_output_tokens,
+    /// temperature, reasoning.effort, tools, tool_choice, store, user. Stateless
+    /// (store=false, no previous_response_id) — history is replayed via `input`.
+    pub fn buildJsonResponsesRequest(self: Agent, params: AgentCall, stream: bool) ![]u8 {
+        const allocator = self.allocator;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const arena_alloc = arena.allocator();
+
+        var total_content_size: usize = 0;
+        for (params.messages) |msg| {
+            if (msg.content) |c| total_content_size += c.len;
+            if (msg.reasoning_content) |rc| total_content_size += rc.len;
+        }
+        self.log_fmt(.debug, "RESPONSES_STATS: tools={d}, content={d}", .{ params.tools.len, total_content_size });
+
+        // Join system messages into top-level `instructions`.
+        var instructions_buf: std.ArrayList(u8) = .empty;
+        for (params.messages) |msg| {
+            if (msg.role == .system) {
+                if (msg.content) |c| {
+                    if (instructions_buf.items.len > 0) try instructions_buf.appendSlice(arena_alloc, "\n\n");
+                    try instructions_buf.appendSlice(arena_alloc, c);
+                }
+            }
+        }
+        const instructions: ?[]const u8 = if (instructions_buf.items.len > 0) instructions_buf.items else null;
+
+        // Build heterogeneous `input` array. Each AgentMessage can expand to 1..N items:
+        //   user        -> 1 message item
+        //   assistant+tool_calls -> 1 message (if content) + N function_call items
+        //   tool        -> 1 function_call_output item
+        //   assistant (no tools) -> 1 message item
+        // Worst case: every message spawns 1 + tool_calls, so capacity = messages.len * 2 + total tool_calls.
+        var total_tool_calls: usize = 0;
+        for (params.messages) |msg| {
+            if (msg.tool_calls) |tcs| total_tool_calls += tcs.len;
+        }
+        const max_input_len = params.messages.len * 2 + total_tool_calls;
+        var input_items = try arena_alloc.alloc(ResponsesInputItem, max_input_len);
+        var input_count: usize = 0;
+
+        for (params.messages) |msg| {
+            if (msg.role == .system) continue; // already in `instructions` (§6)
+            if (msg.role == .user) {
+                // Build content array from content_parts or plain text.
+                const parts = msg.content_parts;
+                const has_parts = parts != null and parts.?.len > 0;
+                if (has_parts) {
+                    const part_count = parts.?.len;
+                    var contents = try arena_alloc.alloc(ResponsesInputContent, part_count);
+                    for (parts.?, 0..) |part, j| {
+                        if (part.image_url) |img| {
+                            contents[j] = .{
+                                .content_type = "input_image",
+                                .image_url = img.url orelse "",
+                                .detail = img.detail orelse "auto",
+                            };
+                        } else if (part.text) |t| {
+                            contents[j] = .{ .content_type = "input_text", .text = t };
+                        } else {
+                            contents[j] = .{ .content_type = "input_text", .text = "" };
+                        }
+                    }
+                    input_items[input_count] = .{
+                        .item_type = "message",
+                        .role = "user",
+                        .content = contents,
+                    };
+                } else {
+                    var contents = try arena_alloc.alloc(ResponsesInputContent, 1);
+                    contents[0] = .{ .content_type = "input_text", .text = msg.content orelse "" };
+                    input_items[input_count] = .{
+                        .item_type = "message",
+                        .role = "user",
+                        .content = contents,
+                    };
+                }
+                input_count += 1;
+            } else if (msg.role == .assistant) {
+                // Preserve both `content` and `reasoning_content` for parity with
+                // `transformLLMHistoryToAgentMessage` (parsing.zig:89) which
+                // populates `AgentMessage.content` and `.reasoning_content`
+                // separately. Responses requires `output_text` for assistant (not
+                // `input_text`) — see runtime error: "content type `input_text`
+                // is not valid on `assistant` messages".
+                const has_tool_calls = msg.tool_calls != null and msg.tool_calls.?.len > 0;
+                const c = msg.content;
+                const rc = msg.reasoning_content;
+                const has_c = c != null and c.?.len > 0;
+                const has_rc = rc != null and rc.?.len > 0;
+                if (has_c or has_rc) {
+                    const count: usize = @as(usize, @intFromBool(has_c)) + @as(usize, @intFromBool(has_rc));
+                    var contents = try arena_alloc.alloc(ResponsesInputContent, count);
+                    var idx: usize = 0;
+                    if (has_rc) {
+                        contents[idx] = .{ .content_type = "output_text", .text = rc.? };
+                        idx += 1;
+                    }
+                    if (has_c) {
+                        contents[idx] = .{ .content_type = "output_text", .text = c.? };
+                        idx += 1;
+                    }
+                    input_items[input_count] = .{
+                        .item_type = "message",
+                        .role = "assistant",
+                        .content = contents,
+                    };
+                    input_count += 1;
+                } else if (!has_tool_calls) {
+                    // Empty assistant message without tools — still emit empty message to preserve turn.
+                    var contents = try arena_alloc.alloc(ResponsesInputContent, 1);
+                    contents[0] = .{ .content_type = "output_text", .text = "" };
+                    input_items[input_count] = .{
+                        .item_type = "message",
+                        .role = "assistant",
+                        .content = contents,
+                    };
+                    input_count += 1;
+                }
+                if (has_tool_calls) {
+                    for (msg.tool_calls.?) |tc| {
+                        input_items[input_count] = .{
+                            .item_type = "function_call",
+                            .call_id = tc.id,
+                            .name = tc.function.name,
+                            .arguments = tc.function.arguments,
+                        };
+                        input_count += 1;
+                    }
+                }
+            } else if (msg.role == .tool) {
+                input_items[input_count] = .{
+                    .item_type = "function_call_output",
+                    .call_id = msg.tool_call_id orelse "",
+                    .output = msg.content orelse "",
+                };
+                input_count += 1;
+            }
+        }
+
+        var json_tools: ?[]ResponsesTool = null;
+        if (params.tools.len > 0) {
+            const tool_slice = try arena_alloc.alloc(ResponsesTool, params.tools.len);
+            for (params.tools, 0..) |tool, i| {
+                const props = tool.function.parameters.properties;
+                const json_props = try arena_alloc.alloc(ToolProperty, props.len);
+                for (props, 0..) |prop, j| {
+                    json_props[j] = prop;
+                }
+                tool_slice[i] = .{
+                    .name = tool.function.name,
+                    .description = tool.function.description,
+                    .parameters = .{
+                        .properties = json_props,
+                        .required = tool.function.parameters.required,
+                    },
+                };
+            }
+            json_tools = tool_slice;
+        }
+
+        const resolved_max_tokens: usize = params.max_tokens orelse self.maxTokens;
+
+        var reasoning: ?ResponsesReasoning = null;
+        if (self.reasoningEffort) |eff| {
+            if (eff.len > 0) reasoning = .{ .effort = eff };
+        }
+        // Do NOT auto-map `thinkingEnabled` → reasoning. Chat's
+        // `enable_thinking` is a separate flag; Responses `reasoning`
+        // should only be sent when the user explicitly set
+        // `reasoning_effort`. Auto-sending `medium` for every
+        // `thinking:auto` profile was making muse-spark not call tools.
+
+        const req = ResponsesRequest{
+            .model = self.model,
+            .input = input_items[0..input_count],
+            .instructions = instructions,
+            .max_output_tokens = resolved_max_tokens,
+            .stream = stream,
+            .temperature = params.temperature orelse self.temperature,
+            .reasoning = reasoning,
+            .tools = json_tools,
+            .tool_choice = if (json_tools != null) "auto" else null,
+            .store = false,
+            .user = if (self.userIdentifier.len > 0) self.userIdentifier else null,
+        };
+
+        var aw2: std.Io.Writer.Allocating = .init(allocator);
+        try aw2.writer.print("{f}", .{std.json.fmt(req, .{})});
+        const out = try aw2.toOwnedSlice();
+        if (std.mem.eql(u8, self.UrlStyle, "openai-response")) {
+            self.log_fmt(.info, "[RESPONSES DEBUG] input_items={d} tools={d} has_instructions={} json_len={d}", .{ input_items[0..input_count].len, if (json_tools) |t| t.len else 0, instructions != null, out.len });
+            // Log a larger preview (2000 chars) so we can see tool definitions in the truncated log.
+            const preview_len = @min(out.len, 2000);
+            self.log_fmt(.debug, "[RESPONSES BODY] {s}", .{out[0..preview_len]});
+        }
+        return out;
+    }
+
     pub const CallError = error{
         BuildRequestFailed,
         InvalidUri,
@@ -1477,6 +1889,10 @@ pub const Agent = struct {
         // UrlStyle so the rest of the pipeline (StreamingAggregator,
         // CallResponse, the workflow loop) sees the same StreamChunk shape
         // regardless of provider.
+        // Responses API (openai-response) also uses typed events `response.*`.
+        if (std.mem.eql(u8, self.UrlStyle, "openai-response")) {
+            return self.parse_responses_stream_chunk(data, arena);
+        }
         if (std.mem.eql(u8, self.UrlStyle, "anthropic")) {
             return self.parse_anthropic_stream_chunk(data, arena);
         }
@@ -1570,7 +1986,6 @@ pub const Agent = struct {
         }
 
         return chunk;
-
     }
 
     /// Anthropic streaming-SSE → StreamChunk mapper.
@@ -1814,6 +2229,238 @@ pub const Agent = struct {
         return null;
     }
 
+    /// OpenAI Responses API streaming-SSE → StreamChunk mapper.
+    /// Event types per https://developers.openai.com/api/reference/resources/responses
+    /// We translate typed `response.*` events into the same StreamChunk shape the
+    /// chat completions parser produces.
+    ///   response.output_text.delta           → content
+    ///   response.output_text.done            → (ignore, already deltas)
+    ///   response.reasoning_text.delta        → reasoning_content
+    ///   response.reasoning_summary_text.delta→ reasoning_content
+    ///   response.output_item.added (function_call) → tool_calls_delta id+name
+    ///   response.function_call_arguments.delta-> tool_calls_delta arguments
+    ///   response.function_call_arguments.done  -> (finalized via aggregator)
+    ///   response.completed                    → finish_reason + usage
+    ///   response.failed / response.incomplete → finish_reason + usage
+    ///   others (response.created, in_progress, content_part.added/done, output_item.done, queued) → no-op
+    fn parse_responses_stream_chunk(self: *Agent, data: []const u8, arena: std.mem.Allocator) ?StreamChunk {
+        const parsed = json.parseFromSlice(json.Value, arena, data, .{}) catch |err| {
+            const max_data_len = 200;
+            const truncated = data.len > max_data_len;
+            const data_to_log = if (truncated) data[0..max_data_len] else data;
+            if (truncated) {
+                self.log_fmt(.err, "Responses SSE JSON parse failed: {s}\nData (truncated): {s}...", .{ @errorName(err), data_to_log });
+            } else {
+                self.log_fmt(.err, "Responses SSE JSON parse failed: {s}\nData: {s}", .{ @errorName(err), data_to_log });
+            }
+            return null;
+        };
+        defer parsed.deinit();
+        const root = parsed.value;
+        if (root != .object) return null;
+        const type_val = root.object.get("type") orelse return null;
+        if (type_val != .string) return null;
+        const event_type = type_val.string;
+
+        var chunk: StreamChunk = .{};
+
+        // Text deltas — may appear as `response.output_text.delta` with field `delta`
+        if (std.mem.eql(u8, event_type, "response.output_text.delta")) {
+            const delta = root.object.get("delta") orelse return null;
+            if (delta != .string) return null;
+            if (delta.string.len == 0) return null;
+            chunk.content = delta.string;
+            return chunk;
+        }
+        if (std.mem.eql(u8, event_type, "response.output_text.annotation.added")) {
+            return null;
+        }
+        if (std.mem.eql(u8, event_type, "response.output_text.done")) {
+            return null;
+        }
+        if (std.mem.eql(u8, event_type, "response.refusal.delta")) {
+            const delta = root.object.get("delta") orelse return null;
+            if (delta != .string) return null;
+            chunk.content = delta.string;
+            return chunk;
+        }
+        if (std.mem.eql(u8, event_type, "response.refusal.done")) {
+            return null;
+        }
+        // Reasoning deltas (Responses reasoning uses several names)
+        if (std.mem.eql(u8, event_type, "response.reasoning_text.delta") or
+            std.mem.eql(u8, event_type, "response.reasoning_summary_text.delta") or
+            std.mem.eql(u8, event_type, "response.reasoning.delta"))
+        {
+            const delta = root.object.get("delta") orelse root.object.get("text") orelse return null;
+            if (delta != .string) return null;
+            chunk.reasoning_content = delta.string;
+            return chunk;
+        }
+        if (std.mem.eql(u8, event_type, "response.reasoning_text.done") or
+            std.mem.eql(u8, event_type, "response.reasoning_summary_text.done"))
+        {
+            return null;
+        }
+        // Tool call start — `response.output_item.added` with item.type == "function_call"
+        if (std.mem.eql(u8, event_type, "response.output_item.added")) {
+            const item = root.object.get("item") orelse return null;
+            if (item != .object) return null;
+            const item_type = item.object.get("type") orelse return null;
+            if (item_type != .string) return null;
+            if (!std.mem.eql(u8, item_type.string, "function_call")) return null;
+            const call_id = item.object.get("call_id") orelse item.object.get("id") orelse return null;
+            const name_val = item.object.get("name") orelse return null;
+            if (call_id != .string or name_val != .string) return null;
+            // output_index is the tool index for the aggregator
+            var idx: usize = 0;
+            if (root.object.get("output_index")) |ov| {
+                if (ov == .integer) idx = @intCast(ov.integer);
+            }
+            const slice = arena.alloc(ToolCallDelta, 1) catch return null;
+            slice[0] = .{
+                .index = idx,
+                .id = call_id.string,
+                .function_name = name_val.string,
+            };
+            chunk.tool_calls_delta = slice;
+            return chunk;
+        }
+        // Tool arguments deltas
+        if (std.mem.eql(u8, event_type, "response.function_call_arguments.delta")) {
+            const delta = root.object.get("delta") orelse return null;
+            if (delta != .string) return null;
+            var idx: usize = 0;
+            if (root.object.get("output_index")) |ov| {
+                if (ov == .integer) idx = @intCast(ov.integer);
+            } else if (root.object.get("item_id")) |_| {
+                idx = 0;
+            }
+            const slice = arena.alloc(ToolCallDelta, 1) catch return null;
+            slice[0] = .{
+                .index = idx,
+                .function_arguments = delta.string,
+            };
+            chunk.tool_calls_delta = slice;
+            return chunk;
+        }
+        if (std.mem.eql(u8, event_type, "response.function_call_arguments.done")) {
+            // Final arguments already assembled via deltas; emit one more delta with full arguments so aggregator finalizes
+            const args = root.object.get("arguments") orelse return null;
+            if (args != .string) return null;
+            // If we already streamed deltas, this is duplicate;aggregator appends, so only emit if non-empty and not already covered
+            // We emit as a final chunk only if the string is non-empty and we haven't already emitted same length via deltas
+            // For safety, return null to avoid double-append — the deltas already built the full JSON.
+            return null;
+        }
+        // Custom tool deltas (future proof)
+        if (std.mem.eql(u8, event_type, "response.custom_tool_call_input.delta")) {
+            const delta = root.object.get("delta") orelse root.object.get("input") orelse return null;
+            if (delta != .string) return null;
+            var idx: usize = 0;
+            if (root.object.get("output_index")) |ov| {
+                if (ov == .integer) idx = @intCast(ov.integer);
+            }
+            const slice = arena.alloc(ToolCallDelta, 1) catch return null;
+            slice[0] = .{ .index = idx, .function_arguments = delta.string };
+            chunk.tool_calls_delta = slice;
+            return chunk;
+        }
+        // Terminal events — carry finish_reason + usage
+        if (std.mem.eql(u8, event_type, "response.completed") or
+            std.mem.eql(u8, event_type, "response.incomplete") or
+            std.mem.eql(u8, event_type, "response.failed"))
+        {
+            const response = root.object.get("response") orelse root;
+            if (response != .object) return null;
+            // finish_reason: Responses uses status + incomplete_details.reason
+            if (response.object.get("status")) |status_val| {
+                if (status_val == .string) {
+                    if (std.mem.eql(u8, status_val.string, "completed")) {
+                        chunk.finish_reason = .stop;
+                    } else if (std.mem.eql(u8, status_val.string, "failed")) {
+                        chunk.finish_reason = .content_filter;
+                    } else if (std.mem.eql(u8, status_val.string, "incomplete")) {
+                        // check reason
+                        if (response.object.get("incomplete_details")) |inc| {
+                            if (inc == .object) {
+                                if (inc.object.get("reason")) |r| {
+                                    if (r == .string and std.mem.eql(u8, r.string, "max_output_tokens")) {
+                                        chunk.finish_reason = .length;
+                                    } else {
+                                        chunk.finish_reason = .stop;
+                                    }
+                                } else chunk.finish_reason = .stop;
+                            } else chunk.finish_reason = .stop;
+                        } else chunk.finish_reason = .stop;
+                    } else {
+                        chunk.finish_reason = .stop;
+                    }
+                }
+            } else {
+                chunk.finish_reason = .stop;
+            }
+
+            // FIX: The Responses API has NO distinct terminal status for
+            // tool calls — `status` stays "completed" even when the model
+            // emitted one or more function_call items. Chat Completions
+            // signals this via `finish_reason: "tool_calls"`, but Responses
+            // only tells you via the shape of `response.output[]`. Without
+            // this override, `chunk.finish_reason` stays `.stop` even
+            // though `CallResponse.tool_calls` is populated — so any
+            // workflow logic gated on `finish_reason == .tool_calls` never
+            // fires and the model's tool calls are silently dropped.
+            if (response.object.get("output")) |output_val| {
+                if (output_val == .array) {
+                    for (output_val.array.items) |item| {
+                        if (item != .object) continue;
+                        const item_type = item.object.get("type") orelse continue;
+                        if (item_type != .string) continue;
+                        if (std.mem.eql(u8, item_type.string, "function_call")) {
+                            chunk.finish_reason = .tool_calls;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (response.object.get("usage")) |usage_val| {
+                if (usage_val == .object) {
+                    var usage: Usage = .{};
+                    if (usage_val.object.get("input_tokens")) |pt| {
+                        if (pt == .integer) usage.prompt_tokens = @intCast(pt.integer);
+                    } else if (usage_val.object.get("prompt_tokens")) |pt| {
+                        if (pt == .integer) usage.prompt_tokens = @intCast(pt.integer);
+                    }
+                    if (usage_val.object.get("output_tokens")) |ct| {
+                        if (ct == .integer) usage.completion_tokens = @intCast(ct.integer);
+                    } else if (usage_val.object.get("completion_tokens")) |ct| {
+                        if (ct == .integer) usage.completion_tokens = @intCast(ct.integer);
+                    }
+                    if (usage_val.object.get("total_tokens")) |tt| {
+                        if (tt == .integer) usage.total_tokens = @intCast(tt.integer);
+                    } else {
+                        usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+                    }
+                    // preserve cache fields if relay adds them
+                    if (usage_val.object.get("input_tokens_details")) |details| {
+                        if (details == .object) {
+                            if (details.object.get("cached_tokens")) |ct| {
+                                if (ct == .integer) usage.cache_read_input_tokens = @intCast(ct.integer);
+                            }
+                        }
+                    }
+                    chunk.usage = usage;
+                }
+            }
+            // If no explicit finish_reason yet but we have usage, default to stop
+            if (chunk.finish_reason == null) chunk.finish_reason = .stop;
+            return chunk;
+        }
+        // Ignored lifecycle events: response.created, response.in_progress, response.queued,
+        // response.content_part.added/done, response.output_item.done, response.output_text.annotation.*
+        return null;
+    }
     pub fn callStreaming(
         self: *Agent,
         params: AgentCall,
@@ -1832,9 +2479,14 @@ pub const Agent = struct {
         self._anthropic_cache_read_tokens = 0;
         self._anthropic_cache_creation_tokens = 0;
 
-        // 1. Build JSON body (unchanged from Agent.zig).
+        // 1. Build JSON body — dispatch on UrlStyle.
         var json_body: []u8 = undefined;
-        if (std.mem.eql(u8, self.UrlStyle, "openai")) {
+        if (std.mem.eql(u8, self.UrlStyle, "openai-response")) {
+            json_body = self.buildJsonResponsesRequest(params, true) catch |err| {
+                self.log_error("buildJsonResponsesRequest", err, null);
+                return error.BuildRequestFailed;
+            };
+        } else if (std.mem.eql(u8, self.UrlStyle, "openai")) {
             json_body = self.buildJsonOpenAIRequest(params, true) catch |err| {
                 self.log_error("buildJsonRequest", err, null);
                 return error.BuildRequestFailed;
@@ -1861,9 +2513,10 @@ pub const Agent = struct {
         self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         // 2. Compose URL: baseUrl + endpoint.
-        // Anthropic's correct API path is /v1/messages.
         const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
             "/v1/messages"
+        else if (std.mem.eql(u8, self.UrlStyle, "openai-response"))
+            "/responses"
         else
             "/chat/completions";
         const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, endpoint }) catch |err| {
@@ -2035,11 +2688,11 @@ pub const Agent = struct {
                 // scheme. A bare `UnsupportedProtocol` is otherwise opaque.
                 const detail: ?[]u8 = if (err == error.UnsupportedProtocol and
                     std.mem.startsWith(u8, uri_str, "https://"))
-                std.fmt.allocPrint(
-                    self.allocator,
-                    "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see custom_http_client/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/nalar/config.json to an http:// endpoint",
-                    .{chunk_count},
-                ) catch null
+                    std.fmt.allocPrint(
+                        self.allocator,
+                        "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see custom_http_client/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/nalar/config.json to an http:// endpoint",
+                        .{chunk_count},
+                    ) catch null
                 else
                     std.fmt.allocPrint(
                         self.allocator,
