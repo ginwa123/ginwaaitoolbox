@@ -1,3 +1,15 @@
+### 2026-09-01: Fix OpenAI Responses reasoning leak + persist reasoning metadata (Migration 083)
+
+**What landed.** `url_style="openai-response"` was leaking `reasoning_content` as `output_text` inside `type:"message"` — chain-of-thought appeared in the visible answer and `llm_history.reasoning_content` stayed `NULL` (screenshot `task_1788204066849_0`). Fix: reasoning is now a separate top-level `type:"reasoning"` item with `id`/`summary`/`encrypted_content` (per `POST /v1/responses` spec), never merged into `output_text`. New Migration 083 adds `reasoning_id TEXT` + `reasoning_encrypted_content TEXT` on `llm_history` (both nullable, no index) so `store:false` replay can reconstruct `type:reasoning` verbatim. Full chain wired: `SSE parser → StreamingAggregator → CallResponse → workflow/handle_tool → LLMHistory → SQLite → get_llm_histories → AgentMessage → buildJsonResponsesRequest`. Legacy `url_style="openai"` untouched; `reasoning_encrypted_content` never hits the frontend wire (only `reasoning_content` is exposed).
+
+**Files.** 12 EDIT + 1 NEW plan: EDIT `Agent.zig` (ResponsesReasoningSummary, ResponsesInputItem `reasoning` branch, AgentMessage/StreamChunk/CallResponse/StreamingAggregator `reasoning_id`+`encrypted_content`, builder emits separate `reasoning` item, parser captures `id`/`summary[]`/`encrypted_content` from terminal `output[]`), `openai_responses_test.zig` (flipped 3 builder tests + 10 new integration tests: multi-turn replay, tool-call replay, end-to-end aggregator), `migration.zig` (Migration 083 + 4 tests), `llm_history_row.zig`/`models.zig`/`insert_llm_histories.zig`/`llm_history.zig`/`get_llm_histories.zig`/`parsing.zig`/`workflow.zig`/`handle_tool.zig` (thread `reasoning_id`+`encrypted_content` through entire persistence chain), `session_messages_get_test.zig` (fixture). No frontend change — `ChatView.vue` already renders `reasoning_content` in separate collapsible block.
+
+**Tests.** `zig build test --summary all`: 3003/3009 pass (6 skip, 0 fail) — was 2993 baseline (+10 new integration tests). `zig build nalar-desktop --summary all`: 21/21 steps OK. `pnpm test:unit`: 2820/2820 pass (no frontend change).
+
+**Plan:** docs/superpowers/plans/2026-09-01-fix-openai-response-reasoning-leak-and-persist.md
+**Branch:** worktree/fix-openai-response-reasoning
+**Task:** task_1788204837101_1
+
 ### 2026-09-01: Migrate OpenAI legacy features to OpenAI Response (keep legacy) — frontend per-style reasoning UI
 
 **What landed.** Full parity audit + hardening for `url_style="openai-response"` (`POST /v1/responses`) vs legacy `url_style="openai"` (`POST /v1/chat/completions`) while **keeping legacy 100% intact** (no deletion, no deprecation). Backend: `buildJsonResponsesRequest` + `parse_responses_stream_chunk` already existed (commit `6a6501e9`) but had two correctness bugs — fixed here and locked with regression tests. Frontend: `LlmConfigForm.vue` now gates reasoning controls per `url_style` so each style only shows its relevant fields.
