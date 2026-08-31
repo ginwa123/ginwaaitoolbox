@@ -169,6 +169,7 @@ function setThresholdOverride(on: boolean) {
           :style="inputStyle()"
         >
           <option value="openai">OpenAI</option>
+          <option value="openai-response">OpenAI Response</option>
           <option value="anthropic">Anthropic</option>
         </select>
       </div>
