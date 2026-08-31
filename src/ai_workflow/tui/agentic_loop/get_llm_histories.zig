@@ -35,6 +35,8 @@ pub fn getLLMHistories(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -62,10 +64,10 @@ pub fn getLLMHistories(
     defer rows.deinit();
 
     while (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = LLMHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -76,18 +78,20 @@ pub fn getLLMHistories(
             .role = try allocator.dupe(u8, row.values[6]),
             .tool_calls_json = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -110,7 +114,7 @@ pub fn getLLMHistories(
                 // size and trip the debug allocator's canary check.
                 break :blk if (urls.items.len > 0) try urls.toOwnedSlice(allocator) else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -130,22 +134,22 @@ fn parseRowBool(s: []const u8) bool {
 // defaults, numeric/bool parsing, and a pipe-split image_url. The tests
 // below exercise each of those branches against a minimal in-memory DB.
 
-const IdxAgent = 9;
-const IdxSessionName = 10;
-const IdxLoopIndex = 11;
-const IdxToolName = 12;
-const IdxParentSession = 13;
-const IdxTemperature = 14;
-const IdxIsThinking = 15;
-const IdxPromptTokens = 16;
-const IdxCompletionTokens = 17;
-const IdxTotalTokens = 18;
-const IdxIsInput = 19;
-const IdxIsOutput = 20;
-const IdxDiffviewBefore = 21;
-const IdxDiffviewAfter = 22;
-const IdxImageUrl = 23;
-const IdxToolCallId = 24;
+const IdxAgent = 11;
+const IdxSessionName = 12;
+const IdxLoopIndex = 13;
+const IdxToolName = 14;
+const IdxParentSession = 15;
+const IdxTemperature = 16;
+const IdxIsThinking = 17;
+const IdxPromptTokens = 18;
+const IdxCompletionTokens = 19;
+const IdxTotalTokens = 20;
+const IdxIsInput = 21;
+const IdxIsOutput = 22;
+const IdxDiffviewBefore = 23;
+const IdxDiffviewAfter = 24;
+const IdxImageUrl = 25;
+const IdxToolCallId = 26;
 
 fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     const alloc = testing.allocator;
@@ -168,6 +172,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    tool_calls_json TEXT,
         \\    tool_call_id TEXT,
         \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
         \\    is_feed_to_llm INTEGER DEFAULT 1,
         \\    agent TEXT,
         \\    loop_index INTEGER DEFAULT 0,

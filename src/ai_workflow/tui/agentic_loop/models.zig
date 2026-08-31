@@ -18,6 +18,8 @@ pub const TUIHistory = struct {
     role: []const u8,
     tools: []const u8,
     reasoning_content: ?[]const u8 = null,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     agent: []const u8 = "Agent",
     session_name: []const u8 = "",
     loop_index: u32 = 0,
@@ -45,6 +47,8 @@ pub const TUIHistory = struct {
         allocator.free(self.role);
         allocator.free(self.tools);
         if (self.reasoning_content) |rc| allocator.free(rc);
+        if (self.reasoning_id) |rid| allocator.free(rid);
+        if (self.reasoning_encrypted_content) |rec| allocator.free(rec);
         allocator.free(self.agent);
         allocator.free(self.session_name);
         allocator.free(self.tool_name);

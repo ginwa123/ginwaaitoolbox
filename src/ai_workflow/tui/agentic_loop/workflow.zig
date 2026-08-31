@@ -1204,6 +1204,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .model = eff.model,
                     .response_content = res_dynamic_agent.content orelse "",
                     .reasoning_content = res_dynamic_agent.reasoning_content,
+                    .reasoning_id = res_dynamic_agent.reasoning_id,
+                    .reasoning_encrypted_content = res_dynamic_agent.reasoning_encrypted_content,
                     .role = agent.Role.assistant.to_str(),
                     .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else "stop",
                     .tool_calls_json = "",
@@ -1663,6 +1665,8 @@ fn callDynamicAgentNew(
         .tool_calls = tool_calls_for_agent,
         .finish_reason = finish_reason_for_agent,
         .reasoning_content = res_dynamic_agent.reasoning_content,
+        .reasoning_id = res_dynamic_agent.reasoning_id,
+        .reasoning_encrypted_content = res_dynamic_agent.reasoning_encrypted_content,
         .usage = usage_for_agent,
     };
 }

@@ -1965,6 +1965,11 @@ pub const allMigrations: []const Migration = &.{
     // touch. Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md.
     // Task: task_1788004921757_1.
     .{ .version = Migration082AddSessionHumanTouchedAt.version, .name = Migration082AddSessionHumanTouchedAt.name, .up = Migration082AddSessionHumanTouchedAt.up },
+    // Migration 083 — llm_history reasoning metadata (reasoning_id +
+    // reasoning_encrypted_content). Nullable TEXT columns for Responses API
+    // reasoning replay when store:false. Plan:
+    // docs/superpowers/plans/2026-09-01-fix-openai-response-reasoning-leak-and-persist.md.
+    .{ .version = Migration083AddReasoningIdAndEncryptedContent.version, .name = Migration083AddReasoningIdAndEncryptedContent.name, .up = Migration083AddReasoningIdAndEncryptedContent.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4566,6 +4571,174 @@ pub const Migration082AddSessionHumanTouchedAt = struct {
         );
     }
 };
+
+pub const Migration083AddReasoningIdAndEncryptedContent = struct {
+    pub const version: u32 = 83;
+    pub const name = "add_reasoning_id_and_encrypted_content";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "llm_history",
+            "reasoning_id",
+            "reasoning_id TEXT",
+        );
+        try addColumnIfMissing(
+            db,
+            allocator,
+            "llm_history",
+            "reasoning_encrypted_content",
+            "reasoning_encrypted_content TEXT",
+        );
+    }
+};
+
+// ============================================================================
+// Migration 083 — llm_history reasoning metadata — inline tests
+// ============================================================================
+
+test "Migration083 adds reasoning_id + reasoning_encrypted_content columns to llm_history" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Minimal pre-083 llm_history shape (has reasoning_content from Migration 003).
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    reasoning_content TEXT
+        \\)
+    , &.{});
+
+    // Sanity: columns do NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM pragma_table_info('llm_history') WHERE name IN ('reasoning_id', 'reasoning_encrypted_content')",
+            &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    try Migration083AddReasoningIdAndEncryptedContent.up(&ctx.db, alloc);
+
+    // Verify via columnsOf helper (project convention).
+    const cols = try columnsOf(&ctx, "llm_history");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var has_reasoning_id = false;
+    var has_encrypted = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "reasoning_id")) has_reasoning_id = true;
+        if (std.mem.eql(u8, c, "reasoning_encrypted_content")) has_encrypted = true;
+    }
+    try testing.expect(has_reasoning_id);
+    try testing.expect(has_encrypted);
+
+    // Type + nullability sanity: both TEXT, nullable (notnull == 0).
+    var q = try ctx.db.query(alloc,
+        "SELECT name, type, \"notnull\" FROM pragma_table_info('llm_history') WHERE name IN ('reasoning_id', 'reasoning_encrypted_content') ORDER BY name",
+        &.{});
+    defer q.deinit();
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("TEXT", row.values[1]);
+        try testing.expectEqualStrings("0", row.values[2]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), idx);
+}
+
+test "Migration083 INSERT/SELECT round-trip for both new columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    reasoning_content TEXT
+        \\)
+    , &.{});
+
+    try Migration083AddReasoningIdAndEncryptedContent.up(&ctx.db, alloc);
+
+    // Insert with all three reasoning fields populated.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, reasoning_content, reasoning_id, reasoning_encrypted_content) VALUES (?, ?, ?, ?, ?, ?)",
+        &.{ "h1", "sess1", "gpt-5", "thinking trace", "rs_123", "ENC_DATA" });
+
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT reasoning_content, reasoning_id, reasoning_encrypted_content FROM llm_history WHERE id = ?",
+            &.{ "h1" });
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("thinking trace", row.values[0]);
+        try testing.expectEqualStrings("rs_123", row.values[1]);
+        try testing.expectEqualStrings("ENC_DATA", row.values[2]);
+    }
+
+    // NULL handling: legacy row without reasoning metadata should read as "" (SqliteBackend NULL → "").
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model) VALUES (?, ?, ?)",
+        &.{ "h2", "sess1", "gpt-5" });
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT reasoning_id, reasoning_encrypted_content FROM llm_history WHERE id = ?",
+            &.{ "h2" });
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("", row.values[0]);
+        try testing.expectEqualStrings("", row.values[1]);
+    }
+}
+
+test "Migration083 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    reasoning_content TEXT
+        \\)
+    , &.{});
+
+    try Migration083AddReasoningIdAndEncryptedContent.up(&ctx.db, alloc);
+    try Migration083AddReasoningIdAndEncryptedContent.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM pragma_table_info('llm_history') WHERE name IN ('reasoning_id', 'reasoning_encrypted_content')",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
+}
+
+test "Migration083 is registered in allMigrations" {
+    const all = @import("migration.zig").allMigrations;
+    for (all) |m| {
+        if (m.version == Migration083AddReasoningIdAndEncryptedContent.version) return;
+    }
+    return error.Migration083NotRegistered;
+}
 
 // ============================================================================
 // Migration 081 — agent-kanbans mirror — inline tests

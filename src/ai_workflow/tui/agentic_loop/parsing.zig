@@ -87,6 +87,8 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
 
         const content = try allocator.dupe(u8, message.response_content);
         const reasoning_content: ?[]const u8 = if (message.reasoning_content) |rc| try allocator.dupe(u8, rc) else null;
+        const reasoning_id: ?[]const u8 = if (message.reasoning_id) |rid| try allocator.dupe(u8, rid) else null;
+        const reasoning_encrypted_content: ?[]const u8 = if (message.reasoning_encrypted_content) |rec| try allocator.dupe(u8, rec) else null;
 
         // Handle vision support: if image_urls is set, create content_parts with text and images
         var content_parts: ?[]agent.ContentPart = null;
@@ -127,6 +129,8 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
             .content_parts = content_parts,
             .tool_calls = tool_calls,
             .reasoning_content = reasoning_content,
+            .reasoning_id = reasoning_id,
+            .reasoning_encrypted_content = reasoning_encrypted_content,
         };
         try messages.append(allocator, agentMessage);
     }
