@@ -1,3 +1,26 @@
+### 2026-09-01: Migrate OpenAI legacy features to OpenAI Response (keep legacy) — frontend per-style reasoning UI
+
+**What landed.** Full parity audit + hardening for `url_style="openai-response"` (`POST /v1/responses`) vs legacy `url_style="openai"` (`POST /v1/chat/completions`) while **keeping legacy 100% intact** (no deletion, no deprecation). Backend: `buildJsonResponsesRequest` + `parse_responses_stream_chunk` already existed (commit `6a6501e9`) but had two correctness bugs — fixed here and locked with regression tests. Frontend: `LlmConfigForm.vue` now gates reasoning controls per `url_style` so each style only shows its relevant fields.
+
+**Backend fixes (Agent.zig):**
+- **URL routing:** `callStreaming`'s endpoint dispatch was commented out and `concat` only used `baseUrl` — requests went to bare `baseUrl` for every style. Restored: `anthropic → /v1/messages`, `openai-response → /responses`, `openai/default → /chat/completions`, and fixed `concat` to `&.{baseUrl, endpoint}`.
+- **Integer overflow:** `buildJsonResponsesRequest` used `@intFromBool` (returns `u1`) summed as `u1+u1` — overflows when both `content` and `reasoning_content` present. Fixed to `@as(usize, @intFromBool(...))`.
+- **Reasoning gating:** `reasoning.effort` only sent when `reasoningEffort` explicitly set — no auto fallback to `"medium"` when `thinkingEnabled=true` (would 400 on non-reasoning models). Already correct, now regression-tested.
+- **Parser:** `response.completed` with `output[]` containing `function_call` → `finish_reason=.tool_calls` (was `.stop`), usage mapping `input_tokens→prompt_tokens` etc + `cached_tokens`.
+
+**Frontend (LlmConfigForm.vue):**
+- `thinking_budget_tokens` now `v-if="isAnthropic"` (Anthropic only), `reasoning_effort` now `v-if="isOpenAIStyle"` (`openai` + `openai-response`), both still gated by `thinking !== "off"`. Hidden fields preserve values (not nulled) so switching styles doesn't lose data. Helper text updated: budget "Anthropic only", effort "OpenAI / Responses only".
+- Tests: `nalarConfigFormThinking.spec.ts` 9 per-style visibility + preservation tests, `LlmConfigForm.spec.ts` 4 per-style select-count asserts.
+
+**Files.** 7 (1 NEW + 6 EDIT): NEW `openai_responses_test.zig` (34 tests: 18 builder + 16 parser), EDIT `Agent.zig` (URL routing + overflow), `test_runner.zig`, `LlmConfigForm.vue`, `nalarConfigFormThinking.spec.ts`, `LlmConfigForm.spec.ts`, `NALAR.md`. No migration, no config schema change.
+
+**Tests.** `zig build test --summary all`: 2970/2976 pass (6 skip, 0 fail) — was 2936 baseline (+34 new). `pnpm test:unit`: 2820/2820 pass (was 2802 baseline, +18 net from per-style tests). `zig build nalar-desktop --summary all`: 21/21 steps OK.
+
+**Plan:** docs/superpowers/plans/2026-09-01-migrate-openai-legacy-to-response.md
+**Branch:** worktree/migrate-openai-legacy-to-response
+**Task:** task_1788199905343_0
+
+
 ### 2026-08-28: MCP stdio timeout + cancel-callback + self-healing respawn (fixes CI test_mcp_test_stdio_success)
 
 **Root cause.** A hung/unresponsive MCP stdio server previously froze the agent workflow indefinitely. `client.recv()` / `client.send()` in `mcp_stdio.zig` were fully blocking with no timeout, no cancel-check, and no respawn-on-hang. The CI test `test_mcp_test_stdio_success_lists_hello_world_tools` (in `tests/functional/mcp_test_test.py`) was hitting this directly: the SDK's first byte read blocked, the recv hung, and the test's 10s deadline fired with `RecvTimeout` instead of returning the tools list.

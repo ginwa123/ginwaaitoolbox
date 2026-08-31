@@ -26,6 +26,9 @@ test {
     // (plan 2026-08-23-model-thinking.md)
     _ = @import("openai_reasoning_test.zig");
 
+    // OpenAI Responses API builder + parser parity (plan 2026-09-01-migrate-openai-legacy-to-response)
+    _ = @import("openai_responses_test.zig");
+
     // Prompt builder tests
     _ = @import("prompts_test.zig");
 
