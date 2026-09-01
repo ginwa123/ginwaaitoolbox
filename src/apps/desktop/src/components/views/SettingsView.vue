@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import NalarSettings from '../NalarSettings.vue'
 import SkillsSettings from '../preview/SkillsSettings.vue'
 import MemoriesSettings from '../memory/MemoriesSettings.vue'
+import LlmHistorySettings from '../llm/LlmHistorySettings.vue'
 
 const router = useRouter()
 
@@ -101,6 +102,18 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
           <span class="text-lg">🧠</span>
           <span>Memories</span>
         </button>
+
+        <button
+          @click="setSettingsTab('llm_history')"
+          data-testid="settings-tab-llm-history"
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200"
+          :style="activeSettingsTab === 'llm_history'
+            ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
+            : `color: var(--semantic-text-muted);`"
+        >
+          <span class="text-lg">🪵</span>
+          <span>LLM History</span>
+        </button>
       </nav>
     </div>
 
@@ -119,6 +132,11 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
       <!-- Memories Tab Content -->
       <div v-else-if="activeSettingsTab === 'memories'" class="flex-1 overflow-y-auto p-6">
         <MemoriesSettings @notification="handleNotification" />
+      </div>
+
+      <!-- LLM History Tab Content -->
+      <div v-else-if="activeSettingsTab === 'llm_history'" class="flex-1 overflow-y-auto p-6">
+        <LlmHistorySettings />
       </div>
     </main>
 

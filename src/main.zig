@@ -310,6 +310,11 @@ pub fn main(init: std.process.Init) !void {
     // // Worker API
     try gs.router.get("/api/workers", ai_mod.http_handlers.workerListHandler);
     //
+    // LLM History Inspector — MUST be before any generic /api/llm/:id param route
+    // (route-order shadowing: matchRoute walks in registration order, so a
+    // literal /history segment registered AFTER /:id would be captured as :id).
+    try gs.router.get("/api/llm/history/:session_id", ai_mod.http_handlers.llmHistoryInspectorHandler);
+
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.put("/api/llm/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);

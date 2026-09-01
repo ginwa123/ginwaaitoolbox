@@ -4299,3 +4299,47 @@ export async function disableAgentKanbanTool(
     { method: 'DELETE' },
   )
 }
+
+// ─── LLM History Inspector (Phase 2 — Settings tab) ───────────────────────
+//
+// GET /api/llm/history/:session_id — returns the full chain the app would
+// send to the provider + 3 curl previews (one per url_style). The backend
+// reuses Agent.buildJson*Request verbatim so the preview is byte-identical
+// to the real call. api_key is redacted to sk-...**** in every curl.
+//
+// Plan: docs/superpowers/plans/2026-09-02-llm-history-inspector-in-settings.md
+
+export interface LlmHistoryChainMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  id?: string | null
+  created_at?: string | null
+  reasoning_content?: string | null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool_calls shape varies per provider
+  tool_calls?: any[] | null
+  tool_call_id?: string | null
+  tool_name?: string | null
+}
+
+export interface LlmHistoryInspectorResponse {
+  session_id: string
+  model: string
+  url_style: string
+  chain: LlmHistoryChainMessage[]
+  curl: {
+    anthropic: string
+    openai: string
+    openai_response: string
+  }
+  bodies: {
+    anthropic: unknown
+    openai: unknown
+    openai_response: unknown
+  }
+}
+
+export async function getLlmHistory(sessionId: string): Promise<LlmHistoryInspectorResponse> {
+  return await apiFetch<LlmHistoryInspectorResponse>(
+    `/llm/history/${encodeURIComponent(sessionId)}`,
+  )
+}

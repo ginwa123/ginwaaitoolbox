@@ -204,6 +204,11 @@ pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
 
+// LLM History Inspector — GET /api/llm/history/:session_id
+// Returns chain + curl for 3 wire formats. See llm_history_inspector.zig.
+pub const llmHistoryInspectorHandler = @import("llm_history_inspector.zig").llmHistoryInspectorHandler;
+pub const llmHistoryInspectorUseCase = @import("llm_history_inspector.zig").useCase;
+
 // Design-mode HTTP handlers (item_type='design') — v6 of the
 // design-mode redesign. See
 // docs/superpowers/plans/2026-07-08-design-mode-redesign.md
