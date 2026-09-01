@@ -99,150 +99,73 @@ fn buildCurlString(
     , .{ base_url, endpoint, redacted_key, escaped_body });
 }
 
-/// Convert TUIHistory rows to AgentMessage[] for builder input.
-/// Simple mapping for v1 — covers role, content, tool_calls, reasoning.
+/// Convert LLMHistory rows to AgentMessage[] using the shared
+/// `transformLLMHistoryToAgentMessage` (same as the real agent loop).
+/// This ensures the inspector's chain is byte-identical to what the LLM sees.
 fn buildAgentMessages(
     allocator: std.mem.Allocator,
-    histories: []const llm_history.TUIHistory,
+    histories: []const nalarcore.ai_mod.LLMHistory,
 ) ![]agent.AgentMessage {
-    // Prepend synthetic system message for v1
-    const has_system = false; // we always prepend one
-    _ = has_system;
+    const parsing = @import("../agentic_loop/parsing.zig");
     var messages: std.ArrayList(agent.AgentMessage) = .empty;
     errdefer {
         for (messages.items) |*m| m.deinit(allocator);
         messages.deinit(allocator);
     }
 
-    // Synthetic system prompt — v1 keeps it simple
+    // Synthetic system prompt — v1 keeps it simple (real buildMessages
+    // builds a full system prompt from knowledge/skills/workspace; for
+    // the inspector preview we keep a minimal system message so the
+    // curl is still valid and comparable across providers).
     try messages.append(allocator, .{
         .role = .system,
         .content = try allocator.dupe(u8, "You are a helpful assistant."),
     });
 
-    for (histories) |h| {
-        const role = agent.Role.from_str(h.role) orelse .assistant;
-
-        // Parse tool_calls_json if present
-        var tool_calls: ?[]agent.ToolCall = null;
-        if (h.tools.len > 0 and !std.mem.eql(u8, h.tools, "")) {
-            // Try to parse as JSON array of tool calls
-            const parsed = std.json.parseFromSlice(std.json.Value, allocator, h.tools, .{}) catch null;
-            if (parsed) |p| {
-                defer p.deinit();
-                if (p.value == .array and p.value.array.items.len > 0) {
-                    var tc_list: std.ArrayList(agent.ToolCall) = .empty;
-                    errdefer {
-                        for (tc_list.items) |*tc| {
-                            allocator.free(tc.id);
-                            allocator.free(tc.function.name);
-                            allocator.free(tc.function.arguments);
-                        }
-                        tc_list.deinit(allocator);
-                    }
-                    for (p.value.array.items) |item| {
-                        if (item != .object) continue;
-                        const id_val = item.object.get("id") orelse continue;
-                        const func_val = item.object.get("function") orelse continue;
-                        if (id_val != .string) continue;
-                        if (func_val != .object) continue;
-                        const name_val = func_val.object.get("name") orelse continue;
-                        const args_val = func_val.object.get("arguments") orelse continue;
-                        if (name_val != .string) continue;
-                        // arguments may be string or object — normalize to string
-                        var args_str: []const u8 = "";
-                        var args_owned: ?[]u8 = null;
-                        if (args_val == .string) {
-                            args_str = args_val.string;
-                        } else {
-                            // Serialize the value to JSON string
-                            var aw: std.Io.Writer.Allocating = .init(allocator);
-                            aw.writer.print("{f}", .{std.json.fmt(args_val, .{})}) catch continue;
-                            args_owned = aw.toOwnedSlice() catch continue;
-                            args_str = args_owned.?;
-                        }
-                        const tc = agent.ToolCall{
-                            .id = try allocator.dupe(u8, id_val.string),
-                            .type = "function",
-                            .function = .{
-                                .name = try allocator.dupe(u8, name_val.string),
-                                .arguments = if (args_owned) |a| a else try allocator.dupe(u8, args_str),
-                            },
-                        };
-                        // If we didn't own args, we already duped; if we did, it's already owned
-                        if (args_owned == null and args_val != .string) {
-                            // args_str was from serialization, need to handle
-                        }
-                        try tc_list.append(allocator, tc);
-                    }
-                    if (tc_list.items.len > 0) {
-                        tool_calls = try tc_list.toOwnedSlice(allocator);
-                    } else {
-                        tc_list.deinit(allocator);
-                    }
-                }
-            }
+    for (histories) |hist| {
+        const agentMsgs = try parsing.transformLLMHistoryToAgentMessage(allocator, hist);
+        for (agentMsgs) |msg| {
+            try messages.append(allocator, msg);
         }
-
-        const content: ?[]const u8 = if (h.response_content.len > 0)
-            try allocator.dupe(u8, h.response_content)
-        else
-            null;
-
-        const reasoning: ?[]const u8 = if (h.reasoning_content) |rc|
-            if (rc.len > 0) try allocator.dupe(u8, rc) else null
-        else
-            null;
-
-        const reasoning_id: ?[]const u8 = if (h.reasoning_id) |rid|
-            if (rid.len > 0) try allocator.dupe(u8, rid) else null
-        else
-            null;
-
-        const reasoning_enc: ?[]const u8 = if (h.reasoning_encrypted_content) |rec|
-            if (rec.len > 0) try allocator.dupe(u8, rec) else null
-        else
-            null;
-
-        const tool_call_id: ?[]const u8 = if (h.tool_call_id) |tci|
-            if (tci.len > 0) try allocator.dupe(u8, tci) else null
-        else
-            null;
-
-        // Handle image_urls -> content_parts for vision
-        var content_parts: ?[]agent.ContentPart = null;
-        if (h.image_urls) |urls| {
-            if (urls.len > 0) {
-                var parts = try allocator.alloc(agent.ContentPart, urls.len + (if (content != null) @as(usize, 1) else 0));
-                var idx: usize = 0;
-                if (content) |c| {
-                    parts[idx] = .{ .part_type = "text", .text = try allocator.dupe(u8, c) };
-                    idx += 1;
-                }
-                for (urls) |url| {
-                    parts[idx] = .{
-                        .part_type = "image_url",
-                        .image_url = .{ .url = try allocator.dupe(u8, url) },
-                    };
-                    idx += 1;
-                }
-                content_parts = parts[0..idx];
-            }
-        }
-
-        try messages.append(allocator, .{
-            .role = role,
-            .content = content,
-            .content_parts = content_parts,
-            .tool_calls = tool_calls,
-            .tool_call_id = tool_call_id,
-            .reasoning_content = reasoning,
-            .reasoning_id = reasoning_id,
-            .reasoning_encrypted_content = reasoning_enc,
-        });
     }
 
     return messages.toOwnedSlice(allocator);
+}
+
+/// Build the full AgentMessage chain using the real `buildMessages`
+/// (same as workflow). This includes the full system prompt assembled
+/// from knowledge + skills + workspace + plan, not just a synthetic one.
+/// Used when we want the inspector to show exactly what the LLM sees.
+fn buildFullAgentMessages(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    histories: []nalarcore.ai_mod.LLMHistory,
+) ![]agent.AgentMessage {
+    const prompts_build = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+    // cwd from session, tools empty for preview (real tools are resolved
+    // via filteringTools inside buildMessages)
+    const sess = try llm_history.getSession(allocator, db, session_id);
+    const cwd: []const u8 = if (sess) |s| blk: {
+        defer s.deinit(allocator);
+        break :blk try allocator.dupe(u8, s.cwd);
+    } else try allocator.dupe(u8, "");
+    defer allocator.free(cwd);
+
+    const tools_empty: []nalarcore.tool_models.AgentTool = &.{};
+    return prompts_build.buildMessages(
+        allocator,
+        io,
+        db,
+        cwd,
+        session_id,
+        "", // parent_session_id
+        histories,
+        tools_empty,
+        "none", // inherited_context_mode
+        "", // activeAgentContent
+    );
 }
 
 // =====================================================================
@@ -329,8 +252,8 @@ pub fn useCaseWithIo(
         // For tests without singleton, keep defaults
     }
 
-    // 3. Load llm_history chain
-    const histories = try llm_history.getMessages(allocator, db, session_id);
+    // 3. Load llm_history chain via getLLMHistories (same as real agent)
+    const histories = try nalarcore.ai_mod.getLLMHistories(@TypeOf(db.*), .{ .allocator = allocator, .db = db, .session_id = session_id });
     defer {
         for (histories) |*h| {
             var mut = h.*;
@@ -339,20 +262,31 @@ pub fn useCaseWithIo(
         allocator.free(histories);
     }
 
-    // 4. Build AgentMessage[] (with synthetic system prompt)
-    const agent_messages = try buildAgentMessages(allocator, histories);
+    // 4. Build AgentMessage[] via buildMessages (same as real agent — full system prompt)
+    // Uses transformLLMHistoryToAgentMessage internally, so the inspector's chain
+    // is byte-identical to what the LLM sees. Falls back to buildAgentMessages
+    // (which also uses transformLLMHistoryToAgentMessage) if buildMessages fails
+    // (e.g. missing singleton in tests).
+    const agent_messages = blk: {
+        const full = buildFullAgentMessages(allocator, io, db, session_id, histories) catch try buildAgentMessages(allocator, histories);
+        break :blk full;
+    };
     defer {
         for (agent_messages) |*m| m.deinit(allocator);
         allocator.free(agent_messages);
     }
 
-    // 5. Build chain for response (simple mapping for display)
+    // 5. Build chain for response (simple mapping for display) — from LLMHistory
     var chain_list: std.ArrayList(ChainMessage) = .empty;
     errdefer chain_list.deinit(allocator);
-    // System message first
+    // System message first — from the built agent_messages[0] if available, else synthetic
+    const system_content: []const u8 = if (agent_messages.len > 0 and agent_messages[0].role == .system)
+        agent_messages[0].content orelse "You are a helpful assistant."
+    else
+        "You are a helpful assistant.";
     try chain_list.append(allocator, .{
         .role = "system",
-        .content = try allocator.dupe(u8, "You are a helpful assistant."),
+        .content = try allocator.dupe(u8, system_content),
         .id = null,
     });
     for (histories) |h| {
@@ -360,7 +294,7 @@ pub fn useCaseWithIo(
             .role = try allocator.dupe(u8, h.role),
             .content = try allocator.dupe(u8, h.response_content),
             .id = try allocator.dupe(u8, h.id),
-            .tool_calls = if (h.tools.len > 0) try allocator.dupe(u8, h.tools) else null,
+            .tool_calls = if (h.tool_calls_json.len > 0) try allocator.dupe(u8, h.tool_calls_json) else null,
             .tool_call_id = if (h.tool_call_id) |tci| if (tci.len > 0) try allocator.dupe(u8, tci) else null else null,
             .reasoning_content = if (h.reasoning_content) |rc| if (rc.len > 0) try allocator.dupe(u8, rc) else null else null,
             .created_at = try allocator.dupe(u8, h.created_at),
