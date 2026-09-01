@@ -2618,30 +2618,45 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Unset (the default) keeps the historical `.venv-func` behavior for
     // local developers. NOTE: this must be read at CONFIG time so the
     // literal path can be baked into the addSystemCommand argv below.
-    const venv_dir = b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
-    const venv_bin = std.fmt.allocPrint(b.allocator, "{s}/bin", .{venv_dir}) catch unreachable;
+    const venv_dir_raw = b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
+    // Normalize Windows mixed separators (runner.temp is C:\...\ _temp + "/nalar-ci-venv" → "C:\...\ _temp/nalar-ci-venv").
+    // Use forward slashes internally; Python on Windows handles both.
+    const venv_dir = blk: {
+        const dup = b.allocator.dupe(u8, venv_dir_raw) catch unreachable;
+        for (dup) |*c| if (c.* == '\\') c.* = '/';
+        break :blk dup;
+    };
+    const is_windows_host = b.graph.host.result.os.tag == .windows;
+    const venv_bin = if (is_windows_host)
+        std.fmt.allocPrint(b.allocator, "{s}/Scripts", .{venv_dir}) catch unreachable
+    else
+        std.fmt.allocPrint(b.allocator, "{s}/bin", .{venv_dir}) catch unreachable;
+    // On Windows, `python` is the canonical exe; `python3` is often a shim.
+    const default_python = if (is_windows_host) "python" else "python3";
+    const effective_python = if (std.mem.eql(u8, python_exe, "python3") and is_windows_host) default_python else python_exe;
     const install_venv = b.addSystemCommand(&.{
-        python_exe, "-m", "venv", venv_dir,
+        effective_python, "-m", "venv", venv_dir,
     });
     install_venv.setCwd(b.path(""));
 
+    const pip_exe = if (is_windows_host) "pip.exe" else "pip";
     const install_requirements = b.addSystemCommand(&.{
-        b.fmt("{s}/pip", .{venv_bin}), "install", "-q", "-r", "tests/functional/requirements.txt",
+        b.fmt("{s}/{s}", .{ venv_bin, pip_exe }), "install", "-q", "-r", "tests/functional/requirements.txt",
     });
     install_requirements.setCwd(b.path(""));
     install_requirements.step.dependOn(&install_venv.step);
 
-    // Probe python3 — skip the step if missing. Without a probe,
-    // `addSystemCommand(&.{ "python3", ... })` would error at config
-    // time on hosts that don't have python3.
+    // Probe python — skip the step if missing. Without a probe,
+    // `addSystemCommand` would error at config time on hosts that don't have python.
     //
     // Shell selection (cross-platform fix): use cmd.exe with `where` on
     // Windows (the previous `sh -c` failed because Git for Windows
-    // doesn't add its bin/ to PATH automatically).
+    // doesn't add its bin/ to PATH automatically). Check both `python`
+    // and `python3` on Windows.
     const python_probe = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
         .windows => &.{
             "cmd.exe", "/c",
-            \\@where python3 >nul 2>&1 || echo zig build functional-test: python3 not found, skipping (install Python from python.org or set -Dpython=...)
+            \\@where python >nul 2>&1 || @where python3 >nul 2>&1 || echo zig build functional-test: python not found, skipping (install Python from python.org or set -Dpython=...)
         },
         else => &.{
             "sh", "-c",
@@ -2650,8 +2665,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     });
     python_probe.setCwd(b.path(""));
 
+    const python_venv_exe = if (is_windows_host) "python.exe" else "python";
     const run_functional = b.addSystemCommand(&.{
-        b.fmt("{s}/python", .{venv_bin}), "-m", "pytest", "tests/functional/", "-v", "--tb=short",
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }), "-m", "pytest", "tests/functional/", "-v", "--tb=short",
     });
     run_functional.setCwd(b.path(""));
     run_functional.step.dependOn(&install_requirements.step);
@@ -2690,7 +2706,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // missing browser.
     // =====================================================================
     const install_ui_requirements = b.addSystemCommand(&.{
-        b.fmt("{s}/pip", .{venv_bin}), "install", "-q", "-r", "tests/functional_ui/requirements.txt",
+        b.fmt("{s}/{s}", .{ venv_bin, pip_exe }), "install", "-q", "-r", "tests/functional_ui/requirements.txt",
     });
     install_ui_requirements.setCwd(b.path(""));
     install_ui_requirements.step.dependOn(&install_requirements.step);
@@ -2700,13 +2716,13 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // cached. We run it as a separate step so CI logs surface the
     // ~150 MB download progress.
     const install_playwright_browsers = b.addSystemCommand(&.{
-        b.fmt("{s}/python", .{venv_bin}), "-m", "playwright", "install", "chromium",
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }), "-m", "playwright", "install", "chromium",
     });
     install_playwright_browsers.setCwd(b.path(""));
     install_playwright_browsers.step.dependOn(&install_ui_requirements.step);
 
     const run_functional_ui = b.addSystemCommand(&.{
-        b.fmt("{s}/python", .{venv_bin}), "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }), "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
     });
     run_functional_ui.setCwd(b.path(""));
     run_functional_ui.step.dependOn(&install_playwright_browsers.step);

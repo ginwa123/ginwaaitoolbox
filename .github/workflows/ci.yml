@@ -1385,6 +1385,12 @@ jobs:
           NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
         run: |
           set -u
+          # Windows self-hosted runners (WIN-...) may not have Python on
+          # PATH (only the Store shim). Skip instead of failing.
+          if ! command -v python >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+            echo "→ functional-test: python not found, skipping (install Python or set -Dpython=...)"
+            exit 0
+          fi
           echo "→ functional-test: starting"
           date +%s > /tmp/functional-test-start.$$ 2>/dev/null || true
           # zig build functional-test creates the venv at
