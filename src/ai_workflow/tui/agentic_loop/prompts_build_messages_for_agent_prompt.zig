@@ -178,14 +178,9 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, knowledge);
     }
 
-    // Agent-Kanbans mirror (Migration 081, plan
-    // 2026-08-25-agent-kanbans-mirror): Build the "## Kanban System
-    // Prompt" + "## Kanban Knowledge" sections from the
-    // agent_kanban_system_prompt / agent_kanban_knowledges tables.
-    // Empty unless the session's item is a kanban WITH an
-    // `agent_kanbans` row — unconfigured boards are unaffected. Only
-    // ONE of the agent/kanban pairs can be non-empty per session
-    // (item_type is exclusive), so effective ordering is unchanged.
+    const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
+    try final_system.appendSlice(allocator, workspaceContext);
+
     const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
     try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
 
@@ -197,12 +192,6 @@ pub fn buildMessages(
 
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
     try final_system.appendSlice(allocator, agentSystemPromptContent);
-
-    // Workspace Context — siblings in the same workspace. MUST be before kanban
-    // so the kanban prompt can reference "workspace_id + item_id from the ## Workspace Context section above".
-    // This was dropped in 9a5bcafa (prompt simplification) and broke kanban mode entirely.
-    const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
-    try final_system.appendSlice(allocator, workspaceContext);
 
     // kanban rule
     const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, filtered_tools);
