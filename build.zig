@@ -2623,7 +2623,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Use forward slashes internally; Python on Windows handles both.
     const venv_dir = blk: {
         const dup = b.allocator.dupe(u8, venv_dir_raw) catch unreachable;
-        for (dup) |*c| if (c.* == '\\') c.* = '/';
+        for (dup) |*c| {
+            if (c.* == '\\') c.* = '/';
+        }
         break :blk dup;
     };
     const is_windows_host = b.graph.host.result.os.tag == .windows;
