@@ -103,6 +103,15 @@ pub fn toXMLSuccess(allocator: std.mem.Allocator, result: ReadFileResult, path: 
     });
 }
 
+pub const read_file_tool_system_prompt =
+    \\## Read File Tool — Behavior
+    \\Use `read_file` to read file contents by absolute path.
+    \\- For large files, use `offset` + `limit` to paginate (500 lines per page). Check `total_lines` first.
+    \\- Each returned line is prefixed with its 1-indexed line number.
+    \\- Never guess offsets — read sequentially.
+    \\
+;
+
 pub const read_file_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -136,5 +145,6 @@ pub const read_file_tool = AgentTool{
             },
             .required = &.{"path"},
         },
+        .system_prompt = read_file_tool_system_prompt,
     },
 };

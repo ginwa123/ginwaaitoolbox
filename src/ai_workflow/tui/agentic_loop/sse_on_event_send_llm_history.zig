@@ -17,6 +17,7 @@ const ToolCallJson = struct {
 };
 
 const SseEventLLMHistory = struct {
+    id: ?[]const u8 = null,
     index: ?usize = null,
     content: []const u8,
     type: []const u8 = "full",
@@ -51,6 +52,7 @@ const SseEventLLMHistory = struct {
 };
 
 pub const OnEventInputLLMHistory = struct {
+    id: ?[]const u8 = null,
     index: usize = 0,
     session_id: []const u8,
     model: []const u8,
@@ -148,6 +150,7 @@ pub fn onEventSendLLMHistory(
     session_skills_json = try session_skills_owned.toOwnedSlice(allocator);
 
     const payload = SseEventLLMHistory{
+        .id = input.id,
         .index = input.index,
         .content = if (sanitized_content) |s| s else (input.content orelse ""),
         .session_id = input.session_id,

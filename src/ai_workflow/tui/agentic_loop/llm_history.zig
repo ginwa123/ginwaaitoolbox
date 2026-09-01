@@ -29,6 +29,14 @@ pub const SessionInfo = struct {
     /// the workflow observed for this session. Empty string until the
     /// first successful turn; never NULL at the API edge.
     last_finish_reason: []const u8,
+    /// Migration 082 - unix-ms of the last time a HUMAN (not the AI
+    /// agent) interacted with this session. Empty string when no human
+    /// touch yet - the frontend treats that as "fall back to updated_at".
+    /// Stamped by `llm_history.updateSessionLastHumanTouchedAt` from 3
+    /// sites: emit_run_agent (user sends a message), session_update
+    /// (user edits a field), workflow.zig::saveRetryAttemptMessage
+    /// (agent emits an error - "also when error too").
+    last_human_touched_at: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -41,6 +49,7 @@ pub const SessionInfo = struct {
         allocator.free(self.selected_profile_model);
         allocator.free(self.is_auto_retry_until_stop);
         allocator.free(self.last_finish_reason);
+        allocator.free(self.last_human_touched_at);
     }
 };
 
@@ -261,7 +270,8 @@ pub fn getSessionListWithCursor(
         \\COALESCE(h.agent, 'Agent'),
         \\COALESCE(s.selected_profile_model, ''),
         \\COALESCE(s.is_auto_retry_until_stop, '0'),
-        \\COALESCE(s.last_finish_reason, '')
+        \\COALESCE(s.last_finish_reason, ''),
+        \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -293,6 +303,10 @@ pub fn getSessionListWithCursor(
             // row.values[9] = last_finish_reason.
             .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
             .last_finish_reason = try allocator.dupe(u8, row.values[9]),
+            // Migration 082 - row.values[10] = last_human_touched_at_nano.
+            // Aliased to last_human_touched_at on the wire (D3 - SQL
+            // column keeps the _nano suffix, the wire field is bare).
+            .last_human_touched_at = try allocator.dupe(u8, row.values[10]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -341,6 +355,11 @@ pub const SessionInfoJson = struct {
     is_auto_retry_until_stop: []const u8 = "",
     /// Migration 063 — most recent finish_reason (Migration 063).
     last_finish_reason: []const u8 = "",
+    /// Migration 082 - unix-ms of the last human touch. Empty string
+    /// for legacy rows (frontend falls back to updated_at). Aliased from
+    /// the SQL column `last_human_touched_at_nano` at the SELECT layer
+    /// so the wire field is bare per Migration 075 project convention.
+    last_human_touched_at: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -370,6 +389,10 @@ pub fn buildSessionListJson(
             // carries them to the frontend.
             .is_auto_retry_until_stop = sess.is_auto_retry_until_stop,
             .last_finish_reason = sess.last_finish_reason,
+            // Migration 082 - forward the chat-side stamp value to the
+            // wire. Empty string for legacy rows means the frontend
+            // falls back to updated_at (per ChatsList.vue display logic).
+            .last_human_touched_at = sess.last_human_touched_at,
         });
     }
 
@@ -482,6 +505,8 @@ pub const SessionMessage = struct {
     tool_name: []const u8,
     finish_reason: []const u8,
     reasoning_content: []const u8,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
@@ -498,6 +523,8 @@ pub const SessionMessage = struct {
         allocator.free(self.tool_name);
         allocator.free(self.finish_reason);
         allocator.free(self.reasoning_content);
+        if (self.reasoning_id) |rid| allocator.free(rid);
+        if (self.reasoning_encrypted_content) |rec| allocator.free(rec);
         if (self.diffview_before) |dv| allocator.free(dv);
         if (self.diffview_after) |da| allocator.free(da);
         if (self.image_urls) |iums| {
@@ -606,7 +633,7 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
             \\       COALESCE(s.selected_profile_model, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
@@ -625,7 +652,7 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
             \\       COALESCE(s.selected_profile_model, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
@@ -657,9 +684,10 @@ pub fn getSessionMessagesSorted(
         // first row (same for all rows since we filter by session_id).
         // Column indices match the SELECT list above: cwd at 9,
         // git_worktree_cwd at 10, reasoning_content at 11,
-        // diffview_before at 12, diffview_after at 13, image_url at 14,
-        // tool_call_id at 15, tool_calls_json at 16,
-        // selected_profile_model at 17.
+        // reasoning_id at 12, reasoning_encrypted_content at 13,
+        // diffview_before at 14, diffview_after at 15, image_url at 16,
+        // tool_call_id at 17, tool_calls_json at 18,
+        // selected_profile_model at 19.
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
@@ -673,7 +701,7 @@ pub fn getSessionMessagesSorted(
             }
         }
         if (selected_profile_model == null) {
-            const spm_val = row.values[17];
+            const spm_val = row.values[19];
             if (spm_val.len > 0) {
                 selected_profile_model = try allocator.dupe(u8, spm_val);
             }
@@ -690,15 +718,17 @@ pub fn getSessionMessagesSorted(
             .tool_name = try allocator.dupe(u8, row.values[7]),
             .finish_reason = try allocator.dupe(u8, row.values[8]),
             .reasoning_content = try allocator.dupe(u8, row.values[11]),
-            .diffview_before = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
-            .diffview_after = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
-            .image_urls = if (row.values[14].len > 0) blk: {
+            .reasoning_id = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
+            .reasoning_encrypted_content = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+            .diffview_before = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
+            .diffview_after = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
+            .image_urls = if (row.values[16].len > 0) blk: {
                 var urls = std.ArrayList([]const u8).empty;
                 errdefer {
                     for (urls.items) |u| allocator.free(u);
                     urls.deinit(allocator);
                 }
-                var iter = std.mem.splitScalar(u8, row.values[14], '|');
+                var iter = std.mem.splitScalar(u8, row.values[16], '|');
                 while (iter.next()) |url| {
                     if (url.len > 0) {
                         try urls.append(allocator, try allocator.dupe(u8, url));
@@ -706,8 +736,8 @@ pub fn getSessionMessagesSorted(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
-            .tool_calls_json = if (row.values[16].len > 0) try allocator.dupe(u8, row.values[16]) else null,
+            .tool_call_id = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
+            .tool_calls_json = if (row.values[18].len > 0) try allocator.dupe(u8, row.values[18]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -1162,6 +1192,8 @@ pub const SaveMessageInput = struct {
     cwd: []const u8,
     content: ?[]const u8,
     reasoning_content: ?[]const u8,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     role: ?[]const u8,
     finish_reason: ?[]const u8,
     tool_calls: ?[]agent.ToolCall,
@@ -1249,6 +1281,8 @@ pub fn saveMessage(
         \\    tool_calls_json,
         \\    tool_call_id,
         \\    reasoning_content,
+        \\    reasoning_id,
+        \\    reasoning_encrypted_content,
         \\    is_feed_to_llm,
         \\    agent,
         \\    loop_index,
@@ -1272,7 +1306,7 @@ pub fn saveMessage(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -1290,6 +1324,10 @@ pub fn saveMessage(
     defer allocator.free(copy_tool_calls);
     const copy_reasoning = try allocator.dupe(u8, reasoningStr);
     defer allocator.free(copy_reasoning);
+    const copy_reasoning_id = try allocator.dupe(u8, input.reasoning_id orelse "");
+    defer allocator.free(copy_reasoning_id);
+    const copy_reasoning_encrypted_content = try allocator.dupe(u8, input.reasoning_encrypted_content orelse "");
+    defer allocator.free(copy_reasoning_encrypted_content);
     const copy_agent = try allocator.dupe(u8, agentStr);
     defer allocator.free(copy_agent);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
@@ -1340,7 +1378,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -1367,6 +1405,8 @@ pub fn getMessages(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -1394,10 +1434,10 @@ pub fn getMessages(
     defer rows.deinit();
 
     while (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1408,18 +1448,20 @@ pub fn getMessages(
             .role = try allocator.dupe(u8, row.values[6]),
             .tools = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -1436,7 +1478,7 @@ pub fn getMessages(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -2196,6 +2238,8 @@ pub fn getLatestMessage(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -2224,10 +2268,10 @@ pub fn getLatestMessage(
     defer rows.deinit();
 
     if (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -2238,18 +2282,20 @@ pub fn getLatestMessage(
             .role = try allocator.dupe(u8, row.values[6]),
             .tools = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -2266,7 +2312,7 @@ pub fn getLatestMessage(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         row.deinit(allocator);
         return history;
@@ -2301,6 +2347,8 @@ pub fn getMessageById(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -2327,10 +2375,10 @@ pub fn getMessageById(
     defer rows.deinit();
 
     if (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -2341,18 +2389,20 @@ pub fn getMessageById(
             .role = try allocator.dupe(u8, row.values[6]),
             .tools = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -2369,7 +2419,7 @@ pub fn getMessageById(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         row.deinit(allocator);
         return history;
@@ -3369,6 +3419,60 @@ pub fn updateTaskLastHumanTouchedAt(
     const sql =
         "UPDATE workspace_item_tasks SET last_human_touched_at_nano = ? WHERE id = ?";
     try db.exec(allocator, sql, &.{ touched_at_str, task_id });
+}
+
+/// Stamp `sessions.last_human_touched_at_nano = <unix_ms>`. Sibling of
+/// `updateTaskLastHumanTouchedAt` (which targets `workspace_item_tasks`).
+/// Drives the chat sidebar's `last_human_touched_at` time pill — see
+/// `docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md`.
+///
+/// Called by every HTTP handler / workflow site that mutates a chat on
+/// behalf of a human user:
+///   - `root.zig::emit_run_agent` — the single funnel for every
+///     "user sends a message" path (chat send, kanban "create & run",
+///     kanban "Start agent", `+ Chat`). Stamps before the workflow
+///     kicks off so even an immediate agent bail leaves the stamp in
+///     place.
+///   - `session_update.zig::useCase` — when the user renames the
+///     chat, switches its profile, or toggles unattended mode.
+///   - `workflow.zig::saveRetryAttemptMessage` — "also when error
+///     too": every retry-catch / unexpected finish_reason /
+///     TooManyRetries bail sites funnel through this helper, so a
+///     single call covers all error emits.
+///
+/// Schema: `sessions.last_human_touched_at_nano INTEGER NULL`
+/// (Migration 082). We format the unix-ms integer to a string and
+/// bind via `?` per the project's SqliteBackend convention
+/// (`db.exec` only binds TEXT; see memory
+/// `sqlite-backend-exec-binds-text-only`).
+///
+/// The `now_unix_ms` arg lets callers override the stamp time (useful
+/// for tests). When null, we read the real current time via libc
+/// `gettimeofday` (Zig 0.16 removed `std.time.timestamp` per project
+/// memory `zig-0.16-stdlib-changes`).
+///
+/// `session_id.len == 0` is a no-op (returns success without touching
+/// the DB) — matches the empty-slice-as-NULL rule and protects against
+/// accidentally binding `""` as SQL NULL when a handler has a stub
+/// session_id in tests.
+pub fn updateSessionLastHumanTouchedAt(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    now_unix_ms: ?i64,
+) !void {
+    if (session_id.len == 0) return;
+    const now_ms = now_unix_ms orelse unixMillisNow();
+    const touched_at_str = try std.fmt.allocPrint(
+        allocator,
+        "{d}",
+        .{now_ms},
+    );
+    defer allocator.free(touched_at_str);
+
+    const sql =
+        "UPDATE sessions SET last_human_touched_at_nano = ? WHERE id = ?";
+    try db.exec(allocator, sql, &.{ touched_at_str, session_id });
 }
 
 /// Current Unix epoch time in milliseconds. Used by
@@ -7423,6 +7527,398 @@ test "updateTaskLastHumanTouchedAt overwrites on repeated calls" {
 }
 
 // ───────────────────────────────────────────────────────────────────────
+// updateSessionLastHumanTouchedAt (Migration 082 / chat sidebar)
+// ───────────────────────────────────────────────────────────────────────
+
+test "updateSessionLastHumanTouchedAt stamps the unix-ms value on the session" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal sessions table that already declares the Migration 082
+    // column (so the writer doesn't have to run migrations in tests).
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_1', 'Hello')",
+        &.{});
+
+    const now_ms: i64 = 1_786_500_000_000;
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_1", now_ms);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_1'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1786500000000", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt with now_unix_ms=null reads the real clock" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_real', 'Real')",
+        &.{});
+
+    // Stamp with null — should read real clock and produce a recent
+    // unix-ms value (not 0, not NULL).
+    const before_ms = unixMillisNow();
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_real", null);
+    const after_ms = unixMillisNow();
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_real'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+
+    const stamped_ms = try std.fmt.parseInt(i64, row.values[0], 10);
+    // Real-clock stamp must be within the [before, after] window
+    // (allows for clock noise — both bounds are observed times).
+    try testing.expect(stamped_ms >= before_ms);
+    try testing.expect(stamped_ms <= after_ms);
+    // And reasonably close to now — must not be 0 or null.
+    try testing.expect(stamped_ms > 1_700_000_000_000); // year 2023+
+}
+
+test "updateSessionLastHumanTouchedAt is a no-op for unknown session_id" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // No rows inserted.
+
+    // Stamping an unknown id must NOT raise — the UPDATE affects 0
+    // rows and returns success. Defensive against handler code paths
+    // where a session_id might not yet have a row (race with the
+    // INSERT in emit_run_agent).
+    try updateSessionLastHumanTouchedAt(alloc, &db, "unknown_id", 12345);
+
+    // Sanity: still zero rows.
+    var q = try db.query(alloc,
+        "SELECT COUNT(*) FROM sessions",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt is idempotent on repeated calls with the same arg" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_idem', 'Idem')",
+        &.{});
+
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_idem", 999);
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_idem", 999);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_idem'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("999", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt overwrites on repeated calls with a newer arg" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('sess_overwrite', 'Overwrite')",
+        &.{});
+
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_overwrite", 100);
+    try updateSessionLastHumanTouchedAt(alloc, &db, "sess_overwrite", 500);
+
+    var q = try db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 'sess_overwrite'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("500", row.values[0]);
+}
+
+test "updateSessionLastHumanTouchedAt skips empty session_id (no SQL bind)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+
+    // Empty session_id must be a no-op (no DB write attempted).
+    // Without this guard, `db.exec` would bind "" as SQL NULL — and
+    // since SQLite's WHERE id = NULL is always false, this would
+    // silently no-op anyway. But the guard is cheaper and clearer.
+    try updateSessionLastHumanTouchedAt(alloc, &db, "", 999);
+
+    // No row was affected. The session table is empty.
+    var q = try db.query(alloc,
+        "SELECT COUNT(*) FROM sessions",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+
+// Wire format - Migration 082: last_human_touched_at on the JSON wire.
+
+test "buildSessionListJson emits last_human_touched_at when the row has a value (Migration 082 wire format)" {
+    const alloc = testing.allocator;
+
+    // Construct a SessionInfo with a known last_human_touched_at value.
+    // All fields are heap-allocated so the deinit in buildSessionListJson's
+    // caller doesn't trip the leak detector.
+    const sess = SessionInfo{
+        .session_id = try alloc.dupe(u8, "sess_1"),
+        .session_name = try alloc.dupe(u8, "Test chat"),
+        .status = try alloc.dupe(u8, "active"),
+        .cwd = try alloc.dupe(u8, "/tmp"),
+        .created_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .updated_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .agent = try alloc.dupe(u8, "Agent"),
+        .selected_profile_model = try alloc.dupe(u8, ""),
+        .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
+        .last_finish_reason = try alloc.dupe(u8, ""),
+                    // The mapper test injects the wire shape directly (NOT the
+            // raw unix-ms from the column). Production flows through
+            // getSessionListWithCursor whose SELECT casts via strftime()
+            // so SessionInfo.last_human_touched_at arrives here as a
+            // SQLite datetime string ('YYYY-MM-DD HH:MM:SS' UTC).
+            .last_human_touched_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+    };
+    defer sess.deinit(alloc);
+
+    const json = try buildSessionListJson(alloc, &[_]SessionInfo{sess}, 1, false, null);
+    defer alloc.free(json);
+
+    // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3.
+        // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3.
+    // NOTE: this test builds SessionInfo directly (not via the SELECT
+    // layer), so the value is passed through verbatim as unix-ms. The
+    // SELECT-layer conversion to SQLite datetime format is exercised by
+    // the SELECT test in migration_082_test.zig + by the functional
+    // harness. The wire field is what the SessionInfo mapper emits -
+    // frontend receives unix-ms and the SELECT conversion happens
+    // BEFORE SessionInfo construction in production.
+        // The wire field MUST be exactly `last_human_touched_at` (no `_nano`
+    // suffix - per Migration 075 convention, SQL column keeps the suffix,
+    // wire field is bare). Migration 082 D3. The SessionInfo mapper
+    // passes the field through verbatim - the SELECT layer is
+    // responsible for converting from unix-ms storage to SQLite
+    // datetime wire format (see migration_082_test.zig + the SELECT
+    // strftime() call in getSessionListWithCursor).
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"2026-08-29 10:00:00\"") != null);
+}
+
+test "buildSessionListJson emits last_human_touched_at as empty string for legacy NULL rows (Migration 082 fallback)" {
+    const alloc = testing.allocator;
+
+    // Legacy row: last_human_touched_at is the SQL default '' (NULL row).
+    const sess = SessionInfo{
+        .session_id = try alloc.dupe(u8, "sess_legacy"),
+        .session_name = try alloc.dupe(u8, "Legacy chat"),
+        .status = try alloc.dupe(u8, "active"),
+        .cwd = try alloc.dupe(u8, "/tmp"),
+        .created_at = try alloc.dupe(u8, "2026-08-01 10:00:00"),
+        .updated_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+        .agent = try alloc.dupe(u8, "Agent"),
+        .selected_profile_model = try alloc.dupe(u8, ""),
+        .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
+        .last_finish_reason = try alloc.dupe(u8, ""),
+        .last_human_touched_at = try alloc.dupe(u8, ""),
+    };
+    defer sess.deinit(alloc);
+
+    const json = try buildSessionListJson(alloc, &[_]SessionInfo{sess}, 1, false, null);
+    defer alloc.free(json);
+
+    // Empty-string value (frontend treats empty as "fall back to updated_at").
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_human_touched_at\":\"\"") != null);
+}
+// Migration 082 - SELECT-layer unix-ms -> SQLite datetime conversion.
+// The wire format is SQLite datetime UTC, NOT raw unix-ms. The
+// SELECT layer is the sole conversion point (via strftime()).
+test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on the wire (Migration 082)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal schema with the Migration 082 column.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Minimal llm_history (the SELECT LEFT JOINs to it).
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // Insert a session with a known unix-ms stamp.
+    // 2026-08-29 10:00:00 UTC = 1788008400 epoch seconds = 1788008400000 ms.
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd, last_human_touched_at_nano)
+        \\VALUES ('sess_conv', 'Test', '', '1788008400000')
+    , &.{});
+
+    // Run the SELECT.
+    const result = getSessionListWithCursor(
+        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+    try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    const human_t = result.sessions[0].last_human_touched_at;
+    // Must NOT be the raw unix-ms integer.
+    try testing.expect(std.mem.indexOf(u8, human_t, "1788008400000") == null);
+    // Must be the SQLite datetime format the frontend parses.
+    try testing.expectEqualStrings("2026-08-29 13:00:00", human_t);
+}
+
+test "getSessionListWithCursor returns empty string for NULL last_human_touched_at_nano (Migration 082)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    // Minimal llm_history (the SELECT LEFT JOINs to it).
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // Insert a session with NO stamp (NULL column).
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd) VALUES ('sess_null', 'Legacy', '')
+    , &.{});
+
+    const result = getSessionListWithCursor(
+        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    try testing.expectEqualStrings("", result.sessions[0].last_human_touched_at);
+}
+
+// ───────────────────────────────────────────────────────────────────────
 // Behavioural — the SQL predicate for needs_human_review works
 // end-to-end on a real in-memory DB.
 // ───────────────────────────────────────────────────────────────────────
@@ -8590,6 +9086,8 @@ test "saveMessage: writes a correct-year (2026-ish) created_iso from current tim
         \\    tool_calls_json TEXT,
         \\    tool_call_id TEXT,
         \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
         \\    is_feed_to_llm INTEGER DEFAULT 1,
         \\    agent TEXT,
         \\    loop_index INTEGER,
@@ -8675,6 +9173,8 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
         \\    tool_calls_json TEXT,
         \\    tool_call_id TEXT,
         \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
         \\    is_feed_to_llm INTEGER DEFAULT 1,
         \\    agent TEXT,
         \\    loop_index INTEGER,

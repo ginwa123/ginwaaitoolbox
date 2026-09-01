@@ -70,6 +70,14 @@ pub const UpdatePlanInput = struct {
 /// agent's primary signal for WHEN to use this tool — it explicitly
 /// tells the agent to overwrite the plan after every checklist item,
 /// flipping `- [ ]` to `- [x]`.
+pub const update_plan_tool_system_prompt =
+    \\## Update Plan Tool — Behavior
+    \\Use `update_plan` to create or overwrite the session's markdown plan (checklist with `- [ ]` / `- [x]`).
+    \\- Call early for multi-step work and after each step to flip the checkbox. The plan is re-injected into your prompt every iteration.
+    \\- Content must be 1 byte–256 KiB. Empty content is rejected.
+    \\
+;
+
 pub const update_plan_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -118,6 +126,7 @@ pub const update_plan_tool = AgentTool{
             },
             .required = &.{"content"},
         },
+        .system_prompt = update_plan_tool_system_prompt,
     },
 };
 

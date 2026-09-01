@@ -34,6 +34,14 @@ pub const SubAgentsInput = struct {
     }
 };
 
+pub const spawn_sub_agent_tool_system_prompt =
+    \\## Spawn Sub Agent Tool — Behavior
+    \\Use `spawn_sub_agent` to delegate independent sub-tasks in parallel.
+    \\- Provide `instruction` (full task details) and `agent_name` (from available sub-agents). The sub-agent runs isolated and returns a result.
+    \\- Use for parallel research or multi-file work, not for trivial single-step tasks. Up to 20 sub-agents in parallel.
+    \\
+;
+
 pub const spawn_sub_agent_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -143,6 +151,7 @@ pub const spawn_sub_agent_tool = AgentTool{
             },
             .required = &.{"json_input"},
         },
+        .system_prompt = spawn_sub_agent_tool_system_prompt,
     },
 };
 

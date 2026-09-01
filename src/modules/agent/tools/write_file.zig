@@ -99,6 +99,15 @@ pub fn toXmlError(allocator: std.mem.Allocator, err: anyerror, path: []const u8)
     return std.fmt.allocPrint(allocator, "<success>false</success><file_write>{s}</file_write><error>{s}</error>", .{ path, message }) catch "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>";
 }
 
+pub const write_file_tool_system_prompt =
+    \\## Write File Tool — Behavior
+    \\Use `write_file` to create or overwrite a file.
+    \\- Provide absolute `path` and full `content`. Set `create_with_dir=true` to auto-create parent directories.
+    \\- For partial edits, prefer `text_replace` over rewriting the whole file.
+    \\- Always call `update_activity` before writing.
+    \\
+;
+
 pub const write_file_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -130,6 +139,7 @@ pub const write_file_tool = AgentTool{
             },
             .required = &.{ "path", "content" },
         },
+        .system_prompt = write_file_tool_system_prompt,
     },
 };
 

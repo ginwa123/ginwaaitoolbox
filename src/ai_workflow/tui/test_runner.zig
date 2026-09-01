@@ -45,6 +45,11 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/routines_list_test.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");
+    // MCP test endpoint (PR #373): inline static-contract tests for route
+    // registration, error mapping, retry guard, and the JSON-safe stderr
+    // sanitizer. Importing the file surfaces the `test "..."` blocks
+    // here to zig build test — mirrors start_agent.zig / session_create.zig.
+    _ = @import("http_handlers/mcp_test.zig");
     _ = @import("http_handlers/frontend_log_post_test.zig"); // Chunk 2 of frontend-error-logs
     _ = @import("http_handlers/frontend_log_get_test.zig");  // Chunk 3 of frontend-error-logs
     // _ = @import("llm_history_is_input_output_test.zig"); // phase 5: inlined into agentic_loop/llm_history.zig
@@ -125,6 +130,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // resolveNameFromTask helper + the useCase call site. Importing
     // the file surfaces them to zig build test (mirrors start_agent.zig).
     _ = @import("http_handlers/session_create.zig");
+    // NEW (2026-08-29-chat-sidebar-last-human-touched, Task 4):
+    // session_update.zig stamps sessions.last_human_touched_at_nano when
+    // the user edits a field. The static-contract test guards the call site.
+    _ = @import("http_handlers/session_update_test.zig");
     _ = @import("http_handlers/kanban_columns_update_test.zig");
     _ = @import("http_handlers/kanban_columns_delete_test.zig");
     _ = @import("http_handlers/kanban_tags_list.zig"); // 2026-07-30-kanban-task-tags-autocomplete — inline useCase tests

@@ -30,9 +30,6 @@ pub fn buildDesignCanvasPrompt(
 ) ![]const u8 {
     if (session_id.len == 0) return allocator.dupe(u8, "");
 
-    // 1. Re-use the workspace-context anchor to read the parent's
-    //    item_type without a second JOIN. Bail out when the parent
-    //    isn't a design canvas.
     const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
         std.log.warn("BuildDesignCanvasPrompt: getWorkspaceContext failed: {}", .{err});
         return allocator.dupe(u8, "");
@@ -43,8 +40,6 @@ pub fn buildDesignCanvasPrompt(
         return allocator.dupe(u8, "");
     }
 
-    // 2. Read the pages (in flow order). Same graceful-skip pattern as
-    //    BuildKanbanStatusPrompt — any DB failure returns "".
     const pages = design_model.listPages(allocator, db, ctx.self_item_id) catch |err| {
         std.log.warn("BuildDesignCanvasPrompt: listPages failed: {}", .{err});
         return allocator.dupe(u8, "");

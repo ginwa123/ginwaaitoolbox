@@ -95,6 +95,14 @@ function setThresholdOverride(on: boolean) {
     on ? (props.modelValue.compaction_threshold_percent ?? 80) : null,
   )
 }
+
+// === Per-style gating — plan 2026-09-01-migrate-openai-legacy-to-response ===
+// thinking_budget_tokens is Anthropic-only; reasoning_effort is OpenAI + Responses.
+// Hidden fields preserve values (not nulled) so switching styles doesn't lose data.
+const isAnthropic = computed(() => props.modelValue.url_style === 'anthropic')
+const isOpenAIStyle = computed(
+  () => props.modelValue.url_style === 'openai' || props.modelValue.url_style === 'openai-response',
+)
 </script>
 
 <template>
@@ -169,20 +177,25 @@ function setThresholdOverride(on: boolean) {
           :style="inputStyle()"
         >
           <option value="openai">OpenAI</option>
+          <option value="openai-response">OpenAI Response</option>
           <option value="anthropic">Anthropic</option>
         </select>
       </div>
     </div>
 
     <!-- Thinking budget + Reasoning effort — plan 2026-08-23-model-thinking.
+         Per-style gating (plan 2026-09-01-migrate-openai-legacy-to-response):
+           - thinking_budget_tokens: Anthropic only
+           - reasoning_effort: OpenAI + OpenAI-Response
          Hidden when thinking === "off" because the budget is irrelevant
          and the effort dropdown is meaningless when extended reasoning
-         is disabled. -->
+         is disabled. Hidden fields preserve values (not nulled) so
+         switching styles doesn't lose data — only visibility changes. -->
     <div
       v-if="modelValue.thinking !== 'off'"
       class="grid grid-cols-2 gap-3"
     >
-      <div>
+      <div v-if="isAnthropic">
         <label :class="labelBase" :style="labelStyle">
           Thinking budget tokens
           <span class="block text-xs mt-0.5" :style="helperStyle">
@@ -209,11 +222,11 @@ function setThresholdOverride(on: boolean) {
           data-testid="thinking-budget-input"
         />
       </div>
-      <div>
+      <div v-if="isOpenAIStyle">
         <label :class="labelBase" :style="labelStyle">
           Reasoning effort
           <span class="block text-xs mt-0.5" :style="helperStyle">
-            OpenAI only (o1/o3/GPT-5/DeepSeek-R1).
+            OpenAI / Responses only (o1/o3/GPT-5/DeepSeek-R1).
           </span>
         </label>
         <select

@@ -103,6 +103,14 @@ pub const MAX_FULL_CONTENT_BYTES: u32 = 2 * 1024;
 pub const MAX_LIMIT: u32 = 50;
 
 /// Top-level tool definition for the LLM.
+pub const load_memory_tool_system_prompt =
+    \\## Load Memory Tool — Behavior
+    \\Use `load_memory` to recall facts from previous sessions via FTS5 search.
+    \\- Call on the first turn of any session and whenever the user says "do you remember" or "last time".
+    \\- Use `query` + optional `tags`/`limit`/`with_content`. Multi-word queries are OR-joined.
+    \\
+;
+
 pub const load_memory_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -144,6 +152,7 @@ pub const load_memory_tool = AgentTool{
             // `executeLoadMemory` (returns <error> when both are empty).
             .required = &.{},
         },
+        .system_prompt = load_memory_tool_system_prompt,
     },
 };
 

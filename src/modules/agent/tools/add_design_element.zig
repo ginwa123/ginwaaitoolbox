@@ -82,6 +82,14 @@ pub const AddElementInput = struct {
 /// The description enumerates the 6 valid types, lists the geometry
 /// defaults, and tells the LLM that `page_id` comes from a previous
 /// `set_design_page` call (NOT from Workspace Context).
+pub const add_design_element_tool_system_prompt =
+    \\## Add Design Element Tool — Behavior
+    \\Use `add_element` to create a new positioned element on a design page.
+    \\- Provide `type`, geometry (`x`/`y`/`width`/`height`), and optional HTML body.
+    \\- Writes atomically to disk. Discover `page_id` via `set_design_page` first.
+    \\
+;
+
 pub const add_design_element_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -185,6 +193,7 @@ pub const add_design_element_tool = AgentTool{
             },
             .required = &.{ "page_id", "name", "type", "html" },
         },
+        .system_prompt = add_design_element_tool_system_prompt,
     },
 };
 

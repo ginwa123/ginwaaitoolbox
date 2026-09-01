@@ -97,6 +97,14 @@ pub const AddMcpServerInput = struct {
 /// Tool definition for the LLM. The description is the agent's primary
 /// "when to call this" signal — it lists BOTH the stdio fields the agent
 /// must provide AND a brief note that HTTP is forthcoming.
+pub const add_mcp_server_tool_system_prompt =
+    \\## Add MCP Server Tool — Behavior
+    \\Use `add_mcp_server` to register a new MCP server at runtime.
+    \\- Provide `name`, `transport="stdio"`, `command`, and optional `args`/`cwd`. The new server's tools appear on the NEXT iteration.
+    \\- v1 supports `stdio` only; `http` will return an error.
+    \\
+;
+
 pub const add_mcp_server_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -158,6 +166,7 @@ pub const add_mcp_server_tool = AgentTool{
             },
             .required = &.{ "name", "transport", "command" },
         },
+        .system_prompt = add_mcp_server_tool_system_prompt,
     },
 };
 

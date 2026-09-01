@@ -92,6 +92,25 @@ pub fn sessionUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     };
     defer session.deinit(allocator);
 
+    // NEW (plan 2026-08-29-chat-sidebar-last-human-touched, Task 4):
+    // Stamp `sessions.last_human_touched_at_nano` when the user
+    // genuinely edits a field (rename / profile switch / unattended
+    // toggle). The earlier early-return on empty body ensures we
+    // never reach here with zero fields to update, so this stamp is
+    // only triggered by a real edit - no separate guard needed.
+    //
+    // Best-effort: log + continue on transient DB blip so a stamp
+    // failure can't fail the PUT response. Matches the project
+    // pattern at `task_mark_human_touched.zig:70` (task-side sibling).
+    llm_history.updateSessionLastHumanTouchedAt(
+        allocator, sqlite_db, session_id, null,
+    ) catch |stamp_err| {
+        std.log.warn(
+            "session_update: stamp last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(stamp_err)},
+        );
+    };
+
     const data = try http_response.makeSessionUpdateResponse(allocator, .{
         .id = session.id,
         .name = session.name,

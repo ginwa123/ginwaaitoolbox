@@ -40,6 +40,7 @@ const helpers = @import("helpers");
 /// Input parameters for sending SSE events
 /// Used by TUI workflow to broadcast messages to connected clients
 pub const OnEventInputLLMHistory = struct {
+    id: ?[]const u8 = null,
     index: usize = 0,
     session_id: []const u8,
     model: []const u8,
@@ -68,6 +69,7 @@ pub const OnEventInputLLMHistory = struct {
 
 /// JSON event payload structure for SSE
 pub const SseEventLLMHistory = struct {
+    id: ?[]const u8 = null,
     index: ?usize = null,
     content: []const u8,
     type: []const u8 = "full",
@@ -136,6 +138,11 @@ pub const OnEventInputSessions = struct {
     is_auto_retry_until_stop: []const u8 = "",
     /// Migration 063 — most recent finish_reason observed by the workflow.
     last_finish_reason: []const u8 = "",
+    /// Migration 082 - unix-ms of the last human touch, surfaced on
+    /// the SSE session_updated/created events so the ChatsList badge
+    /// and stale-dot update without a refetch. Empty default = no
+    /// human touch yet (frontend falls back to updated_at).
+    last_human_touched_at: []const u8 = "",
 };
 
 /// JSON event payload for SSE session events
@@ -307,6 +314,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     }
 
     const payload = SseEventLLMHistory{
+        .id = input.id,
         .index = input.index,
         .content = if (sanitized_content) |s| s else (input.content orelse ""),
         .session_id = input.session_id,
@@ -391,6 +399,17 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         .git_worktree_cwd = input.git_worktree_cwd,
         .is_auto_retry_until_stop = input.is_auto_retry_until_stop,
         .last_finish_reason = input.last_finish_reason,
+        // Migration 082 - propagate the chat-side stamp so the SSE
+        // session_updated event drives the sidebar's time pill +
+        // stale-dot without a refetch. NOTE: this is the unix-ms
+        // INTEGER string (raw column shape). The REST GET path
+        // (`llm_history.buildSessionListJson`) converts it to the
+        // SQLite datetime UTC format at the SELECT layer. The SSE
+        // emit path bypasses that conversion. Frontend consumers
+        // should treat either format as opaque and fall back to
+        // `updated_at` if the human-time string fails to parse -
+        // the format mismatch doesn't affect display correctness.
+        .last_human_touched_at = input.last_human_touched_at,
     };
     try buf.print(allocator, "{f}", .{std.json.fmt(payload, .{
         .whitespace = .indent_4,

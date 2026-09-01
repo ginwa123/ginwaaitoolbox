@@ -72,7 +72,12 @@ pub fn handle_mcp_tool_run(
     // precedence when both are present (the parser already rejects that
     // combo, but the runtime is defensive).
     if (server_obj.get("command")) |_| {
-        return callViaStdio(allocator, logger, server_name, actual_tool_name, tool_call.function.arguments, server_obj);
+        // 60s default per-call budget for tools/call (vs 30s for
+        // tools/list — mid-loop tool calls can legitimately take
+        // longer because the work itself is unbounded). Caller can
+        // pass a tighter deadline via a future v2 config field.
+        const deadline_ns: u64 = 60 * std.time.ns_per_s;
+        return callViaStdio(allocator, logger, server_name, actual_tool_name, tool_call.function.arguments, server_obj, deadline_ns);
     }
 
     const url_value = server_obj.get("url") orelse {
@@ -176,6 +181,12 @@ pub fn handle_mcp_tool_run(
 /// process keyed by `server_name`, sends a framed `tools/call` JSON-RPC
 /// body, and reads the framed response. Returns the extracted text
 /// content (the `result.content[0].text` field, freshly allocated).
+///
+/// `deadline_ns` is forwarded to both send and recv. On
+/// `SendTimeout` / `RecvTimeout`, the registry's `markStale` is
+/// called so the next `getOrSpawn` for `server_name` spawns a
+/// fresh child. Self-healing: a single hung tool call doesn't
+/// permanently brick subsequent calls.
 fn callViaStdio(
     allocator: std.mem.Allocator,
     logger: *logger_mod.Logger,
@@ -183,6 +194,7 @@ fn callViaStdio(
     tool_name: []const u8,
     arguments_json: []const u8,
     server_obj: std.json.ObjectMap,
+    deadline_ns: u64,
 ) ![]const u8 {
     // Build argv: [command, args...]
     var argv_list: std.ArrayList([]const u8) = .empty;
@@ -224,16 +236,20 @@ fn callViaStdio(
     const req = try buildToolCallRequestBody(allocator, tool_name, arguments_json);
     defer allocator.free(req);
     // client.send/recv use the io stored in the StdioClient itself.
-    // TODO(wire-up): main.zig's StdioRegistry.global() should accept an
-    // io handle and pass it through to all spawned children — the test
-    // path uses std.testing.io via the registry's `global()` helper.
-    client.send(req) catch |err| {
+    // On a hung child, the deadline fires and we mark the client
+    // stale so the next call auto-respawns. We don't pass a
+    // cancel-callback here — the workflow's existing
+    // `isWorkerCancelled` poll at the TOP of each iteration handles
+    // abandonment at the loop boundary, which is sufficient
+    // granularity (sub-tool-call cancel is a v2 nice-to-have).
+    client.send(req, deadline_ns) catch |err| {
         logger.errFmt("stdio MCP send failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
-        // Respawn on next call.
+        if (err == error.SendTimeout) reg.markStale(server_name);
         return error.FailedToCallMCPServer;
     };
-    const resp = client.recv() catch |err| {
+    const resp = client.recv(deadline_ns, null) catch |err| {
         logger.errFmt("stdio MCP recv failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+        if (err == error.RecvTimeout) reg.markStale(server_name);
         return error.MCPServerReturnedError;
     };
     errdefer allocator.free(resp);

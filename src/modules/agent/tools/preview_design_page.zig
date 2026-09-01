@@ -43,6 +43,13 @@ pub const PreviewDesignPageInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const preview_design_page_tool_system_prompt =
+    \\## Preview Design Page Tool — Behavior
+    \\Use `preview_design_page` to render a design page as SVG in the side panel.
+    \\- Provide `page_id` and optional `scale`. Use to visually verify layout after edits.
+    \\
+;
+
 pub const preview_design_page_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -77,6 +84,7 @@ pub const preview_design_page_tool = AgentTool{
             },
             .required = &.{ "page_id" },
         },
+        .system_prompt = preview_design_page_tool_system_prompt,
     },
 };
 

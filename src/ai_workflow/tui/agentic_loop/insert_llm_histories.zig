@@ -94,6 +94,8 @@ pub fn inserLLMHistories(
         \\    tool_calls_json,
         \\    tool_call_id,
         \\    reasoning_content,
+        \\    reasoning_id,
+        \\    reasoning_encrypted_content,
         \\    is_feed_to_llm,
         \\    agent,
         \\    loop_index,
@@ -117,7 +119,7 @@ pub fn inserLLMHistories(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -135,6 +137,10 @@ pub fn inserLLMHistories(
     defer allocator.free(copy_tool_calls);
     const copy_reasoning = try allocator.dupe(u8, reasoningStr);
     defer allocator.free(copy_reasoning);
+    const copy_reasoning_id = try allocator.dupe(u8, input.reasoning_id orelse "");
+    defer allocator.free(copy_reasoning_id);
+    const copy_reasoning_encrypted_content = try allocator.dupe(u8, input.reasoning_encrypted_content orelse "");
+    defer allocator.free(copy_reasoning_encrypted_content);
     const copy_agent = try allocator.dupe(u8, agentStr);
     defer allocator.free(copy_agent);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
@@ -185,7 +191,7 @@ pub fn inserLLMHistories(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     if (!is_skip_db) {
         try db.exec(allocator, sql, sqlArgs);
@@ -201,6 +207,7 @@ pub fn inserLLMHistories(
             const session_skills = try getSessionSkills(allocator, db, copy_session_id);
 
             _ = onEventSendLLMHistory(.{ .allocator = allocator, .io = io, .logger = logger, .event_bus = ev, .entity = .{
+                .id = id,
                 .session_id = session_id,
                 .model = model,
                 .cwd = cwd,

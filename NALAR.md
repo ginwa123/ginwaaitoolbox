@@ -1,3 +1,83 @@
+### 2026-09-01: Fix OpenAI Responses reasoning leak + persist reasoning metadata (Migration 083)
+
+**What landed.** `url_style="openai-response"` was leaking `reasoning_content` as `output_text` inside `type:"message"` — chain-of-thought appeared in the visible answer and `llm_history.reasoning_content` stayed `NULL` (screenshot `task_1788204066849_0`). Fix: reasoning is now a separate top-level `type:"reasoning"` item with `id`/`summary`/`encrypted_content` (per `POST /v1/responses` spec), never merged into `output_text`. New Migration 083 adds `reasoning_id TEXT` + `reasoning_encrypted_content TEXT` on `llm_history` (both nullable, no index) so `store:false` replay can reconstruct `type:reasoning` verbatim. Full chain wired: `SSE parser → StreamingAggregator → CallResponse → workflow/handle_tool → LLMHistory → SQLite → get_llm_histories → AgentMessage → buildJsonResponsesRequest`. Legacy `url_style="openai"` untouched; `reasoning_encrypted_content` never hits the frontend wire (only `reasoning_content` is exposed).
+
+**Files.** 12 EDIT + 1 NEW plan: EDIT `Agent.zig` (ResponsesReasoningSummary, ResponsesInputItem `reasoning` branch, AgentMessage/StreamChunk/CallResponse/StreamingAggregator `reasoning_id`+`encrypted_content`, builder emits separate `reasoning` item, parser captures `id`/`summary[]`/`encrypted_content` from terminal `output[]`), `openai_responses_test.zig` (flipped 3 builder tests + 10 new integration tests: multi-turn replay, tool-call replay, end-to-end aggregator), `migration.zig` (Migration 083 + 4 tests), `llm_history_row.zig`/`models.zig`/`insert_llm_histories.zig`/`llm_history.zig`/`get_llm_histories.zig`/`parsing.zig`/`workflow.zig`/`handle_tool.zig` (thread `reasoning_id`+`encrypted_content` through entire persistence chain), `session_messages_get_test.zig` (fixture). No frontend change — `ChatView.vue` already renders `reasoning_content` in separate collapsible block.
+
+**Tests.** `zig build test --summary all`: 3003/3009 pass (6 skip, 0 fail) — was 2993 baseline (+10 new integration tests). `zig build nalar-desktop --summary all`: 21/21 steps OK. `pnpm test:unit`: 2820/2820 pass (no frontend change).
+
+**Plan:** docs/superpowers/plans/2026-09-01-fix-openai-response-reasoning-leak-and-persist.md
+**Branch:** worktree/fix-openai-response-reasoning
+**Task:** task_1788204837101_1
+
+### 2026-09-01: Migrate OpenAI legacy features to OpenAI Response (keep legacy) — frontend per-style reasoning UI
+
+**What landed.** Full parity audit + hardening for `url_style="openai-response"` (`POST /v1/responses`) vs legacy `url_style="openai"` (`POST /v1/chat/completions`) while **keeping legacy 100% intact** (no deletion, no deprecation). Backend: `buildJsonResponsesRequest` + `parse_responses_stream_chunk` already existed (commit `6a6501e9`) but had two correctness bugs — fixed here and locked with regression tests. Frontend: `LlmConfigForm.vue` now gates reasoning controls per `url_style` so each style only shows its relevant fields.
+
+**Backend fixes (Agent.zig):**
+- **URL routing:** `callStreaming`'s endpoint dispatch was commented out and `concat` only used `baseUrl` — requests went to bare `baseUrl` for every style. Restored: `anthropic → /v1/messages`, `openai-response → /responses`, `openai/default → /chat/completions`, and fixed `concat` to `&.{baseUrl, endpoint}`.
+- **Integer overflow:** `buildJsonResponsesRequest` used `@intFromBool` (returns `u1`) summed as `u1+u1` — overflows when both `content` and `reasoning_content` present. Fixed to `@as(usize, @intFromBool(...))`.
+- **Reasoning gating:** `reasoning.effort` only sent when `reasoningEffort` explicitly set — no auto fallback to `"medium"` when `thinkingEnabled=true` (would 400 on non-reasoning models). Already correct, now regression-tested.
+- **Parser:** `response.completed` with `output[]` containing `function_call` → `finish_reason=.tool_calls` (was `.stop`), usage mapping `input_tokens→prompt_tokens` etc + `cached_tokens`.
+
+**Frontend (LlmConfigForm.vue):**
+- `thinking_budget_tokens` now `v-if="isAnthropic"` (Anthropic only), `reasoning_effort` now `v-if="isOpenAIStyle"` (`openai` + `openai-response`), both still gated by `thinking !== "off"`. Hidden fields preserve values (not nulled) so switching styles doesn't lose data. Helper text updated: budget "Anthropic only", effort "OpenAI / Responses only".
+- Tests: `nalarConfigFormThinking.spec.ts` 9 per-style visibility + preservation tests, `LlmConfigForm.spec.ts` 4 per-style select-count asserts.
+
+**Files.** 7 (1 NEW + 6 EDIT): NEW `openai_responses_test.zig` (34 tests: 18 builder + 16 parser), EDIT `Agent.zig` (URL routing + overflow), `test_runner.zig`, `LlmConfigForm.vue`, `nalarConfigFormThinking.spec.ts`, `LlmConfigForm.spec.ts`, `NALAR.md`. No migration, no config schema change.
+
+**Tests.** `zig build test --summary all`: 2970/2976 pass (6 skip, 0 fail) — was 2936 baseline (+34 new). `pnpm test:unit`: 2820/2820 pass (was 2802 baseline, +18 net from per-style tests). `zig build nalar-desktop --summary all`: 21/21 steps OK.
+
+**Plan:** docs/superpowers/plans/2026-09-01-migrate-openai-legacy-to-response.md
+**Branch:** worktree/migrate-openai-legacy-to-response
+**Task:** task_1788199905343_0
+
+
+### 2026-08-28: MCP stdio timeout + cancel-callback + self-healing respawn (fixes CI test_mcp_test_stdio_success)
+
+**Root cause.** A hung/unresponsive MCP stdio server previously froze the agent workflow indefinitely. `client.recv()` / `client.send()` in `mcp_stdio.zig` were fully blocking with no timeout, no cancel-check, and no respawn-on-hang. The CI test `test_mcp_test_stdio_success_lists_hello_world_tools` (in `tests/functional/mcp_test_test.py`) was hitting this directly: the SDK's first byte read blocked, the recv hung, and the test's 10s deadline fired with `RecvTimeout` instead of returning the tools list.
+
+**Fix layers** (all in `src/modules/agent/mcp/mcp/mcp_stdio.zig`):
+
+1. **Deadline semantics.** `deadline_ns` is a RELATIVE duration in nanoseconds (0 = no timeout), not an absolute timestamp — computed `deadline_abs = now + deadline_ns` on entry so the per-byte deadline check is a single `i128` comparison. The v1 mistake was treating `deadline_ns` as an absolute timestamp (callers passed `30 * std.time.ns_per_s` = 30 seconds since epoch = always in the past).
+
+2. **`readFramed` / `writeFramed`** poll the deadline + optional `?*const fn () bool` cancel-callback between every `readSliceShort` / `writeStreamingAll` call. Cancel fires within one syscall; the deadline fires as soon as the deadline check runs after a byte read.
+
+3. **`StdioClient.send` / `recv`** accept `deadline_ns: u64` + `is_cancelled: ?*const fn () bool`. New `sendNoTimeout` / `recvNoTimeout` overloads preserve the old API for the in-repo tests + any external callers.
+
+4. **`StdioError.RecvTimeout` / `SendTimeout`** new variants. Both production callers (`buildMCPToolsRun`, `callViaStdio`) catch them, log a clear message, and continue.
+
+5. **`StdioRegistry.markStale(name)`** flips a per-slot `dirty: std.atomic.Value(bool)` flag. `getOrSpawn` checks the flag on entry: if dirty, kills the cached child + spawns fresh. Self-healing: a hung call doesn't brick subsequent calls.
+
+6. **`Entry`** in `StdioRegistry` grew the `dirty` field; `entries` map value type changed from `*StdioClient` to `*Entry` (3 in-repo call sites updated). Existing `dropAndRespawn` unchanged.
+
+**Wiring through to the workflow.** `buildMCPToolsRun` (workflow entry, called ONCE before the loop): 30s deadline + workflow's `isWorkerCancelled`-derived cancel-callback. `workflow.zig:564` builds a `mcp_cancel_thunk` closure (`*const fn () bool`) backed by a thread-local `McpCancelCtx { db, session_id }`. The state box is allocated on the workflow's parent arena (lifetime = the whole run) so the cancel-callback survives across the workflow's many recvs.
+
+**Files.** 4 EDIT (`mcp_stdio.zig`, `prompts_build_messages_for_agent_prompt.zig`, `handle_mcp_tool.zig`, `workflow.zig`) + 2 NEW (`tests/functional/mcp_stdio_hang_test.py`, `tests/functional/fixtures/hung-server.sh`) + 1 NALAR.md changelog entry. No migration, no schema change, no frontend change. Hardcoded default timeouts in v1 (`30s tools/list`, `60s tools/call`); a v2 follow-up will add `LlmConfig.mcp_tools_timeout_ms` / `mcp_call_timeout_ms` with frontend wiring.
+
+**Also ports the mcp-test-button PR** (commit 2a3528c4) into this branch: `src/ai_workflow/tui/http_handlers/mcp_test.zig` (the `POST /api/mcp/test` probe) + `mod.zig` re-export + `main.zig` route registration + frontend modal/component updates. The mcp-test-button code was adapted to use the new `recv(deadline_ns, null)` signature with a 10s per-call deadline, and `markStale` is called on timeout so the next probe gets a fresh child.
+
+**Tests.** `zig build test --summary all`: 2859/2865 pass + 6 baseline-skip (was 2829/2865 before — 4 new tests added to `mcp_stdio.zig` inline tests). `zig build nalar-desktop --summary all`: 22/22 steps OK. `pytest tests/functional/`: includes 2 new tests in `mcp_stdio_hang_test.py` (hung-child wire-level behavior, hung-child can be replaced by fresh process). End-to-end manual smoke test against `mcp-hello-world`: `POST /api/mcp/test` returns `{"ok": true, "transport": "stdio", "tools": [...]}` in <100ms (was previously failing with `RecvTimeout` due to the deadline semantic bug).
+
+**Plan:** docs/superpowers/plans/2026-08-28-fix-mcp-stdio-blocking.md
+**Branch:** worktree/fix-mcp-stdio-blocking
+**Task:** task_1787930150605_0
+### 2026-08-29: Chat sidebar `last_human_touched_at` — human-time pill + amber stale dot
+
+**What landed.** The sidebar's per-chat time pill (e.g. "2h", "now") used to source from `sessions.updated_at` — a column bumped by *everything* (the agent's per-loop `update_worker` tick, profile change, error emit, etc). When a long-running agent kept the chat alive, the sidebar showed "now" / "0s" even if the user had walked away 2 hours ago. Now the sidebar's time pill is sourced from `formatRelativeTime(last_human_touched_at ?? updated_at)`, a sibling of the existing `workspace_item_tasks.last_human_touched_at_nano` (kanban). A new **amber `chat-stale-dot`** appears when `updated_at > last_human_touched_at` (i.e. the AI has touched the chat since the user's last touch) so users see at a glance "AI is ahead of you". Hover tooltips distinguish the two timestamp sources. Mirrors the kanban ⚠ indicator (which uses orange) but at amber-400 so the sidebar doesn't visually shout.
+
+**Wire shape.** `SessionInfo.last_human_touched_at: []const u8` (Migration 075 convention: SQL column is `_nano` suffix, JSON wire field is bare). `buildSessionListJson` includes it on every list response. SELECT-layer converts unix-ms → SQLite datetime UTC (`'YYYY-MM-DD HH:MM:SS'`) via `strftime()` so the wire shape matches `updated_at` (the frontend `formatRelativeTime` helper only parses the datetime shape). Legacy NULL rows render as `''` (empty string, not null) so the `?? updated_at` fallback is a defined check. No new SSE event — the new column rides on the existing `session.updated` event.
+
+**Stamp sites (3):** the single funnel `root.zig::emit_run_agent` (covers ChatView send, kanban "create & run", kanban "Start agent", `+ Chat` — every "user sends a message" path delegates here); `session_update.zig::useCase` (any real field edit, no-op bodies don't stamp); `workflow.zig::saveRetryAttemptMessage` (any retry/bail, so the sidebar surfaces "agent errored" via the human-time bump — the in-chat ⚠ `AgentErrorCard` already covers the in-chat rendering).
+
+**Files.** 16 (8 NEW + 8 EDIT). Backend: Migration 082 + 5 tests (`migration_082_test.zig`); `llm_history.updateSessionLastHumanTouchedAt` helper + 6 tests + `SessionInfo.last_human_touched_at` field + 2 SELECT-layer tests + `buildSessionListJson` mapper test; `root.zig::emit_run_agent` stamp; `session_update.zig::useCase` stamp + 1 static-contract test; `workflow.zig::saveRetryAttemptMessage` stamp; `session_create.zig` static-contract test (NO redundant session-side stamp in create handler — the funnel handles it); new `test_runner.zig` registrations. Frontend: `api.getChats` mapper + 4 tests in `apiGetChats.spec.ts`; `Chat` interface gets `updated_at?: string` (pre-existing latent type bug — was accessed at runtime but never declared); `ChatsList.vue` swaps time source + adds stale dot + hover tooltips + 6 tests in `ChatsList.lastHumanTouched.spec.ts`; `relativeTime.ts` now accepts BOTH SQLite datetime UTC strings (REST GET wire shape) AND unix-ms integer strings (SSE event emit shape — `on_event_sent.zig` bypasses the SELECT conversion). Functional: 5 end-to-end tests in `session_human_touched_at_test.py`. Docs: 1 plan + 1 spec.
+
+**Tests.** `zig build test --summary all`: 2916/2922 pass (6 skip, 0 fail, 0 leak) — was 2855/2861 baseline (+61 net: 5 migration + 6 helper + 2 SELECT-layer + 1 buildSessionListJson + 1 session_update static-contract + 2 emit_run_agent static-contract + 1 session_create static-contract + 1 saveRetryAttemptMessage + …). `pnpm test:unit`: 2802/2802 pass across 299 files — was 2737 baseline (+65 net: 4 apiGetChats + 6 ChatsList relativeTime + frontend spec fix). `zig build nalar-desktop --summary all`: 21/21 steps succeed. `pytest tests/functional/session_human_touched_at_test.py -v`: 5/5 pass (PUT stamps column, GET returns SQLite datetime, legacy NULL returns `''`, list endpoint surfaces the field, subsequent PUTs overwrite).
+
+**Plan:** docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+**Branch:** worktree/chat-sidebar-last-human-touched
+**Task:** task_1788004921757_1
+
 ### 2026-08-28: `add_mcp_server` agent tool — runtime MCP registration (stdio in v1)
 
 **What landed.** nalar's agent can now **add new MCP servers at runtime** via the new `add_mcp_server` agent tool (LLM-callable, mirrors the frontend `McpServerModal` wire shape). The LLM passes `{name, transport, command, args?, cwd?}` and the tool validates the input, mutates the live `LlmConfig.mcp_servers` typed map + `mcpServers_parsed` JSON mirror (so `buildMCPToolsRun` picks up the new server's tools on the NEXT iteration's system prompt), then persists to `~/.config/nalar/config.json` and atomically swaps `di.llm_config` via `setLlmConfig` — the same write+reload sequence `PUT /api/config/nalar` already uses, just triggered by the agent instead of the settings UI. v1 covers the **stdio** transport only (per the user's "handle mcp stdio first" scope); HTTP lands in a sibling task (`task_1787928601804_8`) without changing the wire shape — the input struct already has `url` + `headers` fields reserved, gated to a clear "transport must be stdio in v1" error today. On success the tool returns the just-added server's tools via a best-effort `tools/list` JSON-RPC roundtrip (production-only — test path skips it to avoid polluting the global `StdioRegistry`); failures there DON'T fail the call (the server IS registered; the next iteration's prompt reflects the new tools regardless).

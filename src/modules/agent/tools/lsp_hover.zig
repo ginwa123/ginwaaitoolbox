@@ -404,6 +404,13 @@ pub fn lsp_hover_to_string(allocator: std.mem.Allocator, result: LspHoverOutput)
     return try output.toOwnedSlice(allocator);
 }
 
+pub const lsp_hover_tool_system_prompt =
+    \\## LSP Hover Tool — Behavior
+    \\Use `lsp_hover` to get hover info (type, docs) for a symbol via LSP.
+    \\- Provide `lsp`, `project_root`, `file`, `line`, `character`. Use to understand a symbol's signature.
+    \\
+;
+
 pub const lsp_hover_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -444,6 +451,7 @@ pub const lsp_hover_tool = AgentTool{
             },
             .required = &.{ "lsp", "root_dir", "file_path", "line", "character" },
         },
+        .system_prompt = lsp_hover_tool_system_prompt,
     },
 };
 

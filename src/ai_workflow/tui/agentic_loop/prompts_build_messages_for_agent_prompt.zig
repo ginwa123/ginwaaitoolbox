@@ -19,6 +19,11 @@ const prompts_const = @import("../../../modules/agent/prompts/prompts.zig");
 const memory_prompts = @import("../../../modules/agent/prompts/memory.zig");
 const tool_list_skills_mod = @import("../../../modules/agent/tools/list_skills.zig");
 const tool_memories_mod = @import("../../../modules/agent/tools/memories.zig");
+
+// Per-file tool system prompts are now stored directly in each tool's
+// `AgentTool.function.system_prompt` field (see schemas.zig). The aggregator
+// below reads `tool.function.system_prompt` dynamically from `filtered_tools`
+// without hardcoding names — the tool's own `.name` is the key.
 const config_mod = nalarcore.config;
 const custom_http_client = @import("custom_http_client");
 const background_process = @import("background_process.zig");
@@ -77,7 +82,6 @@ const search_tool_mod = nalarcore.search_tool;
 const semantic_search_mod = nalarcore.semantic_search;
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 
-
 pub fn buildMessages(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -90,162 +94,169 @@ pub fn buildMessages(
     inherited_context_mode: []const u8,
     activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
-    // Build content strings internally
-    const skills = try agentic_loop.prompts_mod.makeSkillsEquippedContext(allocator, db, session_id);
-    defer allocator.free(skills);
-
-    const memoryMd = try agentic_loop.prompts_mod.makeWorkingDirectoryContext(allocator, io, cwd);
-    defer allocator.free(memoryMd);
-
-    // const backgroundProcessmessage = try BuildBackgroundProcessPrompt(allocator, db, session_id);
-    // defer allocator.free(backgroundProcessmessage);
-
-    // If the caller supplied an explicit `activeAgentContent`
-    // (sub-agent flow with a config-driven system_prompt), use it
-    // verbatim and skip the `session_agents` lookup. Otherwise fall
-    // back to `BuildDynamicAgentContent(db, session_id)` which is
-    // the main-agent flow's source of truth.
-    const caller_supplied_active = activeAgentContent.len > 0;
-    const agentUsed = if (caller_supplied_active)
-        try allocator.dupe(u8, activeAgentContent)
-    else
-        try BuildDynamicAgentContent(allocator, db, session_id);
-    defer allocator.free(agentUsed);
-
-    // disable dynamic system prompt for cache call llm
-    // buildAgentPrompt now handles processMessages internally
-    // const activity_info = try agentic_loop.prompts_mod.makeActivityInfo(allocator, io, db, session_id);
-    // defer allocator.free(activity_info);
-    const activity_info = "";
-
-    // Resolve environment for the Global Knowledge loader. The singleton
-    // is the single source of truth for the process-level environment map.
     const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
-    // Build the "Available Sub-Agents" listing from the current
-    // session's `selected_profile_model` + the LlmConfig. Renders
-    // an empty string when no sub-agents are configured (or when
-    // the session is missing), so the section is naturally
-    // omitted. See `appendSubAgentsListing` for the format.
-    const sub_agents_listing = try BuildSubAgentsListing(allocator, db, session_id);
-    defer allocator.free(sub_agents_listing);
-
-    // Build the "Workspace Context" section listing the workspace items
-    // and tasks in the same workspace as the current task. Returns `""`
-    // when the session is not bound to any workspace_item_task (caller
-    // omits the section silently — matches `appendSkillsListing` behavior).
-    const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
-    defer allocator.free(workspaceContext);
-
-    // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
-    // Build the "## Agent Knowledge" section. Reads the agent's
-    // markdown knowledge files from disk. Empty for non-agent sessions
-    // (helper silently returns "").
-    const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
-    defer allocator.free(agentKnowledgeContent);
-
-    // Agent System Prompt (plan 2026-08-21-agent-system-prompt,
-    // task_1787408958280_1): Build the "## Agent System Prompt" section
-    // from the agent_system_prompt table (Migration 080). Empty for
-    // non-agent sessions. Injected BEFORE the knowledge block so persona
-    // instructions precede reference data.
-    const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
-    defer allocator.free(agentSystemPromptContent);
-
-    // Agent-Kanbans mirror (Migration 081, plan
-    // 2026-08-25-agent-kanbans-mirror): Build the "## Kanban System
-    // Prompt" + "## Kanban Knowledge" sections from the
-    // agent_kanban_system_prompt / agent_kanban_knowledges tables.
-    // Empty unless the session's item is a kanban WITH an
-    // `agent_kanbans` row — unconfigured boards are unaffected. Only
-    // ONE of the agent/kanban pairs can be non-empty per session
-    // (item_type is exclusive), so effective ordering is unchanged.
-    const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
-    defer allocator.free(agentKanbanSystemPromptContent);
-    const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
-    defer allocator.free(agentKanbanKnowledgeContent);
-
-    // Build the "Kanban Status Tracking" section. Only rendered when
-    // the session's parent item has item_type === 'kanban' (the
-    // helper silently returns "" otherwise). Rendered right after
-    // the Workspace Context section so the agent sees the workflow
-    // expectations before the tool listing. Pass `tools` so the
-    // helper can append the optional "Follow-up Tasks" hint when
-    // the create_kanban_task tool is equipped.
+    var final_system: std.ArrayList(u8) = .empty;
+    defer final_system.deinit(allocator);
 
     const filtered_tools = try filteringTools(allocator, db, session_id, tools);
 
+    // 1. Static prompts — inlined (no PROMPT_SECTIONS constant), gated on hasTool where needed
+    try final_system.appendSlice(allocator, prompts_const.UniversalRules);
+    try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
+    if (hasTool(filtered_tools, "load_memory")) {
+        try final_system.appendSlice(allocator, prompts_const.MemoryToolRule);
+    }
+    try final_system.appendSlice(allocator, prompts_const.Agent);
+    try final_system.appendSlice(allocator, prompts_const.GitPrompt);
+    try final_system.appendSlice(allocator, prompts_const.ResponseFormatting);
+    if (hasTool(filtered_tools, "update_plan")) {
+        try final_system.appendSlice(allocator,
+            \\## Task Planning
+            \\
+            \\For multi-step work, lay out a structured plan early with the `update_plan` tool, then
+            \\keep it in sync by calling `update_plan` after completing each checklist item (flip
+            \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your system prompt on
+            \\every iteration, so you always see the current state. Use `get_plan` to verify the
+            \\current state explicitly.
+            \\
+        );
+    }
+    try final_system.appendSlice(allocator, prompts_const.UpdateActivityRule);
+    try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
+    _ = activeAgentContent;
+
+    // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)
+    const memoryMd = try agentic_loop.prompts_mod.makeWorkingDirectoryContext(allocator, io, cwd);
+    defer allocator.free(memoryMd);
+    if (memoryMd.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n");
+        try final_system.appendSlice(allocator, memoryMd);
+    }
+
+    // 3. Local Knowledge → Global Knowledge ("most specific first")
+    const local_knowledge = try loadLocalKnowledge(allocator, io, cwd);
+    defer allocator.free(local_knowledge);
+    if (local_knowledge.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n## Local Knowledge\n\n");
+        try final_system.appendSlice(allocator,
+            \\The following markdown files are this project's local memory,
+            \\auto-loaded from `<cwd>/.nalar/memories/`. Use `read_file` to
+            \\load a specific memory on demand. To update, use `write_file`
+            \\or `text_replace`; to delete, use `remove_file`.
+            \\
+        );
+        try final_system.appendSlice(allocator, local_knowledge);
+    }
+
+    const knowledge = try loadGlobalKnowledge(allocator, io, environment);
+    defer allocator.free(knowledge);
+    if (knowledge.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n## Global Knowledge\n\n");
+        try final_system.appendSlice(allocator,
+            \\The following markdown files are your persistent global memory,
+            \\auto-loaded from `~/.config/nalar/memories/`. Use `list_memory` to
+            \\see metadata (and any files truncated below the budget).
+        );
+        try final_system.appendSlice(allocator, knowledge);
+    }
+
+    // 4. cwd + OS — consistent with build_agent_prompt (cwd after knowledge, OS at end of static block)
+    if (cwd.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n**Current working directory:** ");
+        try final_system.appendSlice(allocator, cwd);
+    }
+
+    const os_name = getCurrentOs();
+    try final_system.appendSlice(allocator, "\n\n**Operating System:** ");
+    try final_system.appendSlice(allocator, os_name);
+    try final_system.appendSlice(allocator,
+        \\**Important:** Always use OS-specific commands. Check the current OS
+        \\before running system commands or shell scripts.
+    );
+
+    // 5. workspaceContext → agentSystemPrompt → agentKnowledge → agentKanbanSystemPrompt → agentKanbanKnowledge
+    const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
+    defer allocator.free(workspaceContext);
+    if (workspaceContext.len > 0) {
+        try final_system.appendSlice(allocator, workspaceContext);
+    }
+
+    const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentSystemPromptContent);
+    if (agentSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentSystemPromptContent);
+    }
+
+    const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKnowledgeContent);
+    if (agentKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKnowledgeContent);
+    }
+
+    const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanSystemPromptContent);
+    if (agentKanbanSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
+    }
+
+    const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanKnowledgeContent);
+    if (agentKanbanKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
+    }
+
+    // 6. kanbanStatus → designStatus
     const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, filtered_tools);
     defer allocator.free(kanbanStatusContent);
+    if (kanbanStatusContent.len > 0) {
+        try final_system.appendSlice(allocator, kanbanStatusContent);
+    }
 
-    // Build the "Design Canvas" status section (v6 — 3 LLM tools).
-    // Only rendered when the session's parent item has
-    // item_type === 'design' (the helper silently returns "" otherwise).
-    // Mirrors the Kanban pattern above — same graceful-skip on
-    // errors, same render-after-workspace-context ordering.
     const designStatusContent = try buildDesignCanvasPrompt(allocator, db, session_id);
     defer allocator.free(designStatusContent);
+    if (designStatusContent.len > 0) {
+        try final_system.appendSlice(allocator, designStatusContent);
+    }
 
-    const systemContent = try build_agent_prompt(allocator, io, cwd, skills, memoryMd, "", agentUsed, filtered_tools, activity_info, environment, sub_agents_listing, workspaceContext, kanbanStatusContent, designStatusContent);
+    // 7. Tool Behaviors + Available Skills + Available Sub-Agents
+    try appendToolBehaviorSection(allocator, &final_system, filtered_tools);
 
-    // Render inherited parent conversation history (if requested) and append
-    // it to the system prompt as a labelled, read-only block. The formatter
-    // itself detects whether this session is a sub-agent (session_id !=
-    // parent_session_id); if the two are equal (or either is empty), it
-    // short-circuits to "" without hitting the DB.
+    // Available Skills listing — gated on list_skills tool, best-effort
+    try appendSkillsListing(allocator, &final_system, filtered_tools, cwd, io, environment);
+
+    // Available Sub-Agents listing — from LlmConfig (profile-aware)
+    const sub_agents_listing = try BuildSubAgentsListing(allocator, db, session_id);
+    defer allocator.free(sub_agents_listing);
+    if (sub_agents_listing.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n");
+        try final_system.appendSlice(allocator, sub_agents_listing);
+    }
+
+    // 8. inherited_context → Current Plan
     const inherited_md = inherited_context.formatHistory(
         allocator,
         db,
-        session_id, // the current agent's session_id (vs. parent's)
-        parent_session_id, // the parent's session_id, NOT the sub-agent's
+        session_id,
+        parent_session_id,
         inherited_context.parseMode(inherited_context_mode) catch .none,
     ) catch blk: {
         std.log.warn("buildMessages: failed to render inherited_context: mode={s}", .{inherited_context_mode});
         break :blk try allocator.dupe(u8, "");
     };
     defer allocator.free(inherited_md);
-
-    // Build the "## Current Plan" section. Reads session_plan for the
-    // current session_id. Returns "" when no plan exists (silently omitted).
-    // Mirrors the kanban/design pattern (graceful-skip on empty, render
-    // between context sections and the inherited context block).
-    const planContent = try agentic_loop.prompts_mod.makePlanContext(allocator, db, session_id);
-    defer allocator.free(planContent);
-
-    var final_system: std.ArrayList(u8) = .empty;
-    defer final_system.deinit(allocator);
-    try final_system.appendSlice(allocator, systemContent);
-    // Agent System Prompt (Migration 080): inject the
-    // '## Agent System Prompt' section BEFORE the knowledge block —
-    // persona instructions precede reference data. Empty when
-    // item_type != 'agent' OR agent has no prompt rows.
-    if (agentSystemPromptContent.len > 0) {
-        try final_system.appendSlice(allocator, agentSystemPromptContent);
-    }
-    // Agent Mode: inject the '## Agent Knowledge' section right
-    // after the workspace-context section emitted by build_agent_prompt.
-    // Empty when item_type != 'agent' OR agent has no knowledge rows.
-    if (agentKnowledgeContent.len > 0) {
-        try final_system.appendSlice(allocator, agentKnowledgeContent);
-    }
-    // Agent-Kanbans mirror (Migration 081): inject the kanban persona +
-    // knowledge blocks AFTER the agent blocks (mutually exclusive by
-    // item_type, so at most one pair renders per session).
-    if (agentKanbanSystemPromptContent.len > 0) {
-        try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
-    }
-    if (agentKanbanKnowledgeContent.len > 0) {
-        try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
-    }
     if (inherited_md.len > 0) {
         try final_system.appendSlice(allocator, "\n\n");
         try final_system.appendSlice(allocator, inherited_md);
     }
+
+    const planContent = try agentic_loop.prompts_mod.makePlanContext(allocator, db, session_id);
+    defer allocator.free(planContent);
     if (planContent.len > 0) {
-        try final_system.appendSlice(allocator, "\n\n");
         try final_system.appendSlice(allocator, planContent);
     }
+
     const final_system_content = try final_system.toOwnedSlice(allocator);
 
     const systemMessage = agent.AgentMessage{
@@ -253,10 +264,7 @@ pub fn buildMessages(
         .content = final_system_content,
     };
 
-    std.debug.print("DEBUG_BUILD: systemContent size={d} bytes\n", .{final_system_content.len});
-
     var allMessages: std.ArrayList(agent.AgentMessage) = .empty;
-
     try allMessages.append(allocator, systemMessage);
     for (historyMessages) |hist| {
         const agentMsgs = try agentic_loop.parsing_mod.transformLLMHistoryToAgentMessage(allocator, hist);
@@ -391,7 +399,17 @@ const ListToolsResult = struct {
 };
 
 /// Fetch MCP tools from all configured servers
-pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value) !?[]tool_models.AgentTool {
+///
+/// `cancel_fn` (default null) — when set, polled between bytes read
+/// from each MCP stdio child. The workflow's `isWorkerCancelled`
+/// predicate is the canonical caller (see workflow.zig's
+/// `mcp_cancel_thunk` helper that adapts it). When null, the
+/// deadline becomes the only termination signal.
+pub fn buildMCPToolsRun(
+    allocator: std.mem.Allocator,
+    mcpServers: std.json.Value,
+    cancel_fn: ?*const fn () bool,
+) !?[]tool_models.AgentTool {
     // Check if mcpServers is configured
     const mcp_servers = switch (mcpServers) {
         .object => |obj| obj,
@@ -416,7 +434,12 @@ pub fn buildMCPToolsRun(allocator: std.mem.Allocator, mcpServers: std.json.Value
         // HTTP (url). If the entry has a `command`, route to the stdio
         // helper; otherwise fall through to the existing HTTP path.
         if (server_obj.get("command")) |_| {
-            const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj) catch |err| {
+            // 30s default for tools/list — see mcp_stdio.zig's plan
+            // for the per-call timeouts. We forward the workflow's
+            // cancel-callback so the Stop button propagates within
+            // one syscall of the cancel.
+            const deadline_ns: u64 = 30 * std.time.ns_per_s;
+            const stdio_tools = fetchToolsFromServerStdio(allocator, server_name, server_obj, deadline_ns, cancel_fn) catch |err| {
                 std.log.warn("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
                 continue;
             };
@@ -569,10 +592,19 @@ fn convertMcpToolsToAgentTools(
 /// spawns (or reuses) a child via `mcp_stdio.StdioRegistry`, sends
 /// `tools/list` JSON-RPC, parses `result.tools[]` into AgentTool
 /// records (same wire shape as the HTTP branch).
+///
+/// `deadline_ns` is forwarded to both the send and the recv — a
+/// hung child (pipe-buffer deadlock, awaits-init forever) returns
+/// `MCPServerSendFailed` / `MCPServerRecvFailed` instead of blocking
+/// the workflow start indefinitely. `cancel_fn` (optional) is
+/// forwarded to the recv cancel-callback so the workflow's Stop
+/// button propagates within one syscall.
 fn fetchToolsFromServerStdio(
     allocator: std.mem.Allocator,
     server_name: []const u8,
     server_obj: std.json.ObjectMap,
+    deadline_ns: u64,
+    cancel_fn: ?*const fn () bool,
 ) ![]tool_models.AgentTool {
     // Build argv from the config.
     var argv_list: std.ArrayList([]const u8) = .empty;
@@ -602,12 +634,16 @@ fn fetchToolsFromServerStdio(
     const client = reg.getOrSpawn(server_name, argv) catch return error.MCPServerSpawnFailed;
     // No defer — the registry owns the client's lifecycle. Each call
     // reuses the same child; killing it on every fetch would be wasteful.
+    // markStale on timeout: a hung child must NOT be returned to the
+    // next caller. Self-healing happens at the registry boundary
+    // (getOrSpawn checks the dirty flag on entry).
+    errdefer reg.markStale(server_name);
 
     // Send tools/list and read the response.
     const req = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"method\":\"tools/list\",\"params\":{}}");
     defer allocator.free(req);
-    client.send(req) catch return error.MCPServerSendFailed;
-    const resp = client.recv() catch return error.MCPServerRecvFailed;
+    client.send(req, deadline_ns) catch return error.MCPServerSendFailed;
+    const resp = client.recv(deadline_ns, cancel_fn) catch return error.MCPServerRecvFailed;
     defer allocator.free(resp);
 
     // Parse result.tools[] into AgentTool records (same parser the HTTP
@@ -1006,12 +1042,6 @@ pub fn BuildDynamicAgentContent(
 /// decide which sub-agent to dispatch to.
 const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
 
-/// Maximum number of kanban columns rendered in the `## Kanban Status
-/// Tracking` section. Boards with more columns truncate to the first
-/// N by `position ASC` and add an `… and M more` footer. 10 is well
-/// above any realistic kanban (typical N ≤ 7).
-const MAX_KANBAN_COLUMNS: u32 = 10;
-
 /// Build the "Available Sub-Agents" listing for the current
 /// session. Reads `selected_profile_model` from the `sessions`
 /// table, then resolves the sub-agents list with the per-profile
@@ -1109,11 +1139,9 @@ fn BuildSubAgentsListing(
 }
 
 // Cap for how many design pages to enumerate in the Design Canvas status
-// prompt. Pages beyond the cap are listed as a count footer. Mirrors
-// `MAX_KANBAN_COLUMNS` (10) — small enough to keep the prompt compact,
-// large enough to cover most multi-page designs.
+// prompt. Pages beyond the cap are listed as a count footer. Small enough
+// to keep the prompt compact, large enough to cover most multi-page designs.
 const MAX_DESIGN_PAGES: u32 = 10;
-
 
 fn removeTools(tools: []tool_models.AgentTool, names: []const []const u8) []tool_models.AgentTool {
     var count: usize = 0;
@@ -1246,44 +1274,23 @@ const PromptSection = struct {
 /// that needs to change. (For "I want the DynamicProperties section back
 /// unconditionally" → just remove the `requires_tool` field.)
 const PROMPT_SECTIONS: []const PromptSection = &.{
-    // === LEAD: Orchestrator narrative (Philosophy B) ===
     .{ .name = "universal_rules", .content = prompts_const.UniversalRules },
-    // .{ .name = "prompt_auto_fix", .content = prompts_const.PromptAutoFix },
     .{ .name = "search_tool_rule", .content = prompts_const.SearchToolRule },
-    .{ .name = "search_history_tool_rule", .content = prompts_const.SearchHistoryToolRule, .requires_tool = "search_history" },
     .{ .name = "memory_tool_rule", .content = prompts_const.MemoryToolRule, .requires_tool = "load_memory" },
     .{ .name = "agent_directive", .content = prompts_const.Agent },
-    .{ .name = "parallel_work", .content = prompts_const.ParallelWork },
-
-    // === Skills system ===
-    .{ .name = "skills_system", .content = memory_prompts.skills_system_prompt },
-
-    // === Workflow: classify → plan → execute → escalate ===
-    .{ .name = "classification", .content = prompts_const.Classification },
-    .{ .name = "execution", .content = prompts_const.Execution },
-    .{ .name = "escalation", .content = prompts_const.Escalation },
-
-
-    // === Memory & docs ===
-    // .{ .name = "memory_prompt", .content = prompts_const.MemoryPrompt },
-    // .{ .name = "nalar_md", .content = prompts_const.NalarMdAutoUpdate },
-    // .{ .name = "global_memory_system", .content = prompts_const.GlobalMemorySystem },
-    // .{ .name = "local_memory_system", .content = prompts_const.LocalMemorySystem },
     .{ .name = "git_prompt", .content = prompts_const.GitPrompt },
-
-    // === Response formatting (last — applies to everything above) ===
     .{ .name = "response_formatting", .content = prompts_const.ResponseFormatting },
     .{
         .name = "task_planning",
         .content =
-            \\## Task Planning
-            \\
-            \\For multi-step work, lay out a structured plan early with the `update_plan` tool, then
-            \\keep it in sync by calling `update_plan` after completing each checklist item (flip
-            \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your system prompt on
-            \\every iteration, so you always see the current state. Use `get_plan` to verify the
-            \\current state explicitly.
-            \\
+        \\## Task Planning
+        \\
+        \\For multi-step work, lay out a structured plan early with the `update_plan` tool, then
+        \\keep it in sync by calling `update_plan` after completing each checklist item (flip
+        \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your system prompt on
+        \\every iteration, so you always see the current state. Use `get_plan` to verify the
+        \\current state explicitly.
+        \\
         ,
         .requires_tool = "update_plan",
     },
@@ -1386,8 +1393,7 @@ pub fn loadLocalKnowledge(
 ) ![]u8 {
     if (cwd.len == 0) return allocator.dupe(u8, "");
 
-    const dir_path = tool_memories_mod.get_local_memories_path_for_dir(allocator, cwd)
-        orelse return allocator.dupe(u8, "");
+    const dir_path = tool_memories_mod.get_local_memories_path_for_dir(allocator, cwd) orelse return allocator.dupe(u8, "");
     defer allocator.free(dir_path);
 
     const list = tool_memories_mod.listMemoriesInDir(allocator, io, dir_path);
@@ -1468,62 +1474,25 @@ pub fn build_agent_prompt(
     tools: []const tool_models.AgentTool,
     activity_info: []const u8,
     environment: ?*const std.process.Environ.Map,
-    /// Pre-rendered "Available Sub-Agents" listing, built by
-    /// `buildMessages` from the current session's
-    /// `selected_profile_model` + the LlmConfig. Empty string
-    /// means "no sub-agents configured" (the section is omitted).
-    /// See `appendSubAgentsListing` for the rendering format.
     sub_agents_listing: []const u8,
-    /// Pre-rendered "Workspace Context" markdown block, built by
-    /// `BuildWorkspaceContext(allocator, db, session_id)`. Empty
-    /// string means "no workspace context" (session not bound to
-    /// any task; the section is silently omitted). The block
-    /// already includes its `## Workspace Context` header.
     workspaceContext: []const u8,
-    /// Pre-rendered "Kanban Status Tracking" markdown block, built by
-    /// `BuildKanbanStatusPrompt(allocator, db, session_id)` in this file.
-    /// Empty string means "the session is not on a kanban board" (the
-    /// section is silently omitted). The block already includes its
-    /// `## Kanban Status Tracking` header. Rendered right after the
-    /// Workspace Context section so the agent sees "you are on a kanban"
-    /// framing before the tool listing.
     kanbanStatusContent: []const u8,
-    /// Pre-rendered "Design Canvas" markdown block, built by
-    /// `BuildDesignCanvasPrompt(allocator, db, session_id)` in this file.
-    /// Empty string means "the session is not on a design canvas" (the
-    /// section is silently omitted). The block already includes its
-    /// `## Design Canvas` header. Rendered right after the Kanban Status
-    /// Tracking section so the agent sees the workflow expectations
-    /// before the tool listing.
     designStatusContent: []const u8,
 ) ![]const u8 {
+    _ = usedSkills;
+    _ = backgroundProcessContent;
+    _ = activeAgentContent;
+    _ = activity_info;
+    _ = sub_agents_listing;
+
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
 
-    // === 1. Static sections (data-driven) ===
     for (PROMPT_SECTIONS) |section| {
         if (section.requires_tool) |tool_name| {
             if (!hasTool(tools, tool_name)) continue;
         }
         try appendSection(allocator, &result, section.content);
-    }
-
-    // === 2. Dynamic: session-specific content ===
-
-    // Available sub-agents (from LlmConfig.sub_agents or the
-    // active profile's sub_agents). Computed by buildMessages
-    // and passed in as a pre-rendered string so this function
-    // doesn't need DB access or the LlmConfig singleton. The
-    // section is rendered right after the tool listing so the
-    // LLM sees what sub-agents it can spawn before deciding to
-    // call spawn_sub_agent.
-    if (sub_agents_listing.len > 0) {
-        try result.appendSlice(allocator, sub_agents_listing);
-    }
-
-    // Skills loaded for this session (from session_skills table).
-    if (usedSkills.len > 0) {
-        try appendSection(allocator, &result, usedSkills);
     }
 
     // Project memory (NALAR.md / CLAUDE.md from cwd).
@@ -1549,20 +1518,6 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, local_knowledge);
     }
 
-    // need to listing list skills globals and locals
-    //
-    // Lists every installed skill (global + local) by name and description so
-    // the model knows what capabilities are available without having to call
-    // `list_skills` first. Gated on the `list_skills` tool being present (if
-    // it's gone, the model has no way to refresh the list anyway). Best-effort:
-    // any failure inside `listAllSkills` silently omits the section — never
-    // breaks the prompt.
-    try appendSkillsListing(allocator, &result, tools, cwd, io, environment);
-
-    // Global Knowledge — auto-loaded from ~/.config/nalar/memories/*.md.
-    // Same loader and 50KB budget as build_sub_agent_prompt. The
-    // GlobalMemorySystem static section above already told the model this
-    // content is coming; here is where the actual content gets injected.
     const knowledge = try loadGlobalKnowledge(allocator, io, environment);
     defer allocator.free(knowledge);
     if (knowledge.len > 0) {
@@ -1575,57 +1530,20 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, knowledge);
     }
 
-    // Tool listing — gives the model semantic context for each tool
-    // (names + descriptions), not just the JSON schema the API already sends.
-    // Critical for tool selection: without this, the model picks tools based
-    // on name-embedding similarity alone, which is unreliable.
-    try appendToolListing(allocator, &result, tools);
-
-    // Active specialized agent — frames the session's current agent config.
-    if (activeAgentContent.len > 0) {
-        try result.appendSlice(allocator, "\n\n## Your Active Agent Configuration\n\n");
-        try result.appendSlice(allocator,
-            \\You are currently configured as the following specialized agent.
-            \\Its instructions, capabilities, and constraints apply to you for
-            \\this session. When in doubt, defer to the agent configuration below.
-            \\
-        );
-        try result.appendSlice(allocator, activeAgentContent);
-    }
-
     // Working directory.
     if (cwd.len > 0) {
         try result.appendSlice(allocator, "\n\n**Current working directory:** ");
         try result.appendSlice(allocator, cwd);
     }
 
-    // Workspace context (siblings in the same workspace). Rendered
-    // between the cwd line and the OS info so the "you are here"
-    // framing flows: cwd → workspace siblings → OS info. The block
-    // already includes its `## Workspace Context` header (built by
-    // `BuildWorkspaceContext`); we just append it verbatim.
     if (workspaceContext.len > 0) {
         try result.appendSlice(allocator, workspaceContext);
     }
 
-    // Kanban status tracking — instructs the agent to call
-    // `kanban_move_task` at status transitions. Rendered right after
-    // the Workspace Context section so the agent sees the workflow
-    // expectations before the tool listing (where kanban_move_task's
-    // argument shape is documented). Block already includes its
-    // `## Kanban Status Tracking` header (built by
-    // `BuildKanbanStatusPrompt`); we just append it verbatim.
     if (kanbanStatusContent.len > 0) {
         try result.appendSlice(allocator, kanbanStatusContent);
     }
 
-    // Design canvas status block (v6 — 3 LLM tools:
-    // set_design_page, add_element, update_element). Built by
-    // BuildDesignCanvasPrompt. Empty = "session is not on a design
-    // canvas" (silently omitted). Rendered right after the Kanban
-    // Status Tracking block; both share the same "before the tool
-    // listing" ordering so the LLM sees the workflow expectations
-    // before reading the tool schemas.
     if (designStatusContent.len > 0) {
         try result.appendSlice(allocator, designStatusContent);
     }
@@ -1638,24 +1556,6 @@ pub fn build_agent_prompt(
         \\**Important:** Always use OS-specific commands. Check the current OS
         \\before running system commands or shell scripts.
     );
-
-    // Background processes for this session.
-    if (backgroundProcessContent.len > 0) {
-        try appendSection(allocator, &result, backgroundProcessContent);
-    }
-
-    // Other active workers (sub-agents in other sessions/processes).
-    if (activity_info.len > 0) {
-        try result.appendSlice(allocator, "\n\n## Active Workers\n\n");
-        try result.appendSlice(allocator, activity_info);
-        try result.appendSlice(allocator,
-            \\**Note:** These are other agent sessions running in different
-            \\processes/directories. This information helps you avoid duplicate
-            \\work or coordinate with other agents if needed. However, each
-            \\worker operates independently — you have your own separate
-            \\context and session.
-        );
-    }
 
     return result.toOwnedSlice(allocator);
 }
@@ -1686,6 +1586,50 @@ fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), t
         try result.appendSlice(allocator, name);
         try result.appendSlice(allocator, "**: ");
         try result.appendSlice(allocator, desc);
+        try result.appendSlice(allocator, "\n");
+    }
+}
+
+/// Get the behavioral prompt for a tool directly from its own
+/// `AgentTool.function.system_prompt` field — no hardcoded name mapping.
+/// Each tool file sets `.system_prompt = <tool>_system_prompt` in its
+/// `AgentTool` definition, so the prompt travels with `filtered_tools`
+/// and is read here via `tool.function.system_prompt`.
+fn toolBehaviorFromTool(tool: tool_models.AgentTool) ?[]const u8 {
+    const prompt = tool.function.system_prompt;
+    if (prompt.len > 0) return prompt;
+    // Dynamic MCP tools are named mcp_<server>_<tool> — they are not in the
+    // static registry but are still callable. Provide a generic behavior.
+    if (std.mem.startsWith(u8, tool.function.name, "mcp_")) return "MCP tool from an external server. Call it with the parameters defined in its JSON schema. The server is already connected; just invoke the tool.";
+    return null;
+}
+
+/// Append a behavioral tool section to the result ArrayList.
+///
+/// Unlike appendToolListing (which copies tool.description), this renders
+/// *how to behave* with each tool. The LLM already receives the JSON schema
+/// via the API; this prompt tells it when and how to use each tool.
+fn appendToolBehaviorSection(allocator: std.mem.Allocator, result: *std.ArrayList(u8), tools: []const tool_models.AgentTool) !void {
+    if (tools.len == 0) return;
+
+    // Count how many tools have a known behavior — skip the section if none.
+    var known_count: usize = 0;
+    for (tools) |tool| {
+        if (toolBehaviorFromTool(tool) != null) known_count += 1;
+    }
+    if (known_count == 0) return;
+
+    try result.appendSlice(allocator, "\n\n## Tool Behaviors\n\n");
+    try result.appendSlice(allocator, "You have access to the following tools. Use them according to these behaviors:\n\n");
+
+    for (tools) |tool| {
+        const name = tool.function.name;
+        if (name.len == 0) continue;
+        const behavior = toolBehaviorFromTool(tool) orelse continue;
+        try result.appendSlice(allocator, "- **");
+        try result.appendSlice(allocator, name);
+        try result.appendSlice(allocator, "**: ");
+        try result.appendSlice(allocator, behavior);
         try result.appendSlice(allocator, "\n");
     }
 }
@@ -1858,4 +1802,3 @@ pub fn appendSubAgentsListing(
         \\
     );
 }
-

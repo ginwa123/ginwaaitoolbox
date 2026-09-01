@@ -372,6 +372,13 @@ pub fn lsp_references_to_string(allocator: std.mem.Allocator, result: LspReferen
     return try output.toOwnedSlice(allocator);
 }
 
+pub const lsp_references_tool_system_prompt =
+    \\## LSP References Tool — Behavior
+    \\Use `lsp_references` to find all references via LSP.
+    \\- Provide `lsp`, `project_root`, `file`, `line`, `character`. Use to trace where a symbol is used.
+    \\
+;
+
 pub const lsp_references_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -422,6 +429,7 @@ pub const lsp_references_tool = AgentTool{
             },
             .required = &.{ "lsp", "root_dir", "file_path", "line", "character" },
         },
+        .system_prompt = lsp_references_tool_system_prompt,
     },
 };
 

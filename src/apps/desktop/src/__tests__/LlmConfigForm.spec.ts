@@ -19,14 +19,38 @@ const baseValue = {
 }
 
 describe('LlmConfigForm', () => {
-  it('renders all 6 fields', () => {
+  it('renders all 6 fields (openai: 4 selects incl. reasoning_effort)', () => {
     const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue } } })
     expect(wrapper.find('input[placeholder="MiniMax-M2.7"]').exists()).toBe(true)
     expect(wrapper.find('input[placeholder="https://api.minimax.io/v1"]').exists()).toBe(true)
     const selects = wrapper.findAll('select')
     // thinking, temperature, url_style, reasoning_effort — 4 selects.
-    // (plan 2026-08-23-model-thinking added reasoning_effort.)
+    // (plan 2026-08-23-model-thinking added reasoning_effort; plan 2026-09-01 gates it per style.)
     expect(selects.length).toBe(4)
+    expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(false)
+  })
+
+  it('renders 3 selects for anthropic (budget input, no reasoning_effort)', () => {
+    const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue, url_style: 'anthropic' } } })
+    expect(wrapper.findAll('select').length).toBe(3) // thinking, temperature, url_style
+    expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(false)
+  })
+
+  it('renders 4 selects for openai-response (reasoning_effort, no budget)', () => {
+    const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue, url_style: 'openai-response' } } })
+    expect(wrapper.findAll('select').length).toBe(4)
+    expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(false)
+  })
+
+  it('hides both budget and effort when thinking=off regardless of style', () => {
+    for (const style of ['openai', 'openai-response', 'anthropic'] as const) {
+      const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue, url_style: style, thinking: 'off' } } })
+      expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(false)
+    }
   })
 
   it('hides the API key by default (type=password)', () => {

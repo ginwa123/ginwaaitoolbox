@@ -550,6 +550,15 @@ pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const 
 }
 
 /// Properties for text_replace tool
+pub const text_replace_tool_system_prompt =
+    \\## Text Replace Tool — Behavior
+    \\Use `text_replace` for surgical single-occurrence edits.
+    \\- Read the file first to confirm the exact `old_str` (must match exactly once).
+    \\- Provide `new_str` as the replacement; empty string deletes.
+    \\- For multi-line changes, ensure context is unique.
+    \\
+;
+
 pub const text_replace_tool: AgentTool = .{
     .type = "function",
     .function = .{

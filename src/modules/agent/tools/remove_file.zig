@@ -14,6 +14,14 @@ pub const RemoveFileInput = struct {
 };
 
 /// Tool definition for remove_file
+pub const remove_file_tool_system_prompt =
+    \\## Remove File Tool — Behavior
+    \\Use `remove_file` to delete a file or directory.
+    \\- Set `recursive=true` to delete directories with contents. This cannot be undone.
+    \\- Verify the path is correct before deleting.
+    \\
+;
+
 pub const remove_file_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -35,6 +43,7 @@ pub const remove_file_tool = AgentTool{
             },
             .required = &.{ "path" },
         },
+        .system_prompt = remove_file_tool_system_prompt,
     },
 };
 

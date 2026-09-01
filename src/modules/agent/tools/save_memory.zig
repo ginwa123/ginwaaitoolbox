@@ -62,6 +62,14 @@ pub const SaveMemoryInput = struct {
 /// agent's primary signal for WHEN to use this tool — it explicitly
 /// tells the agent that memory entries are UPSERT, FTS5-indexed,
 /// global (cross-session / cross-workspace), and capped at 1 MiB.
+pub const save_memory_tool_system_prompt =
+    \\## Save Memory Tool — Behavior
+    \\Use `save_memory` to persist a fact across sessions (FTS5).
+    \\- Content must be 1 KiB–1 MiB. UPSERT by `id` (auto-generates `mem_<hex>` if omitted).
+    \\- Use for user preferences, project conventions, decisions, and corrections. Call immediately when you learn a preference.
+    \\
+;
+
 pub const save_memory_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -88,6 +96,7 @@ pub const save_memory_tool = AgentTool{
             },
             .required = &.{"content"},
         },
+        .system_prompt = save_memory_tool_system_prompt,
     },
 };
 

@@ -99,6 +99,14 @@ pub const SavedImage = struct {
 /// tool saves the image to disk and returns a path, (2) that the LLM
 /// should call `show_preview` next, and (3) that the active profile's
 /// API key is used (no separate key needed).
+pub const generate_image_tool_system_prompt =
+    \\## Generate Image Tool — Behavior
+    \\Use `generate_image` to generate an image via OpenAI Images API (DALL-E 2/3, gpt-image-1).
+    \\- Provide a detailed `prompt`. Saves to `generated_images/` and returns a path; call `show_preview` next to display it.
+    \\- Use `path` not `content` for large images (DALL-E 3 exceeds 1 MiB inline cap).
+    \\
+;
+
 pub const generate_image_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -132,6 +140,7 @@ pub const generate_image_tool = AgentTool{
             },
             .required = &.{ "prompt" },
         },
+        .system_prompt = generate_image_tool_system_prompt,
     },
 };
 

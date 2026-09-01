@@ -47,6 +47,13 @@ pub const MoveDesignElementInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const move_design_element_tool_system_prompt =
+    \\## Move Design Element Tool — Behavior
+    \\Use `move_design_element` to translate an element by `dx`/`dy` (cascades to descendants by default).
+    \\- Use for moving a whole group or a single leaf. Set `apply_to_children=false` to move only the root.
+    \\
+;
+
 pub const move_design_element_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -101,6 +108,7 @@ pub const move_design_element_tool = AgentTool{
             },
             .required = &.{ "element_id", "dx", "dy" },
         },
+        .system_prompt = move_design_element_tool_system_prompt,
     },
 };
 

@@ -20,6 +20,13 @@ pub const ViewSkillResult = struct {
 };
 
 /// Tool definition for view_skill
+pub const view_skill_tool_system_prompt =
+    \\## View Skill Tool — Behavior
+    \\Use `view_skill` to preview a skill's header without loading the full body.
+    \\- Provide `skill_name`. Use to decide if you need the full skill via `get_skill`.
+    \\
+;
+
 pub const view_skill_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -36,6 +43,7 @@ pub const view_skill_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = view_skill_tool_system_prompt,
     },
 };
 

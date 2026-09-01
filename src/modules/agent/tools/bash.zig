@@ -100,6 +100,16 @@ pub fn execute_bash(
 /// ergonomic callers.
 pub const bash_result_to_string = shell.result_to_xml;
 
+pub const bash_tool_system_prompt =
+    \\## Bash Tool — Behavior
+    \\Use `bash` to execute shell commands. Every command MUST start with `timeout <seconds>` and bound output with `| head -n <N>` or `| tail -n <N>`.
+    \\- Prefer `search`/`read_file`/`glob` for code exploration over `bash` with `rg`/`grep`/`find`.
+    \\- Always set `cwd` explicitly to an absolute path. Never assume the working directory.
+    \\- Use `background=true` for long-running processes; it returns PID + log path.
+    \\- On Windows, `bash` may not be on PATH — use `pwsh` instead.
+    \\
+;
+
 pub const bash_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -227,5 +237,6 @@ pub const bash_tool = AgentTool{
             },
             .required = &.{ "command", "cwd", "mandatory_timeout" },
         },
+        .system_prompt = bash_tool_system_prompt,
     },
 };

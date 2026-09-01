@@ -42,6 +42,14 @@ pub const GroupElementsInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const group_design_elements_tool_system_prompt =
+    \\## Group Design Elements Tool — Behavior
+    \\Use `group_elements` to wrap 2+ elements into a new group/frame parent.
+    \\- The parent's bbox is the union of children. Use `group` for non-clipping, `frame` for clipping.
+    \\- All children must be on the same page and not already parented.
+    \\
+;
+
 pub const group_design_element_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -85,6 +93,7 @@ pub const group_design_element_tool = AgentTool{
             },
             .required = &.{ "page_id", "child_ids" },
         },
+        .system_prompt = group_design_elements_tool_system_prompt,
     },
 };
 

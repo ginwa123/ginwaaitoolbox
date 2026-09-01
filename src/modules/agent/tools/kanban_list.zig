@@ -68,12 +68,24 @@ pub const KanbanListInput = struct {
     /// Optional: when set, only return tasks assigned to this column.
     /// Useful for "list tasks in 'done' column" queries.
     column_id: ?[]const u8 = null,
+    /// Optional: max tasks to return. Default 20, max 100. Use with offset for pagination.
+    limit: ?u32 = null,
+    /// Optional: offset for pagination. Default 0. Use with limit to page through large boards.
+    offset: ?u32 = null,
 };
 
 /// Top-level tool definition for the LLM. The description is the
 /// agent's primary signal for WHEN to use this tool — it explicitly
 /// says the workspace_id + item_id come from the active chat's
 /// workspace context.
+pub const kanban_list_tool_system_prompt =
+    \\## Kanban List Tool — Behavior
+    \\Use `kanban_list` to list kanban board structure: columns and tasks.
+    \\- Call first to discover `task_id` and `column_id` before moving a task.
+    \\- Requires `workspace_id` + `item_id` from Workspace Context.
+    \\
+;
+
 pub const kanban_list_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -83,7 +95,7 @@ pub const kanban_list_tool = AgentTool{
             \\
             \\The workspace_id and item_id parameters must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "kanban feature"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item the user is currently viewing is the one marked with `*(this task)*` (it is the parent of the active chat's task).
             \\
-            \\If the system prompt does not include a "## Workspace Context" section, ask the user for the kanban's id (the one they want to list). The optional `column_id` parameter narrows the task list to one column (use kanban_list first to discover column ids, or call without it to get all tasks).
+            \\If the system prompt does not include a "## Workspace Context" section, ask the user for the kanban's id (the one they want to list). The optional `column_id` parameter narrows the task list to one column (use kanban_list first to discover column ids, or call without it to get all tasks). Pagination: `limit` (default 20, max 100) and `offset` (default 0) control how many tasks are returned. Large boards are truncated — check `total_count` and `has_more` in the response to paginate.
             ,
         .parameters = .{
             .type = "object",
@@ -103,9 +115,20 @@ pub const kanban_list_tool = AgentTool{
                     .type = "string",
                     .description = "Optional: only return tasks in this specific column. Omit to get all tasks across all columns.",
                 },
+                .{
+                    .name = "limit",
+                    .type = "integer",
+                    .description = "Optional: max tasks to return. Default 20, max 100. Use with offset for pagination.",
+                },
+                .{
+                    .name = "offset",
+                    .type = "integer",
+                    .description = "Optional: offset for pagination. Default 0. Use with limit to page through large boards.",
+                },
             },
             .required = &.{ "workspace_id", "item_id" },
         },
+        .system_prompt = kanban_list_tool_system_prompt,
     },
 };
 
@@ -139,18 +162,98 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 ///
 /// Caller owns the returned slice and must release it with
 /// `freeKanbanTaskRows`.
+pub fn countKanbanTasks(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    column_id: ?[]const u8,
+) !u32 {
+    if (column_id) |cid| {
+        var q = try db.query(allocator,
+            \\SELECT COUNT(*)
+            \\FROM workspace_item_tasks t
+            \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+            \\WHERE t.workspace_item_id = ? AND k.kanban_column_id = ?
+        , &.{ workspace_item_id, cid });
+        defer q.deinit();
+        if (try q.next()) |row| {
+            defer row.deinit(allocator);
+            return std.fmt.parseInt(u32, row.values[0], 10) catch 0;
+        }
+        return 0;
+    } else {
+        var q = try db.query(allocator,
+            \\SELECT COUNT(*)
+            \\FROM workspace_item_tasks t
+            \\WHERE t.workspace_item_id = ?
+        , &.{workspace_item_id});
+        defer q.deinit();
+        if (try q.next()) |row| {
+            defer row.deinit(allocator);
+            return std.fmt.parseInt(u32, row.values[0], 10) catch 0;
+        }
+        return 0;
+    }
+}
+
 pub fn listKanbanTasks(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
+    column_id: ?[]const u8,
+    limit: ?u32,
+    offset: ?u32,
 ) ![]KanbanTaskRow {
-    var q = try db.query(allocator,
-        \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
-        \\FROM workspace_item_tasks t
-        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
-        \\WHERE t.workspace_item_id = ?
-        \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
-    , &.{workspace_item_id});
+    // Build query with optional column filter + pagination
+    var q = if (column_id) |cid| blk: {
+        if (limit) |lim| {
+            const off = offset orelse 0;
+            var lim_buf: [16]u8 = undefined;
+            var off_buf: [16]u8 = undefined;
+            const lim_str = std.fmt.bufPrint(&lim_buf, "{d}", .{lim}) catch "20";
+            const off_str = std.fmt.bufPrint(&off_buf, "{d}", .{off}) catch "0";
+            break :blk try db.query(allocator,
+                \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
+                \\FROM workspace_item_tasks t
+                \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+                \\WHERE t.workspace_item_id = ? AND k.kanban_column_id = ?
+                \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
+                \\LIMIT ? OFFSET ?
+            , &.{ workspace_item_id, cid, lim_str, off_str });
+        } else {
+            break :blk try db.query(allocator,
+                \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
+                \\FROM workspace_item_tasks t
+                \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+                \\WHERE t.workspace_item_id = ? AND k.kanban_column_id = ?
+                \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
+            , &.{ workspace_item_id, cid });
+        }
+    } else blk: {
+        if (limit) |lim| {
+            const off = offset orelse 0;
+            var lim_buf: [16]u8 = undefined;
+            var off_buf: [16]u8 = undefined;
+            const lim_str = std.fmt.bufPrint(&lim_buf, "{d}", .{lim}) catch "20";
+            const off_str = std.fmt.bufPrint(&off_buf, "{d}", .{off}) catch "0";
+            break :blk try db.query(allocator,
+                \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
+                \\FROM workspace_item_tasks t
+                \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+                \\WHERE t.workspace_item_id = ?
+                \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
+                \\LIMIT ? OFFSET ?
+            , &.{ workspace_item_id, lim_str, off_str });
+        } else {
+            break :blk try db.query(allocator,
+                \\SELECT t.id, t.name, COALESCE(k.kanban_column_id, ''), COALESCE(k.kanban_position, -1)
+                \\FROM workspace_item_tasks t
+                \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+                \\WHERE t.workspace_item_id = ?
+                \\ORDER BY k.kanban_column_id ASC, k.kanban_position ASC, t.id ASC
+            , &.{workspace_item_id});
+        }
+    };
     defer q.deinit();
 
     var rows = std.ArrayList(KanbanTaskRow).empty;
@@ -279,23 +382,28 @@ pub fn executeKanbanListToString(
     } else null;
     defer if (empty_board_hint) |h| allocator.free(h);
 
-    // 5. Read tasks (sorted by (column_id, position)).
-    const task_rows = listKanbanTasks(allocator, db, input.item_id) catch |err| {
+    // 5. Pagination: clamp limit/offset, fetch total + page
+    const effective_limit: u32 = blk: {
+        const raw = input.limit orelse 20;
+        if (raw == 0) break :blk 20;
+        if (raw > 100) break :blk 100;
+        break :blk raw;
+    };
+    const effective_offset: u32 = input.offset orelse 0;
+
+    const total_count = countKanbanTasks(allocator, db, input.item_id, input.column_id) catch 0;
+
+    // 6. Read tasks (paginated, optionally filtered by column_id)
+    const task_rows = listKanbanTasks(allocator, db, input.item_id, input.column_id, effective_limit, effective_offset) catch |err| {
         return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listTasks failed: {s}", .{@errorName(err)}));
     };
     defer freeKanbanTaskRows(allocator, task_rows);
 
-    // 6. Build column summary array (with task_count computed from
-    //    the task rows we just read — no second DB roundtrip).
+    // 7. Build column summary array (with task_count = total per column)
     var column_summaries = std.ArrayList(ColumnSummary).empty;
     defer column_summaries.deinit(allocator);
     for (cols) |c| {
-        var count: u32 = 0;
-        for (task_rows) |t| {
-            if (t.kanban_column_id.len > 0 and std.mem.eql(u8, t.kanban_column_id, c.id)) {
-                count += 1;
-            }
-        }
+        const count = countKanbanTasks(allocator, db, input.item_id, c.id) catch 0;
         try column_summaries.append(allocator, .{
             .id = c.id,
             .name = c.name,
@@ -304,30 +412,8 @@ pub fn executeKanbanListToString(
         });
     }
 
-    // 7. Build task summary array. Filter to the requested column_id
-    //    when input.column_id is non-null. Each task gets
-    //    column_id + column_name (or both null when unassigned).
-    //
-    // We allocate a fresh `filtered_list` (when filtering) OR pass
-    // through `task_rows` (when not). Track the filtered_list
-    // separately so the defer can free it WITHOUT touching
-    // task_rows (which has its own defer that frees the
-    // underlying rows + slice).
-    var filtered_list: ?[]KanbanTaskRow = null;
-    defer if (filtered_list) |fl| allocator.free(fl);
-
-    const filtered: []const KanbanTaskRow = if (input.column_id) |cid| blk: {
-        const fl = try allocator.alloc(KanbanTaskRow, task_rows.len);
-        var n: usize = 0;
-        for (task_rows) |t| {
-            if (t.kanban_column_id.len > 0 and std.mem.eql(u8, t.kanban_column_id, cid)) {
-                fl[n] = t;
-                n += 1;
-            }
-        }
-        filtered_list = fl;
-        break :blk fl[0..n];
-    } else task_rows;
+    // 8. Build task summary array (already filtered + paginated at DB level)
+    const filtered: []const KanbanTaskRow = task_rows;
 
     var task_summaries = std.ArrayList(TaskSummary).empty;
     defer task_summaries.deinit(allocator);
@@ -367,11 +453,9 @@ pub fn executeKanbanListToString(
         });
     }
 
-    // 8. Render the XML. When the kanban has no columns, append the
-    //    friendly hint inside the root <kanban>...</kanban> wrapper
-    //    (NOT as <error>) so the LLM can distinguish "wrong item_id"
-    //    from "empty board".
-    const xml = try toXml(allocator, input.workspace_id, input.item_id, column_summaries.items, task_summaries.items);
+    // 9. Render the XML with pagination metadata
+    const has_more = (effective_offset + @as(u32, @intCast(task_summaries.items.len)) < total_count);
+    const xml = try toXml(allocator, input.workspace_id, input.item_id, column_summaries.items, task_summaries.items, total_count, effective_limit, effective_offset, has_more);
     if (empty_board_hint) |h| {
         // Splice the hint into the closing </kanban>: insert before
         // the final tag so it lives alongside <columns> and <tasks>.
@@ -400,6 +484,10 @@ pub fn toXml(
     item_id: []const u8,
     columns: []const ColumnSummary,
     tasks: []const TaskSummary,
+    total_count: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
 ) ![]u8 {
     var xml: std.ArrayList(u8) = .empty;
     errdefer xml.deinit(allocator);
@@ -493,6 +581,42 @@ pub fn toXml(
         try xml.appendSlice(allocator, "</task>");
     }
     try xml.appendSlice(allocator, "</tasks>");
+
+    // Pagination block
+    try xml.appendSlice(allocator, "<pagination>");
+    var total_buf: [32]u8 = undefined;
+    const total_str = std.fmt.bufPrint(&total_buf, "{d}", .{total_count}) catch "0";
+    try xml.appendSlice(allocator, "<total_count>");
+    try xml.appendSlice(allocator, total_str);
+    try xml.appendSlice(allocator, "</total_count>");
+    var limit_buf: [32]u8 = undefined;
+    const limit_str = std.fmt.bufPrint(&limit_buf, "{d}", .{limit}) catch "0";
+    try xml.appendSlice(allocator, "<limit>");
+    try xml.appendSlice(allocator, limit_str);
+    try xml.appendSlice(allocator, "</limit>");
+    var offset_buf: [32]u8 = undefined;
+    const offset_str = std.fmt.bufPrint(&offset_buf, "{d}", .{offset}) catch "0";
+    try xml.appendSlice(allocator, "<offset>");
+    try xml.appendSlice(allocator, offset_str);
+    try xml.appendSlice(allocator, "</offset>");
+    try xml.appendSlice(allocator, "<has_more>");
+    try xml.appendSlice(allocator, if (has_more) "true" else "false");
+    try xml.appendSlice(allocator, "</has_more>");
+    try xml.appendSlice(allocator, "</pagination>");
+    if (has_more) {
+        try xml.appendSlice(allocator, "<hint>Showing ");
+        var shown_buf: [32]u8 = undefined;
+        const shown_str = std.fmt.bufPrint(&shown_buf, "{d}", .{tasks.len}) catch "0";
+        try xml.appendSlice(allocator, shown_str);
+        try xml.appendSlice(allocator, " of ");
+        try xml.appendSlice(allocator, total_str);
+        try xml.appendSlice(allocator, " tasks. Call kanban_list with offset=");
+        var next_buf: [32]u8 = undefined;
+        const next_off = offset + limit;
+        const next_str = std.fmt.bufPrint(&next_buf, "{d}", .{next_off}) catch "0";
+        try xml.appendSlice(allocator, next_str);
+        try xml.appendSlice(allocator, " to see more, or filter by column_id.</hint>");
+    }
 
     try xml.appendSlice(allocator, "</kanban>");
     return try xml.toOwnedSlice(allocator);
@@ -800,7 +924,7 @@ test "toXml on empty lists produces <kanban>...</kanban>" {
     const alloc = testing.allocator;
     const cols = &[_]kanban_list.ColumnSummary{};
     const tasks = &[_]kanban_list.TaskSummary{};
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", cols, tasks);
+    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", cols, tasks, 0, 20, 0, false);
     defer alloc.free(xml);
     try testing.expect(std.mem.startsWith(u8, xml, "<kanban>"));
     try testing.expect(std.mem.endsWith(u8, xml, "</kanban>"));
@@ -816,7 +940,7 @@ test "toXml renders column summaries with id/name/position/task_count" {
         .{ .id = "col_done", .name = "done", .position = 1, .task_count = 1 },
     };
     const tasks = &[_]kanban_list.TaskSummary{};
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", &cols, tasks);
+    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", &cols, tasks, 0, 20, 0, false);
     defer alloc.free(xml);
     try testing.expect(contains(xml, "<column>"));
     try testing.expect(contains(xml, "<id>col_todo</id>"));
@@ -833,7 +957,7 @@ test "toXml renders task summaries with optional column_id/column_name" {
         .{ .id = "t_a", .name = "Task A", .column_id = "col_todo", .column_name = "todo", .position = 0 },
         .{ .id = "t_b", .name = "Task B", .column_id = null, .column_name = null, .position = -1 },
     };
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", cols, &tasks);
+    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", cols, &tasks, 2, 20, 0, false);
     defer alloc.free(xml);
     try testing.expect(contains(xml, "<task>"));
     try testing.expect(contains(xml, "<id>t_a</id>"));
@@ -852,7 +976,7 @@ test "toXml escapes special characters in column + task names" {
         .{ .id = "col_x", .name = "in <review>", .position = 0, .task_count = 0 },
     };
     const tasks = &[_]kanban_list.TaskSummary{};
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", &cols, tasks);
+    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", &cols, tasks, 0, 20, 0, false);
     defer alloc.free(xml);
     try testing.expect(contains(xml, "&lt;review&gt;"));
     try testing.expect(!contains(xml, "<review>")); // ensure raw is escaped
@@ -966,7 +1090,7 @@ test "listKanbanTasks returns all tasks with column + position" {
     // t4 has no kanban row — unassigned (the LEFT JOIN surfaces this as
     // empty kanban_column_id in the JSON output)
 
-    const rows = try kanban_list.listKanbanTasks(alloc, &s.db, "item_1");
+    const rows = try kanban_list.listKanbanTasks(alloc, &s.db, "item_1", null, null, null);
     defer kanban_list.freeKanbanTaskRows(alloc, rows);
 
     try testing.expectEqual(@as(usize, 4), rows.len);
@@ -1203,3 +1327,162 @@ test "executeKanbanListToString returns empty-board hint (not error) when item_i
     // Hint: "no columns" so the LLM can distinguish from a wrong-id case.
     try testing.expect(contains(xml, "no columns"));
 }
+
+test "executeKanbanListToString default limit caps at 20" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    // Insert 30 tasks
+    for (0..30) |i| {
+        var id_buf: [16]u8 = undefined;
+        const id = std.fmt.bufPrint(&id_buf, "t{d}", .{i}) catch "t0";
+        var sql_buf: [256]u8 = undefined;
+        const sql = std.fmt.bufPrint(&sql_buf, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('{s}', 'item_1', 'Task {d}', 'standard')", .{ id, i }) catch "";
+        try s.db.exec(alloc, sql, &.{});
+        var ksql_buf: [256]u8 = undefined;
+        const ksql = std.fmt.bufPrint(&ksql_buf, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('{s}', 'col_todo', {d})", .{ id, i }) catch "";
+        try s.db.exec(alloc, ksql, &.{});
+    }
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_1",
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    // Default limit 20 => only 20 tasks in XML, but total_count 30
+    try testing.expect(contains(xml, "<total_count>30</total_count>"));
+    try testing.expect(contains(xml, "<limit>20</limit>"));
+    try testing.expect(contains(xml, "<has_more>true</has_more>"));
+    // Count <task> blocks
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOf(u8, xml[idx..], "<task>")) |pos| {
+        count += 1;
+        idx += pos + 6;
+    }
+    try testing.expectEqual(@as(usize, 20), count);
+}
+
+test "executeKanbanListToString limit=5 returns 5 tasks" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    for (0..10) |i| {
+        var id_buf: [16]u8 = undefined;
+        const id = std.fmt.bufPrint(&id_buf, "t{d}", .{i}) catch "t0";
+        var sql_buf: [256]u8 = undefined;
+        const sql = std.fmt.bufPrint(&sql_buf, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('{s}', 'item_1', 'Task {d}', 'standard')", .{ id, i }) catch "";
+        try s.db.exec(alloc, sql, &.{});
+        var ksql_buf: [256]u8 = undefined;
+        const ksql = std.fmt.bufPrint(&ksql_buf, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('{s}', 'col_todo', {d})", .{ id, i }) catch "";
+        try s.db.exec(alloc, ksql, &.{});
+    }
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_1",
+        .limit = 5,
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<total_count>10</total_count>"));
+    try testing.expect(contains(xml, "<limit>5</limit>"));
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOf(u8, xml[idx..], "<task>")) |pos| {
+        count += 1;
+        idx += pos + 6;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "executeKanbanListToString offset paginates" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    for (0..10) |i| {
+        var id_buf: [16]u8 = undefined;
+        const id = std.fmt.bufPrint(&id_buf, "t{d}", .{i}) catch "t0";
+        var sql_buf: [256]u8 = undefined;
+        const sql = std.fmt.bufPrint(&sql_buf, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('{s}', 'item_1', 'Task {d}', 'standard')", .{ id, i }) catch "";
+        try s.db.exec(alloc, sql, &.{});
+        var ksql_buf: [256]u8 = undefined;
+        const ksql = std.fmt.bufPrint(&ksql_buf, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('{s}', 'col_todo', {d})", .{ id, i }) catch "";
+        try s.db.exec(alloc, ksql, &.{});
+    }
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_1",
+        .limit = 5,
+        .offset = 5,
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<offset>5</offset>"));
+    try testing.expect(contains(xml, "<has_more>false</has_more>"));
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOf(u8, xml[idx..], "<task>")) |pos| {
+        count += 1;
+        idx += pos + 6;
+    }
+    try testing.expectEqual(@as(usize, 5), count);
+}
+
+test "executeKanbanListToString limit >100 clamped to 100" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    for (0..5) |i| {
+        var id_buf: [16]u8 = undefined;
+        const id = std.fmt.bufPrint(&id_buf, "t{d}", .{i}) catch "t0";
+        var sql_buf: [256]u8 = undefined;
+        const sql = std.fmt.bufPrint(&sql_buf, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('{s}', 'item_1', 'Task {d}', 'standard')", .{ id, i }) catch "";
+        try s.db.exec(alloc, sql, &.{});
+        var ksql_buf: [256]u8 = undefined;
+        const ksql = std.fmt.bufPrint(&ksql_buf, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('{s}', 'col_todo', {d})", .{ id, i }) catch "";
+        try s.db.exec(alloc, ksql, &.{});
+    }
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_1",
+        .limit = 200,
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<limit>100</limit>"));
+}
+
+test "executeKanbanListToString offset beyond total returns empty tasks" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try s.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) VALUES ('t1', 'item_1', 'Task 1', 'standard')", &.{});
+    try s.db.exec(alloc, "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES ('t1', 'col_todo', 0)", &.{});
+
+    const input = kanban_list.KanbanListInput{
+        .workspace_id = "ws_1",
+        .item_id = "item_1",
+        .limit = 10,
+        .offset = 100,
+    };
+    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
+    defer alloc.free(xml);
+    try testing.expect(contains(xml, "<total_count>1</total_count>"));
+    try testing.expect(!contains(xml, "<task>"));
+    try testing.expect(contains(xml, "<has_more>false</has_more>"));
+}
+

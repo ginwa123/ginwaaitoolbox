@@ -70,6 +70,8 @@ fn setupDb() !TestCtx {
         \\    tool_name TEXT,
         \\    finish_reason TEXT,
         \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
         \\    diffview_before TEXT,
         \\    diffview_after TEXT,
         \\    image_url TEXT,

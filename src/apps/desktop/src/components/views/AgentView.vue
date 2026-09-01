@@ -19,13 +19,20 @@ import * as api from '../../api'
 import { useAgentToolsStore } from '../../stores/agentTools'
 import type { WorkspaceItem } from '../../stores/workspaces'
 
+/** Agnostic row types — AgentView is reused for both `item_type='agent'` and kanban boards.
+ *  Agent rows use `agent_id`, kanban rows use `kanban_id`; all other fields are identical.
+ *  The component only reads `id`, `label`, `file_path`, `content` (knowledge) and
+ *  `id`, `title`, `content` (system prompts), so a union is safe. */
+export type AgnosticKnowledgeRow = api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow
+export type AgnosticSystemPromptRow = api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow
+
 interface Props {
   item: WorkspaceItem
   workspaceId: string
   itemId: string
-  knowledge: api.AgentKnowledgeRow[]
+  knowledge: AgnosticKnowledgeRow[]
   tools: string[]
-  systemPrompts?: api.AgentSystemPromptRow[]
+  systemPrompts?: AgnosticSystemPromptRow[]
 }
 
 const props = withDefaults(defineProps<Props>(), { systemPrompts: () => [] })
@@ -33,12 +40,12 @@ const props = withDefaults(defineProps<Props>(), { systemPrompts: () => [] })
 const emit = defineEmits<{
   addKnowledge: []
   removeKnowledge: [knowledgeId: string]
-  editKnowledge: [row: api.AgentKnowledgeRow]
+  editKnowledge: [row: AgnosticKnowledgeRow]
   toggleTool: [toolName: string, enabled: boolean]
   toggleToolsBulk: [toolNames: string[], enabled: boolean]
   selectTask: [taskId: string]
   addSystemPrompt: []
-  editSystemPrompt: [row: api.AgentSystemPromptRow]
+  editSystemPrompt: [row: AgnosticSystemPromptRow]
   removeSystemPrompt: [promptId: string]
 }>()
 
@@ -651,7 +658,7 @@ function handleClearAllVisible() {
       </section>
 
       <div class="text-xs" style="color: var(--semantic-text-dim);">
-        Start a conversation with this Agent from the sidebar.
+        Start a conversation from the sidebar.
         The system prompt is injected first, then knowledge files are loaded into context,
         and only the tools you've enabled will be available.
       </div>

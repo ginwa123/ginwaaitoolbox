@@ -1118,10 +1118,21 @@ export interface Chat {
   session_name?: string
   status?: string
   selected_profile_model?: string
+  /// Backend wall-clock timestamp of the last `sessions.UPDATE` —
+  /// bumped by everything (agent loop, profile change, error, etc).
+  /// `ChatsList.vue` renders this as the time pill's fallback when
+  /// `last_human_touched_at` is empty (pre-Migration-082 legacy rows).
+  /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+  updated_at?: string
   /// Migration 063 — "0" / "1" opt-in for unattended mode. Always
   /// present in the GET /api/sessions response (ChatsList uses this
   /// to render the `🔁 unattended` badge).
   is_auto_retry_until_stop?: string
+  /// Migration 082 — unix-ms string of the last time a HUMAN interacted
+  /// with this session. Empty string (NOT undefined) for legacy rows so
+  /// the ChatsList time pill can fall back to `updated_at` predictably.
+  /// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+  last_human_touched_at?: string
 }
 
 export interface Message {
@@ -1472,6 +1483,10 @@ export async function getChats(
           // ChatsList badge condition `=== '1'` is a defined check.
           // Matches the SQL COALESCE default in llm_history.zig.
           is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
+          // Migration 082 — forward the chat-side stamp. Empty string
+          // when absent so the ChatsList `?? updated_at` fallback is
+          // a defined check (NOT undefined).
+          last_human_touched_at: session.last_human_touched_at || '',
         }
       })
     }
@@ -3639,6 +3654,62 @@ export async function deleteProfile(name: string): Promise<ProfileDeleteResponse
     `/config/nalar/profiles/${encodeURIComponent(name)}`,
     { method: 'DELETE' },
   )
+}
+
+// ─── MCP server test probe ──────────────────────────────────────────────────
+// Wire shape mirrors the backend `POST /api/mcp/test` handler in
+// src/ai_workflow/tui/http_handlers/mcp_test.zig. The probe fires a
+// `tools/list` request against the candidate config without persisting
+// anything — used by the "Test" button in McpServerModal so the user
+// can verify command / args / env / cwd (or URL + headers) actually
+// work before clicking Save.
+//
+// Success: `{ ok: true, transport: 'stdio' | 'http', tools: McpToolPreview[] }`
+// Failure: `{ ok: false, error: <message>, details: <error-name> }`
+// Always HTTP 200 — failure is carried in the `ok` field, not the status.
+export interface McpToolPreview {
+  name: string
+  description: string
+}
+export type McpTestResult =
+  | { ok: true; transport: 'http' | 'stdio'; tools: McpToolPreview[] }
+  | { ok: false; error: string; details?: string }
+
+export async function testMcpServer(body: {
+  transport: 'http' | 'stdio'
+  command?: string
+  args?: string[]
+  env?: string[]
+  cwd?: string
+  url?: string
+  headers?: Record<string, string>
+}): Promise<McpTestResult> {
+  // We deliberately DON'T use the shared `apiFetch` wrapper here
+  // because (a) the endpoint always returns HTTP 200 with a payload
+  // that may carry `{ ok: false, ... }`, and (b) we want the modal's
+  // inline result panel to render the error message rather than
+  // firing a toast notification. Direct fetch + manual JSON parse
+  // gives us that without bypassing the API base constant.
+  const res = await fetch(`${API_BASE}/mcp/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text().catch(() => '')
+  let parsed: unknown = null
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : null
+  } catch {
+    // Non-JSON response — fall through to the generic error shape.
+  }
+  if (parsed && typeof parsed === 'object') {
+    return parsed as McpTestResult
+  }
+  return {
+    ok: false,
+    error: `Unexpected response (HTTP ${res.status})`,
+    details: text.slice(0, 200),
+  }
 }
 
 // Git File Diff API

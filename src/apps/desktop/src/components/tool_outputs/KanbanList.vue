@@ -33,7 +33,7 @@
       <kanban><error>...</error></kanban>
 
   Header (always visible):
-    `kanban_list → <N> columns · <M> tasks` on success
+    `kanban_list → <N> columns · <M> tasks` (or `<M>/<total> tasks` when paginated) on success
     `kanban_list → error` on failure
 
   Expanded body (click header to toggle):
@@ -84,6 +84,13 @@ const errorMessage = computed(() => {
 const hintMessage = computed(() => {
   const match = props.content.match(/<hint>([\s\S]*?)<\/hint>/)
   return match?.[1]?.trim() ?? null
+})
+
+const pagination = computed(() => {
+  const total = props.content.match(/<total_count>(\d+)<\/total_count>/)?.[1]
+  const hasMore = props.content.match(/<has_more>(true|false)<\/has_more>/)?.[1]
+  if (total == null) return null
+  return { total: parseInt(total), hasMore: hasMore === 'true' }
 })
 
 const isSuccess = computed(() => errorMessage.value === null)
@@ -158,7 +165,8 @@ const headerLabel = computed(() => {
   const c = columns.value.length
   const t = tasks.value.length
   const cols = `${c} column${c !== 1 ? 's' : ''}`
-  const tk = `${t} task${t !== 1 ? 's' : ''}`
+  const pg = pagination.value
+  const tk = pg && pg.total !== t ? `${t}/${pg.total} task${pg.total !== 1 ? 's' : ''}` : `${t} task${t !== 1 ? 's' : ''}`
   return `${cols} · ${tk}`
 })
 

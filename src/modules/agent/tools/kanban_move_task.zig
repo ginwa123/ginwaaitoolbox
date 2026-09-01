@@ -57,14 +57,23 @@ pub const KanbanMoveTaskInput = struct {
 /// agent's primary signal for WHEN to use this tool — it tells the
 /// LLM to call `kanban_list` first (to find the task_id and
 /// optionally the column id) and explains the name→id fallback.
+pub const kanban_move_task_tool_system_prompt =
+    \\## Kanban Move Task Tool — MANDATORY for kanban tasks
+    \\You are on a kanban board. Moving the card IS part of the job — not optional.
+    \\- **START (MANDATORY, FIRST CALL):** Before any other work, move `todo` → `in progress` (second column).
+    \\- **COMPLETE (MANDATORY, LAST CALL):** Before your final reply, move to `done` (last column). Skipping this = task failure.
+    \\- Pass `workspace_id` + `item_id` from `## Workspace Context` and `task_id` = your `session_id`. Use `target_column_id` from `## Kanban Status Tracking — MANDATORY` (no need for `kanban_list`).
+    \\
+;
+
 pub const kanban_move_task_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "kanban_move_task",
         .description =
-            \\Move a task to a different column (and/or position) on a kanban board. Use this when the user says "move the auth task to done", "put X in review", or any other instruction to relocate a task.
+            \\MANDATORY for kanban tasks: Move a task to a different column/position on a kanban board. You MUST call this at START (todo → in progress, first tool call) and at COMPLETE (→ done, last tool call before final reply) — failure to do so is a task failure. Also use when the user says "move the auth task to done" or "put X in review".
             \\
-            \\Workflow: (1) call kanban_list first to discover the task id and the target column's id, (2) call kanban_move_task with those ids. If you only have a human-readable column name (no id), pass `target_column_name` instead of `target_column_id` — the tool resolves the name against the board's columns via a case-insensitive trimmed match.
+            \\Workflow: All `target_column_id` values are already in `## Kanban Status Tracking — MANDATORY` — call `kanban_move_task` directly in ONE call (no need for `kanban_list` first). If you only have a human-readable column name (no id), pass `target_column_name` instead of `target_column_id` — the tool resolves the name against the board's columns via a case-insensitive trimmed match. `kanban_list` is only needed if you want to discover other tasks on the board.
             \\
             \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, ...)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name. The task_id comes from kanban_list's `<id>` field, not the task name.
             \\
@@ -106,6 +115,7 @@ pub const kanban_move_task_tool = AgentTool{
             },
             .required = &.{ "workspace_id", "item_id", "task_id" },
         },
+        .system_prompt = kanban_move_task_tool_system_prompt,
     },
 };
 

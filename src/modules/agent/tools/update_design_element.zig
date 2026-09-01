@@ -73,6 +73,14 @@ pub const UpdateElementInput = struct {
 /// The description emphasizes that ALL fields except `element_id`
 /// are optional, and that `set_design_page` is the way to discover
 /// element ids (no separate list tool exists).
+pub const update_design_element_tool_system_prompt =
+    \\## Update Design Element Tool — Behavior
+    \\Use `update_element` to partially update an existing design element.
+    \\- Only the fields you provide change; others stay. Use for moving, resizing, or restyling.
+    \\- Discover `element_id` via `set_design_page` or `get_design_context`.
+    \\
+;
+
 pub const update_design_element_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -183,6 +191,7 @@ pub const update_design_element_tool = AgentTool{
             },
             .required = &.{"element_id"},
         },
+        .system_prompt = update_design_element_tool_system_prompt,
     },
 };
 

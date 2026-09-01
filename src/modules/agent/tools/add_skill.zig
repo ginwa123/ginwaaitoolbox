@@ -22,6 +22,14 @@ pub const AddSkillInput = struct {
 };
 
 /// Tool definition for add_skill
+pub const add_skill_tool_system_prompt =
+    \\## Add Skill Tool — Behavior
+    \\Use `add_skill` to create a new reusable skill file.
+    \\- Provide `name`, `description`, and markdown `content`. Use to capture a proven workflow for future sessions.
+    \\- Check for existing skill with `list_skills` first to avoid duplicates.
+    \\
+;
+
 pub const add_skill_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -53,6 +61,7 @@ pub const add_skill_tool = AgentTool{
             },
             .required = &.{ "name", "description", "content" },
         },
+        .system_prompt = add_skill_tool_system_prompt,
     },
 };
 

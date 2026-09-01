@@ -363,6 +363,13 @@ pub fn lsp_workspace_symbol_to_string(allocator: std.mem.Allocator, result: LspW
     return try output.toOwnedSlice(allocator);
 }
 
+pub const lsp_workspace_symbol_tool_system_prompt =
+    \\## LSP Workspace Symbol Tool — Behavior
+    \\Use `lsp_workspace_symbol` to search workspace symbols via LSP (fuzzy).
+    \\- Provide `lsp`, `project_root`, `query`. Use to find a symbol by name without knowing the file.
+    \\
+;
+
 pub const lsp_workspace_symbol_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -398,6 +405,7 @@ pub const lsp_workspace_symbol_tool = AgentTool{
             },
             .required = &.{ "lsp", "root_dir", "query" },
         },
+        .system_prompt = lsp_workspace_symbol_tool_system_prompt,
     },
 };
 

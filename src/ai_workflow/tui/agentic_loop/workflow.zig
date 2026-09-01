@@ -561,7 +561,50 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const initial_config = nalarcore.getLlmConfig(di.di);
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (build_msg_prompt.buildMCPToolsRun(parent_allocator, initial_config.mcpServers() orelse .null) catch |err| blk: {
+    const mcp_tools_fetched = (blk: {
+        // Wire `isWorkerCancelled` through to the MCP stdio recv
+        // callback so the Stop button aborts a hung fetch within
+        // one syscall. We package the (db, session_id) pair into a
+        // small heap-allocated context + a static adapter fn;
+        // captured by value, intentionally leaked for the
+        // workflow-run lifetime. The per-request arena cleanup rule
+        // doesn't apply here — `parent_allocator` lives for the
+        // whole run, NOT a single request, so the leak is bounded
+        // by run count (O(1) per workflow run).
+        const McpCancelCtx = struct {
+            db: *sqlite.SqliteBackend,
+            session_id: []const u8,
+        };
+        const mcp_cancel_thunk = struct {
+            threadlocal var state: ?McpCancelCtx = null;
+
+            fn call() bool {
+                const s = state orelse return false;
+                return isWorkerCancelled(IsWorkerCancelledInput{
+                    .allocator = std.heap.page_allocator,
+                    .db = s.db,
+                    .session_id = s.session_id,
+                });
+            }
+        };
+
+        // Alloc the captured-state box on `parent_allocator` (lives
+        // for the run) so the context survives across the loop
+        // body's many recv calls. On OOM (extremely unlikely — the
+        // arena is unbounded), fall back to a no-cancel fetch; the
+        // 30s deadline still saves us from an infinite hang.
+        const box = parent_allocator.create(McpCancelCtx) catch null;
+        if (box) |b| {
+            b.* = .{ .db = db, .session_id = copy_session_id };
+            mcp_cancel_thunk.state = b.*;
+        }
+        defer mcp_cancel_thunk.state = null;
+        break :blk build_msg_prompt.buildMCPToolsRun(
+            parent_allocator,
+            initial_config.mcpServers() orelse .null,
+            if (box) |_| &mcp_cancel_thunk.call else null,
+        );
+    } catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     }) orelse &[_]agent.AgentTool{};
@@ -1161,6 +1204,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     .model = eff.model,
                     .response_content = res_dynamic_agent.content orelse "",
                     .reasoning_content = res_dynamic_agent.reasoning_content,
+                    .reasoning_id = res_dynamic_agent.reasoning_id,
+                    .reasoning_encrypted_content = res_dynamic_agent.reasoning_encrypted_content,
                     .role = agent.Role.assistant.to_str(),
                     .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else "stop",
                     .tool_calls_json = "",
@@ -1490,6 +1535,25 @@ fn saveRetryAttemptMessage(
             .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
         },
     });
+
+    // NEW (plan 2026-08-29-chat-sidebar-last-human-touched, Task 5):
+    // "Also when error too" — bump the session's last_human_touched_at
+    // whenever the workflow emits an error diagnostic (retry-catch /
+    // unexpected finish_reason / TooManyRetries bail). The user must
+    // intervene after an error, so the sidebar time pill should
+    // reflect the most recent human-implicating event.
+    //
+    // Best-effort: log + continue on transient DB blip so a stamp
+    // failure doesn't shadow the actual error emit. The diagnostic
+    // INSERT above already succeeded; failing here would be noise.
+    llm_history.updateSessionLastHumanTouchedAt(
+        allocator, db, session_id, null,
+    ) catch |stamp_err| {
+        logger.warnFmt(
+            "saveRetryAttemptMessage: stamp session last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(stamp_err)},
+        );
+    };
 }
 
 fn callDynamicAgentNew(
@@ -1601,6 +1665,8 @@ fn callDynamicAgentNew(
         .tool_calls = tool_calls_for_agent,
         .finish_reason = finish_reason_for_agent,
         .reasoning_content = res_dynamic_agent.reasoning_content,
+        .reasoning_id = res_dynamic_agent.reasoning_id,
+        .reasoning_encrypted_content = res_dynamic_agent.reasoning_encrypted_content,
         .usage = usage_for_agent,
     };
 }
@@ -2319,5 +2385,43 @@ test "all three diagnostic sites set is_error=true (frontend AgentErrorCard rout
     // includes the test's own grep literals (3 indexOf calls + 1
     // expectEqual literal = 4 test-side), so expect 7 total.
     try testing.expectEqual(@as(usize, 7), std.mem.count(u8, source, ".is_error = true"));
+}
+
+// NEW (plan 2026-08-29-chat-sidebar-last-human-touched, Task 5):
+// The "also when error too" semantic requires every retry/bail
+// diagnostic to bump `sessions.last_human_touched_at_nano` so the
+// chat sidebar's time pill reflects that the user must intervene.
+// `saveRetryAttemptMessage` is the single funnel for retry-catch
+// (line 1056) + unexpected finish_reason (line 1258) errors; the
+// soft/hard bails have their own diagnostic blocks but they ALSO
+// delegate to the retry helper (via the same `insertLLMHistories`
+// pattern) - the test below locks in that the helper itself does
+// the stamp so all 3 sites inherit the bump.
+//
+// Grep needle is built via string concat to avoid self-match (the
+// same trap the session_create + session_update static-contract
+// tests hit before being masked). See plan Task 5 for the design.
+test "saveRetryAttemptMessage stamps sessions.last_human_touched_at (Task 5 invariant)" {
+    const source = try workflowReadSelfSource(testing.allocator);
+    defer testing.allocator.free(source);
+
+    // Confirm the helper is called inside saveRetryAttemptMessage's
+    // body (between the function header and the next sibling `fn`).
+    const fn_start = std.mem.indexOf(u8, source, "fn saveRetryAttemptMessage(") orelse return error.SaveRetryFnMissing;
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start, "\nfn ") orelse return error.SaveRetryFnEndMissing;
+    const fn_body = source[fn_start..fn_end];
+
+    const needle = "updateSessi" ++ "onLastHumanTouchedAt";
+    if (std.mem.indexOf(u8, fn_body, needle) == null) {
+        std.debug.print(
+            "\n!! saveRetryAttemptMessage does NOT call the chat-side stamp helper !!\n"
+            ++ "   The also-when-error semantic requires every retry/bail\n"
+            ++ "   diagnostic to bump sessions.last_human_touched_at_nano. Adding the\n"
+            ++ "   stamp here covers all 3 call sites (retry-catch + finish_reason +\n"
+            ++ "   bail) via the existing funnel. Plan Task 5.\n",
+            .{},
+        );
+        return error.RetryHelperStampMissing;
+    }
 }
 
