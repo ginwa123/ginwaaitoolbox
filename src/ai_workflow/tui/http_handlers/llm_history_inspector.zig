@@ -262,11 +262,14 @@ pub fn useCaseWithIo(
         allocator.free(histories);
     }
 
-    // 4. Build AgentMessage[] via buildMessages (same as real agent — full system prompt)
-    // Uses transformLLMHistoryToAgentMessage internally, so the inspector's chain
-    // is byte-identical to what the LLM sees. Falls back to buildAgentMessages
-    // (which also uses transformLLMHistoryToAgentMessage) if buildMessages fails
-    // (e.g. missing singleton in tests).
+    // 4. Build AgentMessage[] via buildMessages — the EXACT same function
+    // the real workflow uses (prompts_build_messages_for_agent_prompt.buildMessages).
+    // This assembles the full system prompt from knowledge/skills/workspace/plan
+    // and transforms each LLMHistory via transformLLMHistoryToAgentMessage,
+    // so the curl preview is byte-identical to what the LLM actually sees.
+    // In production (singleton set) this is the real path. In tests (no singleton)
+    // it falls back to buildAgentMessages which also uses transformLLMHistoryToAgentMessage
+    // but with a synthetic system prompt — still byte-identical for the history part.
     const agent_messages = blk: {
         const full = buildFullAgentMessages(allocator, io, db, session_id, histories) catch try buildAgentMessages(allocator, histories);
         break :blk full;
@@ -302,9 +305,19 @@ pub fn useCaseWithIo(
     }
     const chain = try chain_list.toOwnedSlice(allocator);
 
-    // 6. For EACH of 3 url_styles, construct ephemeral Agent and call SAME builder methods
+    // 6. Fetch real tools (same as workflow) — system tools + filtered per session
+    // This ensures curl includes the exact tools the LLM sees (role system + tools)
+    const tools_all = nalarcore.ai_mod.tools_equipped.equips(allocator);
+    defer allocator.free(tools_all);
+    const prompts_build_mod = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+    const tools_filtered = prompts_build_mod.filteringTools(allocator, db, session_id, tools_all) catch tools_all;
+    defer if (tools_filtered.ptr != tools_all.ptr) allocator.free(tools_filtered);
+    const tools_for_curl = tools_filtered;
+
+    // 6b. For EACH of 3 url_styles, construct ephemeral Agent and call SAME builder methods
     // CRITICAL: Reuse Agent.zig builders verbatim — do NOT duplicate serialization.
-    const tools_empty: []const agent.AgentTool = &.{};
+    // agent_messages already includes the system role (from buildMessages), and
+    // tools_for_curl includes the exact tools the LLM sees.
 
     // Anthropic
     var agent_anthropic = Agent.init(allocator, io);
@@ -319,7 +332,7 @@ pub fn useCaseWithIo(
 
     const body_anthropic = try agent_anthropic.buildJsonAnthropicRequest(.{
         .messages = agent_messages,
-        .tools = tools_empty,
+        .tools = tools_for_curl,
         .temperature = temperature,
         .max_tokens = max_tokens,
     }, false);
@@ -336,7 +349,7 @@ pub fn useCaseWithIo(
 
     const body_openai = try agent_openai.buildJsonOpenAIRequest(.{
         .messages = agent_messages,
-        .tools = tools_empty,
+        .tools = tools_for_curl,
         .temperature = temperature,
         .max_tokens = max_tokens,
     }, false);
@@ -353,7 +366,7 @@ pub fn useCaseWithIo(
 
     const body_responses = try agent_responses.buildJsonResponsesRequest(.{
         .messages = agent_messages,
-        .tools = tools_empty,
+        .tools = tools_for_curl,
         .temperature = temperature,
         .max_tokens = max_tokens,
     }, false);
