@@ -433,6 +433,8 @@ pub fn handle_tool(
             .cwd = cwd,
             .content = res_dynamic_agent.content,
             .reasoning_content = res_dynamic_agent.reasoning_content,
+            .reasoning_id = res_dynamic_agent.reasoning_id,
+            .reasoning_encrypted_content = res_dynamic_agent.reasoning_encrypted_content,
             .role = agent.Role.assistant.to_str(),
             .finish_reason = if (res_dynamic_agent.finish_reason) |fr| fr.to_str() else null,
             .tool_calls = tc,

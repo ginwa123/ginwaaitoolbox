@@ -505,6 +505,8 @@ pub const SessionMessage = struct {
     tool_name: []const u8,
     finish_reason: []const u8,
     reasoning_content: []const u8,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
@@ -521,6 +523,8 @@ pub const SessionMessage = struct {
         allocator.free(self.tool_name);
         allocator.free(self.finish_reason);
         allocator.free(self.reasoning_content);
+        if (self.reasoning_id) |rid| allocator.free(rid);
+        if (self.reasoning_encrypted_content) |rec| allocator.free(rec);
         if (self.diffview_before) |dv| allocator.free(dv);
         if (self.diffview_after) |da| allocator.free(da);
         if (self.image_urls) |iums| {
@@ -629,7 +633,7 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
             \\       COALESCE(s.selected_profile_model, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
@@ -648,7 +652,7 @@ pub fn getSessionMessagesSorted(
         sql = try std.fmt.allocPrint(allocator,
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
-            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''),
+            \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
             \\       COALESCE(s.selected_profile_model, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
@@ -680,9 +684,10 @@ pub fn getSessionMessagesSorted(
         // first row (same for all rows since we filter by session_id).
         // Column indices match the SELECT list above: cwd at 9,
         // git_worktree_cwd at 10, reasoning_content at 11,
-        // diffview_before at 12, diffview_after at 13, image_url at 14,
-        // tool_call_id at 15, tool_calls_json at 16,
-        // selected_profile_model at 17.
+        // reasoning_id at 12, reasoning_encrypted_content at 13,
+        // diffview_before at 14, diffview_after at 15, image_url at 16,
+        // tool_call_id at 17, tool_calls_json at 18,
+        // selected_profile_model at 19.
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
@@ -696,7 +701,7 @@ pub fn getSessionMessagesSorted(
             }
         }
         if (selected_profile_model == null) {
-            const spm_val = row.values[17];
+            const spm_val = row.values[19];
             if (spm_val.len > 0) {
                 selected_profile_model = try allocator.dupe(u8, spm_val);
             }
@@ -713,15 +718,17 @@ pub fn getSessionMessagesSorted(
             .tool_name = try allocator.dupe(u8, row.values[7]),
             .finish_reason = try allocator.dupe(u8, row.values[8]),
             .reasoning_content = try allocator.dupe(u8, row.values[11]),
-            .diffview_before = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
-            .diffview_after = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
-            .image_urls = if (row.values[14].len > 0) blk: {
+            .reasoning_id = if (row.values[12].len > 0) try allocator.dupe(u8, row.values[12]) else null,
+            .reasoning_encrypted_content = if (row.values[13].len > 0) try allocator.dupe(u8, row.values[13]) else null,
+            .diffview_before = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
+            .diffview_after = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
+            .image_urls = if (row.values[16].len > 0) blk: {
                 var urls = std.ArrayList([]const u8).empty;
                 errdefer {
                     for (urls.items) |u| allocator.free(u);
                     urls.deinit(allocator);
                 }
-                var iter = std.mem.splitScalar(u8, row.values[14], '|');
+                var iter = std.mem.splitScalar(u8, row.values[16], '|');
                 while (iter.next()) |url| {
                     if (url.len > 0) {
                         try urls.append(allocator, try allocator.dupe(u8, url));
@@ -729,8 +736,8 @@ pub fn getSessionMessagesSorted(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[15].len > 0) try allocator.dupe(u8, row.values[15]) else null,
-            .tool_calls_json = if (row.values[16].len > 0) try allocator.dupe(u8, row.values[16]) else null,
+            .tool_call_id = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
+            .tool_calls_json = if (row.values[18].len > 0) try allocator.dupe(u8, row.values[18]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -1185,6 +1192,8 @@ pub const SaveMessageInput = struct {
     cwd: []const u8,
     content: ?[]const u8,
     reasoning_content: ?[]const u8,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     role: ?[]const u8,
     finish_reason: ?[]const u8,
     tool_calls: ?[]agent.ToolCall,
@@ -1272,6 +1281,8 @@ pub fn saveMessage(
         \\    tool_calls_json,
         \\    tool_call_id,
         \\    reasoning_content,
+        \\    reasoning_id,
+        \\    reasoning_encrypted_content,
         \\    is_feed_to_llm,
         \\    agent,
         \\    loop_index,
@@ -1295,7 +1306,7 @@ pub fn saveMessage(
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -1313,6 +1324,10 @@ pub fn saveMessage(
     defer allocator.free(copy_tool_calls);
     const copy_reasoning = try allocator.dupe(u8, reasoningStr);
     defer allocator.free(copy_reasoning);
+    const copy_reasoning_id = try allocator.dupe(u8, input.reasoning_id orelse "");
+    defer allocator.free(copy_reasoning_id);
+    const copy_reasoning_encrypted_content = try allocator.dupe(u8, input.reasoning_encrypted_content orelse "");
+    defer allocator.free(copy_reasoning_encrypted_content);
     const copy_agent = try allocator.dupe(u8, agentStr);
     defer allocator.free(copy_agent);
     const loop_index_str = try std.fmt.allocPrint(allocator, "{}", .{input.loop_index});
@@ -1363,7 +1378,7 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -1390,6 +1405,8 @@ pub fn getMessages(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -1417,10 +1434,10 @@ pub fn getMessages(
     defer rows.deinit();
 
     while (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1431,18 +1448,20 @@ pub fn getMessages(
             .role = try allocator.dupe(u8, row.values[6]),
             .tools = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -1459,7 +1478,7 @@ pub fn getMessages(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -2219,6 +2238,8 @@ pub fn getLatestMessage(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -2247,10 +2268,10 @@ pub fn getLatestMessage(
     defer rows.deinit();
 
     if (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -2261,18 +2282,20 @@ pub fn getLatestMessage(
             .role = try allocator.dupe(u8, row.values[6]),
             .tools = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -2289,7 +2312,7 @@ pub fn getLatestMessage(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         row.deinit(allocator);
         return history;
@@ -2324,6 +2347,8 @@ pub fn getMessageById(
         \\    COALESCE(h.role, 'assistant'),
         \\    COALESCE(h.tool_calls_json, ''),
         \\    COALESCE(h.reasoning_content, ''),
+        \\    COALESCE(h.reasoning_id, ''),
+        \\    COALESCE(h.reasoning_encrypted_content, ''),
         \\    COALESCE(h.agent, 'Agent'),
         \\    COALESCE(s.name, ''),
         \\    COALESCE(h.loop_index, 0),
@@ -2350,10 +2375,10 @@ pub fn getMessageById(
     defer rows.deinit();
 
     if (try rows.next()) |row| {
-        const parent_session_id_str = row.values[13];
-        const diffview_before_str = row.values[21];
-        const diffview_after_str = row.values[22];
-        const image_url_str = row.values[23];
+        const parent_session_id_str = row.values[15];
+        const diffview_before_str = row.values[23];
+        const diffview_after_str = row.values[24];
+        const image_url_str = row.values[25];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -2364,18 +2389,20 @@ pub fn getMessageById(
             .role = try allocator.dupe(u8, row.values[6]),
             .tools = try allocator.dupe(u8, row.values[7]),
             .reasoning_content = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
-            .agent = try allocator.dupe(u8, row.values[9]),
-            .session_name = try allocator.dupe(u8, row.values[10]),
-            .loop_index = std.fmt.parseInt(u32, row.values[11], 10) catch 0,
-            .tool_name = try allocator.dupe(u8, row.values[12]),
+            .reasoning_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
+            .reasoning_encrypted_content = if (row.values[10].len > 0) try allocator.dupe(u8, row.values[10]) else null,
+            .agent = try allocator.dupe(u8, row.values[11]),
+            .session_name = try allocator.dupe(u8, row.values[12]),
+            .loop_index = std.fmt.parseInt(u32, row.values[13], 10) catch 0,
+            .tool_name = try allocator.dupe(u8, row.values[14]),
             .parent_session_id = if (parent_session_id_str.len > 0) try allocator.dupe(u8, parent_session_id_str) else null,
-            .temperature = std.fmt.parseFloat(f32, row.values[14]) catch 0.2,
-            .is_thinking = std.mem.eql(u8, row.values[15], "1"),
-            .prompt_tokens = std.fmt.parseInt(u32, row.values[16], 10) catch 0,
-            .completion_tokens = std.fmt.parseInt(u32, row.values[17], 10) catch 0,
-            .total_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
-            .is_input = parseRowBool(row.values[19]),
-            .is_output = parseRowBool(row.values[20]),
+            .temperature = std.fmt.parseFloat(f32, row.values[16]) catch 0.2,
+            .is_thinking = std.mem.eql(u8, row.values[17], "1"),
+            .prompt_tokens = std.fmt.parseInt(u32, row.values[18], 10) catch 0,
+            .completion_tokens = std.fmt.parseInt(u32, row.values[19], 10) catch 0,
+            .total_tokens = std.fmt.parseInt(u32, row.values[20], 10) catch 0,
+            .is_input = parseRowBool(row.values[21]),
+            .is_output = parseRowBool(row.values[22]),
             .diffview_before = if (diffview_before_str.len > 0) try allocator.dupe(u8, diffview_before_str) else null,
             .diffview_after = if (diffview_after_str.len > 0) try allocator.dupe(u8, diffview_after_str) else null,
             .image_urls = if (image_url_str.len > 0) blk: {
@@ -2392,7 +2419,7 @@ pub fn getMessageById(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[24].len > 0) try allocator.dupe(u8, row.values[24]) else null,
+            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
         };
         row.deinit(allocator);
         return history;
@@ -9059,6 +9086,8 @@ test "saveMessage: writes a correct-year (2026-ish) created_iso from current tim
         \\    tool_calls_json TEXT,
         \\    tool_call_id TEXT,
         \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
         \\    is_feed_to_llm INTEGER DEFAULT 1,
         \\    agent TEXT,
         \\    loop_index INTEGER,
@@ -9144,6 +9173,8 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
         \\    tool_calls_json TEXT,
         \\    tool_call_id TEXT,
         \\    reasoning_content TEXT,
+        \\    reasoning_id TEXT,
+        \\    reasoning_encrypted_content TEXT,
         \\    is_feed_to_llm INTEGER DEFAULT 1,
         \\    agent TEXT,
         \\    loop_index INTEGER,

@@ -11,6 +11,8 @@ pub const LLMHistory = struct {
     finish_reason: []const u8,
     role: []const u8,
     reasoning_content: ?[]const u8 = null,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     agent: []const u8 = "Agent",
     session_name: []const u8 = "",
     loop_index: u32 = 0,
@@ -49,6 +51,8 @@ pub const LLMHistory = struct {
         allocator.free(self.role);
         allocator.free(self.tool_calls_json);
         if (self.reasoning_content) |rc| allocator.free(rc);
+        if (self.reasoning_id) |rid| allocator.free(rid);
+        if (self.reasoning_encrypted_content) |rec| allocator.free(rec);
         allocator.free(self.agent);
         allocator.free(self.session_name);
         allocator.free(self.tool_name);

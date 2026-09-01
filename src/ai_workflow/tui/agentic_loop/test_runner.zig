@@ -52,6 +52,7 @@ test {
     _ = @import("workflow_commpact_message.zig");
     _ = @import("workflow_compact_message.zig"); // 2026-08-14-consolidate-compaction-message — buildCompactMessagePrompt (8) + compaction_context helpers (22) = 30 inline tests
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
+    _ = @import("prompts_make_kanban_context.zig"); // kanban prompt — renders all columns at tail (no cap) so kanban_move_task is 1-call; in-memory DB tests
     // impl + tests are in the same .zig file for Agent Mode helpers.
     // No separate _test.zig imports needed here — the test blocks
     // inside agent_tools_allowed.zig and prompts_make_agent_knowledge.zig

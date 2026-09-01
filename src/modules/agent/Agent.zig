@@ -595,8 +595,22 @@ const ResponsesInputContent = struct {
     }
 };
 
+const ResponsesReasoningSummary = struct {
+    type: []const u8 = "summary_text",
+    text: []const u8,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.type);
+        try stringify.objectField("text");
+        try stringify.write(self.text);
+        try stringify.endObject();
+    }
+};
+
 const ResponsesInputItem = struct {
-    /// "message" | "function_call" | "function_call_output"
+    /// "message" | "function_call" | "function_call_output" | "reasoning"
     item_type: []const u8,
     role: ?[]const u8 = null,
     content: ?[]const ResponsesInputContent = null,
@@ -604,12 +618,32 @@ const ResponsesInputItem = struct {
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
     output: ?[]const u8 = null,
+    id: ?[]const u8 = null,
+    summary: ?[]const ResponsesReasoningSummary = null,
+    encrypted_content: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
         try stringify.objectField("type");
         try stringify.write(self.item_type);
-        if (std.mem.eql(u8, self.item_type, "message")) {
+        if (std.mem.eql(u8, self.item_type, "reasoning")) {
+            if (self.id) |rid| {
+                if (rid.len > 0) {
+                    try stringify.objectField("id");
+                    try stringify.write(rid);
+                }
+            }
+            if (self.summary) |s| {
+                try stringify.objectField("summary");
+                try stringify.write(s);
+            }
+            if (self.encrypted_content) |ec| {
+                if (ec.len > 0) {
+                    try stringify.objectField("encrypted_content");
+                    try stringify.write(ec);
+                }
+            }
+        } else if (std.mem.eql(u8, self.item_type, "message")) {
             if (self.role) |r| {
                 try stringify.objectField("role");
                 try stringify.write(r);
@@ -821,6 +855,8 @@ pub const AgentMessage = struct {
     tool_calls: ?[]ToolCall = null,
     tool_call_id: ?[]const u8 = null,
     reasoning_content: ?[]const u8 = null,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
 
     pub fn deinit(self: *const AgentMessage, allocator: std.mem.Allocator) void {
         if (self.id) |i| allocator.free(i);
@@ -837,6 +873,8 @@ pub const AgentMessage = struct {
         }
         if (self.tool_call_id) |id| allocator.free(id);
         if (self.reasoning_content) |rc| allocator.free(rc);
+        if (self.reasoning_id) |rid| allocator.free(rid);
+        if (self.reasoning_encrypted_content) |rec| allocator.free(rec);
         if (self.tool_calls) |tc| {
             for (tc) |*tool_call| {
                 allocator.free(tool_call.id);
@@ -874,6 +912,8 @@ pub const ToolCallDelta = struct {
 pub const StreamChunk = struct {
     content: ?[]const u8 = null,
     reasoning_content: ?[]const u8 = null,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     tool_calls_delta: ?[]const ToolCallDelta = null,
     finish_reason: ?FinishReason = null,
     usage: ?Usage = null,
@@ -886,6 +926,8 @@ pub const StreamingAggregator = struct {
     allocator: std.mem.Allocator,
     content: std.ArrayList(u8),
     reasoning_content: std.ArrayList(u8),
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     finish_reason: ?FinishReason = null,
     usage: Usage = .{},
 
@@ -938,7 +980,16 @@ pub const StreamingAggregator = struct {
             try self.content.appendSlice(self.allocator, c);
         }
         if (chunk.reasoning_content) |rc| {
-            try self.reasoning_content.appendSlice(self.allocator, rc);
+            // Terminal chunks (finish_reason or reasoning_id present) carry
+            // summary[] as fallback — only use if no delta reasoning arrived.
+            const is_terminal = chunk.finish_reason != null or chunk.reasoning_id != null or chunk.reasoning_encrypted_content != null;
+            if (is_terminal) {
+                if (self.reasoning_content.items.len == 0 and rc.len > 0) {
+                    try self.reasoning_content.appendSlice(self.allocator, rc);
+                }
+            } else {
+                try self.reasoning_content.appendSlice(self.allocator, rc);
+            }
         }
 
         if (chunk.tool_calls_delta) |deltas| {
@@ -963,6 +1014,15 @@ pub const StreamingAggregator = struct {
                     try gop.value_ptr.arguments.appendSlice(self.allocator, args);
                 }
             }
+        }
+
+        if (chunk.reasoning_id) |rid| {
+            if (self.reasoning_id) |old| self.allocator.free(old);
+            self.reasoning_id = try self.allocator.dupe(u8, rid);
+        }
+        if (chunk.reasoning_encrypted_content) |rec| {
+            if (self.reasoning_encrypted_content) |old| self.allocator.free(old);
+            self.reasoning_encrypted_content = try self.allocator.dupe(u8, rec);
         }
 
         if (chunk.finish_reason) |fr| {
@@ -1032,12 +1092,23 @@ pub const StreamingAggregator = struct {
             reasoning_copy = try self.allocator.dupe(u8, self.reasoning_content.items);
         }
 
+        var reasoning_id_copy: ?[]const u8 = null;
+        if (self.reasoning_id) |rid| {
+            reasoning_id_copy = try self.allocator.dupe(u8, rid);
+        }
+        var reasoning_enc_copy: ?[]const u8 = null;
+        if (self.reasoning_encrypted_content) |rec| {
+            reasoning_enc_copy = try self.allocator.dupe(u8, rec);
+        }
+
         return .{
             .allocator = self.allocator,
             .content = content_copy,
             .tool_calls = tool_calls_out,
             .finish_reason = self.finish_reason,
             .reasoning_content = reasoning_copy,
+            .reasoning_id = reasoning_id_copy,
+            .reasoning_encrypted_content = reasoning_enc_copy,
             .usage = self.usage,
         };
     }
@@ -1079,11 +1150,15 @@ pub const CallResponse = struct {
     tool_calls: ?[]ToolCall,
     finish_reason: ?FinishReason,
     reasoning_content: ?[]const u8 = null,
+    reasoning_id: ?[]const u8 = null,
+    reasoning_encrypted_content: ?[]const u8 = null,
     usage: Usage = .{},
 
     pub fn deinit(self: *const CallResponse) void {
         if (self.content) |c| self.allocator.free(c);
         if (self.reasoning_content) |rc| self.allocator.free(rc);
+        if (self.reasoning_id) |rid| self.allocator.free(rid);
+        if (self.reasoning_encrypted_content) |rec| self.allocator.free(rec);
         if (self.tool_calls) |tc| {
             for (tc) |*tool_call| {
                 self.allocator.free(tool_call.id);
@@ -1729,36 +1804,35 @@ pub const Agent = struct {
                 }
                 input_count += 1;
             } else if (msg.role == .assistant) {
-                // Preserve both `content` and `reasoning_content` for parity with
-                // `transformLLMHistoryToAgentMessage` (parsing.zig:89) which
-                // populates `AgentMessage.content` and `.reasoning_content`
-                // separately. Responses requires `output_text` for assistant (not
-                // `input_text`) — see runtime error: "content type `input_text`
-                // is not valid on `assistant` messages".
+                // Responses reasoning is a separate top-level `type:"reasoning"`
+                // item, NOT merged into the assistant `type:"message"` content.
+                // See plan docs/superpowers/plans/2026-09-01-fix-openai-response-reasoning-leak-and-persist.md
                 const has_tool_calls = msg.tool_calls != null and msg.tool_calls.?.len > 0;
                 const c = msg.content;
                 const rc = msg.reasoning_content;
                 const has_c = c != null and c.?.len > 0;
                 const has_rc = rc != null and rc.?.len > 0;
-                if (has_c or has_rc) {
-                    const count: usize = @as(usize, @intFromBool(has_c)) + @as(usize, @intFromBool(has_rc));
-                    var contents = try arena_alloc.alloc(ResponsesInputContent, count);
-                    var idx: usize = 0;
-                    if (has_rc) {
-                        contents[idx] = .{ .content_type = "output_text", .text = rc.? };
-                        idx += 1;
-                    }
-                    if (has_c) {
-                        contents[idx] = .{ .content_type = "output_text", .text = c.? };
-                        idx += 1;
-                    }
+                if (has_rc) {
+                    var summary = try arena_alloc.alloc(ResponsesReasoningSummary, 1);
+                    summary[0] = .{ .text = rc.? };
+                    input_items[input_count] = .{
+                        .item_type = "reasoning",
+                        .id = msg.reasoning_id,
+                        .summary = summary,
+                        .encrypted_content = msg.reasoning_encrypted_content,
+                    };
+                    input_count += 1;
+                }
+                if (has_c) {
+                    var contents = try arena_alloc.alloc(ResponsesInputContent, 1);
+                    contents[0] = .{ .content_type = "output_text", .text = c.? };
                     input_items[input_count] = .{
                         .item_type = "message",
                         .role = "assistant",
                         .content = contents,
                     };
                     input_count += 1;
-                } else if (!has_tool_calls) {
+                } else if (!has_rc and !has_tool_calls) {
                     // Empty assistant message without tools — still emit empty message to preserve turn.
                     var contents = try arena_alloc.alloc(ResponsesInputContent, 1);
                     contents[0] = .{ .content_type = "output_text", .text = "" };
@@ -2424,6 +2498,57 @@ pub const Agent = struct {
                 }
             }
 
+            // Capture reasoning metadata from terminal output: id,
+            // encrypted_content, and summary[] fallback for reasoning_content.
+            if (response.object.get("output")) |output_val| {
+                if (output_val == .array) {
+                    var first_reasoning_id: ?[]const u8 = null;
+                    var first_encrypted: ?[]const u8 = null;
+                    var summary_buf: std.ArrayList(u8) = .empty;
+                    var has_summary = false;
+                    for (output_val.array.items) |item| {
+                        if (item != .object) continue;
+                        const item_type = item.object.get("type") orelse continue;
+                        if (item_type != .string) continue;
+                        if (!std.mem.eql(u8, item_type.string, "reasoning")) continue;
+                        if (first_reasoning_id == null) {
+                            if (item.object.get("id")) |id_val| {
+                                if (id_val == .string and id_val.string.len > 0) {
+                                    first_reasoning_id = id_val.string;
+                                }
+                            }
+                        }
+                        if (first_encrypted == null) {
+                            if (item.object.get("encrypted_content")) |enc_val| {
+                                if (enc_val == .string and enc_val.string.len > 0) {
+                                    first_encrypted = enc_val.string;
+                                }
+                            }
+                        }
+                        if (item.object.get("summary")) |summary_val| {
+                            if (summary_val == .array) {
+                                for (summary_val.array.items) |s_item| {
+                                    if (s_item != .object) continue;
+                                    const text_val = s_item.object.get("text") orelse continue;
+                                    if (text_val != .string) continue;
+                                    if (text_val.string.len == 0) continue;
+                                    if (has_summary) {
+                                        summary_buf.appendSlice(arena, "\n") catch continue;
+                                    }
+                                    summary_buf.appendSlice(arena, text_val.string) catch continue;
+                                    has_summary = true;
+                                }
+                            }
+                        }
+                    }
+                    if (first_reasoning_id) |rid| chunk.reasoning_id = rid;
+                    if (first_encrypted) |enc| chunk.reasoning_encrypted_content = enc;
+                    if (has_summary and summary_buf.items.len > 0) {
+                        chunk.reasoning_content = summary_buf.items;
+                    }
+                }
+            }
+
             if (response.object.get("usage")) |usage_val| {
                 if (usage_val == .object) {
                     var usage: Usage = .{};
@@ -2513,13 +2638,12 @@ pub const Agent = struct {
         self.log_fmt(.debug, "[STREAM REQUEST] JSON body ({} bytes): {s}{s}", .{ json_body.len, json_body[0..json_preview_len], json_ellipsis });
 
         // 2. Compose URL: baseUrl + endpoint.
-        const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
-            "/v1/messages"
-        else if (std.mem.eql(u8, self.UrlStyle, "openai-response"))
-            "/responses"
-        else
-            "/chat/completions";
-        const uri_str = std.mem.concat(self.allocator, u8, &.{ self.baseUrl, endpoint }) catch |err| {
+        // Anthropic's correct API path is /v1/messages.
+        // const endpoint = if (std.mem.eql(u8, self.UrlStyle, "anthropic"))
+        //     "/v1/messages"
+        // else
+        //     "/chat/completions";
+        const uri_str = std.mem.concat(self.allocator, u8, &.{self.baseUrl}) catch |err| {
             self.log_error("concat URI", err, null);
             return error.OutOfMemory;
         };
