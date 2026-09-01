@@ -30,13 +30,17 @@ import { useRoute, useRouter } from 'vue-router'
 import KanbanColumnEditor from '../kanban/KanbanColumnEditor.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
-import KanbanToolsPanel from './KanbanToolsPanel.vue'
-import KanbanKnowledgePanel from './KanbanKnowledgePanel.vue'
+import AgentView from './AgentView.vue'
+import AgentKnowledgeDialog from '../dialogs/AgentKnowledgeDialog.vue'
+import AgentKnowledgeDetailDialog from '../dialogs/AgentKnowledgeDetailDialog.vue'
+import AgentSystemPromptDialog from '../dialogs/AgentSystemPromptDialog.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import * as api from '../../api'
+import { buildToggle } from '../../stores/agentToolToggle'
 
-type SettingsMode = 'columns' | 'memories' | 'tools' | 'knowledge'
+type SettingsMode = 'columns' | 'memories' | 'agent'
 
-const VALID_TABS: readonly SettingsMode[] = ['columns', 'memories', 'tools', 'knowledge']
+const VALID_TABS: readonly SettingsMode[] = ['columns', 'memories', 'agent']
 
 const route = useRoute()
 const router = useRouter()
@@ -61,10 +65,13 @@ const emit = defineEmits<{
 // calls `router.replace` to update the query so reload + deep-link both
 // work. Default to 'columns' when the query is missing or unknown —
 // keeps the URL clean (no ?tab=columns in the default state).
+// Legacy `?tab=tools` / `?tab=knowledge` (pre-unified Agent tab) are
+// mapped to `agent` so old bookmarks / shared links still land correctly.
 const settingsMode = computed<SettingsMode>({
   get: () => {
     const raw = route.query.tab
     const s = Array.isArray(raw) ? raw[0] : raw
+    if (s === 'tools' || s === 'knowledge') return 'agent'
     return (VALID_TABS as readonly string[]).includes(s ?? '')
       ? (s as SettingsMode)
       : 'columns'
@@ -134,6 +141,274 @@ const workspaceId = computed<string>(() => {
 
 const notFound = computed(() => !!itemId.value && !item.value)
 const emptyHint = computed(() => !itemId.value)
+
+// ─── Kanban Agent (reuses AgentView) ────────────────────────────────────────
+//
+// Kanban boards reuse the same Knowledge + Tools + System Prompt UI as
+// `item_type='agent'` — AgentView is now agnostic (accepts both
+// AgentKnowledgeRow and AgentKanbanKnowledgeRow via union). The parent
+// (this view) owns the data + API calls; AgentView is a dumb
+// presentational component that emits intents.
+
+const kanbanKnowledge = ref<api.AgentKanbanKnowledgeRow[]>([])
+const kanbanTools = ref<string[]>([])
+const kanbanSystemPrompts = ref<api.AgentKanbanSystemPromptRow[]>([])
+
+async function loadKanbanAgent() {
+  const id = item.value?.id
+  const wsId = workspaceId.value
+  if (!id || !wsId) return
+  try {
+    const data = await api.getAgentKanban(wsId, id)
+    if (data) {
+      kanbanKnowledge.value = data.knowledges
+      kanbanTools.value = data.tools
+      kanbanSystemPrompts.value = data.system_prompts
+    } else {
+      kanbanKnowledge.value = []
+      kanbanTools.value = []
+      kanbanSystemPrompts.value = []
+    }
+  } catch (e) {
+    console.error('[KanbanSettingsView] failed to load kanban agent:', e)
+  }
+}
+
+watch(
+  () => item.value?.id,
+  (id) => {
+    if (id) void loadKanbanAgent()
+  },
+  { immediate: true },
+)
+
+// ─── AgentView dialog state (mirrors AppLayout's agent dialogs) ─────────────
+
+const kanbanKnowledgeDialogOpen = ref(false)
+const kanbanKnowledgeError = ref<string | null>(null)
+const kanbanKnowledgeBusy = ref(false)
+
+const kanbanKnowledgeDetailOpen = ref(false)
+const kanbanKnowledgeDetailRow = ref<api.AgentKanbanKnowledgeRow | null>(null)
+const kanbanKnowledgeDetailBusy = ref(false)
+const kanbanKnowledgeDetailError = ref<string | null>(null)
+
+const kanbanSystemPromptDialogOpen = ref(false)
+const kanbanSystemPromptRow = ref<api.AgentKanbanSystemPromptRow | null>(null)
+const kanbanSystemPromptBusy = ref(false)
+const kanbanSystemPromptError = ref<string | null>(null)
+
+function tryParseErrorBody(body: string): string | null {
+  try {
+    const obj = JSON.parse(body)
+    if (obj && typeof obj === 'object' && typeof obj.error === 'string') return obj.error
+    return null
+  } catch {
+    return null
+  }
+}
+
+function handleKanbanAddKnowledge() {
+  kanbanKnowledgeError.value = null
+  kanbanKnowledgeDialogOpen.value = true
+}
+
+function closeKanbanKnowledgeDialog() {
+  kanbanKnowledgeDialogOpen.value = false
+  kanbanKnowledgeError.value = null
+}
+
+async function handleKanbanKnowledgeCreate(filePath: string, label: string, content: string) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  kanbanKnowledgeBusy.value = true
+  kanbanKnowledgeError.value = null
+  try {
+    const newRow = await api.addAgentKanbanKnowledge(kanbanId, filePath, label, content)
+    kanbanKnowledge.value = [...kanbanKnowledge.value, newRow]
+    closeKanbanKnowledgeDialog()
+  } catch (e) {
+    kanbanKnowledgeError.value = e instanceof Error ? e.message : 'Failed to add knowledge'
+  } finally {
+    kanbanKnowledgeBusy.value = false
+  }
+}
+
+function handleKanbanEditKnowledge(row: api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow) {
+  // AgentView emits AgnosticKnowledgeRow — for kanban we know it's a kanban row
+  kanbanKnowledgeDetailRow.value = row as api.AgentKanbanKnowledgeRow
+  kanbanKnowledgeDetailError.value = null
+  kanbanKnowledgeDetailOpen.value = true
+}
+
+function closeKanbanKnowledgeDetailDialog() {
+  kanbanKnowledgeDetailOpen.value = false
+  kanbanKnowledgeDetailError.value = null
+}
+
+async function handleKanbanKnowledgeSave(
+  knowledgeId: string,
+  updates: { label: string; file_path?: string; content?: string },
+) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  kanbanKnowledgeDetailBusy.value = true
+  kanbanKnowledgeDetailError.value = null
+  try {
+    const updated = await api.updateAgentKanbanKnowledge(kanbanId, knowledgeId, updates)
+    kanbanKnowledge.value = kanbanKnowledge.value.map((k) => (k.id === knowledgeId ? updated : k))
+    closeKanbanKnowledgeDetailDialog()
+  } catch (e) {
+    kanbanKnowledgeDetailError.value =
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to update knowledge'
+  } finally {
+    kanbanKnowledgeDetailBusy.value = false
+  }
+}
+
+async function handleKanbanRemoveKnowledge(knowledgeId: string) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  const previous = kanbanKnowledge.value
+  kanbanKnowledge.value = previous.filter((k) => k.id !== knowledgeId)
+  try {
+    await api.deleteAgentKanbanKnowledge(kanbanId, knowledgeId)
+  } catch (e) {
+    kanbanKnowledge.value = previous
+    console.error('[KanbanSettingsView] failed to remove knowledge:', e)
+  }
+}
+
+function handleKanbanAddSystemPrompt() {
+  kanbanSystemPromptRow.value = null
+  kanbanSystemPromptError.value = null
+  kanbanSystemPromptDialogOpen.value = true
+}
+
+function handleKanbanEditSystemPrompt(row: api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow) {
+  kanbanSystemPromptRow.value = row as api.AgentKanbanSystemPromptRow
+  kanbanSystemPromptError.value = null
+  kanbanSystemPromptDialogOpen.value = true
+}
+
+function closeKanbanSystemPromptDialog() {
+  kanbanSystemPromptDialogOpen.value = false
+  kanbanSystemPromptError.value = null
+}
+
+async function handleKanbanSystemPromptCreate(title: string, content: string) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  kanbanSystemPromptBusy.value = true
+  kanbanSystemPromptError.value = null
+  try {
+    const newRow = await api.addAgentKanbanSystemPrompt(kanbanId, title, content)
+    kanbanSystemPrompts.value = [...kanbanSystemPrompts.value, newRow]
+    closeKanbanSystemPromptDialog()
+  } catch (e) {
+    kanbanSystemPromptError.value =
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to add system prompt'
+  } finally {
+    kanbanSystemPromptBusy.value = false
+  }
+}
+
+async function handleKanbanSystemPromptSave(promptId: string, updates: { title: string; content: string }) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  kanbanSystemPromptBusy.value = true
+  kanbanSystemPromptError.value = null
+  try {
+    const updated = await api.updateAgentKanbanSystemPrompt(kanbanId, promptId, updates)
+    kanbanSystemPrompts.value = kanbanSystemPrompts.value.map((p) => (p.id === promptId ? updated : p))
+    closeKanbanSystemPromptDialog()
+  } catch (e) {
+    kanbanSystemPromptError.value =
+      e instanceof api.ApiError && e.body
+        ? tryParseErrorBody(e.body) ?? e.message
+        : e instanceof Error ? e.message : 'Failed to update system prompt'
+  } finally {
+    kanbanSystemPromptBusy.value = false
+  }
+}
+
+async function handleKanbanRemoveSystemPrompt(promptId: string) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  const previous = kanbanSystemPrompts.value
+  kanbanSystemPrompts.value = previous.filter((p) => p.id !== promptId)
+  try {
+    await api.deleteAgentKanbanSystemPrompt(kanbanId, promptId)
+  } catch (e) {
+    kanbanSystemPrompts.value = previous
+    console.error('[KanbanSettingsView] failed to remove system prompt:', e)
+  }
+}
+
+async function handleKanbanToggleTool(toolName: string, enabled: boolean) {
+  const kanbanId = item.value?.id
+  if (!kanbanId) return
+  const { nextLocal, serverPromise } = buildToggle(kanbanTools.value, toolName, enabled, kanbanId, {
+    enableAgentTool: api.enableAgentKanbanTool,
+    disableAgentTool: api.disableAgentKanbanTool,
+    refetchAgentTools: async (id) => {
+      const data = await api.getAgentKanban(workspaceId.value, id)
+      return data?.tools ?? []
+    },
+  })
+  kanbanTools.value = nextLocal
+  const out = await serverPromise
+  if ('error' in out) {
+    kanbanTools.value = enabled
+      ? kanbanTools.value.filter((n) => n !== toolName)
+      : [...kanbanTools.value, toolName]
+    console.error('[KanbanSettingsView] toggle tool failed:', out.error)
+    return
+  }
+  kanbanTools.value = out.canonical
+  // If this was the first enable on an unconfigured board, the backend
+  // auto-seeded the row — reload the full bundle so knowledge/system
+  // prompts become available without a manual refresh.
+  if (kanbanKnowledge.value.length === 0 && kanbanSystemPrompts.value.length === 0) {
+    void loadKanbanAgent()
+  }
+}
+
+async function handleKanbanToggleToolsBulk(toolNames: string[], enabled: boolean) {
+  const kanbanId = item.value?.id
+  if (!kanbanId || toolNames.length === 0) return
+  const set = new Set(kanbanTools.value)
+  for (const n of toolNames) {
+    if (enabled) set.add(n)
+    else set.delete(n)
+  }
+  kanbanTools.value = Array.from(set)
+  try {
+    const ops = toolNames.map(async (n) => {
+      try {
+        if (enabled) await api.enableAgentKanbanTool(kanbanId, n)
+        else await api.disableAgentKanbanTool(kanbanId, n)
+        return { name: n, ok: true as const }
+      } catch (e) {
+        return { name: n, ok: false as const, error: e }
+      }
+    })
+    const results = await Promise.all(ops)
+    const failures = results.filter((r) => !r.ok)
+    if (failures.length > 0) console.error('[KanbanSettingsView] bulk toggle: some tools failed:', failures)
+    const data = await api.getAgentKanban(workspaceId.value, kanbanId)
+    kanbanTools.value = data?.tools ?? kanbanTools.value
+    if (kanbanKnowledge.value.length === 0 && kanbanSystemPrompts.value.length === 0) {
+      void loadKanbanAgent()
+    }
+  } catch (e) {
+    console.error('[KanbanSettingsView] bulk toggle failed:', e)
+  }
+}
 
 // ─── Handlers (mirror KanbanSettingsDialog 1:1) ────────────────────────────
 
@@ -309,11 +584,10 @@ function sortedColumns() {
         </h1>
       </div>
 
-      <!-- Tab strip: Columns | Local Memories | Tools | Knowledge.
-           Always visible (even without item.path) — the Tools +
-           Knowledge tabs don't depend on a folder. The Local Memories
-           button is individually gated on item.path (no memories
-           without a folder). -->
+      <!-- Tab strip: Columns | Local Memories | Agent.
+           Agent tab reuses AgentView (now agnostic) — same Knowledge +
+           Tools + System Prompt UI as `item_type='agent'`. Always
+           visible (no path required). Local Memories gated on item.path. -->
       <div
         class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
@@ -348,29 +622,16 @@ function sortedColumns() {
         </button>
         <button
           type="button"
-          @click="settingsMode = 'tools'"
-          data-testid="kanban-settings-page-tab-tools"
+          @click="settingsMode = 'agent'"
+          data-testid="kanban-settings-page-tab-agent"
           class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
           :style="
-            settingsMode === 'tools'
+            settingsMode === 'agent'
               ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
               : 'background-color: transparent; color: var(--semantic-text-muted);'
           "
         >
-          🛠 Tools
-        </button>
-        <button
-          type="button"
-          @click="settingsMode = 'knowledge'"
-          data-testid="kanban-settings-page-tab-knowledge"
-          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
-          :style="
-            settingsMode === 'knowledge'
-              ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
-              : 'background-color: transparent; color: var(--semantic-text-muted);'
-          "
-        >
-          🧠 Knowledge
+          🤖 Agent
         </button>
       </div>
 
@@ -571,25 +832,30 @@ function sortedColumns() {
         </p>
       </div>
 
-      <!-- Tools tab body (always available — no path required) -->
+      <!-- Agent tab body — reuses AgentView (agnostic) for kanban.
+           Same Knowledge + Tools + System Prompt UI as `item_type='agent'`.
+           Always available (no path required). -->
       <div
-        v-else-if="settingsMode === 'tools'"
-        class="flex-1 min-h-0 overflow-y-auto"
-        data-testid="kanban-settings-page-tools-panel"
+        v-else-if="settingsMode === 'agent'"
+        class="flex-1 min-h-0 overflow-hidden"
+        data-testid="kanban-settings-page-agent-panel"
       >
-        <KanbanToolsPanel :item="item" :workspace-id="workspaceId" />
-      </div>
-
-      <!-- Knowledge tab body (always available — no path required).
-           Hosts both knowledge rows + system prompt blocks (merged
-           persona content). Bootstrap hint when no agent_kanbans row
-           yet (user must enable a tool on Tools tab first). -->
-      <div
-        v-else-if="settingsMode === 'knowledge'"
-        class="flex-1 min-h-0 overflow-y-auto"
-        data-testid="kanban-settings-page-knowledge-panel"
-      >
-        <KanbanKnowledgePanel :item="item" :workspace-id="workspaceId" />
+        <AgentView
+          :item="item"
+          :workspace-id="workspaceId"
+          :item-id="item.id"
+          :knowledge="kanbanKnowledge"
+          :tools="kanbanTools"
+          :system-prompts="kanbanSystemPrompts"
+          @add-knowledge="handleKanbanAddKnowledge"
+          @remove-knowledge="handleKanbanRemoveKnowledge"
+          @edit-knowledge="handleKanbanEditKnowledge"
+          @toggle-tool="handleKanbanToggleTool"
+          @toggle-tools-bulk="handleKanbanToggleToolsBulk"
+          @add-system-prompt="handleKanbanAddSystemPrompt"
+          @edit-system-prompt="handleKanbanEditSystemPrompt"
+          @remove-system-prompt="handleKanbanRemoveSystemPrompt"
+        />
       </div>
     </template>
 
@@ -607,6 +873,33 @@ function sortedColumns() {
       @close="handleSettingsEditorClose"
       @rename="handleSettingsEditorRename"
       @delete="handleSettingsEditorDelete"
+    />
+
+    <!-- Kanban Agent dialogs — reuse the same dialogs as `item_type='agent'` (AppLayout).
+         Mounted here so the AgentView emits inside the settings page can open them. -->
+    <AgentKnowledgeDialog
+      v-model:show="kanbanKnowledgeDialogOpen"
+      :busy="kanbanKnowledgeBusy"
+      :error="kanbanKnowledgeError"
+      @close="closeKanbanKnowledgeDialog"
+      @create="handleKanbanKnowledgeCreate"
+    />
+    <AgentKnowledgeDetailDialog
+      :show="kanbanKnowledgeDetailOpen"
+      :row="kanbanKnowledgeDetailRow ? { ...kanbanKnowledgeDetailRow, agent_id: kanbanKnowledgeDetailRow.kanban_id } as unknown as api.AgentKnowledgeRow : null"
+      :busy="kanbanKnowledgeDetailBusy"
+      :error="kanbanKnowledgeDetailError"
+      @close="closeKanbanKnowledgeDetailDialog"
+      @save="handleKanbanKnowledgeSave"
+    />
+    <AgentSystemPromptDialog
+      :show="kanbanSystemPromptDialogOpen"
+      :row="kanbanSystemPromptRow ? { ...kanbanSystemPromptRow, agent_id: kanbanSystemPromptRow.kanban_id } as unknown as api.AgentSystemPromptRow : null"
+      :busy="kanbanSystemPromptBusy"
+      :error="kanbanSystemPromptError"
+      @close="closeKanbanSystemPromptDialog"
+      @create="handleKanbanSystemPromptCreate"
+      @save="handleKanbanSystemPromptSave"
     />
   </div>
 </template>

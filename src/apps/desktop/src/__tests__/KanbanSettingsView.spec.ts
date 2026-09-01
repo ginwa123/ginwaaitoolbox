@@ -161,18 +161,12 @@ describe('KanbanSettingsView', () => {
           // Stub the memories view — it's heavy (renders a full
           // memories panel) and we only test its presence/absence.
           WorkspaceItemMemoriesView: { template: '<div data-testid="stub-memories"></div>' },
-          // Stub the tools panel — same rationale. We only assert
-          // its presence/absence here (its own spec covers
-          // behaviour). The wrapper div mirrors the real panel's
-          // outer testid so the page-level body assertion works.
-          KanbanToolsPanel: {
-            template: '<div data-testid="kanban-settings-page-tools-panel-stub"></div>',
-            props: ['item', 'workspaceId'],
-          },
-          // Stub the knowledge panel — same rationale.
-          KanbanKnowledgePanel: {
-            template: '<div data-testid="kanban-settings-page-knowledge-panel-stub"></div>',
-            props: ['item', 'workspaceId'],
+          // Stub AgentView — it renders the full Knowledge + Tools + System Prompt
+          // UI (reused from `item_type='agent'`). We only assert its
+          // presence/absence here; AgentView's own spec covers behaviour.
+          AgentView: {
+            template: '<div data-testid="kanban-settings-page-agent-panel-stub"></div>',
+            props: ['item', 'workspaceId', 'itemId', 'knowledge', 'tools', 'systemPrompts'],
           },
           // Stub KanbanColumnEditor to avoid the Teleport + nested
           // dialog complexity in the rename/delete tests. Mirrors the
@@ -339,37 +333,33 @@ describe('KanbanSettingsView', () => {
     expect(hint).not.toBeNull()
   })
 
-  // ─── Tools + Knowledge tabs (plan: docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md,
-  //    iteration 2 — split Agent into Tools + Knowledge as separate top-level tabs) ───
+  // ─── Agent tab (reuses AgentView — unified Knowledge + Tools + System Prompt) ───
 
-  it('renders BOTH Tools and Knowledge tab buttons (visible regardless of item.path)', async () => {
+  it('renders the Agent tab button (visible regardless of item.path)', async () => {
     seedWorkspaces({ ...baseItem, path: null })
     mountView()
     await flushPromises()
     expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]'),
-    ).not.toBeNull()
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]'),
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]'),
     ).not.toBeNull()
   })
 
-  it('does NOT render an Agent umbrella tab (regression — split into Tools + Knowledge)', async () => {
+  it('does NOT render separate Tools / Knowledge tabs (regression — unified into Agent)', async () => {
     seedWorkspaces()
     mountView()
     await flushPromises()
-    const agentTab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
-    expect(agentTab).toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]')).toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]')).toBeNull()
   })
 
-  it('mounts the KanbanToolsPanel as the active body when ?tab=tools is in the URL', async () => {
+  it('mounts AgentView as the active body when ?tab=agent is in the URL', async () => {
     seedWorkspaces({ ...baseItem, path: null })
-    setupRoute({ tab: 'tools' })
+    setupRoute({ tab: 'agent' })
     mountView()
     await flushPromises()
-    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-tools"]')
+    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
     expect(tab).not.toBeNull()
-    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tools-panel"]')
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
     expect(panel).not.toBeNull()
     // Columns body should NOT be rendered.
     expect(
@@ -377,39 +367,32 @@ describe('KanbanSettingsView', () => {
     ).toBeNull()
   })
 
-  it('mounts the KanbanKnowledgePanel as the active body when ?tab=knowledge is in the URL', async () => {
+  it('also mounts AgentView for legacy ?tab=tools (backward compat)', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ tab: 'tools' })
+    mountView()
+    await flushPromises()
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
+    expect(panel).not.toBeNull()
+  })
+
+  it('also mounts AgentView for legacy ?tab=knowledge (backward compat)', async () => {
     seedWorkspaces({ ...baseItem, path: null })
     setupRoute({ tab: 'knowledge' })
     mountView()
     await flushPromises()
-    const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]')
-    expect(tab).not.toBeNull()
-    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-knowledge-panel"]')
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
     expect(panel).not.toBeNull()
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
-    ).toBeNull()
   })
 
-  it('calls router.replace with {query:{tab:"tools"}} when the Tools tab is clicked', async () => {
+  it('calls router.replace with {query:{tab:"agent"}} when the Agent tab is clicked', async () => {
     seedWorkspaces()
     const { router } = setupRoute({})
     mountView()
     await flushPromises()
-    clickInDom('[data-testid="kanban-settings-page-tab-tools"]')
+    clickInDom('[data-testid="kanban-settings-page-tab-agent"]')
     expect(router.replace).toHaveBeenCalledWith(
-      expect.objectContaining({ query: expect.objectContaining({ tab: 'tools' }) }),
-    )
-  })
-
-  it('calls router.replace with {query:{tab:"knowledge"}} when the Knowledge tab is clicked', async () => {
-    seedWorkspaces()
-    const { router } = setupRoute({})
-    mountView()
-    await flushPromises()
-    clickInDom('[data-testid="kanban-settings-page-tab-knowledge"]')
-    expect(router.replace).toHaveBeenCalledWith(
-      expect.objectContaining({ query: expect.objectContaining({ tab: 'knowledge' }) }),
+      expect.objectContaining({ query: expect.objectContaining({ tab: 'agent' }) }),
     )
   })
 

@@ -1208,9 +1208,9 @@ const agentKnowledgeDetailRow = ref<api.AgentKnowledgeRow | null>(null)
 const agentKnowledgeDetailBusy = ref(false)
 const agentKnowledgeDetailError = ref<string | null>(null)
 
-function handleAgentEditKnowledge(row: api.AgentKnowledgeRow) {
+function handleAgentEditKnowledge(row: api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow) {
   if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
-  agentKnowledgeDetailRow.value = row
+  agentKnowledgeDetailRow.value = row as api.AgentKnowledgeRow
   agentKnowledgeDetailError.value = null
   agentKnowledgeDetailOpen.value = true
 }
@@ -1280,9 +1280,9 @@ function handleAgentAddSystemPrompt() {
   agentSystemPromptDialogOpen.value = true
 }
 
-function handleAgentEditSystemPrompt(row: api.AgentSystemPromptRow) {
+function handleAgentEditSystemPrompt(row: api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow) {
   if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
-  agentSystemPromptRow.value = row
+  agentSystemPromptRow.value = row as api.AgentSystemPromptRow
   agentSystemPromptError.value = null
   agentSystemPromptDialogOpen.value = true
 }

@@ -198,6 +198,12 @@ pub fn buildMessages(
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
     try final_system.appendSlice(allocator, agentSystemPromptContent);
 
+    // Workspace Context — siblings in the same workspace. MUST be before kanban
+    // so the kanban prompt can reference "workspace_id + item_id from the ## Workspace Context section above".
+    // This was dropped in 9a5bcafa (prompt simplification) and broke kanban mode entirely.
+    const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
+    try final_system.appendSlice(allocator, workspaceContext);
+
     // kanban rule
     const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, filtered_tools);
     try final_system.appendSlice(allocator, kanbanStatusContent);

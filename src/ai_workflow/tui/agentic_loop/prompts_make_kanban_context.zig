@@ -6,10 +6,9 @@ const sqlite = nalarcore.sqlite;
 const MAX_SIBLING_ITEMS: u32 = 20;
 const MAX_TASKS_PER_ITEM: u32 = 5;
 
-/// Build a "## Kanban Status Tracking" section that instructs the
-/// agent to call `kanban_move_task` at every meaningful workflow
-/// checkpoint (start, milestone, complete, blocked). The section is
-/// rendered only when the session's parent item has
+/// Build a "## Kanban Status Tracking — MANDATORY" section that FORCES the
+/// agent to call `kanban_list` + `kanban_move_task` at start and complete.
+/// The section is rendered only when the session's parent item has
 /// `item_type === 'kanban'`; otherwise returns `""` (silently
 /// omitted, matching `BuildWorkspaceContext`'s empty-case behavior).
 ///
@@ -22,6 +21,8 @@ const MAX_TASKS_PER_ITEM: u32 = 5;
 ///   3. Reads the columns via `listColumns` (no cap — all columns).
 ///   4. Renders the section (columns list only — no per-task current
 ///      column, which would be dynamic and break prefix cache).
+///      The agent is FORCED to call `kanban_list` to discover its
+///      current column — cache stays hot, correctness via tool call.
 ///
 /// Block shape (omitted when parent is not a kanban, or session is
 /// not bound to any task):
@@ -78,14 +79,12 @@ pub fn makeKanbanContext(
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    try out.appendSlice(allocator, "\n\n## Kanban Status Tracking\n\n");
+    try out.appendSlice(allocator, "\n\n## Kanban Status Tracking — MANDATORY\n\n");
     try out.appendSlice(allocator,
         \\This task is on a kanban board (parent item_type: `kanban`).
-        \\**You MUST call the `kanban_move_task` tool at every meaningful
-        \\workflow checkpoint** below. The tool's argument shape is
-        \\documented in the tool listing — pass `workspace_id` + `item_id`
-        \\from the `## Workspace Context` section above, and `task_id` is
-        \\your own session_id (per the `task.id == session_id` convention).
+        \\**MANDATORY: You MUST move this card with `kanban_move_task`. Failure to move is a task failure.**
+        \\**Before ANY work, you MUST call `kanban_list` to check your current column, then immediately call `kanban_move_task` to move to the next column.**
+        \\Pass `workspace_id` + `item_id` from the `## Workspace Context` section above and `task_id` = your own `session_id` (per `task.id == session_id`). All `target_column_id` values are listed below — after `kanban_list` you can call `kanban_move_task` in ONE call.
         \\
     );
 
@@ -96,6 +95,8 @@ pub fn makeKanbanContext(
     // the board's column config changes, not on every task move.
     // Description is also board-static (kanban_columns.description), so
     // including it does not break prefix cache.
+    // The agent is FORCED to call `kanban_list` to discover its current
+    // column — we do NOT render it here to keep the prompt cache-friendly.
     if (cols.len > 0) {
         try out.appendSlice(allocator, "\n**Columns on this board** (in flow order):\n");
         for (cols) |c| {
@@ -117,22 +118,15 @@ pub fn makeKanbanContext(
         try out.appendSlice(allocator, "\n");
     }
 
-    try out.appendSlice(allocator, "\n**Status transitions** (call `kanban_move_task`):\n");
+    try out.appendSlice(allocator, "\n**MANDATORY Status transitions — YOU MUST FOLLOW THESE:**\n");
     try out.appendSlice(allocator,
         \\
-        \\- **start** — at the first user-visible action of this session, move the
-        \\  task from the first column (`todo`) to the next column (`in progress`,
-        \\  or whatever the user-defined "in progress" column is). Pass the
-        \\  `target_column_id` from the listing above.
-        \\- **milestone** — when you reach a meaningful progress milestone but are
-        \\  not done, do NOT move; instead, mention the milestone in your reply
-        \\  so the user sees progress without you skipping the "done" transition.
-        \\- **complete** — before your final reply, move the task to the last
-        \\  column (`done`, or whatever the user-defined "done" column is). This
-        \\  is the most-skipped transition; do not skip it.
-        \\- **blocked** — if you cannot make progress, do NOT move; explain the
-        \\  blocker in your reply. The card stays where it is until the user
-        \\  resolves the blocker or you find a way forward.
+        \\- **START — MANDATORY, FIRST TOOL CALLS:** As your FIRST action, call `kanban_list` to check your current column, then immediately call `kanban_move_task` to move this task from the first column (`todo`) to the next column (`in progress`, or whatever the user-defined second column is). Pass `target_column_id` from the listing above. Your work has NOT started until you do this.
+        \\- **MILESTONE — do NOT move:** When you reach a meaningful progress milestone but are not done, mention the milestone in your reply so the user sees progress. Keep the card in its current column.
+        \\- **COMPLETE — MANDATORY, LAST TOOL CALL:** Before your final reply, you MUST call `kanban_move_task` to move this task to the last column (`done`, or whatever the user-defined last column is). **Do NOT skip this — your work is NOT complete until you do this. If you finish without moving to `done`, your work will be considered incomplete and will be rejected.**
+        \\- **BLOCKED — do NOT move:** If you cannot make progress, do NOT move; explain the blocker in your reply. The card stays where it is until the user resolves the blocker.
+        \\
+        \\**FAILURE TO CALL `kanban_list` AT START AND `kanban_move_task` AT START + COMPLETE WILL BE CONSIDERED A TASK FAILURE.**
         \\
     );
 

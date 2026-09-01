@@ -67,28 +67,12 @@ pub fn makeWorkspaceContext(
             try out.appendSlice(allocator, "(none)");
         }
         try out.appendSlice(allocator, "`)");
-        if (sib.is_self) try out.appendSlice(allocator, " *(this task)*");
+        // Cache-friendly: no "*(this task)*" marker — that would make the prompt per-task dynamic.
+        // The agent can find its own item_id via the task's workspace_item_id in the anchor,
+        // but we don't mark it here to keep the prompt workspace-static (same for all tasks in workspace).
         try out.appendSlice(allocator, "\n");
-
-        for (sib.tasks) |t| {
-            try out.appendSlice(allocator, "  - task: `");
-            try out.appendSlice(allocator, t.name);
-            try out.appendSlice(allocator, "` (task_id: `");
-            try out.appendSlice(allocator, t.id);
-            try out.appendSlice(allocator, "`, type: ");
-            try out.appendSlice(allocator, t.task_type);
-            try out.appendSlice(allocator, ")\n");
-        }
-
-        if (sib.truncated_tasks_count > 0) {
-            const footer = try std.fmt.allocPrint(
-                allocator,
-                "    … and {d} more task{s} under this item\n",
-                .{ sib.truncated_tasks_count, if (sib.truncated_tasks_count == 1) "" else "s" },
-            );
-            defer allocator.free(footer);
-            try out.appendSlice(allocator, footer);
-        }
+        // Cache-friendly: no per-item tasks listing — tasks are highly dynamic (change on every create)
+        // and break prefix cache. The agent should use kanban_list / search to discover tasks.
     }
 
     if (ctx.truncated_items_count > 0) {
@@ -100,6 +84,16 @@ pub fn makeWorkspaceContext(
         defer allocator.free(footer);
         try out.appendSlice(allocator, footer);
     }
+
+    // Per-task dynamic tail — small, at the end so prefix cache for the workspace-static
+    // siblings list above stays hot. This is the ONLY per-task dynamic part.
+    try out.appendSlice(allocator, "\n**Your current task:** `");
+    try out.appendSlice(allocator, ctx.self_task_id);
+    try out.appendSlice(allocator, "` is bound to item `");
+    try out.appendSlice(allocator, ctx.self_item_id);
+    try out.appendSlice(allocator, "` (item_type: `");
+    try out.appendSlice(allocator, ctx.self_item_type);
+    try out.appendSlice(allocator, "`)\n");
 
     return out.toOwnedSlice(allocator);
 }
@@ -151,17 +145,17 @@ fn getWorkspaceContext(
     const total_item_count = try std.fmt.parseInt(u32, count_row.values[0], 10);
     count_row.deinit(allocator);
 
+    // Cache-friendly: workspace-static ordering (no is_self). Same prompt for all tasks in workspace.
     const items_sql = try std.fmt.allocPrint(allocator,
-        \\SELECT wi.id, wi.item_type, wi.name, wi.path,
-        \\       (wi.id = ?) AS is_self
+        \\SELECT wi.id, wi.item_type, wi.name, wi.path
         \\FROM workspace_items wi
         \\WHERE wi.workspace_id = ?
-        \\ORDER BY is_self DESC, wi.position DESC, wi.id ASC
+        \\ORDER BY wi.position DESC, wi.id ASC
         \\LIMIT {d}
     , .{MAX_SIBLING_ITEMS});
     defer allocator.free(items_sql);
 
-    var items_q = try db.query(allocator, items_sql, &.{ self_item_id, workspace_id });
+    var items_q = try db.query(allocator, items_sql, &.{workspace_id});
     defer items_q.deinit();
 
     var siblings: std.ArrayList(WorkspaceContext.SiblingItem) = .empty;
@@ -176,78 +170,17 @@ fn getWorkspaceContext(
         const item_type_owned = try allocator.dupe(u8, row.values[1]);
         const name_owned: ?[]u8 = if (row.values[2].len > 0) try allocator.dupe(u8, row.values[2]) else null;
         const path_owned: ?[]u8 = if (row.values[3].len > 0) try allocator.dupe(u8, row.values[3]) else null;
-        const is_self_owned = std.mem.eql(u8, row.values[4], "1");
         row.deinit(allocator);
 
-        const tasks_sql = try std.fmt.allocPrint(allocator,
-            \\SELECT t.id, t.name, t.task_type
-            \\FROM workspace_item_tasks t
-            \\WHERE t.workspace_item_id = ?
-            \\ORDER BY t.updated_at DESC, t.id ASC
-            \\LIMIT {d}
-        , .{MAX_TASKS_PER_ITEM});
-        defer allocator.free(tasks_sql);
-
-        var tasks_q = try db.query(allocator, tasks_sql, &.{item_id_owned});
-        defer tasks_q.deinit();
-
-        var tasks: std.ArrayList(WorkspaceContext.SiblingItem.SiblingTask) = .empty;
-        errdefer {
-            for (tasks.items) |t| {
-                allocator.free(t.id);
-                allocator.free(t.name);
-                allocator.free(t.task_type);
-            }
-            tasks.deinit(allocator);
-        }
-
-        while (try tasks_q.next()) |trow| {
-            const t_id = try allocator.dupe(u8, trow.values[0]);
-            const t_name = try allocator.dupe(u8, trow.values[1]);
-            const t_type = try allocator.dupe(u8, trow.values[2]);
-            trow.deinit(allocator);
-            try tasks.append(allocator, .{
-                .id = t_id,
-                .name = t_name,
-                .task_type = t_type,
-            });
-        }
-
-        var task_count_q = try db.query(
-            allocator,
-            "SELECT COUNT(*) FROM workspace_item_tasks t WHERE t.workspace_item_id = ?",
-            &.{item_id_owned},
-        );
-        defer task_count_q.deinit();
-        const task_count_row = (try task_count_q.next()) orelse {
-            // Defensive — COUNT(*) should always return a row.
-            // Use the loaded count as the truth.
-            try siblings.append(allocator, .{
-                .id = item_id_owned,
-                .item_type = item_type_owned,
-                .name = name_owned,
-                .path = path_owned,
-                .is_self = is_self_owned,
-                .tasks = try tasks.toOwnedSlice(allocator),
-                .truncated_tasks_count = 0,
-            });
-            continue;
-        };
-        const total_tasks: u32 = try std.fmt.parseInt(u32, task_count_row.values[0], 10);
-        task_count_row.deinit(allocator);
-        const truncated_tasks_count: u32 = if (total_tasks > MAX_TASKS_PER_ITEM)
-            total_tasks - MAX_TASKS_PER_ITEM
-        else
-            0;
-
+        // Cache-friendly: no per-item tasks — workspace-static only
         try siblings.append(allocator, .{
             .id = item_id_owned,
             .item_type = item_type_owned,
             .name = name_owned,
             .path = path_owned,
-            .is_self = is_self_owned,
-            .tasks = try tasks.toOwnedSlice(allocator),
-            .truncated_tasks_count = truncated_tasks_count,
+            .is_self = false, // not used for rendering anymore, kept for struct compat
+            .tasks = &.{},
+            .truncated_tasks_count = 0,
         });
     }
 
