@@ -1812,9 +1812,26 @@ pub const Agent = struct {
                 const rc = msg.reasoning_content;
                 const has_c = c != null and c.?.len > 0;
                 const has_rc = rc != null and rc.?.len > 0;
-                if (has_rc) {
-                    var summary = try arena_alloc.alloc(ResponsesReasoningSummary, 1);
-                    summary[0] = .{ .text = rc.? };
+                const has_rid = msg.reasoning_id != null and msg.reasoning_id.?.len > 0;
+                const has_enc = msg.reasoning_encrypted_content != null and msg.reasoning_encrypted_content.?.len > 0;
+                const has_reasoning = has_rc or has_rid or has_enc;
+                if (has_reasoning) {
+                    // Provider (Console Go → upstream) requires `summary` to be present
+                    // on every `type:"reasoning"` item. When `reasoning_content` is
+                    // NULL (summary was empty or never streamed), we still persist
+                    // `id`+`encrypted_content` for `store:false` replay — so we
+                    // must emit an empty `summary:[]` to satisfy the schema.
+                    // Omitting it produces:
+                    //   `input[1]` missing required field `summary`
+                    // and the stream terminates with 0 chunks.
+                    var summary: ?[]const ResponsesReasoningSummary = null;
+                    if (has_rc) {
+                        var s = try arena_alloc.alloc(ResponsesReasoningSummary, 1);
+                        s[0] = .{ .text = rc.? };
+                        summary = s;
+                    } else {
+                        summary = try arena_alloc.alloc(ResponsesReasoningSummary, 0);
+                    }
                     input_items[input_count] = .{
                         .item_type = "reasoning",
                         .id = msg.reasoning_id,
@@ -1832,8 +1849,8 @@ pub const Agent = struct {
                         .content = contents,
                     };
                     input_count += 1;
-                } else if (!has_rc and !has_tool_calls) {
-                    // Empty assistant message without tools — still emit empty message to preserve turn.
+                } else if (!has_reasoning and !has_tool_calls) {
+                    // Empty assistant message without tools/reasoning — still emit empty message to preserve turn.
                     var contents = try arena_alloc.alloc(ResponsesInputContent, 1);
                     contents[0] = .{ .content_type = "output_text", .text = "" };
                     input_items[input_count] = .{
@@ -2374,7 +2391,29 @@ pub const Agent = struct {
         if (std.mem.eql(u8, event_type, "response.reasoning_text.done") or
             std.mem.eql(u8, event_type, "response.reasoning_summary_text.done"))
         {
-            return null;
+            // `done` carries the final `text` for the part — use it as
+            // fallback when deltas were not emitted or were dropped.
+            // This complements the terminal `response.completed` summary
+            // fallback. Without it, a stream that only emits `done` with
+            // no prior `delta` leaves `reasoning_content` NULL (seen on
+            // opencode.ai/zen muse-spark via Console Go).
+            const text = root.object.get("text") orelse return null;
+            if (text != .string) return null;
+            if (text.string.len == 0) return null;
+            chunk.reasoning_content = text.string;
+            return chunk;
+        }
+        // Reasoning summary part boundaries — `added`/`done` carry `part`
+        // with `{type:"summary_text", text:"..."}`.
+        if (std.mem.eql(u8, event_type, "response.reasoning_summary_part.added") or
+            std.mem.eql(u8, event_type, "response.reasoning_summary_part.done"))
+        {
+            const part = root.object.get("part") orelse return null;
+            if (part != .object) return null;
+            const t = part.object.get("text") orelse return null;
+            if (t != .string or t.string.len == 0) return null;
+            chunk.reasoning_content = t.string;
+            return chunk;
         }
         // Tool call start — `response.output_item.added` with item.type == "function_call"
         if (std.mem.eql(u8, event_type, "response.output_item.added")) {
@@ -2440,6 +2479,44 @@ pub const Agent = struct {
             chunk.tool_calls_delta = slice;
             return chunk;
         }
+        // Reasoning item done — the per-item finalization carries the
+        // complete summary + id + encrypted_content for that reasoning
+        // item. This fires before `response.completed`, so capturing here
+        // gives us the same fallback that `response.completed` uses, but
+        // earlier. If the stream never reaches `completed` (e.g. truncated
+        // due to max_output_tokens), this is the last chance to capture.
+        if (std.mem.eql(u8, event_type, "response.output_item.done")) {
+            const item = root.object.get("item") orelse return null;
+            if (item != .object) return null;
+            const it = item.object.get("type") orelse return null;
+            if (it != .string or !std.mem.eql(u8, it.string, "reasoning")) return null;
+            var has_summary = false;
+            var buf: std.ArrayList(u8) = .empty;
+            if (item.object.get("summary")) |sv| {
+                if (sv == .array) {
+                    for (sv.array.items) |si| {
+                        if (si != .object) continue;
+                        const tv = si.object.get("text") orelse continue;
+                        if (tv != .string or tv.string.len == 0) continue;
+                        if (has_summary) buf.appendSlice(arena, "\n") catch continue;
+                        buf.appendSlice(arena, tv.string) catch continue;
+                        has_summary = true;
+                    }
+                }
+            }
+            if (has_summary and buf.items.len > 0) chunk.reasoning_content = buf.items;
+            if (item.object.get("id")) |idv| {
+                if (idv == .string and idv.string.len > 0) chunk.reasoning_id = idv.string;
+            }
+            if (item.object.get("encrypted_content")) |ev| {
+                if (ev == .string and ev.string.len > 0) chunk.reasoning_encrypted_content = ev.string;
+            }
+            // Don't return yet if only id/enc without summary — let it
+            // flow as terminal-like chunk so aggregator captures id/enc.
+            if (chunk.reasoning_content != null or chunk.reasoning_id != null or chunk.reasoning_encrypted_content != null) return chunk;
+            return null;
+        }
+
         // Terminal events — carry finish_reason + usage
         if (std.mem.eql(u8, event_type, "response.completed") or
             std.mem.eql(u8, event_type, "response.incomplete") or

@@ -1578,3 +1578,310 @@ test "StreamingAggregator: end-to-end DB round-trip simulation via builder repla
     // reasoning must not leak into assistant output_text
     try testing.expect(!std.mem.eql(u8, input.items[2].object.get("content").?.array.items[0].object.get("text").?.string, "db thinking"));
 }
+
+test "buildJsonResponsesRequest: regression task_1788204837101_1 — reasoning_id+encrypted persisted even when reasoning_content is NULL" {
+    // Real DB row from task_1788204837101_1 (2026-09-01 03:17:31):
+    // assistant: content="Reasoning ID saved but content empty — tracing the summary extraction."
+    //   tool_calls=[bash call_01a05af8ce...], reasoning_content=NULL,
+    //   reasoning_id="rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e",
+    //   reasoning_encrypted_content="Q-PaDgH1f..." (87k, truncated in test)
+    // tool: role=tool, call_id=call_01a05..., output="<tool>...bash output...</tool>"
+    // Builder must emit a separate reasoning item even when reasoning_content is NULL
+    // so that store:false replay can reconstruct the reasoning block verbatim.
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_01a05af8ce457620beb3a5990637e153");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "bash");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{\"command\":\"timeout 10 git checkout main 2>&1 | tail -n 5\",\"cwd\":\"/home/ginwa/ginwaaitoolbox\"}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(agent.ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const enc = try testing.allocator.dupe(u8, "Q-PaDgH1f_g4UMio3N6QC9OP42jJO2-WMTCEw6alywPh84L9_64jRusfZspFIeQI7UiYTDzLT6yAPOOfM_e-dMhNZtGD0rjNmMB8DnDBCRxws-8fYmo0BJf8oKM4ze5");
+    defer testing.allocator.free(enc);
+    const rid = try testing.allocator.dupe(u8, "rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e");
+    defer testing.allocator.free(rid);
+
+    const messages = [_]agent.AgentMessage{
+        userMsg("trace the summary"),
+        .{
+            .role = .assistant,
+            .content = "Reasoning ID saved but content empty \u{2014} tracing the summary extraction.",
+            .reasoning_content = null,
+            .reasoning_id = rid,
+            .reasoning_encrypted_content = enc,
+            .tool_calls = tc_array,
+            .tool_call_id = null,
+            .content_parts = null,
+        },
+        .{
+            .role = .tool,
+            .content = "<tool><name>bash</name><parameters><command>timeout 10 git checkout main</command></parameters><success>true</success><data>Already on 'main'</data></tool>",
+            .tool_call_id = "call_01a05af8ce457620beb3a5990637e153",
+            .tool_calls = null,
+            .content_parts = null,
+            .reasoning_content = null,
+        },
+    };
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // Expected: [user, reasoning(with id+enc, no summary), assistant message, function_call, function_call_output]
+    try testing.expectEqual(@as(usize, 5), input.items.len);
+
+    // input[0] = user
+    try testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("user", input.items[0].object.get("role").?.string);
+
+    // input[1] = reasoning — must exist even though reasoning_content was NULL
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    try testing.expectEqualStrings("rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e", reasoning.object.get("id").?.string);
+    try testing.expectEqualStrings("Q-PaDgH1f_g4UMio3N6QC9OP42jJO2-WMTCEw6alywPh84L9_64jRusfZspFIeQI7UiYTDzLT6yAPOOfM_e-dMhNZtGD0rjNmMB8DnDBCRxws-8fYmo0BJf8oKM4ze5", reasoning.object.get("encrypted_content").?.string);
+    // summary must be present as empty array when reasoning_content is NULL —
+    // the upstream schema requires the field (omitting it → `missing required field summary`)
+    try testing.expect(reasoning.object.get("summary") != null);
+    try testing.expectEqual(@as(usize, 0), reasoning.object.get("summary").?.array.items.len);
+
+    // input[2] = assistant message with original content, must NOT contain reasoning
+    const assistant = input.items[2];
+    try testing.expectEqualStrings("message", assistant.object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", assistant.object.get("role").?.string);
+    try testing.expectEqualStrings("Reasoning ID saved but content empty \u{2014} tracing the summary extraction.", assistant.object.get("content").?.array.items[0].object.get("text").?.string);
+
+    // input[3] = function_call
+    try testing.expectEqualStrings("function_call", input.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("call_01a05af8ce457620beb3a5990637e153", input.items[3].object.get("call_id").?.string);
+
+    // input[4] = function_call_output
+    try testing.expectEqualStrings("function_call_output", input.items[4].object.get("type").?.string);
+    try testing.expectEqualStrings("call_01a05af8ce457620beb3a5990637e153", input.items[4].object.get("call_id").?.string);
+}
+
+test "buildJsonResponsesRequest: reasoning with id but no content emits empty summary array" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    const messages = [_]agent.AgentMessage{
+        userMsg("hi"),
+        assistantMsgFull(null, null, "rs_only_id", "ENC_ONLY"),
+    };
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+    const input = body.parsed.value.object.get("input").?.array;
+    // user + reasoning (id+enc, empty summary array, no message) — provider requires summary field
+    try testing.expectEqual(@as(usize, 2), input.items.len);
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    try testing.expectEqualStrings("rs_only_id", reasoning.object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_ONLY", reasoning.object.get("encrypted_content").?.string);
+    try testing.expect(reasoning.object.get("summary") != null);
+    try testing.expectEqual(@as(usize, 0), reasoning.object.get("summary").?.array.items.len);
+    // raw must contain empty summary array (field present)
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"summary\":[]") != null);
+}
+
+test "parse_responses_stream_chunk: response.reasoning_summary_text.done captures reasoning_content" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"text\":\"final summary via done\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("final summary via done", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.reasoning_summary_part.added captures reasoning_content" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"part added text\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("part added text", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.output_item.done reasoning captures id/enc/summary" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"done summary\"}],\"encrypted_content\":\"ENC_DONE\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("done summary", chunk.?.reasoning_content.?);
+    try testing.expectEqualStrings("rs_done_1", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_DONE", chunk.?.reasoning_encrypted_content.?);
+}
+
+test "parse_responses_stream_chunk: response.output_item.done reasoning without summary still captures id/enc" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done_2\",\"summary\":[],\"encrypted_content\":\"ENC2\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_done_2", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC2", chunk.?.reasoning_encrypted_content.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+}
+
+// ---------------------------------------------------------------------------
+// Spec cases from OpenAI JSON response — output[] handling (user-provided)
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: case 1 normal answer — no reasoning item" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_123\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is 4.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expect(chunk.?.reasoning_content == null);
+    try testing.expectEqual(@as(?agent.FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 2 reasoning with empty summary" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_123\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_123\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is 4.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_123", chunk.?.reasoning_id.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+    try testing.expectEqual(@as(?agent.FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 3 reasoning with summary + answer" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_123\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"The calculation requires adding 2 and 2.\"}]},{\"type\":\"message\",\"id\":\"msg_123\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"2 + 2 = 4.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_123", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("The calculation requires adding 2 and 2.", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: case 4 multiple reasoning items — iterates output[], does not assume [0]/[1]" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_001\",\"summary\":[]},{\"type\":\"reasoning\",\"id\":\"rs_002\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_001\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is 42.\"}]}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    // parser keeps first id (current single-row model) but must not misinterpret indices
+    try testing.expectEqualStrings("rs_001", chunk.?.reasoning_id.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+}
+
+test "parse_responses_stream_chunk: case 5 tool call" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Jakarta\\\"}\"}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?agent.FinishReason, .tool_calls), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 6 reasoning + tool_call and reasoning + answer are two separate responses" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data1 = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_001\",\"summary\":[]},{\"type\":\"function_call\",\"id\":\"fc_001\",\"call_id\":\"call_001\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Jakarta\\\"}\"}]}}";
+    const c1 = a.parse_stream_chunk(data1, arena.allocator());
+    try testing.expect(c1 != null);
+    try testing.expectEqualStrings("rs_001", c1.?.reasoning_id.?);
+    try testing.expectEqual(@as(?agent.FinishReason, .tool_calls), c1.?.finish_reason);
+    const data2 = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_002\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_001\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Jakarta is currently 30°C.\"}]}]}}";
+    const c2 = a.parse_stream_chunk(data2, arena.allocator());
+    try testing.expect(c2 != null);
+    try testing.expectEqualStrings("rs_002", c2.?.reasoning_id.?);
+    try testing.expectEqual(@as(?agent.FinishReason, .stop), c2.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 7 multiple content parts in one message — don't assume content[0]" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Here is the result:\"},{\"type\":\"output_text\",\"text\":\"2 + 2 = 4.\"}]}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expectEqual(@as(?agent.FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 8 message containing annotations" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"According to the source, the answer is 42.\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://example.com\",\"title\":\"Example\"}]}]}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expectEqual(@as(?agent.FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "buildJsonResponsesRequest: case 2 reasoning empty summary replays as reasoning+message" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    const messages = [_]agent.AgentMessage{
+        userMsg("q"),
+        assistantMsgFull("The answer is 4.", null, "rs_123", null),
+    };
+    // reasoning_content null but id present -> should still emit reasoning with empty summary
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    try testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("reasoning", input.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_123", input.items[1].object.get("id").?.string);
+    try testing.expectEqual(@as(usize, 0), input.items[1].object.get("summary").?.array.items.len);
+    try testing.expectEqualStrings("message", input.items[2].object.get("type").?.string);
+}
+
+test "buildJsonResponsesRequest: iterates output — not output[0] reasoning assumption" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    // Simulate history with two reasoning turns collapsed into one row — builder emits one reasoning per row
+    const messages = [_]agent.AgentMessage{
+        userMsg("q"),
+        assistantMsgFull("a", "summary text", "rs_123", "ENC"),
+    };
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+    const input = body.parsed.value.object.get("input").?.array;
+    // Must handle reasoning at any index, not fixed positions
+    var found_reasoning = false;
+    var found_message = false;
+    for (input.items) |it| {
+        const t = it.object.get("type").?.string;
+        if (std.mem.eql(u8, t, "reasoning")) found_reasoning = true;
+        if (std.mem.eql(u8, t, "message")) {
+            if (it.object.get("role")) |r| {
+                if (std.mem.eql(u8, r.string, "assistant")) found_message = true;
+            }
+        }
+    }
+    try testing.expect(found_reasoning);
+    try testing.expect(found_message);
+}

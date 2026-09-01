@@ -2167,6 +2167,55 @@ const connectSse = () => {
         (event.role as 'user' | 'assistant' | 'system' | 'tool') ||
         (event.tool_call_id ? 'tool' : 'assistant')
 
+      // 2026-09-01 fix: placeholder → final update for the same tool
+      // call shares the same `id` (row id). The placeholder SSE (empty
+      // `<data>`) arrives first, then the final SSE (`<results>`) for
+      // the same row. Without this, the frontend would push a DUPLICATE
+      // message (same id, same tool_call_id, different content) and
+      // render two cards. Update in place instead.
+      if (event.id) {
+        const existingById = messages.value.find((m) => m.id === event.id)
+        if (existingById) {
+          // In-place update — preserve timestamp, refresh all wire fields
+          existingById.content = event.content || ''
+          existingById.role = role
+          existingById.tool_name = event.tool_name
+          existingById.tool_call_id = event.tool_call_id
+          existingById.finish_reason = event.finish_reason
+          existingById.tool_calls_json = event.tool_calls_json
+          existingById.reasoning_content = event.reasoning_content || undefined
+          existingById.diffview_before = event.diffview_before
+          existingById.diffview_after = event.diffview_after
+          existingById.image_urls = event.image_url ? event.image_url.split('|') : undefined
+          existingById.is_input = event.is_input
+          existingById.is_output = event.is_output
+          streamingContent.value = ''
+          isStreaming.value = false
+          scrollLogger.markProgrammatic()
+          lastAutoStickAt.value = Date.now()
+          nextTick(() => {
+            if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
+            scrollToBottom(false, 'sse-message-update')
+          })
+          setupCodeBlockCopyButtons()
+          if (
+            role === 'tool' &&
+            event.tool_name === 'spawn_sub_agent' &&
+            event.tool_call_id &&
+            subAgentProgressMap.value[event.tool_call_id]
+          ) {
+            subAgentProgressMap.value = clearProgressFor(
+              subAgentProgressMap.value,
+              event.tool_call_id,
+            )
+          }
+          if (event.total_tokens) {
+            maxTotalTokens.value = event.total_tokens
+          }
+          return
+        }
+      }
+
       // 2026-08-23 TOOLS-pill-spam fix — the backend re-emits an SSE for
       // EVERY tool completion via getLatestMessage(), which (backend bug
       // B1, see handle_tool.zig) often returns the ASSISTANT tool_calls

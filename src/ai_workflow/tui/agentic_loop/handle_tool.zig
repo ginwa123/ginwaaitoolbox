@@ -551,6 +551,21 @@ pub fn handle_tool(
             try list_id_that_was_loaded.append(allocator, id_llm_history);
         }
 
+        // 2026-09-01 fix: emit placeholder SSE immediately so the
+        // frontend has a tool message to attach live progress to.
+        // Without this, spawn_sub_agent's `role="subagent_progress"`
+        // events arrive but there's no <SpawnSubAgent> component yet
+        // (it only mounts for tool messages), so the card stays at
+        // "0 sub-agents" until the final <results> envelope lands
+        // minutes later. Emitting here gives the card an empty-data
+        // envelope (agents.length==0) that flips to inLiveMode when
+        // progress arrives.
+        for (list_id_that_was_loaded.items) |pid| {
+            sendSSEForMessageById(allocator, db, session_id, cwd, current_agent_for_save, parent_session_id, agent_temperature.*, isThinking.*, false, true, pid) catch |err| {
+                logger.warnFmt("Failed to emit placeholder SSE for {s}: {s}", .{ pid, @errorName(err) });
+            };
+        }
+
         // Build context for dispatch
         const ctx = ToolContext{
             .allocator = allocator,
@@ -789,10 +804,15 @@ fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
         // assistant message's wire format. The old code passed null here
         // too (via sendSSEForLatestMessage's `null` argument).
         .tool_calls_json = null,
-        // NOTE: tool_call_id on the wire is the ROW ID (matches the
-        // previous behaviour in sendSSEForLatestMessage), NOT the
-        // column value. The frontend keys expand-state and dedupe off it.
-        .tool_call_id = msg.id,
+        // 2026-09-01 fix: tool_call_id on the wire is the ORIGINAL LLM
+        // id (e.g. "call_abc123"), NOT the row id. The row id is already
+        // in `msg.id` / `event.id`. Using the row id here broke
+        // spawn_sub_agent live progress: progress events are keyed by
+        // the original id, but the placeholder's SSE had the row id, so
+        // `subAgentProgressMap[msg.tool_call_id]` never matched and the
+        // card showed "0 sub-agents" while running. REST (get_llm_histories)
+        // already returns the original id; SSE must agree.
+        .tool_call_id = msg.tool_call_id orelse msg.id,
         .tool_name = msg.tool_name,
         .agent_name = agent_name,
         .loop_index = msg.loop_index,
