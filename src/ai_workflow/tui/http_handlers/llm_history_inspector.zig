@@ -177,7 +177,8 @@ pub fn useCase(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !LlmHistoryInspectorResponse {
-    return useCaseWithIo(allocator, db, session_id, std.testing.io);
+    const di = try nalarcore.getSingleton();
+    return useCaseWithIo(allocator, db, session_id, di.io);
 }
 
 pub fn useCaseWithIo(
@@ -549,7 +550,7 @@ test "llm_history_inspector: empty session_id returns EmptySessionId" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
     const alloc = testing.allocator;
-    const result = useCase(alloc, &ctx.db, "");
+    const result = useCaseWithIo(alloc, &ctx.db, "", ctx.threaded.io());
     try testing.expectError(error.EmptySessionId, result);
 }
 
@@ -558,7 +559,7 @@ test "llm_history_inspector: unknown session returns SessionNotFound" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
     const alloc = testing.allocator;
-    const result = useCase(alloc, &ctx.db, "nonexistent_session");
+    const result = useCaseWithIo(alloc, &ctx.db, "nonexistent_session", ctx.threaded.io());
     try testing.expectError(error.SessionNotFound, result);
 }
 
@@ -597,7 +598,7 @@ test "llm_history_inspector: known session returns chain + curl with correct end
         .is_output = true,
     });
 
-    const result = try useCase(alloc, &ctx.db, "sess_test_1");
+    const result = try useCaseWithIo(alloc, &ctx.db, "sess_test_1", ctx.threaded.io());
     defer {
         for (result.chain) |*m| {
             alloc.free(m.role);
@@ -696,7 +697,7 @@ test "llm_history_inspector: session with tool calls includes tool_calls in chai
         .is_output = true,
     });
 
-    const result = try useCase(alloc, &ctx.db, "sess_tool");
+    const result = try useCaseWithIo(alloc, &ctx.db, "sess_tool", ctx.threaded.io());
     defer {
         for (result.chain) |*m| {
             alloc.free(m.role);
@@ -771,7 +772,7 @@ test "llm_history_inspector: session with reasoning_content includes it in chain
         .is_output = true,
     });
 
-    const result = try useCase(alloc, &ctx.db, "sess_reason");
+    const result = try useCaseWithIo(alloc, &ctx.db, "sess_reason", ctx.threaded.io());
     defer {
         for (result.chain) |*m| {
             alloc.free(m.role);
@@ -836,7 +837,7 @@ test "llm_history_inspector: curl redaction never leaks api_key" {
         .is_input = true,
     });
 
-    const result = try useCase(alloc, &ctx.db, "sess_redact");
+    const result = try useCaseWithIo(alloc, &ctx.db, "sess_redact", ctx.threaded.io());
     defer {
         for (result.chain) |*m| {
             alloc.free(m.role);
