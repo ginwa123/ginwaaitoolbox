@@ -44,6 +44,14 @@ pub const SetDesignPageInput = struct {
 ///    page_name) updates width/height in place.
 /// 3. That `item_id` comes from the chat's workspace context (system
 ///    prompt's `## Workspace Context` section).
+pub const set_design_page_tool_system_prompt =
+    \\## Set Design Page Tool — Behavior
+    \\Use `set_design_page` to create or update a design page (idempotent).
+    \\- Returns page + elements (no HTML bodies). Use to ensure a page exists before adding elements.
+    \\- Provide `page_id` or create a new page with `name`/`width`/`height`.
+    \\
+;
+
 pub const set_design_page_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -85,6 +93,7 @@ pub const set_design_page_tool = AgentTool{
             },
             .required = &.{ "item_id", "page_name" },
         },
+        .system_prompt = set_design_page_tool_system_prompt,
     },
 };
 

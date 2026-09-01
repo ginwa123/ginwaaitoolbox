@@ -57,6 +57,14 @@ pub const KanbanMoveTaskInput = struct {
 /// agent's primary signal for WHEN to use this tool — it tells the
 /// LLM to call `kanban_list` first (to find the task_id and
 /// optionally the column id) and explains the name→id fallback.
+pub const kanban_move_task_tool_system_prompt =
+    \\## Kanban Move Task Tool — Behavior
+    \\Use `kanban_move_task` to move a task to a different column/position.
+    \\- You MUST call this at every workflow checkpoint: start → in progress, milestone → stay, complete → done, blocked → explain without moving.
+    \\- Pass `workspace_id` + `item_id` from Workspace Context and `task_id` (your session_id).
+    \\
+;
+
 pub const kanban_move_task_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -106,6 +114,7 @@ pub const kanban_move_task_tool = AgentTool{
             },
             .required = &.{ "workspace_id", "item_id", "task_id" },
         },
+        .system_prompt = kanban_move_task_tool_system_prompt,
     },
 };
 

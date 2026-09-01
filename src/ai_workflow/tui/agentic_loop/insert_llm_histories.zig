@@ -207,6 +207,7 @@ pub fn inserLLMHistories(
             const session_skills = try getSessionSkills(allocator, db, copy_session_id);
 
             _ = onEventSendLLMHistory(.{ .allocator = allocator, .io = io, .logger = logger, .event_bus = ev, .entity = .{
+                .id = id,
                 .session_id = session_id,
                 .model = model,
                 .cwd = cwd,

@@ -37,6 +37,13 @@ pub fn xmlError(allocator: std.mem.Allocator, skill_name: []const u8, err_msg: [
 }
 
 /// Tool definition for remove_skill
+pub const remove_skill_tool_system_prompt =
+    \\## Remove Skill Tool — Behavior
+    \\Use `remove_skill` to permanently delete a skill file.
+    \\- Provide `skill_name` and `session_id`. Use only when the skill is obsolete or the user asks to remove it.
+    \\
+;
+
 pub const remove_skill_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -63,6 +70,7 @@ pub const remove_skill_tool = AgentTool{
             },
             .required = &.{ "skill_name", "session_id" },
         },
+        .system_prompt = remove_skill_tool_system_prompt,
     },
 };
 

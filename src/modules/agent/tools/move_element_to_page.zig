@@ -37,6 +37,13 @@ pub const MoveElementToPageInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const move_element_to_page_tool_system_prompt =
+    \\## Move Element To Page Tool — Behavior
+    \\Use `move_element_to_page` to move an element (and optionally its descendants) to a different page in the same design item.
+    \\- Provide `element_id` and `target_page_id`. Both must be on the same design item.
+    \\
+;
+
 pub const move_element_to_page_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -71,6 +78,7 @@ pub const move_element_to_page_tool = AgentTool{
             },
             .required = &.{ "element_id", "new_page_id" },
         },
+        .system_prompt = move_element_to_page_tool_system_prompt,
     },
 };
 

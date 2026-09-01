@@ -51,6 +51,12 @@ pub const AgentToolFunction = struct {
     name: []const u8,
     description: []const u8,
     parameters: ToolParameters,
+    /// Behavioral system prompt for this tool — co-located with the tool
+    /// definition so the prompt stays in sync with the tool's schema.
+    /// Empty when the tool has no dedicated behavior prompt (e.g. dynamic
+    /// MCP tools). The aggregator in `prompts_build_messages_for_agent_prompt.zig`
+    /// reads this field directly from `filtered_tools` without hardcoding names.
+    system_prompt: []const u8 = "",
 };
 
 pub const AgentTool = struct {

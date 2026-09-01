@@ -793,6 +793,7 @@ fn sendSSEForMessageById(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
     };
 
     onEventSendLLMHistory(allocator, .{
+        .id = msg.id,
         .session_id = msg.session_id,
         .model = msg.model,
         .cwd = cwd,
@@ -852,6 +853,7 @@ fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBacke
         };
 
         onEventSendLLMHistory(allocator, .{
+            .id = msg.id,
             .session_id = msg.session_id,
             .model = msg.model,
             .cwd = cwd,
@@ -860,7 +862,7 @@ fn sendSSEForLatestMessage(allocator: std.mem.Allocator, db: *sqlite.SqliteBacke
             .role = msg.role,
             .finish_reason = msg.finish_reason,
             .tool_calls_json = tool_calls_json,
-            .tool_call_id = msg.id,
+            .tool_call_id = msg.tool_call_id orelse msg.id,
             .tool_name = msg.tool_name,
             .agent_name = agent_name,
             .loop_index = msg.loop_index,

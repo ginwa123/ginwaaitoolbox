@@ -677,6 +677,15 @@ pub fn search_result_to_string_flat(allocator: std.mem.Allocator, result: Search
     return try output.toOwnedSlice(allocator);
 }
 
+pub const search_tool_system_prompt =
+    \\## Search Tool — Behavior
+    \\Use `search` for full-text code search. Always prefer this over `bash` with `rg`/`grep`.
+    \\- Returns structured XML with file paths + line numbers, respects `.gitignore`.
+    \\- Use `word_boundary`, `literal`, `only_matching` flags as needed.
+    \\- Bound results with `max_results`/`max_output`.
+    \\
+;
+
 pub const search_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -830,6 +839,7 @@ pub const search_tool = AgentTool{
             },
             .required = &.{ "pattern", "path" },
         },
+        .system_prompt = search_tool_system_prompt,
     },
 };
 

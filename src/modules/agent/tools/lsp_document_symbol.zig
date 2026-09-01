@@ -493,6 +493,13 @@ pub fn lsp_document_symbol_to_string(allocator: std.mem.Allocator, result: LspDo
     return try output.toOwnedSlice(allocator);
 }
 
+pub const lsp_document_symbol_tool_system_prompt =
+    \\## LSP Document Symbol Tool — Behavior
+    \\Use `lsp_document_symbol` to list symbols in a single file via LSP.
+    \\- Provide `lsp`, `project_root`, `file`. Use to get an outline of a file's structure.
+    \\
+;
+
 pub const lsp_document_symbol_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -528,6 +535,7 @@ pub const lsp_document_symbol_tool = AgentTool{
             },
             .required = &.{ "lsp", "root_dir", "file_path" },
         },
+        .system_prompt = lsp_document_symbol_tool_system_prompt,
     },
 };
 

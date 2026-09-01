@@ -74,6 +74,14 @@ pub const KanbanListInput = struct {
 /// agent's primary signal for WHEN to use this tool — it explicitly
 /// says the workspace_id + item_id come from the active chat's
 /// workspace context.
+pub const kanban_list_tool_system_prompt =
+    \\## Kanban List Tool — Behavior
+    \\Use `kanban_list` to list kanban board structure: columns and tasks.
+    \\- Call first to discover `task_id` and `column_id` before moving a task.
+    \\- Requires `workspace_id` + `item_id` from Workspace Context.
+    \\
+;
+
 pub const kanban_list_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -106,6 +114,7 @@ pub const kanban_list_tool = AgentTool{
             },
             .required = &.{ "workspace_id", "item_id" },
         },
+        .system_prompt = kanban_list_tool_system_prompt,
     },
 };
 

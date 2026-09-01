@@ -33,6 +33,15 @@ pub const SetGitWorktreeInput = struct {
 };
 
 /// Tool definition for set_git_worktree
+pub const set_git_worktree_tool_system_prompt =
+    \\## Set Git Worktree Tool — Behavior
+    \\Use `set_git_worktree` to create or switch a git worktree at an absolute path.
+    \\- All subsequent `bash`/`read_file`/`write_file` ops run inside the worktree.
+    \\- Pass `clear=true` to remove the worktree and clear the binding.
+    \\- The `path` must be absolute, no `..` segments, and parent must exist.
+    \\
+;
+
 pub const set_git_worktree_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -63,6 +72,7 @@ pub const set_git_worktree_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = set_git_worktree_tool_system_prompt,
     },
 };
 

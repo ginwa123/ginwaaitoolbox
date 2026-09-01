@@ -12,6 +12,14 @@ pub const UpdateActivityInput = struct {
     thought: []const u8,
 };
 
+pub const update_activity_tool_system_prompt =
+    \\## Update Activity Tool — Behavior
+    \\Use `update_activity` to report your current thinking/work status.
+    \\- Call BEFORE every `bash`/`write_file`/`text_replace`. Include timestamp, session_id, cwd, and what you are about to do.
+    \\- This is mandatory — it updates the UI's activity feed and worker status.
+    \\
+;
+
 pub const update_activity_tool = AgentTool{
     .type = "function",
     .function = AgentToolFunction{
@@ -28,6 +36,7 @@ pub const update_activity_tool = AgentTool{
             },
             .required = &.{"thought"},
         },
+        .system_prompt = update_activity_tool_system_prompt,
     },
 };
 

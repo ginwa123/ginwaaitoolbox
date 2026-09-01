@@ -102,6 +102,14 @@ pub const MAX_MESSAGE_IDS: u32 = 50;
 /// (still bounded).
 pub const MAX_FULL_CONTENT_BYTES: u32 = 16 * 1024;
 
+pub const search_history_tool_system_prompt =
+    \\## Search History Tool — Behavior
+    \\Use `search_history` to search past conversation history (including compacted-out messages).
+    \\- `mode="text"` for FTS search with `query`; `mode="session"` to fetch a session's messages.
+    \\- Prefer filters (`tool_name`, `role`, `parent_session_id`) over broad queries. Paginate with `offset`/`limit`.
+    \\
+;
+
 pub const search_history_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -168,6 +176,7 @@ pub const search_history_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = search_history_tool_system_prompt,
     },
 };
 

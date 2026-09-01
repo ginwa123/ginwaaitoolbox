@@ -20,6 +20,13 @@ pub const EditSkillInput = struct {
 };
 
 /// Tool definition for edit_skill
+pub const edit_skill_tool_system_prompt =
+    \\## Edit Skill Tool — Behavior
+    \\Use `edit_skill` to update an existing skill's description or body.
+    \\- Provide `skill_name` and new `description`/`content`. Use to fix or improve a skill after learning a better approach.
+    \\
+;
+
 pub const edit_skill_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -51,6 +58,7 @@ pub const edit_skill_tool = AgentTool{
             },
             .required = &.{ "skill_name" },
         },
+        .system_prompt = edit_skill_tool_system_prompt,
     },
 };
 

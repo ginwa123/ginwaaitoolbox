@@ -296,6 +296,14 @@ pub fn toXMLError(allocator: std.mem.Allocator, result: NalarBrowserResult, acti
 }
 
 /// NalarBrowser tool definition for agent
+pub const nalar_browser_tool_system_prompt =
+    \\## Nalar Browser Tool — Behavior
+    \\Use `nalar_browser` for stealth Chromium automation on anti-bot sites.
+    \\- Workflow: `launch` → `open_page` → `snapshot` → `click`/`fill`/`press` → `close_page`/`close_browser`.
+    \\- Use for sites that block normal fetch (Cloudflare, reCAPTCHA).
+    \\
+;
+
 pub const nalar_browser_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -351,6 +359,7 @@ pub const nalar_browser_tool = AgentTool{
             },
             .required = &.{"action"},
         },
+        .system_prompt = nalar_browser_tool_system_prompt,
     },
 };
 

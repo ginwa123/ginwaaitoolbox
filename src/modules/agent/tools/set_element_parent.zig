@@ -26,6 +26,13 @@ pub const SetElementParentInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const set_element_parent_tool_system_prompt =
+    \\## Set Element Parent Tool — Behavior
+    \\Use `set_element_parent` to re-parent an element to a group/frame or back to top-level (null).
+    \\- Use to fix nesting after creation. The new parent must be a `group` or `frame` on the same page.
+    \\
+;
+
 pub const set_element_parent_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -55,6 +62,7 @@ pub const set_element_parent_tool = AgentTool{
             },
             .required = &.{ "element_id" },
         },
+        .system_prompt = set_element_parent_tool_system_prompt,
     },
 };
 

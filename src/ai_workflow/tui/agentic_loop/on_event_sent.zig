@@ -40,6 +40,7 @@ const helpers = @import("helpers");
 /// Input parameters for sending SSE events
 /// Used by TUI workflow to broadcast messages to connected clients
 pub const OnEventInputLLMHistory = struct {
+    id: ?[]const u8 = null,
     index: usize = 0,
     session_id: []const u8,
     model: []const u8,
@@ -68,6 +69,7 @@ pub const OnEventInputLLMHistory = struct {
 
 /// JSON event payload structure for SSE
 pub const SseEventLLMHistory = struct {
+    id: ?[]const u8 = null,
     index: ?usize = null,
     content: []const u8,
     type: []const u8 = "full",
@@ -312,6 +314,7 @@ pub fn onEventSendLLMHistory(allocator: std.mem.Allocator, input: OnEventInputLL
     }
 
     const payload = SseEventLLMHistory{
+        .id = input.id,
         .index = input.index,
         .content = if (sanitized_content) |s| s else (input.content orelse ""),
         .session_id = input.session_id,

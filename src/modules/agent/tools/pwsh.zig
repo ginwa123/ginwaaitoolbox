@@ -71,6 +71,15 @@ pub fn execute_pwsh(
 /// Re-exported under the pwsh name for ergonomic callers.
 pub const pwsh_result_to_string = shell.result_to_xml;
 
+pub const pwsh_tool_system_prompt =
+    \\## Pwsh Tool — Behavior
+    \\Use `pwsh` to execute PowerShell commands. Same timeout/output rules as `bash`.
+    \\- Always prefix with `timeout` and bound output.
+    \\- Use on Windows or when PowerShell syntax is required.
+    \\- Set `cwd` explicitly.
+    \\
+;
+
 pub const pwsh_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -194,6 +203,7 @@ pub const pwsh_tool = AgentTool{
             },
             .required = &.{ "command", "cwd", "mandatory_timeout" },
         },
+        .system_prompt = pwsh_tool_system_prompt,
     },
 };
 

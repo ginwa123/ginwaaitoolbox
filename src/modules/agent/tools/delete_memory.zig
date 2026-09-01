@@ -31,6 +31,14 @@ pub const DeleteMemoryInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const delete_memory_tool_system_prompt =
+    \\## Delete Memory Tool — Behavior
+    \\Use `delete_memory` to permanently delete a memory row by `id`.
+    \\- Never delete user-preference memories unless the user explicitly asks. Prefer UPSERT with superseding content.
+    \\- Unknown `id` returns `deleted=false` (idempotent).
+    \\
+;
+
 pub const delete_memory_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -56,6 +64,7 @@ pub const delete_memory_tool = AgentTool{
             },
             .required = &.{"id"},
         },
+        .system_prompt = delete_memory_tool_system_prompt,
     },
 };
 

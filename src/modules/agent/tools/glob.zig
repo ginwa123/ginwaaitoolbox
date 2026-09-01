@@ -1170,6 +1170,14 @@ pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult, pattern: [
 // Tool Definition
 // ============================================================================
 
+pub const glob_tool_system_prompt =
+    \\## Glob Tool — Behavior
+    \\Use `glob` to find files by pattern (e.g. `**/*.zig`, `*.ts`).
+    \\- Respects `.gitignore` by default. Set `respect_ignore_files=false` to include ignored files.
+    \\- Use to discover files by name before reading them.
+    \\
+;
+
 pub const glob_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -1245,6 +1253,7 @@ pub const glob_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = glob_tool_system_prompt,
     },
 };
 

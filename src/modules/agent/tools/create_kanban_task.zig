@@ -128,6 +128,14 @@ pub const CreateKanbanTaskInput = struct {
 ///   3. `column_id` is OPTIONAL — omit it to auto-assign to the
 ///      first column (append-to-bottom). Pass it only when the user
 ///      explicitly names a column.
+pub const create_kanban_task_tool_system_prompt =
+    \\## Create Kanban Task Tool — Behavior
+    \\Use `create_kanban_task` to create a new kanban card.
+    \\- Requires `name`, `description`, and `cwd` (absolute path). Optionally set `column_id`, `tags`, `image_urls`.
+    \\- Use when you discover follow-up work that should be tracked on the board.
+    \\
+;
+
 pub const create_kanban_task_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -207,6 +215,7 @@ pub const create_kanban_task_tool = AgentTool{
             // optional.
             .required = &.{ "workspace_id", "item_id", "name", "description", "cwd" },
         },
+        .system_prompt = create_kanban_task_tool_system_prompt,
     },
 };
 

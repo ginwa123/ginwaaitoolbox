@@ -32,6 +32,14 @@ pub const GetDesignContextInput = struct {
 };
 
 /// Top-level tool definition for the LLM.
+pub const get_design_context_tool_system_prompt =
+    \\## Get Design Context Tool — Behavior
+    \\Use `get_design_context` to inspect design structure: pages + elements with geometry.
+    \\- Pass `page_id` for one page or `workspace_item_id` for all pages. Use to discover `element_id`/`page_id` before editing.
+    \\- HTML bodies are not included — read them via `read_file` if needed.
+    \\
+;
+
 pub const get_design_context_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -78,6 +86,7 @@ pub const get_design_context_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = get_design_context_tool_system_prompt,
     },
 };
 

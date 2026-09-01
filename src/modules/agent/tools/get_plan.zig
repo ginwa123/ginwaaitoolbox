@@ -52,6 +52,14 @@ pub const GetPlanInput = struct {};
 /// agent's primary signal for WHEN to call this tool — it explicitly
 /// mentions the `<empty/>` absent signal so the agent knows to use
 /// `update_plan` to lay out a plan when it sees the empty result.
+pub const get_plan_tool_system_prompt =
+    \\## Get Plan Tool — Behavior
+    \\Use `get_plan` to read the current session plan.
+    \\- No parameters. Use to verify progress before updating, or after compaction to confirm the injected copy.
+    \\- Returns `<plan>` with CDATA or `<empty/>` if no plan exists.
+    \\
+;
+
 pub const get_plan_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -73,6 +81,7 @@ pub const get_plan_tool = AgentTool{
             .properties = &.{},
             .required = &.{},
         },
+        .system_prompt = get_plan_tool_system_prompt,
     },
 };
 

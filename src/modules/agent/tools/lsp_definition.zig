@@ -496,6 +496,13 @@ pub fn xmlError(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 
     , .{error_msg}) catch "<error>UnknownError</error>";
 }
 
+pub const lsp_definition_tool_system_prompt =
+    \\## LSP Definition Tool — Behavior
+    \\Use `lsp_definition` to jump to definition via LSP.
+    \\- Provide `lsp` (binary), `project_root`, `file`, `line`, `character`. Use to navigate code precisely.
+    \\
+;
+
 pub const lsp_definition_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -536,6 +543,7 @@ pub const lsp_definition_tool = AgentTool{
             },
             .required = &.{ "file_path", "line", "character" },
         },
+        .system_prompt = lsp_definition_tool_system_prompt,
     },
 };
 

@@ -84,6 +84,14 @@ pub const ShowPreviewInput = struct {
 /// "show", "display", "preview", or "render" something — without
 /// that hint the LLM would write to the chat transcript and miss
 /// the rich-rendering side panel entirely.
+pub const show_preview_tool_system_prompt =
+    \\## Show Preview Tool — Behavior
+    \\Use `show_preview` to render markdown/text/code/image/html in the side panel.
+    \\- Provide `content_type` and `content` (or `path` for images). Content is not saved to chat history — use for ephemeral previews.
+    \\- For code, provide `language` for syntax highlighting.
+    \\
+;
+
 pub const show_preview_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -133,6 +141,7 @@ pub const show_preview_tool = AgentTool{
             },
             .required = &.{ "content_type", "content" },
         },
+        .system_prompt = show_preview_tool_system_prompt,
     },
 };
 

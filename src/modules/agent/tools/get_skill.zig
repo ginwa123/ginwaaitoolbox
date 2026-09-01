@@ -27,6 +27,13 @@ pub const GetSkillResult = struct {
 };
 
 /// Tool definition for get_skill
+pub const get_skill_tool_system_prompt =
+    \\## Get Skill Tool — Behavior
+    \\Use `get_skill` to load a skill's full instructions by exact file path (from `list_skills`).
+    \\- The path is case-sensitive and ends in `SKILL.MD` — don't construct it from the name. Pass it verbatim.
+    \\
+;
+
 pub const get_skill_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -48,6 +55,7 @@ pub const get_skill_tool = AgentTool{
             },
             .required = &.{ "path", "is_global" },
         },
+        .system_prompt = get_skill_tool_system_prompt,
     },
 };
 

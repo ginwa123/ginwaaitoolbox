@@ -14,6 +14,13 @@ pub const SkillsListData = struct {
 };
 
 /// Tool definition for list_skills
+pub const list_skills_tool_system_prompt =
+    \\## List Skills Tool — Behavior
+    \\Use `list_skills` to discover available skills (global + local).
+    \\- Call to refresh the skill list before picking a skill to load. No parameters required beyond `cwd`.
+    \\
+;
+
 pub const list_skills_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -31,6 +38,7 @@ pub const list_skills_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = list_skills_tool_system_prompt,
     },
 };
 

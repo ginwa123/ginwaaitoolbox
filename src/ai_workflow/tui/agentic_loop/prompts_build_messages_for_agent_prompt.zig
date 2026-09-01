@@ -19,6 +19,11 @@ const prompts_const = @import("../../../modules/agent/prompts/prompts.zig");
 const memory_prompts = @import("../../../modules/agent/prompts/memory.zig");
 const tool_list_skills_mod = @import("../../../modules/agent/tools/list_skills.zig");
 const tool_memories_mod = @import("../../../modules/agent/tools/memories.zig");
+
+// Per-file tool system prompts are now stored directly in each tool's
+// `AgentTool.function.system_prompt` field (see schemas.zig). The aggregator
+// below reads `tool.function.system_prompt` dynamically from `filtered_tools`
+// without hardcoding names — the tool's own `.name` is the key.
 const config_mod = nalarcore.config;
 const custom_http_client = @import("custom_http_client");
 const background_process = @import("background_process.zig");
@@ -200,6 +205,13 @@ pub fn buildMessages(
     // design rule
     const designStatusContent = try buildDesignCanvasPrompt(allocator, db, session_id);
     try final_system.appendSlice(allocator, designStatusContent);
+
+    // Tool Behaviors — generated from filtered_tools (post kanban/design filtering).
+    // Unlike appendToolListing (which copies tool.description verbatim), this
+    // section describes *how to behave* with each tool: when to use it, what
+    // it does, and constraints. The LLM already receives the JSON schema via
+    // the API; this prompt is the behavioral layer on top.
+    try appendToolBehaviorSection(allocator, &final_system, filtered_tools);
 
     const inherited_md = inherited_context.formatHistory(
         allocator,
@@ -1548,6 +1560,50 @@ fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), t
         try result.appendSlice(allocator, name);
         try result.appendSlice(allocator, "**: ");
         try result.appendSlice(allocator, desc);
+        try result.appendSlice(allocator, "\n");
+    }
+}
+
+/// Get the behavioral prompt for a tool directly from its own
+/// `AgentTool.function.system_prompt` field — no hardcoded name mapping.
+/// Each tool file sets `.system_prompt = <tool>_system_prompt` in its
+/// `AgentTool` definition, so the prompt travels with `filtered_tools`
+/// and is read here via `tool.function.system_prompt`.
+fn toolBehaviorFromTool(tool: tool_models.AgentTool) ?[]const u8 {
+    const prompt = tool.function.system_prompt;
+    if (prompt.len > 0) return prompt;
+    // Dynamic MCP tools are named mcp_<server>_<tool> — they are not in the
+    // static registry but are still callable. Provide a generic behavior.
+    if (std.mem.startsWith(u8, tool.function.name, "mcp_")) return "MCP tool from an external server. Call it with the parameters defined in its JSON schema. The server is already connected; just invoke the tool.";
+    return null;
+}
+
+/// Append a behavioral tool section to the result ArrayList.
+///
+/// Unlike appendToolListing (which copies tool.description), this renders
+/// *how to behave* with each tool. The LLM already receives the JSON schema
+/// via the API; this prompt tells it when and how to use each tool.
+fn appendToolBehaviorSection(allocator: std.mem.Allocator, result: *std.ArrayList(u8), tools: []const tool_models.AgentTool) !void {
+    if (tools.len == 0) return;
+
+    // Count how many tools have a known behavior — skip the section if none.
+    var known_count: usize = 0;
+    for (tools) |tool| {
+        if (toolBehaviorFromTool(tool) != null) known_count += 1;
+    }
+    if (known_count == 0) return;
+
+    try result.appendSlice(allocator, "\n\n## Tool Behaviors\n\n");
+    try result.appendSlice(allocator, "You have access to the following tools. Use them according to these behaviors:\n\n");
+
+    for (tools) |tool| {
+        const name = tool.function.name;
+        if (name.len == 0) continue;
+        const behavior = toolBehaviorFromTool(tool) orelse continue;
+        try result.appendSlice(allocator, "- **");
+        try result.appendSlice(allocator, name);
+        try result.appendSlice(allocator, "**: ");
+        try result.appendSlice(allocator, behavior);
         try result.appendSlice(allocator, "\n");
     }
 }

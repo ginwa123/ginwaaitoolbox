@@ -154,6 +154,14 @@ pub fn toXml(allocator: std.mem.Allocator, entries: []const Entry, dir_path: []c
 }
 
 /// Tool definition for the LLM-facing API.
+pub const list_directory_tool_system_prompt =
+    \\## List Directory Tool — Behavior
+    \\Use `list_directory` to list first-level entries in a directory (like `ls`).
+    \\- Respects `.gitignore`. Set `hidden=true` to include dotfiles.
+    \\- Use to explore project structure before diving into files.
+    \\
+;
+
 pub const list_directory_tool = AgentTool{
     .type = "function",
     .function = .{
@@ -194,6 +202,7 @@ pub const list_directory_tool = AgentTool{
             },
             .required = &.{},
         },
+        .system_prompt = list_directory_tool_system_prompt,
     },
 };
 
