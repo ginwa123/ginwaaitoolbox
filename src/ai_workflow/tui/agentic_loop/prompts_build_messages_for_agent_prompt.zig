@@ -94,8 +94,6 @@ pub fn buildMessages(
     inherited_context_mode: []const u8,
     activeAgentContent: []const u8,
 ) ![]agent.AgentMessage {
-    _ = activeAgentContent;
-
     const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
@@ -104,51 +102,40 @@ pub fn buildMessages(
 
     const filtered_tools = try filteringTools(allocator, db, session_id, tools);
 
-    const universal_rules_prompt = prompts_const.UniversalRules;
-    try final_system.appendSlice(allocator, universal_rules_prompt);
+    // 1. Static prompts — inlined (no PROMPT_SECTIONS constant), gated on hasTool where needed
+    try final_system.appendSlice(allocator, prompts_const.UniversalRules);
+    try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
+    if (hasTool(filtered_tools, "load_memory")) {
+        try final_system.appendSlice(allocator, prompts_const.MemoryToolRule);
+    }
+    try final_system.appendSlice(allocator, prompts_const.Agent);
+    try final_system.appendSlice(allocator, prompts_const.GitPrompt);
+    try final_system.appendSlice(allocator, prompts_const.ResponseFormatting);
+    if (hasTool(filtered_tools, "update_plan")) {
+        try final_system.appendSlice(allocator,
+            \\## Task Planning
+            \\
+            \\For multi-step work, lay out a structured plan early with the `update_plan` tool, then
+            \\keep it in sync by calling `update_plan` after completing each checklist item (flip
+            \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your system prompt on
+            \\every iteration, so you always see the current state. Use `get_plan` to verify the
+            \\current state explicitly.
+            \\
+        );
+    }
+    try final_system.appendSlice(allocator, prompts_const.UpdateActivityRule);
+    try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
+    _ = activeAgentContent;
 
-    const os_name = getCurrentOs();
-    try final_system.appendSlice(allocator, "\n\n**Operating System:** ");
-    try final_system.appendSlice(allocator, os_name);
-    try final_system.appendSlice(allocator,
-        \\**Important:** Always use OS-specific commands. Check the current OS
-        \\before running system commands or shell scripts.
-    );
+    // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)
+    const memoryMd = try agentic_loop.prompts_mod.makeWorkingDirectoryContext(allocator, io, cwd);
+    defer allocator.free(memoryMd);
+    if (memoryMd.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n");
+        try final_system.appendSlice(allocator, memoryMd);
+    }
 
-    try final_system.appendSlice(allocator, "\n\n**Current working directory:** ");
-    try final_system.appendSlice(allocator, cwd);
-
-    const response_formatting_prompt = prompts_const.ResponseFormatting;
-    try final_system.appendSlice(allocator, response_formatting_prompt);
-
-    const git_prompt_prompt = prompts_const.GitPrompt;
-    try final_system.appendSlice(allocator, git_prompt_prompt);
-
-    const memory_tool_rule_prompt = prompts_const.MemoryToolRule;
-    try final_system.appendSlice(allocator, memory_tool_rule_prompt);
-
-    const skill_prompt = prompts_const.memory.skills_system_prompt;
-    try final_system.appendSlice(allocator, skill_prompt);
-
-    const update_activity_tool_prompt = prompts_const.UpdateActivityRule;
-    try final_system.appendSlice(allocator, update_activity_tool_prompt);
-
-    const update_plan_tool =
-        \\
-        \\## Task Planning
-        \\
-        \\For multi-step work, lay out a structured plan early with the `update_plan` tool, then
-        \\keep it in sync by calling `update_plan` after completing each checklist item (flip
-        \\`- [ ]` → `- [x]`). The plan is automatically re-injected into your system prompt on
-        \\every iteration, so you always see the current state. Use `get_plan` to verify the
-        \\current state explicitly.
-    ;
-    try final_system.appendSlice(allocator, update_plan_tool);
-
-    // Local Knowledge — auto-loaded from <cwd>/.nalar/memories/*.md.
-    // Project-specific memories that ship with the codebase. Renders
-    // BEFORE Global Knowledge so project context precedes cross-project
-    // context ("most specific first" ordering).
+    // 3. Local Knowledge → Global Knowledge ("most specific first")
     const local_knowledge = try loadLocalKnowledge(allocator, io, cwd);
     defer allocator.free(local_knowledge);
     if (local_knowledge.len > 0) {
@@ -163,11 +150,8 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, local_knowledge);
     }
 
-    // Global Knowledge — auto-loaded from ~/.config/nalar/memories/*.md.
-    // Same loader and 50KB budget as build_sub_agent_prompt. The
-    // GlobalMemorySystem static section above already told the model this
-    // content is coming; here is where the actual content gets injected.
     const knowledge = try loadGlobalKnowledge(allocator, io, environment);
+    defer allocator.free(knowledge);
     if (knowledge.len > 0) {
         try final_system.appendSlice(allocator, "\n\n## Global Knowledge\n\n");
         try final_system.appendSlice(allocator,
@@ -178,53 +162,100 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, knowledge);
     }
 
+    // 4. cwd + OS — consistent with build_agent_prompt (cwd after knowledge, OS at end of static block)
+    if (cwd.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n**Current working directory:** ");
+        try final_system.appendSlice(allocator, cwd);
+    }
+
+    const os_name = getCurrentOs();
+    try final_system.appendSlice(allocator, "\n\n**Operating System:** ");
+    try final_system.appendSlice(allocator, os_name);
+    try final_system.appendSlice(allocator,
+        \\**Important:** Always use OS-specific commands. Check the current OS
+        \\before running system commands or shell scripts.
+    );
+
+    // 5. workspaceContext → agentSystemPrompt → agentKnowledge → agentKanbanSystemPrompt → agentKanbanKnowledge
     const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
-    try final_system.appendSlice(allocator, workspaceContext);
-
-    const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
-    try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
-
-    const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
-    try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
-
-    const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
-    try final_system.appendSlice(allocator, agentKnowledgeContent);
+    defer allocator.free(workspaceContext);
+    if (workspaceContext.len > 0) {
+        try final_system.appendSlice(allocator, workspaceContext);
+    }
 
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
-    try final_system.appendSlice(allocator, agentSystemPromptContent);
+    defer allocator.free(agentSystemPromptContent);
+    if (agentSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentSystemPromptContent);
+    }
 
-    // kanban rule
+    const agentKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKnowledgeContent);
+    if (agentKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKnowledgeContent);
+    }
+
+    const agentKanbanSystemPromptContent = try agentic_loop.prompts_mod.makeAgentKanbanSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanSystemPromptContent);
+    if (agentKanbanSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanSystemPromptContent);
+    }
+
+    const agentKanbanKnowledgeContent = try agentic_loop.prompts_mod.makeAgentKanbanKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentKanbanKnowledgeContent);
+    if (agentKanbanKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
+    }
+
+    // 6. kanbanStatus → designStatus
     const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, filtered_tools);
-    try final_system.appendSlice(allocator, kanbanStatusContent);
+    defer allocator.free(kanbanStatusContent);
+    if (kanbanStatusContent.len > 0) {
+        try final_system.appendSlice(allocator, kanbanStatusContent);
+    }
 
-    // design rule
     const designStatusContent = try buildDesignCanvasPrompt(allocator, db, session_id);
-    try final_system.appendSlice(allocator, designStatusContent);
+    defer allocator.free(designStatusContent);
+    if (designStatusContent.len > 0) {
+        try final_system.appendSlice(allocator, designStatusContent);
+    }
 
-    // Tool Behaviors — generated from filtered_tools (post kanban/design filtering).
-    // Unlike appendToolListing (which copies tool.description verbatim), this
-    // section describes *how to behave* with each tool: when to use it, what
-    // it does, and constraints. The LLM already receives the JSON schema via
-    // the API; this prompt is the behavioral layer on top.
+    // 7. Tool Behaviors + Available Skills + Available Sub-Agents
     try appendToolBehaviorSection(allocator, &final_system, filtered_tools);
 
+    // Available Skills listing — gated on list_skills tool, best-effort
+    try appendSkillsListing(allocator, &final_system, filtered_tools, cwd, io, environment);
+
+    // Available Sub-Agents listing — from LlmConfig (profile-aware)
+    const sub_agents_listing = try BuildSubAgentsListing(allocator, db, session_id);
+    defer allocator.free(sub_agents_listing);
+    if (sub_agents_listing.len > 0) {
+        try final_system.appendSlice(allocator, "\n\n");
+        try final_system.appendSlice(allocator, sub_agents_listing);
+    }
+
+    // 8. inherited_context → Current Plan
     const inherited_md = inherited_context.formatHistory(
         allocator,
         db,
-        session_id, // the current agent's session_id (vs. parent's)
-        parent_session_id, // the parent's session_id, NOT the sub-agent's
+        session_id,
+        parent_session_id,
         inherited_context.parseMode(inherited_context_mode) catch .none,
     ) catch blk: {
         std.log.warn("buildMessages: failed to render inherited_context: mode={s}", .{inherited_context_mode});
         break :blk try allocator.dupe(u8, "");
     };
+    defer allocator.free(inherited_md);
     if (inherited_md.len > 0) {
         try final_system.appendSlice(allocator, "\n\n");
         try final_system.appendSlice(allocator, inherited_md);
     }
 
-    const memoryMd = try agentic_loop.prompts_mod.makeWorkingDirectoryContext(allocator, io, cwd);
-    try final_system.appendSlice(allocator, memoryMd);
+    const planContent = try agentic_loop.prompts_mod.makePlanContext(allocator, db, session_id);
+    defer allocator.free(planContent);
+    if (planContent.len > 0) {
+        try final_system.appendSlice(allocator, planContent);
+    }
 
     const final_system_content = try final_system.toOwnedSlice(allocator);
 
