@@ -104,9 +104,13 @@ pub fn buildMessages(
 
     // 1. Static prompts — inlined (no PROMPT_SECTIONS constant), gated on hasTool where needed
     try final_system.appendSlice(allocator, prompts_const.UniversalRules);
-    try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
+    if (hasTool(filtered_tools, "search")) {
+        try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
+    }
     try final_system.appendSlice(allocator, prompts_const.Agent);
-    try final_system.appendSlice(allocator, prompts_const.GitPrompt);
+    if (hasTool(filtered_tools, "bash")) {
+        try final_system.appendSlice(allocator, prompts_const.GitPrompt);
+    }
     try final_system.appendSlice(allocator, prompts_const.ResponseFormatting);
     if (hasTool(filtered_tools, "update_plan")) {
         try final_system.appendSlice(allocator,
@@ -120,8 +124,12 @@ pub fn buildMessages(
             \\
         );
     }
-    try final_system.appendSlice(allocator, prompts_const.UpdateActivityRule);
-    try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
+    if (hasTool(filtered_tools, "update_activity")) {
+        try final_system.appendSlice(allocator, prompts_const.UpdateActivityRule);
+    }
+    if (hasTool(filtered_tools, "list_skills")) {
+        try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
+    }
     _ = activeAgentContent;
 
     // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)
