@@ -606,8 +606,10 @@ class FunctionalHarness:
             # On Windows, rmtree can fail with PermissionError if the DB or log
             # is still held for a moment after child exit (AV, indexing, etc.).
             # Retry with backoff; the child is already dead at this point.
+            # Windows needs more retries for vite log (child tree may linger).
             last_exc = None
-            for _ in range(5):
+            retries = 10 if os.name == "nt" else 5
+            for _ in range(retries):
                 try:
                     shutil.rmtree(self.temp_dir)
                     last_exc = None
@@ -615,7 +617,7 @@ class FunctionalHarness:
                 except OSError as e:
                     last_exc = e
                     if os.name == "nt":
-                        time.sleep(0.5)
+                        time.sleep(1.0)
                         continue
                     raise
             if last_exc is not None:

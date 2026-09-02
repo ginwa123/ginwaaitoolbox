@@ -275,7 +275,10 @@ class UIHarness:
         # Vite reads .env files; we set BROWSER=none so vite doesn't try
         # to open a browser tab on the developer's display.
         env["BROWSER"] = "none"
-        vite_log_path = backend.temp_dir / "vite.log"
+        # Vite log outside temp_dir so backend's rmtree doesn't fail on
+        # Windows when vite child still holds the file (PermissionError).
+        # Use a separate temp file that we clean up explicitly.
+        vite_log_path = Path(tempfile.gettempdir()) / f"nalar-vite-{backend.temp_dir.name}.log"
         vite_log_file = vite_log_path.open("wb")
         vite_proc = subprocess.Popen(
             [
@@ -294,6 +297,12 @@ class UIHarness:
             env=env,
             start_new_session=True,
         )
+        # Parent can close its handle — child has duped it. On Windows, keeping
+        # it open prevents shutil.rmtree (PermissionError: file in use) on teardown.
+        try:
+            vite_log_file.close()
+        except Exception:
+            pass
 
         instance = cls(
             backend=backend,
@@ -310,7 +319,6 @@ class UIHarness:
         except Exception:
             with contextlib.suppress(ProcessLookupError):
                 vite_proc.kill()
-            vite_log_file.close()
             backend.teardown()
             raise
 
@@ -403,6 +411,23 @@ class UIHarness:
         # 2. Backend teardown. This handles HOME restore, SIGTERM/SIGKILL
         #    the binary, is_safe_tmp validation, and rmtree.
         self.backend.teardown()
+        # Vite log is now outside temp_dir (to avoid Windows PermissionError
+        # on rmtree when child still holds the file). Clean it separately
+        # with retries.
+        if os.name == "nt":
+            for _ in range(5):
+                try:
+                    if self.vite_log_path.exists():
+                        self.vite_log_path.unlink()
+                    break
+                except OSError:
+                    time.sleep(0.5)
+        else:
+            try:
+                if self.vite_log_path.exists():
+                    self.vite_log_path.unlink()
+            except OSError:
+                pass
 
     def __enter__(self) -> "UIHarness":
         return self
@@ -461,6 +486,20 @@ class UIHarness:
             except OSError:
                 pass
         else:
+            # Windows: TerminateProcess only kills the parent; vite spawns
+            # node/esbuild children that may hold vite.log. Use taskkill /T
+            # to kill the whole tree when available, fall back to os.kill.
+            if sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self.vite_pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=5,
+                    )
+                    return
+                except Exception:
+                    pass
             try:
                 os.kill(self.vite_pid, sig)
             except OSError:
