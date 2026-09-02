@@ -716,9 +716,12 @@ const handleItemDragEnd = () => {
             >
               <li>
                 <button
-                  @click="handleAddItem(workspace.id, 'folder')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+                  disabled
+                  class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
                   style="color: var(--semantic-text);"
+                  title="Coming soon"
+                  aria-disabled="true"
+                  data-testid="workspace-add-project-option"
                 >
                   Add Project
                 </button>
@@ -744,7 +747,7 @@ const handleItemDragEnd = () => {
                   style="color: var(--semantic-text);"
                   data-testid="workspace-add-design-option"
                 >
-                  Add Design
+                  Add Design (alpha)
                 </button>
               </li>
               <!-- Agent Mode (plan 2026-08-15-agent-mode,

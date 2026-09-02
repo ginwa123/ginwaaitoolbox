@@ -165,7 +165,7 @@ describe('KanbanSettingsView', () => {
           // UI (reused from `item_type='agent'`). We only assert its
           // presence/absence here; AgentView's own spec covers behaviour.
           AgentView: {
-            template: '<div data-testid="kanban-settings-page-agent-panel-stub"></div>',
+            template: '<div data-testid="kanban-settings-page-agent-panel-stub"><slot name="right-extra" /></div>',
             props: ['item', 'workspaceId', 'itemId', 'knowledge', 'tools', 'systemPrompts'],
           },
           // Stub KanbanColumnEditor to avoid the Teleport + nested

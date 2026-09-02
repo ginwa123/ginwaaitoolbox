@@ -202,139 +202,10 @@ function handleClearAllVisible() {
 
 <template>
   <div class="flex h-full" data-testid="agent-view">
-    <!-- Left column: Knowledge + Tools panels -->
-    <div class="w-96 border-r overflow-y-auto p-4 space-y-6" style="border-color: var(--color-border);">
-      <!-- Knowledge panel -->
-      <section data-testid="agent-knowledge-panel">
-        <div class="flex items-center justify-between mb-2">
-          <div class="flex items-center gap-2">
-            <h2 class="text-sm font-semibold" style="color: var(--semantic-text);">
-              Knowledge
-            </h2>
-            <span
-              data-testid="agent-knowledge-count"
-              class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-              :style="{
-                backgroundColor: knowledge.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
-                color: knowledge.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
-                border: knowledge.length > 0 ? 'none' : '1px solid var(--color-border)',
-              }"
-            >
-              {{ knowledge.length }}
-            </span>
-          </div>
-          <button
-            type="button"
-            @click="emit('addKnowledge')"
-            data-testid="agent-add-knowledge"
-            class="text-xs px-2 py-1 rounded font-medium"
-            style="background: var(--color-violet); color: var(--color-bg);"
-          >
-            + Add
-          </button>
-        </div>
-        <div v-if="knowledge.length === 0" class="text-xs mt-2" style="color: var(--semantic-text-dim);">
-          No knowledge files yet — click <strong>+ Add</strong> to attach a markdown file the agent will read on every chat start.
-        </div>
-        <ul v-else class="space-y-1.5 mt-2">
-          <li
-            v-for="k in knowledge"
-            :key="k.id"
-            data-testid="agent-knowledge-item"
-            class="group p-2 rounded border"
-            style="background: var(--semantic-sidebar-bg); border-color: var(--color-border);"
-          >
-            <div class="flex items-start gap-2">
-              <button
-                type="button"
-                @click="toggleKnowledgeExpanded(k.id)"
-                :data-testid="`agent-knowledge-expand-${k.id}`"
-                class="shrink-0 w-4 h-4 mt-0.5 flex items-center justify-center rounded hover:opacity-80 transition-transform"
-                :style="{ color: 'var(--semantic-text-dim)', transform: expandedKnowledge.has(k.id) ? 'rotate(90deg)' : 'none' }"
-                :aria-expanded="expandedKnowledge.has(k.id)"
-                :aria-label="expandedKnowledge.has(k.id) ? 'Collapse details' : 'Expand details'"
-                title="Show / hide details"
-              >
-                ▸
-              </button>
-              <div class="flex-1 min-w-0 cursor-pointer" @click="toggleKnowledgeExpanded(k.id)">
-                <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
-                  {{ k.label || (k.content ? 'Inline knowledge' : basename(k.file_path)) }}
-                </div>
-                <div v-if="k.content" class="text-[11px] mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
-                  <span
-                    class="px-1.5 py-0.5 rounded shrink-0"
-                    data-testid="agent-knowledge-inline-badge"
-                    style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-                  >Inline text</span>
-                  <span v-if="!expandedKnowledge.has(k.id)" class="truncate" :title="k.content">{{ k.content.slice(0, 60) }}{{ k.content.length > 60 ? '…' : '' }}</span>
-                </div>
-                <div v-else class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
-                  {{ k.file_path }}
-                </div>
-              </div>
-              <button
-                type="button"
-                @click="emit('editKnowledge', k)"
-                data-testid="agent-edit-knowledge"
-                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-white/10"
-                style="color: var(--semantic-text-muted);"
-                :aria-label="`Edit ${k.label || basename(k.file_path)}`"
-                title="Edit this knowledge entry"
-              >
-                ✎
-              </button>
-              <button
-                type="button"
-                @click="emit('removeKnowledge', k.id)"
-                data-testid="agent-remove-knowledge"
-                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-red-500/10"
-                style="color: var(--color-red);"
-                :aria-label="`Remove ${k.label || basename(k.file_path)}`"
-                title="Remove this knowledge file"
-              >
-                ✕
-              </button>
-            </div>
-            <!-- Expanded detail area -->
-            <div
-              v-if="expandedKnowledge.has(k.id)"
-              data-testid="agent-knowledge-detail"
-              class="mt-2 pt-2 border-t space-y-1.5"
-              style="border-color: var(--color-border);"
-            >
-              <template v-if="k.content">
-                <pre
-                  data-testid="agent-knowledge-content-preview"
-                  class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto p-2 rounded"
-                  style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);"
-                >{{ k.content }}</pre>
-                <button
-                  type="button"
-                  @click="copyKnowledgeContent(k.content)"
-                  data-testid="agent-knowledge-copy"
-                  class="text-[11px] px-1.5 py-0.5 rounded font-medium hover:opacity-80"
-                  style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
-                  title="Copy content to clipboard"
-                >
-                  ⧉ Copy
-                </button>
-              </template>
-              <template v-else>
-                <div class="text-[11px] font-mono break-all p-2 rounded" style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);">
-                  {{ k.file_path }}
-                </div>
-                <div class="text-[11px]" style="color: var(--semantic-text-dim);">
-                  File-backed — the agent reads this file at chat start.
-                </div>
-              </template>
-            </div>
-          </li>
-        </ul>
-      </section>
-
-      <!-- Tools panel -->
-      <section data-testid="agent-tools-panel">
+    <!-- Left column: Tools panel (Knowledge moved to right per arrow) -->
+    <div class="w-96 border-r overflow-y-auto p-5" style="border-color: var(--color-border);">
+      <!-- Tools panel (card for consistency with right panels) -->
+      <section data-testid="agent-tools-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
             <h2 class="text-sm font-semibold" style="color: var(--semantic-text);">
@@ -559,10 +430,11 @@ function handleClearAllVisible() {
           </li>
         </ul>
       </section>
+
     </div>
 
-    <!-- Right column: Agent name + System Prompt panel -->
-    <div class="flex-1 flex flex-col p-4">
+    <!-- Right column: System Prompt → Local Memories → Knowledge (ordered per user request) -->
+    <div class="flex-1 flex flex-col p-5 gap-6 overflow-y-auto">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
           {{ props.item.name || 'Agent' }}
@@ -573,9 +445,10 @@ function handleClearAllVisible() {
            list of named prompt blocks injected into every chat with this
            agent, before its knowledge. Mirrors the Knowledge panel's row
            pattern (expand chevron + ✎/✕). -->
-      <section data-testid="agent-system-prompt-panel" class="mb-6">
-        <div class="flex items-center justify-between mb-2">
+      <section data-testid="agent-system-prompt-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
+        <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
+            <span aria-hidden="true" class="text-sm">📝</span>
             <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">System Prompt</h3>
             <span
               class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
@@ -597,9 +470,11 @@ function handleClearAllVisible() {
           </button>
         </div>
 
-        <p v-if="systemPrompts.length === 0" class="text-xs" style="color: var(--semantic-text-dim);">
-          No system prompts yet. Add one to give this Agent a persona or standing instructions.
-        </p>
+        <div v-if="systemPrompts.length === 0" class="text-xs text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
+          <div class="text-lg mb-1" aria-hidden="true">📝</div>
+          <div>No system prompts yet.</div>
+          <div class="mt-1">Add one to give this Agent a persona or standing instructions.</div>
+        </div>
 
         <ul v-else class="space-y-1.5">
           <li
@@ -657,10 +532,144 @@ function handleClearAllVisible() {
         </ul>
       </section>
 
-      <div class="text-xs" style="color: var(--semantic-text-dim);">
-        Start a conversation from the sidebar.
-        The system prompt is injected first, then knowledge files are loaded into context,
-        and only the tools you've enabled will be available.
+      <!-- Slot for extra right content (e.g. Local Memories in Kanban Settings per arrow - both arrows point to main panel) -->
+      <slot name="right-extra" />
+
+      <!-- Knowledge panel -->
+      <section data-testid="agent-knowledge-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-2">
+            <span aria-hidden="true" class="text-sm">📚</span>
+            <h2 class="text-sm font-semibold" style="color: var(--semantic-text);">
+              Knowledge
+            </h2>
+            <span
+              data-testid="agent-knowledge-count"
+              class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+              :style="{
+                backgroundColor: knowledge.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
+                color: knowledge.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
+                border: knowledge.length > 0 ? 'none' : '1px solid var(--color-border)',
+              }"
+            >
+              {{ knowledge.length }}
+            </span>
+          </div>
+          <button
+            type="button"
+            @click="emit('addKnowledge')"
+            data-testid="agent-add-knowledge"
+            class="text-xs px-2.5 py-1 rounded-lg font-medium hover:opacity-90 transition-opacity"
+            style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
+          >
+            + Add
+          </button>
+        </div>
+        <div v-if="knowledge.length === 0" class="text-xs text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
+          <div class="text-lg mb-1" aria-hidden="true">📚</div>
+          <div>No knowledge files yet.</div>
+          <div class="mt-1">Click <strong>+ Add</strong> to attach a markdown file the agent will read on every chat start.</div>
+        </div>
+        <ul v-else class="space-y-1.5 mt-2">
+          <li
+            v-for="k in knowledge"
+            :key="k.id"
+            data-testid="agent-knowledge-item"
+            class="group p-2 rounded border"
+            style="background: var(--semantic-sidebar-bg); border-color: var(--color-border);"
+          >
+            <div class="flex items-start gap-2">
+              <button
+                type="button"
+                @click="toggleKnowledgeExpanded(k.id)"
+                :data-testid="`agent-knowledge-expand-${k.id}`"
+                class="shrink-0 w-4 h-4 mt-0.5 flex items-center justify-center rounded hover:opacity-80 transition-transform"
+                :style="{ color: 'var(--semantic-text-dim)', transform: expandedKnowledge.has(k.id) ? 'rotate(90deg)' : 'none' }"
+                :aria-expanded="expandedKnowledge.has(k.id)"
+                :aria-label="expandedKnowledge.has(k.id) ? 'Collapse details' : 'Expand details'"
+                title="Show / hide details"
+              >
+                ▸
+              </button>
+              <div class="flex-1 min-w-0 cursor-pointer" @click="toggleKnowledgeExpanded(k.id)">
+                <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                  {{ k.label || (k.content ? 'Inline knowledge' : basename(k.file_path)) }}
+                </div>
+                <div v-if="k.content" class="text-[11px] mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
+                  <span
+                    class="px-1.5 py-0.5 rounded shrink-0"
+                    data-testid="agent-knowledge-inline-badge"
+                    style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+                  >Inline text</span>
+                  <span v-if="!expandedKnowledge.has(k.id)" class="truncate" :title="k.content">{{ k.content.slice(0, 60) }}{{ k.content.length > 60 ? '…' : '' }}</span>
+                </div>
+                <div v-else class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
+                  {{ k.file_path }}
+                </div>
+              </div>
+              <button
+                type="button"
+                @click="emit('editKnowledge', k)"
+                data-testid="agent-edit-knowledge"
+                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-white/10"
+                style="color: var(--semantic-text-muted);"
+                :aria-label="`Edit ${k.label || basename(k.file_path)}`"
+                title="Edit this knowledge entry"
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                @click="emit('removeKnowledge', k.id)"
+                data-testid="agent-remove-knowledge"
+                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-red-500/10"
+                style="color: var(--color-red);"
+                :aria-label="`Remove ${k.label || basename(k.file_path)}`"
+                title="Remove this knowledge file"
+              >
+                ✕
+              </button>
+            </div>
+            <!-- Expanded detail area -->
+            <div
+              v-if="expandedKnowledge.has(k.id)"
+              data-testid="agent-knowledge-detail"
+              class="mt-2 pt-2 border-t space-y-1.5"
+              style="border-color: var(--color-border);"
+            >
+              <template v-if="k.content">
+                <pre
+                  data-testid="agent-knowledge-content-preview"
+                  class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto p-2 rounded"
+                  style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);"
+                >{{ k.content }}</pre>
+                <button
+                  type="button"
+                  @click="copyKnowledgeContent(k.content)"
+                  data-testid="agent-knowledge-copy"
+                  class="text-[11px] px-1.5 py-0.5 rounded font-medium hover:opacity-80"
+                  style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
+                  title="Copy content to clipboard"
+                >
+                  ⧉ Copy
+                </button>
+              </template>
+              <template v-else>
+                <div class="text-[11px] font-mono break-all p-2 rounded" style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);">
+                  {{ k.file_path }}
+                </div>
+                <div class="text-[11px]" style="color: var(--semantic-text-dim);">
+                  File-backed — the agent reads this file at chat start.
+                </div>
+              </template>
+            </div>
+          </li>
+        </ul>
+      </section>
+
+
+      <div class="text-xs p-3 rounded-xl text-center" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);">
+        <span aria-hidden="true">💡</span> Start a conversation from the sidebar. The system prompt is injected first, then knowledge files are loaded into context, and only the tools you've enabled will be available.
       </div>
     </div>
   </div>

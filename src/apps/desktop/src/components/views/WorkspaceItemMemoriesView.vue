@@ -88,22 +88,28 @@ watch(
 
 <template>
   <div class="flex flex-col h-full" data-testid="workspace-item-memories-view">
-    <!-- Header: item name + path + refresh button -->
+    <!-- Header: item name + path + refresh button (consistent with System Prompt/Knowledge) -->
     <div
-      class="flex items-center justify-between gap-3 px-6 py-3 shrink-0"
-      style="border-bottom: 1px solid var(--color-border);"
+      class="flex items-center justify-between gap-3 shrink-0 mb-3"
     >
       <div class="flex flex-col min-w-0">
-        <h2
-          v-if="itemName"
-          class="text-base font-semibold truncate"
-          style="color: var(--semantic-text);"
-        >
-          🧠 {{ itemName }}
-        </h2>
+        <div class="flex items-center gap-2">
+          <span aria-hidden="true" class="text-sm">🧠</span>
+          <h3 class="text-sm font-semibold truncate" style="color: var(--semantic-text);">
+            {{ itemName || 'Local Memories' }}
+          </h3>
+          <span
+            class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+            :style="{
+              backgroundColor: memories.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
+              color: memories.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
+              border: memories.length > 0 ? 'none' : '1px solid var(--color-border)',
+            }"
+          >{{ memories.length }}</span>
+        </div>
         <p
           v-if="hasCwd"
-          class="text-xs mt-0.5 truncate"
+          class="text-xs mt-1 truncate"
           style="color: var(--semantic-text-dim);"
           data-testid="workspace-item-memories-path"
         >
@@ -117,7 +123,7 @@ watch(
           @click="handleRefresh"
           :disabled="isLoading"
           data-testid="workspace-item-memories-refresh"
-          class="px-3 py-1.5 rounded-lg text-xs font-medium"
+          class="px-2.5 py-1 rounded-lg text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50"
           style="
             background-color: var(--semantic-card-bg);
             color: var(--semantic-text-muted);
@@ -131,7 +137,7 @@ watch(
           type="button"
           @click="handleStartCreate"
           data-testid="workspace-item-memories-new"
-          class="px-3 py-1.5 rounded-lg text-xs font-medium"
+          class="px-2.5 py-1 rounded-lg text-xs font-medium hover:opacity-90 transition-opacity"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
         >
           + New Memory
@@ -186,20 +192,20 @@ watch(
       </div>
     </div>
 
-    <!-- Empty list -->
+    <!-- Empty list (consistent with System Prompt/Knowledge) -->
     <div
       v-else-if="memories.length === 0"
-      class="flex-1 flex items-center justify-center"
+      class="flex flex-col items-center justify-center text-center py-6 px-4 rounded-lg"
+      style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);"
       data-testid="workspace-item-memories-empty"
     >
-      <div class="text-center">
-        <p class="text-sm" style="color: var(--semantic-text-muted);">
-          No memories yet
-        </p>
-        <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
-          Create one with the + New Memory button, or add a <code>.md</code> file to <code>{{ headerPath }}</code>.
-        </p>
-      </div>
+      <div class="text-lg mb-1" aria-hidden="true">🧠</div>
+      <p class="text-xs font-medium" style="color: var(--semantic-text-dim);">
+        No memories yet
+      </p>
+      <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+        Create one with the <strong>+ New Memory</strong> button, or add a <code>.md</code> file to <code>{{ headerPath }}</code>.
+      </p>
     </div>
 
     <!-- List + detail two-panel -->

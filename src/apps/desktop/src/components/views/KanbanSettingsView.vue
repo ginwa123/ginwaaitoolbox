@@ -17,9 +17,10 @@
     3. Content area (full width):
        - Columns tab: add-column inline form + columns list with
          per-row edit/delete + copy-spec footer.
-       - Agent tab: AgentView (Knowledge + Tools + System Prompt)
-         + Local Memories section (WorkspaceItemMemoriesView when
-         item.path is truthy, hint otherwise).
+       - Agent tab: AgentView with Tools on left + Knowledge/System Prompt on right
+         (Knowledge moved from left to right per arrow), Local Memories
+         in left sidebar alongside Tools (moved from bottom bar per arrow)
+         via left-extra slot (WorkspaceItemMemoriesView when item.path is truthy).
 
   Empty / not-found states render centered hints with friendly
   messages instead of the columns UI.
@@ -801,13 +802,12 @@ function sortedColumns() {
         </div>
       </template>
 
-      <!-- Agent tab body — reuses AgentView (agnostic) for kanban +
-           Local Memories section. The Agent tab now owns both the
-           Knowledge/Tools/System Prompt UI and the per-directory
-           local memories listing. -->
+      <!-- Agent tab body — reuses AgentView (agnostic) for kanban.
+           Knowledge moved to right column (with System Prompt) per arrow;
+           Local Memories moved to left sidebar (with Tools) per arrow via slot. -->
       <div
         v-else-if="settingsMode === 'agent'"
-        class="flex-1 min-h-0 overflow-y-auto flex flex-col"
+        class="flex-1 min-h-0 overflow-hidden flex flex-col"
         data-testid="kanban-settings-page-agent-panel"
       >
         <AgentView
@@ -825,35 +825,36 @@ function sortedColumns() {
           @add-system-prompt="handleKanbanAddSystemPrompt"
           @edit-system-prompt="handleKanbanEditSystemPrompt"
           @remove-system-prompt="handleKanbanRemoveSystemPrompt"
-        />
-
-        <!-- Local Memories section — embedded inside Agent tab.
-             Only rendered when the kanban has a directory path;
-             otherwise shows a hint. -->
-        <div
-          class="shrink-0"
-          style="border-top: 1px solid var(--color-border)"
-          data-testid="kanban-settings-page-agent-memories-section"
         >
-          <div
-            v-if="item.path"
-            data-testid="kanban-settings-page-agent-memories"
-          >
-            <WorkspaceItemMemoriesView
-              :cwd="item.path"
-              :item-name="item.name"
-            />
-          </div>
-          <div
-            v-else
-            class="p-6 text-center"
-            data-testid="kanban-settings-page-agent-memories-no-path"
-          >
-            <p class="text-sm" style="color: var(--semantic-text-dim)">
-              No directory is set on this kanban — pick one when creating the kanban to enable local memories.
-            </p>
-          </div>
-        </div>
+          <!-- Local Memories moved from bottom bar to main panel per arrow (both arrows point to center) -->
+          <template #right-extra>
+            <div
+              class="shrink-0 rounded-xl p-4"
+              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+              data-testid="kanban-settings-page-agent-memories-section"
+            >
+              <div
+                v-if="item.path"
+                data-testid="kanban-settings-page-agent-memories"
+              >
+                <WorkspaceItemMemoriesView
+                  :cwd="item.path"
+                  :item-name="item.name"
+                />
+              </div>
+              <div
+                v-else
+                class="text-xs text-center py-6 px-4 rounded-lg"
+                style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);"
+                data-testid="kanban-settings-page-agent-memories-no-path"
+              >
+                <div class="text-lg mb-1" aria-hidden="true">📁</div>
+                <div>No directory is set on this kanban.</div>
+                <div class="mt-1">Pick one when creating the kanban to enable local memories.</div>
+              </div>
+            </div>
+          </template>
+        </AgentView>
       </div>
     </template>
 
