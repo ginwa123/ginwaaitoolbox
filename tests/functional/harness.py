@@ -26,6 +26,17 @@ rmtree's that tempdir, never anything else.
    and restored as the first step of teardown. A stray ``~`` in any
    downstream code expands to the tempdir, not the real home.
 
+6. (Windows-only) ``XDG_CONFIG_HOME`` / ``XDG_STATE_HOME`` /
+   ``XDG_DATA_HOME`` / ``XDG_CACHE_HOME`` plus ``USERPROFILE`` /
+   ``APPDATA`` / ``LOCALAPPDATA`` are captured BEFORE shadowing and
+   restored on teardown. The Windows child's env points inside
+   ``temp_dir`` (``<temp_dir>/.config``, ``<temp_dir>/AppData/...``)
+   so nalar's XDG/APPDATA-aware code lands inside the tempdir even
+   when the parent shell has those vars set to the real home. Linux/mac
+   keep the original parent env per project request ("dont touch linux
+   and mac") — child ``HOME`` is still isolated there via the existing
+   ``env["HOME"]`` path.
+
 The five negative tests in ``tests/functional/harness_safety_test.py``
 guard these invariants against regression.
 """
@@ -208,6 +219,11 @@ class FunctionalHarness:
     orig_userprofile: str = ""
     orig_appdata: str = ""
     orig_localappdata: str = ""
+    # XDG original env snapshots — empty if not set in parent env.
+    orig_xdg_config_home: str = ""
+    orig_xdg_state_home: str = ""
+    orig_xdg_data_home: str = ""
+    orig_xdg_cache_home: str = ""
 
     # ---- bootstrap --------------------------------------------------------
 
@@ -262,6 +278,15 @@ class FunctionalHarness:
         orig_appdata = os.environ.get("APPDATA", "")
         orig_localappdata = os.environ.get("LOCALAPPDATA", "")
 
+        # Snapshot XDG envs for isolation and restore. These are used by
+        # nalar on Linux for config/state/cache paths (XDG spec). If the
+        # parent env has e.g. XDG_CONFIG_HOME=/home/user/.config, the child
+        # must NOT inherit it — otherwise config.json lands in the real home.
+        orig_xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "")
+        orig_xdg_state_home = os.environ.get("XDG_STATE_HOME", "")
+        orig_xdg_data_home = os.environ.get("XDG_DATA_HOME", "")
+        orig_xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "")
+
         # 1.5. Reap orphan nalar pids from prior aborted runs. This MUST
         #      run BEFORE _find_free_port() so the random pick sees a
         #      clean slate. Without this, a prior `kill -9` of the pytest
@@ -315,17 +340,47 @@ class FunctionalHarness:
         #    any subprocess the binary spawned). On Windows,
         #    start_new_session maps to CREATE_NEW_PROCESS_GROUP and
         #    killpg is unavailable — we use kill-by-pid instead.
-        log_path = temp_dir / "nalar.log"
-        env = os.environ.copy()
-        env["HOME"] = str(temp_dir)
+        # Windows-only parent isolation: shadow HOME/USERPROFILE/APPDATA so
+        # stray `~` expansions in test code hit temp_dir, not real home.
+        # Linux/mac keep original parent env per user request ("dont touch
+        # linux and mac") — child env is already isolated for HOME there.
+        # XDG vars are also isolated on Windows for completeness (child
+        # may read XDG_CONFIG_HOME even on Windows via WSL/Git-Bash).
+        xdg_config = temp_dir / ".config"
+        xdg_state = temp_dir / ".local" / "state"
+        xdg_data = temp_dir / ".local" / "share"
+        xdg_cache = temp_dir / ".cache"
         if os.name == "nt":
-            env["USERPROFILE"] = str(temp_dir)
+            xdg_config.mkdir(parents=True, exist_ok=True)
+            xdg_state.mkdir(parents=True, exist_ok=True)
+            xdg_data.mkdir(parents=True, exist_ok=True)
+            xdg_cache.mkdir(parents=True, exist_ok=True)
+            os.environ["HOME"] = str(temp_dir)
+            os.environ["USERPROFILE"] = str(temp_dir)
+            os.environ["XDG_CONFIG_HOME"] = str(xdg_config)
+            os.environ["XDG_STATE_HOME"] = str(xdg_state)
+            os.environ["XDG_DATA_HOME"] = str(xdg_data)
+            os.environ["XDG_CACHE_HOME"] = str(xdg_cache)
             appdata_roaming = temp_dir / "AppData" / "Roaming"
             appdata_local = temp_dir / "AppData" / "Local"
             appdata_roaming.mkdir(parents=True, exist_ok=True)
             appdata_local.mkdir(parents=True, exist_ok=True)
-            env["APPDATA"] = str(appdata_roaming)
-            env["LOCALAPPDATA"] = str(appdata_local)
+            os.environ["APPDATA"] = str(appdata_roaming)
+            os.environ["LOCALAPPDATA"] = str(appdata_local)
+
+        log_path = temp_dir / "nalar.log"
+        env = os.environ.copy()
+        # Child env: HOME always isolated (existing Linux/mac behavior).
+        env["HOME"] = str(temp_dir)
+        if os.name == "nt":
+            env["USERPROFILE"] = str(temp_dir)
+            env["APPDATA"] = str(temp_dir / "AppData" / "Roaming")
+            env["LOCALAPPDATA"] = str(temp_dir / "AppData" / "Local")
+            # Windows child XDG isolation (matches parent)
+            env["XDG_CONFIG_HOME"] = str(xdg_config)
+            env["XDG_STATE_HOME"] = str(xdg_state)
+            env["XDG_DATA_HOME"] = str(xdg_data)
+            env["XDG_CACHE_HOME"] = str(xdg_cache)
         log_file = log_path.open("wb")
         # `start_new_session=True` is a keyword arg accepted on
         # Python 3.2+ for both POSIX (setsid) and Windows
@@ -381,6 +436,10 @@ class FunctionalHarness:
             orig_userprofile=orig_userprofile,
             orig_appdata=orig_appdata,
             orig_localappdata=orig_localappdata,
+            orig_xdg_config_home=orig_xdg_config_home,
+            orig_xdg_state_home=orig_xdg_state_home,
+            orig_xdg_data_home=orig_xdg_data_home,
+            orig_xdg_cache_home=orig_xdg_cache_home,
         )
 
     # ---- HTTP client ------------------------------------------------------
@@ -480,15 +539,35 @@ class FunctionalHarness:
 
         Idempotent: safe to call twice.
         """
-        # 1. Restore HOME first.
+        # 1. Restore HOME first (so any post-test code sees original env).
+        # HOME is restored on all platforms (Linux/mac keep parent HOME
+        # isolated only via child env, but teardown still ensures original
+        # is back). XDG and Windows vars are restored only on Windows per
+        # user request to not touch Linux/mac.
         os.environ["HOME"] = self.orig_home
         if os.name == "nt":
+            for key, orig in (
+                ("XDG_CONFIG_HOME", self.orig_xdg_config_home),
+                ("XDG_STATE_HOME", self.orig_xdg_state_home),
+                ("XDG_DATA_HOME", self.orig_xdg_data_home),
+                ("XDG_CACHE_HOME", self.orig_xdg_cache_home),
+            ):
+                if orig:
+                    os.environ[key] = orig
+                else:
+                    os.environ.pop(key, None)
             if self.orig_userprofile:
                 os.environ["USERPROFILE"] = self.orig_userprofile
+            else:
+                os.environ.pop("USERPROFILE", None)
             if self.orig_appdata:
                 os.environ["APPDATA"] = self.orig_appdata
+            else:
+                os.environ.pop("APPDATA", None)
             if self.orig_localappdata:
                 os.environ["LOCALAPPDATA"] = self.orig_localappdata
+            else:
+                os.environ.pop("LOCALAPPDATA", None)
 
         # 2. Stop the binary.
         if self.pid is not None and not self._stopped:
