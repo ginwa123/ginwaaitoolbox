@@ -1037,7 +1037,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
         loop_counter += 1;
         if (loop_counter == 1 and is_task_kanban == false) {
-            generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, copy_session_id, logger, io, db, event_bus);
+            generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, logger, io, db, event_bus);
         }
 
         const merged_tools = try filterAndMergeTools(allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
@@ -1353,6 +1353,7 @@ fn generateSessionNameNew(
     api_key: []const u8,
     model: []const u8,
     base_url: []const u8,
+    url_style: []const u8,
     session_id: []const u8,
     logger: *logger_mod.Logger,
     io: std.Io,
@@ -1383,6 +1384,9 @@ fn generateSessionNameNew(
     name_agent.apiKey = api_key;
     name_agent.model = model;
     name_agent.baseUrl = base_url;
+    name_agent.UrlStyle = url_style;
+    name_agent.thinkingEnabled = false;
+    name_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
     const params = agent.AgentCall{
         .tools = &.{},
