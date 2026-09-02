@@ -170,14 +170,19 @@ fn sendAndTrack(model: *app_mod.App, msg_text: []const u8) void {
 
 fn pollMessages(model: *app_mod.App) void {
     const sid = model.session_id orelse return;
+    // Use a tmp arena so the per-poll HTTP body + JSON parse don't
+    // leak the long-lived arena (init.arena) that backs model.allocator.
+    var arena = std.heap.ArenaAllocator.init(model.allocator);
+    defer arena.deinit();
+    const tmp_allocator = arena.allocator();
     const body = transport.getMessages(
-        model.allocator,
+        tmp_allocator,
         &model.http_client,
         model.cfg.server,
         sid,
         100,
     ) catch return; // transient failure — retry on next tick
-    defer model.allocator.free(body);
+    defer tmp_allocator.free(body);
     model.onMessages(body) catch {};
 }
 

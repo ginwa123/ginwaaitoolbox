@@ -208,7 +208,10 @@ pub const App = struct {
     /// viewport. Dedupe is by message id (not by array index), so
     /// re-polls don't re-render the same rows.
     pub fn onMessages(self: *App, body: []const u8) !void {
-        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const tmp_allocator = arena.allocator();
+        const parsed = std.json.parseFromSlice(std.json.Value, tmp_allocator, body, .{}) catch {
             // Malformed body — keep streaming and let the next poll try
             // again. Never let a bad JSON snapshot wedge the spinner.
             return;
@@ -297,17 +300,25 @@ pub const App = struct {
                 .tool_name = tool_name,
                 .reasoning_content = reasoning_content,
             };
-            const lines = render_msg.renderMessage(self.allocator, msg_view) catch |err| switch (err) {
-                error.OutOfMemory => return,
+            var iter_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const iter_allocator = iter_arena.allocator();
+            const tmp_lines = render_msg.renderMessage(iter_allocator, msg_view) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    iter_arena.deinit();
+                    return;
+                },
             };
-            for (lines) |line| {
-                // Move ownership of `line.text` into the viewport's
-                // Line (which will free it on viewport.deinit). We
-                // still own the outer slice and must free it.
-                const owned = tui.widgets.Line{ .text = line.text, .style = line.style };
+            for (tmp_lines) |line| {
+                const duped_text = try self.allocator.dupe(u8, line.text);
+                const owned = tui.widgets.Line{ .text = duped_text, .style = line.style };
                 try self.viewport.lines.append(self.allocator, owned);
+                if (self.viewport.lines.items.len > 10_000) {
+                    const old = self.viewport.lines.orderedRemove(0);
+                    self.allocator.free(old.text);
+                    if (self.viewport.scroll_from_bottom > 0) self.viewport.scroll_from_bottom -= 1;
+                }
             }
-            self.allocator.free(lines);
+            iter_arena.deinit();
         }
     }
 
