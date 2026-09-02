@@ -11,13 +11,15 @@
   board entirely, not overlays it):
     1. Top header bar — back button + "⚙ Kanban Settings" title +
        kanban name (inline rename) all on one row.
-    2. Tab strip below the header — "Columns" / "🠯 Local Memories"
-       (memories tab hidden when item.path is null).
+    2. Tab strip below the header — "Columns" / "🤖 Agent"
+       (Local Memories is now embedded inside the Agent tab when
+       item.path is set, instead of a standalone tab).
     3. Content area (full width):
        - Columns tab: add-column inline form + columns list with
          per-row edit/delete + copy-spec footer.
-       - Memories tab: WorkspaceItemMemoriesView (renders only when
-         item.path is truthy).
+       - Agent tab: AgentView (Knowledge + Tools + System Prompt)
+         + Local Memories section (WorkspaceItemMemoriesView when
+         item.path is truthy, hint otherwise).
 
   Empty / not-found states render centered hints with friendly
   messages instead of the columns UI.
@@ -38,9 +40,9 @@ import { useWorkspacesStore } from '../../stores/workspaces'
 import * as api from '../../api'
 import { buildToggle } from '../../stores/agentToolToggle'
 
-type SettingsMode = 'columns' | 'memories' | 'agent'
+type SettingsMode = 'columns' | 'agent'
 
-const VALID_TABS: readonly SettingsMode[] = ['columns', 'memories', 'agent']
+const VALID_TABS: readonly SettingsMode[] = ['columns', 'agent']
 
 const route = useRoute()
 const router = useRouter()
@@ -61,17 +63,18 @@ const emit = defineEmits<{
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-// Active tab is URL-backed (?tab=columns|memories|agent). Clicking a tab
+// Active tab is URL-backed (?tab=columns|agent). Clicking a tab
 // calls `router.replace` to update the query so reload + deep-link both
 // work. Default to 'columns' when the query is missing or unknown —
 // keeps the URL clean (no ?tab=columns in the default state).
-// Legacy `?tab=tools` / `?tab=knowledge` (pre-unified Agent tab) are
-// mapped to `agent` so old bookmarks / shared links still land correctly.
+// Legacy `?tab=tools` / `?tab=knowledge` / `?tab=memories`
+// (pre-unified tabs) are mapped to `agent` so old bookmarks / shared
+// links still land correctly.
 const settingsMode = computed<SettingsMode>({
   get: () => {
     const raw = route.query.tab
     const s = Array.isArray(raw) ? raw[0] : raw
-    if (s === 'tools' || s === 'knowledge') return 'agent'
+    if (s === 'tools' || s === 'knowledge' || s === 'memories') return 'agent'
     return (VALID_TABS as readonly string[]).includes(s ?? '')
       ? (s as SettingsMode)
       : 'columns'
@@ -485,7 +488,7 @@ const goBack = () => {
 
 // Reset settingsMode when the route changes (so navigating from one
 // kanban's settings to another's starts on the Columns tab, not the
-// Memories/Agent tab that the previous kanban had selected). The URL
+// Agent tab that the previous kanban had selected). The URL
 // is the source of truth, so we use `router.replace` to strip the
 // ?tab= query rather than mutating the computed directly.
 watch(
@@ -584,10 +587,11 @@ function sortedColumns() {
         </h1>
       </div>
 
-      <!-- Tab strip: Columns | Local Memories | Agent.
-           Agent tab reuses AgentView (now agnostic) — same Knowledge +
-           Tools + System Prompt UI as `item_type='agent'`. Always
-           visible (no path required). Local Memories gated on item.path. -->
+      <!-- Tab strip: Columns | Agent.
+           Agent tab now contains both the AgentView (Knowledge + Tools +
+           System Prompt) and the Local Memories section (WorkspaceItem-
+           MemoriesView when item.path is set). Local Memories is no
+           longer a standalone tab. -->
       <div
         class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
@@ -605,20 +609,6 @@ function sortedColumns() {
           "
         >
           Columns
-        </button>
-        <button
-          v-if="item.path"
-          type="button"
-          @click="settingsMode = 'memories'"
-          data-testid="kanban-settings-page-tab-memories"
-          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
-          :style="
-            settingsMode === 'memories'
-              ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
-              : 'background-color: transparent; color: var(--semantic-text-muted);'
-          "
-        >
-          🧠 Local Memories
         </button>
         <button
           type="button"
@@ -811,33 +801,13 @@ function sortedColumns() {
         </div>
       </template>
 
-      <!-- Memories tab body -->
-      <div
-        v-else-if="settingsMode === 'memories' && item.path"
-        class="flex-1 min-h-0 overflow-hidden"
-        data-testid="kanban-settings-page-memories-panel"
-      >
-        <WorkspaceItemMemoriesView
-          :cwd="item.path"
-          :item-name="item.name"
-        />
-      </div>
-      <div
-        v-else-if="settingsMode === 'memories' && !item.path"
-        class="flex-1 flex items-center justify-center p-8"
-        data-testid="kanban-settings-page-memories-no-path"
-      >
-        <p class="text-sm" style="color: var(--semantic-text-dim)">
-          No directory is set on this kanban — pick one when creating the kanban to enable local memories.
-        </p>
-      </div>
-
-      <!-- Agent tab body — reuses AgentView (agnostic) for kanban.
-           Same Knowledge + Tools + System Prompt UI as `item_type='agent'`.
-           Always available (no path required). -->
+      <!-- Agent tab body — reuses AgentView (agnostic) for kanban +
+           Local Memories section. The Agent tab now owns both the
+           Knowledge/Tools/System Prompt UI and the per-directory
+           local memories listing. -->
       <div
         v-else-if="settingsMode === 'agent'"
-        class="flex-1 min-h-0 overflow-hidden"
+        class="flex-1 min-h-0 overflow-y-auto flex flex-col"
         data-testid="kanban-settings-page-agent-panel"
       >
         <AgentView
@@ -856,6 +826,34 @@ function sortedColumns() {
           @edit-system-prompt="handleKanbanEditSystemPrompt"
           @remove-system-prompt="handleKanbanRemoveSystemPrompt"
         />
+
+        <!-- Local Memories section — embedded inside Agent tab.
+             Only rendered when the kanban has a directory path;
+             otherwise shows a hint. -->
+        <div
+          class="shrink-0"
+          style="border-top: 1px solid var(--color-border)"
+          data-testid="kanban-settings-page-agent-memories-section"
+        >
+          <div
+            v-if="item.path"
+            data-testid="kanban-settings-page-agent-memories"
+          >
+            <WorkspaceItemMemoriesView
+              :cwd="item.path"
+              :item-name="item.name"
+            />
+          </div>
+          <div
+            v-else
+            class="p-6 text-center"
+            data-testid="kanban-settings-page-agent-memories-no-path"
+          >
+            <p class="text-sm" style="color: var(--semantic-text-dim)">
+              No directory is set on this kanban — pick one when creating the kanban to enable local memories.
+            </p>
+          </div>
+        </div>
       </div>
     </template>
 
