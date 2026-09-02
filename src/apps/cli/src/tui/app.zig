@@ -31,6 +31,7 @@ const POLL_MS: u64 = 500;
 pub const Config = struct {
     server: []const u8 = "http://localhost:8081",
     session_id: ?[]const u8 = null,
+    cwd: []const u8 = "",
 };
 
 pub const App = struct {
@@ -659,4 +660,15 @@ test "App: view produces full-height frame with status bar" {
     try testing.expectEqual(@as(u16, 10), f.height);
     // Status bar row has the brightBlack background bar.
     try testing.expect(f.get(0, 9).bg != null);
+}
+
+test "App: Config cwd defaults to empty" {
+    const cfg = Config{};
+    try testing.expectEqualStrings("", cfg.cwd);
+}
+
+test "App: init dupes cwd from Config" {
+    var app = try App.init(testing.allocator, undefined, .{ .server = "http://test", .cwd = "/tmp/proj" });
+    defer app.deinit();
+    try testing.expectEqualStrings("/tmp/proj", app.cfg.cwd);
 }

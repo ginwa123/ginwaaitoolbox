@@ -21,8 +21,9 @@ pub fn postSend(
     server: []const u8,
     session_id: []const u8,
     message: []const u8,
+    cwd: []const u8,
 ) ![]u8 {
-    const body = try buildSendBody(allocator, session_id, message);
+    const body = try buildSendBody(allocator, session_id, message, cwd);
     defer allocator.free(body);
 
     const url = try joinUrl(allocator, server, "/api/llm/session");
@@ -100,6 +101,7 @@ pub fn buildSendBody(
     allocator: std.mem.Allocator,
     session_id: []const u8,
     message: []const u8,
+    cwd: []const u8,
 ) ![]u8 {
     var aw: std.Io.Writer.Allocating = .init(allocator);
     defer aw.deinit();
@@ -108,9 +110,10 @@ pub fn buildSendBody(
     try std.json.Stringify.encodeJsonString(session_id, .{}, w);
     try w.writeAll(",\"queue_message\":");
     try std.json.Stringify.encodeJsonString(message, .{}, w);
+    try w.writeAll(",\"allowed_tools\":\"all\",\"cwd_session\":");
+    try std.json.Stringify.encodeJsonString(cwd, .{}, w);
     try w.writeAll(
-        ",\"allowed_tools\":\"all\",\"cwd_session\":\"\"," ++
-            "\"image_urls\":\"\",\"selected_profile_model\":\"\"," ++
+        ",\"image_urls\":\"\",\"selected_profile_model\":\"\"," ++
             "\"is_auto_retry_until_stop\":\"\"}",
     );
     return aw.toOwnedSlice();
@@ -126,4 +129,36 @@ test "joinUrl: strips trailing slash" {
     const u = try joinUrl(testing.allocator, "http://x:8081/", "/api/x");
     defer testing.allocator.free(u);
     try testing.expectEqualStrings("http://x:8081/api/x", u);
+}
+
+test "buildSendBody: cwd_session is JSON-escaped and round-trips" {
+    const body = try buildSendBody(testing.allocator, "s1", "hi", "/home/ginwa/my project");
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("/home/ginwa/my project", parsed.value.object.get("cwd_session").?.string);
+}
+
+test "buildSendBody: cwd with quote and backslash is escaped" {
+    const body = try buildSendBody(testing.allocator, "s1", "hi", "/tmp/a\"b\\c");
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("/tmp/a\"b\\c", parsed.value.object.get("cwd_session").?.string);
+}
+
+test "buildSendBody: empty cwd still produces valid JSON with empty cwd_session" {
+    const body = try buildSendBody(testing.allocator, "s1", "hi", "");
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("", parsed.value.object.get("cwd_session").?.string);
+}
+
+test "buildSendBody: non-empty cwd is sent as cwd_session (regression: tui always sent empty)" {
+    const body = try buildSendBody(testing.allocator, "session-1", "hi", "/home/ginwa/my-project");
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("/home/ginwa/my-project", parsed.value.object.get("cwd_session").?.string);
 }
