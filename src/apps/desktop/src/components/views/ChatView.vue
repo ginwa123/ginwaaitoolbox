@@ -372,6 +372,8 @@ interface VirtualScrollerExposed {
   containerRef: HTMLElement | null
   isPreservingScroll: boolean
   effectiveLoadMoreThreshold: number
+  sizerHeight?: number
+  modelTotal?: number
 }
 const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 
@@ -456,6 +458,17 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
     // total height) won't trigger a re-scroll.
     if (newScrollHeight === lastObservedScrollHeight) return
     const delta = newScrollHeight - lastObservedScrollHeight
+    // ── Fix: only stick on GROWTH, not shrink (2026-09-02) ──────────
+    // Shrinking is the sizer clamp itself (modelTotal -> realTotal),
+    // not new content. Sticking on shrink causes the down-clamp loop:
+    // sizer 22163 -> stick to 21007 -> sizer 21788 -> stick to 20632
+    // -> sizer 20433 -> stick to 19277 -> sizer jumps back to 22163
+    // (because at 19277 range no longer includes last item) -> gap.
+    // Also ignore tiny deltas (<50px) which are sub-pixel noise.
+    if (delta <= 0 || Math.abs(delta) < 50) {
+      lastObservedScrollHeight = newScrollHeight
+      return
+    }
     lastObservedScrollHeight = newScrollHeight
     void shift
     // Build a context with the *pre-stick* geometry (scrollTop before
@@ -473,13 +486,13 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
         ...ctx,
         caller: 'onContentShift',
         origin: 'programmatic',
-        extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up' },
+        extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up', isAtBottom: isAtBottom.value, distanceFromBottom: ctx.distanceFromBottom, scrollTop: ctx.scrollTop },
       })
       scrollLogger.info({
         ...ctx,
         caller: 'onContentShift',
         reason: 'spacer-resize-skip',
-        extra: { delta, lastObservedScrollHeight: newScrollHeight },
+        extra: { delta, lastObservedScrollHeight: newScrollHeight, isAtBottom: isAtBottom.value, distanceFromBottom: ctx.distanceFromBottom, scrollTop: ctx.scrollTop, shift },
       })
       return
     }
@@ -507,7 +520,7 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
       ...ctx,
       caller: 'onContentShift',
       reason: 'spacer-resize-stick',
-      extra: { delta, lastObservedScrollHeight: newScrollHeight },
+      extra: { delta, lastObservedScrollHeight: newScrollHeight, isAtBottom: isAtBottom.value, distanceFromBottom: ctx.distanceFromBottom, scrollTop: ctx.scrollTop, shift, willStick: true },
     })
   })
 }
@@ -2023,8 +2036,41 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // contentShift hit the spacer-resize-skip guard — the gap below the
   // last message accumulated with each chunk and never self-healed.
   const userScrolledUp = !isProgrammatic && deltaTop < 0
-  const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp
-  isAtBottom.value = newIsAtBottom || retainedThroughGrowth
+  // ── Fix: cap retention (2026-09-02) ───────────────────────────────
+  // Previously retained even with bottom=1730px gap, keeping
+  // isAtBottom=true forever and causing every contentShift to stick
+  // even when user is far from bottom. Only retain when gap is small.
+  const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp && distanceFromBottom < 100
+  const nextIsAtBottom = newIsAtBottom || retainedThroughGrowth
+  // ── Deep-dive: isAtBottom decision (2026-09-02) ────────────────────
+  // Log every time the retained path changes the outcome, or when
+  // contentGrew is true (the blinking-loop trigger). This is the
+  // single line that answers "why did isAtBottom stay true with
+  // bottom=1633px?" — without it you have to infer from
+  // spacer-resize-stick vs skip.
+  if (contentGrew || retainedThroughGrowth || newIsAtBottom !== nextIsAtBottom) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'handleVirtualScroll',
+      reason: 'isAtBottom-decision',
+      extra: {
+        newIsAtBottom,
+        previousIsAtBottom,
+        contentGrew,
+        deltaHeight,
+        deltaTop,
+        isProgrammatic,
+        userScrolledUp,
+        retainedThroughGrowth,
+        nextIsAtBottom,
+        distanceFromBottom,
+        distanceFromTop,
+        scrollHeight,
+        actualScrollTop,
+      },
+    })
+  }
+  isAtBottom.value = nextIsAtBottom
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
@@ -2538,6 +2584,7 @@ watch(
   () => messages.value.length,
   () => {
     if (isInitialLoad) return // initial-load branch handled scroll explicitly
+    if (!isAtBottom.value) return // don't disturb scrolled-up readers
     scrollLogger.markProgrammatic()
     // Any push to `messages` triggers an auto-stick (scrollToBottom
     // below). Mark the timestamp synchronously so the loadMore gate
@@ -2554,7 +2601,7 @@ watch(
       // (stick lands short). Gated on isAtBottom — scrolled-up readers
       // are never disturbed; at-bottom users get an exact sizer so the
       // stick shows the real last message.
-      if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
+      virtualScrollerRef.value?.remeasure()
       scrollToBottom(false, 'messages-length')
     })
   },
@@ -2859,6 +2906,7 @@ const compactSession = async () => {
           :load-more-threshold="200"
           :load-more-threshold-ratio="0.5"
           :load-more-at-top="true"
+          :debug-chat-id="sessionId || props.chatId"
           @load-more="handleLoadMore"
           @load-more-suppressed="handleLoadMoreSuppressed"
           @scroll="handleVirtualScroll"

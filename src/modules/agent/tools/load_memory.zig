@@ -104,11 +104,69 @@ pub const MAX_LIMIT: u32 = 50;
 
 /// Top-level tool definition for the LLM.
 pub const load_memory_tool_system_prompt =
-    \\## Load Memory Tool — Behavior
-    \\Use `load_memory` to recall facts from previous sessions via FTS5 search.
-    \\- Call on the first turn of any session and whenever the user says "do you remember" or "last time".
-    \\- Use `query` + optional `tags`/`limit`/`with_content`. Multi-word queries are OR-joined.
+    \\## Memory Tools — save_memory / load_memory / delete_memory
+    \\SQLite FTS5, cross-session. **Mandatory, not optional.** Skipping `load_memory`
+    \\when prior context exists, or skipping `save_memory` when a fact should
+    \\persist, counts as a task failure.
     \\
+    \\These are AGENT-managed notes — distinct from the curated `.md` files in
+    \\`~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`).
+    \\- `save_memory` → short structured facts you'd otherwise re-ask or re-derive.
+    \\- `.md` files → hand-curated insights (architecture notes, conventions). Not
+    \\  written by these tools; edit directly if that's the surface you need.
+    \\
+    \\### Reference
+    \\
+    \\| Tool | Signature | Behavior |
+    \\|---|---|---|
+    \\| `save_memory` | `{ content, tags?, id? }` | UPSERT by `id`. No `id` (or `""`) → auto-generates `mem_<16-hex>`. Stable slug `id` → updates that row. `content`: 1 KiB–1 MiB (empty/oversized = rejected, never silently truncated). |
+    \\| `load_memory` | `{ query, tags?, limit?, offset?, with_content? }` | FTS5 phrase search over `content` + `tags`. Returns ranked hits with `<snippet>`. `with_content=true` → full body, capped 2 KiB/row. `limit` default 10, max 50. Paginate with `<total_count>` + `offset`. |
+    \\| `delete_memory` | `{ id }` | Permanent, no undo. Unknown `id` → `<deleted>false</deleted>` (idempotent, not an error). Empty `id` → `<error>`. |
+    \\
+    \\**Deletion policy:** prefer `save_memory` overwrite to `delete_memory`. Never
+    \\delete a user-preference memory unless the user explicitly asks for it.
+    \\
+    \\### Wire format
+    \\- `tags`: **one string**, not an array. Separator preference order: `||` >
+    \\  `|` > `,` > space. Example: `tags: "dark-mode||preferences"`.
+    \\- `id`: opaque. Either `mem_<16-hex>` (auto) or a caller-chosen slug (e.g.
+    \\  `"user-pref-theme"`). Never parse or construct it manually beyond passing a
+    \\  slug through.
+    \\- FTS query: pass plain text. `.`, `-`, `:` etc. are auto-sanitized/stripped;
+    \\  multi-word queries are OR-joined automatically. Do not pre-escape.
+    \\
+    \\### When to call `load_memory` (before proceeding)
+    \\1. First user message of a session — before anything else.
+    \\2. User says "do you remember…" / "last time we…" — never guess or fabricate
+    \\   an answer to this; the tool call is the only acceptable source.
+    \\3. Before re-deriving any fact you could plausibly have already verified
+    \\   (a build command, a config value, a prior decision).
+    \\4. On entry to any long-running or recurring project.
+    \\
+    \\### When to call `save_memory` (immediately, not batched for later)
+    \\- A user preference is stated (theme, model, language, working hours, profile).
+    \\- A project convention is established (build/test/deploy commands, code style).
+    \\- A decision is made worth surviving the session.
+    \\- A lookup key is defined (model aliases, session_id conventions, board/column
+    \\  mappings).
+    \\- The user corrects you — **even a single correction, save it immediately.**
+    \\- You just re-derived a fact that `load_memory` should have returned — save it
+    \\  so the next session doesn't redo the work.
+    \\
+    \\### Blocking gate (apply before every response)
+    \\- About to ask the user something they may have already told you? → `load_memory` first, not a question.
+    \\- About to re-derive a fact that could be stored? → `load_memory` first.
+    \\- Just learned a preference/convention/correction? → `save_memory` now.
+    \\- Is this the first turn of the session? → confirm `load_memory` already ran.
+    \\
+    \\These four checks are blocking preconditions, not suggestions — do not send a
+    \\response that skips a check it should have passed.
+    \\
+    \\### Examples
+    \\- ✅ User: "use pnpm not npm" → immediately `save_memory({ content: "Project uses pnpm, not npm, for all installs/scripts.", tags: "convention||tooling" })`.
+    \\- ✅ Session start → `load_memory({ query: "project setup conventions" })` before reading any files.
+    \\- ❌ Agent re-asks "which package manager do you use?" after the user already stated it in an earlier session → gate violation; should have called `load_memory` first.
+    \\- ❌ Agent discovers the deploy command by trial-and-error but never calls `save_memory` → next session repeats the discovery; gate violation.
 ;
 
 pub const load_memory_tool = AgentTool{
@@ -116,24 +174,24 @@ pub const load_memory_tool = AgentTool{
     .function = .{
         .name = "load_memory",
         .description =
-            \\Search your saved notes (from `save_memory`) using SQLite FTS5 search. Returns ranked hits with a short `<snippet>` (10-token window with `[match]` markers) per row.
-            \\
-            \\BY-ID LOOKUP: pass `id="mem_xxx"` to fetch a single memory by its exact id (no FTS5, no 2 KiB snippet cap, returns the full body up to 1 MiB). When `id` is set, `tags` is ignored. Either `query` or `id` must be non-empty — supplying both is allowed (by-id wins).
-            \\
-            \\Context anti-bloat: by default, only `<snippet>` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
-            \\
-            \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
-            \\
-            \\FTS5 QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — so you can write "handle_tool.zig" or "2026-08-06" without crashes. FTS5's default tokenizer splits on those characters like the indexer did.
-            \\
-            \\Tags filter: AND semantics. Every tag in the `tags` array must be present in the row's tags (substring match). Empty `tags` = no filter. Ignored when `id` is set.
-            \\
-            \\Pagination: use `offset` to walk through more results. The `<total_count>` field tells you how many total matches exist.
-            \\
-            \\Example: {"query": "preferred model", "tags": "user"} — finds memories about either preference OR model.
-            \\Example: {"query": "AGENTS.md", "limit": 3}
-            \\Example: {"query": "dark mode", "with_content": true}
-            \\Example: {"id": "user-dark-mode"} — fetch a specific memory's full body, no FTS.
+        \\Search your saved notes (from `save_memory`) using SQLite FTS5 search. Returns ranked hits with a short `<snippet>` (10-token window with `[match]` markers) per row.
+        \\
+        \\BY-ID LOOKUP: pass `id="mem_xxx"` to fetch a single memory by its exact id (no FTS5, no 2 KiB snippet cap, returns the full body up to 1 MiB). When `id` is set, `tags` is ignored. Either `query` or `id` must be non-empty — supplying both is allowed (by-id wins).
+        \\
+        \\Context anti-bloat: by default, only `<snippet>` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
+        \\
+        \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
+        \\
+        \\FTS5 QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — so you can write "handle_tool.zig" or "2026-08-06" without crashes. FTS5's default tokenizer splits on those characters like the indexer did.
+        \\
+        \\Tags filter: AND semantics. Every tag in the `tags` array must be present in the row's tags (substring match). Empty `tags` = no filter. Ignored when `id` is set.
+        \\
+        \\Pagination: use `offset` to walk through more results. The `<total_count>` field tells you how many total matches exist.
+        \\
+        \\Example: {"query": "preferred model", "tags": "user"} — finds memories about either preference OR model.
+        \\Example: {"query": "AGENTS.md", "limit": 3}
+        \\Example: {"query": "dark mode", "with_content": true}
+        \\Example: {"id": "user-dark-mode"} — fetch a specific memory's full body, no FTS.
         ,
         .parameters = .{
             .type = "object",
@@ -283,16 +341,12 @@ fn successXml(
     var xml: std.ArrayList(u8) = .empty;
     errdefer xml.deinit(allocator);
 
-    try xml.print(allocator,
-        "<load_memory query=\"{s}\" limit=\"{d}\" offset=\"{d}\" with_content=\"{s}\">\n",
-        .{ query_e, effective_limit, input.offset, with_content_str });
+    try xml.print(allocator, "<load_memory query=\"{s}\" limit=\"{d}\" offset=\"{d}\" with_content=\"{s}\">\n", .{ query_e, effective_limit, input.offset, with_content_str });
 
     const total_count: u32 = if (hits.len > 0) hits[0].total_count else 0;
-    try xml.print(allocator,
-        "  <count>{d}</count>\n" ++
+    try xml.print(allocator, "  <count>{d}</count>\n" ++
         "  <total_count>{d}</total_count>\n" ++
-        "  <results>\n",
-        .{ hits.len, total_count });
+        "  <results>\n", .{ hits.len, total_count });
 
     for (hits, 0..) |hit, i| {
         const id_e = try xmlEscape(allocator, hit.id);
@@ -323,9 +377,7 @@ fn successXml(
                 const content_e = try xmlEscape(allocator, c);
                 defer allocator.free(content_e);
                 const was_truncated = c.len == MAX_FULL_CONTENT_BYTES;
-                try xml.print(allocator,
-                    "      <content truncated=\"{c}\">{s}</content>\n",
-                    .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
+                try xml.print(allocator, "      <content truncated=\"{c}\">{s}</content>\n", .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
             }
         }
         try xml.appendSlice(allocator, "    </memory>\n");
@@ -367,12 +419,9 @@ fn successByIdXml(
     // <load_memory id="..." by_id="1" with_content="1"> — by-id always
     // carries full content, so the with_content attribute is "1".
     // query="", limit/offset echo the caller's input for symmetry.
-    try xml.print(allocator,
-        "<load_memory query=\"\" id=\"{s}\" by_id=\"1\" limit=\"{d}\" offset=\"{d}\" with_content=\"1\">\n",
-        .{ id_e, input.limit, input.offset });
+    try xml.print(allocator, "<load_memory query=\"\" id=\"{s}\" by_id=\"1\" limit=\"{d}\" offset=\"{d}\" with_content=\"1\">\n", .{ id_e, input.limit, input.offset });
 
-    try xml.appendSlice(allocator,
-        "  <count>1</count>\n" ++
+    try xml.appendSlice(allocator, "  <count>1</count>\n" ++
         "  <total_count>1</total_count>\n" ++
         "  <results>\n");
 
@@ -387,12 +436,9 @@ fn successByIdXml(
     }
     // Full body — `saveMemory` enforces MAX_CONTENT_BYTES (1 MiB) at
     // write time, so the truncation flag is always "0" for by-id.
-    try xml.print(allocator,
-        "      <content truncated=\"0\">{s}</content>\n",
-        .{content_e});
+    try xml.print(allocator, "      <content truncated=\"0\">{s}</content>\n", .{content_e});
 
-    try xml.appendSlice(allocator,
-        "    </memory>\n" ++
+    try xml.appendSlice(allocator, "    </memory>\n" ++
         "  </results>\n</load_memory>\n");
     return try xml.toOwnedSlice(allocator);
 }
@@ -400,9 +446,7 @@ fn successByIdXml(
 fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
     const escaped = try xmlEscape(allocator, msg);
     defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        "<load_memory><error>{s}</error></load_memory>",
-        .{escaped});
+    return std.fmt.allocPrint(allocator, "<load_memory><error>{s}</error></load_memory>", .{escaped});
 }
 
 const testing = std.testing;

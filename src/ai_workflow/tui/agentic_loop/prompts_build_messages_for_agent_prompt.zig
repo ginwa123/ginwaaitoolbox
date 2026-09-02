@@ -105,9 +105,6 @@ pub fn buildMessages(
     // 1. Static prompts — inlined (no PROMPT_SECTIONS constant), gated on hasTool where needed
     try final_system.appendSlice(allocator, prompts_const.UniversalRules);
     try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
-    if (hasTool(filtered_tools, "load_memory")) {
-        try final_system.appendSlice(allocator, prompts_const.MemoryToolRule);
-    }
     try final_system.appendSlice(allocator, prompts_const.Agent);
     try final_system.appendSlice(allocator, prompts_const.GitPrompt);
     try final_system.appendSlice(allocator, prompts_const.ResponseFormatting);

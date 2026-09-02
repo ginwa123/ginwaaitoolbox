@@ -73,15 +73,14 @@ describe('VirtualScroller tail estimation (no gap below last message)', () => {
     await wrapper.setProps({ items: [...Array.from({ length: 100 }, (_, i) => ({ id: i })), { id: 100 }], totalCount: 101 })
     await nextTick()
 
-    // The sizer total must be: items 0..44 unmeasured history → median
-    // 300; items 45..67 measured (window: start=45, viewBottom=4000 →
-    // end=68) → stored 300; items 68..100 unmeasured TAIL (after
-    // maxMeasuredIndex=67) → prop 64.
-    // = 68×300 + 33×64 = 20400 + 2112 = 22512.
-    // With the bug (median for the tail): 101×300 = 30300.
+    // With fix for blank viewport, ALL unmeasured use 64 (not median),
+    // so sizer is conservative: measured 23 items (45..67) at 300, plus
+    // 78 unmeasured at 64 = 23*300 + 78*64 = 6900+4992=11892.
+    // Previously 68*300+33*64=22512 used median for history, but that
+    // overestimated and caused blank gap with 100 msgs.
     const sizer = el.querySelector('.virtual-scroller-sizer') as HTMLElement
     const total = parseFloat(sizer.style.height)
-    expect(total).toBe(68 * 300 + 33 * 64)
+    expect(total).toBe(23 * 300 + 78 * 64)
     wrapper.unmount()
   })
 
@@ -92,12 +91,9 @@ describe('VirtualScroller tail estimation (no gap below last message)', () => {
     //
     // Geometry: 200 items, scroll to index ~90, measure the rendered
     // window (indices 85..107) at 300px. maxMeasuredIndex=107.
-    // Final sizer total = Σ:
-    //   items 0..84    unmeasured, before maxMeasured → median 300
-    //   items 85..107  measured → 300
-    //   items 108..199 unmeasured, AFTER maxMeasured → prop 64
-    //   = 108×300 + 92×64 = 32400 + 5888 = 38288.
-    // Buggy all-median: 200×300 = 60000. All-prop: 200×64 = 12800.
+    // With fix, ALL unmeasured use 64: 23 measured at 300, 177
+    // unmeasured at 64 = 23*300+177*64=6900+11328=18228. Previously
+    // 108*300+92*64=38288 used median for history, but overestimated.
     const { wrapper, el } = mountScroller(200)
     await nextTick()
 
@@ -116,7 +112,7 @@ describe('VirtualScroller tail estimation (no gap below last message)', () => {
 
     const sizer = el.querySelector('.virtual-scroller-sizer') as HTMLElement
     const total = parseFloat(sizer.style.height)
-    expect(total).toBe(108 * 300 + 92 * 64)
+    expect(total).toBe(23 * 300 + 177 * 64)
     wrapper.unmount()
   })
 })
