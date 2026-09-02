@@ -204,6 +204,10 @@ class FunctionalHarness:
     pid: int | None = None
     dry_run: bool = False
     _stopped: bool = dataclasses.field(default=False, repr=False)
+    # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
+    orig_userprofile: str = ""
+    orig_appdata: str = ""
+    orig_localappdata: str = ""
 
     # ---- bootstrap --------------------------------------------------------
 
@@ -239,12 +243,24 @@ class FunctionalHarness:
                 does not become ready within ``ready_timeout_s``.
         """
         # 1. Snapshot HOME BEFORE we shadow it.
-        orig_home = os.environ.get("HOME", "")
+        # On Windows, HOME is not set by default; USERPROFILE is.
+        orig_home = os.environ.get("HOME", "") or os.environ.get("USERPROFILE", "")
+        if not orig_home:
+            # Fallback to expanduser for edge cases.
+            try:
+                orig_home = str(Path.home())
+            except Exception:
+                orig_home = ""
         if not orig_home:
             raise FunctionalHarnessError(
                 "HOME not set; refusing to boot. "
                 "Functional tests must run in a normal user shell."
             )
+
+        # Snapshot Windows envs for isolation and restore.
+        orig_userprofile = os.environ.get("USERPROFILE", "")
+        orig_appdata = os.environ.get("APPDATA", "")
+        orig_localappdata = os.environ.get("LOCALAPPDATA", "")
 
         # 1.5. Reap orphan nalar pids from prior aborted runs. This MUST
         #      run BEFORE _find_free_port() so the random pick sees a
@@ -302,6 +318,14 @@ class FunctionalHarness:
         log_path = temp_dir / "nalar.log"
         env = os.environ.copy()
         env["HOME"] = str(temp_dir)
+        if os.name == "nt":
+            env["USERPROFILE"] = str(temp_dir)
+            appdata_roaming = temp_dir / "AppData" / "Roaming"
+            appdata_local = temp_dir / "AppData" / "Local"
+            appdata_roaming.mkdir(parents=True, exist_ok=True)
+            appdata_local.mkdir(parents=True, exist_ok=True)
+            env["APPDATA"] = str(appdata_roaming)
+            env["LOCALAPPDATA"] = str(appdata_local)
         log_file = log_path.open("wb")
         # `start_new_session=True` is a keyword arg accepted on
         # Python 3.2+ for both POSIX (setsid) and Windows
@@ -313,6 +337,12 @@ class FunctionalHarness:
             env=env,
             start_new_session=True,
         )
+        # Parent can close its handle — child has duped it. On Windows, keeping
+        # it open prevents shutil.rmtree (PermissionError: file in use).
+        try:
+            log_file.close()
+        except Exception:
+            pass
 
         # 7.5. Record pids so a subsequent boot can reap us if we die.
         #      The pidfile format is "<harness_pid> <nalar_pid>\n":
@@ -336,7 +366,8 @@ class FunctionalHarness:
         except Exception:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            log_file.close()
+            with contextlib.suppress(Exception):
+                log_file.close()
             raise
 
         return cls(
@@ -347,6 +378,9 @@ class FunctionalHarness:
             log_path=log_path,
             pid=proc.pid,
             dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+            orig_userprofile=orig_userprofile,
+            orig_appdata=orig_appdata,
+            orig_localappdata=orig_localappdata,
         )
 
     # ---- HTTP client ------------------------------------------------------
@@ -448,6 +482,13 @@ class FunctionalHarness:
         """
         # 1. Restore HOME first.
         os.environ["HOME"] = self.orig_home
+        if os.name == "nt":
+            if self.orig_userprofile:
+                os.environ["USERPROFILE"] = self.orig_userprofile
+            if self.orig_appdata:
+                os.environ["APPDATA"] = self.orig_appdata
+            if self.orig_localappdata:
+                os.environ["LOCALAPPDATA"] = self.orig_localappdata
 
         # 2. Stop the binary.
         if self.pid is not None and not self._stopped:
@@ -483,7 +524,23 @@ class FunctionalHarness:
         if self.dry_run:
             print(f"[dry-run] would rmtree: {self.temp_dir}")
         else:
-            shutil.rmtree(self.temp_dir)
+            # On Windows, rmtree can fail with PermissionError if the DB or log
+            # is still held for a moment after child exit (AV, indexing, etc.).
+            # Retry with backoff; the child is already dead at this point.
+            last_exc = None
+            for _ in range(5):
+                try:
+                    shutil.rmtree(self.temp_dir)
+                    last_exc = None
+                    break
+                except OSError as e:
+                    last_exc = e
+                    if os.name == "nt":
+                        time.sleep(0.5)
+                        continue
+                    raise
+            if last_exc is not None:
+                raise last_exc
 
     # ---- context-manager sugar -------------------------------------------
 

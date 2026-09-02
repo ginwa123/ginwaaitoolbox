@@ -144,11 +144,6 @@ pub fn workspaceItemsCreateHandler(ctx: gserverz.HttpContext, req: gserverz.Http
         });
     };
 
-    return res.jsonResponse(.{ .status_code = 201, .data = try std.fmt.allocPrint(allocator, "{{\"id\":\"{s}\",\"workspace_id\":\"{s}\",\"item_type\":\"{s}\",\"name\":\"{s}\",\"path\":\"{s}\"}}", .{
-        result.id,
-        result.workspace_id,
-        result.item_type,
-        result.name,
-        result.path,
-    }) });
+    const json_data = try std.json.Stringify.valueAlloc(allocator, result, .{});
+    return res.jsonResponse(.{ .status_code = 201, .data = json_data });
 }
