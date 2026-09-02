@@ -89,12 +89,14 @@ pub fn main(init: std.process.Init) !void {
     } else if (env.get("NALARCLI_CWD")) |v| {
         if (v.len > 0) cfg.cwd = v;
     } else {
-        // Capture OS cwd via realPath. On failure (e.g., cwd deleted),
+        // Capture OS cwd via realPathFile with ".". On failure (e.g., cwd deleted),
         // fall back to "" so the backend uses its sandbox fallback.
+        // NOTE: Dir.realPath (no sub_path) fails with FileNotFound on Linux
+        // (see /tmp/test_cwd.zig) — must use realPathFile with ".".
         var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-        if (std.Io.Dir.cwd().realPath(io, &cwd_buf)) |cwd_len| {
+        if (std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf)) |cwd_len| {
             const cwd_slice = cwd_buf[0..cwd_len];
-            // Only use if absolute — defensive, realPath should always be absolute.
+            // Only use if absolute — defensive, realPathFile should always be absolute.
             if (cwd_slice.len > 0 and std.fs.path.isAbsolute(cwd_slice)) {
                 // Dupe into arena so it lives for the process lifetime.
                 cfg.cwd = allocator.dupe(u8, cwd_slice) catch "";
