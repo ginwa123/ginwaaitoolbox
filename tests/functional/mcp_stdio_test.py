@@ -139,6 +139,10 @@ def _send_jsonrpc(binary: Path, body: dict, timeout_s: float = 5.0) -> dict:
 
 def test_mcp_hello_world_lists_tools() -> None:
     """mcp-hello-world responds to tools/list with 3 tools."""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("mcp-hello-world shell wrapper requires POSIX sh")
     binary = _mcp_hello_world_bin()
     resp = _send_jsonrpc(binary, {
         "jsonrpc": "2.0",
@@ -156,6 +160,10 @@ def test_mcp_hello_world_lists_tools() -> None:
 
 def test_mcp_hello_world_call_print_hello() -> None:
     """mcp-hello-world tools/call print_hello('MCP') returns 'Hello MCP'."""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("mcp-hello-world shell wrapper requires POSIX sh")
     binary = _mcp_hello_world_bin()
     resp = _send_jsonrpc(binary, {
         "jsonrpc": "2.0",
@@ -175,6 +183,10 @@ def test_mcp_hello_world_call_print_hello() -> None:
 
 def test_mcp_hello_world_call_print_name() -> None:
     """mcp-hello-world tools/call print_name() returns server identity."""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("mcp-hello-world shell wrapper requires POSIX sh")
     binary = _mcp_hello_world_bin()
     resp = _send_jsonrpc(binary, {
         "jsonrpc": "2.0",

@@ -1143,14 +1143,20 @@ def _wait_ready(
 
 
 def _write_stub_llm_profile(temp_dir: Path) -> None:
-    """Pre-create a stub LLM profile at ``$HOME/.config/nalar/config.json``.
+    """Pre-create a stub LLM profile at the platform-correct path.
+
+    Linux:   $HOME/.config/nalar/config.json (or $XDG_CONFIG_HOME)
+    macOS:   $HOME/Library/Application Support/nalar/config.json
+    Windows: %APPDATA%/nalar/config.json ($HOME/.config is also written
+             as a fallback so the same helper works cross-platform).
 
     The base_url points to a port that never responds, so session-create
     will fail at runtime when it tries to call the LLM — which is fine,
     since the functional tests assert on the wire, not on LLM responses.
+
+    Writes to all three locations so the harness works regardless of
+    which platform's `getDefaultConfigDir` the nalar binary uses.
     """
-    config_dir = temp_dir / ".config" / "nalar"
-    config_dir.mkdir(parents=True, exist_ok=True)
     profile = {
         "profiles_models": {
             "stub": {
@@ -1161,7 +1167,14 @@ def _write_stub_llm_profile(temp_dir: Path) -> None:
         },
         "selected_profile_model": "stub",
     }
-    (config_dir / "config.json").write_text(json.dumps(profile, indent=2))
+    payload = json.dumps(profile, indent=2)
+    for config_dir in (
+        temp_dir / ".config" / "nalar",
+        temp_dir / "AppData" / "Roaming" / "nalar",
+        temp_dir / "Library" / "Application Support" / "nalar",
+    ):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text(payload)
 
 
 # ============================================================================

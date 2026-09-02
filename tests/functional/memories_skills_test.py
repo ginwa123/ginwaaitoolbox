@@ -45,20 +45,39 @@ def _list_skills(harness: FunctionalHarness) -> list[dict[str, Any]]:
 def _get_memory_disk_path(harness: FunctionalHarness, name: str) -> Path:
     """Return the absolute path where a memory file lives on disk.
 
-    Memories live in $HOME/.config/nalar/memories/<name> — the
-    harness's temp_dir IS the $HOME for the nalar process, so the
-    file is at temp_dir/.config/nalar/memories/<name>.
+    Memories live in $XDG_CONFIG_HOME/nalar/memories/<name> or
+    $HOME/.config/nalar/memories/<name> (Windows: %APPDATA%/nalar).
+    The harness isolates all three, but the file is at the XDG/.config
+    location on Windows (where XDG_CONFIG_HOME is now isolated to
+    temp_dir/.config). Use that path for assertions; fallback to
+    APPDATA if not found (covers old harness without XDG isolation).
     """
-    return harness.temp_dir / ".config" / "nalar" / "memories" / name
+    # Check XDG/.config first (current Windows isolation), then APPDATA.
+    config_base = harness.temp_dir / ".config" / "nalar" / "memories" / name
+    if config_base.exists():
+        return config_base
+    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "nalar" / "memories" / name
+    if appdata_base.exists():
+        return appdata_base
+    # Default for new writes: use the XDG/.config location (matches
+    # harness's isolated XDG_CONFIG_HOME on Windows and HOME/.config on Linux).
+    return config_base
 
 
 def _get_skill_disk_path(harness: FunctionalHarness, name: str) -> Path:
     """Return the absolute path where a skill file lives on disk.
 
-    Skills are stored as `$HOME/.config/nalar/skills/<name>/SKILL.MD`
-    (each skill in its own subdirectory; the file is uppercase).
+    Skills are stored as `$XDG_CONFIG_HOME/nalar/skills/<name>/SKILL.MD`
+    or `$HOME/.config/nalar/skills/<name>/SKILL.MD`
+    (Windows: %APPDATA%/nalar/skills). Same fallback as memories.
     """
-    return harness.temp_dir / ".config" / "nalar" / "skills" / name / "SKILL.MD"
+    config_base = harness.temp_dir / ".config" / "nalar" / "skills" / name / "SKILL.MD"
+    if config_base.exists():
+        return config_base
+    appdata_base = harness.temp_dir / "AppData" / "Roaming" / "nalar" / "skills" / name / "SKILL.MD"
+    if appdata_base.exists():
+        return appdata_base
+    return config_base
 
 
 # ─── Test 1: create + list a global memory ─────────────────────────────
@@ -81,7 +100,7 @@ def test_create_global_memory_writes_to_disk(
     # File on disk.
     mem_path = _get_memory_disk_path(harness, "test-mem.md")
     assert mem_path.exists(), f"memory file not written to {mem_path}"
-    assert mem_path.read_text() == "# Hello\n\nMemory body."
+    assert mem_path.read_text(encoding="utf-8") == "# Hello\n\nMemory body."
 
     # Listed via the API.
     listed = _list_memories(harness)
@@ -127,7 +146,7 @@ def test_update_memory_overwrites_file(
         expect=201,
     )
     mem_path = _get_memory_disk_path(harness, "update-me.md")
-    assert mem_path.read_text() == "original"
+    assert mem_path.read_text(encoding="utf-8") == "original"
 
     # Update.
     new_content = "# Updated\n\nNew body with unicode: こんにちは"
@@ -140,7 +159,7 @@ def test_update_memory_overwrites_file(
     assert r.json().get("success", True) is True
 
     # File content matches.
-    assert mem_path.read_text() == new_content
+    assert mem_path.read_text(encoding="utf-8") == new_content
 
 
 # ─── Test 4: delete memory removes the file ────────────────────────────
@@ -193,7 +212,7 @@ def test_create_local_memory_under_cwd(
     # File on disk under the requested cwd.
     mem_path = cwd / ".nalar" / "memories" / "local-mem.md"
     assert mem_path.exists(), f"local memory not at {mem_path}"
-    assert mem_path.read_text() == "# local\nscoped to cwd"
+    assert mem_path.read_text(encoding="utf-8") == "# local\nscoped to cwd"
 
 
 # ─── Test 6: skill listing — create skill on disk, list it ────────────

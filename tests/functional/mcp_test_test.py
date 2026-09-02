@@ -81,6 +81,8 @@ def test_mcp_test_stdio_success_lists_hello_world_tools() -> None:
     ~5 seconds. Proves the probe's happy path: spawn child +
     framed send/recv + parse + return tools list.
     """
+    if sys.platform == "win32":
+        pytest.skip("mcp-hello-world shell wrapper not executable on Windows (requires sh)")
     binary = _mcp_hello_world_bin()
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
@@ -244,6 +246,8 @@ def test_mcp_test_stdio_child_inherits_parent_path(tmp_path, monkeypatch) -> Non
     only via a custom PATH entry outside libc's default fallback, so this
     fails on the empty-env bug and passes once PATH is inherited.
     """
+    if sys.platform == "win32":
+        pytest.skip("shim server requires /bin/sh, not available on Windows")
     # Place the shim on a PATH entry that is NOT on the glibc default
     # fallback (`/bin:/usr/bin`). Keep the rest of PATH so nalar's own
     # boot (git rev-parse, etc.) still resolves.
@@ -299,6 +303,8 @@ def test_mcp_test_stdio_diagnostic_on_child_death() -> None:
     fires deterministically. With 20 attempts × 500ms delay this
     test takes ~12s on the first attempt and ~22s worst case.
     """
+    if sys.platform == "win32":
+        pytest.skip("false command not available on Windows")
     harness = FunctionalHarness.boot(stub_llm_profile=True)
     try:
         start = time.monotonic()
