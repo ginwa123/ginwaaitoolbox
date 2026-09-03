@@ -88,6 +88,40 @@ def test_is_safe_tmp_resolves_symlinks_in_path() -> None:
 # ─── teardown safety net ──────────────────────────────────────────────────
 
 
+#: Every env var teardown() restores (harness.py step 1). Tests that
+#: call teardown() on a directly-constructed (never-booted) instance
+#: must snapshot/restore these: teardown unconditionally writes
+#: orig_home into the parent env (and pops the Windows/XDG keys when
+#: the instance carries empty originals), so without a restore the
+#: leaked values poison every LATER test in the session — e.g.
+#: smoke_boot's orig_home assertion, which passed on POSIX only
+#: because the leak made both sides of its comparison equal.
+_TEARDOWN_ENV_KEYS = (
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+)
+
+
+def _snapshot_env() -> dict[str, str | None]:
+    """Snapshot teardown-touched vars; None means absent."""
+    return {k: os.environ.get(k) for k in _TEARDOWN_ENV_KEYS}
+
+
+def _restore_env(saved: dict[str, str | None]) -> None:
+    """Restore a _snapshot_env mapping (removing vars that were absent)."""
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def test_teardown_refuses_unsafe_temp_dir() -> None:
     """Constructing a harness with an unsafe temp_dir makes teardown raise.
 
@@ -117,8 +151,15 @@ def test_teardown_refuses_unsafe_temp_dir() -> None:
         log_path=Path("/dev/null"),
         pid=None,
     )
-    with pytest.raises(FunctionalHarnessError) as exc:
-        h.teardown()
+    # teardown() writes orig_home into the parent env BEFORE the safety
+    # check raises — snapshot/restore so the probe values don't leak
+    # into later tests in this session (see _TEARDOWN_ENV_KEYS).
+    saved_env = _snapshot_env()
+    try:
+        with pytest.raises(FunctionalHarnessError) as exc:
+            h.teardown()
+    finally:
+        _restore_env(saved_env)
     assert "REFUSING to rmtree" in str(exc.value)
     # And the file MUST still exist.
     assert os.path.exists(unsafe_dir)
@@ -145,7 +186,15 @@ def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
     # - pytest's tmp_path is on /tmp/... on Linux (or /var/folders/... on macOS)
     # - safe contains the substring
     # - safe != orig_home
-    h.teardown()
+    # teardown() leaves orig_home in the parent env by design (step 1
+    # restores it for post-test code). This directly-constructed probe
+    # never booted, so restore afterwards — otherwise "/home/nonexistent"
+    # leaks into later tests in this session (see _TEARDOWN_ENV_KEYS).
+    saved_env = _snapshot_env()
+    try:
+        h.teardown()
+    finally:
+        _restore_env(saved_env)
     assert not safe.exists()
 
 

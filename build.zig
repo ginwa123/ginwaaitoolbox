@@ -2673,9 +2673,57 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // On Windows, `python` is the canonical exe; `python3` is often a shim.
     const default_python = if (is_windows_host) "python" else "python3";
     const effective_python = if (std.mem.eql(u8, python_exe, "python3") and is_windows_host) default_python else python_exe;
-    const install_venv = b.addSystemCommand(&.{
-        effective_python, "-m", "venv", venv_dir,
-    });
+    // Windows venv creation must survive the Microsoft Store `python`
+    // stub ("Python was not found") and must not redo an existing venv:
+    //   1. If the venv interpreter already exists, the step is a no-op
+    //      (`pip install -r` below still runs every time).
+    //   2. Else pick an interpreter at config time: explicit `-Dpython`
+    //      wins; otherwise scan PATH for python.exe/python3.exe
+    //      (skipping 0-byte Store stubs), then the `py` launcher.
+    //      Nothing found → bare `python` (loud Store-stub failure, same
+    //      as before this change).
+    // Everything is direct argv (no cmd.exe shell), so paths with
+    // spaces work and there is no shell-quoting to get wrong.
+    const venv_python_name = if (is_windows_host) "python.exe" else "python";
+    const venv_python_rel = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ venv_bin, venv_python_name }) catch unreachable;
+    const have_venv = blk: {
+        _ = std.Io.Dir.cwd().statFile(b.graph.io, venv_python_rel, .{}) catch break :blk false;
+        break :blk true;
+    };
+    const install_venv = blk: {
+        if (have_venv) {
+            if (is_windows_host) break :blk b.addSystemCommand(&.{ "cmd.exe", "/c", "exit", "0" });
+            break :blk b.addSystemCommand(&.{"true"});
+        }
+        if (!is_windows_host) break :blk b.addSystemCommand(&.{
+            effective_python, "-m", "venv", venv_dir,
+        });
+        var chosen: ?[]const u8 = null;
+        var chosen_args: []const []const u8 = &.{};
+        if (!std.mem.eql(u8, python_exe, "python3")) {
+            chosen = python_exe; // explicit -Dpython: trust it (old behavior)
+        } else if (b.graph.environ_map.get("PATH")) |path_var| {
+            var it = std.mem.splitScalar(u8, path_var, ';');
+            const probes = [_][]const u8{ "python.exe", "python3.exe", "py.exe" };
+            outer: while (it.next()) |dir| {
+                if (dir.len == 0) continue;
+                for (probes) |name| {
+                    const cand = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir, name }) catch unreachable;
+                    // Absolute sub_path: the cwd handle is ignored.
+                    const st = std.Io.Dir.cwd().statFile(b.graph.io, cand, .{}) catch continue;
+                    if (st.size == 0) continue; // Microsoft Store stub
+                    chosen = cand;
+                    if (std.mem.eql(u8, name, "py.exe")) chosen_args = &.{"-3"};
+                    break :outer;
+                }
+            }
+        }
+        var argv: std.ArrayList([]const u8) = .empty;
+        argv.append(b.allocator, chosen orelse "python") catch unreachable;
+        argv.appendSlice(b.allocator, chosen_args) catch unreachable;
+        argv.appendSlice(b.allocator, &.{ "-m", "venv", venv_dir }) catch unreachable;
+        break :blk b.addSystemCommand(argv.items);
+    };
     install_venv.setCwd(b.path(""));
 
     const pip_exe = if (is_windows_host) "pip.exe" else "pip";

@@ -97,10 +97,16 @@ def _resolve_mcp_http_argv() -> list[str]:
     return [node, str(js)]
 
 
-def _spawn_mcp_http_hello_world(port: int, timeout_s: float = 5.0) -> subprocess.Popen[bytes]:
+def _spawn_mcp_http_hello_world(port: int, timeout_s: float = 15.0) -> subprocess.Popen[bytes]:
     """Spawn the mcp-http-hello-world binary on `port` and wait for
     the "listening on" stderr line. Returns the Popen handle; caller
     is responsible for terminate()+wait() on teardown.
+
+    The default readiness budget is generous (15s, not 5s): the full
+    `zig build functional-test` run saturates the box (zig compiling
+    + parallel pnpm), and cold node + MCP-SDK import can exceed 5s
+    with an alive-but-silent process — the earlier 5s default flaked
+    exactly that way under load (empty stderr, no early exit).
 
     Raises RuntimeError on timeout or spawn failure.
     """
