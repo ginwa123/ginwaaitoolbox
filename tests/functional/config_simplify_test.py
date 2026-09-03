@@ -47,7 +47,10 @@ from harness import (
 def _platform_config_dir(temp_dir: Path) -> Path:
     """Mirror nalar's `getDefaultConfigDir` (Config.zig) per-OS layout:
       - macOS   → <HOME>/Library/Application Support/nalar/
-      - Windows → <APPDATA>/nalar/
+      - Windows → <APPDATA>/nalar/ (the preboot fixture sets the
+        child's APPDATA to <temp_dir>/AppData/Roaming, so this is
+        deterministic — it does NOT read the parent's APPDATA, which
+        points at the real home)
       - else    → <XDG_CONFIG_HOME or HOME/.config>/nalar/
     """
     import platform as _platform
@@ -55,10 +58,6 @@ def _platform_config_dir(temp_dir: Path) -> Path:
     if system == "Darwin":
         return temp_dir / "Library" / "Application Support" / "nalar"
     if system == "Windows":
-        appdata = os.environ.get("APPDATA") or str(temp_dir / "AppData" / "Roaming")
-        # The harness shadows HOME, not APPDATA; resolve relative to temp_dir.
-        if appdata.startswith(str(temp_dir)):
-            return Path(appdata) / "nalar"
         return temp_dir / "AppData" / "Roaming" / "nalar"
     return temp_dir / ".config" / "nalar"
 
@@ -74,7 +73,13 @@ def preboot(default_nalar_bin):
     def make(cfg: dict) -> FunctionalHarness:
         # Mirror FunctionalHarness.boot steps 1-5, but seed the config
         # BEFORE spawning the binary (step 7).
-        orig_home = os.environ.get("HOME", "")
+        orig_home = os.environ.get("HOME", "") or os.environ.get("USERPROFILE", "")
+        if not orig_home:
+            # Windows has no HOME by default; fall back like boot() does.
+            try:
+                orig_home = str(Path.home())
+            except Exception:
+                orig_home = ""
         if not orig_home:
             raise RuntimeError("HOME not set; refusing to boot")
         try:
@@ -94,8 +99,44 @@ def preboot(default_nalar_bin):
         bin_path = default_nalar_bin
         log_path = temp_dir / "nalar.log"
         log_file = log_path.open("wb")
+        # Snapshot parent Windows/XDG vars so teardown() restores them
+        # (the fixture never shadows the parent env, unlike boot()).
+        orig_userprofile = os.environ.get("USERPROFILE", "")
+        orig_appdata = os.environ.get("APPDATA", "")
+        orig_localappdata = os.environ.get("LOCALAPPDATA", "")
+        orig_xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "")
+        orig_xdg_state_home = os.environ.get("XDG_STATE_HOME", "")
+        orig_xdg_data_home = os.environ.get("XDG_DATA_HOME", "")
+        orig_xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "")
         env = os.environ.copy()
         env["HOME"] = str(temp_dir)
+        if os.name == "nt":
+            # Windows nalar reads %APPDATA%/nalar/config.json
+            # (Config.zig windows branch) — NOT HOME/.config. Point
+            # the child's APPDATA/LOCALAPPDATA/USERPROFILE/XDG_* at
+            # the tempdir (mirroring FunctionalHarness.boot); without
+            # this the binary reads/writes the REAL %APPDATA% config
+            # and the seeded file is invisible (all 4 tests fail +
+            # the runner's real config gets clobbered by PUTs).
+            appdata_roaming = temp_dir / "AppData" / "Roaming"
+            appdata_local = temp_dir / "AppData" / "Local"
+            (appdata_roaming / "nalar").mkdir(parents=True, exist_ok=True)
+            appdata_local.mkdir(parents=True, exist_ok=True)
+            xdg_config = temp_dir / ".config"
+            xdg_state = temp_dir / ".local" / "state"
+            xdg_data = temp_dir / ".local" / "share"
+            xdg_cache = temp_dir / ".cache"
+            xdg_config.mkdir(parents=True, exist_ok=True)
+            xdg_state.mkdir(parents=True, exist_ok=True)
+            xdg_data.mkdir(parents=True, exist_ok=True)
+            xdg_cache.mkdir(parents=True, exist_ok=True)
+            env["USERPROFILE"] = str(temp_dir)
+            env["APPDATA"] = str(appdata_roaming)
+            env["LOCALAPPDATA"] = str(appdata_local)
+            env["XDG_CONFIG_HOME"] = str(xdg_config)
+            env["XDG_STATE_HOME"] = str(xdg_state)
+            env["XDG_DATA_HOME"] = str(xdg_data)
+            env["XDG_CACHE_HOME"] = str(xdg_cache)
         proc = subprocess.Popen(
             [str(bin_path), "--port", str(chosen_port)],
             stdout=log_file,
@@ -103,6 +144,10 @@ def preboot(default_nalar_bin):
             env=env,
             start_new_session=True,
         )
+        try:
+            log_file.close()
+        except Exception:
+            pass
         try:
             (temp_dir / ".harness.pid").write_text(f"{os.getpid()} {proc.pid}\n")
         except OSError:
@@ -122,6 +167,13 @@ def preboot(default_nalar_bin):
             orig_home=orig_home,
             log_path=log_path,
             pid=proc.pid,
+            orig_userprofile=orig_userprofile,
+            orig_appdata=orig_appdata,
+            orig_localappdata=orig_localappdata,
+            orig_xdg_config_home=orig_xdg_config_home,
+            orig_xdg_state_home=orig_xdg_state_home,
+            orig_xdg_data_home=orig_xdg_data_home,
+            orig_xdg_cache_home=orig_xdg_cache_home,
         )
         booted.append(h)
         return h

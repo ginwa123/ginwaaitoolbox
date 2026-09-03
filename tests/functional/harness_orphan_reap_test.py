@@ -66,10 +66,14 @@ def _pid_alive(pid: int) -> bool:
     NOTE: a zombie process reports alive here (kill -0 succeeds). For
     the test, we follow kill-with-waitpid (the test runner is the
     parent) to drain the zombie before asserting "dead".
+
+    Broad ``OSError`` (not just ProcessLookupError): on Windows a
+    dead pid raises ``[WinError 87] The parameter is incorrect``,
+    which must count as dead.
     """
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
+    except OSError:
         return False
     return True
 
@@ -94,9 +98,16 @@ def _pid_state(pid: int) -> str | None:
 
 def _force_kill_child(child: subprocess.Popen[bytes]) -> None:
     """Best-effort SIGKILL for cleanup. Used as a last resort in finally."""
+    # Windows has no signal.SIGKILL (AttributeError on access); SIGTERM
+    # maps to TerminateProcess there, which is the same last-resort
+    # semantic.
+    sig = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
-        os.kill(child.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+        os.kill(child.pid, sig)
+    except OSError:
+        # Already dead (POSIX ESRCH) or Windows [WinError 87] for a
+        # dead pid. Either way there is nothing to kill; swallowing
+        # here keeps finally-blocks from masking the test result.
         pass
 
 
@@ -117,6 +128,30 @@ def _reap_child_zombie(child: subprocess.Popen[bytes], timeout: float = 2.0) -> 
         child.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         pass  # reap didn't kill it — leave as-is
+
+
+def _rmtree_retry(path: Path, attempts: int = 10, delay_s: float = 0.5) -> None:
+    """rmtree with backoff for Windows' transient post-exit file locks.
+
+    After teardown() stops the fake-nalar tree, nalar.log can stay
+    locked for ~0.5s even though both processes are dead (verified via
+    tasklist: no cmd.exe/python.exe survivor — the OS/AV releases the
+    redirected-stdout handle asynchronously). The harness's own
+    teardown rmtree already retries for exactly this; manual cleanups
+    in tests need the same treatment. POSIX never hits it (unlink
+    works on open files), so the loop is a single fast pass there.
+    """
+    last: OSError | None = None
+    for _ in range(attempts):
+        try:
+            import shutil
+            shutil.rmtree(path)
+            return
+        except OSError as e:
+            last = e
+            time.sleep(delay_s)
+    assert last is not None  # attempts >= 1, so last is always set
+    raise last
 
 
 # ============================================================================
@@ -151,13 +186,25 @@ def test_reap_kills_orphan_nalar_and_removes_dir() -> None:
         # Simplest correct path: create a real sub-process, kill it,
         # waitpid it (so it's not a zombie — waitpid is the only way
         # to make the OS mark a pid as truly gone), then use it.
-        dead_pid_proc = subprocess.Popen(
-            [sys.executable, "-c", "pass"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        dead_pid_proc.wait(timeout=5.0)
-        dead_pid = dead_pid_proc.pid
+        #
+        # Windows exception: a terminated child's process handle stays
+        # open in the parent (Popen._active/finalizer), so os.kill()
+        # keeps reporting "alive" even after wait()+del+gc (verified
+        # empirically). Instead use a never-assigned pid above
+        # Windows' max pid (2^22): OpenProcess deterministically
+        # fails, which is exactly the "harness dead" signal reap
+        # keys on (os.kill raising of any kind).
+        if sys.platform == "win32":
+            dead_pid = 99_999_999
+            assert not _pid_alive(dead_pid), "never-assigned pid must read dead"
+        else:
+            dead_pid_proc = subprocess.Popen(
+                [sys.executable, "-c", "pass"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            dead_pid_proc.wait(timeout=5.0)
+            dead_pid = dead_pid_proc.pid
         # Rewrite the pidfile with the dead PID as the "harness parent".
         _make_orphan_marker(temp_dir, harness_pid=dead_pid, nalar_pid=child.pid)
 
@@ -257,8 +304,10 @@ def built_nalar(tmp_path: Path) -> Path:
 
     The fake binary binds the requested port (with SO_REUSEADDR so it can
     bind TIME_WAIT ports just like real nalar), prints '{"status":"ok"}'
-    on /health, and sleeps forever — sufficient for the boot pidfile test
-    which only needs the harness to reach the post-Popen state.
+    on /health, exits 0 on /test/shutdown (so teardown()'s graceful
+    path works), and sleeps forever otherwise — sufficient for the
+    boot pidfile test which only needs the harness to reach the
+    post-Popen state.
     """
     port_env_file = tmp_path / "port"
     fake = tmp_path / "fake-nalar"
@@ -274,6 +323,35 @@ def built_nalar(tmp_path: Path) -> Path:
         "            self.send_header('Content-Type','application/json')\n"
         "            self.end_headers()\n"
         "            self.wfile.write(b'{\"status\":\"ok\"}')\n"
+        "        elif self.path == '/test/shutdown':\n"
+        "            self.send_response(200)\n"
+        "            self.end_headers()\n"
+        "            try:\n"
+        "                self.wfile.write(b'bye')\n"
+        "                self.wfile.flush()\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            os._exit(0)\n"
+        "        else:\n"
+        "            self.send_response(404); self.end_headers()\n"
+        "    def do_POST(self):\n"
+        "        # The real binary serves POST /test/shutdown (main.zig)\n"
+        "        # and the harness's graceful path sends POST. Without\n"
+        "        # this the fake 501s the shutdown; on Windows teardown\n"
+        "        # then SIGTERMs only the .cmd wrapper, orphaning the\n"
+        "        # python grandchild that holds nalar.log open\n"
+        "        # (rmtree fails with PermissionError [WinError 32]). POSIX masks\n"
+        "        # this because killpg takes the whole group (and unlink\n"
+        "        # works on open files there).\n"
+        "        if self.path == '/test/shutdown':\n"
+        "            self.send_response(200)\n"
+        "            self.end_headers()\n"
+        "            try:\n"
+        "                self.wfile.write(b'bye')\n"
+        "                self.wfile.flush()\n"
+        "            except Exception:\n"
+        "                pass\n"
+        "            os._exit(0)\n"
         "        else:\n"
         "            self.send_response(404); self.end_headers()\n"
         "    def log_message(self, *a, **k): pass\n"
@@ -283,6 +361,24 @@ def built_nalar(tmp_path: Path) -> Path:
         "    srv.serve_forever()\n"
     )
     fake.chmod(0o755)
+    if sys.platform == "win32":
+        # Windows CreateProcess cannot execute a shebang script
+        # directly ([WinError 193] "%1 is not a valid Win32
+        # application"). Launch it through a .cmd wrapper, which
+        # CreateProcess dispatches via cmd.exe automatically
+        # (verified empirically: Popen(["x.cmd"]) works, Popen on
+        # the .py itself raises 193). The wrapper forwards argv
+        # (%*) so boot()'s `--port <n>` reaches the script.
+        # NOTE: /test/shutdown above exits the python grandchild
+        # via os._exit so teardown()'s graceful path releases the
+        # log file; killing the cmd wrapper alone would orphan the
+        # grandchild and block rmtree with PermissionError.
+        launcher = tmp_path / "fake-nalar.cmd"
+        launcher.write_text(
+            '@"%s" "%s" %%*\r\n' % (sys.executable, fake),
+            encoding="ascii",
+        )
+        return launcher
     return fake
 
 
@@ -347,9 +443,10 @@ def test_teardown_dry_run_removes_pidfile(
     # Tempdir survives (dry_run) but pidfile is gone.
     assert h.temp_dir.is_dir(), "dry_run keeps the tempdir"
     assert not pidfile.exists(), "dry_run teardown must remove the pidfile"
-    # Manual cleanup since dry_run skipped rmtree.
-    import shutil
-    shutil.rmtree(h.temp_dir)
+    # Manual cleanup since dry_run skipped rmtree. Retry: nalar.log can
+    # stay transiently locked just after teardown on Windows (see
+    # _rmtree_retry) — the harness's own rmtree path already retries.
+    _rmtree_retry(h.temp_dir)
 
 
 # ============================================================================

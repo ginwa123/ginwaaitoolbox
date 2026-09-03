@@ -59,6 +59,44 @@ def _find_free_port() -> int:
     return port
 
 
+def _resolve_mcp_http_argv() -> list[str]:
+    """Argv to spawn the mcp-http-hello-world test server.
+
+    POSIX: the ``zig-out/bin/mcp-http-hello-world`` shell wrapper
+    (``#!/bin/sh`` + ``exec node dist/index.js``) is directly
+    executable.
+
+    Windows: the wrapper is a POSIX shell script, which neither
+    CreateProcess nor Zig's ``std.process.spawn`` can execute
+    (WinError 193 / ``ChildSpawnFailed``). The wrapper's only job
+    is ``exec node <repo>/src/apps/mcp_http_hello_world/dist/index.js``,
+    so invoke that file with ``node`` directly — same interpreter,
+    same entrypoint, no shell involved.
+    """
+    import shutil
+    import sys
+
+    binary = mcp_http_hello_world_bin()  # raises if not built
+    if sys.platform != "win32":
+        return [str(binary)]
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not on PATH; cannot run mcp-http-hello-world on Windows")
+    # Repo root is two levels above zig-out/bin (bin → zig-out →
+    # repo root), mirroring the wrapper's own $SCRIPT_DIR/../../ lookup.
+    js = (
+        Path(str(binary)).resolve().parent.parent.parent
+        / "src"
+        / "apps"
+        / "mcp_http_hello_world"
+        / "dist"
+        / "index.js"
+    )
+    if not js.is_file():
+        pytest.skip(f"mcp-http-hello-world dist/index.js missing: {js}")
+    return [node, str(js)]
+
+
 def _spawn_mcp_http_hello_world(port: int, timeout_s: float = 5.0) -> subprocess.Popen[bytes]:
     """Spawn the mcp-http-hello-world binary on `port` and wait for
     the "listening on" stderr line. Returns the Popen handle; caller
@@ -66,54 +104,59 @@ def _spawn_mcp_http_hello_world(port: int, timeout_s: float = 5.0) -> subprocess
 
     Raises RuntimeError on timeout or spawn failure.
     """
-    binary = mcp_http_hello_world_bin()  # raises pytest.skip if not built
-    proc = subprocess.Popen(
-        [str(binary), str(port)],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-    )
+    import threading
+
+    argv = _resolve_mcp_http_argv()
+    try:
+        proc = subprocess.Popen(
+            [*argv, str(port)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as e:
+        raise RuntimeError(
+            f"mcp-http-hello-world spawn failed (argv={argv}): {e}"
+        )
+    # Readiness probe: a daemon thread drains stderr line-by-line and
+    # signals when "listening on" appears. A thread (not select() on
+    # the pipe fd) because select() only supports sockets on Windows —
+    # select([fd]) raises [WinError 10038] there and would fail all 5
+    # tests in this file on CI.
+    ready = threading.Event()
+    err_lines: list[str] = []
+
+    def _drain() -> None:
+        try:
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                try:
+                    text = line.decode("utf-8", errors="replace")
+                except Exception:
+                    text = ""
+                err_lines.append(text)
+                if "listening on" in text:
+                    ready.set()
+                    return
+        except Exception:
+            pass
+
+    drain_thread = threading.Thread(target=_drain, daemon=True)
+    drain_thread.start()
     deadline = time.monotonic() + timeout_s
-    # Read stderr line-by-line until we see "listening on" OR the
-    # process exits. Use a short poll interval to avoid blocking on
-    # readline() if the process never writes.
     while time.monotonic() < deadline:
+        if ready.is_set():
+            return proc
         if proc.poll() is not None:
             # Process exited before printing "listening on" — gather
             # the stderr we DID get and surface it.
-            try:
-                _, stderr = proc.communicate(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                stderr = b""
+            drain_thread.join(timeout=1.0)
             raise RuntimeError(
                 f"mcp-http-hello-world exited rc={proc.returncode} before "
-                f"listening on port {port}\nstderr:\n"
-                + stderr.decode("utf-8", errors="replace")
+                f"listening on port {port}\nstderr:\n" + "".join(err_lines)
             )
-        # Non-blocking read: check if a line is available. We use a
-        # short sleep + .readline() with a 100ms timeout via the
-        # underlying file object's setblocking? No, simpler: just
-        # sleep 50ms in a tight loop. The binary prints "listening on"
-        # ~10ms after start, so this converges fast.
-        time.sleep(0.05)
-        # Poll the stderr buffer without blocking. We can't easily
-        # do a non-blocking read on Popen.stderr (it's a Python file
-        # object), so instead we set a tiny read timeout via select().
-        # Simpler: use os.read on the underlying FD.
-        import os
-        import select
-        if proc.stderr is None:
-            continue
-        fd = proc.stderr.fileno()
-        ready, _, _ = select.select([fd], [], [], 0.05)
-        if not ready:
-            continue
-        chunk = os.read(fd, 4096)
-        if not chunk:
-            continue
-        text = chunk.decode("utf-8", errors="replace")
-        if "listening on" in text:
-            return proc
+        # Short wait so we notice both the event and early exit fast.
+        ready.wait(0.05)
     proc.kill()
     proc.wait(timeout=2.0)
     raise RuntimeError(

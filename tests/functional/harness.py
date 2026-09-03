@@ -91,6 +91,13 @@ ALLOWED_TMP_PREFIXES: tuple[str, ...] = (
 #: non-tmpdir path is rejected.
 REQUIRED_TMP_SUBSTR = "nalar-func-"
 
+#: Last-resort kill signal. Windows has no ``signal.SIGKILL`` (the
+#: attribute simply doesn't exist — accessing it raises AttributeError,
+#: which the OSError-only handlers below would NOT swallow).
+#: ``SIGTERM`` already maps to TerminateProcess on Windows, so it is
+#: the correct fallback there.
+_SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 #: Port range the harness will scan for a free port. Skip 8081 (the
 #: always-running dev port per project memory). Used by the legacy
 #: sequential picker (``_find_free_port_sequential``); the modern
@@ -675,8 +682,8 @@ class FunctionalHarness:
         self._signal_group(signal.SIGTERM)
         if self._wait_dead(1.0, "post-sigterm"):
             return
-        # Last resort — SIGKILL.
-        self._signal_group(signal.SIGKILL)
+        # Last resort — SIGKILL (SIGTERM on Windows, which lacks SIGKILL).
+        self._signal_group(_SIGKILL)
         self._wait_dead(1.0, "post-sigkill")  # best-effort final wait
 
     def _wait_dead(self, timeout: float, label: str = "wait") -> bool:
@@ -924,6 +931,13 @@ def _wait_pid_dead(pid: int, timeout: float) -> bool:
     alive-but-not-ours (treated as "dead for our purposes" because we
     can't signal it anyway).
 
+    Windows note: ``os.kill(dead_pid, 0)`` raises plain ``OSError``
+    (``[WinError 87] The parameter is incorrect``), NOT
+    ``ProcessLookupError`` — so the except clause must be broad
+    ``OSError`` (narrow ``(ProcessLookupError, PermissionError)``
+    lets 87 escape, aborting the orphan-reap loop mid-scan and
+    leaking every tempdir after the first dead pid).
+
     For subprocess children specifically, prefer ``os.waitpid(WNOHANG)``
     which also reaps zombies — see ``_stop_binary`` for the richer case.
     """
@@ -931,7 +945,10 @@ def _wait_pid_dead(pid: int, timeout: float) -> bool:
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
-        except (ProcessLookupError, PermissionError):
+        except OSError:
+            # ProcessLookupError / PermissionError on POSIX;
+            # [WinError 87] on Windows for a dead pid. Either way
+            # the pid is gone (or not ours) — dead for our purposes.
             return True
         time.sleep(0.05)
     return False
@@ -984,24 +1001,40 @@ def _reap_orphan_test_pids() -> int:
             continue
         # If the harness python is alive, this test is still in progress —
         # another worker scanning concurrently must NOT kill it.
+        # NOTE: broad OSError (not just ProcessLookupError): on
+        # Windows a dead pid raises [WinError 87], which must count
+        # as "harness dead" or the whole reap loop aborts on the
+        # first orphan (leaking every tempdir after it). The outer
+        # `except Exception` is the backstop for non-OSError probe
+        # failures (e.g. CPython's SystemError when a recycled pid
+        # lands on a protected system process): one bad entry must
+        # never abort the scan — skip it and reap the rest.
         try:
-            os.kill(harness_pid, 0)
-        except (ProcessLookupError, PermissionError):
-            pass  # harness is dead — this dir is an orphan
-        else:
-            continue
-        # Harness is dead. Kill the nalar child if alive.
-        if nalar_pid and nalar_pid != os.getpid():
             try:
-                os.kill(nalar_pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-            # Wait up to 1s for graceful exit; SIGKILL fallback.
-            if not _wait_pid_dead(nalar_pid, 1.0):
+                os.kill(harness_pid, 0)
+            except OSError:
+                pass  # harness is dead — this dir is an orphan
+            else:
+                continue
+            # Harness is dead. Kill the nalar child if alive.
+            if nalar_pid and nalar_pid != os.getpid():
                 try:
-                    os.kill(nalar_pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                    os.kill(nalar_pid, signal.SIGTERM)
+                except OSError:
                     pass
+                # Wait up to 1s for graceful exit; SIGKILL fallback
+                # (SIGTERM on Windows, which lacks SIGKILL).
+                if not _wait_pid_dead(nalar_pid, 1.0):
+                    try:
+                        os.kill(nalar_pid, _SIGKILL)
+                    except OSError:
+                        pass
+        except Exception as e:
+            print(
+                f"warning: orphan reap skipped {entry.name}: {e}",
+                file=sys.stderr,
+            )
+            continue
         # rmtree via the safety validator (same gate as teardown).
         # is_safe_tmp checks (1) prefix allow-list, (2) REQUIRED_TMP_SUBSTR
         # substring, (3) not the real HOME. For an orphan we don't know

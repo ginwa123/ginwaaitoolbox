@@ -55,6 +55,7 @@ test_*.log
 .venv-func/
 .pytest_cache/
 tests/functional/__pycache__/
+tests/functional_ui/__pycache__/
 
 # === WebView2 NuGet headers + loader (downloaded by CI's
 # "Stage WebView2 + integrate vcpkg + install ripgrep (Windows)" step;

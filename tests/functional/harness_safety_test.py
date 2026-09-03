@@ -97,12 +97,23 @@ def test_teardown_refuses_unsafe_temp_dir() -> None:
     from harness import FunctionalHarness as _FH
 
     # Build a harness instance WITHOUT calling boot (which creates its
-    # own tempdir). Use a clearly-unsafe temp_dir.
+    # own tempdir). Use a clearly-unsafe temp_dir: an absolute path
+    # that is neither under the tmp prefix nor namespaced — and that
+    # EXISTS, so the post-teardown "still exists" assertion is real.
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        unsafe_dir = Path(system_root) / "System32" / "drivers" / "etc" / "hosts"
+        if not unsafe_dir.exists():
+            pytest.skip(f"expected system file missing: {unsafe_dir}")
+        unsafe_home = os.environ.get("USERPROFILE", str(unsafe_dir.parent))
+    else:
+        unsafe_dir = Path("/etc/passwd")
+        unsafe_home = "/home/alice"
     h = _FH(
         port=9999,
         nalar_bin=Path("/nonexistent"),
-        temp_dir=Path("/etc/passwd"),  # unsafe: not in tmp, no substring
-        orig_home="/home/alice",
+        temp_dir=unsafe_dir,  # unsafe: not in tmp, no substring
+        orig_home=unsafe_home,
         log_path=Path("/dev/null"),
         pid=None,
     )
@@ -110,7 +121,7 @@ def test_teardown_refuses_unsafe_temp_dir() -> None:
         h.teardown()
     assert "REFUSING to rmtree" in str(exc.value)
     # And the file MUST still exist.
-    assert os.path.exists("/etc/passwd")
+    assert os.path.exists(unsafe_dir)
 
 
 def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
@@ -143,7 +154,11 @@ def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
 
 def test_allowed_tmp_prefixes_contains_gettempdir() -> None:
     """The allow-list must include tempfile.gettempdir() (defensive)."""
-    assert (tempfile.gettempdir() + "/") in ALLOWED_TMP_PREFIXES
+    if os.name == "nt":
+        # Windows prefixes use native backslashes (see harness.py).
+        assert (tempfile.gettempdir().rstrip("\\") + "\\") in ALLOWED_TMP_PREFIXES
+    else:
+        assert (tempfile.gettempdir() + "/") in ALLOWED_TMP_PREFIXES
 
 
 def test_required_substring_is_namespaced() -> None:
@@ -153,16 +168,21 @@ def test_required_substring_is_namespaced() -> None:
     assert REQUIRED_TMP_SUBSTR.endswith("-")
 
 
-def test_orig_home_must_exist_for_boot() -> None:
-    """boot() refuses if HOME is unset (no path to validate against)."""
-    saved = os.environ.pop("HOME", None)
-    try:
-        with pytest.raises(FunctionalHarnessError) as exc:
-            FunctionalHarness.boot()
-        assert "HOME not set" in str(exc.value)
-    finally:
-        if saved is not None:
-            os.environ["HOME"] = saved
+def test_orig_home_must_exist_for_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """boot() refuses if no home can be determined (no path to validate against)."""
+    # boot() resolves orig_home as HOME → USERPROFILE (Windows) →
+    # Path.home(). Remove both env vars AND break Path.home so every
+    # layer fails deterministically on all platforms.
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: (_ for _ in ()).throw(OSError("no home"))),
+    )
+    with pytest.raises(FunctionalHarnessError) as exc:
+        FunctionalHarness.boot()
+    assert "HOME not set" in str(exc.value)
 
 
 # ─── boot() signature: port default must be None (random), not 8080 ────────

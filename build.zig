@@ -1348,13 +1348,25 @@ pub fn build(b: *std.Build) void {
     );
     mcp_http_wrapper_install.step.dependOn(&mcp_http_wrapper_write.step);
 
-    const mcp_http_wrapper_chmod = b.addSystemCommand(&.{
-        "chmod",
-        "755",
-        b.pathJoin(&.{ b.install_path, "bin", "mcp-http-hello-world" }),
-    });
-    mcp_http_wrapper_chmod.step.dependOn(&mcp_http_wrapper_install.step);
-    mcp_http_hello_world_step.dependOn(&mcp_http_wrapper_chmod.step);
+    // chmod 0755 on the installed path. POSIX-only — same rationale
+    // as the mcp-hello-world chain above: Windows has no `chmod` on
+    // PATH for zig's `addSystemCommand` spawn (it resolves via
+    // CreateProcess, not Git Bash), and Windows file permissions are
+    // a no-op anyway (every .exe / .cmd / .bat is executable by
+    // default). Without this guard `zig build mcp-http-hello-world`
+    // (and therefore `zig build functional-test`, which depends on
+    // this step) fails on Windows with "failed to spawn chmod".
+    if (target.result.os.tag != .windows) {
+        const mcp_http_wrapper_chmod = b.addSystemCommand(&.{
+            "chmod",
+            "755",
+            b.pathJoin(&.{ b.install_path, "bin", "mcp-http-hello-world" }),
+        });
+        mcp_http_wrapper_chmod.step.dependOn(&mcp_http_wrapper_install.step);
+        mcp_http_hello_world_step.dependOn(&mcp_http_wrapper_chmod.step);
+    } else {
+        mcp_http_hello_world_step.dependOn(&mcp_http_wrapper_install.step);
+    }
 
     // Don't include mcp-http-hello-world in the default `zig build` —
     // it's not needed by the desktop binary. Users invoke it explicitly
@@ -2966,7 +2978,15 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     build_all_step.dependOn(host_install_step);
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
-    build_all_step.dependOn(&tui_install.step);
+    // nalar-tui is POSIX-only: src/apps/cli/src/tui/terminal.zig passes
+    // integer fds (std.posix.STDIN_FILENO) where Windows' fd_t is
+    // *anyopaque, so it cannot compile on Windows. Skip it in
+    // `build:all` there so `zig build` stays green; explicit
+    // `zig build install:tui` still attempts the build (and fails the
+    // same way) until the TUI is ported.
+    if (b.graph.host.result.os.tag != .windows) {
+        build_all_step.dependOn(&tui_install.step);
+    }
     build_all_step.dependOn(&build_banner.step);
     // Make `zig build` (default) auto-fetch the vendored curl archive
     // when missing. The fetch script is idempotent — re-running on a
