@@ -30,7 +30,7 @@ const app_mod = @import("app.zig");
 // ============================================================================
 
 test "buildSendBody: plain message round-trips" {
-    const body = try transport.buildSendBody(testing.allocator, "session-1", "hi");
+    const body = try transport.buildSendBody(testing.allocator, "session-1", "hi", "");
     defer testing.allocator.free(body);
     try testing.expectEqualStrings(
         "{\"session_id\":\"session-1\",\"queue_message\":\"hi\",\"allowed_tools\":\"all\",\"cwd_session\":\"\",\"image_urls\":\"\",\"selected_profile_model\":\"\",\"is_auto_retry_until_stop\":\"\"}",
@@ -39,7 +39,7 @@ test "buildSendBody: plain message round-trips" {
 }
 
 test "buildSendBody: embedded double quote is escaped (was raw -> invalid JSON)" {
-    const body = try transport.buildSendBody(testing.allocator, "s", "say \"hi\"");
+    const body = try transport.buildSendBody(testing.allocator, "s", "say \"hi\"", "");
     defer testing.allocator.free(body);
     // The body must PARSE as JSON and carry the quote through.
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
@@ -49,7 +49,7 @@ test "buildSendBody: embedded double quote is escaped (was raw -> invalid JSON)"
 }
 
 test "buildSendBody: backslash is escaped" {
-    const body = try transport.buildSendBody(testing.allocator, "s", "path C:\\tmp");
+    const body = try transport.buildSendBody(testing.allocator, "s", "path C:\\tmp", "");
     defer testing.allocator.free(body);
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
     defer parsed.deinit();
@@ -58,7 +58,7 @@ test "buildSendBody: backslash is escaped" {
 }
 
 test "buildSendBody: newline is escaped (multi-line message)" {
-    const body = try transport.buildSendBody(testing.allocator, "s", "line1\nline2");
+    const body = try transport.buildSendBody(testing.allocator, "s", "line1\nline2", "");
     defer testing.allocator.free(body);
     // Body must remain a SINGLE line of JSON (no raw control byte).
     try testing.expect(std.mem.indexOfScalar(u8, body, '\n') == null);
@@ -69,7 +69,7 @@ test "buildSendBody: newline is escaped (multi-line message)" {
 }
 
 test "buildSendBody: session id with quote cannot break out of the field" {
-    const body = try transport.buildSendBody(testing.allocator, "evil\"}", "x");
+    const body = try transport.buildSendBody(testing.allocator, "evil\"}", "x", "");
     defer testing.allocator.free(body);
     const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
     defer parsed.deinit();

@@ -180,6 +180,30 @@ fn wrapText(allocator: std.mem.Allocator, text: []const u8, width: u16) ![]const
         return chunks.toOwnedSlice(allocator);
     }
 
+    // Handle embedded newlines: split on \n first, then wrap each
+    // segment. This ensures that a Line containing "a\nb" (from
+    // legacy callers or direct Viewport.appendLine) still renders
+    // as two visual rows, not one row with a literal \n char.
+    // The common path (renderMessage) already splits on \n, so this
+    // is a safety net for any remaining callers.
+    if (std.mem.indexOfScalar(u8, text, '\n')) |_| {
+        var it = std.mem.splitScalar(u8, text, '\n');
+        while (it.next()) |segment| {
+            const seg_chunks = try wrapText(allocator, segment, width);
+            defer {
+                for (seg_chunks) |c| allocator.free(c);
+                allocator.free(seg_chunks);
+            }
+            for (seg_chunks) |c| {
+                try chunks.append(allocator, try allocator.dupe(u8, c));
+            }
+        }
+        if (chunks.items.len == 0) {
+            try chunks.append(allocator, try allocator.dupe(u8, ""));
+        }
+        return chunks.toOwnedSlice(allocator);
+    }
+
     var rest: []const u8 = text;
     while (rest.len > width) {
         // Look for the last space in rest[0..=width].
@@ -697,6 +721,65 @@ test "StatusBar: left/right render at edges" {
     try testing.expectEqual(@as(u21, 's'), f.get(0, 0).char);
     // Right-aligned: last chars of "streaming" land at x=29.
     try testing.expectEqual(@as(u21, 'g'), f.get(29, 0).char);
+}
+
+
+test "wrapText: handles embedded newlines" {
+    const chunks = try wrapText(testing.allocator, "line1\nline2\nline3", 20);
+    defer {
+        for (chunks) |c| testing.allocator.free(c);
+        testing.allocator.free(chunks);
+    }
+    try testing.expectEqual(@as(usize, 3), chunks.len);
+    try testing.expectEqualStrings("line1", chunks[0]);
+    try testing.expectEqualStrings("line2", chunks[1]);
+    try testing.expectEqualStrings("line3", chunks[2]);
+}
+
+test "wrapText: handles newline with wrapping" {
+    // "hello world\nfoo bar" at width 6 should wrap each segment
+    const chunks = try wrapText(testing.allocator, "hello world\nfoo bar", 6);
+    defer {
+        for (chunks) |c| testing.allocator.free(c);
+        testing.allocator.free(chunks);
+    }
+    // "hello world" -> ["hello", "world"], "foo bar" -> ["foo", "bar"]
+    try testing.expectEqual(@as(usize, 4), chunks.len);
+    try testing.expectEqualStrings("hello", chunks[0]);
+    try testing.expectEqualStrings("world", chunks[1]);
+    try testing.expectEqualStrings("foo", chunks[2]);
+    try testing.expectEqualStrings("bar", chunks[3]);
+}
+
+test "wrapText: handles empty segments from blank lines" {
+    const chunks = try wrapText(testing.allocator, "a\n\nb", 10);
+    defer {
+        for (chunks) |c| testing.allocator.free(c);
+        testing.allocator.free(chunks);
+    }
+    try testing.expectEqual(@as(usize, 3), chunks.len);
+    try testing.expectEqualStrings("a", chunks[0]);
+    try testing.expectEqualStrings("", chunks[1]);
+    try testing.expectEqualStrings("b", chunks[2]);
+}
+
+test "Viewport.render handles multiline assistant message" {
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    // Simulate assistant message with 3 lines
+    try vp.appendLine("line1", .{});
+    try vp.appendLine("line2", .{});
+    try vp.appendLine("line3", .{});
+
+    var f = try vp.render(testing.allocator, 20, 5);
+    defer f.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u21, 'l'), f.get(0, 0).char);
+    try testing.expectEqual(@as(u21, '1'), f.get(4, 0).char);
+    try testing.expectEqual(@as(u21, 'l'), f.get(0, 1).char);
+    try testing.expectEqual(@as(u21, '2'), f.get(4, 1).char);
+    try testing.expectEqual(@as(u21, 'l'), f.get(0, 2).char);
+    try testing.expectEqual(@as(u21, '3'), f.get(4, 2).char);
 }
 
 test "Input: cursor cell uses foreground-only caret (round-3: bg inherits black default)" {

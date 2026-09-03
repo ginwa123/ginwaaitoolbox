@@ -265,6 +265,23 @@ fn readFramed(
     return body;
 }
 
+/// Write a newline-delimited JSON message (NDJSON). Used for MCP stdio
+/// servers that expect `JSON.stringify(msg) + '\n'` (the SDK default for
+/// both Node and Python). Pair with `readFramed` which already handles
+/// both framing styles on read. For Content-Length framing, use `writeFramed`.
+fn writeNDJSON(io: std.Io, file: std.Io.File, body: []const u8) !void {
+    // Fast path: body + '\n' fits in a small stack buffer
+    var stack_buf: [8192]u8 = undefined;
+    if (body.len + 1 <= stack_buf.len) {
+        @memcpy(stack_buf[0..body.len], body);
+        stack_buf[body.len] = '\n';
+        try std.Io.File.writeStreamingAll(file, io, stack_buf[0 .. body.len + 1]);
+    } else {
+        try std.Io.File.writeStreamingAll(file, io, body);
+        try std.Io.File.writeStreamingAll(file, io, "\n");
+    }
+}
+
 /// Write a Content-Length-framed message. Pair with `readFramed`.
 ///
 /// `deadline_ns` (default 0 = no timeout) — when >0, polled between
@@ -365,6 +382,15 @@ pub const StdioClient = struct {
     pub fn send(self: *StdioClient, body: []const u8, deadline_ns: u64) !void {
         const stdin = self.stdin orelse return StdioError.BrokenPipe;
         try writeFramed(self.io, stdin, body, deadline_ns);
+    }
+
+    /// Send a newline-delimited JSON message (NDJSON) to the child.
+    /// Used for MCP servers that expect `JSON.stringify(msg) + '\n'`
+    /// (the default for both Node and Python SDKs). No deadline
+    /// polling — NDJSON sends are small and atomic.
+    pub fn sendNDJSON(self: *StdioClient, body: []const u8) !void {
+        const stdin = self.stdin orelse return StdioError.BrokenPipe;
+        try writeNDJSON(self.io, stdin, body);
     }
 
     /// Convenience overload of `send` that uses no timeout. Preserves

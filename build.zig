@@ -2275,6 +2275,31 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const install_tui_step = b.step("install:tui", "Install the nalar-tui binary only");
     install_tui_step.dependOn(&tui_install.step);
 
+    // === nalar-tui user-local install (`zig build install-tui`) ===
+    // Builds nalar-tui and copies it to the per-user bin directory:
+    //   Linux:   $HOME/.local/bin/nalar-tui
+    //   macOS:   $HOME/.local/bin/nalar-tui
+    //   Windows: %LOCALAPPDATA%\nalar\bin\nalar-tui.exe
+    //            (fallback: %APPDATA%, %USERPROFILE%, $HOME)
+    // The copy is done by a small Zig helper (tools/install_tui.zig) so it
+    // works without shell dependencies (no `cp`, no `sh`).
+    const install_tui_tool = b.addExecutable(.{
+        .name = "install_tui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/install_tui.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .link_libc = true,
+        }),
+    });
+    const install_tui_run = b.addRunArtifact(install_tui_tool);
+    const tui_bin_name = if (b.graph.host.result.os.tag == .windows) "nalar-tui.exe" else "nalar-tui";
+    install_tui_run.addArg(b.pathJoin(&.{ b.install_path, "bin", tui_bin_name }));
+    install_tui_run.step.dependOn(&tui_install.step);
+
+    const install_tui_user_step = b.step("install-tui", "Build nalar-tui and install to user bin (~/.local/bin on Linux/macOS, %LOCALAPPDATA%\\nalar\\bin on Windows)");
+    install_tui_user_step.dependOn(&install_tui_run.step);
+
     const run_step = b.step("run", "Run the app");
 
     const run_cmd = b.addRunArtifact(exe);

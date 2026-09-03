@@ -4,6 +4,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { computeLoadMoreThreshold } from './virtualScrollerThreshold'
 import { computeAnchorCompensation, type AnchorMeasurement } from './virtualScrollerScrollAnchor'
 import { quantizePx, AdaptiveItemHeightEstimator } from './virtualScrollerPerf'
+import { createScrollLogger } from './scrollLogger'
 
 const props = withDefaults(
   defineProps<{
@@ -159,6 +160,15 @@ const props = withDefaults(
      * SHOULD pass this prop.
      */
     itemKey?: (item: T, index: number) => string
+    /**
+     * Debug chat id for VirtualScroller internal logging (2026-09-02).
+     * When provided, the scroller creates its own scrollLogger and emits
+     * sizer-recomputed / measure-compensation / scroll-to-bottom-target
+     * lines with the same chatId tag as ChatView, so you can correlate
+     * sizerHeight flips with spacer-resize-stick in one grep.
+     * When omitted, internal logging is silent (no perf cost).
+     */
+    debugChatId?: string
   }>(),
   {
     totalCount: 0,
@@ -168,6 +178,7 @@ const props = withDefaults(
     loadMoreThresholdRatio: 0.5,
     loadMoreAtTop: false,
     itemKey: undefined,
+    debugChatId: undefined,
   },
 )
 
@@ -246,6 +257,13 @@ const emit = defineEmits<{
    */
   contentShift: [shift: { topSpacer: number; bottomSpacer: number; total: number }]
 }>()
+
+// ── Deep-dive logger (2026-09-02) ──────────────────────────────────────────
+// When debugChatId is provided, internal sizer/measure/scrollToBottom
+// decisions are logged via the same scrollLogger infra as ChatView,
+// so a single `grep chat=task_...` shows both sides of the loop.
+const vsLogger = computed(() => props.debugChatId ? createScrollLogger(props.debugChatId) : null)
+let lastSizerClamped = false
 
 const containerRef = ref<HTMLElement | null>(null)
 // The content div is measured via the onContentRef callback (see the
@@ -338,21 +356,19 @@ const heightEstimator = new AdaptiveItemHeightEstimator({
 let maxMeasuredIndex = -1
 
 /**
- * Estimated height for an item with no stored measurement. Feeds the
- * prefix-sum builder and the visible-range scan.
- *
- * - Index ≤ maxMeasuredIndex (history): learned median — representative
- *   of what the user has scrolled through.
- * - Index > maxMeasuredIndex (tail): static prop — deliberately a
- *   conservative UNDER-estimate so the sizer never extends past real
- *   content (no scrollable gap below the last message).
+ * Estimated height for an item with no stored measurement.
+ * Fix for blank viewport with 100 msgs: previously used median for
+ * history (index ≤ maxMeasuredIndex) which could be 300px and
+ * overestimate 50 unmeasured history items by 15000px → sizer too
+ * tall → blank gap. Now uses defaultItemHeight (64) for ALL
+ * unmeasured, so sizer underestimates (too short) not overestimates.
+ * Undershoot is safe: scrollToBottom real-bottom shows last message,
+ * and as items are measured sizer grows to accurate. No blank gap.
  */
 const estimateHeight = (index: number): number => {
   const stored = itemHeights.value.get(keyOf(index))
   if (stored !== undefined) return stored
-  return index <= maxMeasuredIndex
-    ? heightEstimator.estimate()
-    : props.defaultItemHeight
+  return props.defaultItemHeight
 }
 
 /**
@@ -463,20 +479,94 @@ const renderTick = ref(0)
 // against no-op bumps (same height → no reactive write → no loop).
 const onContentRef = (el: unknown) => {
   const h = el ? (el as HTMLElement).offsetHeight : 0
-  if (h > 0 && h !== realContentHeight) {
+  if (h > 0 && Math.abs(h - realContentHeight) > HYSTERESIS_PX) {
     realContentHeight = h
     renderTick.value++
   }
 }
+// ── Sizer height — FIX for 100-message blinking + blank viewport (2026-09-02) ─
+// Previous clamp: realTotal = topSpacer + realContentHeight when at bottom,
+// overshoot = modelTotal - realTotal, clamp if overshoot > 50. But topSpacer
+// = accumulatedHeights[start] where start = f(scrollTop), so sizerHeight
+// depended on scrollTop → loop: sizerHeight → scrollHeight → onContentShift
+// → scrollToBottom → scrollTop → visibleRange → topSpacer → sizerHeight
+// (60Hz blinking with 100 msgs). Removing clamp entirely (modelTotal only)
+// fixed blinking but reintroduced blank viewport (sizer 29389 vs real 13720).
+//
+// Fix v2: sizerHeight is modelTotal, but when at bottom and sizer is
+// too short (underestimate, realTotal > modelTotal), expand to realTotal
+// so scrollToBottom can reach realBottom (otherwise cut off). When too
+// tall (overestimate, blank gap), scrollToBottom real-bottom handles it
+// without sizer clamp. Sizer update only when realContentHeight changes
+// >50 or total changes >50, not on every scroll-driven topSpacer change
+// → no loop. estimateHeight uses 64 for all unmeasured (conservative)
+// so sizer underestimates, not overestimates, and grows to accurate as
+// items are measured.
+let cachedSizerHeight = -1
+let lastRealContentHeightForSizer = -1
 const sizerHeight = computed(() => {
-  void renderTick.value // re-evaluate after each measured render
+  void renderTick.value
+  const total = modelTotal.value
   const range = visibleRange.value
-  if (range.end < props.items.length || realContentHeight <= 0) return modelTotal.value
+  // Not at bottom → use modelTotal (stable)
+  if (range.end < props.items.length || realContentHeight <= 0) {
+    if (Math.abs(total - cachedSizerHeight) > HYSTERESIS_PX) {
+      cachedSizerHeight = total
+      lastSizerClamped = false
+      lastRealContentHeightForSizer = realContentHeight
+      if (vsLogger.value) {
+        try {
+          vsLogger.value.info({
+            scrollTop: containerRef.value?.scrollTop ?? scrollTop.value,
+            scrollHeight: containerRef.value?.scrollHeight ?? total,
+            clientHeight: containerRef.value?.clientHeight ?? containerHeight.value,
+            messages: props.items.length,
+            isAtBottom: false,
+            containerInfo: { null: !containerRef.value, offsetHeight: containerRef.value?.offsetHeight ?? 0, offsetParent: null },
+            reason: 'sizer-recomputed',
+            caller: 'VirtualScroller.sizerHeight',
+            extra: { modelTotal: total, sizerHeight: total, hysteresis: HYSTERESIS_PX, renderTick: renderTick.value, atBottom: false },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any)
+        } catch {}
+      }
+    }
+    return cachedSizerHeight
+  }
+  // At bottom: if sizer too short (realTotal > modelTotal), expand to realTotal
+  // so you can scroll to last message. If too tall, keep modelTotal and let
+  // scrollToBottom real-bottom handle gap (no sizer clamp needed).
   const realTotal = range.topSpacer + realContentHeight
-  // Only clamp overshoot; never inflate past the model (undershoot is
-  // handled by the normal measure path — content grows into it).
-  const overshoot = modelTotal.value - realTotal
-  return overshoot > HYSTERESIS_PX ? realTotal : modelTotal.value
+  const isTooShort = realTotal > total + HYSTERESIS_PX
+  const target = isTooShort ? realTotal : total
+  const isClamped = isTooShort
+  const contentHeightChanged = Math.abs(realContentHeight - lastRealContentHeightForSizer) > HYSTERESIS_PX
+  const totalChanged = Math.abs(total - cachedSizerHeight) > HYSTERESIS_PX
+  const clampFlipped = isClamped !== lastSizerClamped
+  const shouldUpdate = contentHeightChanged || totalChanged || clampFlipped
+  if (shouldUpdate) {
+    cachedSizerHeight = target
+    lastSizerClamped = isClamped
+    lastRealContentHeightForSizer = realContentHeight
+    if (vsLogger.value) {
+      const c = containerRef.value
+      try {
+        vsLogger.value.info({
+          scrollTop: c?.scrollTop ?? scrollTop.value,
+          scrollHeight: c?.scrollHeight ?? target,
+          clientHeight: c?.clientHeight ?? containerHeight.value,
+          messages: props.items.length,
+          isAtBottom: true,
+          containerInfo: { null: !c, offsetHeight: c?.offsetHeight ?? 0, offsetParent: c?.offsetParent ? (c.offsetParent as HTMLElement).tagName : null },
+          reason: clampFlipped ? 'sizer-clamp' : 'sizer-recomputed',
+          caller: 'VirtualScroller.sizerHeight',
+          extra: { modelTotal: total, realTotal, sizerHeight: target, isClamped, hysteresis: HYSTERESIS_PX, renderTick: renderTick.value, contentHeightChanged, totalChanged },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any)
+      } catch {}
+    }
+  }
+  return cachedSizerHeight
 })
 
 // CRITICAL: `{ immediate: true }` is required here. Without it,
@@ -644,7 +734,7 @@ watch(
 // distanceFromBottom stayed constant. 4 px is large enough to
 // absorb the noise floor and small enough to admit any real
 // layout change (image load, content expansion, streaming).
-const HYSTERESIS_PX = 4
+const HYSTERESIS_PX = 50
 
 const measureItems = () => {
   if (!containerRef.value) return
@@ -756,6 +846,29 @@ const measureItems = () => {
     // event that onScroll must label as programmatic (see the counter
     // comment above — without this, a downward compensation is misread
     // as "user scrolled up" and disengages ChatView's auto-stick).
+    if (vsLogger.value) {
+      try {
+        vsLogger.value.info({
+          scrollTop: prevScrollTop,
+          scrollHeight: containerRef.value.scrollHeight,
+          clientHeight: containerRef.value.clientHeight,
+          messages: props.items.length,
+          isAtBottom: false,
+          containerInfo: { null: false, offsetHeight: containerRef.value.offsetHeight, offsetParent: containerRef.value.offsetParent ? (containerRef.value.offsetParent as HTMLElement).tagName : null },
+          reason: 'measure-compensation',
+          caller: 'VirtualScroller.measureItems',
+          extra: {
+            anchorIndex,
+            prevScrollTop,
+            newScrollTop: result.newScrollTop,
+            shiftPx: result.shiftPx,
+            pendingMeasurements,
+            pendingWritesLen: pendingWrites.length,
+          },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any)
+      } catch {}
+    }
     markProgrammaticScroll()
     containerRef.value.scrollTop = result.newScrollTop
     scrollTop.value = result.newScrollTop
@@ -989,32 +1102,16 @@ const scrollToTop = (behavior: ScrollBehavior = 'auto') =>
   containerRef.value?.scrollTo({ top: 0, behavior })
 const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return
-  // ── Real-bottom target (2026-08-26 blank-viewport fix) ───────────────
-  //
-  // The sizer height is a MODEL number (Σ stored/estimated heights) and
-  // can overshoot the real content — stick-to-bottom computed from it
-  // (scrollHeight - clientHeight) landed PAST the last row, in the
-  // phantom region: the user's fully-blank-viewport screenshots
-  // (sizer 29389px, window translated to 27971px, nothing visible).
-  //
-  // When the rendered window includes the LAST item, the real content
-  // bottom is directly measurable: topSpacer + content.offsetHeight
-  // (the content div is a flex column holding exactly the rendered
-  // window). Targeting that instead of the model total guarantees the
-  // last message is on screen — regardless of any residual model
-  // overshoot. READ-ONLY: no sizer writes, no feedback loop (the tail
-  // clamp that oscillated was a writer; this is a reader).
+  // Real-bottom override (blank-viewport fix) — kept, but now safe because
+  // sizerHeight is stable (modelTotal only, no visibleRange dependency).
+  // Previously the sizer clamp + this override together caused the loop;
+  // with sizer stable, this is a one-time read that doesn't feedback.
   const range = visibleRange.value
   const content = containerRef.value.querySelector('.virtual-scroller-content')
   const contentH = content ? (content as HTMLElement).offsetHeight : 0
-  // Guard: a 0-height content div means layout hasn't settled (jsdom,
-  // mid-frame) — trusting it would stick to the TOP. Fall through to
-  // the model path instead.
   if (range.end >= props.items.length && contentH > 0) {
     const realBottom = range.topSpacer + contentH
     const target = Math.max(0, realBottom - containerHeight.value)
-    // Only override when the model actually overshoots; otherwise the
-    // plain scrollHeight path is already correct.
     const modelBottom = containerRef.value.scrollHeight - containerHeight.value
     if (modelBottom - target > HYSTERESIS_PX) {
       containerRef.value.scrollTo({ top: target, behavior })
@@ -1093,6 +1190,8 @@ defineExpose({
   effectiveLoadMoreThreshold,
   renderedCount,
   effectiveRange,
+  sizerHeight,
+  modelTotal,
 })
 </script>
 

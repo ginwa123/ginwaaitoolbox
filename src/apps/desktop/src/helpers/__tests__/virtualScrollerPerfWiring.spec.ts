@@ -227,10 +227,11 @@ describe('VirtualScroller adaptive item-height estimation', () => {
     expect(events).toBeTruthy()
     const last = events![events!.length - 1]![0]
 
-    // Static-64 estimate for the ~95 unmeasured tail items would be
-    // 95*64 ≈ 6080px. Adaptive median(300) gives ≈ 28500px. Assert we
-    // got the ADAPTIVE value (well above the static estimate).
-    expect(last.bottomSpacer).toBeGreaterThan(15000)
+    // With fix for 100-msg blank viewport, ALL unmeasured use 64
+    // (not median), so bottomSpacer for ~95 tail items is 95*64≈6080.
+    // Previously adaptive median(300) gave ≈28500, but that overestimated
+    // and caused sizer too tall → blank gap. Now conservative.
+    expect(last.bottomSpacer).toBeLessThan(10000)
     wrapper.unmount()
   })
 

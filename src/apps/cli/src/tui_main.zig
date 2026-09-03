@@ -22,6 +22,7 @@ fn usage() []const u8 {
     \\  --server <url>     Backend URL (default http://localhost:8081)
     \\  --session <id>     Resume an existing session (default: new)
     \\  --profile <name>   LLM profile name
+    \\  --cwd <path>       Working directory for the agent (default: shell cwd)
     \\  --help             Show this help
     \\
     \\Keys:
@@ -44,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
 
     var cfg = app_mod.Config{};
     var profile: ?[]const u8 = null;
+    var flag_cwd: ?[]const u8 = null;
 
     var i: usize = 0;
     while (i < argv.len) : (i += 1) {
@@ -63,6 +65,10 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= argv.len) return fail("--profile requires a value");
             profile = argv[i]; // accepted for parity with nalarcli; sent as "" in v1
+        } else if (std.mem.eql(u8, a, "--cwd")) {
+            i += 1;
+            if (i >= argv.len) return fail("--cwd requires a value");
+            flag_cwd = argv[i];
         } else {
             return fail("unknown flag; try --help");
         }
@@ -73,6 +79,35 @@ pub fn main(init: std.process.Init) !void {
         if (env.get("NALARCLI_SESSION_ID")) |v| {
             if (v.len > 0) cfg.session_id = v;
         }
+    }
+
+    // Resolve cwd: --cwd flag > NALARCLI_CWD env > OS cwd > "" (sandbox fallback).
+    // Priority mirrors nalarcli's --cwd handling but auto-detects OS cwd when
+    // no explicit value is given — the TUI's project is the shell's cwd.
+    if (flag_cwd) |v| {
+        cfg.cwd = v;
+    } else if (env.get("NALARCLI_CWD")) |v| {
+        if (v.len > 0) cfg.cwd = v;
+    } else {
+        // Capture OS cwd via realPathFile with ".". On failure (e.g., cwd deleted),
+        // fall back to "" so the backend uses its sandbox fallback.
+        // NOTE: Dir.realPath (no sub_path) fails with FileNotFound on Linux
+        // (see /tmp/test_cwd.zig) — must use realPathFile with ".".
+        var cwd_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        if (std.Io.Dir.cwd().realPathFile(io, ".", &cwd_buf)) |cwd_len| {
+            const cwd_slice = cwd_buf[0..cwd_len];
+            // Only use if absolute — defensive, realPathFile should always be absolute.
+            if (cwd_slice.len > 0 and std.fs.path.isAbsolute(cwd_slice)) {
+                // Dupe into arena so it lives for the process lifetime.
+                cfg.cwd = allocator.dupe(u8, cwd_slice) catch "";
+            }
+        } else |_| {
+            // Keep cfg.cwd = "" (sandbox fallback)
+        }
+    }
+    // Validate: non-empty cwd must be absolute; otherwise fall back to sandbox.
+    if (cfg.cwd.len > 0 and !std.fs.path.isAbsolute(cfg.cwd)) {
+        cfg.cwd = "";
     }
 
     var app = try app_mod.App.init(allocator, io, cfg);
@@ -122,6 +157,7 @@ fn sendAndTrack(model: *app_mod.App, msg_text: []const u8) void {
         model.cfg.server,
         session_id,
         msg_text,
+        model.cfg.cwd,
     ) catch {
         model.viewport.appendLine("! failed to reach server", .{ .fg = .red }) catch {};
         model.is_streaming = false;
@@ -134,14 +170,19 @@ fn sendAndTrack(model: *app_mod.App, msg_text: []const u8) void {
 
 fn pollMessages(model: *app_mod.App) void {
     const sid = model.session_id orelse return;
+    // Use a tmp arena so the per-poll HTTP body + JSON parse don't
+    // leak the long-lived arena (init.arena) that backs model.allocator.
+    var arena = std.heap.ArenaAllocator.init(model.allocator);
+    defer arena.deinit();
+    const tmp_allocator = arena.allocator();
     const body = transport.getMessages(
-        model.allocator,
+        tmp_allocator,
         &model.http_client,
         model.cfg.server,
         sid,
         100,
     ) catch return; // transient failure — retry on next tick
-    defer model.allocator.free(body);
+    defer tmp_allocator.free(body);
     model.onMessages(body) catch {};
 }
 

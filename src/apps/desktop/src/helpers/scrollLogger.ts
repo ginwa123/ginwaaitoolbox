@@ -154,6 +154,12 @@ export type ScrollReason =
   | 'direction-change' // user reversed scroll direction (up↔down)
   | 'content-resized' // scrollHeight changed between two scroll events
   | 'lazy-load-zone' // within VirtualScroller's loadMoreThreshold but not at the 10px edge
+  // VirtualScroller internal diagnostics (2026-09-02 blinking-loop deep dive)
+  | 'sizer-recomputed' // sizerHeight flipped between modelTotal and realTotal
+  | 'sizer-clamp' // sizerHeight is currently clamped (overshoot > hysteresis)
+  | 'measure-compensation' // measureItems anchor compensation wrote scrollTop
+  | 'scroll-to-bottom-target' // scrollToBottom chose realBottom vs modelBottom
+  | 'isAtBottom-decision' // handleVirtualScroll isAtBottom retained vs flipped
   // Warn-level reason: handleVirtualScroll fired but the container
   // ref chain was null (component unmounted, inner ref not yet
   // bound, or layout chain broke). The scrollerState/wrapperState

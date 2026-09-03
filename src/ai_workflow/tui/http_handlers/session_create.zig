@@ -68,7 +68,19 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     const io = ctx.io;
     const di = try nalarcore.getSingleton();
 
-    std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_20={}\n", .{ req.body.len, req.body.len });
+    {
+        const prefix_len = @min(200, req.body.len);
+        const prefix = if (prefix_len > 0) req.body[0..prefix_len] else "";
+        // Use {s} for the prefix slice; escape control chars by printing length + prefix
+        std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_200={s}\n", .{ req.body.len, prefix });
+        if (req.body.len > 1024 * 1024) {
+            std.log.warn("session_create: body too large ({} bytes), rejecting", .{req.body.len});
+            return res.jsonResponse(.{
+                .status_code = 413,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "PayloadTooLarge" }),
+            });
+        }
+    }
 
     const parsed = std.json.parseFromSliceLeaky(RequestSession, allocator, req.body, .{
         .ignore_unknown_fields = true,

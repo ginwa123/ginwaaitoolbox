@@ -59,12 +59,32 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
         defer allocator.free(stripped);
         const unwrapped = try think.unwrapContentWrappers(allocator, stripped);
         defer allocator.free(unwrapped);
-        const text = try allocator.dupe(u8, unwrapped);
-        const lines = try allocator.dupe(Line, &[_]Line{.{
-            .text = text,
-            .style = .{},
-        }});
-        return lines;
+        // Split on newlines into multiple Lines so paragraphs/bullets
+        // are preserved. Each line is stripped of markdown syntax for
+        // TUI readability (desktop renders markdown via marked.parse).
+        var out: std.ArrayList(Line) = .empty;
+        defer out.deinit(allocator);
+        var it = std.mem.splitScalar(u8, unwrapped, '\n');
+        while (it.next()) |raw_line| {
+            // Strip markdown syntax for TUI display
+            const cleaned = try stripMarkdown(allocator, raw_line);
+            defer allocator.free(cleaned);
+            const trimmed = std.mem.trim(u8, cleaned, &std.ascii.whitespace);
+            // Preserve empty lines as blank Lines (paragraph spacing)
+            // but trim trailing whitespace. For non-empty, use cleaned
+            // trimmed version.
+            const text = if (trimmed.len == 0)
+                try allocator.dupe(u8, "")
+            else
+                try allocator.dupe(u8, trimmed);
+            try out.append(allocator, .{ .text = text, .style = .{} });
+        }
+        // Ensure at least one line
+        if (out.items.len == 0) {
+            const text = try allocator.dupe(u8, "");
+            try out.append(allocator, .{ .text = text, .style = .{} });
+        }
+        return out.toOwnedSlice(allocator);
     }
 
     if (std.mem.eql(u8, msg.role, "tool")) {
@@ -102,9 +122,59 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
     return lines;
 }
 
+
+/// Strip markdown syntax for TUI plain-text display.
+/// Removes **, __, `, #, >, and normalizes bullet markers.
+/// Keeps the inner text content.
+fn stripMarkdown(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(allocator);
+    try out.ensureTotalCapacity(allocator, input.len);
+
+    var i: usize = 0;
+    // Strip leading markdown markers: #, >, -, *, and whitespace
+    // e.g. "## Heading" -> "Heading", "> quote" -> "quote", "- bullet" -> "• bullet"
+    var start: usize = 0;
+    // Handle heading markers: leading #'s + space
+    while (start < input.len and input[start] == '#') start += 1;
+    if (start > 0 and start < input.len and input[start] == ' ') start += 1;
+    // Handle blockquote marker
+    if (start < input.len and input[start] == '>') {
+        start += 1;
+        if (start < input.len and input[start] == ' ') start += 1;
+    }
+    // Handle bullet markers: "- ", "* ", "• "
+    var is_bullet = false;
+    if (start < input.len and (input[start] == '-' or input[start] == '*') and start + 1 < input.len and input[start + 1] == ' ') {
+        is_bullet = true;
+        start += 2;
+    }
+    if (is_bullet) {
+        try out.appendSlice(allocator, "• ");
+    }
+    i = start;
+
+    while (i < input.len) {
+        // Skip ** and __ (bold)
+        if (i + 1 < input.len and ((input[i] == '*' and input[i + 1] == '*') or (input[i] == '_' and input[i + 1] == '_'))) {
+            i += 2;
+            continue;
+        }
+        // Skip single ` (inline code)
+        if (input[i] == '`') {
+            i += 1;
+            continue;
+        }
+        try out.append(allocator, input[i]);
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 // ----------------------------------------------------------------------------
 // Tests (RED — impl added below after tests fail)
 // ----------------------------------------------------------------------------
+
 
 fn freeLines(allocator: std.mem.Allocator, lines: []Line) void {
     for (lines) |l| allocator.free(l.text);
@@ -239,3 +309,118 @@ test "renderMessage: unknown role renders raw dim" {
     try testing.expectEqualStrings("system prompt text", lines[0].text);
     try testing.expectEqual(@as(?Color, .brightBlack), lines[0].style.fg);
 }
+
+test "renderMessage: assistant multiline preserves paragraphs" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "line1\nline2\nline3",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqualStrings("line1", lines[0].text);
+    try testing.expectEqualStrings("line2", lines[1].text);
+    try testing.expectEqualStrings("line3", lines[2].text);
+}
+
+test "renderMessage: assistant with blank line preserves empty line" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "para1\n\npara2",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqualStrings("para1", lines[0].text);
+    try testing.expectEqualStrings("", lines[1].text);
+    try testing.expectEqualStrings("para2", lines[2].text);
+}
+
+test "renderMessage: assistant strips markdown bold" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "Hello **world** and __bold__ text",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqual(@as(usize, 1), lines.len);
+    try testing.expectEqualStrings("Hello world and bold text", lines[0].text);
+}
+
+test "renderMessage: assistant strips inline code backticks" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "Use `app.go` and `main.go`",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqualStrings("Use app.go and main.go", lines[0].text);
+}
+
+test "renderMessage: assistant handles bullet list" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "- item one\n- item two\n- item three",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqualStrings("• item one", lines[0].text);
+    try testing.expectEqualStrings("• item two", lines[1].text);
+    try testing.expectEqualStrings("• item three", lines[2].text);
+}
+
+test "renderMessage: assistant strips heading markers" {
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = "## Heading\n### Subheading\nNormal text",
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqual(@as(usize, 3), lines.len);
+    try testing.expectEqualStrings("Heading", lines[0].text);
+    try testing.expectEqualStrings("Subheading", lines[1].text);
+    try testing.expectEqualStrings("Normal text", lines[2].text);
+}
+
+test "renderMessage: assistant handles real-world markdown from screenshot" {
+    const content = "Hai! Project **iblsql** adalah **aplikasi desktop**\n\nStack:\n- **Backend:** Go 1.25\n- **Frontend:** React";
+    const lines = try renderMessage(testing.allocator, .{
+        .role = "assistant",
+        .content = content,
+        .tool_name = "",
+        .reasoning_content = "",
+    });
+    defer freeLines(testing.allocator, lines);
+    try testing.expectEqual(@as(usize, 5), lines.len);
+    try testing.expectEqualStrings("Hai! Project iblsql adalah aplikasi desktop", lines[0].text);
+    try testing.expectEqualStrings("", lines[1].text);
+    try testing.expectEqualStrings("Stack:", lines[2].text);
+    try testing.expectEqualStrings("• Backend: Go 1.25", lines[3].text);
+    try testing.expectEqualStrings("• Frontend: React", lines[4].text);
+}
+
+test "stripMarkdown: removes bold and code markers" {
+    const got = try stripMarkdown(testing.allocator, "**bold** and `code`");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("bold and code", got);
+}
+
+test "stripMarkdown: handles bullet conversion" {
+    const got = try stripMarkdown(testing.allocator, "- bullet item");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("• bullet item", got);
+}
+
+test "stripMarkdown: handles heading" {
+    const got = try stripMarkdown(testing.allocator, "## My Heading");
+    defer testing.allocator.free(got);
+    try testing.expectEqualStrings("My Heading", got);
+}
+
