@@ -145,6 +145,13 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Setup Python 3.11
+        if: runner.os == 'Windows'
+        # Windows-only: the self-hosted Linux (Arch) runner has no
+        # Python 3.11 in the setup-python tool cache, so the step fails
+        # with "version '3.11' was not found for this operating system"
+        # (run 33773588748). Linux/macOS use the system python3 like
+        # origin/main (no setup-python step there) — functional tests
+        # create their venv via `python3 -m venv`.
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
