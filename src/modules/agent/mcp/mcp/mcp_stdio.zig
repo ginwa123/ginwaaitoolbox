@@ -658,13 +658,18 @@ pub const StdioRegistry = struct {
         while (it.next()) |kv| {
             kv.value_ptr.*.client.deinit();
         }
+        const parent_allocator = self.entries.allocator;
         self.entries.deinit();
         // If we own a Threaded io (the global registry case), tear it
-        // down before the arena — the Threaded instance is allocated
-        // FROM the arena, so we must .deinit() it (which joins its
-        // background threads) before the arena wipes the memory.
+        // down before the arena. The Threaded instance itself was
+        // allocated via `parent_allocator.create` in initThreaded (NOT
+        // from the arena), so we must .deinit() it (joins background
+        // threads) AND .destroy() it — otherwise the struct leaks
+        // (caught by the buildMCPToolsRun bogus-command unit test).
         if (self.threaded) |t| {
             t.deinit();
+            parent_allocator.destroy(t);
+            self.threaded = null;
         }
         // Single arena.deinit() frees ALL the clients + keys + the
         // Threaded struct at once.

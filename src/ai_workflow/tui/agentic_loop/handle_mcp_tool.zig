@@ -200,7 +200,7 @@ fn callViaStdio(
     var argv_list: std.ArrayList([]const u8) = .empty;
     defer argv_list.deinit(allocator);
     if (server_obj.get("command")) |cmd_field| {
-        if (cmd_field == .string) {
+        if (cmd_field == .string and cmd_field.string.len > 0) {
             try argv_list.append(allocator, try allocator.dupe(u8, cmd_field.string));
         }
     }
