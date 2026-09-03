@@ -450,8 +450,17 @@ pub const HttpRegistry = struct {
         const alloc = self.arena.allocator();
         const client = try alloc.create(HttpClient);
         const key_dup = try alloc.dupe(u8, name);
+        // Deep-dupe the headers (structs AND strings): the caller's
+        // Header slice is per-run memory (stack buf + run-arena strings)
+        // that dies with the run, while the cached client must stay
+        // valid for the process lifetime. A shallow struct copy leaves
+        // dangling name/value pointers → segfault in buildMcpHeaders
+        // on the next run. Same lifetime rule as the registry itself.
         const hdrs_dup = try alloc.alloc(custom_http_client_mod.Header, custom_headers.len);
-        for (custom_headers, 0..) |h, i| hdrs_dup[i] = h;
+        for (custom_headers, 0..) |h, i| hdrs_dup[i] = .{
+            .name = try alloc.dupe(u8, h.name),
+            .value = try alloc.dupe(u8, h.value),
+        };
         client.* = try HttpClient.init(alloc, url, hdrs_dup);
         try self.entries.put(key_dup, client);
         return client;
@@ -463,16 +472,33 @@ pub const HttpRegistry = struct {
     var global_registry: ?HttpRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;
 
-    /// Get the process-global registry. Lazily initialized on first
-    /// call. `allocator` is the long-lived allocator (typically
-    /// `di.allocator` from main.zig) — NOT `std.heap.page_allocator`.
-    pub fn global(allocator: std.mem.Allocator) *HttpRegistry {
+    /// Explicit one-time init from `main` — call with main's allocator
+    /// (`init.gpa`) at startup, before serving (see main.zig).
+    /// Idempotent: first call wins (locked); later calls are no-ops.
+    ///
+    /// The allocator MUST have process lifetime (main's GPA). A
+    /// per-run/per-request arena here poisoned ALL later runs with a
+    /// dead arena (segfault in ArenaAllocator.loadBuf via
+    /// Client.perform on the second agent run) — that is why this is
+    /// explicit init from main instead of lazy first-caller init.
+    /// Trace: main.zig `init.gpa` → `initGlobal` → registry arena →
+    /// cached HttpClients.
+    pub fn initGlobal(allocator: std.mem.Allocator) void {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
         if (global_registry == null) {
             global_registry = HttpRegistry.init(allocator);
         }
-        return &global_registry.?;
+    }
+
+    /// Get the process-global registry. Must have been initialized via
+    /// `initGlobal` (main.zig does this at startup). Panics otherwise —
+    /// a global with no backing is a programmer error, and failing loud
+    /// beats silently backing it with a short-lived caller arena.
+    pub fn global() *HttpRegistry {
+        mutexLock(&global_init_mutex);
+        defer global_init_mutex.unlock();
+        return &(global_registry orelse @panic("HttpRegistry.global: registry not initialized — call HttpRegistry.initGlobal(main_allocator) at startup (see main.zig)"));
     }
 
     /// Called by main.zig shutdown hook. Frees all clients + the map.
@@ -521,7 +547,9 @@ pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types
     const headers = try buildMcpHeaders(allocator, "tools/list", "", client.custom_headers);
     defer allocator.free(headers);
 
-    // POST.
+    // POST. Response memory belongs to the client's registry arena
+    // (perform allocates from client.http.allocator), NOT the caller's
+    // run arena — free with client.allocator or the arenas mismatch.
     const result = custom_http_client_mod.post(
         &client.http,
         client.url,
@@ -529,7 +557,7 @@ pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types
         headers,
         .{ .timeout_ms = 30_000 },
     ) catch return &[_]mcp_types.McpTool{};
-    defer result.deinit(allocator);
+    defer result.deinit(client.allocator);
 
     if (result.status_code != 200) {
         return &[_]mcp_types.McpTool{};

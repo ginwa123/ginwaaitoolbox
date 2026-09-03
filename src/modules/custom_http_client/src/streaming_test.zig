@@ -3,7 +3,7 @@
 //! Eliminates network flakiness and rate-limited-throttling during CI.
 //!
 //! The TestServer fixture:
-//!   1. Binds Address.init(0) (OS picks ephemeral port)
+//!   1. Binds Address.init("127.0.0.1", 0) (OS picks ephemeral port)
 //!   2. Calls getsockname() to retrieve the assigned port
 //!   3. Inits GinwaServer, registers routes, spawns a worker thread
 //!      that calls server.listen() (blocks until shutdown())
@@ -63,7 +63,7 @@ const TestServer = struct {
         const ts = try allocator.create(TestServer);
 
         // Bind on ephemeral port (0 = OS picks).
-        const addr = try gserverz.Address.init(0);
+        const addr = try gserverz.Address.init("127.0.0.1", 0);
         // NOTE: addr.sock_fd is intentionally NOT closed on errdefer —
         // GinwaServer.init() takes ownership of it. The errdefer is
         // a no-op marker; the socket is bound by bind() but not yet

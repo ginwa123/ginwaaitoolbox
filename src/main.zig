@@ -135,6 +135,16 @@ pub fn main(init: std.process.Init) !void {
 
     _ = try nalarcore.setSingleton(ctxParent);
 
+    // MCP registries: process-global client caches for HTTP + stdio
+    // transports. MUST be backed by main's allocator (init.gpa,
+    // process lifetime) — never a per-run/per-request arena. A
+    // first-run arena backing poisoned ALL later runs with a dead
+    // arena (segfault in ArenaAllocator.loadBuf via Client.perform on
+    // the second agent run). Trace: init.gpa → here → registry arena
+    // → cached clients. Idempotent; safe to call once per binary.
+    nalarcore.mcp_http.HttpRegistry.initGlobal(allocator);
+    nalarcore.mcp_stdio.StdioRegistry.initGlobal(allocator);
+
     const event_bus_mod = nalarcore.event_bus;
     var event_bus = event_bus_mod.EventBus.init("my-bus", allocator, io);
     defer event_bus.deinit();
@@ -625,6 +635,15 @@ pub fn main(init: std.process.Init) !void {
     // SIGKILL deadlines (10s per test × 64 tests = ~10 min of CI waste).
     gs.cronjob_manager.stop();
     gs.sse_manager.stop();
+
+    // MCP registries: free the process-global client caches. No
+    // allocator param — deinitGlobal uses the main allocator stored by
+    // initGlobal at startup. Must run here (not via defer at the top of
+    // main): the stdio registry joins its Threaded io + kills spawned
+    // children, which must finish before the defers free the process
+    // context — same ordering rule as the cronjob/sse stops above.
+    nalarcore.mcp_http.HttpRegistry.deinitGlobal();
+    nalarcore.mcp_stdio.StdioRegistry.deinitGlobal();
 }
 
 /// Dispatch the `nalar service {start,stop,status,restart}` subcommand.

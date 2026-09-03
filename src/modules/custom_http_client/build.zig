@@ -273,12 +273,11 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
         };
         defer b.allocator.free(obj_path_bs);
         const argv = [_][]const u8{
-            zig_exe, "cc",
-            "-target", "x86_64-windows-gnu",
-            "-c",
-            "-I",  b.fmt("{s}/{s}", .{ pkg_dir_bs, stub_src_dir }),
-            "-o",  b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
-            b.fmt("{s}\\{s}\\stub_libcurl.c", .{ pkg_dir_bs, stub_src_dir }),
+            zig_exe,                                         "cc",
+            "-target",                                       "x86_64-windows-gnu",
+            "-c",                                            "-I",
+            b.fmt("{s}/{s}", .{ pkg_dir_bs, stub_src_dir }), "-o",
+            b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }), b.fmt("{s}\\{s}\\stub_libcurl.c", .{ pkg_dir_bs, stub_src_dir }),
         };
         const result = std.process.run(
             b.allocator,
@@ -331,9 +330,8 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
         };
         defer b.allocator.free(obj_path_bs);
         const argv = [_][]const u8{
-            zig_exe, "ar", "rcs",
-            b.fmt("{s}\\{s}", .{ pkg_dir_bs, archive_path_bs }),
-            b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
+            zig_exe,                                             "ar",                                            "rcs",
+            b.fmt("{s}\\{s}", .{ pkg_dir_bs, archive_path_bs }), b.fmt("{s}\\{s}", .{ pkg_dir_bs, obj_path_bs }),
         };
         const result = std.process.run(
             b.allocator,
@@ -590,23 +588,52 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
 
     const mod = b.addModule("custom_http_client", .{
-    .root_source_file = b.path("src/root.zig"),
-    .target = target,
-    .optimize = optimize,
-});
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
-// Portable helpers (PosixTimespec / clock_gettime) — used by
-// cpu_usage_test.zig. Declared as a package dependency in this
-// build.zig.zon; mirrors how the root build.zig wires `helpers`.
-const helpers_dep = b.dependency("helpers", .{
-    .target = target,
-    .optimize = optimize,
-});
-mod.addImport("helpers", helpers_dep.module("helpers"));
+    // Portable helpers (PosixTimespec / clock_gettime) — used by
+    // cpu_usage_test.zig. Declared as a package dependency in this
+    // build.zig.zon; mirrors how the root build.zig wires `helpers`.
+    const helpers_dep = b.dependency("helpers", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("helpers", helpers_dep.module("helpers"));
 
-// Universal: libc is required by every libcurl binding + cimport.
-mod.linkSystemLibrary("c", .{});
-mod.link_libc = true;
+    // In-process test fixture server. The streaming / integration / edge /
+    // stress / memory-leak / cpu-usage suites spin up a real GinwaServer on
+    // an ephemeral port (no external network). Sibling path dep declared in
+    // build.zig.zon; the server package exposes it via b.addModule.
+    //
+    // NOTE: intentionally wired ONLY into `test_mod` below, NOT into the
+    // lib `mod`. nalarcore file-imports http_server.zig directly
+    // (src/root.zig's `gserverz`), and one file in two modules is a hard
+    // compile error — putting this import on the lib broke `zig build run`
+    // ("file exists in modules 'nalarcore' and 'custom_http_server'").
+    const server_dep = b.dependency("custom_http_server", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Test-only module: same sources as the lib (same src/root.zig root,
+    // so the `test { ... }` block discovers every suite) PLUS the fixture
+    // server import. Separate module keeps that import out of downstream
+    // link lines (`zig build run`, root `zig build test`).
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_mod.addImport("helpers", helpers_dep.module("helpers"));
+    test_mod.addImport("custom_http_server", server_dep.module("custom_http_server"));
+    test_mod.linkSystemLibrary("c", .{});
+    test_mod.link_libc = true;
+
+    // Universal: libc is required by every libcurl binding + cimport.
+    mod.linkSystemLibrary("c", .{});
+    mod.link_libc = true;
 
     // Probe host system for libcurl + openssl. When the probe finds
     // usable system libs (typical Arch / Debian / Fedora dev hosts),
@@ -620,182 +647,190 @@ mod.link_libc = true;
         .found_crypto = false,
     } else probeSystemLibs(b, target);
 
-    if (sys.use_system) {
-        // System libs path. `linkSystemLibrary("curl")` does NOT auto-
-        // pull libssl/libcrypto (no pkg-config Requires honour), so we
-        // link them explicitly. The cimport for `curl/curl.h` needs
-        // `/usr/include` on the include path on Linux (Debian/Ubuntu
-        // put curl.h at `/usr/include/curl/curl.h` and the cimport does
-        // `#include <curl/curl.h>`, so /usr/include must be on the
-        // search path). Most distros add /usr/include by default, but
-        // some configurations (e.g. cross-compile toolchains) don't —
-        // add it explicitly so the cimport works everywhere.
-        //
-        // On macOS, the probe only returns `use_system=true` when both
-        // /opt/homebrew/opt/curl/include/curl/curl.h AND
-        // /opt/homebrew/opt/openssl@3/include/openssl/ssl.h exist.
-        // We mirror those paths here so the cimport resolves
-        // <curl/curl.h> and <openssl/ssl.h> regardless of which
-        // include-path probe happens to win the search.
-        switch (target.result.os.tag) {
-            .linux => {
-                mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-                // Library search path. Without this, Zig 0.16's
-                // `linkSystemLibrary("curl"/"ssl"/"crypto")` calls
-                // below fail with
-                //   "unable to find dynamic system library 'curl'
-                //    using strategy 'paths_first'.
-                //    searched paths: none"
-                // because the glibc 2.38+ default target's link search
-                // path doesn't include /usr/lib for some Compile steps
-                // (cli tests, package tests) — even though it works for
-                // the main exe via the root build.zig's
-                // `linkPlatformDeps`. Mirrors the macOS branch below.
-                mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-            },
-            .macos => {
-                // Probe uses an OR-of-paths predicate, but link only
-                // succeeds against the path that actually has the .dylib.
-                // /opt/homebrew/opt/curl/include and
-                // /opt/homebrew/opt/openssl@3/include are the canonical
-                // keg-only Homebrew paths on Apple Silicon.
-                mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/curl/include" });
-                mod.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
-                // Library search paths so linkSystemLibrary can find
-                // the .dylib (it's keg-only — not on the default search
-                // path). The /usr/lib fallback covers system-wide installs.
-                mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/curl/lib" });
-                mod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
-                mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-            },
-            .windows => {
-                // vcpkg at `C:/vcpkg/installed/x64-windows/`. Both the
-                // include and lib subdirs are added explicitly because
-                // the cimport in src/curl.zig resolves <curl/curl.h>
-                // and the linker needs to find the .lib files at link
-                // time. The `\` → `/` translation is fine on Windows
-                // since the NTFS layer accepts both separators — Zig's
-                // path-handler routes them through the same kernel
-                // APIs.
-                //
-                // Use addObjectFile (not linkSystemLibrary) to bypass
-                // the GNU-vs-MSVC lib-name convention mismatch: the
-                // build target is `x86_64-windows-gnu` (GNU toolchain
-                // conventions — `libcurl.a`), but vcpkg ships
-                // `libcurl.lib` (MSVC-style extension, GCC-style name).
-                // Explicit object-file links work with either naming
-                // — the linker doesn't try to translate `-lcurl` →
-                // `libcurl.{a,lib}` it just adds the file the build.zig
-                // hands it.
-                mod.addIncludePath(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/include" });
-                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcurl.lib" });
-                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libssl.lib" });
-                mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcrypto.lib" });
-            },
-            else => {
-                mod.addIncludePath(.{ .cwd_relative = "/usr/include" });
-            },
-        }
-        // addObjectFile above replaces these linkSystemLibrary calls
-        // on Windows (where the vcpkg lib-file naming doesn't match
-        // the GNU `libfoo.a` convention). On Linux + macOS the
-        // linkSystemLibrary calls below work because the system libs
-        // are at `/usr/lib/libfoo.so.<n>` / `/opt/homebrew/opt/...`/
-        // `libfoo.dylib`, which IS the convention `linkSystemLibrary`
-        // looks for on those platforms.
-        if (target.result.os.tag != .windows) {
-            mod.linkSystemLibrary("curl", .{});
-            mod.linkSystemLibrary("ssl", .{});
-            mod.linkSystemLibrary("crypto", .{});
-        }
-    } else {
-        // Vendored path. Add the per-target include path + embed the
-        // prebuilt archive as an object file.
-        const target_subdir = switch (target.result.os.tag) {
-            .linux => b.fmt("linux-{s}", .{switch (target.result.cpu.arch) {
-                .x86_64 => "x86_64",
-                .aarch64 => "aarch64",
-                else => @panic("vendored curl: unsupported Linux arch"),
-            }}),
-            .macos => switch (target.result.cpu.arch) {
-                .aarch64 => "macos-arm64",
-                .x86_64 => "macos-x86_64",
-                else => @panic("vendored curl: unsupported macOS arch"),
-            },
-            .windows => "windows-amd64", // script doesn't build yet — see note
-            else => @panic("vendored curl: unsupported OS"),
-        };
-        const target_dir = b.fmt("{s}/{s}", .{ vendor_dir, target_subdir });
+    // Curl wiring applies to BOTH modules (lib + test-only) — the test
+    // binary compiles the same client sources, so it needs the same
+    // include paths + libcurl link line. Second iteration skips the
+    // Windows stub generation via the fileExists check (first iteration
+    // already wrote the archive).
+    for ([_]*std.Build.Module{ mod, test_mod }) |m| {
+        if (sys.use_system) {
+            // System libs path. `linkSystemLibrary("curl")` does NOT auto-
+            // pull libssl/libcrypto (no pkg-config Requires honour), so we
+            // link them explicitly. The cimport for `curl/curl.h` needs
+            // `/usr/include` on the include path on Linux (Debian/Ubuntu
+            // put curl.h at `/usr/include/curl/curl.h` and the cimport does
+            // `#include <curl/curl.h>`, so /usr/include must be on the
+            // search path). Most distros add /usr/include by default, but
+            // some configurations (e.g. cross-compile toolchains) don't —
+            // add it explicitly so the cimport works everywhere.
+            //
+            // On macOS, the probe only returns `use_system=true` when both
+            // /opt/homebrew/opt/curl/include/curl/curl.h AND
+            // /opt/homebrew/opt/openssl@3/include/openssl/ssl.h exist.
+            // We mirror those paths here so the cimport resolves
+            // <curl/curl.h> and <openssl/ssl.h> regardless of which
+            // include-path probe happens to win the search.
+            switch (target.result.os.tag) {
+                .linux => {
+                    m.addIncludePath(.{ .cwd_relative = "/usr/include" });
+                    // Library search path. Without this, Zig 0.16's
+                    // `linkSystemLibrary("curl"/"ssl"/"crypto")` calls
+                    // below fail with
+                    //   "unable to find dynamic system library 'curl'
+                    //    using strategy 'paths_first'.
+                    //    searched paths: none"
+                    // because the glibc 2.38+ default target's link search
+                    // path doesn't include /usr/lib for some Compile steps
+                    // (cli tests, package tests) — even though it works for
+                    // the main exe via the root build.zig's
+                    // `linkPlatformDeps`. Mirrors the macOS branch below.
+                    m.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+                },
+                .macos => {
+                    // Probe uses an OR-of-paths predicate, but link only
+                    // succeeds against the path that actually has the .dylib.
+                    // /opt/homebrew/opt/curl/include and
+                    // /opt/homebrew/opt/openssl@3/include are the canonical
+                    // keg-only Homebrew paths on Apple Silicon.
+                    m.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/curl/include" });
+                    m.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
+                    // Library search paths so linkSystemLibrary can find
+                    // the .dylib (it's keg-only — not on the default search
+                    // path). The /usr/lib fallback covers system-wide installs.
+                    m.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/curl/lib" });
+                    m.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
+                    m.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+                },
+                .windows => {
+                    // vcpkg at `C:/vcpkg/installed/x64-windows/`. Both the
+                    // include and lib subdirs are added explicitly because
+                    // the cimport in src/curl.zig resolves <curl/curl.h>
+                    // and the linker needs to find the .lib files at link
+                    // time. The `\` → `/` translation is fine on Windows
+                    // since the NTFS layer accepts both separators — Zig's
+                    // path-handler routes them through the same kernel
+                    // APIs.
+                    //
+                    // Use addObjectFile (not linkSystemLibrary) to bypass
+                    // the GNU-vs-MSVC lib-name convention mismatch: the
+                    // build target is `x86_64-windows-gnu` (GNU toolchain
+                    // conventions — `libcurl.a`), but vcpkg ships
+                    // `libcurl.lib` (MSVC-style extension, GCC-style name).
+                    // Explicit object-file links work with either naming
+                    // — the linker doesn't try to translate `-lcurl` →
+                    // `libcurl.{a,lib}` it just adds the file the build.zig
+                    // hands it.
+                    m.addIncludePath(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/include" });
+                    m.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcurl.lib" });
+                    m.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libssl.lib" });
+                    m.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libcrypto.lib" });
+                },
+                else => {
+                    m.addIncludePath(.{ .cwd_relative = "/usr/include" });
+                },
+            }
+            // addObjectFile above replaces these linkSystemLibrary calls
+            // on Windows (where the vcpkg lib-file naming doesn't match
+            // the GNU `libfoo.a` convention). On Linux + macOS the
+            // linkSystemLibrary calls below work because the system libs
+            // are at `/usr/lib/libfoo.so.<n>` / `/opt/homebrew/opt/...`/
+            // `libfoo.dylib`, which IS the convention `linkSystemLibrary`
+            // looks for on those platforms.
+            if (target.result.os.tag != .windows) {
+                m.linkSystemLibrary("curl", .{});
+                m.linkSystemLibrary("ssl", .{});
+                m.linkSystemLibrary("crypto", .{});
+            }
+        } else {
+            // Vendored path. Add the per-target include path + embed the
+            // prebuilt archive as an object file.
+            const target_subdir = switch (target.result.os.tag) {
+                .linux => b.fmt("linux-{s}", .{switch (target.result.cpu.arch) {
+                    .x86_64 => "x86_64",
+                    .aarch64 => "aarch64",
+                    else => @panic("vendored curl: unsupported Linux arch"),
+                }}),
+                .macos => switch (target.result.cpu.arch) {
+                    .aarch64 => "macos-arm64",
+                    .x86_64 => "macos-x86_64",
+                    else => @panic("vendored curl: unsupported macOS arch"),
+                },
+                .windows => "windows-amd64", // script doesn't build yet — see note
+                else => @panic("vendored curl: unsupported OS"),
+            };
+            const target_dir = b.fmt("{s}/{s}", .{ vendor_dir, target_subdir });
 
-        // Header path — needed by `@cImport(@cInclude("curl/curl.h"))`
-        // inside src/curl.zig. The header is portable C, so the same
-        // vendored copy works for every host (Zig's cimport uses the
-        // HOST C compiler, not the cross-target compiler).
-        mod.addIncludePath(b.path(b.fmt("{s}/include", .{target_dir})));
+            // Header path — needed by `@cImport(@cInclude("curl/curl.h"))`
+            // inside src/curl.zig. The header is portable C, so the same
+            // vendored copy works for every host (Zig's cimport uses the
+            // HOST C compiler, not the cross-target compiler).
+            m.addIncludePath(b.path(b.fmt("{s}/include", .{target_dir})));
 
-        // Link the prebuilt vendored archive directly into every consumer.
-        // addObjectFile embeds the .a symbols in the consumer's link line
-        // (no separate -L/-l needed — Zig's linker resolves the archive's
-        // undefined symbols at consumer link time).
-        //
-        // The archive is a FAT build: curl + libssl + libcrypto objects
-        // merged in one .a (see scripts/build-vendor-curl.sh). So we
-        // do NOT also link ssl/crypto — they're already in the archive.
-        const libcurl_a = b.path(b.fmt("{s}/lib/libcurl.a", .{target_dir}));
+            // Link the prebuilt vendored archive directly into every consumer.
+            // addObjectFile embeds the .a symbols in the consumer's link line
+            // (no separate -L/-l needed — Zig's linker resolves the archive's
+            // undefined symbols at consumer link time).
+            //
+            // The archive is a FAT build: curl + libssl + libcrypto objects
+            // merged in one .a (see scripts/build-vendor-curl.sh). So we
+            // do NOT also link ssl/crypto — they're already in the archive.
+            const libcurl_a = b.path(b.fmt("{s}/lib/libcurl.a", .{target_dir}));
 
-        // WINDOWS-DEV-BOX STUB PATH:
-        //
-        // `build-vendor-curl.sh` intentionally never builds a Windows
-        // archive (it only cross-compiles Linux + macOS targets; the
-        // Windows script section is a no-op with an informative message
-        // — see the script's `case "$(uname -s)"` Windows-host arm).
-        // On a Windows host without vcpkg libcurl + openssl installed,
-        // there's no `vendor/curl/windows-amd64/lib/libcurl.a` AND no
-        // header at `vendor/curl/windows-amd64/include/curl/curl.h`,
-        // which causes two failures during `zig build test`:
-        //
-        //   1. `src/modules/agent/Agent.zig` transitively pulls in
-        //      `custom_http_client` (via the test runner imports), so
-        //      the test compile includes custom_http_client's source.
-        //      `custom_http_client/src/curl.zig` does
-        //      `@cImport(@cInclude("curl/curl.h"))` — without the
-        //      header, the cimport fails with "file not found".
-        //   2. The test compile's link line references the missing
-        //      `libcurl.a` via `addObjectFile`, which fails with
-        //      "file not found" at link-line construction time.
-        //
-        // The fix: when the vendored archive is missing on Windows,
-        // generate a STUB archive + STUB header from the sources in
-        // `scripts/stub_libcurl.{h,c}`. The stub functions are empty
-        // no-ops (curl_easy_init returns NULL, curl_easy_perform
-        // returns CURLE_FAILED_INIT) — enough to satisfy the linker +
-        // cimport without providing real network capability. Tests that
-        // merely construct a custom_http_client.Client and never fire
-        // a request pass; tests that actually call .get/.post/.stream
-        // fail at runtime with a clear InitFailed error from the stub
-        // (visible in `zig build test` output).
-        //
-        // This stub path is Windows-only (Linux + macOS still require
-        // the real archive or system libcurl). To get a real libcurl
-        // on Windows: install vcpkg (`vcpkg install curl:x64-windows
-        // openssl:x64-windows`) — the system probe above takes over
-        // and the stub is bypassed entirely.
-        if (target.result.os.tag == .windows and !fileExists(b.fmt("{s}/lib/libcurl.a", .{target_dir}))) {
-            generateStubLibcurlWindows(b, target_dir);
-            // After the stub is generated, addObjectFile points at
-            // the now-existing file. (The compile step's file existence
-            // check is lazy — addObjectFile records the path; the actual
-            // check happens at link-line construction time.)
+            // WINDOWS-DEV-BOX STUB PATH:
+            //
+            // `build-vendor-curl.sh` intentionally never builds a Windows
+            // archive (it only cross-compiles Linux + macOS targets; the
+            // Windows script section is a no-op with an informative message
+            // — see the script's `case "$(uname -s)"` Windows-host arm).
+            // On a Windows host without vcpkg libcurl + openssl installed,
+            // there's no `vendor/curl/windows-amd64/lib/libcurl.a` AND no
+            // header at `vendor/curl/windows-amd64/include/curl/curl.h`,
+            // which causes two failures during `zig build test`:
+            //
+            //   1. `src/modules/agent/Agent.zig` transitively pulls in
+            //      `custom_http_client` (via the test runner imports), so
+            //      the test compile includes custom_http_client's source.
+            //      `custom_http_client/src/curl.zig` does
+            //      `@cImport(@cInclude("curl/curl.h"))` — without the
+            //      header, the cimport fails with "file not found".
+            //   2. The test compile's link line references the missing
+            //      `libcurl.a` via `addObjectFile`, which fails with
+            //      "file not found" at link-line construction time.
+            //
+            // The fix: when the vendored archive is missing on Windows,
+            // generate a STUB archive + STUB header from the sources in
+            // `scripts/stub_libcurl.{h,c}`. The stub functions are empty
+            // no-ops (curl_easy_init returns NULL, curl_easy_perform
+            // returns CURLE_FAILED_INIT) — enough to satisfy the linker +
+            // cimport without providing real network capability. Tests that
+            // merely construct a custom_http_client.Client and never fire
+            // a request pass; tests that actually call .get/.post/.stream
+            // fail at runtime with a clear InitFailed error from the stub
+            // (visible in `zig build test` output).
+            //
+            // This stub path is Windows-only (Linux + macOS still require
+            // the real archive or system libcurl). To get a real libcurl
+            // on Windows: install vcpkg (`vcpkg install curl:x64-windows
+            // openssl:x64-windows`) — the system probe above takes over
+            // and the stub is bypassed entirely.
+            if (target.result.os.tag == .windows and !fileExists(b.fmt("{s}/lib/libcurl.a", .{target_dir}))) {
+                generateStubLibcurlWindows(b, target_dir);
+                // After the stub is generated, addObjectFile points at
+                // the now-existing file. (The compile step's file existence
+                // check is lazy — addObjectFile records the path; the actual
+                // check happens at link-line construction time.)
+            }
+            m.addObjectFile(libcurl_a);
         }
-        mod.addObjectFile(libcurl_a);
     }
 
     // === Tests for the package itself ===
-    // `b.addTest({ .root_module = mod })` walks every `_test.zig`
+    // `b.addTest({ .root_module = test_mod })` walks every `_test.zig`
     // reachable from src/root.zig via the `test { _ = @import(...) }`
-    // block. The mod already carries link_libc + (system or vendored)
-    // libcurl, so test executables inherit those deps automatically.
-    const mod_tests = b.addTest(.{ .root_module = mod });
+    // block. test_mod carries link_libc + (system or vendored) libcurl
+    // (wired above) + the `custom_http_server` fixture import, so the
+    // in-process-server suites link and resolve cleanly.
+    const mod_tests = b.addTest(.{ .root_module = test_mod });
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const test_step = b.step("test", "Run custom_http_client package tests");
     test_step.dependOn(&run_mod_tests.step);

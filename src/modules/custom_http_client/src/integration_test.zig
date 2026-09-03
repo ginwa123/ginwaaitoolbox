@@ -39,7 +39,7 @@ const TestServer = struct {
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !*TestServer {
         const ts = try allocator.create(TestServer);
 
-        const addr = try gserverz.Address.init(0);
+        const addr = try gserverz.Address.init("127.0.0.1", 0);
 
         const port: u16 = try getBoundPort(addr.sock_fd);
 

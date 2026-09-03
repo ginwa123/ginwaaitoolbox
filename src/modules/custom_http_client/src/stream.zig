@@ -693,7 +693,13 @@ pub fn openStream(
     // ERRORBUFFER backing is state.errbuf (heap, lifetime matches the
     // handle). libcurl holds this raw pointer and writes into it from
     // the worker thread, possibly AFTER this function returns.
-    _ = setoptLong(handle, curl.OPT.ERRORBUFFER, @as(c_long, @intCast(@intFromPtr(&state.errbuf))));
+    //
+    // CURLOPT_ERRORBUFFER takes a `char *`, NOT a long — must use
+    // setoptPtr. The prior `setoptLong(..., @intCast(@intFromPtr(...)))`
+    // silently works on Linux/macOS (c_long = 64-bit) and panics on
+    // Windows (c_long = 32-bit LLP64; the 64-bit pointer's high bits
+    // overflow). Same fix as client.zig's perform().
+    _ = setoptPtr(handle, curl.OPT.ERRORBUFFER, &state.errbuf);
     _ = setoptPtr(handle, curl.OPT.URL, state.url_buf.ptr);
     _ = setoptPtr(handle, curl.OPT.CUSTOMREQUEST, state.method_buf.ptr);
     _ = setoptSlist(handle, curl.OPT.HTTPHEADER, state.header_slist);

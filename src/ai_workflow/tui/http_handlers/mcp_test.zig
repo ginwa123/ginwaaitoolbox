@@ -205,7 +205,7 @@ fn testStdio(
     ) catch return TestError.OutOfMemory;
     defer allocator.free(preview_name);
 
-    const reg = mcp_stdio.StdioRegistry.global(allocator);
+    const reg = mcp_stdio.StdioRegistry.global();
 
     // Build the MCP handshake + tools/list bodies once. The SDK
     // expects line-delimited JSON on stdin.

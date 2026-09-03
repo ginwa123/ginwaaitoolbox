@@ -674,29 +674,39 @@ pub const StdioRegistry = struct {
     // Process-global singleton. Lives for the whole nalar process.
     // Cleaned up via the shutdown hook in main.zig (Task 7).
     //
-    // The arena is created with the parent allocator passed to `global()`
-    // — typically the dependency-injected `di.allocator` from main.zig,
-    // which has process lifetime. NOT std.heap.page_allocator (per project
-    // convention: the user always passes an explicit allocator).
+    // The arena is backed by main's allocator via `initGlobal` (see
+    // `global()` below), NOT a caller allocator — every caller passes a
+    // per-run/per-request arena, and backing a process-global with one
+    // is a use-after-free (the first run's dead arena poisons all later
+    // runs). See `mcp_http.HttpRegistry.initGlobal` for the full
+    // post-mortem.
 
     var global_registry: ?StdioRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;
 
-    /// Get the process-global registry. Lazily initialized on first call.
-    /// `allocator` is the long-lived allocator (passed down from main.zig,
-    /// typically `di.allocator`) — NOT `std.heap.page_allocator`.
+    /// Explicit one-time init from `main` — call with main's allocator
+    /// (`init.gpa`) at startup, before serving (see main.zig).
+    /// Idempotent: first call wins (locked); later calls are no-ops.
     ///
-    /// The global registry owns its own `std.Io.Threaded` instance,
-    /// created lazily here and torn down in `deinitGlobal`. This is
-    /// the same pattern used elsewhere in the codebase for long-lived
-    /// io contexts (see e.g. `agent_memories.zig:525`).
-    pub fn global(allocator: std.mem.Allocator) *StdioRegistry {
+    /// Same lifetime rule as `HttpRegistry.initGlobal`: the allocator
+    /// MUST have process lifetime. A per-run arena backing poisoned all
+    /// later runs (dead arena in cached clients). Trace: main.zig
+    /// `init.gpa` → `initGlobal` → registry arena → spawned children.
+    pub fn initGlobal(allocator: std.mem.Allocator) void {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
         if (global_registry == null) {
-            global_registry = initThreaded(allocator) catch @panic("OOM: StdioRegistry.global");
+            global_registry = initThreaded(allocator) catch @panic("OOM: StdioRegistry.initGlobal");
         }
-        return &global_registry.?;
+    }
+
+    /// Get the process-global registry. Must have been initialized via
+    /// `initGlobal` (main.zig does this at startup). Panics otherwise —
+    /// see `HttpRegistry.global` for why silent lazy init is banned.
+    pub fn global() *StdioRegistry {
+        mutexLock(&global_init_mutex);
+        defer global_init_mutex.unlock();
+        return &(global_registry orelse @panic("StdioRegistry.global: registry not initialized — call StdioRegistry.initGlobal(main_allocator) at startup (see main.zig)"));
     }
 
     /// Called by main.zig shutdown hook. Kills all spawned children AND

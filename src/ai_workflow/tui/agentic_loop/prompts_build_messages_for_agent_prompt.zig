@@ -489,7 +489,7 @@ pub fn buildMCPToolsRun(
             }
             break :blk buf[0..count];
         };
-        const http_registry = mcp_http.HttpRegistry.global(allocator);
+        const http_registry = mcp_http.HttpRegistry.global();
         const http_client = http_registry.getOrConnect(
             server_name,
             url,
@@ -635,7 +635,7 @@ fn fetchToolsFromServerStdio(
         allocator.free(argv);
     }
 
-    const reg = mcp_stdio.StdioRegistry.global(allocator);
+    const reg = mcp_stdio.StdioRegistry.global();
 
     // Retry loop for cold-start race: process.spawn returns before the
     // child (python → SDK connect → _stdin.on('data')) has attached its

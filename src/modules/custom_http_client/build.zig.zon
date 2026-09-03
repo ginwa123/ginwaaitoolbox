@@ -4,6 +4,13 @@
     .fingerprint = 0xea0a69586896b76d,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
+        // Test fixture server for the package's TestServer helpers
+        // (streaming / integration / edge / stress / memory / cpu tests
+        // do `@import("custom_http_server")`). Sibling path dep — no
+        // hash needed (only url deps need one).
+        .custom_http_server = .{
+            .path = "../custom_http_server",
+        },
         // Portable helpers (PosixTimespec / clock_gettime) used by
         // cpu_usage_test.zig. Path is relative to this package dir
         // (src/modules/custom_http_client → src/helpers).
