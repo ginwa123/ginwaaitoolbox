@@ -224,34 +224,56 @@ fn callViaStdio(
     }
 
     // stdio transport: long-lived child per server, lazy spawn + respawn.
-    // We need an io handle — for now use the threaded io (same as the
-    // stdio client tests). Real wiring in main.zig will pass a real io.
     const reg = mcp_stdio.StdioRegistry.global(allocator);
-    const client = reg.getOrSpawn(server_name, argv) catch |err| {
-        logger.errFmt("stdio MCP spawn failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
-        return error.FailedToCallMCPServer;
-    };
 
-    // Build the framed request and send.
-    const req = try buildToolCallRequestBody(allocator, tool_name, arguments_json);
-    defer allocator.free(req);
-    // client.send/recv use the io stored in the StdioClient itself.
-    // On a hung child, the deadline fires and we mark the client
-    // stale so the next call auto-respawns. We don't pass a
-    // cancel-callback here — the workflow's existing
-    // `isWorkerCancelled` poll at the TOP of each iteration handles
-    // abandonment at the loop boundary, which is sufficient
-    // granularity (sub-tool-call cancel is a v2 nice-to-have).
-    client.send(req, deadline_ns) catch |err| {
-        logger.errFmt("stdio MCP send failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
-        if (err == error.SendTimeout) reg.markStale(server_name);
-        return error.FailedToCallMCPServer;
-    };
-    const resp = client.recv(deadline_ns, null) catch |err| {
-        logger.errFmt("stdio MCP recv failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
-        if (err == error.RecvTimeout) reg.markStale(server_name);
-        return error.MCPServerReturnedError;
-    };
+    // Retry loop for cold-start / stale child. Use NDJSON framing (like
+    // the discovery path) — Python and Node SDKs both default to NDJSON.
+    var last_err: anyerror = error.FailedToCallMCPServer;
+    var attempt: u8 = 0;
+    var resp: []u8 = undefined;
+    var resp_owned = false;
+    while (attempt < 3) : (attempt += 1) {
+        const client = reg.getOrSpawn(server_name, argv) catch |err| {
+            logger.errFmt("stdio MCP spawn failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+            last_err = err;
+            if (attempt + 1 < 3) {
+                
+                continue;
+            }
+            return error.FailedToCallMCPServer;
+        };
+
+        const req = try buildToolCallRequestBody(allocator, tool_name, arguments_json);
+        defer allocator.free(req);
+
+        // Send as NDJSON (JSON + '\n'), not Content-Length
+        client.sendNDJSON(req) catch |err| {
+            logger.errFmt("stdio MCP send failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+            last_err = err;
+            if (err == error.SendTimeout or err == error.BrokenPipe) reg.markStale(server_name);
+            const is_retryable = err == error.BrokenPipe or err == error.SendTimeout;
+            if (is_retryable and attempt + 1 < 3) {
+                
+                continue;
+            }
+            return error.FailedToCallMCPServer;
+        };
+        const r = client.recv(deadline_ns, null) catch |err| {
+            logger.errFmt("stdio MCP recv failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
+            last_err = err;
+            if (err == error.RecvTimeout) reg.markStale(server_name);
+            const is_retryable = err == error.RecvTimeout or err == error.UnexpectedEof or err == error.BrokenPipe;
+            if (is_retryable and attempt + 1 < 3) {
+                
+                continue;
+            }
+            return error.MCPServerReturnedError;
+        };
+        resp = r;
+        resp_owned = true;
+        break;
+    }
+    if (!resp_owned) return last_err;
     errdefer allocator.free(resp);
 
     // Same JSON extraction as the HTTP branch: pull `result.content[0].text`.
@@ -279,6 +301,21 @@ fn callViaStdio(
         }
     }
     if (!needs_copy) tool_result = try allocator.dupe(u8, resp);
+    // Large payload guard: truncate tool results over 100KB to avoid
+    // downstream SEGV / OOM / LLM context overflow. The 120KB graph
+    // data that crashed the backend is a real example.
+    const MAX_TOOL_RESULT_BYTES: usize = 100 * 1024;
+    if (tool_result.len > MAX_TOOL_RESULT_BYTES) {
+        logger.warnFmt("MCP tool result too large: {} bytes, truncating to {} bytes", .{ tool_result.len, MAX_TOOL_RESULT_BYTES });
+        const truncated = try std.fmt.allocPrint(allocator, "{s}\n\n[truncated: original was {} bytes, showing first {} bytes]", .{ tool_result[0..MAX_TOOL_RESULT_BYTES], tool_result.len, MAX_TOOL_RESULT_BYTES });
+        allocator.free(tool_result);
+        // resp is arena-allocated (per-iteration arena in workflow.zig),
+        // so it will be freed at iteration end — no need to free here.
+        // But if this is called outside workflow (e.g. Test), free it.
+        // We don't free resp here to avoid double-free with errdefer;
+        // the arena handles it. Just return truncated.
+        return truncated;
+    }
     return tool_result;
 }
 
