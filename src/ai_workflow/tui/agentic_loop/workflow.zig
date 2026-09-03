@@ -607,7 +607,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     } catch |err| blk: {
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
-    }) orelse &[_]agent.AgentTool{};
+    });
+    // Keep nullable (don't collapse to empty slice here): null means
+    // "no MCP servers configured OR fetch threw" — distinct from an
+    // empty slice ("servers configured but zero tools"). Unwrapped
+    // at the use site so the log can report which case we're in.
 
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);
@@ -1042,8 +1046,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
         const merged_tools = try filterAndMergeTools(allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
         logger.infoFmt(
-            "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={}",
-            .{ mcp_tools_fetched.len, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent },
+            "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
+            .{ if (mcp_tools_fetched) |t| t.len else 0, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent, mcp_tools_fetched == null },
         );
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
@@ -1739,10 +1743,12 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 
 /// Filter and merge tools based on allowed_tools setting
 /// - allowed_tools: "" = no tools, "all" = all tools, comma-separated = specific tools
-/// Returns filtered base tools merged with MCP tools
+/// - mcp_tools: null = no MCP (not configured or fetch failed) → base tools only;
+///   non-null slice (possibly empty) = merge them in. Nullable so the
+///   caller doesn't need a dummy `orelse &[_]AgentTool{}` struct.
 pub fn filterAndMergeTools(
     allocator: std.mem.Allocator,
-    mcp_tools: []const agent.AgentTool,
+    mcp_tools: ?[]const agent.AgentTool,
     allowed_tools: []const u8,
     is_sub_agent: bool,
 ) ![]agent.AgentTool {
@@ -1782,10 +1788,12 @@ pub fn filterAndMergeTools(
         base_tools = try filtered.toOwnedSlice(allocator);
     }
 
-    // Merge base tools and MCP tools
+    // Merge base tools and MCP tools (null = no MCP, skip the append)
     var all_tools_list: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
     try all_tools_list.appendSlice(allocator, base_tools);
-    try all_tools_list.appendSlice(allocator, mcp_tools);
+    if (mcp_tools) |mt| {
+        try all_tools_list.appendSlice(allocator, mt);
+    }
 
     return try all_tools_list.toOwnedSlice(allocator);
 }
@@ -2429,3 +2437,46 @@ test "saveRetryAttemptMessage stamps sessions.last_human_touched_at (Task 5 inva
     }
 }
 
+
+test "filterAndMergeTools: MCP tools appear in agent tool list (agent sees MCP)" {
+    // Proves the user-visible contract: when buildMCPToolsRun returns
+    // mcp_graphify_* tools, filterAndMergeTools includes them in the
+    // final list the LLM receives. Uses mock MCP tools (no spawn).
+    //
+    // Uses a per-test arena: filterAndMergeTools has pre-existing
+    // intermediate allocs (base_tools copy) that production's
+    // per-iteration arena reaps but DebugAllocator would flag as
+    // leaks. The arena gives us the same reaping semantics here.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var mock_mcp = [_]agent.AgentTool{.{
+        .type = "function",
+        .function = .{
+            .name = try alloc.dupe(u8, "mcp_graphify_query_graph"),
+            .description = try alloc.dupe(u8, "Search the graph"),
+            .parameters = .{ .type = "object", .properties = &.{}, .required = &.{} },
+        },
+    }};
+    // allowed_tools="" means no filtering — all base + all MCP
+    const merged = try filterAndMergeTools(alloc, &mock_mcp, "", false);
+    var found = false;
+    for (merged) |t| {
+        if (std.mem.eql(u8, t.function.name, "mcp_graphify_query_graph")) {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+    // Also verify null MCP (not configured) still yields base tools
+    const merged_null = try filterAndMergeTools(alloc, null, "", false);
+    try testing.expect(merged_null.len > 0);
+    var found_mcp = false;
+    for (merged_null) |t| {
+        if (std.mem.startsWith(u8, t.function.name, "mcp_")) {
+            found_mcp = true;
+            break;
+        }
+    }
+    try testing.expect(!found_mcp);
+}

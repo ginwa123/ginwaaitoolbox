@@ -194,15 +194,31 @@ fn testStdio(
         allocator.free(argv);
     }
 
-    // Per-call preview name. Keeps the spawned child distinct from
-    // the user's eventual Save'd name (so two consecutive Tests
-    // don't share cached children). Marked stale on failure so
-    // the next test doesn't reuse a half-dead client.
-    const preview_name = std.fmt.allocPrint(
-        allocator,
-        "__mcp_test_preview_{d}",
-        .{std.Io.Timestamp.now(io, .real).nanoseconds},
-    ) catch return TestError.OutOfMemory;
+    // Stable preview name per config (hash of command + args). Keeps
+    // the spawned child distinct from the user's eventual Save'd name,
+    // but STABLE across consecutive Tests so the second click reuses
+    // the same cached child instead of spawning a new Python process
+    // (each holding the 9.4MB graph) and leaking the old one.
+    // Previously this used a timestamp (new entry per click, never
+    // cleaned up) — first Test worked, second Test spawned a second
+    // child while the first was still alive → OOM/FD exhaustion → SEGV.
+    const preview_name = blk: {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(req.command);
+        if (req.args) |a| {
+            for (a) |arg| {
+                hasher.update(arg);
+                hasher.update("|");
+            }
+        }
+        if (req.cwd.len > 0) hasher.update(req.cwd);
+        const h = hasher.final();
+        break :blk std.fmt.allocPrint(
+            allocator,
+            "__mcp_test_preview_{x}",
+            .{h},
+        ) catch return TestError.OutOfMemory;
+    };
     defer allocator.free(preview_name);
 
     const reg = mcp_stdio.StdioRegistry.global(allocator);
@@ -313,7 +329,10 @@ fn testStdio(
             freeStderrs(allocator, &stderrs_buf, attempts_used);
             return TestError.OutOfMemory;
         };
-        defer allocator.free(full_payload);
+        // NOTE: no `defer free` here — this is inside `while(true)`,
+        // and `defer` would run at function exit, leaking one
+        // allocation per retry iteration. Free explicitly on every
+        // path below (success, retry-continue, error-return).
         std.Io.File.writeStreamingAll(stdin_file, io, full_payload) catch |err| {
             logger.warnFmt("[mcp_test] stdio send failed: {s}", .{@errorName(err)});
             if (attempts_used < 20) {
@@ -335,15 +354,19 @@ fn testStdio(
                 ) catch null;
                 freeStderrs(allocator, &stderrs_buf, attempts_used);
                 out_err_detail.* = detail;
+                allocator.free(full_payload);
                 return TestError.SendFailed;
             }
             reg.markStale(preview_name);
+            allocator.free(full_payload);
             std.Io.Clock.Duration.sleep(
                 .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
                 io,
             ) catch {};
             continue;
         };
+        // Write succeeded — payload is on the wire, free it now.
+        allocator.free(full_payload);
 
         // Read the initialize response (1st response). If we get
         // EOF, the SDK is dead → cold-start race → retry.
@@ -388,7 +411,8 @@ fn testStdio(
             ) catch {};
             continue;
         };
-        defer allocator.free(init_resp);
+        // NOTE: no `defer free` — inside `while(true)`, defer runs at
+        // function exit. Free explicitly on every path below.
 
         // We got the initialize response — SDK is alive. Read the
         // tools/list response (2nd response). Same retry semantics.
@@ -420,6 +444,7 @@ fn testStdio(
                 ) catch null;
                 freeStderrs(allocator, &stderrs_buf, attempts_used);
                 out_err_detail.* = detail;
+                allocator.free(init_resp);
                 return TestError.RecvFailed;
             }
             logger.warnFmt(
@@ -427,20 +452,25 @@ fn testStdio(
                 .{ @errorName(err), attempt, TEST_STDIO_MAX_ATTEMPTS },
             );
             reg.markStale(preview_name);
+            allocator.free(init_resp);
             std.Io.Clock.Duration.sleep(
                 .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
                 io,
             ) catch {};
             continue;
         };
-        defer allocator.free(tools_resp);
 
         // Parse result.tools[] from the 2nd response.
         const tools = parseToolsList(allocator, tools_resp) catch |err| {
             logger.warnFmt("[mcp_test] stdio response parse failed: {s}", .{@errorName(err)});
             freeStderrs(allocator, &stderrs_buf, attempts_used);
+            allocator.free(init_resp);
+            allocator.free(tools_resp);
             return TestError.JsonParseFailed;
         };
+        // Success — both responses are no longer needed.
+        allocator.free(init_resp);
+        allocator.free(tools_resp);
 
         // Success — free the collected stderrs (diagnostic only).
         freeStderrs(allocator, &stderrs_buf, attempts_used);
