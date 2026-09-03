@@ -218,20 +218,32 @@ def test_mcp_test_missing_command_for_stdio_returns_clear_error() -> None:
 #
 
 # Minimal in-shell MCP stdio shim (newline-delimited JSON, which
-# readFramed auto-detects). Reads & discards the probe's 3 handshake
-# requests, then emits an initialize response + a tools/list response
-# with one tool ("shim_tool"). Lives at a custom PATH entry NOT on the
-# libc default fallback, so it is only resolvable when PATH is inherited.
+# readFramed auto-detects). Responds to the probe's 3-message handshake
+# (initialize → init response, notifications/initialized + tools/list →
+# tools response) with one tool ("shim_tool"). Lives at a custom PATH
+# entry NOT on the libc default fallback, so it is only resolvable when
+# PATH is inherited.
+#
+# SEQUENCED, not batched (2026-09-04 CI fix): the shim reads ONE request,
+# prints the init response, sleeps 0.2s, THEN reads the remaining two
+# requests and prints the tools response. The sleep separates the two
+# response writes in time so they never coalesce in the kernel pipe
+# buffer. Without it the shim printed both responses back-to-back; the
+# backend's `readFramed` creates a fresh 4 KiB `Io.Reader` per call
+# (stack buffer, discarded on return), so when both lines arrived
+# together the first recv buffered + dropped the second line and the
+# second recv saw EOF → 20/20 UnexpectedEof, flaky 1-in-3 pass on CI
+# and locally. Real MCP servers (Node SDK) never coalesce — they
+# process each request on the event loop with a tick between responses
+# — so production is unaffected; this is a test-only fidelity fix.
+# The 0.2s cost keeps the probe at ~0.2s (well inside the 20s timeout).
 SHIM_SERVER = """\
 #!/bin/sh
-# Drain up to 3 incoming request lines (initialize, notifications/initialized,
-# tools/list) sent by the probe in a single write. `read` returns false on
-# EOF, so this also tolerates the case where the child exited early.
-i=0
-while [ "$i" -lt 3 ] && IFS= read -r _line; do i=$((i + 1)); done
-# Respond. NDJSON — readFramed peeks for '{' and treats each \\n-delimited
-# object as one frame.
+IFS= read -r l1
 printf '%s\\n' '{"jsonrpc":"2.0","id":"1","result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"shim","version":"1.0"}}}'
+sleep 0.2
+IFS= read -r l2
+IFS= read -r l3
 printf '%s\\n' '{"jsonrpc":"2.0","id":"2","result":{"tools":[{"name":"shim_tool","description":"env-inheritance regression guard"}]}}'
 """
 

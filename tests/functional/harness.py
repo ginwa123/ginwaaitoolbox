@@ -992,8 +992,17 @@ def _wait_ready(
                 body = json.loads(resp.read())
                 if body.get("status") == "ok":
                     return
-        except (urllib.error.URLError, ConnectionError, OSError) as e:
-            last_err = str(e)
+        except Exception as e:
+            # Catch-all during readiness polling (not just URLError /
+            # ConnectionError / OSError). A half-open listener can reply
+            # with a malformed status line (http.client.BadStatusLine,
+            # an HTTPException, not a URLError) when a prior test's nalar
+            # is still shutting down on a recycled port, or when the
+            # server is mid-boot. Any such transient must be retried,
+            # not propagated as a fixture ERROR (observed on CI Linux as
+            # `ERROR design_lifecycle_test.py::test_element_html_file_written_to_disk
+            # - http.client.BadStatusLine: GET /health HTTP/1.1`).
+            last_err = f"{type(e).__name__}: {e}"
         time.sleep(0.1)
     log = log_path.read_text(errors="replace") if log_path.exists() else ""
     raise FunctionalHarnessError(
