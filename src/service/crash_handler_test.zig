@@ -41,6 +41,43 @@ test "installCrashHandlers is safe to call twice" {
     try testing.expect(true);
 }
 
+// ─── Better-logger contracts (2026-09-03) ─────────────────────────────
+//
+// The 2026-09-03 upgrade replaced the raw-hex-only dump with a
+// symbolicated report (function + file:line via writeStackTrace, fault
+// address + si_code via SA_SIGINFO). These static-contract tests embed
+// the implementation source and assert the key mechanisms are present —
+// a future refactor that silently drops symbolication or the siginfo
+// handler fails closed here instead of regressing to bare addresses.
+
+const impl_src = @embedFile("crash_handler.zig");
+
+test "crash handler symbolicates via writeStackTrace" {
+    // The handler must attempt DWARF symbolication, not just print raw
+    // hex. If this substring disappears, the log regresses to the
+    // pre-2026-09-03 "0x..."-only output the user complained about.
+    try testing.expect(std.mem.indexOf(u8, impl_src, "writeStackTrace") != null);
+}
+
+test "crash handler uses SA_SIGINFO for fault address" {
+    // Without SA_SIGINFO the kernel only delivers the signal number —
+    // no si_addr, no si_code, no answer to "WHY did it crash".
+    try testing.expect(std.mem.indexOf(u8, impl_src, "SIGINFO") != null);
+    try testing.expect(std.mem.indexOf(u8, impl_src, "sigaction") != null);
+}
+
+test "crash handler reports fault address and si_code meaning" {
+    try testing.expect(std.mem.indexOf(u8, impl_src, "Fault address") != null);
+    try testing.expect(std.mem.indexOf(u8, impl_src, "si_code") != null);
+    try testing.expect(std.mem.indexOf(u8, impl_src, "SEGV_MAPERR") != null);
+}
+
+test "crash handler keeps raw-hex addr2line fallback" {
+    // Symbolication can fail (stripped binary, no DWARF) — the raw
+    // addresses must ALWAYS be emitted alongside, with an addr2line hint.
+    try testing.expect(std.mem.indexOf(u8, impl_src, "addr2line") != null);
+}
+
 // ─── Behavioural coverage ─────────────────────────────────────────────
 //
 // A real SIGSEGV / SIGBUS / SIGABRT / SIGILL / SIGFPE / ACCESS_VIOLATION
