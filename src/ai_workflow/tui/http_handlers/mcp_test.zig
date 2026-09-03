@@ -49,6 +49,7 @@
 //! to render the error message inline, not as a 500).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const mod = @import("mod.zig");
 const nalarcore = mod.nalarcore;
 const gserverz = nalarcore.gserverz;
@@ -399,6 +400,15 @@ fn testStdio(
                 ) catch null;
                 freeStderrs(allocator, &stderrs_buf, attempts_used);
                 out_err_detail.* = detail;
+                // Silent-but-alive child (e.g. bare `python` with empty
+                // args, waiting on stdin for EOF): it started fine but
+                // never answered `initialize`. Report `Timeout` so the
+                // modal shows "did not respond within 10 seconds"
+                // instead of the generic receive-failure text — the
+                // user almost certainly forgot the server's arguments.
+                // Still `markStale`d above (next probe respawns) and
+                // still HTTP 200 + `{ok:false}` (no backend crash).
+                if (err == error.RecvTimeout) return TestError.Timeout;
                 return TestError.RecvFailed;
             }
             logger.warnFmt(
@@ -483,21 +493,44 @@ fn testStdio(
 /// ALWAYS returns a HEAP-allocated slice (caller frees),
 /// even when the pipe is empty or the read failed. Truncated at 4
 /// KiB to keep the response body small.
+///
+/// NEVER BLOCKS (2026-09-03 empty-args hang fix): on POSIX the pipe
+/// is polled for 200ms first — a live-but-silent child (e.g. bare
+/// `python` waiting on stdin after a `RecvTimeout`) has no stderr
+/// bytes and no EOF, so a bare `readSliceShort` would block forever
+/// and hang the handler a second time, right after `recv` was fixed
+/// to time out. No data within 200ms → return `""`. On Windows
+/// (`std.posix.poll` is a `@compileError` there) the single read is
+/// kept as-is: after `UnexpectedEof` the child is dead so the read
+/// returns promptly; the live-silent shape keeps the old blocking
+/// behavior (documented limitation, same as `waitReadable`).
 fn drainStderr(allocator: std.mem.Allocator, io: std.Io, stderr: ?std.Io.File) []u8 {
     // Always heap-allocate so the caller can uniformly `free` the
     // returned slice. The empty fallback is also heap so `free` is
     // safe even when no bytes were captured.
     const empty = allocator.dupe(u8, "") catch allocator.dupe(u8, "") catch unreachable;
     const f = stderr orelse return empty;
+    if (comptime builtin.os.tag != .windows) {
+        var pfds = [_]std.posix.pollfd{.{
+            .fd = f.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        // Fail-open: poll error → try the read (old behavior).
+        const ready = std.posix.poll(&pfds, 200) catch 1;
+        // Timeout (0): child alive but stderr-silent — do NOT block.
+        if (ready == 0) return empty;
+        // ready > 0: bytes OR EOF/HUP waiting — the read below returns
+        // immediately either way.
+    }
     var buf: [4096]u8 = undefined;
     var reader = std.Io.File.reader(f, io, &buf);
-    // Single-shot non-blocking-ish read: read whatever is in the
-    // kernel pipe buffer RIGHT NOW. If the child crashed, we get
-    // whatever was in flight (1-2 lines of error message). If the
-    // child is alive and writing, we may block briefly — but at
-    // the point we call this the cold-start probe has already
-    // detected the child is dead (EOF on stdout), so blocking on
-    // stderr is bounded by the kernel pipe buffer (~64 KiB).
+    // Single-shot read: whatever is in the kernel pipe buffer RIGHT
+    // NOW (up to 4 KiB). The `poll` above guarantees this never blocks:
+    // after `UnexpectedEof` the child is dead (data + EOF waiting); after
+    // `RecvTimeout` the child is alive but we only reach this read when
+    // poll saw bytes waiting. If the child crashed, we get whatever was
+    // in flight (1-2 lines of error message).
     const n = std.Io.Reader.readSliceShort(&reader.interface, &buf) catch return empty;
     if (n == 0) return empty;
     return allocator.dupe(u8, buf[0..n]) catch empty;
@@ -854,6 +887,43 @@ test "mcp_test.zig http timeout is 10_000 ms" {
     );
     defer testing.allocator.free(raw);
     try testing.expect(std.mem.indexOf(u8, raw, "TEST_HTTP_TIMEOUT_MS: u32 = 10_000") != null);
+}
+
+test "mcp_test.zig stdio probe maps silent-child init timeout to Timeout" {
+    // Regression guard for the 2026-09-03 empty-args hang (bare
+    // `python` with no args waits on stdin for EOF, zero stdout bytes):
+    // the init-recv `RecvTimeout` must surface as `TestError.Timeout`
+    // ("did not respond within 10 seconds") rather than the generic
+    // `RecvFailed`, so the modal tells the user the server stayed
+    // silent (almost always: forgotten arguments).
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/ai_workflow/tui/http_handlers/mcp_test.zig",
+        testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer testing.allocator.free(raw);
+    try testing.expect(std.mem.indexOf(u8, raw, "if (err == error.RecvTimeout) return TestError.Timeout;") != null);
+}
+
+test "mcp_test.zig drainStderr never blocks on live-silent child" {
+    // After `recv` was fixed to time out via `waitReadable`, the very
+    // next call on that path is `drainStderr` — against a child that is
+    // still ALIVE with an empty stderr pipe. A bare `readSliceShort`
+    // there would block forever and re-hang the handler. Guard: the
+    // drain must poll first and give up fast.
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/ai_workflow/tui/http_handlers/mcp_test.zig",
+        testing.allocator,
+        .limited(1024 * 1024),
+    );
+    defer testing.allocator.free(raw);
+    const drain_start = std.mem.indexOf(u8, raw, "fn drainStderr(") orelse
+        return error.DrainFnMissing;
+    const drain_body = raw[drain_start..@min(drain_start + 3000, raw.len)];
+    try testing.expect(std.mem.indexOf(u8, drain_body, "std.posix.poll(&pfds, 200)") != null);
+    try testing.expect(std.mem.indexOf(u8, drain_body, "if (ready == 0) return empty;") != null);
 }
 
 test "mcp_test.zig stdio probe has cold-start retry guard (macOS ARM64 race fix)" {

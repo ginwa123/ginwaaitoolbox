@@ -51,6 +51,77 @@ pub const StdioError = error{
 // We accept BOTH CRLF (\r\n\r\n) and LF-only (\n\n) blank-line separators — the
 // spec says CRLF but real-world servers (e.g. node-based) sometimes emit LF-only.
 
+/// Wait until `file` is readable (data OR EOF/hangup waiting) or the
+/// deadline elapses / the cancel callback fires.
+///
+/// Returns `true` when a subsequent read is guaranteed not to block;
+/// returns `false` on deadline/cancel (the caller maps this to
+/// `StdioError.RecvTimeout`).
+///
+/// WHY THIS EXISTS: `readFramed` used to poll its deadline only *between*
+/// syscalls, but a blocking `readSliceShort` on a silent child never
+/// returns, so the deadline never fired. Concrete trigger: probing a
+/// stdio server with empty args spawns bare `python`, which sits in
+/// stdin-script mode waiting for EOF (the probe must keep stdin open —
+/// real MCP servers need it) while writing zero stdout bytes. The
+/// first-byte read blocked forever, the `/api/mcp/test` handler thread
+/// stuck, and the Test button spun forever. Waiting with `posix.poll`
+/// first makes the deadline real even when the child produces zero
+/// bytes.
+///
+/// POSIX-only. `std.Io.File.handle` is a pollable fd there. On Windows
+/// `std.posix.poll` is a `@compileError` ("use std.Io instead"), so the
+/// whole body is behind a `comptime` gate and this returns `true`
+/// immediately (previous blocking behavior — documented limitation;
+/// a future plan can use `WaitForSingleObject` there).
+///
+/// Callers skip this when the reader already holds buffered bytes
+/// (`iface.bufferedLen() > 0` — a poll on an empty fd would wrongly
+/// time out while data sits in the userspace buffer) and when neither
+/// a deadline nor a cancel callback is set (pure blocking `recvNoTimeout`
+/// mode).
+fn waitReadable(
+    io: std.Io,
+    file: std.Io.File,
+    deadline_abs: i128,
+    deadline_ns: u64,
+    is_cancelled: ?*const fn () bool,
+) bool {
+    if (comptime builtin.os.tag == .windows) {
+        return true;
+    } else {
+        const has_deadline = deadline_ns != 0;
+        while (true) {
+            if (is_cancelled) |cb| if (cb()) return false;
+            const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+            if (has_deadline and now_ns >= deadline_abs) return false;
+            // Poll in ≤100ms slices so the cancel callback stays
+            // responsive and the deadline check above runs often. With
+            // only a cancel callback set (no deadline) the slice is a
+            // flat 100ms.
+            const chunk_ms: i32 = if (has_deadline) blk: {
+                const rem_ns: i128 = deadline_abs - now_ns;
+                const rem_ms: i128 = @divTrunc(rem_ns, std.time.ns_per_ms);
+                const clamped: i128 = @min(@max(rem_ms, 1), 100);
+                break :blk @intCast(clamped);
+            } else 100;
+            var pfds = [_]std.posix.pollfd{.{
+                .fd = file.handle,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            }};
+            // Fail-open: if poll itself errors, let the read decide
+            // (preserves the old behavior instead of inventing a timeout).
+            const n = std.posix.poll(&pfds, chunk_ms) catch return true;
+            // n > 0: readable bytes OR EOF/HUP/ERR waiting — either way
+            // the next read returns immediately instead of blocking.
+            if (n > 0) return true;
+            // n == 0: slice elapsed with no data — loop to recheck
+            // deadline/cancel.
+        }
+    }
+}
+
 /// Read one Content-Length-framed or newline-delimited JSON message.
 /// Allocates ONE slice that's returned to the caller; the caller owns
 /// it and is responsible for freeing. No per-byte scratch buffers,
@@ -65,8 +136,14 @@ pub const StdioError = error{
 /// runs for at most this many nanoseconds from the moment the
 /// function was called. Internally we compute
 /// `deadline_abs = now + deadline_ns` on entry and compare against
-/// `now` between bytes. Wall-clock check (not `std.posix.poll`) to
-/// stay portable across OS without FFI.
+/// `now` between bytes. The FIRST byte (and every subsequent byte
+/// when the reader buffer is empty) additionally waits via
+/// `waitReadable` (`posix.poll` on POSIX), so a child that produces
+/// zero bytes — e.g. bare `python` with no args, waiting on stdin
+/// for EOF — surfaces as `RecvTimeout` instead of blocking the
+/// caller forever. Wall-clock check stays portable across OS
+/// without FFI beyond poll itself (which is `comptime`-gated out
+/// on Windows).
 ///
 /// `is_cancelled` (default null = no cancel-check) — when set, polled
 /// between bytes read. When the function returns `true`, recv bails
@@ -144,6 +221,13 @@ fn readFramed(
         }
     }
     var first: [1]u8 = undefined;
+    // Deadline-aware wait: without this, a silent child (zero stdout
+    // bytes, pipe still open) blocks the read below forever and the
+    // deadline never fires. Skip when the caller wants pure blocking
+    // mode (deadline 0 + no cancel callback).
+    if (deadline_ns != 0 or is_cancelled != null) {
+        if (!waitReadable(io, file, deadline_abs, deadline_ns, is_cancelled)) return StdioError.RecvTimeout;
+    }
     const n0 = iface.readSliceShort(&first) catch return StdioError.UnexpectedEof;
     if (n0 == 0) return StdioError.UnexpectedEof;
 
@@ -166,6 +250,12 @@ fn readFramed(
         var len: usize = 1; // already read '{'
         body[0] = first[0];
         while (true) {
+            // Same silent-child guard as the first byte: only poll when
+            // the reader buffer is drained, otherwise buffered bytes
+            // would sit unread while we wait on an empty fd.
+            if (iface.bufferedLen() == 0 and (deadline_ns != 0 or is_cancelled != null)) {
+                if (!waitReadable(io, file, deadline_abs, deadline_ns, is_cancelled)) return StdioError.RecvTimeout;
+            }
             var b: [1]u8 = undefined;
             const r = iface.readSliceShort(&b) catch {
                 // EOF before newline — a partial frame is what we have.
@@ -214,6 +304,9 @@ fn readFramed(
     var found_blank = false;
 
     while (!found_blank) {
+        if (iface.bufferedLen() == 0 and (deadline_ns != 0 or is_cancelled != null)) {
+            if (!waitReadable(io, file, deadline_abs, deadline_ns, is_cancelled)) return StdioError.RecvTimeout;
+        }
         var byte: [1]u8 = undefined;
         const n = iface.readSliceShort(&byte) catch return StdioError.UnexpectedEof;
         if (n == 0) return StdioError.UnexpectedEof;
@@ -245,23 +338,24 @@ fn readFramed(
     const content_length = cl orelse return StdioError.InvalidFrame;
 
     const body = allocator.alloc(u8, content_length) catch return StdioError.UnexpectedEof;
-    // Use readSliceAll for the body — it loops until exactly
-    // content_length bytes are read or EOF. Eliminates the off-by-one
-    // we saw with readStreaming. On read failure the caller never sees
-    // the slice so it stays alive until the arena teardown / test
-    // teardown frees it — the DebugAllocator in tests would flag this
-    // as a leak; the test bodies all use `defer testing.allocator.free(body)`
-    // so the leak only fires if readSliceAll errors mid-read, which
-    // doesn't happen in the tests today.
-    //
-    // For LARGE bodies (the pipe-buffer deadlock case described in the
-    // plan §"Two deadlock shapes"), we can't poll inside readSliceAll
-    // (it's a single syscall block). Mitigation: callers cap
-    // `content_length` at the message-size cap BEFORE calling recv —
-    // see MCP_MAX_MESSAGE_BYTES below. For the common case (responses
-    // <64 KiB), readSliceAll completes in O(1) syscalls and the
-    // deadline check before this line is enough.
-    iface.readSliceAll(body) catch return StdioError.UnexpectedEof;
+    // Chunked body read (NOT a single `readSliceAll`): each chunk is
+    // guarded by `waitReadable` so a child that stalls mid-body —
+    // header promised N bytes but the bytes never arrive — surfaces
+    // as `RecvTimeout` instead of blocking forever. EOF mid-body
+    // stays `UnexpectedEof`, matching the old `readSliceAll` mapping.
+    var off: usize = 0;
+    while (off < body.len) {
+        if (iface.bufferedLen() == 0 and (deadline_ns != 0 or is_cancelled != null)) {
+            if (!waitReadable(io, file, deadline_abs, deadline_ns, is_cancelled)) return StdioError.RecvTimeout;
+        }
+        const n = iface.readSliceShort(body[off..]) catch return StdioError.UnexpectedEof;
+        if (n == 0) return StdioError.UnexpectedEof;
+        off += n;
+        if (deadline_ns != 0 or is_cancelled != null) {
+            const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+            if (checkDeadlineOrCancel(now_ns, deadline_abs, is_cancelled).err) |e| return e;
+        }
+    }
     return body;
 }
 
@@ -1086,9 +1180,13 @@ test "fd: failed spawn does not leak FDs (20 attempts at missing binary)" {
 /// `cmd.exe /C "timeout /T 1 /NOBREAK"`. Use this for tests that
 /// assert `recv` returns within `deadline + slack` — see
 /// `"recv returns RecvTimeout when child never responds"` for the
-/// full rationale (truly-hung children block forever on the
-/// first-byte read because Zig 0.16's readSliceShort has no
-/// portable deadline integration).
+/// full rationale.
+///
+/// NOTE (2026-09-03): `waitReadable` (`posix.poll`) now bounds even the
+/// first-byte read on POSIX, so truly-silent children are covered by
+/// the dedicated `"recv times out on truly-silent child"` test below.
+/// This helper stays for the close-after-deadline shape (child exits
+/// on its own → `UnexpectedEof` branch).
 fn eventually_closes_argv() []const []const u8 {
     return if (builtin.os.tag == .windows)
         &.{ "cmd.exe", "/C", "timeout", "/T", "1", "/NOBREAK" }
@@ -1107,16 +1205,15 @@ test "recv returns RecvTimeout when child never responds" {
     // deadline) fails this test via the zig test runner's hang
     // detector.
     //
-    // WHY NOT A TRULY-HUNG CHILD: Zig 0.16's `readSliceShort` is a
-    // single blocking syscall with no portable deadline integration
-    // (see readFramed's known-limitation note above). A child that
-    // never closes stdout (e.g. `cat`, `pause` on Windows, `sleep 60`
-    // on most kernels) leaves the parent blocked on the first byte
-    // forever — there's no way to recover without a watchdog thread
-    // or platform-specific `posix.poll` / `WaitForSingleObject`. The
-    // proper bounded first-byte fix is tracked in a follow-up plan.
+    // WHY NOT A TRULY-HUNG CHILD HERE: this test predates `waitReadable`
+    // (2026-09-03) and keeps its close-after-deadline shape to cover the
+    // `UnexpectedEof` branch. The truly-silent shape (child never closes
+    // stdout — e.g. bare `python` with no args waiting on stdin for EOF,
+    // or `sleep 60`) is covered by `"recv times out on truly-silent
+    // child"` below, which would hang forever without the `posix.poll`
+    // first-byte guard.
     //
-    // WORKAROUND: use a child that exits (and closes stdout) AFTER
+    // WORKAROUND (kept for this test's shape): use a child that exits (and closes stdout) AFTER
     // the deadline elapses, but BEFORE the test's 700ms slack window.
     // POSIX: `sh -c "sleep 0.6"` — sh owns the pipe, so even if
     // sleep's libc-init prematurely closes its inherited stdout ref
@@ -1156,20 +1253,12 @@ test "recv aborts immediately when cancel callback returns true" {
     // We pass a 10s deadline so the deadline is irrelevant here;
     // the cancel-callback path is what we exercise.
     //
-    // KNOWN LIMITATION: `readSliceShort` is a blocking syscall with
-    // no portable deadline integration in Zig 0.16. The cancel-
-    // callback is only consulted BETWEEN bytes, NOT during the
-    // first-byte read. So a truly hung child (no data ever) blocks
-    // until either the kernel signals or the parent sends data.
-    // We work around this for the cancel test by using a child
-    // (`echo` over stdin) that produces data immediately on first
-    // stdin write — the parent writes a line, echo echoes it back,
-    // the recv reads it on the first byte and the post-read check
-    // sees cancel=true and bails.
-    //
-    // This limitation is tracked for a future plan that uses
-    // `posix.poll` (POSIX) / `WaitForSingleObject` (Windows) to
-    // enforce timeouts on the first byte read.
+    // NOTE (2026-09-03): `waitReadable` now consults the cancel
+    // callback inside the first-byte wait too, so a truly-silent child
+    // aborts on cancel without producing any bytes — covered by
+    // `"recv aborts on cancel with truly-silent child"` below. This
+    // test keeps its echo shape (data on the wire → cancel observed
+    // between bytes).
     var client = StdioClient.init(testing.allocator, testing.io, echo_argv()) catch |err| {
         if (err == error.ChildSpawnFailed) return;
         return err;
@@ -1228,4 +1317,98 @@ test "markStale on unknown name is a no-op (does not panic or insert)" {
     const c = try reg.getOrSpawn("not_in_registry", echo_argv());
     _ = c;
     try testing.expectEqual(@as(usize, 1), reg.entries.count());
+}
+
+// ── First-byte deadline tests (2026-09-03 empty-args hang fix) ──────────────
+//
+// Regression coverage for the `/api/mcp/test` hang: probing a stdio
+// server with empty args spawns the bare command (e.g. `python` with
+// no args), which waits on stdin for EOF while writing zero stdout
+// bytes. Without `waitReadable`'s `posix.poll` guard the first-byte
+// `readSliceShort` blocked forever and the deadline never fired.
+// These tests use a truly-silent child (`sleep 30`, killed by the
+// `defer client.deinit()` at test end) — pre-fix they hang the test
+// runner; post-fix they return `RecvTimeout` in ~deadline.
+//
+// POSIX-only: `waitReadable` is `comptime`-gated out on Windows
+// (`std.posix.poll` is a `@compileError` there), so Windows keeps the
+// old blocking behavior and these tests must skip there.
+
+/// Argv for a child that stays alive and silent well past any test
+/// deadline. POSIX-only (`sleep`); Windows callers must skip first.
+fn silent_child_argv() []const []const u8 {
+    return &.{"sleep", "30"};
+}
+
+test "recv times out on truly-silent child (empty-args bare command)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var client = StdioClient.init(testing.allocator, testing.io, silent_child_argv()) catch |err| {
+        if (err == error.ChildSpawnFailed) return;
+        return err;
+    };
+    defer client.deinit();
+
+    const start = std.Io.Timestamp.now(testing.io, .real).nanoseconds;
+    const result = client.recv(300 * std.time.ns_per_ms, null);
+    const elapsed_ms: u64 = @intCast(@divTrunc(
+        std.Io.Timestamp.now(testing.io, .real).nanoseconds - start,
+        std.time.ns_per_ms,
+    ));
+    try testing.expect(result == error.RecvTimeout);
+    // Waited ~the full deadline (not an instant fail) but stayed far
+    // below any hang: 200ms lower bound proves the poll actually
+    // waited; 5s upper bound proves the deadline fired (pre-fix this
+    // recv never returned at all).
+    try testing.expect(elapsed_ms >= 200);
+    try testing.expect(elapsed_ms < 5000);
+}
+
+test "recv aborts on cancel with truly-silent child" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var client = StdioClient.init(testing.allocator, testing.io, silent_child_argv()) catch |err| {
+        if (err == error.ChildSpawnFailed) return;
+        return err;
+    };
+    defer client.deinit();
+
+    const cancel = struct {
+        fn call() bool {
+            return true;
+        }
+    }.call;
+    const start = std.Io.Timestamp.now(testing.io, .real).nanoseconds;
+    // 10s deadline is irrelevant — cancel fires inside the first
+    // 100ms poll slice, so the recv must abort almost immediately
+    // even though the child never produces a single byte.
+    const result = client.recv(10_000 * std.time.ns_per_ms, &cancel);
+    const elapsed_ms: u64 = @intCast(@divTrunc(
+        std.Io.Timestamp.now(testing.io, .real).nanoseconds - start,
+        std.time.ns_per_ms,
+    ));
+    try testing.expect(result == error.RecvTimeout);
+    try testing.expect(elapsed_ms < 2000);
+}
+
+test "recv with deadline still delivers data (happy path)" {
+    // Guards the `waitReadable` fast path: when the child IS producing,
+    // poll returns readable immediately and the framed message comes
+    // back intact. Runs on all platforms (`waitReadable` is a no-op
+    // pass-through on Windows).
+    var client = StdioClient.init(testing.allocator, testing.io, echo_argv()) catch |err| {
+        if (err == error.ChildSpawnFailed) return;
+        return err;
+    };
+    defer client.deinit();
+
+    const stdin_file = client.stdin orelse return error.BrokenPipe;
+    // NDJSON-framed line; `cat`/`more` echoes it back on stdout.
+    const probe = "{\"jsonrpc\":\"2.0\",\"id\":1}\n";
+    std.Io.File.writeStreamingAll(stdin_file, testing.io, probe) catch return;
+
+    const body = client.recv(5_000 * std.time.ns_per_ms, null) catch |err| {
+        std.debug.print("!! happy-path recv failed: {s} !!\n", .{@errorName(err)});
+        return err;
+    };
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1}", body);
 }

@@ -195,6 +195,22 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
     return `<span class="tool-inline">${tool_name} → "${query || 'unknown'}"</span>`
   }
 
+  // Universal MCP summary: ANY `mcp_<server>_<tool>` (graphify, db, future
+  // servers). The backend stores MCP success as RAW server text (no `<tool>`
+  // envelope), so unwrap may fail — fall back to the raw content. Truncate
+  // to one line / 80 chars so the collapsed pill stays one line.
+  if (tool_name?.startsWith('mcp_')) {
+    const unwrappedMcp = tryUnwrapToolOutput(content)
+    const raw = unwrappedMcp === null ? content : (unwrappedMcp.data ?? unwrappedMcp.error ?? '')
+    if (unwrappedMcp !== null && !unwrappedMcp.success) {
+      return `<span class="tool-inline">${tool_name} → ${escapeHtml((unwrappedMcp.error ?? 'error').trim() || 'error')}</span>`
+    }
+    const oneLine = raw.replace(/\s+/g, ' ').trim()
+    const preview = oneLine.slice(0, 80)
+    const suffix = oneLine.length > 80 ? '…' : ''
+    return `<span class="tool-inline">${tool_name} → ${escapeHtml(preview || 'ok')}${suffix}</span>`
+  }
+
   if (
     tool_name === 'list_skills' ||
     tool_name === 'get_skill' ||

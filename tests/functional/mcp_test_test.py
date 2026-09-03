@@ -331,3 +331,62 @@ def test_mcp_test_stdio_diagnostic_on_child_death() -> None:
         assert elapsed < 30.0, f"probe took {elapsed:.1f}s (>30s budget!)"
     finally:
         harness.teardown()
+
+
+# ─── Test 7: silent child with empty args returns Timeout, not a hang ────────
+#
+# The user's exact report (2026-09-03): editing an MCP server to have
+# EMPTY arguments and clicking Test left the backend blocking forever.
+# Empty args means argv=[command] only — for a bare `python` that is
+# stdin-script mode: it waits on stdin for EOF (the probe must keep
+# stdin open — real MCP servers need it for the session) while writing
+# ZERO stdout bytes and staying alive. `readFramed`'s first-byte
+# `readSliceShort` blocked forever because the deadline was only polled
+# BETWEEN syscalls, never during a zero-byte blocking read.
+#
+# The fix (`waitReadable` posix.poll guard in mcp_stdio.zig +
+# non-blocking `drainStderr` in mcp_test.zig) makes the init recv time
+# out after 10s and surfaces `TestError.Timeout`. This test replays the
+# exact wire body the modal sends for empty args
+# (`argsText "" → []`, command = the python binary) using the test
+# runner's own interpreter (guaranteed to exist) and asserts:
+#   1. the probe RETURNS (~10s) instead of hanging,
+#   2. the error is the Timeout message (not a crash, not a 500 —
+#      the endpoint always answers HTTP 200 + {ok:false}),
+#   3. a SECOND identical probe also returns (the first failure
+#      `markStale`s the hung child; the retry must kill + respawn
+#      cleanly instead of wedging the registry).
+def test_mcp_test_stdio_empty_args_silent_child_returns_timeout() -> None:
+    """Bare interpreter with no args stays silent → {ok:false} Timeout
+    within ~10s per probe, backend stays alive across both probes.
+    Pre-fix this test never completes (handler thread blocks forever
+    on the first-byte read); the harness `timeout_s` turns that hang
+    into a failure instead of hanging the suite.
+    """
+    harness = FunctionalHarness.boot(stub_llm_profile=True)
+    try:
+        body = {
+            "transport": "stdio",
+            "command": sys.executable,  # bare python, no args
+            "args": [],  # modal sends [] for an empty Arguments textarea
+        }
+        for probe_no in (1, 2):
+            start = time.monotonic()
+            result = _post_test(harness, body, timeout_s=60.0)
+            elapsed = time.monotonic() - start
+            assert result.get("ok") is False, (
+                f"probe {probe_no}: expected failure, got: {result}"
+            )
+            assert result.get("error") == "MCP server did not respond within 10 seconds", (
+                f"probe {probe_no}: unexpected error message: {result.get('error')!r}"
+            )
+            assert "RecvTimeout" in result.get("details", ""), (
+                f"probe {probe_no}: details should name RecvTimeout; got: {result.get('details')!r}"
+            )
+            # ~10s deadline + 200ms stderr poll + spawn overhead.
+            # 30s bound proves the deadline fired (pre-fix: infinite).
+            assert elapsed < 30.0, (
+                f"probe {probe_no} took {elapsed:.1f}s (>30s bound — deadline regressed!)"
+            )
+    finally:
+        harness.teardown()

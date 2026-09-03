@@ -56,6 +56,7 @@ import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
+import McpTool from '../tool_outputs/McpTool.vue'
 import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
 import SubAgentPeekPanel from '../nalar/SubAgentPeekPanel.vue'
 import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
@@ -3210,6 +3211,20 @@ const compactSession = async () => {
                             :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
+                          <!--
+                            Universal MCP card: ANY `mcp_*` tool (graphify, db,
+                            context7, future servers) renders here — never in
+                            the DiffView fallback below. The name check uses
+                            startsWith so new servers work with zero template
+                            changes.
+                          -->
+                          <McpTool
+                            v-else-if="msg.tool_name?.startsWith('mcp_')"
+                            :content="innerToolData(msg)"
+                            :tool-name="msg.tool_name ?? 'mcp_tool'"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                          />
                           <div v-else class="tool-expandable">
                             <button
                               class="tool-summary"
@@ -3240,15 +3255,19 @@ const compactSession = async () => {
                               class="tool-full-content"
                             >
                               <!--
-                                Render the diff whenever the tool emitted
-                                diffview_before/after, even if one is empty.
-                                The outer v-if handles the expand/collapse
-                                toggle. Empty-before or empty-after still
-                                renders the diff frame so the user sees the
-                                "all deleted" / "new file" case clearly.
+                                Render the diff only when at least one side
+                                has content. Both-empty (e.g. legacy MCP rows
+                                whose COALESCE'd "" diffview fields reach the
+                                wire) renders nothing — the previous
+                                `!== undefined` check treated "" as present
+                                and showed a "(no content)" / "(no content)"
+                                frame (see mcp_graphify_graph_stats bug).
+                                Empty-before or empty-after alone still
+                                renders so "new file" / "all deleted" stays
+                                visible.
                               -->
                               <DiffView
-                                v-if="msg.diffview_before !== undefined || msg.diffview_after !== undefined"
+                                v-if="msg.diffview_before || msg.diffview_after"
                                 :before="msg.diffview_before ?? ''"
                                 :after="msg.diffview_after ?? ''"
                                 :file-path="msg.tool_name"
