@@ -135,6 +135,16 @@ pub fn main(init: std.process.Init) !void {
 
     _ = try nalarcore.setSingleton(ctxParent);
 
+    // Eagerly init the process-global MCP registries on the process-lifetime
+    // allocator and cache the pointers on the singleton struct, so every
+    // call site goes through `di.mcp_stdio_registry` (via
+    // `nalarcore.mcpStdioRegistry`) instead of lazy-init on first MCP use.
+    // Shutdown hooks below kill spawned children + free registry arenas.
+    ctxParent.mcp_stdio_registry = nalarcore.mcp_stdio.StdioRegistry.global(allocator);
+    ctxParent.mcp_http_registry = nalarcore.mcp_http.HttpRegistry.global(allocator);
+    defer nalarcore.mcp_stdio.StdioRegistry.deinitGlobal();
+    defer nalarcore.mcp_http.HttpRegistry.deinitGlobal();
+
     const event_bus_mod = nalarcore.event_bus;
     var event_bus = event_bus_mod.EventBus.init("my-bus", allocator, io);
     defer event_bus.deinit();

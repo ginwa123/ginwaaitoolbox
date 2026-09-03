@@ -489,9 +489,8 @@ pub fn buildMCPToolsRun(
             }
             break :blk buf[0..count];
         };
-        // Same process-lifetime rule as the stdio registry above.
-        const http_long_lived = if (nalarcore.getSingleton()) |di| di.allocator else |_| allocator;
-        const http_registry = mcp_http.HttpRegistry.global(http_long_lived);
+        // Via the singleton struct (see root.zig `mcpHttpRegistry`).
+        const http_registry = nalarcore.mcpHttpRegistry(allocator);
         const http_client = http_registry.getOrConnect(
             server_name,
             url,
@@ -637,11 +636,8 @@ fn fetchToolsFromServerStdio(
         allocator.free(argv);
     }
 
-    // Process-lifetime allocator for the global registry (see
-    // mcp_test.zig: per-request/per-run arenas dangle after scope end
-    // → SEGV in getOrSpawn on next use).
-    const long_lived = if (nalarcore.getSingleton()) |di| di.allocator else |_| allocator;
-    const reg = mcp_stdio.StdioRegistry.global(long_lived);
+    // Via the singleton struct (see root.zig `mcpStdioRegistry`).
+    const reg = nalarcore.mcpStdioRegistry(allocator);
 
     // Retry loop for cold-start race: process.spawn returns before the
     // child (python → SDK connect → _stdin.on('data')) has attached its
