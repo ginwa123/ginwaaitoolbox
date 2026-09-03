@@ -4,17 +4,17 @@
 //
 // A real crash handler can't be exercised in-process — SIGSEGV / SIGBUS
 // / SIGABRT / SIGILL / SIGFPE / ACCESS_VIOLATION all terminate the
-// process. The closest in-process check is to install the handler and
-// confirm the function pointer is well-formed (i.e. the comptime
-// `builtin.os.tag` switch produced a real body on every platform).
-// Behavioural verification happens via a manual smoke test (see
-// docs/superpowers/plans/<date>-crash-signal-handler.md) that spawns
-// a child process which deliberately dereferences a bad pointer and
-// then inspects the panic log file.
+// process. So this file tests the handler's pure building blocks
+// BEHAVIORALLY (call the function, assert on the returned value), not
+// via source-text contracts. End-to-end verification (a child process
+// that really crashes) lives outside the test suite:
+//
+//   scripts/crash_handler_smoke.sh
 //
 // Plan: docs/superpowers/plans/2026-04-08-crash-signal-handler.md
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 const crash_handler = @import("crash_handler.zig");
 
@@ -41,49 +41,107 @@ test "installCrashHandlers is safe to call twice" {
     try testing.expect(true);
 }
 
-// ─── Better-logger contracts (2026-09-03) ─────────────────────────────
-//
-// The 2026-09-03 upgrade replaced the raw-hex-only dump with a
-// symbolicated report (function + file:line via writeStackTrace, fault
-// address + si_code via SA_SIGINFO). These static-contract tests embed
-// the implementation source and assert the key mechanisms are present —
-// a future refactor that silently drops symbolication or the siginfo
-// handler fails closed here instead of regressing to bare addresses.
+// ─── signalDescription: one-liner per crash signal ────────────────────
 
-const impl_src = @embedFile("crash_handler.zig");
-
-test "crash handler symbolicates via writeStackTrace" {
-    // The handler must attempt DWARF symbolication, not just print raw
-    // hex. If this substring disappears, the log regresses to the
-    // pre-2026-09-03 "0x..."-only output the user complained about.
-    try testing.expect(std.mem.indexOf(u8, impl_src, "writeStackTrace") != null);
+test "signalDescription names each crash signal" {
+    try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.SEGV), "invalid memory reference") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.BUS), "bus error") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.ABRT), "abort") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.ILL), "illegal instruction") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.FPE), "arithmetic") != null);
 }
 
-test "crash handler uses SA_SIGINFO for fault address" {
-    // Without SA_SIGINFO the kernel only delivers the signal number —
-    // no si_addr, no si_code, no answer to "WHY did it crash".
-    try testing.expect(std.mem.indexOf(u8, impl_src, "SIGINFO") != null);
-    try testing.expect(std.mem.indexOf(u8, impl_src, "sigaction") != null);
+// ─── siCodeMeaning: hardware sub-reason decoding ──────────────────────
+
+test "siCodeMeaning decodes hardware sub-reasons" {
+    const SEGV = std.c.SIG.SEGV;
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(SEGV, 1), "MAPERR") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(SEGV, 2), "ACCERR") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.BUS, 1), "ADRALN") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.ILL, 1), "ILLOPC") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.FPE, 1), "INTDIV") != null);
 }
 
-test "crash handler reports fault address and si_code meaning" {
-    try testing.expect(std.mem.indexOf(u8, impl_src, "Fault address") != null);
-    try testing.expect(std.mem.indexOf(u8, impl_src, "si_code") != null);
-    try testing.expect(std.mem.indexOf(u8, impl_src, "SEGV_MAPERR") != null);
+test "siCodeMeaning treats non-positive codes as sender codes" {
+    // kill()/raise()/abort()-delivered signals carry a sender identity
+    // (SI_TKILL=-6, SI_USER=0), not a hardware sub-reason. The decoder
+    // must say so instead of "unknown SEGV code".
+    const SEGV = std.c.SIG.SEGV;
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(SEGV, -6), "sender") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(SEGV, 0), "sender") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.ABRT, -6), "sender") != null);
 }
 
-test "crash handler keeps raw-hex addr2line fallback" {
-    // Symbolication can fail (stripped binary, no DWARF) — the raw
-    // addresses must ALWAYS be emitted alongside, with an addr2line hint.
-    try testing.expect(std.mem.indexOf(u8, impl_src, "addr2line") != null);
+// ─── classifyFaultAddr: address buckets ───────────────────────────────
+
+test "classifyFaultAddr buckets fault addresses" {
+    try testing.expectEqualStrings("NULL dereference", crash_handler.classifyFaultAddr(0));
+    try testing.expect(std.mem.indexOf(u8, crash_handler.classifyFaultAddr(0x10), "near-NULL") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.classifyFaultAddr(0x5000), "low address") != null);
+    try testing.expect(std.mem.indexOf(u8, crash_handler.classifyFaultAddr(0xdeadbeef), "wild/unmapped") != null);
 }
 
-// ─── Behavioural coverage ─────────────────────────────────────────────
-//
-// A real SIGSEGV / SIGBUS / SIGABRT / SIGILL / SIGFPE / ACCESS_VIOLATION
-// crashes the test process. We can't exercise the handler in-process
-// without killing the test runner. The behavioural verification lives
-// outside the test suite:
+// ─── faultAddrFromSiginfo / siCodeFromSiginfo: siginfo extraction ─────
+
+test "faultAddrFromSiginfo and siCodeFromSiginfo extract siginfo fields" {
+    // Linux-only: the test constructs the Linux siginfo_t shape
+    // (fields.sigfault.addr). Other platforms have a different layout.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var info = std.mem.zeroes(std.posix.siginfo_t);
+    info.code = 1;
+    info.fields = .{ .sigfault = .{
+        .addr = @ptrFromInt(0xdeadbeef),
+        .addr_lsb = 0,
+        .first = .{ .pkey = 0 },
+    } };
+
+    try testing.expectEqual(@as(usize, 0xdeadbeef), crash_handler.faultAddrFromSiginfo(&info));
+    try testing.expectEqual(@as(i32, 1), crash_handler.siCodeFromSiginfo(&info));
+}
+
+// ─── formatRawAddrs: deterministic hex formatting ─────────────────────
+
+test "formatRawAddrs formats one hex line per address" {
+    const addrs = [_]usize{ 0x1, 0xabcdef };
+    const out = crash_handler.formatRawAddrs(testing.allocator, &addrs);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("  0x0000000000000001\n  0x0000000000abcdef\n", out);
+}
+
+test "formatRawAddrs of empty trace is empty" {
+    const out = crash_handler.formatRawAddrs(testing.allocator, &.{});
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("", out);
+}
+
+// ─── symbolicateStack: DWARF symbolication ────────────────────────────
+
+test "symbolicateStack returns null for an empty trace" {
+    // writeStackTrace prints "(empty stack trace)" for zero frames —
+    // the helper treats that as "no symbolication", not a section.
+    const empty: std.debug.StackTrace = .{ .return_addresses = &.{}, .skipped = .none };
+    try testing.expect(crash_handler.symbolicateStack(testing.allocator, &empty) == null);
+}
+
+test "symbolicateStack symbolicates a live trace" {
+    // Capture a real stack in-test and symbolicate it. In a Debug
+    // build with debug info this must succeed and mention addresses;
+    // the smoke script covers the in-handler path end-to-end.
+    var addr_buf: [16]usize = undefined;
+    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
+    try testing.expect(stack.return_addresses.len > 0);
+    const sym = crash_handler.symbolicateStack(testing.allocator, &stack) orelse {
+        // Stripped/ReleaseFast binary without DWARF — nothing to check.
+        if (builtin.mode != .Debug) return error.SkipZigTest;
+        try testing.expect(false); // Debug must symbolicate
+        return;
+    };
+    defer testing.allocator.free(sym);
+    try testing.expect(std.mem.indexOf(u8, sym, "0x") != null);
+}
+
+// ─── Behavioural coverage (out-of-process) ────────────────────────────
 //
 //   scripts/crash_handler_smoke.sh
 //

@@ -133,7 +133,7 @@ pub fn installCrashHandlers() void {
 /// Human-readable one-liner for each crash signal — the "why did my
 /// process die" line. Shown directly under the `=== CRASH ===` header so
 /// the most likely cause is visible without decoding anything else.
-fn signalDescription(sig: std.c.SIG) []const u8 {
+pub fn signalDescription(sig: std.c.SIG) []const u8 {
     if (sig == std.c.SIG.SEGV) return "invalid memory reference (null deref, use-after-free, bad pointer, stack overflow)";
     if (sig == std.c.SIG.BUS) return "bus error (misaligned access, truncated mmap'd file, hardware fault)";
     if (sig == std.c.SIG.ABRT) return "abort (explicit abort(), failed assertion, debug-allocator error such as Invalid free)";
@@ -148,7 +148,7 @@ fn signalDescription(sig: std.c.SIG) []const u8 {
 /// numbers may differ but the text still reads sensibly. Unknown codes
 /// fall through to a generic label — the numeric code is always printed
 /// alongside so nothing is lost.
-fn siCodeMeaning(sig: std.c.SIG, code: i32) []const u8 {
+pub fn siCodeMeaning(sig: std.c.SIG, code: i32) []const u8 {
     // Non-positive codes are sender identities (SI_USER=0, SI_QUEUE=-1,
     // SI_TIMER=-2, SI_MESGQ=-3, SI_ASYNCIO=-4, SI_SIGIO=-5, SI_TKILL=-6),
     // not hardware sub-reasons — typical when the signal was sent via
@@ -210,7 +210,7 @@ fn siCodeMeaning(sig: std.c.SIG, code: i32) []const u8 {
 /// Classify a fault address into the bucket that matters for debugging:
 /// NULL, near-NULL (null struct-field access), low (null-derived), or a
 /// wild/unmapped pointer. Pure function — unit-testable.
-fn classifyFaultAddr(addr: usize) []const u8 {
+pub fn classifyFaultAddr(addr: usize) []const u8 {
     if (addr == 0) return "NULL dereference";
     if (addr < 0x1000) return "near-NULL (null pointer + small offset — likely a null struct-field access)";
     if (addr < 0x10000) return "low address (likely a null-derived pointer)";
@@ -225,7 +225,7 @@ fn classifyFaultAddr(addr: usize) []const u8 {
 /// where the kernel actually fills it (SEGV/BUS/ILL/FPE) — for SIGABRT
 /// the union holds sender info and the reinterpreted bytes are
 /// meaningless (we still return them; the caller labels the line).
-fn faultAddrFromSiginfo(info: *const std.posix.siginfo_t) usize {
+pub fn faultAddrFromSiginfo(info: *const std.posix.siginfo_t) usize {
     const Info = @TypeOf(info.*);
     // Darwin/libc shape: top-level si_addr.
     if (@hasField(Info, "si_addr")) {
@@ -257,7 +257,7 @@ fn faultAddrFromSiginfo(info: *const std.posix.siginfo_t) usize {
 }
 
 /// Extract `si_code` portably (Linux: `.code`, Darwin/libc: `.si_code`).
-fn siCodeFromSiginfo(info: *const std.posix.siginfo_t) i32 {
+pub fn siCodeFromSiginfo(info: *const std.posix.siginfo_t) i32 {
     const Info = @TypeOf(info.*);
     if (@hasField(Info, "code")) return info.code;
     if (@hasField(Info, "si_code")) return info.si_code;
@@ -272,7 +272,7 @@ fn siCodeFromSiginfo(info: *const std.posix.siginfo_t) i32 {
 /// back to raw hex addresses. Never calls `std.debug.print` / locks
 /// stderr itself; the output goes into the caller-provided allocator so
 /// the caller decides where it lands (log file + stderr mirror).
-fn symbolicateStack(
+pub fn symbolicateStack(
     allocator: std.mem.Allocator,
     stack: *const std.debug.StackTrace,
 ) ?[]const u8 {
@@ -294,18 +294,26 @@ fn symbolicateStack(
 /// Format raw return addresses, one `0x…` per line — the addr2line
 /// fallback. Always succeeds on a best-effort basis (empty string on
 /// OOM). The caller prints the `addr2line -e <exe>` hint above it.
-fn formatRawAddrs(
+pub fn formatRawAddrs(
     allocator: std.mem.Allocator,
     addrs: []const usize,
 ) []const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
     var line: [32]u8 = undefined;
     for (addrs) |ra| {
         const s = std.fmt.bufPrint(&line, "  0x{x:0>16}\n", .{ra}) catch continue;
-        buf.appendSlice(allocator, s) catch return buf.items;
+        buf.appendSlice(allocator, s) catch break;
     }
-    return buf.items;
+    // Ownership transfer: toOwnedSlice shrinks the buffer to the exact
+    // length so the caller can free it with a plain allocator.free.
+    // Returning buf.items directly would be an "Invalid free" — the
+    // ArrayList over-allocates (capacity > len) and free() requires the
+    // exact allocation block.
+    const owned = buf.toOwnedSlice(allocator) catch {
+        buf.deinit(allocator);
+        return "";
+    };
+    return owned;
 }
 
 // =============================================================================
@@ -517,7 +525,7 @@ fn installCrashHandlersWindows() void {
 }
 
 /// Human-readable one-liner for a Win32 exception code.
-fn windowsExceptionDescription(code: u32) []const u8 {
+pub fn windowsExceptionDescription(code: u32) []const u8 {
     return switch (code) {
         0xC0000005 => "EXCEPTION_ACCESS_VIOLATION (invalid memory reference — SIGSEGV equivalent)",
         0xC000001D => "EXCEPTION_ILLEGAL_INSTRUCTION (SIGILL equivalent)",
