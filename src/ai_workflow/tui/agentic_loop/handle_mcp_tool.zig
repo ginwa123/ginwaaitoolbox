@@ -120,9 +120,9 @@ pub fn handle_mcp_tool_run(
     // (the arena memory is freed at process exit). A future v2 may
     // wire main.zig's shutdown hook to call HttpRegistry.deinitGlobal() —
     // for now, same pattern as mcp_stdio.StdioRegistry.
-    // Process-lifetime allocator (see mcp_test.zig: per-iteration arenas dangle).
-    const http_long_lived = if (nalar_mod.getSingleton()) |di| di.allocator else |_| allocator;
-    const http_registry = mcp_http.HttpRegistry.global(http_long_lived);
+    // The global registry owns its own memory; `allocator` here is
+    // only used for this call's short-lived work.
+    const http_registry = mcp_http.HttpRegistry.global();
     const http_client = http_registry.getOrConnect(
         server_name,
         url,
@@ -226,9 +226,9 @@ fn callViaStdio(
     }
 
     // stdio transport: long-lived child per server, lazy spawn + respawn.
-    // Process-lifetime allocator (see mcp_test.zig: per-iteration arenas dangle).
-    const long_lived = if (nalar_mod.getSingleton()) |di| di.allocator else |_| allocator;
-    const reg = mcp_stdio.StdioRegistry.global(long_lived);
+    // The global registry owns its own memory; `allocator` here is
+    // only used for this call's short-lived work.
+    const reg = mcp_stdio.StdioRegistry.global();
 
     // Retry loop for cold-start / stale child. Use NDJSON framing (like
     // the discovery path) — Python and Node SDKs both default to NDJSON.

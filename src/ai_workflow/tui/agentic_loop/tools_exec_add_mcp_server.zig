@@ -453,9 +453,9 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
     }
 
     const mcp_stdio = nalarcore.mcp_stdio;
-    // Process-lifetime allocator (see mcp_test.zig: per-iteration arenas dangle).
-    const long_lived = if (nalarcore.getSingleton()) |di| di.allocator else |_| ctx.allocator;
-    const reg = mcp_stdio.StdioRegistry.global(long_lived);
+    // The global registry owns its own memory; ctx.allocator is only
+    // used for this call's short-lived work.
+    const reg = mcp_stdio.StdioRegistry.global();
     const client = reg.getOrSpawn(server_name, argv) catch return inner_xml;
     const req = ctx.allocator.dupe(u8,
         \\{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}

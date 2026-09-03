@@ -671,37 +671,59 @@ pub const StdioRegistry = struct {
             parent_allocator.destroy(t);
             self.threaded = null;
         }
-        // Single arena.deinit() frees ALL the clients + keys + the
-        // Threaded struct at once.
+        // Single arena.deinit() frees ALL the clients + keys at once
+        // (the Threaded struct was destroyed separately above).
         self.arena.deinit();
     }
 
     // Process-global singleton. Lives for the whole nalar process.
     // Cleaned up via the shutdown hook in main.zig (Task 7).
     //
-    // The arena is created with the parent allocator passed to `global()`
-    // — typically the dependency-injected `di.allocator` from main.zig,
-    // which has process lifetime. NOT std.heap.page_allocator (per project
-    // convention: the user always passes an explicit allocator).
-
+    // The registry owns its memory via `std.heap.page_allocator` —
+    // process lifetime, same precedent as stream_snapshot.zig's
+    // process-global registry. `global()` deliberately takes NO
+    // allocator: an earlier revision took the caller's allocator, and
+    // every call site passed a short-lived arena (per-request in
+    // mcp_test.zig, per-iteration in handle_mcp_tool.zig). The first
+    // call poisoned the static with a dying arena; the next use
+    // dereferenced the corpse → SEGV in getOrSpawn (wild HashMap
+    // header). Callers keep using their own allocator (request arena,
+    // etc.) for their short-lived work; the registry's long-lived
+    // state comes from the process heap.
     var global_registry: ?StdioRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;
 
     /// Get the process-global registry. Lazily initialized on first call.
-    /// `allocator` is the long-lived allocator (passed down from main.zig,
-    /// typically `di.allocator`) — NOT `std.heap.page_allocator`.
+    /// Takes no allocator — long-lived state comes from `global_backing`.
     ///
     /// The global registry owns its own `std.Io.Threaded` instance,
     /// created lazily here and torn down in `deinitGlobal`. This is
     /// the same pattern used elsewhere in the codebase for long-lived
     /// io contexts (see e.g. `agent_memories.zig:525`).
-    pub fn global(allocator: std.mem.Allocator) *StdioRegistry {
+    pub fn global() *StdioRegistry {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
         if (global_registry == null) {
-            global_registry = initThreaded(allocator) catch @panic("OOM: StdioRegistry.global");
+            global_registry = initThreaded(std.heap.page_allocator) catch @panic("OOM: StdioRegistry.global");
         }
         return &global_registry.?;
+    }
+
+    /// Drop one cached server: kill its child (if any) and forget the
+    /// entry so the next `getOrSpawn` for `name` spawns fresh. No-op
+    /// for unknown names. Used by short-lived probes (mcp_test.zig)
+    /// that must not leave live children behind.
+    ///
+    /// NOTE: the key + Entry + client structs stay in the arena (tiny,
+    /// bounded by distinct server count — arena owns them and has no
+    /// per-item free). The child PROCESS — the real resource (MBs of
+    /// graph, FDs) — is reaped here.
+    pub fn remove(self: *StdioRegistry, name: []const u8) void {
+        mutexLock(&self.mutex);
+        defer self.mutex.unlock();
+        if (self.entries.fetchRemove(name)) |kv| {
+            kv.value.client.deinit();
+        }
     }
 
     /// Called by main.zig shutdown hook. Kills all spawned children AND

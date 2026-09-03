@@ -460,19 +460,36 @@ pub const HttpRegistry = struct {
     // Process-global singleton. Mirrors `mcp_stdio.StdioRegistry.global`.
     // Lives for the whole nalar process; cleaned up via the shutdown
     // hook in main.zig (deinitGlobal).
+    //
+    // Self-owned backing allocator (same rationale as StdioRegistry:
+    // taking the caller's arena poisoned the static with dying memory
+    // → SEGV on next use). `global()` takes no allocator; long-lived
+    // state comes from the process heap.
     var global_registry: ?HttpRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;
 
     /// Get the process-global registry. Lazily initialized on first
-    /// call. `allocator` is the long-lived allocator (typically
-    /// `di.allocator` from main.zig) — NOT `std.heap.page_allocator`.
-    pub fn global(allocator: std.mem.Allocator) *HttpRegistry {
+    /// call. Takes no allocator — long-lived state comes from
+    /// `global_backing`.
+    pub fn global() *HttpRegistry {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
         if (global_registry == null) {
-            global_registry = HttpRegistry.init(allocator);
+            global_registry = HttpRegistry.init(std.heap.page_allocator);
         }
         return &global_registry.?;
+    }
+
+    /// Drop one cached client and forget the entry. No-op for unknown
+    /// names. Used by short-lived probes that must not accumulate
+    /// cached clients. (Keys/values stay in the arena — tiny and
+    /// bounded; the client's sockets are released by deinit.)
+    pub fn remove(self: *HttpRegistry, name: []const u8) void {
+        mutexLock(&self.mutex);
+        defer self.mutex.unlock();
+        if (self.entries.fetchRemove(name)) |kv| {
+            kv.value.deinit();
+        }
     }
 
     /// Called by main.zig shutdown hook. Frees all clients + the map.

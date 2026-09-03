@@ -221,13 +221,12 @@ fn testStdio(
     };
     defer allocator.free(preview_name);
 
-    // Process-lifetime allocator for the global registry. The registry
-    // outlives this request, so initializing it with the per-request
-    // arena leaves a dangling registry after the request scope ends →
-    // SEGV in getOrSpawn on the NEXT Test click (wild HashMap header
-    // via capacity()). Prefer the DI allocator (process lifetime).
-    const long_lived = if (nalarcore.getSingleton()) |di| di.allocator else |_| allocator;
-    const reg = mcp_stdio.StdioRegistry.global(long_lived);
+    // The global registry owns its own memory (see StdioRegistry.global)
+    // so the per-request `allocator` is only used for this probe's
+    // short-lived work. The preview child is removed before return
+    // (defer below) so Test clicks never accumulate live children.
+    const reg = mcp_stdio.StdioRegistry.global();
+    defer reg.remove(preview_name);
 
     // Build the MCP handshake + tools/list bodies once. The SDK
     // expects line-delimited JSON on stdin.
