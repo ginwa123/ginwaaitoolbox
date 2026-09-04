@@ -160,16 +160,35 @@ def test_granular_update_with_subagents_replaces_list(
     assert profiles["stub"].get("sub_agents") == [sa2]
 
 
+def _disk_config_path(h):
+    """Effective config.json path for this platform.
+
+    Mirrors the `config_harness` fixture: the harness always writes
+    the stub to the Linux path, but nalar on macOS reads from the
+    macOS path (the fixture copies it there before boot). Tests
+    must edit/assert the file the server actually reads.
+    """
+    import platform
+
+    if platform.system() == "Darwin":
+        return (
+            h.temp_dir
+            / "Library"
+            / "Application Support"
+            / "nalar"
+            / "config.json"
+        )
+    return h.temp_dir / ".config" / "nalar" / "config.json"
+
+
 def test_put_strips_deprecated_top_level_key_from_disk(
     config_harness: FunctionalHarness,
 ) -> None:
     """A PUT save migrates a legacy on-disk top-level `sub_agents`
     array into profiles missing their own list, then strips the key."""
-    cfg_path = (
-        config_harness.temp_dir / ".config" / "nalar" / "config.json"
-    )
+    cfg_path = _disk_config_path(config_harness)
     if not cfg_path.exists():
-        pytest.skip("stub config not at Linux path (non-Linux platform?)")
+        pytest.skip(f"stub config missing at {cfg_path}")
     disk = json.loads(cfg_path.read_text())
     disk["sub_agents"] = [SA]
     # Ensure the stub profile has NO sub_agents key (legacy shape).
