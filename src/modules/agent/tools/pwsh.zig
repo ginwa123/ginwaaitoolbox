@@ -107,18 +107,20 @@ test "pwsh_available returns false when pwsh is not on PATH" {
     try testing.expect(true);
 }
 
-test "pwsh is wired through agentic-loop tools_exec_pwsh.zig (static-contract grep)" {
-    // Mirrors the existing create_kanban_task_test.zig:1051 pattern.
-    // The pwsh tool must be (a) imported from the agentic-loop executor,
-    // (b) callable through the unified registry name \"pwsh\".
+test "command-only registry: tools_equipped wires command, not bash/pwsh (static-contract grep)" {
+    // Post-unify contract (2026-09-04): the equipped tool surface is ONE
+    // shell tool named "command". `bash`/`pwsh` survive only as unregistered
+    // shim modules (bash.zig / pwsh.zig delegate to command.execute_command)
+    // so old code still compiles — but they must NOT appear in
+    // UNIFIED_TOOL_REGISTRY, otherwise the LLM sees three shell tools again.
     //
-    // The grep proves three things at once:
-    //   1. tools_exec_pwsh.zig EXISTS (the file was created).
-    //   2. tools.zig re-exports execPwsh from it.
-    //   3. tools_equipped.zig has both the \"pwsh\" name entry AND the
-    //      pwsh_tool_mod.pwsh_tool tool_def AND tools.execPwsh exec.
+    // The grep proves four things at once:
+    //   1. tools_equipped.zig has the "command" name entry.
+    //   2. ... with .exec = tools.execCommand.
+    //   3. ... with .tool_def = command_tool_mod.command_tool.
+    //   4. ... and NO "bash"/"pwsh" name entries.
     //
-    // If a future refactor forgets to wire any of these, the test fails
+    // If a future refactor re-adds a bash/pwsh entry, the test fails
     // closed and prints an actionable error.
     const tools_equipped_src = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
@@ -129,27 +131,41 @@ test "pwsh is wired through agentic-loop tools_exec_pwsh.zig (static-contract gr
     defer testing.allocator.free(tools_equipped_src);
 
     var problems: u32 = 0;
-    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"pwsh\"") == null) {
+    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"command\"") == null) {
         std.debug.print(
-            "\\n!! UNIFIED_TOOL_REGISTRY is missing the pwsh name entry !!\\n",
+            "\n!! UNIFIED_TOOL_REGISTRY is missing the command name entry !!\n",
             .{},
         );
         problems += 1;
     }
-    if (std.mem.indexOf(u8, tools_equipped_src, "tools.execPwsh") == null) {
+    if (std.mem.indexOf(u8, tools_equipped_src, "tools.execCommand") == null) {
         std.debug.print(
-            "\\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execPwsh !!\\n",
+            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .exec = tools.execCommand !!\n",
             .{},
         );
         problems += 1;
     }
-    if (std.mem.indexOf(u8, tools_equipped_src, "pwsh_tool_mod.pwsh_tool") == null) {
+    if (std.mem.indexOf(u8, tools_equipped_src, "command_tool_mod.command_tool") == null) {
         std.debug.print(
-            "\\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = pwsh_tool_mod.pwsh_tool !!\\n",
+            "\n!! UNIFIED_TOOL_REGISTRY entry is missing .tool_def = command_tool_mod.command_tool !!\n",
             .{},
         );
         problems += 1;
     }
-    if (problems != 0) return error.MissingPwshWiring;
+    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"bash\"") != null) {
+        std.debug.print(
+            "\n!! UNIFIED_TOOL_REGISTRY still equips legacy bash (must be command-only) !!\n",
+            .{},
+        );
+        problems += 1;
+    }
+    if (std.mem.indexOf(u8, tools_equipped_src, ".name = \"pwsh\"") != null) {
+        std.debug.print(
+            "\n!! UNIFIED_TOOL_REGISTRY still equips legacy pwsh (must be command-only) !!\n",
+            .{},
+        );
+        problems += 1;
+    }
+    if (problems != 0) return error.MissingCommandWiring;
     try testing.expect(problems == 0);
 }

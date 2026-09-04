@@ -251,14 +251,17 @@ describe('KanbanToolsPanel', () => {
     await flushPromises()
 
     expect(enableSpy).toHaveBeenCalled()
-    // Every preset tool got an enable call (RECOMMENDED_TOOLS list).
+    // Every preset tool got an enable call (RECOMMENDED_TOOLS list,
+    // filtered by registry presence — the mock registry has no
+    // `command`, so only read_file + write_file fire).
     const calledTools = enableSpy.mock.calls.map((c) => c[1]).sort()
-    expect(calledTools).toEqual(['bash', 'read_file', 'write_file'])
+    expect(calledTools).toEqual(['read_file', 'write_file'])
   })
 
-  // unify-command Phase C: the preset also enables `command` (unified
-  // shell) when the registry advertises it; `bash` stays for compat.
-  it('includes command in the recommended starter set when the registry advertises it', async () => {
+  // unify-command: the preset enables `command` (unified shell) when the
+  // registry advertises it; legacy `bash` is NOT equipped anymore, so it
+  // is never part of the starter set even when advertised.
+  it('includes command (not bash) in the recommended starter set when the registry advertises it', async () => {
     vi.spyOn(api, 'getAgentToolsRegistry').mockResolvedValue({
       tools: [
         { name: 'bash', description: 'Run shell commands (legacy)' },
@@ -282,6 +285,6 @@ describe('KanbanToolsPanel', () => {
     await flushPromises()
 
     const calledTools = enableSpy.mock.calls.map((c) => c[1]).sort()
-    expect(calledTools).toEqual(['bash', 'command', 'read_file', 'write_file'])
+    expect(calledTools).toEqual(['command', 'read_file', 'write_file'])
   })
 })

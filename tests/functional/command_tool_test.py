@@ -7,23 +7,23 @@ What this covers
 ================
 The unify change merges `bash` + `pwsh` into a single `command` tool
 (`src/modules/agent/tools/command.zig`) that dispatches per-OS
-(`pwsh` on Windows, `bash` elsewhere) while keeping `bash`/`pwsh` as
-deprecated shims. Registration is in `tools_equipped.zig`:
-`equips()` + `UNIFIED_TOOL_REGISTRY()` both gain a `command` entry.
+(`pwsh` on Windows, `bash` elsewhere). `bash`/`pwsh` survive only as
+unregistered shim modules (they still compile) — the equipped registry
+(`tools_equipped.zig`: `equips()` + `UNIFIED_TOOL_REGISTRY()`) exposes
+`command` ONLY.
 
 A full end-to-end LLM agent run (`echo hello` via chat) is too heavy
 for a wire test (it needs a stub LLM that returns a tool_call for
 `command`), so this test verifies the wire-visible halves instead —
 the same strategy as `agent_add_mcp_server_test.py`:
 
-  * REGISTRY — GET /api/agent-tools/registry exposes `command`
-    alongside the legacy `bash` + `pwsh` shims (proves the new tool
-    is registered and the old ones were NOT removed).
+  * REGISTRY — GET /api/agent-tools/registry exposes `command` and
+    NOT `bash` / `pwsh` (proves the equipped surface is command-only).
   * ENABLE/DISABLE — POST/DELETE /api/agents/:id/tools round-trips
     `command` (proves the per-agent allowlist path accepts the new
     name; unknown names 400).
-  * LEGACY — POST `bash` still 201s (proves the old tool still
-    dispatches after the unify).
+  * LEGACY — POST `bash` / `pwsh` now 400s (proves the old names are
+    no longer equipped).
 
 Run:
     NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
@@ -106,19 +106,19 @@ def _enable_tool(
 
 
 class TestCommandRegistry:
-    def test_registry_exposes_command_alongside_bash_and_pwsh(
+    def test_registry_exposes_only_command_no_bash_no_pwsh(
         self, harness: FunctionalHarness
     ) -> None:
-        """The unify registers `command` WITHOUT removing the shims."""
+        """The equipped surface is `command` ONLY."""
         names = _registry_names(harness)
         assert "command" in names, (
             f"registry missing unified 'command' tool; got {names!r}"
         )
-        assert "bash" in names, (
-            f"registry missing legacy 'bash' shim; got {names!r}"
+        assert "bash" not in names, (
+            f"registry still equips legacy 'bash'; got {names!r}"
         )
-        assert "pwsh" in names, (
-            f"registry missing legacy 'pwsh' shim; got {names!r}"
+        assert "pwsh" not in names, (
+            f"registry still equips legacy 'pwsh'; got {names!r}"
         )
 
 
@@ -158,24 +158,33 @@ class TestCommandEnableDisable:
         assert _list_tools(harness, agent_id) == ["command"]
 
 
-class TestLegacyBashStillDispatches:
-    def test_bash_enable_still_201s_after_unify(
+class TestLegacyNamesRejected:
+    def test_bash_enable_now_400s_after_unify(
         self, harness: FunctionalHarness
     ) -> None:
-        """The deprecated `bash` shim must still enable (not removed)."""
+        """The removed `bash` name is no longer equipped (unknown → 400)."""
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "bash")
-        assert _list_tools(harness, agent_id) == ["bash"]
+        harness.http(
+            "POST",
+            f"/api/agents/{agent_id}/tools",
+            json_body={"tool_name": "bash"},
+            expect=400,
+        )
+        assert _list_tools(harness, agent_id) == []
 
-    def test_command_and_bash_coexist_sorted(
+    def test_pwsh_enable_now_400s_after_unify(
         self, harness: FunctionalHarness
     ) -> None:
-        """Both names can be enabled on one agent; list is sorted ASC."""
+        """The removed `pwsh` name is no longer equipped (unknown → 400)."""
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "command")
-        _enable_tool(harness, agent_id, "bash")
-        assert _list_tools(harness, agent_id) == ["bash", "command"]
+        harness.http(
+            "POST",
+            f"/api/agents/{agent_id}/tools",
+            json_body={"tool_name": "pwsh"},
+            expect=400,
+        )
+        assert _list_tools(harness, agent_id) == []

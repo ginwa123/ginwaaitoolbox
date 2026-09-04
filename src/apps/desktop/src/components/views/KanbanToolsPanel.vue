@@ -20,7 +20,7 @@
       (green-violet gradient border + filled checkbox).
     - "Use recommended starter set" preset button at the bottom
       when zero tools are enabled — lets the user bootstrap the
-      config with a curated safe set (bash, command, read_file, write_file).
+      config with a curated safe set (command, read_file, write_file).
 
   Public API:
     props: item ({ id, name? } | null), workspaceId (string)
@@ -75,9 +75,8 @@ const kanbanId = computed(() => props.item?.id ?? '')
 
 // Curated, safe-by-default starter set. Visible only when 0 tools are
 // enabled — gives the user a one-click bootstrap.
-// 'bash' is kept for back-compat (legacy tool name); 'command' is the
-// unified shell tool and is included alongside it.
-const RECOMMENDED_TOOLS = ['bash', 'command', 'read_file', 'write_file'] as const
+// 'command' is the unified shell tool (bash/pwsh are not equipped).
+const RECOMMENDED_TOOLS = ['command', 'read_file', 'write_file'] as const
 
 const errText = (err: unknown): string => {
   const msg = err instanceof Error ? err.message : String(err)
@@ -428,7 +427,7 @@ const handleApplyRecommended = async () => {
       <div class="flex items-center justify-between gap-2">
         <div class="text-xs" style="color: var(--semantic-text-dim)">
           <strong style="color: var(--semantic-text-muted)">Quick start:</strong>
-          enable a safe starter set (bash, command, read_file, write_file) — add more any time.
+          enable a safe starter set (command, read_file, write_file) — add more any time.
         </div>
         <button
           type="button"
