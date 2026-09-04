@@ -441,7 +441,9 @@ describe('useSubAgentPeek', () => {
     expect(peek.status.value).toBe('streaming')
   })
 
-  it('marks complete on tool_calls finish_reason (sub-agent waits for tool result next)', async () => {
+  it('keeps status=streaming on tool_calls finish_reason (tool result still pending)', async () => {
+    // 2026-09-04 subagent-peek fix: tool_calls is NOT terminal — the old
+    // assertion (complete) stranded the panel on the first tool call.
     const initial = msgs([
       { id: 'a1', role: 'assistant', content: '', created_at: 1000 },
     ])
@@ -453,6 +455,65 @@ describe('useSubAgentPeek', () => {
         finish_reason: 'tool_calls',
       },
     ])
+    expect(peek.status.value).toBe('streaming')
+  })
+
+  it('encodes the sessionId in the fetch URL (spaces/slashes)', async () => {
+    // 2026-09-04 subagent-peek P0: raw spaces break the HTTP request line.
+    mockFetchOnce(200, { messages: [], has_more: false, next_cursor: null })
+    mountWith({
+      sessionId: 'subagent_1_backend implementer',
+      agentName: 'backend implementer',
+      instruction: 'do X',
+    })
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url] = fetchMock.mock.calls[0] as [string]
+    expect(url).toContain('/llm/session/subagent_1_backend%20implementer/messages')
+    expect(url).not.toContain('backend implementer/messages')
+  })
+
+  it('refetches when a parent subagent_progress completed event arrives for our sid', async () => {
+    // 2026-09-04 subagent-peek P2: panel opened mid-run with 0 rows must
+    // populate after done via the parent-scoped completed event.
+    const sid = 'subagent_9_refetch_me'
+    mockFetchOnce(200, { messages: [], has_more: false, next_cursor: null })
+    const { peek } = mountWith({ sessionId: sid, agentName: 'x', instruction: 'do X' })
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(peek.messages.value).toHaveLength(0)
+
+    const doneMsgs = msgs([
+      { id: 'm1', role: 'user', content: 'do X', created_at: 1000 },
+      { id: 'm2', role: 'assistant', content: 'all done', created_at: 1001, finish_reason: 'stop' },
+    ])
+    mockFetchOnce(200, { messages: doneMsgs, has_more: false, next_cursor: null })
+    __dispatchSseBus('llm', {
+      session_id: 'parent_1',
+      role: 'subagent_progress',
+      status: 'completed',
+      subagent_session_id: sid,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(peek.messages.value).toHaveLength(2)
     expect(peek.status.value).toBe('complete')
+  })
+
+  it('ignores subagent_progress events for other sids', async () => {
+    mockFetchOnce(200, { messages: [], has_more: false, next_cursor: null })
+    mountWith({ sessionId: 'subagent_10_mine', agentName: 'x', instruction: 'do X' })
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    __dispatchSseBus('llm', {
+      session_id: 'parent_1',
+      role: 'subagent_progress',
+      status: 'completed',
+      subagent_session_id: 'subagent_10_other',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

@@ -60,12 +60,11 @@ import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
 import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
-import SubAgentPeekPanel from '../nalar/SubAgentPeekPanel.vue'
+import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
 import type { AgentErrorEntry } from '../../stores/agentError'
-import { useSubAgentPeek } from '../../composables/useSubAgentPeek'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 import { useRouter } from 'vue-router'
 import CompactionCard from '../preview/CompactionCard.vue'
@@ -314,17 +313,10 @@ const PAGE_SIZE = 1000
 const nav = useNavigationStore()
 const router = useRouter()
 
-// Lazy: only call useSubAgentPeek when a panel is open (otherwise
-// the composable's onMounted would fire a fetch unconditionally).
-const peek = computed(() => {
-  const payload = nav.peekPanel
-  if (!payload) return null
-  return useSubAgentPeek({
-    sessionId: payload.sessionId,
-    agentName: payload.agentName,
-    instruction: payload.instruction,
-  })
-})
+// 2026-09-04 subagent-peek P1 fix: the peek lifecycle lives in
+// SubAgentPeekHost (setup scope, keyed by sessionId). Never call
+// useSubAgentPeek inside a computed — lifecycle hooks registered during
+// render are unreliable (fetch fired 0/N times → permanent empty panel).
 
 /**
  * Handler for the panel's `openFull` event — closes the peek and
@@ -3712,18 +3704,14 @@ const compactSession = async () => {
          Renders only when navigationStore.peekPanel is set;
          teardown happens when ChatView unmounts (route change
          away from this chat). -->
-    <SubAgentPeekPanel
-      v-if="nav.peekPanel && peek"
+    <SubAgentPeekHost
+      v-if="nav.peekPanel"
+      :key="nav.peekPanel.sessionId"
       :session-id="nav.peekPanel.sessionId"
       :agent-name="nav.peekPanel.agentName"
       :instruction="nav.peekPanel.instruction"
-      :status="peek.status.value"
-      :error-message="peek.errorMessage.value"
-      :messages="peek.messages.value"
-      :total-tokens="peek.totalTokens.value"
       @close="nav.closePeek()"
       @open-full="onPeekOpenFull"
-      @reload="peek.reload"
     />
     <!--
       Preview side panel: renders every `show_preview` tool result

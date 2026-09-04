@@ -18,7 +18,7 @@
  * The panel component (`SubAgentPeekPanel.vue`) is presentational —
  * it only renders props.
  */
-import { onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { apiFetch, type SseEvent, type Message } from '../api'
 import { useSseBus } from '../helpers/sseBus'
 
@@ -144,15 +144,14 @@ function applyChunkToMessages(
   }
 
   // Completion detection — applied to any chunk that carries a
-  // finish_reason. Note: a `finish_reason: 'tool_calls'` means
-  // "assistant stopped to await a tool result", which we count as
-  // complete for the panel UI (the sub-agent will either come back
-  // with the tool result SSE or fail). A `finish_reason: 'stop'` is
-  // the terminal state.
+  // finish_reason. 2026-09-04 subagent-peek fix: `tool_calls` means
+  // "assistant stopped to await a tool result" — NOT terminal. Marking
+  // it complete stranded the panel on the sub-agent's FIRST tool call
+  // (status read Complete while chunks were still streaming).
+  // Terminal states only: stop | length | content_filter.
   if (
     ev.finish_reason === 'stop' ||
     ev.finish_reason === 'length' ||
-    ev.finish_reason === 'tool_calls' ||
     ev.finish_reason === 'content_filter'
   ) {
     status.value = 'complete'
@@ -174,11 +173,13 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
       // We fetch in ASC order so messages render in chronological
       // order. Limit 100 covers typical sub-agent runs (a single
       // tool-using loop rarely exceeds 50 messages).
+      // 2026-09-04 subagent-peek P0: encode the sid — raw spaces break
+      // the HTTP request line, '/' breaks router segment matching.
       const data = await apiFetch<{
         messages: Message[]
         has_more: boolean
         next_cursor: string | null
-      }>(`/llm/session/${opts.sessionId}/messages?sort_by=created_at&direction=asc&limit=100`, {
+      }>(`/llm/session/${encodeURIComponent(opts.sessionId)}/messages?sort_by=created_at&direction=asc&limit=100`, {
         silent: true,
       })
       messages.value = Array.isArray(data.messages) ? data.messages : []
@@ -204,6 +205,19 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
     const bus = useSseBus()
     const sid = opts.sessionId
     offLlm = bus.on('llm', (event: SseEvent) => {
+      // 2026-09-04 subagent-peek P2: completion signals are parent-scoped
+      // (progress events carry session_id=parent + subagent_session_id=child).
+      // When OUR child completes, refetch — the panel may have opened
+      // mid-run with 0 rows committed and missed the live chunks.
+      if (event.role === 'subagent_progress') {
+        if (
+          event.subagent_session_id === sid &&
+          (event.status === 'completed' || event.status === 'failed')
+        ) {
+          void fetchInitial()
+        }
+        return
+      }
       // Listener-side filter — the bus's single global EventSource
       // carries all sessions' llm events, so we drop events for other
       // sessions here. This is the layer that knows which session is
@@ -224,6 +238,19 @@ export function useSubAgentPeek(opts: UseSubAgentPeekOptions): UseSubAgentPeekRe
   onMounted(() => {
     void fetchInitial()
   })
+
+  // 2026-09-04 subagent-peek P1: eye-click from agent A -> agent B reuses
+  // the panel without unmount. Refetch when the sid changes.
+  watch(
+    () => opts.sessionId,
+    (next, prev) => {
+      if (next !== prev) {
+        closeSse()
+        messages.value = []
+        void fetchInitial()
+      }
+    },
+  )
 
   onUnmounted(() => {
     closeSse()
