@@ -22,6 +22,13 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
   body?: unknown
   /** When true, skip the error notification (caller handles UI inline). */
   silent?: boolean
+  /**
+   * Timeout in ms for the request. Default: 15_000. Set 0 to disable.
+   * Uses `AbortSignal.timeout` when available, otherwise falls back to
+   * an `AbortController` + `setTimeout`. A caller-provided `signal`
+   * is respected and no timeout signal is added.
+   */
+  timeoutMs?: number
 }
 
 /**
@@ -37,10 +44,30 @@ export async function apiFetch<T = unknown>(
   url: string,
   opts: ApiFetchOptions = {},
 ): Promise<T> {
-  const { body, silent, ...init } = opts
+  const { body, silent, timeoutMs = 15_000, ...init } = opts
+
+  // Idle-freeze fix: hung backend must not park the UI forever.
+  // Respect a caller-provided signal; otherwise arm a timeout signal.
+  let signal: AbortSignal | undefined = init.signal as AbortSignal | undefined
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+  // Fallback controller when `AbortSignal.timeout` is unavailable
+  // (older WebKit / jsdom). Only created when we need a timeout and
+  // the caller did not provide their own signal.
+  let fallbackController: AbortController | undefined
+  if (!signal && timeoutMs > 0) {
+    const withTimeout = (globalThis as { AbortSignal?: typeof AbortSignal }).AbortSignal
+    if (withTimeout && typeof withTimeout.timeout === 'function') {
+      signal = withTimeout.timeout(timeoutMs)
+    } else if (typeof AbortController !== 'undefined') {
+      fallbackController = new AbortController()
+      signal = fallbackController.signal
+      timeoutId = setTimeout(() => fallbackController?.abort(), timeoutMs)
+    }
+  }
 
   const fetchInit: RequestInit = {
     ...init,
+    signal,
     headers: {
       'Content-Type': 'application/json',
       ...(init.headers as Record<string, string> | undefined),
@@ -48,7 +75,8 @@ export async function apiFetch<T = unknown>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   }
 
-  const response = await fetch(`${API_BASE}${url}`, fetchInit)
+  try {
+    const response = await fetch(`${API_BASE}${url}`, fetchInit)
 
   if (!response.ok) {
     const responseBody = await response.text().catch(() => '')
@@ -69,6 +97,9 @@ export async function apiFetch<T = unknown>(
   }
 
   return (await response.json()) as T
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId)
+  }
 }
 
 function tryParseJsonErrorField(body: string): string | null {

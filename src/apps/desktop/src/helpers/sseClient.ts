@@ -140,6 +140,7 @@ export interface SseStateInfo {
   /**
    * What triggered this transition. Useful for log/UX messages:
    *   - `error`            — the EventSource fired onerror
+   *   - `stall`            — stall detector fired (no events for stallThresholdMs while open)
    *   - `closed`           — the EventSource fired a clean close (rare)
    *   - `online`           — the browser's `online` event fast-pathed us
    *   - `visible`          — the tab became visible while we were paused
@@ -147,7 +148,7 @@ export interface SseStateInfo {
    *   - `exhausted`        — `maxAttempts` reached (only on `failed`)
    *   - `non-recoverable`  — first-attempt failure (4xx/5xx) (only on `failed`)
    */
-  reason?: 'error' | 'closed' | 'online' | 'visible' | 'manual' | 'exhausted' | 'non-recoverable'
+  reason?: 'error' | 'stall' | 'closed' | 'online' | 'visible' | 'manual' | 'exhausted' | 'non-recoverable'
 }
 
 export interface SseClientOptions {
@@ -332,6 +333,21 @@ export interface SseClientOptions {
    * it for symmetry / future flexibility.
    */
   connectedEventName?: string
+  /**
+   * Stall threshold in ms. While `state === 'open'`, if no event
+   * (message / heartbeat / connected) arrives within this window,
+   * the client treats the stream as silently dead and reconnects
+   * (see `stallRecovery`). Default: 7_000 (well below the 15s
+   * backend keep-alive timeout). Tests may pass a smaller value
+   * for determinism.
+   */
+  stallThresholdMs?: number
+  /**
+   * When true (default), a stall triggers `es.close()` +
+   * `scheduleRetry({ reason: 'stall' })` instead of only logging.
+   * Set false to restore log-only behaviour (e.g. for diagnosis).
+   */
+  stallRecovery?: boolean
 }
 
 export interface SseClient {
@@ -453,7 +469,8 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // onerror fires. Disabled by default; activated via the global
   // toggle below.
   const stallDetectorOn: boolean = (globalThis as { __sseStallDetector?: boolean }).__sseStallDetector !== false
-  const stallThresholdMs: number = 7_000 // 7s — well below the 15s bug
+  const stallThresholdMs: number = opts.stallThresholdMs ?? 7_000 // 7s — well below the 15s bug
+  const stallRecovery: boolean = opts.stallRecovery ?? true
   let stallTimer: ReturnType<typeof setTimeout> | null = null
   // Set to `now()` the first time the stall detector fires during a
   // given open window. Reset on every 'connected' event (so the gap
@@ -713,6 +730,24 @@ export function createSseClient(opts: SseClientOptions): SseClient {
           lastReconnectReason,
         }),
       })
+      // Stall recovery (idle-freeze fix): the stream is silently dead
+      // (TCP open, zero bytes). The browser will NOT fire onerror on
+      // its own, so close the dead EventSource and schedule a retry.
+      // Guarded by `stallRecovery` (default true) so diagnosis builds
+      // can restore log-only behaviour.
+      if (stallRecovery && !closed && state === 'open') {
+        log('STALL RECOVERY reconnect', { sinceLastEventMs: Math.round(sinceLast), suspect })
+        if (es) {
+          try {
+            es.close()
+          } catch {
+            // Some polyfills throw on close; ignore.
+          }
+          es = null
+        }
+        logDisconnectDiagnosis('error-event')
+        scheduleRetry({ reason: 'stall' })
+      }
     }, stallThresholdMs)
   }
 
@@ -1170,7 +1205,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     scheduleRetry({ reason: 'error' })
   }
 
-  function scheduleRetry(reasonInfo: { reason: 'error' | 'visible' | 'online' }): void {
+  function scheduleRetry(reasonInfo: { reason: 'error' | 'stall' | 'visible' | 'online' }): void {
     if (closed) return
     clearRetry()
 

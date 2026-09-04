@@ -92,10 +92,9 @@ describe('McpServerModal — stdio transport', () => {
     wrapper = null
     // Defensive: the Teleport-target content can survive between tests
     // if unmount() doesn't fully clean it. Force-remove both the
-    // stdio modal's teleport-landmarks and the HTTP branch's
-    // LlmConfigModal landmarks so each test starts from a fresh DOM.
+    // stdio + http modal teleport-landmarks so each test starts fresh.
     document.querySelectorAll(
-      '[data-testid="stdio-modal-backdrop"], [data-testid="stdio-modal-dialog"], [role="dialog"]',
+      '[data-testid="stdio-modal-backdrop"], [data-testid="stdio-modal-dialog"], [data-testid="http-modal-backdrop"], [data-testid="http-modal-dialog"], [role="dialog"]',
     ).forEach((el) => el.remove())
   })
 
@@ -138,18 +137,29 @@ describe('McpServerModal — stdio transport', () => {
     expect(document.body.querySelector('[data-testid="args-textarea"]')).not.toBeNull()
     expect(document.body.querySelector('[data-testid="env-textarea"]')).not.toBeNull()
     expect(document.body.querySelector('[data-testid="cwd-input"]')).not.toBeNull()
-    // URL field (HTTP branch) MUST NOT be in the DOM — LlmConfigModal
-    // uses 'base-url-input' and would teleport it to body if it were.
+    // URL field (HTTP branch, url-input) MUST NOT be in the DOM when
+    // the stdio branch is mounted (branches are exclusive).
     expect(document.body.querySelector('[data-testid="base-url-input"]')).toBeNull()
   })
 
   it('shows URL + headers fields when transport=http', async () => {
     wrapper = mountModal(baseHttpServer)
     await wrapper.vm.$nextTick()
-    // HTTP branch teleports via LlmConfigModal. Document body has the
-    // base-url-input (LlmConfigModal's data-testid) but the stdio
-    // dialog landmarks are absent.
-    expect(document.body.querySelector('[data-testid="base-url-input"]')).not.toBeNull()
+    // HTTP branch is a bespoke dialog (Name + URL + Headers only) —
+    // it must NOT render LlmConfigForm's LLM profile fields.
+    expect(document.body.querySelector('[data-testid="http-modal-backdrop"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="http-modal-dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="url-input"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="name-input"]')).not.toBeNull()
+    // Headers editor is present (empty-state hint).
+    expect(document.body.textContent).toContain('No headers')
+    // LLM profile fields must be absent.
+    expect(document.body.querySelector('[data-testid="model-input"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="base-url-input"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="api-key-input"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="reasoning-effort-select"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="profile-capacity-input"]')).toBeNull()
+    // Stdio dialog landmarks are absent (branches are exclusive).
     expect(document.body.querySelector('[data-testid="stdio-modal-backdrop"]')).toBeNull()
     expect(document.body.querySelector('[data-testid="stdio-modal-dialog"]')).toBeNull()
   })
@@ -168,10 +178,10 @@ describe('McpServerModal — stdio transport', () => {
     httpBtn!.click()
     await wrapper.vm.$nextTick()
 
-    // StdIO dialog unmounts; HTTP modal teleports (LlmConfigModal renders
-    // its dialog via its own Teleport, but the stdio backdrop is gone).
+    // StdIO dialog unmounts; HTTP dialog teleports in its place.
     expect(document.body.querySelector('[data-testid="stdio-modal-dialog"]')).toBeNull()
-    expect(document.body.querySelector('[data-testid="base-url-input"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="http-modal-dialog"]')).not.toBeNull()
+    expect(document.body.querySelector('[data-testid="url-input"]')).not.toBeNull()
   })
 
   it('emits cancel when the close ✕ button is clicked', async () => {
@@ -478,5 +488,99 @@ describe('McpServerModal — stdio transport', () => {
       tools: [{ name: 'foo', description: 'bar' }],
     })
     await wrapper.vm.$nextTick()
+  })
+
+  // ── Regression: duplicate footer (task_1788495808955_0) ─────────────
+  // PR #373 added a Test-button footer BEFORE the old Cancel+Save
+  // footer but forgot to delete the old one — the stdio dialog
+  // rendered two stacked footers (Test | Cancel Save / Cancel Save)
+  // with duplicated data-testids. Exactly one of each button must
+  // exist per open dialog.
+  it('stdio branch renders exactly one footer (1 Test + 1 Cancel + 1 Save)', async () => {
+    wrapper = mountModal(baseStdioServer)
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelectorAll('[data-testid="test-btn"]').length).toBe(1)
+    expect(document.body.querySelectorAll('[data-testid="cancel-btn"]').length).toBe(1)
+    expect(document.body.querySelectorAll('[data-testid="save-btn"]').length).toBe(1)
+  })
+
+  // ── HTTP branch: bespoke dialog (no LLM fields) ────────────────────
+  // The HTTP branch previously delegated to LlmConfigModal, which
+  // renders the full LLM profile form (Model / Thinking / Temperature
+  // / URL style / API key / compaction overrides). An MCP HTTP server
+  // is just Name + URL + Headers — those profile fields confused
+  // users into filling LLM credentials into an MCP entry.
+  it('http branch renders exactly one footer (1 Test + 1 Cancel + 1 Save)', async () => {
+    wrapper = mountModal(baseHttpServer)
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelectorAll('[data-testid="test-btn"]').length).toBe(1)
+    expect(document.body.querySelectorAll('[data-testid="cancel-btn"]').length).toBe(1)
+    expect(document.body.querySelectorAll('[data-testid="save-btn"]').length).toBe(1)
+  })
+
+  it('http Test button is disabled when URL is empty, enabled when present', async () => {
+    wrapper = mountModal({ ...baseHttpServer, url: '' })
+    await wrapper.vm.$nextTick()
+    const testBtn = document.body.querySelector<HTMLButtonElement>('[data-testid="test-btn"]')!
+    expect(testBtn.disabled).toBe(true)
+
+    wrapper.unmount()
+    wrapper = null
+    document.querySelectorAll('[data-testid="http-modal-backdrop"], [data-testid="http-modal-dialog"], [role="dialog"]').forEach((el) => el.remove())
+
+    wrapper = mountModal(baseHttpServer)
+    await wrapper.vm.$nextTick()
+    const testBtn2 = document.body.querySelector<HTMLButtonElement>('[data-testid="test-btn"]')!
+    expect(testBtn2.disabled).toBe(false)
+  })
+
+  it('http Save is disabled when URL is empty, enabled when present', async () => {
+    wrapper = mountModal({ ...baseHttpServer, url: '' })
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelector<HTMLButtonElement>('[data-testid="save-btn"]')!.disabled).toBe(true)
+
+    wrapper.unmount()
+    wrapper = null
+    document.querySelectorAll('[data-testid="http-modal-backdrop"], [data-testid="http-modal-dialog"], [role="dialog"]').forEach((el) => el.remove())
+
+    wrapper = mountModal(baseHttpServer)
+    await wrapper.vm.$nextTick()
+    expect(document.body.querySelector<HTMLButtonElement>('[data-testid="save-btn"]')!.disabled).toBe(false)
+  })
+
+  it('http clicking Test invokes testMcpServer with url + headers', async () => {
+    wrapper = mountModal({
+      ...baseHttpServer,
+      headers: [{ key: 'Authorization', value: 'Bearer sk-123' }],
+    })
+    await wrapper.vm.$nextTick()
+    const testBtn = document.body.querySelector<HTMLButtonElement>('[data-testid="test-btn"]')!
+    testBtn.click()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockTestMcpServer).toHaveBeenCalledTimes(1)
+    const firstCall = mockTestMcpServer.mock.calls[0] as unknown as
+      readonly unknown[] | undefined
+    expect(firstCall).toBeDefined()
+    const callArgs = (firstCall?.[0] as unknown) as Record<string, unknown>
+    expect(callArgs.transport).toBe('http')
+    expect(callArgs.url).toBe(baseHttpServer.url)
+    expect(callArgs.headers).toEqual({ Authorization: 'Bearer sk-123' })
+  })
+
+  it('http renders green check + tool list on test success', async () => {
+    wrapper = mountModal(baseHttpServer)
+    await wrapper.vm.$nextTick()
+    const testBtn = document.body.querySelector<HTMLButtonElement>('[data-testid="test-btn"]')!
+    testBtn.click()
+    await wrapper.vm.$nextTick()
+    await wrapper.vm.$nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+
+    const resultEl = document.body.querySelector('[data-testid="test-result"]')
+    expect(resultEl).not.toBeNull()
+    expect(resultEl!.textContent).toContain('Connected')
   })
 })

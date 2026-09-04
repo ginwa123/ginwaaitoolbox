@@ -92,6 +92,7 @@ pub fn runWindow(
     width: c_int,
     height: c_int,
     debug: bool,
+    force_x11: bool,
 ) !void {
     // Pin WebKitGTK hardware compositing before WebKit initialises
     // (task_1787761084050_0). The vendored webview library only sets
@@ -105,6 +106,15 @@ pub fn runWindow(
     // call if the user already set the variable, so a "0" opt-out
     // survives). See `setEnvIfUnset` below for the rationale.
     _ = setEnvIfUnset("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+
+    // Idle-freeze fix (task_1788487031990_1): `--x11` was parsed into
+    // `cli.Config.force_x11` but never consumed, so Wayland users had
+    // no opt-out when the compositor stopped sending frame callbacks.
+    // Force XWayland before gtk_init (i.e. before webview_create).
+    // Respects existing user override via setEnvIfUnset.
+    if (force_x11) {
+        _ = setEnvIfUnset("GDK_BACKEND", "x11");
+    }
 
     const w = webview_create(if (debug) 1 else 0, null) orelse
         return error.WebviewCreateFailed;
@@ -338,5 +348,42 @@ test "runWindow pins WEBKIT_FORCE_COMPOSITING_MODE before webview_create" {
             .{},
         );
         return error.WebkitCompositingPinOrderWrong;
+    }
+}
+
+test "runWindow wires force_x11 to GDK_BACKEND before webview_create" {
+    // Static-contract test for task_1788487031990_1: `--x11` was parsed
+    // into `cli.Config.force_x11` but never consumed. runWindow must
+    // accept force_x11 and pin GDK_BACKEND=x11 before webview_create.
+    const allocator = testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/apps/desktop_app/webview_lib.zig",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(source);
+
+    const sig_needle = "force_x11: bool";
+    const sig_idx = std.mem.indexOf(u8, source, sig_needle) orelse {
+        std.debug.print("!! runWindow does not accept force_x11: bool !!\n", .{});
+        return error.X11ParamMissing;
+    };
+    const pin_needle = "setEnvIfUnset(\"GDK_BACKEND\", \"x11\")";
+    const pin_idx = std.mem.indexOf(u8, source, pin_needle) orelse {
+        std.debug.print("!! webview_lib.zig does not pin GDK_BACKEND=x11 !!\n", .{});
+        return error.GdkBackendPinMissing;
+    };
+    const create_idx = std.mem.indexOf(u8, source, "const w = webview_create(") orelse {
+        std.debug.print("!! webview_lib.zig does not call webview_create !!\n", .{});
+        return error.WebviewCreateCallMissing;
+    };
+    if (sig_idx >= pin_idx) {
+        std.debug.print("!! force_x11 param appears AFTER GDK_BACKEND pin — must be param before use !!\n", .{});
+        return error.X11ParamOrderWrong;
+    }
+    if (pin_idx >= create_idx) {
+        std.debug.print("!! GDK_BACKEND pin appears AFTER webview_create — must be set BEFORE !!\n", .{});
+        return error.GdkBackendPinOrderWrong;
     }
 }

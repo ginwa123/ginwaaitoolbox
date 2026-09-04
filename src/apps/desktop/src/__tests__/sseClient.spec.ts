@@ -400,6 +400,10 @@ describe('createSseClient', () => {
       onlineTarget: onlineTarget,
       random: () => 0.5,
       pauseWhenHidden: false,
+      // Stall recovery would fire during the 10s idle below and create
+      // a 4th instance — disable it so this test isolates the
+      // "open cancels retry" path (stall covered in sseStallRecovery.spec).
+      stallRecovery: false,
       onEvent: () => {},
     })
 

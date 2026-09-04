@@ -305,6 +305,7 @@ describe('SseClient deep v2 logger — error event context', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      stallRecovery: false,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
@@ -372,6 +373,9 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      // Disable stall recovery so this test isolates diagnosis
+      // classification (stall covered in sseStallRecovery.spec).
+      stallRecovery: false,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
@@ -432,6 +436,7 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
         onEvent: () => {},
         additionalEventTypes: [],
         EventSourceCtor: mock.ctor,
+        stallRecovery: false,
       })
       void vi.advanceTimersByTime(0)
       const es = mock.instance()

@@ -232,6 +232,7 @@ fn runWebview(
         @intCast(cfg.window_width),
         @intCast(cfg.window_height),
         cfg.enable_devtools,
+        cfg.force_x11,
     ) catch |err| {
         std.log.err("Webview error: {s}", .{@errorName(err)});
         return err;
