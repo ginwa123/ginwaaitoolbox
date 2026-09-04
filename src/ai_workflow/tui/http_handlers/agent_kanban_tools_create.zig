@@ -275,7 +275,7 @@ test "useCase: empty kanban_id returns KanbanIdRequired" {
 
     try testing.expectError(
         error.KanbanIdRequired,
-        useCase(alloc, &ctx.db, .{ .kanban_id = "", .tool_name = "bash" }),
+        useCase(alloc, &ctx.db, .{ .kanban_id = "", .tool_name = "command" }),
     );
 }
 
@@ -301,6 +301,16 @@ test "useCase: unknown tool_name returns UnknownTool" {
         error.UnknownTool,
         useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "totally_made_up_tool_xyz" }),
     );
+
+    // Legacy shell names are not equipped anymore (unify 2026-09-04).
+    try testing.expectError(
+        error.UnknownTool,
+        useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "bash" }),
+    );
+    try testing.expectError(
+        error.UnknownTool,
+        useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "pwsh" }),
+    );
 }
 
 test "useCase: duplicate insert returns DuplicateTool (UNIQUE violation)" {
@@ -311,7 +321,7 @@ test "useCase: duplicate insert returns DuplicateTool (UNIQUE violation)" {
 
     // First insert succeeds.
     {
-        const first = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "bash" });
+        const first = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "command" });
         defer {
             alloc.free(first.tool.id);
             alloc.free(first.tool.kanban_id);
@@ -322,7 +332,7 @@ test "useCase: duplicate insert returns DuplicateTool (UNIQUE violation)" {
     // Second insert with same (kanban_id, tool_name) fails with DuplicateTool.
     try testing.expectError(
         error.DuplicateTool,
-        useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "bash" }),
+        useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "command" }),
     );
 }
 
@@ -332,14 +342,14 @@ test "useCase: happy path inserts row with enabled=1" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const output = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "bash" });
+    const output = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1", .tool_name = "command" });
     defer {
         alloc.free(output.tool.id);
         alloc.free(output.tool.kanban_id);
         alloc.free(output.tool.tool_name);
     }
     try testing.expectEqualStrings("ws_item_1", output.tool.kanban_id);
-    try testing.expectEqualStrings("bash", output.tool.tool_name);
+    try testing.expectEqualStrings("command", output.tool.tool_name);
     try testing.expectEqual(@as(u8, 1), output.tool.enabled);
     // id should be a fresh "akt_<ts>" string
     try testing.expect(output.tool.id.len > 3);

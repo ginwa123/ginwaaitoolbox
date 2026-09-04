@@ -120,7 +120,7 @@ pub fn toolEnvelopePrimary(env: ToolEnvelope) []const u8 {
         if (p.len > 0) return p;
     }
 
-    if (std.mem.eql(u8, env.name, "bash") or std.mem.eql(u8, env.name, "pwsh")) {
+    if (std.mem.eql(u8, env.name, "bash") or std.mem.eql(u8, env.name, "pwsh") or std.mem.eql(u8, env.name, "command")) {
         const limit: usize = 64;
         if (env.data.len == 0) {
             // On error path there's no <data>; fall through to tool name.
@@ -216,6 +216,16 @@ test "toolEnvelopePrimary: bash truncates to 64 chars" {
     var buf: [512]u8 = undefined;
     const long_output = "a" ** 200;
     const content = std.fmt.bufPrint(&buf, "<tool><name>bash</name><parameters></parameters><success>true</success><data><output>{s}</output></data></tool>", .{long_output}) catch unreachable;
+    const env = tryParseToolEnvelope(content) orelse return error.UnexpectedNull;
+    const primary = toolEnvelopePrimary(env);
+    try testing.expect(primary.len <= 64);
+    try testing.expect(primary.len > 0);
+}
+
+test "toolEnvelopePrimary: command truncates to 64 chars" {
+    var buf: [512]u8 = undefined;
+    const long_output = "a" ** 200;
+    const content = std.fmt.bufPrint(&buf, "<tool><name>command</name><parameters></parameters><success>true</success><data><output>{s}</output></data></tool>", .{long_output}) catch unreachable;
     const env = tryParseToolEnvelope(content) orelse return error.UnexpectedNull;
     const primary = toolEnvelopePrimary(env);
     try testing.expect(primary.len <= 64);
