@@ -167,10 +167,18 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             // Granular change-list shape: array of ProfileChange entries.
             .array => |arr| {
                 for (arr.items) |item| {
+                    // Re-serialize the item to JSON text first: `item`
+                    // is an already-parsed `json.Value`, and parsing
+                    // its raw struct bytes (the old `asBytes` trick)
+                    // is a guaranteed SyntaxError → 500. The
+                    // stringify round-trip is the correct bridge into
+                    // the typed `ProfileChange` struct.
+                    const item_str = try std.json.Stringify.valueAlloc(allocator, item, .{});
+                    defer allocator.free(item_str);
                     const profile_change = try json.parseFromSliceLeaky(
                         ProfileChange,
                         allocator,
-                        std.mem.asBytes(&item),
+                        item_str,
                         .{ .ignore_unknown_fields = true },
                     );
                     const action = profile_change.action;
@@ -229,6 +237,50 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
                                     });
                                 };
                                 try profile_obj.put(allocator, "reasoning_effort", json.Value{ .string = try allocator.dupe(u8, re) });
+                            }
+                            // === Per-profile sub_agents (plan 2026-09-04-subagents-per-profile) ===
+                            // When the change provides a list, validate +
+                            // serialize it onto the profile object. When
+                            // omitted on "update", preserve the existing
+                            // on-disk list so a profile edit doesn't wipe
+                            // the profile's subagents.
+                            if (profile_change.sub_agents) |sas| {
+                                for (sas) |sa| {
+                                    if (sa.thinking_budget_tokens) |t| {
+                                        if (t == 0 or t > 2_000_000) {
+                                            return res.jsonResponse(.{
+                                                .status_code = 400,
+                                                .data = try http_response.makeErrorResponse(
+                                                    allocator,
+                                                    .{ .@"error" = "InvalidThinkingBudgetTokens: thinking_budget_tokens must be in (0, 2_000_000]" },
+                                                ),
+                                            });
+                                        }
+                                    }
+                                    if (sa.reasoning_effort) |re| {
+                                        _ = parse_thinking_mod.parseReasoningEffort(re) catch {
+                                            return res.jsonResponse(.{
+                                                .status_code = 400,
+                                                .data = try http_response.makeErrorResponse(
+                                                    allocator,
+                                                    .{ .@"error" = "InvalidReasoningEffort: reasoning_effort must be one of low/medium/high/auto" },
+                                                ),
+                                            });
+                                        };
+                                    }
+                                    if (sa.compaction_threshold_percent) |tp| {
+                                        if (tp > 100) return error.InvalidThresholdPercent;
+                                    }
+                                }
+                                try profile_obj.put(allocator, "sub_agents", try subAgentsJsonToValue(allocator, sas));
+                            } else if (std.mem.eql(u8, action, "update")) {
+                                if (profiles_obj.get(profile_change.name)) |existing| {
+                                    if (existing == .object) {
+                                        if (existing.object.get("sub_agents")) |sas_value| {
+                                            try profile_obj.put(allocator, "sub_agents", try deepCopyJsonValue(allocator, sas_value));
+                                        }
+                                    }
+                                }
                             }
                             const profile_value_obj = json.Value{ .object = profile_obj };
                             try profiles_obj.put(allocator, try allocator.dupe(u8, profile_change.name), profile_value_obj);
@@ -316,7 +368,12 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
     }
 
-    // Handle top-level sub_agents: if the input provides a `sub_agents`
+    // Handle top-level sub_agents (DEPRECATED — plan
+    // 2026-09-04-subagents-per-profile: subagents are per-profile now).
+    // Kept as a compat write path: old clients may still send it, and
+    // the next load migrates it into profiles with empty lists. New
+    // clients must use per-profile `sub_agents` via `ProfileChange`.
+    // If the input provides a `sub_agents`
     // array, replace the existing list wholesale (whole-list replace matches
     // the UI's add/edit/delete workflow). Each entry's 8 string fields are
     // duped onto the allocator so the new array is independent of the
@@ -372,6 +429,12 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         }
         config_json.sub_agents = owned;
     }
+
+    // Plan 2026-09-04-subagents-per-profile: disk-side migration.
+    // Fold any deprecated top-level `sub_agents` into profiles that
+    // lack their own list, then strip the key so the file on disk
+    // is per-profile-only after this save.
+    try migrateTopLevelSubAgentsOnDisk(allocator, &config_json);
 
     // Write config
     const config_str = try std.json.Stringify.valueAlloc(allocator, config_json, .{
@@ -528,6 +591,13 @@ const ProfileChange = struct {
     /// parse_thinking helper (so the validation logic lives in
     /// exactly one place — see parse_thinking.zig).
     reasoning_effort: ?[]const u8 = null,
+    /// Per-profile sub-agents (plan 2026-09-04-subagents-per-profile).
+    /// Each profile owns its list — there is no global list anymore.
+    /// When non-null on add/update, replaces the profile's list
+    /// wholesale. When null on update, the existing on-disk list is
+    /// preserved (same omit-doesn't-clobber rule as
+    /// `max_capacity_tokens` above).
+    sub_agents: ?[]const LlmConfig.SubAgentJson = null,
 };
 
 const ConfigJson = struct {
@@ -569,6 +639,88 @@ const ConfigJson = struct {
     /// a new list.
     sub_agents: ?[]LlmConfig.SubAgentJson = null,
 };
+
+/// Serialize a borrowed `[]SubAgentJson` slice into an owned
+/// `json.Value` array for writing onto a profile object (plan
+/// 2026-09-04-subagents-per-profile). All strings are duped onto
+/// the allocator so the value outlives the parsed request body.
+fn subAgentsJsonToValue(allocator: std.mem.Allocator, sas: []const LlmConfig.SubAgentJson) error{OutOfMemory}!json.Value {
+    var arr = json.Array.init(allocator);
+    errdefer arr.deinit();
+    for (sas) |sa| {
+        var obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+        errdefer obj.deinit(allocator);
+        try obj.put(allocator, "name", json.Value{ .string = try allocator.dupe(u8, sa.name) });
+        try obj.put(allocator, "model", json.Value{ .string = try allocator.dupe(u8, sa.model) });
+        try obj.put(allocator, "base_url", json.Value{ .string = try allocator.dupe(u8, sa.base_url) });
+        try obj.put(allocator, "thinking", json.Value{ .string = try allocator.dupe(u8, sa.thinking) });
+        try obj.put(allocator, "temperature", json.Value{ .string = try allocator.dupe(u8, sa.temperature) });
+        try obj.put(allocator, "url_style", json.Value{ .string = try allocator.dupe(u8, sa.url_style) });
+        try obj.put(allocator, "api_key", json.Value{ .string = try allocator.dupe(u8, sa.api_key) });
+        try obj.put(allocator, "system_prompt", json.Value{ .string = try allocator.dupe(u8, sa.system_prompt) });
+        if (sa.max_capacity_tokens) |mct| {
+            try obj.put(allocator, "max_capacity_tokens", json.Value{ .integer = mct });
+        }
+        if (sa.compaction_threshold_percent) |tp| {
+            try obj.put(allocator, "compaction_threshold_percent", json.Value{ .integer = tp });
+        }
+        if (sa.thinking_budget_tokens) |t| {
+            try obj.put(allocator, "thinking_budget_tokens", json.Value{ .integer = t });
+        }
+        if (sa.reasoning_effort) |re| {
+            try obj.put(allocator, "reasoning_effort", json.Value{ .string = try allocator.dupe(u8, re) });
+        }
+        try arr.append(json.Value{ .object = obj });
+    }
+    return json.Value{ .array = arr };
+}
+
+/// Disk-side twin of the load migration in `Config.zig`
+/// (`migrateTopLevelSubAgentsIntoEmptyProfiles`).
+///
+/// When the on-disk config still carries the deprecated top-level
+/// `sub_agents` array, copy it into every profile object that lacks
+/// a non-empty `sub_agents` array, then strip the top-level key so
+/// fresh writes are per-profile-only. Profiles with their own list
+/// are untouched. When there are no profiles to migrate into, the
+/// top-level key is kept (nowhere to move the entries).
+fn migrateTopLevelSubAgentsOnDisk(
+    allocator: std.mem.Allocator,
+    config_json: *ConfigJson,
+) error{OutOfMemory}!void {
+    const top = config_json.sub_agents orelse return;
+    if (top.len == 0) {
+        config_json.sub_agents = null;
+        return;
+    }
+    const profiles_value = config_json.profiles_models orelse return;
+    if (profiles_value != .object) return;
+
+    // Serialize once, deep-copy per profile that needs it.
+    const arr_value = try subAgentsJsonToValue(allocator, top);
+    var new_obj = try json.ObjectMap.init(allocator, &.{}, &.{});
+    errdefer new_obj.deinit(allocator);
+    var iter = profiles_value.object.iterator();
+    while (iter.next()) |entry| {
+        const key = try allocator.dupe(u8, entry.key_ptr.*);
+        errdefer allocator.free(key);
+        var copied_value = try deepCopyJsonValue(allocator, entry.value_ptr.*);
+        if (copied_value == .object) {
+            const needs = blk: {
+                if (copied_value.object.get("sub_agents")) |sas| {
+                    if (sas == .array and sas.array.items.len > 0) break :blk false;
+                }
+                break :blk true;
+            };
+            if (needs) {
+                try copied_value.object.put(allocator, "sub_agents", try deepCopyJsonValue(allocator, arr_value));
+            }
+        }
+        try new_obj.put(allocator, key, copied_value);
+    }
+    config_json.profiles_models = json.Value{ .object = new_obj };
+    config_json.sub_agents = null;
+}
 
 /// Deep copy a json.Value to avoid use-after-free from parsed.deinit()
 fn deepCopyJsonValue(allocator: std.mem.Allocator, value: json.Value) error{OutOfMemory}!json.Value {

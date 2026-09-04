@@ -25,18 +25,37 @@ describe('NalarSettings (orchestrator)', () => {
     })
   })
 
-  it('renders the 4 tab labels in order: General / Profiles / Sub-agents / MCP Servers', async () => {
+  it('renders the 3 tab labels in order: General / Profiles / MCP Servers (no global Sub-agents)', async () => {
     // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
     // General tab is the FIRST tab. Tab order matters — operational
     // settings (notification toggles + retry delay) belong at the top.
+    // Plan 2026-09-04-subagents-per-profile: the global Sub-agents tab
+    // is removed — sub-agents live inside each profile row.
     mockGet.mockResolvedValueOnce({})
     const wrapper = mount(NalarSettings, {
       global: { stubs: { Teleport: true } },
     })
     await flushPromises()
     const tabs = wrapper.findAll('button[role="tab"]').map(b => b.text().trim())
-    expect(tabs).toEqual(['General', 'Profiles', 'Sub-agents', 'MCP Servers'])
+    expect(tabs).toEqual(['General', 'Profiles', 'MCP Servers'])
     expect(wrapper.text()).not.toContain('Defaults')
+    expect(wrapper.find('[data-tab-id="sub-agents"]').exists()).toBe(false)
+  })
+
+  it('never mounts the global SubAgentsSection (per-profile lists are the only editor)', async () => {
+    // Plan 2026-09-04-subagents-per-profile regression: the global
+    // `subAgentsList` + `SubAgentsSection` mount are gone. Even with a
+    // legacy top-level `sub_agents` payload, no global list renders.
+    mockGet.mockResolvedValueOnce({
+      profiles: { work: { model: 'm' } },
+      sub_agents: [{ name: 'legacy', model: 'm' }],
+    })
+    const wrapper = mount(NalarSettings, {
+      global: { stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="subagent-list"]').exists()).toBe(false)
+    expect(wrapper.find('[data-tab-id="sub-agents"]').exists()).toBe(false)
   })
 
   it('lands on the General tab by default', async () => {
@@ -133,8 +152,8 @@ describe('NalarSettings (orchestrator)', () => {
     // The 'home' profile never received a sub-agent, so its
     // sub_agents should be an empty array (or undefined).
     expect((profiles.home!.sub_agents as unknown[] | undefined)?.length ?? 0).toBe(0)
-    // The top-level sub_agents list should not contain 'coder'.
-    const topLevel = savedConfig.sub_agents as Array<{ name: string }> | undefined
+    // No top-level sub_agents list is ever sent (per-profile only).
+    const topLevel = (savedConfig as Record<string, unknown>).sub_agents as Array<{ name: string }> | undefined
     expect(topLevel ?? []).not.toContainEqual(expect.objectContaining({ name: 'coder' }))
   })
 

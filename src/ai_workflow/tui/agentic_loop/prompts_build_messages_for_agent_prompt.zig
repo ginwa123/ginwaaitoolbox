@@ -1094,12 +1094,12 @@ const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
 
 /// Build the "Available Sub-Agents" listing for the current
 /// session. Reads `selected_profile_model` from the `sessions`
-/// table, then resolves the sub-agents list with the per-profile
-/// overlay (active profile's `sub_agents` first, then top-level).
+/// table, then uses that profile's OWN `sub_agents` list
+/// (plan 2026-09-04-subagents-per-profile: no global list).
 ///
 /// Returns an empty string when:
 ///   - the session doesn't exist or has empty profile / no profile
-///   - the resolved config has no sub_agents (top-level + profile)
+///   - the profile has no sub_agents
 ///   - the LlmConfig singleton is unreachable (graceful fallback)
 ///
 /// The returned slice is freshly allocated on `allocator`; caller
@@ -1127,22 +1127,18 @@ fn BuildSubAgentsListing(
     const di = nalarcore.getSingleton() catch return allocator.dupe(u8, "");
     const config = nalarcore.getLlmConfig(di);
 
-    // 3. Resolve which list to render. Per-profile first (when a
-    // profile is selected AND has sub_agents configured), else
-    // top-level. Note: `config.getProfile(name)` returns null when
-    // the profile is missing; we then fall through to the
-    // top-level list. The user's review comment
-    // "make sure it integrate with selected profile models or
-    // the default one" is satisfied by this precedence chain.
+    // 3. Resolve which list to render. Per-profile ONLY (plan
+    // 2026-09-04-subagents-per-profile): each profile owns its
+    // subagents, there is no global list. Empty profile name or
+    // missing profile → empty listing.
     const profile_name: []const u8 = session_info.selected_profile_model;
-    const use_profile: bool = profile_name.len > 0;
-    const rows = if (use_profile) blk: {
+    const rows: []const config_mod.LlmConfig.SubAgentConfig = if (profile_name.len > 0) blk: {
         if (config.getProfile(profile_name)) |profile| {
-            if (profile.sub_agents.len > 0) break :blk profile.sub_agents;
+            break :blk profile.sub_agents;
         }
-        break :blk config.sub_agents;
-    } else config.sub_agents;
-    const source_label: []const u8 = if (use_profile) profile_name else "";
+        break :blk &.{};
+    } else &.{};
+    const source_label: []const u8 = profile_name;
 
     if (rows.len == 0) return allocator.dupe(u8, "");
 
@@ -1773,8 +1769,8 @@ pub const SubAgentListingRow = struct {
     /// sub-agent has no system_prompt. Caller should pre-truncate
     /// (e.g. to 80 chars) to keep the prompt lean.
     description: []const u8,
-    /// `""` for top-level, or the profile name when the row
-    /// came from a profile's `sub_agents`. Used for the source
+    /// The profile name the row came from (per-profile-only;
+    /// plan 2026-09-04-subagents-per-profile). Used for the source
     /// suffix in the listing.
     source: []const u8,
 };
@@ -1794,9 +1790,8 @@ pub const SubAgentListingRow = struct {
 /// - **code-reviewer** — model: `gpt-4o` — "You are a strict code reviewer..."
 /// - **frontend-helper** — model: `claude-3.5-sonnet` — "You are a frontend..."
 ///
-/// (Loaded from the `sub_agents` array in `~/.config/nalar/config.json`.
-/// With a profile selected, the profile's sub_agents list is used;
-/// otherwise the top-level list is used.)
+/// (Loaded from the profile's `sub_agents` array in
+/// `~/.config/nalar/config.json` under `profiles_models`.)
 /// ```
 ///
 /// No-op when `rows.len == 0` so callers can pass an empty slice
@@ -1846,9 +1841,8 @@ pub fn appendSubAgentsListing(
 
     try result.appendSlice(allocator,
         \\
-        \\Loaded from the `sub_agents` array in `~/.config/nalar/config.json`.
-        \\With a profile selected, the profile's sub_agents list is
-        \\used; otherwise the top-level list is used.
+        \\Loaded from the profile's `sub_agents` array in
+        \\`~/.config/nalar/config.json` under `profiles_models`.
         \\
     );
 }

@@ -3583,10 +3583,11 @@ export interface NalarConfig {
     | { command: string; args?: string[]; env?: string[]; cwd?: string }
   >
   /**
-   * Top-level sub-agents array. Each entry is a named sub-agent LLM
-   * configuration (model + base_url + thinking + temperature + url_style
-   * + api_key + system_prompt) that the `spawn_sub_agent` tool can
-   * reference by name. Sent as-is to the backend on save.
+   * @deprecated Per-profile only (plan 2026-09-04-subagents-per-profile).
+   * The backend (`GET /api/config/nalar`) always returns `sub_agents: null`
+   * at the top level; each profile owns its list via `NalarProfile.sub_agents`.
+   * Kept as an optional field so legacy payloads still type-check — do NOT
+   * read or write it in new code.
    */
   sub_agents?: SubAgent[]
   /**

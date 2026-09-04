@@ -21,7 +21,7 @@ describe('NalarTabStrip', () => {
     })
   })
 
-  it('renders all 4 tab labels in order: General / Profiles / Sub-agents / MCP Servers', () => {
+  it('renders all 3 tab labels in order: General / Profiles / MCP Servers (no Sub-agents)', () => {
     // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
     // General tab is the FIRST tab. Tab order matters — operational
     // settings (notification toggles + retry delay) belong at the top.
@@ -29,8 +29,9 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'general' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
+    // Plan 2026-09-04-subagents-per-profile: global Sub-agents tab removed.
     expect(buttons.map(b => b.text().trim())).toEqual([
-      'General', 'Profiles', 'Sub-agents', 'MCP Servers',
+      'General', 'Profiles', 'MCP Servers',
     ])
   })
 
@@ -48,17 +49,17 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'general' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(3)
     await buttons[2]!.trigger('click')
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['sub-agents'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['mcp'])
   })
 
   it('marks the active tab with aria-selected=true', () => {
     const wrapper = mount(NalarTabStrip, {
-      props: { modelValue: 'sub-agents' },
+      props: { modelValue: 'mcp' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(3)
     expect(buttons[0]!.attributes('aria-selected')).toBe('false')
     expect(buttons[2]!.attributes('aria-selected')).toBe('true')
   })
@@ -90,7 +91,7 @@ describe('NalarTabStrip', () => {
       props: { modelValue: 'profiles' },
     })
     const buttons = wrapper.findAll('button[role="tab"]')
-    expect(buttons.length).toBe(4)
+    expect(buttons.length).toBe(3)
     await buttons[0]!.trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['general'])
   })

@@ -64,30 +64,12 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
 
     const cfg = parsed;
 
-    // Build the typed sub_agents response from the typed parse target.
-    // `cfg.sub_agents` is borrowed from `parsed` (zero-copy view into
-    // `content`); we materialize a `SubAgentResponse` array so the
-    // response payload uses our typed struct instead of `std.json.Value`.
-    // No explicit `defer allocator.free(...)` here — see the
-    // "Custom HTTP server uses per-request arena" memory; the request
-    // allocator is freed by `GinwaServer.handle` when the request ends.
-    const sub_agents_response: ?[]const http_response.SubAgentResponse = if (cfg.sub_agents) |sas| blk: {
-        var out = try allocator.alloc(http_response.SubAgentResponse, sas.len);
-        errdefer allocator.free(out);
-        for (sas, 0..) |sa, i| {
-            out[i] = .{
-                .name = sa.name,
-                .model = sa.model,
-                .base_url = sa.base_url,
-                .thinking = sa.thinking,
-                .temperature = sa.temperature,
-                .url_style = sa.url_style,
-                .api_key = sa.api_key,
-                .system_prompt = sa.system_prompt,
-            };
-        }
-        break :blk out;
-    } else null;
+    // Plan 2026-09-04-subagents-per-profile: the top-level `sub_agents`
+    // response block was removed. Per-profile lists ride inside
+    // `profiles` as raw JSON passthrough — no typed materialization
+    // needed here. (`cfg.sub_agents` stays parsed for compat but is
+    // never sent; prefix with underscore to mark intentionally unused.)
+    _ = cfg.sub_agents;
 
     return res.jsonResponse(.{
         .status_code = 200,
@@ -98,7 +80,12 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .profiles = cfg.profiles_models,
             .active_profile = cfg.active_profile,
             .mcp_servers = cfg.mcp_servers,
-            .sub_agents = sub_agents_response,
+            // Plan 2026-09-04-subagents-per-profile: top-level
+            // subagents are removed from the wire. Each profile
+            // carries its own `sub_agents` inside `profiles` (raw
+            // JSON passthrough above). The on-disk key is still
+            // parsed (compat) but never sent.
+            .sub_agents = null,
             .notify_on_complete = cfg.notify_on_complete,
             .notify_on_error = cfg.notify_on_error,
             .model_compaction_size_kb = cfg.model_compaction_size_kb,

@@ -79,14 +79,19 @@ describe('ProfilesSection', () => {
   })
 
   // ─── Sub-agent meta line ──────────────────────────────────────────
-  it('shows "inherits top-level" when the profile has no sub-agents', () => {
+  it('shows "no sub-agents" (no inheritance) when the profile has none', () => {
+    // Plan 2026-09-04-subagents-per-profile: no global list, no
+    // inheritance — the meta line is a plain count summary.
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [baseProfile], activeProfile: null },
     })
-    expect(wrapper.text()).toContain('inherits top-level')
+    expect(wrapper.text()).toContain('no sub-agents')
+    expect(wrapper.text()).not.toContain('inherits')
+    expect(wrapper.text()).not.toContain('top-level')
   })
 
-  it('shows the sub-agent count and "overrides" when the profile has sub-agents', () => {
+  it('shows the plain sub-agent count (no "overrides" copy) when the profile has sub-agents', () => {
+    // Plan 2026-09-04-subagents-per-profile: count-only summary.
     const wrapper = mount(ProfilesSection, {
       props: {
         modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent, { ...baseSubAgent, name: 'reviewer' }] }],
@@ -94,7 +99,8 @@ describe('ProfilesSection', () => {
       },
     })
     expect(wrapper.text()).toContain('2 sub-agents')
-    expect(wrapper.text()).toContain('overrides top-level')
+    expect(wrapper.text()).not.toContain('overrides')
+    expect(wrapper.text()).not.toContain('top-level')
   })
 
   it('uses singular "sub-agent" when there is exactly one', () => {

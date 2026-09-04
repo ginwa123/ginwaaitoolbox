@@ -628,6 +628,14 @@ pub const LlmConfig = struct {
         // Parse top-level sub_agents (skip-with-warning on bad entries).
         config.sub_agents = try parseSubAgentsList(allocator, config_json.sub_agents);
 
+        // Plan 2026-09-04-subagents-per-profile: one-time load migration.
+        // Old configs carry subagents ONLY at the top level. Copy them
+        // into every profile with an empty list so each profile owns its
+        // subagents going forward. Profiles that already have their own
+        // list are left untouched. The top-level list stays in memory
+        // for now (deprecated read path) until Task 3 removes it.
+        try migrateTopLevelSubAgentsIntoEmptyProfiles(&config);
+
         // Plan 2026-08-24-config-simplify-remove-defaults: config.json no
         // longer carries top-level api_key/model/base_url/url_style. When
         // absent/empty, derive them from the active profile so every
@@ -925,6 +933,56 @@ pub const LlmConfig = struct {
         }
 
         return list.toOwnedSlice(allocator);
+    }
+
+    /// Deep-copy one already-parsed `SubAgentConfig` onto `allocator`.
+    /// Used by the top-level → per-profile load migration and by `clone`.
+    fn dupeSubAgentConfig(allocator: std.mem.Allocator, sa: SubAgentConfig) !SubAgentConfig {
+        return SubAgentConfig{
+            .name = try allocator.dupe(u8, sa.name),
+            .model = try allocator.dupe(u8, sa.model),
+            .base_url = try allocator.dupe(u8, sa.base_url),
+            .thinking = try allocator.dupe(u8, sa.thinking),
+            .temperature = try allocator.dupe(u8, sa.temperature),
+            .url_style = try allocator.dupe(u8, sa.url_style),
+            .api_key = try allocator.dupe(u8, sa.api_key),
+            .system_prompt = try allocator.dupe(u8, sa.system_prompt),
+            .max_capacity_tokens = sa.max_capacity_tokens,
+            .compaction_threshold_percent = sa.compaction_threshold_percent,
+            .thinking_budget_tokens = sa.thinking_budget_tokens,
+            .reasoning_effort = if (sa.reasoning_effort) |re| try allocator.dupe(u8, re) else null,
+        };
+    }
+
+    /// Plan 2026-09-04-subagents-per-profile: copy the deprecated
+    /// top-level `sub_agents` into every profile whose own list is
+    /// empty. No-op when the top-level list is empty. Profiles with a
+    /// non-empty list keep theirs (no merge — per-profile wins).
+    fn migrateTopLevelSubAgentsIntoEmptyProfiles(config: *LlmConfig) !void {
+        if (config.sub_agents.len == 0) return;
+        var it = config.profiles_models.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.sub_agents.len > 0) continue;
+            var list = std.ArrayList(SubAgentConfig).empty;
+            errdefer {
+                for (list.items) |sa| {
+                    config.allocator.free(sa.name);
+                    config.allocator.free(sa.model);
+                    config.allocator.free(sa.base_url);
+                    config.allocator.free(sa.thinking);
+                    config.allocator.free(sa.temperature);
+                    config.allocator.free(sa.url_style);
+                    config.allocator.free(sa.api_key);
+                    config.allocator.free(sa.system_prompt);
+                    if (sa.reasoning_effort) |re| config.allocator.free(re);
+                }
+                list.deinit(config.allocator);
+            }
+            for (config.sub_agents) |sa| {
+                try list.append(config.allocator, try dupeSubAgentConfig(config.allocator, sa));
+            }
+            entry.value_ptr.sub_agents = try list.toOwnedSlice(config.allocator);
+        }
     }
 
     /// Free all owned memory inside a `McpHeadersMap` (header keys + values)
@@ -1238,17 +1296,34 @@ pub const LlmConfig = struct {
         }
 
         // Clone all profiles.
-        //
-        // NOTE: per-profile `sub_agents` is NOT preserved in the clone — we
-        // pass `null` to `addProfile` here, accepting this limitation. The
-        // top-level `sub_agents` is fully cloned (see below). Preserving
-        // per-profile sub_agents through clone would require retaining the
-        // original `std.json.Value` of the per-profile array (or another
-        // round-trip serialization), which is out of scope for this change.
-        // See `sub_agents: per-profile sub_agents are parsed` test for the
-        // parse side, which works correctly.
+        // Plan 2026-09-04-subagents-per-profile: per-profile `sub_agents`
+        // ARE preserved through clone via `dupeSubAgentConfig` (each
+        // profile owns its list — no global fallback to rely on).
         var it = self.profiles_models.iterator();
         while (it.next()) |entry| {
+            const owned_sub_agents = blk: {
+                if (entry.value_ptr.sub_agents.len == 0) break :blk @as(SubAgentsList, &.{});
+                var plist = std.ArrayList(SubAgentConfig).empty;
+                errdefer {
+                    for (plist.items) |sa| {
+                        self.allocator.free(sa.name);
+                        self.allocator.free(sa.model);
+                        self.allocator.free(sa.base_url);
+                        self.allocator.free(sa.thinking);
+                        self.allocator.free(sa.temperature);
+                        self.allocator.free(sa.url_style);
+                        self.allocator.free(sa.api_key);
+                        self.allocator.free(sa.system_prompt);
+                        if (sa.reasoning_effort) |re| self.allocator.free(re);
+                    }
+                    plist.deinit(self.allocator);
+                }
+                for (entry.value_ptr.sub_agents) |sa| {
+                    try plist.append(self.allocator, try dupeSubAgentConfig(self.allocator, sa));
+                }
+                break :blk try plist.toOwnedSlice(self.allocator);
+            };
+            errdefer freeSubAgentsList(owned_sub_agents, self.allocator);
             try addProfile(
                 &config.profiles_models,
                 entry.key_ptr.*,
@@ -1263,6 +1338,19 @@ pub const LlmConfig = struct {
                 },
                 self.allocator,
             );
+            // `addProfile` always sets an empty list (it only parses
+            // from `ProfileJson`); swap in the deep-copied list.
+            if (owned_sub_agents.len > 0) {
+                const got = config.profiles_models.getPtr(entry.key_ptr.*).?;
+                freeSubAgentsList(got.sub_agents, config.allocator);
+                got.sub_agents = owned_sub_agents;
+            } else {
+                if (owned_sub_agents.len == 0) {
+                    // `toOwnedSlice` on an empty list may still allocate;
+                    // `freeSubAgentsList` is safe on any slice.
+                    freeSubAgentsList(owned_sub_agents, self.allocator);
+                }
+            }
         }
 
         // Deep-copy top-level sub_agents into a freshly allocated slice.
@@ -2009,11 +2097,9 @@ pub const LlmConfig = struct {
         profile_name: []const u8,
         agent_name: []const u8,
     ) ResolvedSubAgent {
-        // 1. Per-profile lookup (when a profile is selected). The
-        // profile's `sub_agents` list is consulted first so a
-        // specialized sub-agent (e.g. a code-reviewer model only
-        // available on profile1) is preferred over the top-level
-        // config's general-purpose list.
+        // 1. Per-profile lookup ONLY (plan 2026-09-04-subagents-per-profile).
+        // Each profile owns its subagents; there is no global fallback.
+        // A miss here goes straight to the random fallback below.
         if (profile_name.len > 0) {
             if (self.getProfile(profile_name)) |profile| {
                 if (profile.sub_agents.len > 0) {
@@ -2024,21 +2110,12 @@ pub const LlmConfig = struct {
                     }
                 }
             }
-            // Profile not found OR profile has no sub_agents
-            // matching the name: fall through to the top-level
-            // lookup. (We deliberately do NOT warn here — empty
-            // sub_agents on a profile is a normal configuration
-            // and per-profile sub_agents are an optional override.
-            // The caller can still get `is_random_fallback = true`
-            // if the top-level list also lacks the name.)
+            // Profile not found OR no match: fall through to the
+            // random fallback. (We deliberately do NOT warn here —
+            // an empty per-profile list is a normal configuration.)
         }
 
-        // 2. Top-level lookup.
-        if (self.getSubAgent(agent_name)) |sa| {
-            return self.buildResolvedFromConfig(sa, agent_name, "");
-        }
-
-        // 3. Not found — random fallback. The random name is
+        // 2. Not found — random fallback. The random name is
         // tracked in `self.random_names` so it can be freed in
         // `deinit`. We do this BEFORE returning so the caller can
         // safely use the borrowed `name` slice.

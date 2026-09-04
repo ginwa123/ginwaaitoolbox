@@ -11,10 +11,10 @@ import type { NalarProfile, SubAgent } from '../../api'
  * of `ProfileRow` with the name attached so the UI can iterate
  * cleanly.
  *
- * `sub_agents` is the per-profile override: when non-empty, it
- * REPLACES the top-level sub-agents for sessions that use this
- * profile (per the `spawn_sub_agent` resolution rules in
- * docs/plans/2026-06-15-spawn-sub-agent-config.md).
+ * `sub_agents` is the profile's OWN sub-agent list (plan
+ * 2026-09-04-subagents-per-profile: per-profile only, no global list,
+ * no inheritance). Each profile owns its sub-agents; sessions that use
+ * this profile resolve `spawn_sub_agent` names against this list only.
  */
 export interface ProfileRow extends NalarProfile {
   name: string
@@ -161,10 +161,9 @@ function compactionSummary(profile: ProfileRow): string {
             <div class="text-xs font-mono mt-1" style="color: var(--semantic-text-dim);">
               <template v-if="profile.sub_agents && profile.sub_agents.length > 0">
                 <span style="color: var(--color-violet);">▾ {{ profile.sub_agents.length }} sub-agent{{ profile.sub_agents.length === 1 ? '' : 's' }}</span>
-                <span> · overrides top-level</span>
               </template>
               <template v-else>
-                <span>· inherits top-level sub-agents</span>
+                <span>· no sub-agents</span>
               </template>
             </div>
             <!-- Compaction summary (plan 2026-07-07-compaction-inline):
@@ -219,7 +218,7 @@ function compactionSummary(profile: ProfileRow): string {
             class="text-xs italic py-1"
             style="color: var(--semantic-text-dim);"
           >
-            No sub-agents. This profile uses the top-level sub-agents.
+            No sub-agents yet. Add one below — each profile owns its sub-agents.
           </div>
           <ul v-else class="space-y-2">
             <li

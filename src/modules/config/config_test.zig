@@ -959,6 +959,96 @@ test "sub_agents: per-profile sub_agents are parsed" {
     try std.testing.expectEqualStrings("sp1", p1.sub_agents[0].system_prompt);
 }
 
+test "sub_agents: top-level list migrates into profiles with empty lists" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "sub_agents": [
+        \\    { "name": "shared", "model": "M", "base_url": "https://a",
+        \\      "thinking": "on", "temperature": "0.5", "url_style": "openai",
+        \\      "api_key": "ak", "system_prompt": "sp" }
+        \\  ],
+        \\  "profiles_models": {
+        \\    "empty1": {
+        \\      "model": "M-e1", "base_url": "https://e1",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "ke1"
+        \\    },
+        \\    "empty2": {
+        \\      "model": "M-e2", "base_url": "https://e2",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "ke2"
+        \\    },
+        \\    "owns": {
+        \\      "model": "M-o", "base_url": "https://o",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "ko",
+        \\      "sub_agents": [
+        \\        { "name": "mine", "model": "MO", "base_url": "https://mo",
+        \\          "thinking": "off", "temperature": "auto", "url_style": "openai",
+        \\          "api_key": "ako", "system_prompt": "spo" }
+        \\      ]
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    // Empty profiles inherit the migrated entry (deep copy).
+    const e1 = cfg.getProfile("empty1").?;
+    try std.testing.expectEqual(@as(usize, 1), e1.sub_agents.len);
+    try std.testing.expectEqualStrings("shared", e1.sub_agents[0].name);
+    try std.testing.expectEqualStrings("sp", e1.sub_agents[0].system_prompt);
+    const e2 = cfg.getProfile("empty2").?;
+    try std.testing.expectEqual(@as(usize, 1), e2.sub_agents.len);
+    try std.testing.expectEqualStrings("shared", e2.sub_agents[0].name);
+    // Independent copies, not shared pointers.
+    try std.testing.expect(e1.sub_agents[0].name.ptr != e2.sub_agents[0].name.ptr);
+    // Non-empty profile keeps its own list (no merge).
+    const owns = cfg.getProfile("owns").?;
+    try std.testing.expectEqual(@as(usize, 1), owns.sub_agents.len);
+    try std.testing.expectEqualStrings("mine", owns.sub_agents[0].name);
+}
+
+test "sub_agents: clone preserves per-profile sub_agents" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "profiles_models": {
+        \\    "profile1": {
+        \\      "model": "M-p1", "base_url": "https://p1",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "kp1",
+        \\      "sub_agents": [
+        \\        { "name": "p1sa", "model": "M1", "base_url": "https://a",
+        \\          "thinking": "on", "temperature": "0.5", "url_style": "openai",
+        \\          "api_key": "ak1", "system_prompt": "sp1" }
+        \\      ]
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+    var cloned = try cfg.clone();
+    defer cloned.deinit();
+
+    const p1 = cloned.getProfile("profile1").?;
+    try std.testing.expectEqual(@as(usize, 1), p1.sub_agents.len);
+    try std.testing.expectEqualStrings("p1sa", p1.sub_agents[0].name);
+    try std.testing.expectEqualStrings("sp1", p1.sub_agents[0].system_prompt);
+    // Deep copy, not aliased.
+    const orig = cfg.getProfile("profile1").?;
+    try std.testing.expect(orig.sub_agents[0].name.ptr != p1.sub_agents[0].name.ptr);
+}
+
 // ---------------------------------------------------------------------------
 // resolveSubAgent — config-driven sub-agent selection
 // ---------------------------------------------------------------------------
@@ -1009,21 +1099,28 @@ fn resolveFromProfile(
     return ResolvedPair{ .cfg = cfg, .resolved = resolved };
 }
 
-test "resolveSubAgent: top-level hit returns the matched sub-agent's fields" {
+test "resolveSubAgent: per-profile hit returns the matched sub-agent's fields" {
     const json =
         \\{
         \\  "api_key": "default-key", "model": "default-model",
         \\  "base_url": "https://default.example.com",
-        \\  "sub_agents": [
-        \\    { "name": "reviewer", "model": "gpt-4o",
-        \\      "base_url": "https://api.openai.com/v1",
-        \\      "thinking": "true", "temperature": "0.3",
-        \\      "url_style": "openai", "api_key": "reviewer-key",
-        \\      "system_prompt": "You are a strict code reviewer." }
-        \\  ]
+        \\  "profiles_models": {
+        \\    "profile1": {
+        \\      "model": "M-p1", "base_url": "https://p1",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "kp1",
+        \\      "sub_agents": [
+        \\        { "name": "reviewer", "model": "gpt-4o",
+        \\          "base_url": "https://api.openai.com/v1",
+        \\          "thinking": "true", "temperature": "0.3",
+        \\          "url_style": "openai", "api_key": "reviewer-key",
+        \\          "system_prompt": "You are a strict code reviewer." }
+        \\      ]
+        \\    }
+        \\  }
         \\}
     ;
-    var pair = try resolveFromTopLevel(json, "reviewer");
+    var pair = try resolveFromProfile(json, "profile1", "reviewer");
         defer pair.cfg.deinit();
         const r = pair.resolved;
     try std.testing.expectEqualStrings("reviewer", r.name);
@@ -1036,8 +1133,8 @@ test "resolveSubAgent: top-level hit returns the matched sub-agent's fields" {
     try std.testing.expectEqualStrings("You are a strict code reviewer.", r.system_prompt);
     try std.testing.expectEqual(@as(?bool, true), r.is_thinking);
     try std.testing.expectApproxEqAbs(@as(f32, 0.3), r.temperature.?, 0.0001);
-    // Top-level lookup: source is "" (no profile).
-    try std.testing.expectEqualStrings("", r.source);
+    // Per-profile lookup: source is the profile name.
+    try std.testing.expectEqualStrings("profile1", r.source);
 }
 
 test "resolveSubAgent: miss returns random fallback with orchestrator defaults" {
@@ -1082,14 +1179,21 @@ test "resolveSubAgent: overlay — empty SubAgentConfig field falls through to o
         \\  "api_key": "default-key", "model": "default-model",
         \\  "base_url": "https://default.example.com",
         \\  "url_style": "openai",
-        \\  "sub_agents": [
-        \\    { "name": "minimal", "model": "gpt-4o",
-        \\      "base_url": "", "thinking": "auto", "temperature": "auto",
-        \\      "url_style": "", "api_key": "", "system_prompt": "" }
-        \\  ]
+        \\  "profiles_models": {
+        \\    "profile1": {
+        \\      "model": "M-p1", "base_url": "https://p1",
+        \\      "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "kp1",
+        \\      "sub_agents": [
+        \\        { "name": "minimal", "model": "gpt-4o",
+        \\          "base_url": "", "thinking": "auto", "temperature": "auto",
+        \\          "url_style": "", "api_key": "", "system_prompt": "" }
+        \\      ]
+        \\    }
+        \\  }
         \\}
     ;
-    var pair = try resolveFromTopLevel(json, "minimal");
+    var pair = try resolveFromProfile(json, "profile1", "minimal");
         defer pair.cfg.deinit();
         const r = pair.resolved;
     try std.testing.expect(!r.is_random_fallback);
@@ -1104,21 +1208,27 @@ test "resolveSubAgent: overlay — empty SubAgentConfig field falls through to o
 test "resolveSubAgent: thinking \"true\" -> Some(true), \"false\" -> Some(false)" {
     const json_true =
         \\{ "api_key": "k", "model": "m", "base_url": "u",
-        \\  "sub_agents": [{ "name": "sa", "model": "m",
-        \\    "base_url": "u", "thinking": "true", "temperature": "auto",
-        \\    "url_style": "openai", "api_key": "k", "system_prompt": "p" }] }
+        \\  "profiles_models": { "p1": {
+        \\    "model": "m", "base_url": "u", "thinking": "auto",
+        \\    "temperature": "auto", "url_style": "openai", "api_key": "k",
+        \\    "sub_agents": [{ "name": "sa", "model": "m",
+        \\      "base_url": "u", "thinking": "true", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "k", "system_prompt": "p" }] } } }
     ;
-    var pair_true = try resolveFromTopLevel(json_true, "sa");
+    var pair_true = try resolveFromProfile(json_true, "p1", "sa");
     defer pair_true.cfg.deinit();
     try std.testing.expectEqual(@as(?bool, true), pair_true.resolved.is_thinking);
 
     const json_false =
         \\{ "api_key": "k", "model": "m", "base_url": "u",
-        \\  "sub_agents": [{ "name": "sa", "model": "m",
-        \\    "base_url": "u", "thinking": "false", "temperature": "auto",
-        \\    "url_style": "openai", "api_key": "k", "system_prompt": "p" }] }
+        \\  "profiles_models": { "p1": {
+        \\    "model": "m", "base_url": "u", "thinking": "auto",
+        \\    "temperature": "auto", "url_style": "openai", "api_key": "k",
+        \\    "sub_agents": [{ "name": "sa", "model": "m",
+        \\      "base_url": "u", "thinking": "false", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "k", "system_prompt": "p" }] } } }
     ;
-    var pair_false = try resolveFromTopLevel(json_false, "sa");
+    var pair_false = try resolveFromProfile(json_false, "p1", "sa");
     defer pair_false.cfg.deinit();
     try std.testing.expectEqual(@as(?bool, false), pair_false.resolved.is_thinking);
 }
@@ -1126,11 +1236,14 @@ test "resolveSubAgent: thinking \"true\" -> Some(true), \"false\" -> Some(false)
 test "resolveSubAgent: temperature \"0.7\" parses to Some(0.7)" {
     const json =
         \\{ "api_key": "k", "model": "m", "base_url": "u",
-        \\  "sub_agents": [{ "name": "sa", "model": "m",
-        \\    "base_url": "u", "thinking": "auto", "temperature": "0.7",
-        \\    "url_style": "openai", "api_key": "k", "system_prompt": "p" }] }
+        \\  "profiles_models": { "p1": {
+        \\    "model": "m", "base_url": "u", "thinking": "auto",
+        \\    "temperature": "auto", "url_style": "openai", "api_key": "k",
+        \\    "sub_agents": [{ "name": "sa", "model": "m",
+        \\      "base_url": "u", "thinking": "auto", "temperature": "0.7",
+        \\      "url_style": "openai", "api_key": "k", "system_prompt": "p" }] } } }
     ;
-    var pair = try resolveFromTopLevel(json, "sa");
+    var pair = try resolveFromProfile(json, "p1", "sa");
         defer pair.cfg.deinit();
         const r = pair.resolved;
     try std.testing.expect(r.temperature != null);
@@ -1163,25 +1276,27 @@ test "resolveSubAgent: top-level sub_agents list is empty -> miss fallback" {
     try std.testing.expectEqualStrings("m", r.model);
 }
 
-test "resolveSubAgent: two sub_agents, the second one matches" {
+test "resolveSubAgent: two per-profile sub_agents, the second one matches" {
     const json =
         \\{ "api_key": "k", "model": "m", "base_url": "u",
-        \\  "sub_agents": [
-        \\    { "name": "first", "model": "M1", "base_url": "u",
-        \\      "thinking": "auto", "temperature": "auto",
-        \\      "url_style": "openai", "api_key": "k", "system_prompt": "sp1" },
-        \\    { "name": "second", "model": "M2", "base_url": "u",
-        \\      "thinking": "auto", "temperature": "auto",
-        \\      "url_style": "openai", "api_key": "k", "system_prompt": "sp2" }
-        \\  ]
-        \\}
+        \\  "profiles_models": { "p1": {
+        \\    "model": "m", "base_url": "u", "thinking": "auto",
+        \\    "temperature": "auto", "url_style": "openai", "api_key": "k",
+        \\    "sub_agents": [
+        \\      { "name": "first", "model": "M1", "base_url": "u",
+        \\        "thinking": "auto", "temperature": "auto",
+        \\        "url_style": "openai", "api_key": "k", "system_prompt": "sp1" },
+        \\      { "name": "second", "model": "M2", "base_url": "u",
+        \\        "thinking": "auto", "temperature": "auto",
+        \\        "url_style": "openai", "api_key": "k", "system_prompt": "sp2" }
+        \\    ] } } }
     ;
-    var pair1 = try resolveFromTopLevel(json, "first");
+    var pair1 = try resolveFromProfile(json, "p1", "first");
     defer pair1.cfg.deinit();
     try std.testing.expect(!pair1.resolved.is_random_fallback);
     try std.testing.expectEqualStrings("M1", pair1.resolved.model);
     try std.testing.expectEqualStrings("sp1", pair1.resolved.system_prompt);
-    var pair2 = try resolveFromTopLevel(json, "second");
+    var pair2 = try resolveFromProfile(json, "p1", "second");
     defer pair2.cfg.deinit();
     try std.testing.expect(!pair2.resolved.is_random_fallback);
     try std.testing.expectEqualStrings("M2", pair2.resolved.model);
@@ -1191,14 +1306,17 @@ test "resolveSubAgent: two sub_agents, the second one matches" {
 test "resolveSubAgent: name match is exact (case-sensitive)" {
     const json =
         \\{ "api_key": "k", "model": "m", "base_url": "u",
-        \\  "sub_agents": [{ "name": "Reviewer", "model": "M1",
-        \\    "base_url": "u", "thinking": "auto", "temperature": "auto",
-        \\    "url_style": "openai", "api_key": "k", "system_prompt": "p" }] }
+        \\  "profiles_models": { "p1": {
+        \\    "model": "m", "base_url": "u", "thinking": "auto",
+        \\    "temperature": "auto", "url_style": "openai", "api_key": "k",
+        \\    "sub_agents": [{ "name": "Reviewer", "model": "M1",
+        \\      "base_url": "u", "thinking": "auto", "temperature": "auto",
+        \\      "url_style": "openai", "api_key": "k", "system_prompt": "p" }] } } }
     ;
-    var pair_match = try resolveFromTopLevel(json, "Reviewer");
+    var pair_match = try resolveFromProfile(json, "p1", "Reviewer");
     defer pair_match.cfg.deinit();
     try std.testing.expect(!pair_match.resolved.is_random_fallback);
-    var pair_miss = try resolveFromTopLevel(json, "reviewer");
+    var pair_miss = try resolveFromProfile(json, "p1", "reviewer");
     defer pair_miss.cfg.deinit();
     try std.testing.expect(pair_miss.resolved.is_random_fallback);
 }
@@ -1250,9 +1368,11 @@ test "resolveSubAgent: per-profile sub_agent is preferred over top-level" {
     try std.testing.expectEqualStrings("profile1", pair.resolved.source);
 }
 
-test "resolveSubAgent: when profile doesn't have the sub_agent, fall back to top-level" {
-    // profile1 has no sub_agents at all; the top-level "reviewer"
-    // is the source.
+test "resolveSubAgent: empty profile inherits top-level via load migration" {
+    // profile1 has no sub_agents of its own; the load migration
+    // (plan 2026-09-04-subagents-per-profile) copies the top-level
+    // "reviewer" into it. Resolution hits the migrated entry with
+    // source="profile1" — there is no live top-level fallback.
     const json =
         \\{ "api_key": "k", "model": "default", "base_url": "u",
         \\  "sub_agents": [
@@ -1271,23 +1391,18 @@ test "resolveSubAgent: when profile doesn't have the sub_agent, fall back to top
     var pair = try resolveFromProfile(json, "profile1", "reviewer");
     defer pair.cfg.deinit();
     try std.testing.expect(!pair.resolved.is_random_fallback);
-    // Top-level hit: TOP_MODEL wins, source is "".
+    // Migrated entry: TOP_MODEL wins, source is the profile.
     try std.testing.expectEqualStrings("TOP_MODEL", pair.resolved.model);
-    try std.testing.expectEqualStrings("", pair.resolved.source);
+    try std.testing.expectEqualStrings("profile1", pair.resolved.source);
 }
 
-test "resolveSubAgent: profile has the sub_agent but with empty profile_name -> top-level" {
-    // Same JSON as the per-profile test, but the call passes
-    // `""` for `profile_name` (e.g. the parent session has no
-    // profile selected). The top-level list must be consulted.
+test "resolveSubAgent: empty profile_name -> random fallback (no global list)" {
+    // The call passes `""` for `profile_name` (e.g. the parent
+    // session has no profile selected). Per-profile-only means
+    // there is nothing to consult — random fallback, even though
+    // profile1 owns a matching "reviewer".
     const json =
         \\{ "api_key": "k", "model": "default", "base_url": "u",
-        \\  "sub_agents": [
-        \\    { "name": "reviewer", "model": "TOP_MODEL",
-        \\      "base_url": "u", "thinking": "auto", "temperature": "auto",
-        \\      "url_style": "openai", "api_key": "k",
-        \\      "system_prompt": "top-level" }
-        \\  ],
         \\  "profiles_models": {
         \\    "profile1": {
         \\      "model": "P1", "base_url": "u",
@@ -1303,42 +1418,38 @@ test "resolveSubAgent: profile has the sub_agent but with empty profile_name -> 
         \\  }
         \\}
     ;
-    // Note: resolveFromTopLevel passes "" as profile_name, so the
-    // per-profile list is SKIPPED entirely — only the top-level
-    // list is consulted.
+    // Note: resolveFromTopLevel passes "" as profile_name, so no
+    // profile list is consulted — random fallback.
     var pair = try resolveFromTopLevel(json, "reviewer");
     defer pair.cfg.deinit();
-    try std.testing.expect(!pair.resolved.is_random_fallback);
-    try std.testing.expectEqualStrings("TOP_MODEL", pair.resolved.model);
-    try std.testing.expectEqualStrings("top-level", pair.resolved.system_prompt);
-    try std.testing.expectEqualStrings("", pair.resolved.source);
+    try std.testing.expect(pair.resolved.is_random_fallback);
+    try std.testing.expectEqualStrings("reviewer", pair.resolved.requested_name);
 }
 
-test "resolveSubAgent: profile_name not in profiles_models -> fallback to top-level" {
-    // The user requested a profile that doesn't exist; the
-    // function silently falls through to the top-level list.
+test "resolveSubAgent: profile_name not in profiles_models -> random fallback" {
+    // The user requested a profile that doesn't exist; with no
+    // global list there is nothing to fall back to.
     const json =
         \\{ "api_key": "k", "model": "default", "base_url": "u",
-        \\  "sub_agents": [
-        \\    { "name": "reviewer", "model": "TOP_MODEL",
-        \\      "base_url": "u", "thinking": "auto", "temperature": "auto",
-        \\      "url_style": "openai", "api_key": "k",
-        \\      "system_prompt": "top-level" }
-        \\  ],
         \\  "profiles_models": {
         \\    "profile1": { "model": "P1", "base_url": "u",
         \\      "thinking": "auto", "temperature": "auto",
-        \\      "url_style": "openai", "api_key": "k" }
+        \\      "url_style": "openai", "api_key": "k",
+        \\      "sub_agents": [
+        \\        { "name": "reviewer", "model": "P1_MODEL",
+        \\          "base_url": "u", "thinking": "auto", "temperature": "auto",
+        \\          "url_style": "openai", "api_key": "k",
+        \\          "system_prompt": "profile1" }
+        \\      ] }
         \\  }
         \\}
     ;
     // profile_name "profile_unknown" is not in profiles_models;
-    // we should still resolve via the top-level list.
+    // random fallback (the unknown profile owns nothing).
     var pair = try resolveFromProfile(json, "profile_unknown", "reviewer");
     defer pair.cfg.deinit();
-    try std.testing.expect(!pair.resolved.is_random_fallback);
-    try std.testing.expectEqualStrings("TOP_MODEL", pair.resolved.model);
-    try std.testing.expectEqualStrings("", pair.resolved.source);
+    try std.testing.expect(pair.resolved.is_random_fallback);
+    try std.testing.expectEqualStrings("reviewer", pair.resolved.requested_name);
 }
 
 test "resolveSubAgent: per-profile miss AND top-level miss -> random fallback" {

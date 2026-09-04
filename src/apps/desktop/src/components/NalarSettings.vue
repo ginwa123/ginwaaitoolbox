@@ -16,7 +16,8 @@ import NalarTabStrip from './nalar/NalarTabStrip.vue'
 import NalarSaveBar from './nalar/NalarSaveBar.vue'
 import NalarGeneralSection, { type NalarGeneralSettings } from './nalar/NalarGeneralSection.vue'
 import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
-import SubAgentsSection from './nalar/SubAgentsSection.vue'
+// Plan 2026-09-04-subagents-per-profile: SubAgentsSection.vue is no longer
+// mounted here (no global list). The file is kept for now — see note below.
 import McpServersSection from './nalar/McpServersSection.vue'
 // plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
 // (compaction settings live in the Defaults tab + Edit-profile modal now).
@@ -43,7 +44,9 @@ defineExpose({
 // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: 'general' tab
 // added as the FIRST tab — operational settings (notification toggles +
 // retry delay) are the broadest, most-frequently-touched UI surface.
-type Tab = 'general' | 'profiles' | 'sub-agents' | 'mcp'
+// Plan 2026-09-04-subagents-per-profile: 'sub-agents' tab removed —
+// sub-agents live inside each profile row (Profiles tab expand chevron).
+type Tab = 'general' | 'profiles' | 'mcp'
 const activeTab = ref<Tab>('general')
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
@@ -66,7 +69,8 @@ onMounted(async () => {
 // ─── Per-section view state ──────────────────────────────────────────────
 const profilesList = ref<ProfileRow[]>([])
 const activeProfile = ref<string | null>(null)
-const subAgentsList = ref<SubAgent[]>([])
+// Plan 2026-09-04-subagents-per-profile: no global list — per-profile
+// `profilesList[].sub_agents` is the only editor.
 const mcpServersList = ref<McpServer[]>([])
 
 // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the General
@@ -107,7 +111,8 @@ function syncFromConfig() {
     reasoning_effort: p.reasoning_effort ?? null,
   }))
   activeProfile.value = c.active_profile ?? null
-  subAgentsList.value = c.sub_agents ?? []
+  // Plan 2026-09-04-subagents-per-profile: top-level `sub_agents` is
+  // always null from the backend — intentionally NOT hydrated anywhere.
   mcpServersList.value = parseMcpServers(c.mcp_servers)
 
   // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: hydrate
@@ -138,7 +143,6 @@ function syncToConfig() {
   // Plan 2026-08-24-config-simplify-remove-defaults: the top-level LLM
   // defaults are no longer sent — profiles + operational settings only.
   const profiles = profilesToRecord(profilesList.value)
-  const subAgents = subAgentsList.value
   const mcpServers = serializeMcpServers(mcpServersList.value)
   config.value = {
     ...c,
@@ -156,7 +160,8 @@ function syncToConfig() {
     // Per-profile compaction overrides still live on `profiles` below.
     ...(Object.keys(profiles).length > 0 ? { profiles } : {}),
     ...(activeProfile.value ? { active_profile: activeProfile.value } : {}),
-    ...(subAgents.length > 0 ? { sub_agents: subAgents } : {}),
+    // Plan 2026-09-04-subagents-per-profile: never send top-level
+    // `sub_agents` — per-profile lists ride inside `profiles` above.
     ...(mcpServers ? { mcp_servers: mcpServers } : {}),
   }
 }
@@ -262,7 +267,7 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [profilesList, activeProfile, subAgentsList, mcpServersList, generalSettings],
+  [profilesList, activeProfile, mcpServersList, generalSettings],
   () => { if (loaded.value) syncToConfig() },
   { deep: true },
 )
@@ -270,12 +275,12 @@ watch(
 // ─── Modal state ──────────────────────────────────────────────────────────
 type ProfileModalState = { mode: 'add' | 'edit'; value: LlmConfigModalValue } | null
 /**
- * Where a sub-agent is being added/edited. The same `SubAgentModal`
- * component is used for both the top-level Sub-agents tab and the
- * per-profile override; the `scope` field tells the save handler
- * which list to push the result into.
+ * Where a sub-agent is being added/edited. Plan
+ * 2026-09-04-subagents-per-profile: per-profile only — the `scope`
+ * always carries the owning profile name (the old `{ kind: 'top' }`
+ * global scope is gone with the Sub-agents tab).
  */
-type SubAgentScope = { kind: 'top' } | { kind: 'profile'; profileName: string }
+type SubAgentScope = { kind: 'profile'; profileName: string }
 type SubAgentModalState = {
   mode: 'add' | 'edit'
   scope: SubAgentScope
@@ -346,41 +351,6 @@ function deleteProfile(name: string) {
   })
 }
 
-function startAddSubAgent() {
-  subAgentModal.value = {
-    mode: 'add',
-    scope: { kind: 'top' },
-    value: { name: '', system_prompt: '', config: { model: '', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '', max_capacity_tokens: null, compaction_threshold_percent: null, thinking_budget_tokens: null, reasoning_effort: null } },
-  }
-}
-function startEditSubAgent(sa: SubAgent) {
-  subAgentModal.value = {
-    mode: 'edit',
-    scope: { kind: 'top' },
-    value: {
-      name: sa.name,
-      system_prompt: sa.system_prompt ?? '',
-      config: {
-        model: sa.model ?? '', base_url: sa.base_url ?? '', thinking: sa.thinking ?? 'auto',
-        temperature: sa.temperature ?? 'auto', url_style: sa.url_style ?? 'openai',
-        api_key: sa.api_key ?? '',
-        // Compaction overrides (plan 2026-07-07-compaction-inline) — not
-        // currently editable in the sub-agent modal but required by
-        // LlmConfig type.
-        max_capacity_tokens: null,
-        compaction_threshold_percent: null,
-        // Model-thinking knobs (plan 2026-08-23-model-thinking).
-        // These ARE editable in the LlmConfigForm when the user
-        // opens the sub-agent modal and switches Thinking on — the
-        // modal forwards them through the LlmConfigForm embedded
-        // here. We hydrate from the loaded SubAgent so an edit
-        // returns to the previously-saved values.
-        thinking_budget_tokens: sa.thinking_budget_tokens ?? null,
-        reasoning_effort: sa.reasoning_effort ?? null,
-      },
-    },
-  }
-}
 function startAddSubAgentInProfile(profileName: string) {
   subAgentModal.value = {
     mode: 'add',
@@ -420,30 +390,20 @@ function saveSubAgent() {
   const name = v.name.trim()
   if (!name) { subAgentErrors.value = { name: 'Name is required' }; return }
   const next: SubAgent = { name, ...v.config, system_prompt: v.system_prompt }
-  const scope = subAgentModal.value.scope
-  if (scope.kind === 'top') {
-    if (subAgentModal.value.mode === 'add') {
-      subAgentsList.value = [...subAgentsList.value, next]
-    } else {
-      subAgentsList.value = subAgentsList.value.map(s => s.name === name ? next : s)
-    }
-  } else {
-    const profileName = scope.profileName
-    const mode = subAgentModal.value.mode
-    profilesList.value = profilesList.value.map(p => {
-      if (p.name !== profileName) return p
-      const subs = p.sub_agents ?? []
-      const exists = subs.some(s => s.name === name)
-      const nextSubs = mode === 'add'
-        ? (exists ? subs : [...subs, next])
-        : subs.map(s => s.name === name ? next : s)
-      return { ...p, sub_agents: nextSubs }
-    })
-  }
+  // Plan 2026-09-04-subagents-per-profile: profile scope only — the
+  // top-level branch is gone with the Sub-agents tab.
+  const profileName = subAgentModal.value.scope.profileName
+  const mode = subAgentModal.value.mode
+  profilesList.value = profilesList.value.map(p => {
+    if (p.name !== profileName) return p
+    const subs = p.sub_agents ?? []
+    const exists = subs.some(s => s.name === name)
+    const nextSubs = mode === 'add'
+      ? (exists ? subs : [...subs, next])
+      : subs.map(s => s.name === name ? next : s)
+    return { ...p, sub_agents: nextSubs }
+  })
   closeSubAgentModal()
-}
-function deleteSubAgent(name: string) {
-  subAgentsList.value = subAgentsList.value.filter(s => s.name !== name)
 }
 function deleteSubAgentInProfile(profileName: string, subAgentName: string) {
   profilesList.value = profilesList.value.map(p => {
@@ -643,14 +603,10 @@ const isLoading = computed(() => !loaded.value)
           @delete-sub-agent="deleteSubAgentInProfile"
         />
 
-        <SubAgentsSection
-          v-else-if="activeTab === 'sub-agents'"
-          v-model="subAgentsList"
-          @edit="startEditSubAgent"
-          @delete="deleteSubAgent"
-          @add="startAddSubAgent"
-        />
-
+        <!-- Plan 2026-09-04-subagents-per-profile: the global Sub-agents
+             tab is removed. Sub-agents are edited inline inside each
+             profile row (Profiles tab → expand chevron → + Add sub-agent).
+             SubAgentsSection.vue is kept on disk but no longer mounted. -->
         <McpServersSection
           v-else-if="activeTab === 'mcp'"
           v-model="mcpServersList"

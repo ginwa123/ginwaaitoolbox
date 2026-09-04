@@ -3,7 +3,7 @@ import { onMounted, watch } from 'vue'
 
 const STORAGE_KEY = 'nalar-settings-active-tab'
 
-type TabId = 'general' | 'profiles' | 'sub-agents' | 'mcp'
+type TabId = 'general' | 'profiles' | 'mcp'
 
 const props = defineProps<{
   modelValue: TabId
@@ -18,11 +18,13 @@ const emit = defineEmits<{
 // toggles + retry delay) sit before profiles so the user lands on
 // the most-frequently-touched settings first. Plan 2026-08-24-
 // config-simplify-remove-defaults: the 'defaults' tab was removed
-// (top-level LLM defaults no longer persist).
+// (top-level LLM defaults no longer persist). Plan
+// 2026-09-04-subagents-per-profile: the 'sub-agents' tab was removed
+// (no global list — each profile owns its sub-agents, edited inline
+// in the Profiles tab via expand chevron).
 const tabs: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'profiles', label: 'Profiles' },
-  { id: 'sub-agents', label: 'Sub-agents' },
   { id: 'mcp', label: 'MCP Servers' },
 ] as const
 
