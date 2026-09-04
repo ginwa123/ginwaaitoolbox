@@ -80,7 +80,7 @@ pub fn execMoveElementToPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExec
     // tool wrapper in this directory).
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
         const err_msg = inner[err_start .. err_start + err_end];
         const output = try wrapToolOutput(
             ctx.allocator,
