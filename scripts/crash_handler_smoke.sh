@@ -56,10 +56,18 @@ echo "==> Compiling smoke test binary..."
 # Compile as a standalone executable that uses the project's
 # nalarcore (root.zig) as a module — smoke.zig does
 # `@import("nalarcore").crash_handler` to reach the production module.
+# smoke.zig also does `@import("helpers")` for the pre-trigger nanosleep
+# (helpers was promoted to its own package in 2026-08; the standalone
+# build-exe line must provide it explicitly — root.zig's own
+# `@import("helpers")` stays lazy/unresolved because only
+# `nalarcore.crash_handler` is referenced, but smoke.zig's direct use
+# forces resolution).
 if ! zig build-exe \
     --dep nalarcore \
+    --dep helpers \
     -Mroot="${SMOKE_SRC}" \
     -Mnalarcore="${SMOKE_DEPS}" \
+    -Mhelpers="${WORKTREE}/src/helpers/mod.zig" \
     -lc \
     --cache-dir .zig-cache-smoke \
     --global-cache-dir /home/ginwa/.cache/zig \

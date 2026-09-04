@@ -144,12 +144,7 @@ If any of those is missing, the wire contract is broken.
 
 **Concrete example** (task_1786507100896, PR #215): backend's `onEventSendSessions` had an `event_type_name` if/else that knew about `created` and `deleted` and fell through to `session_unknown` for everything else. `action="updated"` (the most common case — fired by the auto-rename-on-first-message cascade in `workflow.zig` and the unattended toggle in `llm_history.zig`) reached the wire as `event: session_unknown`, which the frontend's `additionalEventTypes` didn't pre-register. The browser silently dropped it. Sidebar task rows kept showing "New Chat" until a manual page refresh.
 
-## Code Exploration with Graphify
-
-Before exploring or making changes in an unfamiliar or large codebase, use the `graphify` CLI to build a knowledge graph of the repo instead of manually grepping through files.
-
-**Setup (once per environment):**
-
+## Code Exploration with Graphify — graph-first, grep-second
 
 > **Audience:** any AI agent (Claude, GPT, sub-agent, future-me) that writes,
 > edits, reviews, or tests code in this repo. Humans may also find it useful.
@@ -158,20 +153,74 @@ Before exploring or making changes in an unfamiliar or large codebase, use the `
 > start. Treat the rules below as non-negotiable. If a rule conflicts with a
 > specific task, surface the conflict to the user before acting.
 
+Before exploring or making changes in an unfamiliar module, query the knowledge
+graph instead of manually grepping. Graphify combines Tree-sitter static
+analysis with LLM-driven semantic extraction into `graphify-out/` (`graph.json`
++ interactive `graph.html` + `GRAPH_REPORT.md`). It only sends semantic
+descriptions to the model — never raw source code.
 
-**Usage:**
-- `graphify ./path` — build the knowledge graph for a project or folder
-- `graphify query "<question>"` — ask a question against the graph
-- `graphify path <A> <B>` — trace the relationship/path between two nodes (e.g., functions, files)
-- `graphify explain <node>` — get an explanation of what a specific node does and why
+### 0. Freshness check (do this first — graph goes stale fast)
 
-**When to use it:**
-- Onboarding to an unfamiliar repo or module
-- Before refactoring, to see what depends on what
-- Tracing how a function, class, or file is used across the codebase
-- Investigating "god nodes" (highly-connected core components) or unexpected cross-file connections
+```bash
+stat -c '%y %n' graphify-out/graph.json  # if >1 day old, refresh:
+graphify update .                        # re-extract, no LLM needed, fast
+```
 
-**Why:** Graphify combines Tree-sitter static analysis with LLM-driven semantic extraction to produce an interactive `graph.html`, a queryable `graph.json`, and a `GRAPH_REPORT.md` audit report in `graphify-out/`. It only sends semantic descriptions to the AI model — never raw source code.
+- `graph.json` older than ~1 day → run `graphify update .` before trusting
+  query results (this repo moves fast — 9k+ nodes, 600+ communities).
+- Missing `graphify-out/` entirely → full build (slow, LLM-backed) is needed;
+  ask the user before running it.
+- Never hand-edit `graph.json` / `.graphify_labels.json` — they are generated.
+
+### 1. MCP tools (preferred — you already have these connected)
+
+| Goal | Tool | Example |
+|---|---|---|
+| Project overview | `mcp_graphify_graph_stats` | node/edge/community counts + confidence |
+| Find core abstractions | `mcp_graphify_god_nodes` (`top_n: 10`) | hubs like `vue`, `useWorkspacesStore`, `FunctionalHarness` |
+| Ask a question | `mcp_graphify_query_graph` (`mode: bfs`, `depth: 2-3`, `token_budget: 4000-6000`) | `"agentic loop workflow tools execution"` |
+| Node detail | `mcp_graphify_get_node` (`label: "Agent"`) | file, location, community |
+| What depends on X | `mcp_graphify_get_neighbors` (`label: "useWorkspacesStore"`) | callers + callees with edge types |
+| Whole subsystem | `mcp_graphify_get_community` (`community_id: N`) | all nodes in one cluster |
+| How A reaches B | `mcp_graphify_shortest_path` (`source`, `target`, `max_hops`) | e.g. `ChatView.vue` → `workflow.zig` |
+| PR review | `mcp_graphify_list_prs` / `get_pr_impact` / `triage_prs` | blast radius before merging |
+
+Always pass `project_path: /home/ginwa/ginwaaitoolbox` (or the worktree path)
+so queries hit the right `graphify-out/graph.json`.
+
+### 2. CLI fallback (shell / sub-agents without MCP)
+
+- `graphify query "<question>" --budget 4000` (add `--dfs` to trace one path)
+- `graphify god-nodes --top 10`
+- `graphify path "A" "B"` / `graphify explain "X"` / `graphify affected "X" --depth 2`
+
+### 3. Recommended workflow
+
+1. `graph_stats` → scale check (2026-09-03 refresh: ~14.9k nodes / ~22k edges / ~906 communities).
+2. `god_nodes` → orient (frontend: `vue`/`useWorkspacesStore`; backend:
+   `Agent` in `src/modules/agent/Agent.zig`, `workflow.zig` + `tools.zig` in
+   `src/ai_workflow/tui/agentic_loop/`; DB: `migration.zig` + `SqliteBackend`;
+   tests: `FunctionalHarness` in `tests/functional/harness.py`).
+3. `query_graph` BFS depth 2–3 with a focused keyword set per layer
+   (backend: `agentic loop tools execution`; frontend: `ChatView kanban sidebar`;
+   DB: `sqlite migration llm_history sessions`). One broad query returns README
+   noise — split by layer.
+4. `get_node` / `get_neighbors` on the hits that matter, then `read_file` at the
+   cited `src=… loc=L…` to confirm (graph snippets are ~100 chars — never quote
+   them as source).
+5. Before refactoring: `shortest_path` (blast radius) + `affected` (reverse deps).
+
+### 4. Pitfalls
+
+- **Truncated BFS is normal.** Large queries return `TRUNCATED: showing 130/1000
+  nodes` — raise `token_budget` or narrow with `context_filter: ["call"]` /
+  a specific `get_node` instead of re-asking broadly.
+- **Stale graph lies.** A month-old `graph.json` misses new `tools_exec_*.zig`
+  files and renamed Vue components. Check `stat` first (see §0).
+- **Community IDs are unstable** across rebuilds — cite node labels + file paths,
+  not `community=N`, in plans and PR descriptions.
+- **MCP `project_path` matters in worktrees.** In a git worktree, point it at
+  the worktree root so you query the worktree's `graphify-out/`, not main's.
 
 
 ## Recent changes

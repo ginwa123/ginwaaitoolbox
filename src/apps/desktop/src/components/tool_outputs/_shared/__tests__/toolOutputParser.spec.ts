@@ -13,6 +13,7 @@ import {
   parseAddSkill,
   parseBash,
   parseEditSkill,
+  parseMcp,
   parsePwsh,
   parseListSkills,
   parseMetadata,
@@ -583,5 +584,48 @@ describe('parsePwsh', () => {
     // Lock-down test: pwsh + bash share the wire envelope. If a future
     // refactor diverges them, this assertion fails closed.
     expect(parsePwsh(envelope)).toEqual(parseBash(envelope))
+  })
+})
+
+describe('parseMcp', () => {
+  it('splits mcp_<server>_<tool> into server + subTool', () => {
+    const r = parseMcp('mcp_graphify_graph_stats', 'Nodes: 14885')
+    expect(r.server).toBe('graphify')
+    expect(r.subTool).toBe('graph_stats')
+    expect(r.output).toBe('Nodes: 14885')
+    expect(r.success).toBe(true)
+  })
+
+  it('keeps multi-underscore sub-tools intact (mcp_db_query_v2)', () => {
+    const r = parseMcp('mcp_db_query_v2', 'ok')
+    expect(r.server).toBe('db')
+    expect(r.subTool).toBe('query_v2')
+  })
+
+  it('pretty-prints JSON output', () => {
+    const r = parseMcp('mcp_db_query', '{"a":1,"b":[1,2]}')
+    expect(r.isJson).toBe(true)
+    expect(r.prettyOutput).toBe(JSON.stringify({ a: 1, b: [1, 2] }, null, 2))
+  })
+
+  it('unwraps the error envelope (backend failure path)', () => {
+    const envelope =
+      '<tool><name>mcp_graphify_graph_stats</name>' +
+      '<parameters>{}</parameters><success>false</success>' +
+      '<error>connection refused</error><data></data></tool>'
+    const r = parseMcp('mcp_graphify_graph_stats', envelope)
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('connection refused')
+    expect(r.output).toBe('')
+  })
+
+  it('unwraps the success <data> envelope (placeholder shape)', () => {
+    const envelope =
+      '<tool><name>mcp_db_query</name>' +
+      '<parameters>{"q":"1"}</parameters><success>true</success>' +
+      '<data>row1</data></tool>'
+    const r = parseMcp('mcp_db_query', envelope)
+    expect(r.success).toBe(true)
+    expect(r.output).toBe('row1')
   })
 })

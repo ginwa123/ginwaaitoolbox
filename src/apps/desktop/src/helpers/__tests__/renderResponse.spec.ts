@@ -114,3 +114,28 @@ describe('renderResponse memoization', () => {
     expect(a).not.toBe(b)
   })
 })
+
+describe('renderResponse mcp_* summary', () => {
+  beforeEach(() => {
+    _resetRenderResponseCache()
+  })
+
+  it('summarizes raw MCP output (graphify stats)', () => {
+    const out = renderResponse('Nodes: 14885 Edges: 21958', 'tool', 'mcp_graphify_graph_stats')
+    expect(out).toContain('mcp_graphify_graph_stats')
+    expect(out).toContain('Nodes: 14885')
+  })
+
+  it('summarizes any future server (mcp_db_*) the same way', () => {
+    const out = renderResponse('{"rows":[]}', 'tool', 'mcp_db_query')
+    expect(out).toContain('mcp_db_query')
+  })
+
+  it('surfaces the error envelope message', () => {
+    const envelope =
+      '<tool><name>mcp_db_query</name><parameters>{}</parameters>' +
+      '<success>false</success><error>boom</error><data></data></tool>'
+    const out = renderResponse(envelope, 'tool', 'mcp_db_query')
+    expect(out).toContain('boom')
+  })
+})

@@ -452,8 +452,8 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
         ctx.allocator.free(argv);
     }
 
-    const mcp_stdio = nalarcore.mcp_stdio;
-    const reg = mcp_stdio.StdioRegistry.global();
+    // Via the singleton struct (see root.zig `mcpStdioRegistry`).
+    const reg = nalarcore.mcpStdioRegistry(ctx.allocator);
     const client = reg.getOrSpawn(server_name, argv) catch return inner_xml;
     const req = ctx.allocator.dupe(u8,
         \\{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}

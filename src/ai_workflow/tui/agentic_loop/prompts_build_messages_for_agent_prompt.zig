@@ -489,7 +489,8 @@ pub fn buildMCPToolsRun(
             }
             break :blk buf[0..count];
         };
-        const http_registry = mcp_http.HttpRegistry.global();
+        // Via the singleton struct (see root.zig `mcpHttpRegistry`).
+        const http_registry = nalarcore.mcpHttpRegistry(allocator);
         const http_client = http_registry.getOrConnect(
             server_name,
             url,
@@ -615,7 +616,7 @@ fn fetchToolsFromServerStdio(
     var argv_list: std.ArrayList([]const u8) = .empty;
     defer argv_list.deinit(allocator);
     if (server_obj.get("command")) |cmd_field| {
-        if (cmd_field == .string) {
+        if (cmd_field == .string and cmd_field.string.len > 0) {
             try argv_list.append(allocator, try allocator.dupe(u8, cmd_field.string));
         }
     }
@@ -635,7 +636,8 @@ fn fetchToolsFromServerStdio(
         allocator.free(argv);
     }
 
-    const reg = mcp_stdio.StdioRegistry.global();
+    // Via the singleton struct (see root.zig `mcpStdioRegistry`).
+    const reg = nalarcore.mcpStdioRegistry(allocator);
 
     // Retry loop for cold-start race: process.spawn returns before the
     // child (python → SDK connect → _stdin.on('data')) has attached its
@@ -1849,4 +1851,170 @@ pub fn appendSubAgentsListing(
         \\used; otherwise the top-level list is used.
         \\
     );
+}
+
+// ============================================================================
+// Unit tests for buildMCPToolsRun (task_1788372445618_0 follow-up)
+// ============================================================================
+//
+// These tests cover the pure dispatch logic without spawning real MCP
+// servers. The stdio spawn-failure path is exercised with a bogus
+// command (which fails fast with ChildSpawnFailed, caught and skipped
+// by buildMCPToolsRun's `continue`). The happy-path stdio handshake
+// is covered by the functional test (mcp_stdio_test.py) and the manual
+// graphify verification — unit tests can't spawn Python reliably.
+
+const testing = std.testing;
+
+test "buildMCPToolsRun: null input returns null (no servers configured)" {
+    const result = try buildMCPToolsRun(testing.allocator, .null, null);
+    try testing.expect(result == null);
+}
+
+test "buildMCPToolsRun: non-object input returns null" {
+    const arr = std.json.Value{ .array = std.json.Array.init(testing.allocator) };
+    const result = try buildMCPToolsRun(testing.allocator, arr, null);
+    try testing.expect(result == null);
+
+    const str = std.json.Value{ .string = "not-an-object" };
+    const result2 = try buildMCPToolsRun(testing.allocator, str, null);
+    try testing.expect(result2 == null);
+}
+
+test "buildMCPToolsRun: empty object returns empty slice (not null)" {
+    var obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer obj.deinit(testing.allocator);
+    const result = try buildMCPToolsRun(testing.allocator, .{ .object = obj }, null);
+    try testing.expect(result != null);
+    defer testing.allocator.free(result.?);
+    try testing.expectEqual(@as(usize, 0), result.?.len);
+}
+
+test "buildMCPToolsRun: non-object server entry is skipped" {
+    var obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer obj.deinit(testing.allocator);
+    // Server entry is a string, not an object — should be skipped
+    try obj.put(testing.allocator, try testing.allocator.dupe(u8, "bad"), .{ .string = "not-an-object" });
+    // Free the duped key (ObjectMap.deinit doesn't free keys)
+    defer {
+        var it = obj.iterator();
+        while (it.next()) |kv| testing.allocator.free(kv.key_ptr.*);
+    }
+    const result = try buildMCPToolsRun(testing.allocator, .{ .object = obj }, null);
+    try testing.expect(result != null);
+    defer testing.allocator.free(result.?);
+    try testing.expectEqual(@as(usize, 0), result.?.len);
+}
+
+test "buildMCPToolsRun: server with neither command nor url is skipped" {
+    var server_obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer server_obj.deinit(testing.allocator);
+    // Empty server object — no command, no url
+    var outer = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer outer.deinit(testing.allocator);
+    const key = try testing.allocator.dupe(u8, "empty");
+    defer testing.allocator.free(key);
+    try outer.put(testing.allocator, key, .{ .object = server_obj });
+    const result = try buildMCPToolsRun(testing.allocator, .{ .object = outer }, null);
+    try testing.expect(result != null);
+    defer testing.allocator.free(result.?);
+    try testing.expectEqual(@as(usize, 0), result.?.len);
+}
+
+test "buildMCPToolsRun: stdio server with bogus command is skipped (no crash)" {
+    // Uses a non-existent binary — getOrSpawn fails with ChildSpawnFailed,
+    // which buildMCPToolsRun catches and skips. Proves the spawn-failure
+    // path doesn't crash or propagate the error.
+    //
+    // NOTE: this touches StdioRegistry.global (process-global singleton
+    // backed by testing.allocator). Clean it up afterwards so the
+    // DebugAllocator doesn't report the registry's arena as a leak.
+    const json_text =
+        \\{"bad": {"command": "/no/such/binary/should/exist/xyzzy", "args": []}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_text, .{});
+    defer parsed.deinit();
+    const result = try buildMCPToolsRun(testing.allocator, parsed.value, null);
+    try testing.expect(result != null);
+    defer testing.allocator.free(result.?);
+    try testing.expectEqual(@as(usize, 0), result.?.len);
+    mcp_stdio.StdioRegistry.deinitGlobal();
+}
+
+test "buildMCPToolsRun: stdio server with empty command is skipped" {
+    const json_text =
+        \\{"empty": {"command": "", "args": []}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_text, .{});
+    defer parsed.deinit();
+    const result = try buildMCPToolsRun(testing.allocator, parsed.value, null);
+    try testing.expect(result != null);
+    defer testing.allocator.free(result.?);
+    // Empty command → MCPServerCommandNotFound → skipped
+    try testing.expectEqual(@as(usize, 0), result.?.len);
+}
+
+// ============================================================================
+// Agent-visibility wiring tests: prove the agent CAN see MCP tools
+// ============================================================================
+//
+// These tests verify the contract that matters to the user: when MCP
+// tools ARE fetched, they appear as `mcp_<server>_<tool>` in the
+// agent's tool list. They use mock data (no child spawn) so they're
+// fast and hermetic.
+
+test "convertMcpToolsToAgentTools: names are mcp_<server>_<tool> (agent sees them)" {
+    // Mock one MCP tool like graphify's query_graph
+    const props_json =
+        \\{"question": {"type": "string", "description": "Question to ask"}}
+    ;
+    var props_parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, props_json, .{});
+    defer props_parsed.deinit();
+    const mcp_tools = [_]mcp_types.McpTool{.{
+        .name = "query_graph",
+        .description = "Search the knowledge graph",
+        .inputSchema = .{
+            .type = "object",
+            .properties = props_parsed.value,
+            .required = null,
+        },
+    }};
+    const result = try convertMcpToolsToAgentTools(testing.allocator, &mcp_tools, "graphify");
+    defer {
+        for (result) |*t| {
+            testing.allocator.free(t.function.name);
+            testing.allocator.free(t.function.description);
+            for (t.function.parameters.properties) |*p| {
+                testing.allocator.free(p.name);
+                testing.allocator.free(p.type);
+                testing.allocator.free(p.description);
+            }
+            testing.allocator.free(t.function.parameters.properties);
+            testing.allocator.free(t.function.parameters.required);
+        }
+        testing.allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    // THE contract: agent sees mcp_graphify_query_graph
+    try testing.expectEqualStrings("mcp_graphify_query_graph", result[0].function.name);
+    try testing.expectEqualStrings("Search the knowledge graph", result[0].function.description);
+    try testing.expectEqual(@as(usize, 1), result[0].function.parameters.properties.len);
+    try testing.expectEqualStrings("question", result[0].function.parameters.properties[0].name);
+}
+
+test "fetchToolsFromServerStdio: empty command returns MCPServerCommandNotFound (no spawn)" {
+    // Fast-failure path — no child spawned, no global registry touched.
+    var empty_obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer empty_obj.deinit(testing.allocator);
+    const err = fetchToolsFromServerStdio(testing.allocator, "srv", empty_obj, 1_000_000_000, null);
+    try testing.expectError(error.MCPServerCommandNotFound, err);
+}
+
+test "fetchToolsFromServerStdio: missing command field returns MCPServerCommandNotFound" {
+    var obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer obj.deinit(testing.allocator);
+    // Has url but no command — fetchToolsFromServerStdio only looks at
+    // command/args, so empty argv → CommandNotFound
+    const err = fetchToolsFromServerStdio(testing.allocator, "srv", obj, 1_000_000_000, null);
+    try testing.expectError(error.MCPServerCommandNotFound, err);
 }

@@ -472,33 +472,24 @@ pub const HttpRegistry = struct {
     var global_registry: ?HttpRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;
 
-    /// Explicit one-time init from `main` — call with main's allocator
-    /// (`init.gpa`) at startup, before serving (see main.zig).
-    /// Idempotent: first call wins (locked); later calls are no-ops.
+    /// Get the process-global registry. Lazily initialized on first
+    /// call. `allocator` is the long-lived allocator (typically
+    /// `di.allocator` from main.zig) — NOT `std.heap.page_allocator`.
     ///
-    /// The allocator MUST have process lifetime (main's GPA). A
-    /// per-run/per-request arena here poisoned ALL later runs with a
-    /// dead arena (segfault in ArenaAllocator.loadBuf via
-    /// Client.perform on the second agent run) — that is why this is
-    /// explicit init from main instead of lazy first-caller init.
-    /// Trace: main.zig `init.gpa` → `initGlobal` → registry arena →
-    /// cached HttpClients.
-    pub fn initGlobal(allocator: std.mem.Allocator) void {
+    /// NOTE: first call wins. Production goes through the eager init
+    /// in main.zig (process-lifetime GPA) and the cached
+    /// `di.mcp_http_registry` handle, so the lazy path only serves
+    /// unit tests. Never pass a per-run/per-request arena here: it
+    /// would back the process-global cache with dead memory (segfault
+    /// in ArenaAllocator.loadBuf on the next run — see post-mortem in
+    /// getOrConnect below).
+    pub fn global(allocator: std.mem.Allocator) *HttpRegistry {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
         if (global_registry == null) {
             global_registry = HttpRegistry.init(allocator);
         }
-    }
-
-    /// Get the process-global registry. Must have been initialized via
-    /// `initGlobal` (main.zig does this at startup). Panics otherwise —
-    /// a global with no backing is a programmer error, and failing loud
-    /// beats silently backing it with a short-lived caller arena.
-    pub fn global() *HttpRegistry {
-        mutexLock(&global_init_mutex);
-        defer global_init_mutex.unlock();
-        return &(global_registry orelse @panic("HttpRegistry.global: registry not initialized — call HttpRegistry.initGlobal(main_allocator) at startup (see main.zig)"));
+        return &global_registry.?;
     }
 
     /// Called by main.zig shutdown hook. Frees all clients + the map.

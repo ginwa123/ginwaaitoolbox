@@ -47,6 +47,7 @@ import KanbanList from '../tool_outputs/KanbanList.vue'
 import SaveMemory from '../tool_outputs/SaveMemory.vue'
 import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import DeleteMemory from '../tool_outputs/DeleteMemory.vue'
+import McpTool from '../tool_outputs/McpTool.vue'
 
 type PeekStatus = 'idle' | 'loading' | 'streaming' | 'complete' | 'error'
 
@@ -369,6 +370,12 @@ watch(
               <DeleteMemory
                 v-else-if="msg.tool_name === 'delete_memory'"
                 :content="innerToolData(msg) ?? msg.content"
+              />
+              <McpTool
+                v-else-if="msg.tool_name?.startsWith('mcp_')"
+                :content="innerToolData(msg) ?? msg.content"
+                :tool-name="msg.tool_name ?? 'mcp_tool'"
+                :parameters="getParametersForMessage(msg)"
               />
               <!-- Fallback: unknown tool name — generic <pre> bubble. -->
               <div v-else class="peek-tool-fallback">

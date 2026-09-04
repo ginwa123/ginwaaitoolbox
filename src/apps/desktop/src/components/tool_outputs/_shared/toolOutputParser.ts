@@ -734,3 +734,115 @@ export function parseListDirectory(content: string): ParsedListDirectory {
     error: null,
   }
 }
+
+// ─── mcp_* (universal MCP tool) ─────────────────────────────────────────────
+//
+// Any tool whose name starts with `mcp_` (e.g. `mcp_graphify_graph_stats`,
+// `mcp_db_query`) renders through the universal `<McpTool>` card. The backend
+// (`handle_tool.zig`) stores MCP results as RAW server text (not a wrapped
+// `<tool>` envelope) on success, and as a wrapped
+// `wrapToolOutput(..., success=false, err, "")` envelope on failure — so the
+// parser tolerates BOTH shapes:
+//
+//   raw success:   `Nodes: 14885 Edges: 21958 ...` (or JSON)
+//   error envelope: `<tool><name>mcp_...</name>...<success>false</success><error>...</error>...</tool>`
+//
+// `toolName` is the full registry name (`mcp_<server>_<tool>`). The server is
+// the segment between the first and second underscore; the sub-tool is the
+// remainder (which may itself contain underscores, e.g. `graph_stats`).
+
+export interface ParsedMcp {
+  /** Full registry name (e.g. `mcp_graphify_graph_stats`). */
+  toolName: string
+  /** Server segment (e.g. `graphify`), or null when the name has no second underscore. */
+  server: string | null
+  /** Sub-tool segment (e.g. `graph_stats`), or null when unparseable. */
+  subTool: string | null
+  /** Raw output text (unwrapped from `<data>` when an envelope is present). */
+  output: string
+  /** JSON-pretty (2-space) when output parses as JSON, else identical to output. */
+  prettyOutput: string
+  /** True when output parsed as JSON. */
+  isJson: boolean
+  /** Line count of output (0 for empty). */
+  lineCount: number
+  /** Byte length of output. */
+  byteSize: number
+  /** False only when an envelope carries `<success>false</success>`. */
+  success: boolean
+  /** Error message on failure; null on success. */
+  error: string | null
+}
+
+export function splitMcpToolName(toolName: string): { server: string | null; subTool: string | null } {
+  const prefix = 'mcp_'
+  if (!toolName.startsWith(prefix)) return { server: null, subTool: null }
+  const after = toolName.slice(prefix.length)
+  if (!after) return { server: null, subTool: null }
+  const idx = after.indexOf('_')
+  if (idx === -1) return { server: after || null, subTool: null }
+  const server = after.slice(0, idx) || null
+  const subTool = after.slice(idx + 1) || null
+  return { server, subTool }
+}
+
+export function parseMcp(toolName: string, content: string): ParsedMcp {
+  const { server, subTool } = splitMcpToolName(toolName)
+
+  // Envelope-aware unwrap: error path carries `<success>false</success>` +
+  // `<error>`, success placeholders carry `<data></data>`. Raw MCP success
+  // output has neither tag — fall through to raw.
+  const successFlag = extractBool(content, 'success', true)
+  const errorTag = extractTag(content, 'error')
+  const dataTag = extractTag(content, 'data')
+
+  let output: string
+  let success: boolean
+  let error: string | null
+  if (!successFlag) {
+    success = false
+    error = errorTag
+    output = dataTag ?? ''
+  } else if (dataTag !== null) {
+    // Wrapped success (placeholder or future backend wrap): inner data.
+    success = true
+    error = null
+    output = dataTag
+  } else if (errorTag !== null && content.includes('<tool>')) {
+    // Defensive: envelope with error tag but success flag defaulted true
+    // (shouldn't happen — wrapToolOutput always pairs them). Treat as error.
+    success = false
+    error = errorTag
+    output = ''
+  } else {
+    success = true
+    error = null
+    output = content
+  }
+
+  let prettyOutput = output
+  let isJson = false
+  const trimmed = output.trim()
+  if (trimmed) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      prettyOutput = JSON.stringify(parsed, null, 2)
+      isJson = true
+    } catch {
+      // Not JSON — show raw.
+    }
+  }
+
+  return {
+    toolName,
+    server,
+    subTool,
+    output,
+    prettyOutput,
+    isJson,
+    lineCount: output ? output.split('\n').length : 0,
+    byteSize: output.length,
+    success,
+    error,
+  }
+}

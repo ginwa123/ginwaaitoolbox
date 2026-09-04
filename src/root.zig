@@ -92,6 +92,15 @@ pub const ContextIPCTui = struct {
 
     static_dir_path: ?[]const u8 = null,
 
+    /// Process-global MCP stdio registry, cached here so every call site
+    /// goes through the singleton struct (`di.mcp_stdio_registry`) instead
+    /// of calling `StdioRegistry.global(allocator)` with its own allocator
+    /// choice. Eagerly set in main.zig after `setSingleton`; lazily filled
+    /// by `mcpStdioRegistry()` on first use when main didn't (unit tests).
+    /// Nullable + default null so existing struct literals keep compiling.
+    mcp_stdio_registry: ?*mcp_stdio.StdioRegistry = null,
+    mcp_http_registry: ?*mcp_http.HttpRegistry = null,
+
     /// Schedule an async session-create task on the Io group.
     ///
     /// Lifetime contract: the string fields of `obj` are duped into
@@ -536,6 +545,41 @@ pub const loggermod = @import("modules/logger/Logger.zig");
 pub const mcp_stdio = @import("modules/agent/mcp/mcp/mcp_stdio.zig");
 pub const mcp_http = @import("modules/agent/mcp/mcp/mcp_http.zig");
 pub const mcp_types = @import("modules/agent/mcp/mcp/mcp_types.zig");
+
+/// Process-global MCP stdio registry accessor (lives in root so every
+/// call site shares one `long_lived` allocator choice).
+///
+/// Picks the DI allocator (process lifetime, via `getSingleton`) when the
+/// server is up, else falls back to the caller-provided allocator (unit
+/// tests / pre-singleton startup). Replaces the repeated two-liner:
+/// `const long_lived = if (getSingleton()) |di| di.allocator else |_| alloc;`
+/// `const reg = mcp_stdio.StdioRegistry.global(long_lived);`
+///
+/// Prefers the cached `di.mcp_stdio_registry` (eagerly set in main.zig) so
+/// every call site goes through the singleton struct; lazily fills the
+/// cache when main didn't (unit tests). The lazy fill is benign under
+/// concurrency: `global()` itself is mutex-protected and every thread
+/// computes the same pointer value.
+pub fn mcpStdioRegistry(fallback: std.mem.Allocator) *mcp_stdio.StdioRegistry {
+    if (getSingleton()) |di| {
+        if (di.mcp_stdio_registry) |cached| return cached;
+        const reg = mcp_stdio.StdioRegistry.global(di.allocator);
+        di.mcp_stdio_registry = reg;
+        return reg;
+    } else |_| {}
+    return mcp_stdio.StdioRegistry.global(fallback);
+}
+
+/// Same shape for the HTTP transport registry.
+pub fn mcpHttpRegistry(fallback: std.mem.Allocator) *mcp_http.HttpRegistry {
+    if (getSingleton()) |di| {
+        if (di.mcp_http_registry) |cached| return cached;
+        const reg = mcp_http.HttpRegistry.global(di.allocator);
+        di.mcp_http_registry = reg;
+        return reg;
+    } else |_| {}
+    return mcp_http.HttpRegistry.global(fallback);
+}
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
