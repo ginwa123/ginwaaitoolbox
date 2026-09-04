@@ -2,6 +2,7 @@
 
 /* Kanagawa Dragon Theme - inspired by Japanese woodblock prints */
 :root {
+  color-scheme: dark;
   /* Background shades */
   --color-bg-dim: #12120f;
   --color-bg-gutter: #282727;
@@ -88,6 +89,7 @@
 /* Base layer styles */
 @layer base {
   html {
+    color-scheme: dark;
     overflow-x: hidden;
     /*
      * Removed `touch-action: manipulation` (formerly suppressed the
@@ -103,6 +105,28 @@
   body {
     @apply bg-[--color-bg] text-[--color-fg] font-sans antialiased;
     overflow-x: hidden;
+  }
+
+  /* Native form controls: force dark rendering in WebView2/WebView.
+   * Without this, WebView2 defaults to a light color-scheme and paints
+   * <select> (closed button + popup) white even when an inline
+   * background-color is set — while desktop Chrome follows the OS
+   * dark theme and looks correct. App is dark-only (Kanagawa Dragon). */
+  select,
+  input,
+  textarea {
+    color-scheme: dark;
+  }
+
+  select {
+    background-color: var(--semantic-content-bg);
+    color: var(--semantic-text);
+    border-color: var(--color-border);
+  }
+
+  select option {
+    background-color: var(--semantic-content-bg);
+    color: var(--semantic-text);
   }
 
   /* Selection */

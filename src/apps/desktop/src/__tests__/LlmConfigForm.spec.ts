@@ -156,4 +156,17 @@ describe('LlmConfigForm', () => {
     const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseValue
     expect(emitted.compaction_threshold_percent).toBe(100)  // clamped
   })
+
+  // Task task_1788535488395_0 (WebView2 white select): every select/input
+  // must carry an inline color-scheme:dark hint so WebView2 renders native
+  // controls dark even though it defaults to a light color-scheme.
+  // Global `color-scheme: dark` in style.css is the primary fix.
+  it('selects carry color-scheme:dark for WebView2', () => {
+    const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue } } })
+    const selects = wrapper.findAll('select')
+    expect(selects.length).toBeGreaterThan(0)
+    for (const s of selects) {
+      expect((s.element as HTMLElement).style.colorScheme).toBe('dark')
+    }
+  })
 })

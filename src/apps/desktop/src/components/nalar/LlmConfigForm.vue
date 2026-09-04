@@ -48,6 +48,11 @@ const inputStyle = (hasError?: boolean): Record<string, string> => ({
   backgroundColor: 'var(--semantic-content-bg)',
   color: 'var(--semantic-text)',
   borderColor: hasError ? 'var(--color-red)' : 'var(--color-border)',
+  // WebView2 defaults to a light color-scheme and paints native <select>
+  // white even with an explicit background — this per-element hint forces
+  // dark control rendering. Global `color-scheme: dark` in style.css is
+  // the primary fix; this is defense-in-depth. See task_1788535488395_0.
+  colorScheme: 'dark',
 })
 
 const labelBase = 'block text-xs font-medium mb-1.5'
