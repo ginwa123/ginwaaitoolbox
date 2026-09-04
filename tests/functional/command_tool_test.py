@@ -1,0 +1,181 @@
+"""Functional wire verification for the unified `command` tool.
+
+Branch: worktree/nalar-unify-command (commit `unify: add command tool
+merged from bash+pwsh`).
+
+What this covers
+================
+The unify change merges `bash` + `pwsh` into a single `command` tool
+(`src/modules/agent/tools/command.zig`) that dispatches per-OS
+(`pwsh` on Windows, `bash` elsewhere) while keeping `bash`/`pwsh` as
+deprecated shims. Registration is in `tools_equipped.zig`:
+`equips()` + `UNIFIED_TOOL_REGISTRY()` both gain a `command` entry.
+
+A full end-to-end LLM agent run (`echo hello` via chat) is too heavy
+for a wire test (it needs a stub LLM that returns a tool_call for
+`command`), so this test verifies the wire-visible halves instead —
+the same strategy as `agent_add_mcp_server_test.py`:
+
+  * REGISTRY — GET /api/agent-tools/registry exposes `command`
+    alongside the legacy `bash` + `pwsh` shims (proves the new tool
+    is registered and the old ones were NOT removed).
+  * ENABLE/DISABLE — POST/DELETE /api/agents/:id/tools round-trips
+    `command` (proves the per-agent allowlist path accepts the new
+    name; unknown names 400).
+  * LEGACY — POST `bash` still 201s (proves the old tool still
+    dispatches after the unify).
+
+Run:
+    NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \
+      python3 -m pytest tests/functional/command_tool_test.py -v
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from harness import FunctionalHarness
+
+
+# ─── Helpers (mirror agent_tools_toggle_test.py) ─────────────────────────────
+
+
+def _create_workspace(harness: FunctionalHarness, name: str = "cmd-ws") -> str:
+    r = harness.http("POST", "/api/workspaces", json_body={"name": name}, expect=201)
+    return r.json()["id"]
+
+
+def _create_agent(
+    harness: FunctionalHarness,
+    workspace_id: str,
+    name: str = "cmd-agent",
+    path: str = "/tmp/command-tool-test",
+) -> str:
+    r = harness.http(
+        "POST",
+        f"/api/workspaces/{workspace_id}/items/agent",
+        json_body={"name": name, "path": path},
+        expect=201,
+    )
+    body = r.json()
+    item = body.get("item")
+    agent = body.get("agent")
+    assert item is not None, f"missing 'item' envelope: {body!r}"
+    assert agent is not None, f"missing 'agent' envelope: {body!r}"
+    assert agent["id"] == item["id"], (
+        f"agents.id should equal workspace_items.id (1-1 invariant). "
+        f"got agent.id={agent['id']!r} vs item.id={item['id']!r}"
+    )
+    return item["id"]
+
+
+def _registry_names(harness: FunctionalHarness) -> list[str]:
+    r = harness.http("GET", "/api/agent-tools/registry", expect=200)
+    body = r.json()
+    names = [t["name"] for t in body.get("tools", [])]
+    assert len(names) >= 1, "registry returned 0 tools — fixture broken?"
+    return names
+
+
+def _list_tools(harness: FunctionalHarness, agent_id: str) -> list[str]:
+    r = harness.http("GET", f"/api/agents/{agent_id}/tools", expect=200)
+    body = r.json()
+    assert isinstance(body.get("tools"), list), (
+        f"tools response should be {{tools: list}}, got {body!r}"
+    )
+    return list(body["tools"])
+
+
+def _enable_tool(
+    harness: FunctionalHarness, agent_id: str, tool_name: str
+) -> dict[str, Any]:
+    r = harness.http(
+        "POST",
+        f"/api/agents/{agent_id}/tools",
+        json_body={"tool_name": tool_name},
+        expect=201,
+    )
+    tool = r.json()
+    assert tool.get("tool_name") == tool_name, (
+        f"expected tool_name={tool_name!r}, got {tool!r}"
+    )
+    return tool
+
+
+# ─── Tests ───────────────────────────────────────────────────────────────────
+
+
+class TestCommandRegistry:
+    def test_registry_exposes_command_alongside_bash_and_pwsh(
+        self, harness: FunctionalHarness
+    ) -> None:
+        """The unify registers `command` WITHOUT removing the shims."""
+        names = _registry_names(harness)
+        assert "command" in names, (
+            f"registry missing unified 'command' tool; got {names!r}"
+        )
+        assert "bash" in names, (
+            f"registry missing legacy 'bash' shim; got {names!r}"
+        )
+        assert "pwsh" in names, (
+            f"registry missing legacy 'pwsh' shim; got {names!r}"
+        )
+
+
+class TestCommandEnableDisable:
+    def test_command_enable_list_disable_lifecycle(
+        self, harness: FunctionalHarness
+    ) -> None:
+        """POST command → 201, GET lists it, DELETE removes it."""
+        ws_id = _create_workspace(harness)
+        agent_id = _create_agent(harness, ws_id)
+
+        assert _list_tools(harness, agent_id) == []
+
+        _enable_tool(harness, agent_id, "command")
+        assert _list_tools(harness, agent_id) == ["command"]
+
+        r = harness.http(
+            "DELETE", f"/api/agents/{agent_id}/tools/command", expect=200
+        )
+        assert r.json().get("ok") is True, f"expected ok=true, got {r.json()!r}"
+        assert _list_tools(harness, agent_id) == []
+
+    def test_command_enable_duplicate_is_409(
+        self, harness: FunctionalHarness
+    ) -> None:
+        """Second POST of `command` hits the UNIQUE index → 409."""
+        ws_id = _create_workspace(harness)
+        agent_id = _create_agent(harness, ws_id)
+
+        _enable_tool(harness, agent_id, "command")
+        harness.http(
+            "POST",
+            f"/api/agents/{agent_id}/tools",
+            json_body={"tool_name": "command"},
+            expect=409,
+        )
+        assert _list_tools(harness, agent_id) == ["command"]
+
+
+class TestLegacyBashStillDispatches:
+    def test_bash_enable_still_201s_after_unify(
+        self, harness: FunctionalHarness
+    ) -> None:
+        """The deprecated `bash` shim must still enable (not removed)."""
+        ws_id = _create_workspace(harness)
+        agent_id = _create_agent(harness, ws_id)
+
+        _enable_tool(harness, agent_id, "bash")
+        assert _list_tools(harness, agent_id) == ["bash"]
+
+    def test_command_and_bash_coexist_sorted(
+        self, harness: FunctionalHarness
+    ) -> None:
+        """Both names can be enabled on one agent; list is sorted ASC."""
+        ws_id = _create_workspace(harness)
+        agent_id = _create_agent(harness, ws_id)
+
+        _enable_tool(harness, agent_id, "command")
+        _enable_tool(harness, agent_id, "bash")
+        assert _list_tools(harness, agent_id) == ["bash", "command"]
