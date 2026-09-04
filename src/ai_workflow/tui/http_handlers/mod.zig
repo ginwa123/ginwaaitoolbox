@@ -28,6 +28,9 @@ pub const sessionMessagesHandler = @import("session_messages_get.zig").sessionMe
 // GET /api/llm/session/:session_id/stream — in-flight stream snapshot
 // (task_1787673548905_0 stream-resume-on-reselect).
 pub const streamGetHandler = @import("stream_get.zig").streamGetHandler;
+// GET /api/subagent/progress/:tool_call_id — live spawn-batch snapshot
+// (task_1788505292766_1 spawn-subagent-refresh-persist).
+pub const subAgentProgressGetHandler = @import("subagent_progress_get.zig").subAgentProgressGetHandler;
 pub const sessionLatestHandler = @import("session_latest.zig").sessionLatestHandler;
 pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHandler;
 pub const pingHandler = @import("ping.zig").pingHandler;

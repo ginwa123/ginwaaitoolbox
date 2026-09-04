@@ -29,10 +29,10 @@
 
 - EDIT `src/ai_workflow/tui/agentic_loop/subagent_progress.zig` — add snapshot registry (mutex-guarded HashMap) + snapshot getter.
 - EDIT `src/ai_workflow/tui/agentic_loop/tools_exec_spawn_sub_agent.zig` — write registry on launched/completed/failed + clear on final envelope.
-- EDIT session-messages GET handler (whichever serves `GET /llm/session/:id/messages` — likely `src/ai_workflow/tui/*session_messages_get*.zig`) — attach `subagent_progress_snapshot` for placeholder rows, OR new tiny `GET /api/subagent/progress?tool_call_id=` handler + route in `main.zig` (AFTER literal routes to avoid `:param` shadowing; static-contract test locks order).
+- NEW `src/ai_workflow/tui/http_handlers/subagent_progress_get.zig` — `GET /api/subagent/progress/:tool_call_id` (separate endpoint, NOT piggyback: avoids changing the shared SessionMessage struct; fresh prefix so no route-order risk) + route in `main.zig` + `mod.zig` re-exports + `tui/mod.zig` re-export.
 - EDIT `src/apps/desktop/src/helpers/subagentProgress.ts` — add snapshot → map rehydrator (reuse `applyProgressEvent` shape).
 - EDIT `src/apps/desktop/src/components/views/ChatView.vue` — call rehydrator at end of `loadChatHistory` for placeholder `spawn_sub_agent` rows; keep existing live bus + clear-on-envelope logic untouched.
-- EDIT `src/apps/desktop/src/components/tool_outputs/SpawnSubAgent.vue` — only if needed: render "reconnecting…" / "interrupted by restart" fallback states.
+- EDIT `src/apps/desktop/src/components/tool_outputs/SpawnSubAgent.vue` — Task 0 fallback: `isStarting` state (no `<results>` + no `<summary>` + no live rows) renders pulsing "starting…" header + auto-shown "Spawning…" body with requested names instead of "0 sub-agents".
 - NEW `docs/superpowers/plans/2026-09-04-spawn-subagent-refresh-persistence.md` (this file).
 - NEW/EDIT tests: `subagent_progress_test.zig` (registry), `tools_exec_spawn_sub_agent_test.zig` (registry writes), `subagentProgress.spec.ts` (rehydrator), `ChatView.subagent-refresh.spec.ts` (loadChatHistory rehydrate), `tests/functional/subagent_refresh_test.py` (harness: launch long subagents → refresh-equivalent GET → assert snapshot non-empty → await completion → assert final envelope).
 

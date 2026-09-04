@@ -112,8 +112,9 @@ const toggleAgent = (idx: number) => {
 }
 
 const toggle = () => {
-  // In live-progress mode the body is already shown — toggle is a no-op.
-  if (inLiveMode.value) return
+  // In live-progress or starting-placeholder mode the body is already
+  // shown — toggle is a no-op.
+  if (inLiveMode.value || isStarting.value) return
   if (agents.value.length > 0) {
     isExpanded.value = !isExpanded.value
   }
@@ -154,6 +155,30 @@ const liveSummary = computed(() => {
     failed: rows.filter(r => r.status === 'failed').length,
   }
 })
+
+// ─── Placeholder-starting fallback (2026-09-04 refresh fix, Task 0) ───
+//
+// When the backend has written the Phase 1 placeholder envelope
+// (`handle_tool.zig` empty `<data></data>`, no `<results>` yet) and no
+// live `role="subagent_progress"` events have arrived yet — e.g. right
+// after page refresh mid-run, or in the ms between placeholder SSE and
+// the first `launched` event — both `agents` and `liveProgress` are
+// empty. Previously the header fell through to `agentCount = 0` and
+// showed "0 sub-agents", indistinguishable from "finished with zero".
+//
+// `isStarting` detects that state: no parsed agents, no `<summary>`
+// (the final envelope in `tools_exec_spawn_sub_agent.zig` always
+// prints `<summary succeeded= failed= />`, so its absence means the
+// tool has NOT completed), and no live rows. The template renders a
+// pulsing "starting…" header + auto-shown body instead of "0".
+const isStarting = computed(
+  () => agents.value.length === 0 && summary.value === null && liveProgress.value.length === 0,
+)
+
+// Expected count from the assistant's `tool_calls_json` args (parsed by
+// ChatView via `parseSpawnSubAgentArgs`). Used only for the starting
+// header copy ("3 sub-agents starting…" vs bare "starting…").
+const expectedCount = computed(() => props.subAgentArgs?.length ?? 0)
 
 /**
  * Emit a peek event for one sub-agent row. In live-progress mode,
@@ -228,9 +253,13 @@ function formatElapsed(ms: number): string {
       tabindex="0"
     >
       <span class="text-[var(--color-violet)] font-semibold text-xs">spawn_sub_agent</span>
-      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="(inLiveMode ? liveProgress.length : agentCount) + ' sub-agent(s)'">
+      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="(inLiveMode ? liveProgress.length : isStarting ? expectedCount : agentCount) + ' sub-agent(s)'">
         <template v-if="inLiveMode">
           {{ liveProgress.length }} sub-agent{{ liveProgress.length !== 1 ? 's' : '' }}
+        </template>
+        <template v-else-if="isStarting">
+          <template v-if="expectedCount > 0">{{ expectedCount }} sub-agent{{ expectedCount !== 1 ? 's' : '' }} starting…</template>
+          <template v-else>starting…</template>
         </template>
         <template v-else>
           {{ agentCount }} sub-agent{{ agentCount !== 1 ? 's' : '' }}
@@ -255,6 +284,11 @@ function formatElapsed(ms: number): string {
           ✗ {{ liveSummary.failed }}
         </span>
       </span>
+      <!-- Starting-placeholder summary (2026-09-04 refresh fix) -->
+      <span v-else-if="isStarting" class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full shrink-0 bg-yellow-500 animate-pulse" data-testid="starting-dot"></span>
+        <span class="text-[var(--semantic-text-muted)] font-semibold" data-testid="starting-badge">starting</span>
+      </span>
       <!-- Final-envelope summary -->
       <span v-else-if="summary" class="flex items-center gap-1.5">
         <span v-if="summary.succeeded > 0" class="text-green-500 font-semibold">
@@ -264,15 +298,41 @@ function formatElapsed(ms: number): string {
           ✗ {{ summary.failed }}
         </span>
       </span>
-      <!-- Toggle caret: hidden in live mode (body is always shown). -->
-      <span v-if="!inLiveMode && (agentCount > 0 || agents.length > 0)" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <!-- Toggle caret: hidden in live/starting mode (body is always shown). -->
+      <span v-if="!inLiveMode && !isStarting && (agentCount > 0 || agents.length > 0)" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
 
     <!-- Expanded content -->
-    <div v-if="isExpanded || inLiveMode" class="border-t border-[var(--color-border)] bg-black/[0.02]">
+    <div v-if="isExpanded || inLiveMode || isStarting" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <div class="divide-y divide-[var(--color-border)]">
+        <!-- STARTING placeholder (2026-09-04) — Phase 1 envelope with
+             empty <data>, no <results>, no live rows yet (e.g. right
+             after page refresh mid-run). Auto-shown like live mode. -->
+        <template v-if="isStarting">
+          <div class="overflow-hidden">
+            <div class="flex items-center gap-1 px-2 py-1.5 select-none">
+              <span class="w-2 h-2 rounded-full shrink-0 bg-yellow-500 animate-pulse" data-testid="starting-row-dot"></span>
+              <span class="text-[var(--semantic-text-muted)] text-xs" data-testid="starting-row-text">
+                Spawning sub-agent{{ expectedCount !== 1 ? 's' : '' }}…
+              </span>
+              <span v-if="expectedCount > 0" class="text-[10px] text-[var(--semantic-text-muted)] whitespace-nowrap">
+                {{ expectedCount }} requested
+              </span>
+            </div>
+            <div v-if="subAgentArgs && subAgentArgs.length > 0" class="px-3 pb-2">
+              <div
+                v-for="(arg, idx) in subAgentArgs"
+                :key="`starting-${idx}`"
+                class="text-xs text-[var(--semantic-text-muted)] truncate"
+                :title="arg.instruction"
+              >
+                • {{ arg.agent_name }}
+              </div>
+            </div>
+          </div>
+        </template>
         <!-- LIVE PROGRESS rows (2026-08-23) — shown until the
              <results> envelope replaces props.content. Mirrors the
              shape of the parsed-envelope rows below for visual
