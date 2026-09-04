@@ -267,6 +267,168 @@ pub fn emitProgressEventWith(
 
     bus.emit(on_event_sent.SseEvent, input.parent_session_id, event);
     bus.emit(on_event_sent.SseEvent, "llm", event);
+
+    // 2026-09-04 refresh fix (task_1788505292766_1): mirror every
+    // progress event into the snapshot registry below so a mid-run
+    // page refresh can rehydrate via GET /api/subagent/progress.
+    // Fire-and-forget — a snapshot miss only costs a refresh
+    // rehydrate, never a sub-agent.
+    upsertSnapshot(input);
+}
+
+// =====================================================================
+// Snapshot registry (2026-09-04 refresh fix, task_1788505292766_1).
+//
+// Problem: progress events are SSE-ephemeral. A page refresh mid-run
+// re-inits ChatView's `subAgentProgressMap` to {} with no replay, so
+// the card loses its running/done breakdown (Task 0 shows an honest
+// "starting…" fallback, but the per-agent rows are still gone).
+//
+// Fix: mirror every progress event into this process-global,
+// mutex-guarded registry (tool_call_id → per-agent rows), mirroring
+// `stream_snapshot.zig` (stream-resume-on-reselect). A new
+// `GET /api/subagent/progress/:tool_call_id` handler reads it so
+// `loadChatHistory` can rehydrate the map for placeholder rows.
+//
+// Lifetime: entries are owned by `std.heap.page_allocator` (process
+// lifetime, NEVER a caller arena — same rule as stream_snapshot).
+// `clearSnapshot` runs when the final `<results>` envelope is built
+// (execSpawnSubAgent success + errdefer paths); after that the DB
+// row is the source of truth and the snapshot is dead weight.
+// Server restart wipes the map — refresh then falls back to Task 0's
+// "starting…" copy (honest degradation, no fake rows).
+// =====================================================================
+
+/// One row of a spawn batch's live state. Strings are owned by the
+/// registry (page_allocator); `getSnapshot` dupes them into the
+/// caller's allocator.
+pub const SnapshotRow = struct {
+    agent_name: []const u8,
+    status: ProgressStatus,
+    agent_index: usize,
+    total_agents: usize,
+    subagent_session_id: []const u8,
+    elapsed_ms: i64,
+};
+
+var snapshot_mutex: std.atomic.Mutex = .unlocked;
+var snapshot_registry: ?std.StringHashMap(std.ArrayList(SnapshotRow)) = null;
+
+fn snapshotLock() void {
+    while (!snapshot_mutex.tryLock()) std.atomic.spinLoopHint();
+}
+
+fn ensureSnapshotInit() void {
+    if (snapshot_registry == null) {
+        snapshot_registry = std.StringHashMap(std.ArrayList(SnapshotRow)).init(std.heap.page_allocator);
+    }
+}
+
+/// Mirror one progress event into the snapshot registry.
+/// Fire-and-forget: all errors are swallowed — the SSE path already
+/// logs build failures; a snapshot miss only costs a refresh
+/// rehydrate, never a sub-agent.
+pub fn upsertSnapshot(input: ProgressEventInput) void {
+    // Empty tool_call_id would collide every batch onto one key
+    // (empty-slice-as-NULL rule) — skip, same guard as the
+    // frontend clearProgressFor call sites.
+    if (input.tool_call_id.len == 0) return;
+    snapshotLock();
+    defer snapshot_mutex.unlock();
+    ensureSnapshotInit();
+
+    const gop = snapshot_registry.?.getOrPut(input.tool_call_id) catch return;
+    if (!gop.found_existing) {
+        const key = std.heap.page_allocator.dupe(u8, input.tool_call_id) catch return;
+        gop.key_ptr.* = key;
+        gop.value_ptr.* = .empty;
+    }
+    const rows = gop.value_ptr;
+
+    // Upsert by agent_index: launched → completed/failed overwrites.
+    for (rows.items) |*row| {
+        if (row.agent_index == input.agent_index) {
+            const new_name = std.heap.page_allocator.dupe(u8, input.agent_name) catch return;
+            const new_sid = std.heap.page_allocator.dupe(u8, input.session_id) catch {
+                std.heap.page_allocator.free(new_name);
+                return;
+            };
+            std.heap.page_allocator.free(row.agent_name);
+            std.heap.page_allocator.free(row.subagent_session_id);
+            row.agent_name = new_name;
+            row.subagent_session_id = new_sid;
+            row.status = input.status;
+            row.total_agents = input.total_agents;
+            row.elapsed_ms = input.elapsed_ms;
+            return;
+        }
+    }
+    const new_name = std.heap.page_allocator.dupe(u8, input.agent_name) catch return;
+    const new_sid = std.heap.page_allocator.dupe(u8, input.session_id) catch {
+        std.heap.page_allocator.free(new_name);
+        return;
+    };
+    rows.append(std.heap.page_allocator, .{
+        .agent_name = new_name,
+        .status = input.status,
+        .agent_index = input.agent_index,
+        .total_agents = input.total_agents,
+        .subagent_session_id = new_sid,
+        .elapsed_ms = input.elapsed_ms,
+    }) catch {
+        std.heap.page_allocator.free(new_name);
+        std.heap.page_allocator.free(new_sid);
+    };
+}
+
+/// Drop a batch's snapshot. Idempotent; runs when the final
+/// `<results>` envelope is built (the DB row takes over as truth).
+pub fn clearSnapshot(tool_call_id: []const u8) void {
+    if (tool_call_id.len == 0) return;
+    snapshotLock();
+    defer snapshot_mutex.unlock();
+    if (snapshot_registry) |*reg| {
+        if (reg.getPtr(tool_call_id)) |rows_ptr| {
+            for (rows_ptr.items) |row| {
+                std.heap.page_allocator.free(row.agent_name);
+                std.heap.page_allocator.free(row.subagent_session_id);
+            }
+            rows_ptr.deinit(std.heap.page_allocator);
+            // Copy the stored key header BEFORE remove: remove() looks
+            // the entry up by comparing keys, so the stored key must
+            // still be alive during the call. Free only afterwards.
+            const stored_key = reg.getKey(tool_call_id);
+            _ = reg.remove(tool_call_id);
+            if (stored_key) |k| {
+                std.heap.page_allocator.free(k);
+            }
+        }
+    }
+}
+
+/// Read a batch's snapshot. Rows + strings are duped into `allocator`
+/// (the caller's arena); the registry keeps its own copies. Returns
+/// an empty slice when unknown/cleared.
+pub fn getSnapshot(allocator: std.mem.Allocator, tool_call_id: []const u8) ![]SnapshotRow {
+    snapshotLock();
+    defer snapshot_mutex.unlock();
+    if (snapshot_registry) |*reg| {
+        if (reg.getPtr(tool_call_id)) |rows_ptr| {
+            const out = try allocator.alloc(SnapshotRow, rows_ptr.items.len);
+            for (rows_ptr.items, 0..) |row, i| {
+                out[i] = .{
+                    .agent_name = try allocator.dupe(u8, row.agent_name),
+                    .status = row.status,
+                    .agent_index = row.agent_index,
+                    .total_agents = row.total_agents,
+                    .subagent_session_id = try allocator.dupe(u8, row.subagent_session_id),
+                    .elapsed_ms = row.elapsed_ms,
+                };
+            }
+            return out;
+        }
+    }
+    return try allocator.alloc(SnapshotRow, 0);
 }
 
 // =====================================================================
@@ -429,4 +591,153 @@ test "buildProgressEventJson: type field stays llm_full wire shape" {
     });
     defer allocator.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\"type\":\"full\"") != null);
+}
+
+test "snapshot upsert + get round-trips rows" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    defer clearSnapshot("snap-tc-roundtrip");
+
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-roundtrip",
+        .agent_name = "agent-a",
+        .status = .launched,
+        .agent_index = 0,
+        .total_agents = 2,
+        .session_id = "subagent_1_agent-a",
+        .elapsed_ms = 100,
+    });
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-roundtrip",
+        .agent_name = "agent-b",
+        .status = .launched,
+        .agent_index = 1,
+        .total_agents = 2,
+        .session_id = "",
+        .elapsed_ms = 50,
+    });
+
+    const rows = try getSnapshot(a, "snap-tc-roundtrip");
+    try testing.expectEqual(@as(usize, 2), rows.len);
+    try testing.expectEqualStrings("agent-a", rows[0].agent_name);
+    try testing.expectEqual(ProgressStatus.launched, rows[0].status);
+    try testing.expectEqualStrings("subagent_1_agent-a", rows[0].subagent_session_id);
+    try testing.expectEqual(@as(i64, 100), rows[0].elapsed_ms);
+    try testing.expectEqualStrings("agent-b", rows[1].agent_name);
+    try testing.expectEqualStrings("", rows[1].subagent_session_id);
+}
+
+test "snapshot upsert same index overwrites (launched to completed)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    defer clearSnapshot("snap-tc-overwrite");
+
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-overwrite",
+        .agent_name = "agent-a",
+        .status = .launched,
+        .agent_index = 0,
+        .total_agents = 1,
+        .session_id = "subagent_1_agent-a",
+        .elapsed_ms = 10,
+    });
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-overwrite",
+        .agent_name = "agent-a",
+        .status = .completed,
+        .agent_index = 0,
+        .total_agents = 1,
+        .session_id = "subagent_1_agent-a",
+        .elapsed_ms = 999,
+    });
+
+    const rows = try getSnapshot(a, "snap-tc-overwrite");
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqual(ProgressStatus.completed, rows[0].status);
+    try testing.expectEqual(@as(i64, 999), rows[0].elapsed_ms);
+}
+
+test "snapshot clear removes batch, get returns empty" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-clear",
+        .agent_name = "agent-a",
+        .status = .launched,
+        .agent_index = 0,
+        .total_agents = 1,
+        .session_id = "",
+        .elapsed_ms = 0,
+    });
+    clearSnapshot("snap-tc-clear");
+
+    const rows = try getSnapshot(a, "snap-tc-clear");
+    try testing.expectEqual(@as(usize, 0), rows.len);
+
+    // Idempotent: clearing twice must not crash.
+    clearSnapshot("snap-tc-clear");
+}
+
+test "snapshot empty tool_call_id is a no-op" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "",
+        .agent_name = "agent-a",
+        .status = .launched,
+        .agent_index = 0,
+        .total_agents = 1,
+        .session_id = "",
+        .elapsed_ms = 0,
+    });
+
+    const rows = try getSnapshot(a, "");
+    try testing.expectEqual(@as(usize, 0), rows.len);
+}
+
+test "snapshot batches are isolated by tool_call_id" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    defer clearSnapshot("snap-tc-iso-a");
+    defer clearSnapshot("snap-tc-iso-b");
+
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-iso-a",
+        .agent_name = "AAA",
+        .status = .launched,
+        .agent_index = 0,
+        .total_agents = 1,
+        .session_id = "",
+        .elapsed_ms = 0,
+    });
+    upsertSnapshot(.{
+        .parent_session_id = "sess_p",
+        .tool_call_id = "snap-tc-iso-b",
+        .agent_name = "BBB",
+        .status = .failed,
+        .agent_index = 0,
+        .total_agents = 1,
+        .session_id = "",
+        .elapsed_ms = 5,
+    });
+
+    const rows_a = try getSnapshot(a, "snap-tc-iso-a");
+    const rows_b = try getSnapshot(a, "snap-tc-iso-b");
+    try testing.expectEqualStrings("AAA", rows_a[0].agent_name);
+    try testing.expectEqualStrings("BBB", rows_b[0].agent_name);
+    try testing.expectEqual(ProgressStatus.failed, rows_b[0].status);
 }

@@ -19,7 +19,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   applyProgressEvent,
+  applySnapshotRows,
   clearProgressFor,
+  isPlaceholderSpawnRow,
   type SubAgentProgressEvent,
   type SubAgentProgressMap,
 } from '../subagentProgress'
@@ -201,5 +203,100 @@ describe('clearProgressFor', () => {
     const original: SubAgentProgressMap = { tc_1: [] }
     const next = clearProgressFor(original, 'tc_unknown')
     expect(next).toBe(original)
+  })
+})
+
+describe('isPlaceholderSpawnRow (2026-09-04 refresh rehydrate)', () => {
+  const placeholder = {
+    role: 'tool',
+    tool_name: 'spawn_sub_agent',
+    tool_call_id: 'tc_1',
+    content: '<tool><name>spawn_sub_agent</name><parameters>{}</parameters><data></data></tool>',
+  }
+
+  it('matches a Phase 1 placeholder spawn row (no <summary>)', () => {
+    expect(isPlaceholderSpawnRow(placeholder)).toBe(true)
+  })
+
+  it('rejects a completed spawn row (has <summary>)', () => {
+    expect(
+      isPlaceholderSpawnRow({
+        ...placeholder,
+        content: '<tool><data><results><agent name="a" success="true"></agent><summary succeeded="1" failed="0" /></results></data></tool>',
+      }),
+    ).toBe(false)
+  })
+
+  it('rejects non-spawn tools, non-tool roles, and missing ids', () => {
+    expect(isPlaceholderSpawnRow({ ...placeholder, tool_name: 'bash' })).toBe(false)
+    expect(isPlaceholderSpawnRow({ ...placeholder, role: 'assistant' })).toBe(false)
+    expect(isPlaceholderSpawnRow({ ...placeholder, tool_call_id: null })).toBe(false)
+    expect(isPlaceholderSpawnRow({ ...placeholder, tool_call_id: '' })).toBe(false)
+    expect(isPlaceholderSpawnRow({ ...placeholder, content: null })).toBe(false)
+  })
+})
+
+describe('applySnapshotRows (2026-09-04 refresh rehydrate)', () => {
+  const snapshotRows = [
+    {
+      agent_name: 'agent-a',
+      status: 'launched' as const,
+      agent_index: 0,
+      total_agents: 2,
+      subagent_session_id: 'subagent_1_agent-a',
+      elapsed_ms: 1234,
+    },
+    {
+      agent_name: 'agent-b',
+      status: 'completed' as const,
+      agent_index: 1,
+      total_agents: 2,
+      subagent_session_id: 'subagent_2_agent-b',
+      elapsed_ms: 5000,
+    },
+  ]
+
+  it('folds snapshot rows into running/done UI rows', () => {
+    const next = applySnapshotRows({}, 'tc_1', snapshotRows)
+    expect(next.tc_1?.[0]).toMatchObject({ name: 'agent-a', status: 'running' })
+    expect(next.tc_1?.[1]).toMatchObject({
+      name: 'agent-b',
+      status: 'done',
+      sessionId: 'subagent_2_agent-b',
+    })
+  })
+
+  it('normalizes "" session ids to undefined (peek stays disabled)', () => {
+    const next = applySnapshotRows({}, 'tc_1', [
+      {
+        agent_name: 'agent-a',
+        status: 'launched' as const,
+        agent_index: 0,
+        total_agents: 1,
+        subagent_session_id: '',
+        elapsed_ms: 0,
+      },
+    ])
+    expect(next.tc_1?.[0]?.sessionId).toBeUndefined()
+  })
+
+  it('leaves the map untouched for an empty snapshot', () => {
+    const original: SubAgentProgressMap = {}
+    expect(applySnapshotRows(original, 'tc_1', [])).toBe(original)
+  })
+
+  it('does not regress done rows when a stale launched snapshot arrives', () => {
+    let map = applySnapshotRows({}, 'tc_1', snapshotRows)
+    map = applySnapshotRows(map, 'tc_1', [
+      {
+        agent_name: 'agent-b',
+        status: 'launched' as const,
+        agent_index: 1,
+        total_agents: 2,
+        subagent_session_id: '',
+        elapsed_ms: 0,
+      },
+    ])
+    expect(map.tc_1?.[1]?.status).toBe('done')
   })
 })

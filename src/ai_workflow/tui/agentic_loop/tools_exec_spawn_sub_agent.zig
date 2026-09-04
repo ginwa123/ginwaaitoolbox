@@ -377,6 +377,12 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     ctx.logger.debugFmt("execSpawnSubAgent called, arguments len={}", .{tc.function.arguments.len});
     ctx.logger.debugFmt("arguments: '{s}'", .{tc.function.arguments[0..@min(tc.function.arguments.len, 200)]});
 
+    // 2026-09-04 refresh fix: the snapshot registry (subagent_progress)
+    // is the refresh-rehydrate source until the final envelope lands in
+    // the DB. If exec fails before building the envelope, drop the
+    // batch's rows so a refresh falls back to Task 0's "starting…"
+    // copy instead of stranding stale running rows. Idempotent.
+    errdefer subagent_progress.clearSnapshot(ctx.tool_call_id);
     const parsed = spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20) catch |err| {
         ctx.logger.errFmt("parse_sub_agents failed: {}", .{err});
         return error.InvalidArguments;
@@ -570,6 +576,13 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     defer final_list.deinit(ctx.allocator);
     const inner_owned = try final_list.toOwnedSlice(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
+    // 2026-09-04 refresh fix: the final `<results>` envelope is built —
+    // the DB row (written by handle_tool's updateAndSendToolResult right
+    // after we return) takes over as the source of truth, so the
+    // snapshot has served its purpose. Drop it; a post-completion
+    // refresh renders the envelope, never the snapshot. (The errdefer
+    // above covers the failure paths.)
+    subagent_progress.clearSnapshot(ctx.tool_call_id);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -657,4 +670,20 @@ test "failed emit happens on every error return path" {
     const failhelper_already_set = std.mem.count(u8, source, "failSubAgentAlreadySet(");
     const helper_call_sites = failhelper_calls + failhelper_already_set;
     try testing.expect(helper_call_sites >= 4);
+}
+
+test "execSpawnSubAgent clears snapshot when final envelope is built" {
+    // 2026-09-04 refresh fix: the snapshot registry must be dropped
+    // once the final `<results>` envelope exists (success path) and on
+    // every error return (errdefer path). Otherwise batches leak
+    // process-lifetime rows and a post-completion refresh could
+    // rehydrate stale running rows instead of the DB envelope.
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
+    defer testing.allocator.free(source);
+
+    // Success path: explicit clear after the envelope is wrapped.
+    try testing.expect(std.mem.count(u8, source, "clearSnapshot(ctx.tool_call_id)") >= 1);
+    // Failure paths: errdefer covers every error return.
+    try testing.expect(std.mem.indexOf(u8, source, "errdefer subagent_progress.clearSnapshot(ctx.tool_call_id)") != null);
 }

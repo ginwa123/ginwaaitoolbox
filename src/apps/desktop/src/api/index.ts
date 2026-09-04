@@ -3041,6 +3041,33 @@ export async function getStreamSnapshot(sessionId: string): Promise<StreamSnapsh
   return await apiFetch<StreamSnapshot>(`/llm/session/${sessionId}/stream`)
 }
 
+// 2026-09-04 spawn-subagent-refresh-persist (task_1788505292766_1) —
+// live spawn-batch snapshot. A page refresh mid-run wipes ChatView's
+// in-memory subAgentProgressMap with no SSE replay; this endpoint
+// returns the backend's authoritative rows so loadChatHistory can
+// rehydrate placeholder spawn cards.
+export interface SubAgentProgressSnapshotRow {
+  agent_name: string
+  status: 'launched' | 'completed' | 'failed'
+  agent_index: number
+  total_agents: number
+  /** "" when the sub-agent session is not yet known (frontend
+   * normalizes to undefined, same as the omitted live-SSE field). */
+  subagent_session_id: string
+  elapsed_ms: number
+}
+
+export interface SubAgentProgressSnapshot {
+  tool_call_id: string
+  progress: SubAgentProgressSnapshotRow[]
+}
+
+export async function getSubAgentProgress(toolCallId: string): Promise<SubAgentProgressSnapshot> {
+  return await apiFetch<SubAgentProgressSnapshot>(
+    `/subagent/progress/${encodeURIComponent(toolCallId)}`,
+  )
+}
+
 // Workers SSE event types
 export interface WorkerEvent {
   action: 'created' | 'updated' | 'deleted' | 'reordered'

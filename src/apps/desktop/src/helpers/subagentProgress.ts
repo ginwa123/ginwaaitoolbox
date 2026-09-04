@@ -90,6 +90,31 @@ export interface SubAgentProgress {
 export type SubAgentProgressMap = Record<string, SubAgentProgress[]>
 
 /**
+ * True when a tool message is a spawn_sub_agent row still in Phase 1
+ * placeholder state (no `<summary>` → the tool hasn't completed).
+ * Used by ChatView.rehydrateSubAgentProgress to decide which rows
+ * need a snapshot fetch. Mirrors SpawnSubAgent.vue's `isStarting`
+ * (agents==0 && summary==null && no live rows) at the message-list
+ * level: the final envelope in `tools_exec_spawn_sub_agent.zig`
+ * always prints `<summary succeeded= failed= />`, so its absence
+ * means the batch is still running.
+ */
+export function isPlaceholderSpawnRow(msg: {
+  role?: string
+  tool_name?: string | null
+  tool_call_id?: string | null
+  content?: string | null
+}): boolean {
+  return (
+    msg.role === 'tool' &&
+    msg.tool_name === 'spawn_sub_agent' &&
+    !!msg.tool_call_id &&
+    typeof msg.content === 'string' &&
+    !msg.content.includes('<summary')
+  )
+}
+
+/**
  * Pure reducer: apply ONE progress event to the current map and
  * return a NEW map. Vue reactivity demands map-by-replacement; we
  * never mutate the input.
@@ -169,5 +194,43 @@ export function clearProgressFor(
   if (!(toolCallId in map)) return map
   const next: SubAgentProgressMap = { ...map }
   delete next[toolCallId]
+  return next
+}
+
+/**
+ * 2026-09-04 refresh rehydrate (task_1788505292766_1): fold a
+ * `GET /api/subagent/progress` snapshot into the map. Each snapshot
+ * row maps 1:1 onto a `SubAgentProgressEvent`, so we reuse the tested
+ * `applyProgressEvent` reducer (including its done→running guard).
+ * Backend "" session ids normalize to undefined — same as the
+ * omitted wire field on the live SSE path (peek stays disabled).
+ * Returns a NEW map (map-by-replacement for Vue reactivity); an
+ * empty snapshot leaves the map untouched.
+ */
+export function applySnapshotRows(
+  map: SubAgentProgressMap,
+  toolCallId: string,
+  rows: Array<{
+    agent_name: string
+    status: ProgressStatus
+    agent_index: number
+    total_agents: number
+    subagent_session_id: string
+    elapsed_ms: number
+  }>,
+): SubAgentProgressMap {
+  let next = map
+  for (const row of rows) {
+    next = applyProgressEvent(next, {
+      role: 'subagent_progress',
+      tool_call_id: toolCallId,
+      agent_name: row.agent_name,
+      status: row.status,
+      agent_index: row.agent_index,
+      total_agents: row.total_agents,
+      subagent_session_id: row.subagent_session_id || undefined,
+      elapsed_ms: row.elapsed_ms,
+    })
+  }
   return next
 }

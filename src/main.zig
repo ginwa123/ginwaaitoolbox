@@ -336,6 +336,13 @@ pub fn main(init: std.process.Init) !void {
     // mid-stream session. Registered AFTER the sibling /messages +
     // /queue_messages routes (route-order rule).
     try gs.router.get("/api/llm/session/:session_id/stream", ai_mod.http_handlers.streamGetHandler);
+    // Live spawn-batch snapshot (task_1788505292766_1
+    // spawn-subagent-refresh-persist) — serves `{ tool_call_id,
+    // progress[] }` from the in-memory subagent_progress registry so a
+    // refreshed ChatView can rehydrate running rows for placeholder
+    // spawn cards. Fresh `/api/subagent/...` prefix: no sibling
+    // `:param` routes exist under it, so no shadowing risk.
+    try gs.router.get("/api/subagent/progress/:tool_call_id", ai_mod.http_handlers.subAgentProgressGetHandler);
     // Unified SSE endpoint — single EventSource for all event families
     // (workers, sessions, kanban_column, kanban_task, per-session llm +
     // queue_messages). Replaces the 5 dedicated routes that previously

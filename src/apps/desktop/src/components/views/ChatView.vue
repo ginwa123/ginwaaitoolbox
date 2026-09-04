@@ -20,7 +20,9 @@ import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {
   applyProgressEvent,
+  applySnapshotRows,
   clearProgressFor,
+  isPlaceholderSpawnRow,
   type SubAgentProgressEvent,
   type SubAgentProgressMap,
 } from '../../helpers/subagentProgress'
@@ -1312,6 +1314,41 @@ const hasBubbleContent = (group: MessageGroup, groupIndex: number): boolean => {
 
 // ─── Chat History ────────────────────────────────────────────────────────────
 
+// 2026-09-04 spawn-subagent-refresh-persist (task_1788505292766_1) —
+// rehydrate live sub-agent rows after a (re)load. Progress events are
+// SSE-ephemeral; a refresh/re-mount wipes subAgentProgressMap with no
+// replay. For every spawn_sub_agent tool row still in placeholder
+// state (no `<summary>` → the tool hasn't completed), fetch the
+// backend's authoritative snapshot and fold it into the map.
+// Best-effort: any failure (server restarted → progress=[]; network
+// error) leaves Task 0's "starting…" fallback in place. Skipped on
+// loadMore (scroll-back fetches older, already-completed history).
+const rehydrateSubAgentProgress = async () => {
+  const placeholders = messages.value.filter(isPlaceholderSpawnRow)
+  if (placeholders.length === 0) return
+  const seen = new Set<string>()
+  for (const m of placeholders) {
+    const toolCallId = m.tool_call_id as string
+    if (seen.has(toolCallId)) continue
+    seen.add(toolCallId)
+    try {
+      const snap = await api.getSubAgentProgress(toolCallId)
+      if (snap.progress.length > 0) {
+        subAgentProgressMap.value = applySnapshotRows(
+          subAgentProgressMap.value,
+          toolCallId,
+          snap.progress,
+        )
+      }
+    } catch (err) {
+      console.warn(
+        '[ChatView] subagent progress snapshot fetch failed (starting fallback kept):',
+        err,
+      )
+    }
+  }
+}
+
 const loadChatHistory = async (loadMore = false) => {
   if (!sessionId.value || isPendingSession.value) return
 
@@ -1553,6 +1590,11 @@ const loadChatHistory = async (loadMore = false) => {
         }
 
         setupCodeBlockCopyButtons()
+        // 2026-09-04 spawn-subagent-refresh-persist
+        // (task_1788505292766_1) — rehydrate live sub-agent rows after
+        // a (re)load. Fire-and-forget: the map update re-renders cards
+        // when snapshots land; failures keep Task 0's "starting…".
+        void rehydrateSubAgentProgress()
       } finally {
         isInitialLoad = false
       }
