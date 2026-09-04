@@ -1349,11 +1349,8 @@ jobs:
         # and this cache step persists them across runs. Keyed by both
         # requirements.txt files so a dep bump invalidates cleanly.
         #
-        # Runs on all 3 OSes (Linux + macOS + Windows). On Windows the
-        # venv lives at `${{ runner.temp }}\nalar-ci-venv` (same path,
-        # different separator) and Chromium at the standard
-        # `%USERPROFILE%\.cache\ms-playwright`.
-        if: matrix.target.step != '__SKIP__'
+        # Runs on Linux + macOS (skipped on Windows — no functional/UI suites there).
+        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
         uses: actions/cache@v4
         with:
           path: |
@@ -1376,18 +1373,19 @@ jobs:
         # Wall-clock: ~5 min total (each test = ~10s including
         # boot + teardown).
         #
-        # One gate:
+        # Two gates:
         #   matrix.target.step != '__SKIP__' — preserves the
         #   existing cross-compile-cell guard from before this PR.
+        #   runner.os != 'Windows' — Windows skips functional suites.
         #
-        # Runs on all 3 OSes. The Python pytest harness's
+        # Runs on Linux + macOS (skipped on Windows). The Python pytest harness's
         # is_safe_tmp() allow-list previously blocked Windows temp
         # paths (C:/Users/.../AppData/Local/Temp); this was extended
         # in the worktree/fix-ci-windows-webview2 follow-up so the
         # Win temp roots are recognised as safe to rmtree. See
         # tests/functional/harness.py is_safe_tmp() for the full
         # Windows allow-list.
-        if: matrix.target.step != '__SKIP__'
+        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
         shell: bash
         env:
           # Relocate the pytest venv OUTSIDE the workspace (which is
@@ -1429,12 +1427,10 @@ jobs:
         # step, vite isn't on PATH and the UI tests fail with
         # `vite: command not found` (PR #293 feedback).
         #
-        # Runs on all 3 OSes. pnpm.cmd resolves on Windows via Git
-        # Bash's `.cmd` passthrough; node + pnpm are on PATH from
-        # the `Install Node.js 24` + `Install pnpm 11` steps at the
-        # top of the job. The CACHE_DIR `$HOME/.cache/...` resolves
-        # to `%USERPROFILE%\.cache\...` on Windows.
-        if: matrix.target.step != '__SKIP__'
+        # Linux + macOS only (skipped on Windows — UI suite doesn't run there).
+        # node + pnpm are on PATH from the `Install Node.js 24` +
+        # `Install pnpm 11` steps at the top of the job.
+        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
         shell: bash
         run: |
           set -u
@@ -1482,18 +1478,15 @@ jobs:
         # tmpdir HOME; the chatview tests DB-seed `sessions` +
         # `llm_history` rows so no real LLM is invoked.
         #
-        # Two gates:
+        # Three gates:
         #   1. matrix.target.step != '__SKIP__' — preserves the
         #      existing cross-compile-cell guard.
         #   2. Functional-test ran first — functional-test-ui inherits
         #      the .venv-func that functional-test just created.
+        #   3. runner.os != 'Windows' — Windows skips functional suites.
         #
-        # Runs on all 3 OSes. Playwright Chromium + Vite on the
-        # Windows self-hosted runner is exercised via the same
-        # `zig build functional-test-ui` command as Linux/macOS —
-        # both tools have been verified on Windows since the pnpm
-        # migration (2026-08-28).
-        if: matrix.target.step != '__SKIP__'
+        # Runs on Linux + macOS (skipped on Windows).
+        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
         shell: bash
         env:
           # Same venv relocation as the functional-test step — the UI
