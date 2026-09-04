@@ -26,6 +26,17 @@ rmtree's that tempdir, never anything else.
    and restored as the first step of teardown. A stray ``~`` in any
    downstream code expands to the tempdir, not the real home.
 
+6. (Windows-only) ``XDG_CONFIG_HOME`` / ``XDG_STATE_HOME`` /
+   ``XDG_DATA_HOME`` / ``XDG_CACHE_HOME`` plus ``USERPROFILE`` /
+   ``APPDATA`` / ``LOCALAPPDATA`` are captured BEFORE shadowing and
+   restored on teardown. The Windows child's env points inside
+   ``temp_dir`` (``<temp_dir>/.config``, ``<temp_dir>/AppData/...``)
+   so nalar's XDG/APPDATA-aware code lands inside the tempdir even
+   when the parent shell has those vars set to the real home. Linux/mac
+   keep the original parent env per project request ("dont touch linux
+   and mac") — child ``HOME`` is still isolated there via the existing
+   ``env["HOME"]`` path.
+
 The five negative tests in ``tests/functional/harness_safety_test.py``
 guard these invariants against regression.
 """
@@ -79,6 +90,13 @@ ALLOWED_TMP_PREFIXES: tuple[str, ...] = (
 #: a "namespace" so a buggy caller that points ``mkdtemp`` output at a
 #: non-tmpdir path is rejected.
 REQUIRED_TMP_SUBSTR = "nalar-func-"
+
+#: Last-resort kill signal. Windows has no ``signal.SIGKILL`` (the
+#: attribute simply doesn't exist — accessing it raises AttributeError,
+#: which the OSError-only handlers below would NOT swallow).
+#: ``SIGTERM`` already maps to TerminateProcess on Windows, so it is
+#: the correct fallback there.
+_SIGKILL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
 
 #: Port range the harness will scan for a free port. Skip 8081 (the
 #: always-running dev port per project memory). Used by the legacy
@@ -204,6 +222,15 @@ class FunctionalHarness:
     pid: int | None = None
     dry_run: bool = False
     _stopped: bool = dataclasses.field(default=False, repr=False)
+    # Windows original env snapshot (USERPROFILE/APPDATA/LOCALAPPDATA) — empty on POSIX.
+    orig_userprofile: str = ""
+    orig_appdata: str = ""
+    orig_localappdata: str = ""
+    # XDG original env snapshots — empty if not set in parent env.
+    orig_xdg_config_home: str = ""
+    orig_xdg_state_home: str = ""
+    orig_xdg_data_home: str = ""
+    orig_xdg_cache_home: str = ""
 
     # ---- bootstrap --------------------------------------------------------
 
@@ -239,12 +266,33 @@ class FunctionalHarness:
                 does not become ready within ``ready_timeout_s``.
         """
         # 1. Snapshot HOME BEFORE we shadow it.
-        orig_home = os.environ.get("HOME", "")
+        # On Windows, HOME is not set by default; USERPROFILE is.
+        orig_home = os.environ.get("HOME", "") or os.environ.get("USERPROFILE", "")
+        if not orig_home:
+            # Fallback to expanduser for edge cases.
+            try:
+                orig_home = str(Path.home())
+            except Exception:
+                orig_home = ""
         if not orig_home:
             raise FunctionalHarnessError(
                 "HOME not set; refusing to boot. "
                 "Functional tests must run in a normal user shell."
             )
+
+        # Snapshot Windows envs for isolation and restore.
+        orig_userprofile = os.environ.get("USERPROFILE", "")
+        orig_appdata = os.environ.get("APPDATA", "")
+        orig_localappdata = os.environ.get("LOCALAPPDATA", "")
+
+        # Snapshot XDG envs for isolation and restore. These are used by
+        # nalar on Linux for config/state/cache paths (XDG spec). If the
+        # parent env has e.g. XDG_CONFIG_HOME=/home/user/.config, the child
+        # must NOT inherit it — otherwise config.json lands in the real home.
+        orig_xdg_config_home = os.environ.get("XDG_CONFIG_HOME", "")
+        orig_xdg_state_home = os.environ.get("XDG_STATE_HOME", "")
+        orig_xdg_data_home = os.environ.get("XDG_DATA_HOME", "")
+        orig_xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "")
 
         # 1.5. Reap orphan nalar pids from prior aborted runs. This MUST
         #      run BEFORE _find_free_port() so the random pick sees a
@@ -299,9 +347,47 @@ class FunctionalHarness:
         #    any subprocess the binary spawned). On Windows,
         #    start_new_session maps to CREATE_NEW_PROCESS_GROUP and
         #    killpg is unavailable — we use kill-by-pid instead.
+        # Windows-only parent isolation: shadow HOME/USERPROFILE/APPDATA so
+        # stray `~` expansions in test code hit temp_dir, not real home.
+        # Linux/mac keep original parent env per user request ("dont touch
+        # linux and mac") — child env is already isolated for HOME there.
+        # XDG vars are also isolated on Windows for completeness (child
+        # may read XDG_CONFIG_HOME even on Windows via WSL/Git-Bash).
+        xdg_config = temp_dir / ".config"
+        xdg_state = temp_dir / ".local" / "state"
+        xdg_data = temp_dir / ".local" / "share"
+        xdg_cache = temp_dir / ".cache"
+        if os.name == "nt":
+            xdg_config.mkdir(parents=True, exist_ok=True)
+            xdg_state.mkdir(parents=True, exist_ok=True)
+            xdg_data.mkdir(parents=True, exist_ok=True)
+            xdg_cache.mkdir(parents=True, exist_ok=True)
+            os.environ["HOME"] = str(temp_dir)
+            os.environ["USERPROFILE"] = str(temp_dir)
+            os.environ["XDG_CONFIG_HOME"] = str(xdg_config)
+            os.environ["XDG_STATE_HOME"] = str(xdg_state)
+            os.environ["XDG_DATA_HOME"] = str(xdg_data)
+            os.environ["XDG_CACHE_HOME"] = str(xdg_cache)
+            appdata_roaming = temp_dir / "AppData" / "Roaming"
+            appdata_local = temp_dir / "AppData" / "Local"
+            appdata_roaming.mkdir(parents=True, exist_ok=True)
+            appdata_local.mkdir(parents=True, exist_ok=True)
+            os.environ["APPDATA"] = str(appdata_roaming)
+            os.environ["LOCALAPPDATA"] = str(appdata_local)
+
         log_path = temp_dir / "nalar.log"
         env = os.environ.copy()
+        # Child env: HOME always isolated (existing Linux/mac behavior).
         env["HOME"] = str(temp_dir)
+        if os.name == "nt":
+            env["USERPROFILE"] = str(temp_dir)
+            env["APPDATA"] = str(temp_dir / "AppData" / "Roaming")
+            env["LOCALAPPDATA"] = str(temp_dir / "AppData" / "Local")
+            # Windows child XDG isolation (matches parent)
+            env["XDG_CONFIG_HOME"] = str(xdg_config)
+            env["XDG_STATE_HOME"] = str(xdg_state)
+            env["XDG_DATA_HOME"] = str(xdg_data)
+            env["XDG_CACHE_HOME"] = str(xdg_cache)
         log_file = log_path.open("wb")
         # `start_new_session=True` is a keyword arg accepted on
         # Python 3.2+ for both POSIX (setsid) and Windows
@@ -313,6 +399,12 @@ class FunctionalHarness:
             env=env,
             start_new_session=True,
         )
+        # Parent can close its handle — child has duped it. On Windows, keeping
+        # it open prevents shutil.rmtree (PermissionError: file in use).
+        try:
+            log_file.close()
+        except Exception:
+            pass
 
         # 7.5. Record pids so a subsequent boot can reap us if we die.
         #      The pidfile format is "<harness_pid> <nalar_pid>\n":
@@ -336,7 +428,8 @@ class FunctionalHarness:
         except Exception:
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            log_file.close()
+            with contextlib.suppress(Exception):
+                log_file.close()
             raise
 
         return cls(
@@ -347,6 +440,13 @@ class FunctionalHarness:
             log_path=log_path,
             pid=proc.pid,
             dry_run=os.environ.get("NALAR_FUNCTIONAL_DRY_RUN") == "1",
+            orig_userprofile=orig_userprofile,
+            orig_appdata=orig_appdata,
+            orig_localappdata=orig_localappdata,
+            orig_xdg_config_home=orig_xdg_config_home,
+            orig_xdg_state_home=orig_xdg_state_home,
+            orig_xdg_data_home=orig_xdg_data_home,
+            orig_xdg_cache_home=orig_xdg_cache_home,
         )
 
     # ---- HTTP client ------------------------------------------------------
@@ -446,8 +546,35 @@ class FunctionalHarness:
 
         Idempotent: safe to call twice.
         """
-        # 1. Restore HOME first.
+        # 1. Restore HOME first (so any post-test code sees original env).
+        # HOME is restored on all platforms (Linux/mac keep parent HOME
+        # isolated only via child env, but teardown still ensures original
+        # is back). XDG and Windows vars are restored only on Windows per
+        # user request to not touch Linux/mac.
         os.environ["HOME"] = self.orig_home
+        if os.name == "nt":
+            for key, orig in (
+                ("XDG_CONFIG_HOME", self.orig_xdg_config_home),
+                ("XDG_STATE_HOME", self.orig_xdg_state_home),
+                ("XDG_DATA_HOME", self.orig_xdg_data_home),
+                ("XDG_CACHE_HOME", self.orig_xdg_cache_home),
+            ):
+                if orig:
+                    os.environ[key] = orig
+                else:
+                    os.environ.pop(key, None)
+            if self.orig_userprofile:
+                os.environ["USERPROFILE"] = self.orig_userprofile
+            else:
+                os.environ.pop("USERPROFILE", None)
+            if self.orig_appdata:
+                os.environ["APPDATA"] = self.orig_appdata
+            else:
+                os.environ.pop("APPDATA", None)
+            if self.orig_localappdata:
+                os.environ["LOCALAPPDATA"] = self.orig_localappdata
+            else:
+                os.environ.pop("LOCALAPPDATA", None)
 
         # 2. Stop the binary.
         if self.pid is not None and not self._stopped:
@@ -483,7 +610,25 @@ class FunctionalHarness:
         if self.dry_run:
             print(f"[dry-run] would rmtree: {self.temp_dir}")
         else:
-            shutil.rmtree(self.temp_dir)
+            # On Windows, rmtree can fail with PermissionError if the DB or log
+            # is still held for a moment after child exit (AV, indexing, etc.).
+            # Retry with backoff; the child is already dead at this point.
+            # Windows needs more retries for vite log (child tree may linger).
+            last_exc = None
+            retries = 10 if os.name == "nt" else 5
+            for _ in range(retries):
+                try:
+                    shutil.rmtree(self.temp_dir)
+                    last_exc = None
+                    break
+                except OSError as e:
+                    last_exc = e
+                    if os.name == "nt":
+                        time.sleep(1.0)
+                        continue
+                    raise
+            if last_exc is not None:
+                raise last_exc
 
     # ---- context-manager sugar -------------------------------------------
 
@@ -537,8 +682,8 @@ class FunctionalHarness:
         self._signal_group(signal.SIGTERM)
         if self._wait_dead(1.0, "post-sigterm"):
             return
-        # Last resort — SIGKILL.
-        self._signal_group(signal.SIGKILL)
+        # Last resort — SIGKILL (SIGTERM on Windows, which lacks SIGKILL).
+        self._signal_group(_SIGKILL)
         self._wait_dead(1.0, "post-sigkill")  # best-effort final wait
 
     def _wait_dead(self, timeout: float, label: str = "wait") -> bool:
@@ -786,6 +931,13 @@ def _wait_pid_dead(pid: int, timeout: float) -> bool:
     alive-but-not-ours (treated as "dead for our purposes" because we
     can't signal it anyway).
 
+    Windows note: ``os.kill(dead_pid, 0)`` raises plain ``OSError``
+    (``[WinError 87] The parameter is incorrect``), NOT
+    ``ProcessLookupError`` — so the except clause must be broad
+    ``OSError`` (narrow ``(ProcessLookupError, PermissionError)``
+    lets 87 escape, aborting the orphan-reap loop mid-scan and
+    leaking every tempdir after the first dead pid).
+
     For subprocess children specifically, prefer ``os.waitpid(WNOHANG)``
     which also reaps zombies — see ``_stop_binary`` for the richer case.
     """
@@ -793,7 +945,10 @@ def _wait_pid_dead(pid: int, timeout: float) -> bool:
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
-        except (ProcessLookupError, PermissionError):
+        except OSError:
+            # ProcessLookupError / PermissionError on POSIX;
+            # [WinError 87] on Windows for a dead pid. Either way
+            # the pid is gone (or not ours) — dead for our purposes.
             return True
         time.sleep(0.05)
     return False
@@ -846,24 +1001,40 @@ def _reap_orphan_test_pids() -> int:
             continue
         # If the harness python is alive, this test is still in progress —
         # another worker scanning concurrently must NOT kill it.
+        # NOTE: broad OSError (not just ProcessLookupError): on
+        # Windows a dead pid raises [WinError 87], which must count
+        # as "harness dead" or the whole reap loop aborts on the
+        # first orphan (leaking every tempdir after it). The outer
+        # `except Exception` is the backstop for non-OSError probe
+        # failures (e.g. CPython's SystemError when a recycled pid
+        # lands on a protected system process): one bad entry must
+        # never abort the scan — skip it and reap the rest.
         try:
-            os.kill(harness_pid, 0)
-        except (ProcessLookupError, PermissionError):
-            pass  # harness is dead — this dir is an orphan
-        else:
-            continue
-        # Harness is dead. Kill the nalar child if alive.
-        if nalar_pid and nalar_pid != os.getpid():
             try:
-                os.kill(nalar_pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
-            # Wait up to 1s for graceful exit; SIGKILL fallback.
-            if not _wait_pid_dead(nalar_pid, 1.0):
+                os.kill(harness_pid, 0)
+            except OSError:
+                pass  # harness is dead — this dir is an orphan
+            else:
+                continue
+            # Harness is dead. Kill the nalar child if alive.
+            if nalar_pid and nalar_pid != os.getpid():
                 try:
-                    os.kill(nalar_pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
+                    os.kill(nalar_pid, signal.SIGTERM)
+                except OSError:
                     pass
+                # Wait up to 1s for graceful exit; SIGKILL fallback
+                # (SIGTERM on Windows, which lacks SIGKILL).
+                if not _wait_pid_dead(nalar_pid, 1.0):
+                    try:
+                        os.kill(nalar_pid, _SIGKILL)
+                    except OSError:
+                        pass
+        except Exception as e:
+            print(
+                f"warning: orphan reap skipped {entry.name}: {e}",
+                file=sys.stderr,
+            )
+            continue
         # rmtree via the safety validator (same gate as teardown).
         # is_safe_tmp checks (1) prefix allow-list, (2) REQUIRED_TMP_SUBSTR
         # substring, (3) not the real HOME. For an orphan we don't know
@@ -888,9 +1059,12 @@ def _default_nalar_bin() -> Path:
         candidates.append(Path(env_bin))
     candidates.extend([
         Path("./zig-out/bin/nalar"),
+        Path("./zig-out/bin/nalar.exe"),
         Path("./zig-out/bin/nalarcore-linux-x86_64"),
         Path("./zig-out/bin/nalarcore-macos-aarch64"),
         Path("./zig-out/bin/nalarcore-macos-x86_64"),
+        Path("./zig-out/bin/nalarcore-windows-x86_64"),
+        Path("./zig-out/bin/nalarcore-windows-x86_64.exe"),
     ])
     for c in candidates:
         if c.exists():
@@ -1013,14 +1187,20 @@ def _wait_ready(
 
 
 def _write_stub_llm_profile(temp_dir: Path) -> None:
-    """Pre-create a stub LLM profile at ``$HOME/.config/nalar/config.json``.
+    """Pre-create a stub LLM profile at the platform-correct path.
+
+    Linux:   $HOME/.config/nalar/config.json (or $XDG_CONFIG_HOME)
+    macOS:   $HOME/Library/Application Support/nalar/config.json
+    Windows: %APPDATA%/nalar/config.json ($HOME/.config is also written
+             as a fallback so the same helper works cross-platform).
 
     The base_url points to a port that never responds, so session-create
     will fail at runtime when it tries to call the LLM — which is fine,
     since the functional tests assert on the wire, not on LLM responses.
+
+    Writes to all three locations so the harness works regardless of
+    which platform's `getDefaultConfigDir` the nalar binary uses.
     """
-    config_dir = temp_dir / ".config" / "nalar"
-    config_dir.mkdir(parents=True, exist_ok=True)
     profile = {
         "profiles_models": {
             "stub": {
@@ -1031,7 +1211,14 @@ def _write_stub_llm_profile(temp_dir: Path) -> None:
         },
         "selected_profile_model": "stub",
     }
-    (config_dir / "config.json").write_text(json.dumps(profile, indent=2))
+    payload = json.dumps(profile, indent=2)
+    for config_dir in (
+        temp_dir / ".config" / "nalar",
+        temp_dir / "AppData" / "Roaming" / "nalar",
+        temp_dir / "Library" / "Application Support" / "nalar",
+    ):
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "config.json").write_text(payload)
 
 
 # ============================================================================

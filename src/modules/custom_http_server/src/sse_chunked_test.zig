@@ -16,34 +16,53 @@ const posix = std.posix;
 const sse_manager = @import("sse_manager.zig");
 const SseManager = sse_manager.SseManager;
 const builtin = @import("builtin");
+const helpers = @import("test_helpers.zig");
+const toI32 = helpers.toI32;
 const is_windows = builtin.os.tag == .windows;
 
-fn closeFd(fd: i32) void {
-    if (is_windows) return; // Sockets are HANDLE on Windows; fd is meaningless
-    _ = posix.system.close(fd);
-}
+/// Windows-only Winsock extern for recv + closesocket. The test
+/// fixture creates raw winsock SOCKETS (not registered with UCRT via
+/// `_open_osfhandle`), so MSVCRT's `read()` / `close()` don't work on
+/// them (they call `ReadFile` / `_close()` which fail on sockets).
+/// Winsock APIs (`recv`, `closesocket`) take the SOCKET value as c_int
+/// — recovered via `toI32(fd)` — and bypass UCRT entirely. Empty
+/// struct on non-Windows so non-Windows builds don't link ws2_32.
+const winsock = if (is_windows) struct {
+    extern "ws2_32" fn recv(
+        sockfd: c_int,
+        buf: [*]u8,
+        len: c_int,
+        flags: c_int,
+    ) callconv(.c) c_int;
+    extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+} else struct {};
 
-fn readFd(fd: i32, buf: []u8, len: usize) isize {
-    if (is_windows) return 0; // Not used on Windows (tests skip)
-    // posix.system.read takes ([*]u8, usize); pass the slice's pointer
-    // (single-pointer-many-items, not the slice header) and the count.
-    return posix.system.read(fd, buf.ptr, len);
-}
-
-fn createSocketPair() ![2]i32 {
-    if (builtin.os.tag == .windows) {
-        // On Windows, sockets are HANDLE (*anyopaque), not i32 file descriptors.
-        // The entire test suite relies on POSIX socketpair semantics which are
-        // not available on Windows. Skip these tests on Windows.
-        return error.SkipZigTest;
+fn closeFd(fd: std.c.fd_t) void {
+    // Windows: std.c.close on a raw winsock SOCKET fails (UCRT's
+    // _close looks up the fd in its table — raw SOCKETs aren't there).
+    // Use closesocket directly. On POSIX, std.c.close works fine on
+    // socketpair fds.
+    if (is_windows) {
+        _ = winsock.closesocket(toI32(fd));
     } else {
-        var fds: [2]i32 = undefined;
-        // AF_UNIX (1), SOCK_STREAM (1), protocol 0. socketpair returns
-        // 0 on success, -1 on failure.
-        const rc = posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &fds);
-        if (rc != 0) return error.SocketPairFailed;
-        return fds;
+        _ = std.c.close(fd);
     }
+}
+
+fn readFd(fd: std.c.fd_t, buf: []u8, len: usize) isize {
+    // Same reasoning as closeFd above: std.c.read on a raw winsock
+    // SOCKET fails on Windows (UCRT's _read uses ReadFile, which
+    // doesn't work on sockets). Use winsock.recv directly — same
+    // ABI as libc's recv(2) on POSIX, so the POSIX path is a no-op.
+    if (is_windows) {
+        return winsock.recv(toI32(fd), buf.ptr, @intCast(len), 0);
+    } else {
+        return posix.system.read(fd, buf.ptr, len);
+    }
+}
+
+fn createSocketPair() ![2]std.c.fd_t {
+    return helpers.createSocketPair();
 }
 
 // ============================================================================
@@ -55,7 +74,7 @@ test "writeChunkedFrame: writes <hex len>\\r\\n<data>\\r\\n" {
     defer _ = closeFd(pair[0]);
     defer _ = closeFd(pair[1]);
 
-    try sse_manager.writeChunkedFrame(pair[0], "event: ping\ndata: 1\n\n");
+    try sse_manager.writeChunkedFrame(toI32(pair[0]), "event: ping\ndata: 1\n\n");
 
     // Read on the OTHER end of the socketpair and assert the chunked frame.
     // Data is 21 bytes → hex len "15" → "15\r\n" (4) + data (21) + "\r\n" (2) = 27.
@@ -70,7 +89,7 @@ test "writeChunkedFrame: empty data writes 0\\r\\n\\r\\n (chunked terminator)" {
     defer _ = closeFd(pair[0]);
     defer _ = closeFd(pair[1]);
 
-    try sse_manager.writeChunkedFrame(pair[0], "");
+    try sse_manager.writeChunkedFrame(toI32(pair[0]), "");
 
     var buf: [16]u8 = undefined;
     const n = readFd(pair[1], &buf, buf.len);
@@ -87,7 +106,7 @@ test "SseClient: sendEvent writes <hex len>\\r\\n<data>\\r\\n" {
     defer threaded.deinit();
 
     const id: [16]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
-    var client: sse_manager.SseClient = .init(id, pair[0], std.testing.allocator, threaded.io());
+    var client: sse_manager.SseClient = .init(id, toI32(pair[0]), std.testing.allocator, threaded.io());
     // Suppress the per-client arena cleanup on scope-exit (it would
     // double-free the fd that `closeFd(pair[0])` above
     // also closes). The test only needs `client.sendEvent` to write
@@ -146,7 +165,7 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
 
     // Use registerClientForTest so the random-id path (which requires
     // being on the Io thread) is bypassed.
-    const id = try mgr.registerClientForTest(pair[0], .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const id = try mgr.registerClientForTest(toI32(pair[0]), .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
 
     // Send one event so the peer has a chunked frame on the wire.
     try mgr.sendChunked(id, "event: ping\ndata: 1\n\n");
@@ -205,11 +224,20 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
 const HTTP_SERVER_PATH = "src/modules/custom_http_server/src/http_server.zig";
 
 fn readHttpServerSource(allocator: std.mem.Allocator) ![]u8 {
+    // `.unlimited` so the static source-check tests don't break when
+    // http_server.zig grows past the previous 64 KiB cap (currently
+    // ~65.8 KiB on `worktree/fix-ci-windows-webview2`). The previous
+    // `.limited(64 * 1024)` surfaced as `error.StreamTooLong` on Windows
+    // and caused 4 of the source-check tests to fail there while passing
+    // on Linux/macOS (the failure was OS-independent — purely a file-
+    // size limit). `.unlimited` matches the contract of every other
+    // test that does source-grep; the read still goes through the
+    // arena-allocator and the file is freed by the caller.
     return std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         HTTP_SERVER_PATH,
         allocator,
-        .limited(64 * 1024),
+        .unlimited,
     );
 }
 
@@ -297,11 +325,15 @@ test "HTTP server: SSE response says Connection: close (NOT keep-alive)" {
 const SSE_MANAGER_PATH = "src/modules/custom_http_server/src/sse_manager.zig";
 
 fn readSseManagerSource(allocator: std.mem.Allocator) ![]u8 {
+    // See `readHttpServerSource` for the rationale on `.unlimited`.
+    // sse_manager.zig is currently ~43 KiB (under the old 64 KiB cap)
+    // but we use `.unlimited` here too so future growth doesn't break
+    // these tests asymmetrically.
     return std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         SSE_MANAGER_PATH,
         allocator,
-        .limited(64 * 1024),
+        .unlimited,
     );
 }
 
@@ -468,7 +500,7 @@ test "SseManager: sweepStaleClients removes clients whose last_heartbeat is stal
     // The sweep closes pair[0] for us; we close the other end.
     defer _ = closeFd(pair[1]);
     const id: [16]u8 = .{ 0x42 } ** 16;
-    _ = try mgr.registerClientForTest(pair[0], id);
+    _ = try mgr.registerClientForTest(toI32(pair[0]), id);
     try std.testing.expect(mgr.clientCount() == 1);
 
     // The client's `last_heartbeat` was set to `timestamp()` at register
@@ -504,10 +536,10 @@ test "SseManager: sweepStaleClients respects max_per_call cap" {
     defer _ = closeFd(pair3[1]);
     defer _ = closeFd(pair4[1]);
 
-    _ = try mgr.registerClientForTest(pair1[0], .{ 0x11 } ** 16);
-    _ = try mgr.registerClientForTest(pair2[0], .{ 0x22 } ** 16);
-    _ = try mgr.registerClientForTest(pair3[0], .{ 0x33 } ** 16);
-    _ = try mgr.registerClientForTest(pair4[0], .{ 0x44 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair1[0]), .{ 0x11 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair2[0]), .{ 0x22 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair3[0]), .{ 0x33 } ** 16);
+    _ = try mgr.registerClientForTest(toI32(pair4[0]), .{ 0x44 } ** 16);
     try std.testing.expect(mgr.clientCount() == 4);
 
     // Make all 4 stale.
@@ -569,7 +601,7 @@ test "SseManager: sendToClient removes the client on a failed write (behavioural
     defer closeFd(pair[1]);
 
     const id: [16]u8 = .{ 0xAA, 0xBB, 0xCC, 0xDD } ++ .{0} ** 12;
-    _ = try mgr.registerClientForTest(pair[0], id);
+    _ = try mgr.registerClientForTest(toI32(pair[0]), id);
     try std.testing.expect(mgr.clientCount() == 1);
 
     // sendToClient should observe the failed write, remove the client,

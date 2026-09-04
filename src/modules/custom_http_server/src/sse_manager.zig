@@ -13,6 +13,24 @@ const is_bsd = switch (builtin.os.tag) {
     else => false,
 };
 
+/// Windows-only Winsock 2 externs. `send()` is the only function we
+/// actually call from sse_manager.zig on Windows (see `sendAll` below),
+/// but the surrounding struct mirrors the convention in
+/// `http_server.zig` so future Windows-specific call sites can extend
+/// it (recv, setsockopt, etc.) without re-declaring the DLL imports.
+/// `kernel32.dll` and `ws2_32.dll` import libraries are shipped with
+/// Zig's MinGW toolchain, so this just-works without a manual
+/// `linkSystemLibrary` call. The struct is empty on non-Windows so
+/// non-Windows builds don't link ws2_32.
+const winsock = if (is_windows) struct {
+    extern "ws2_32" fn send(
+        sockfd: c_int,
+        buf: [*]const u8,
+        len: c_int,
+        flags: c_int,
+    ) callconv(.c) c_int;
+} else struct {};
+
 const LOOP_COUNT = 4;
 
 /// Scoped logger for all SSE-manager diagnostics. Output goes to stderr.
@@ -445,13 +463,22 @@ pub const SseManager = struct {
                 } else {
                     // Zig 0.16 removed `.{ .seconds = N }` from std.Io.Duration —
                     // only `.{ .nanoseconds = N }` is available. Convert the
-                    // wall-clock heartbeat interval (heartbeat_secs, a u64) to
+                    // wall-clock heartbeat interval (heartbeat_secs, a u32) to
                     // nanoseconds via std.time.ns_per_s. The cast to i96 is
-                    // safe: heartbeat_secs fits in i64 (the underlying type of
+                    // safe: heartbeat_ns fits in i64 (the underlying type of
                     // `nanoseconds` minus its 32 sign bits is huge), and the
                     // @as(i96, ...) widening is always lossless for non-negative
                     // u64 values.
-                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
+                    //
+                    // NB: widen heartbeat_secs to u64 BEFORE the multiply —
+                    // multiplying u32 by the comptime int 1_000_000_000 produces
+                    // a u32 result which OVERFLOWS for any heartbeat_secs >= 5
+                    // (5 * 1e9 > u32 max = 4_294_967_295). That was the source of
+                    // the "thread panic: integer overflow" on Windows startup —
+                    // every SSE worker thread crashed before it could service
+                    // any clients, leaving the HTTP server unable to accept
+                    // /health probes from nalar-desktop → AutoSpawnFailed.
+                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(@as(u64, heartbeat_secs) * std.time.ns_per_s)) }, .real) catch {};
                 }
                 continue;
             }
@@ -469,7 +496,7 @@ pub const SseManager = struct {
             // support requires porting the poll-based loop to WSAPoll,
             // which is out of scope for the fix-windows-ci task.
             if (is_windows) {
-                std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
+                std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(@as(u64, heartbeat_secs) * std.time.ns_per_s)) }, .real) catch {};
                 continue;
             }
 
@@ -481,7 +508,7 @@ pub const SseManager = struct {
                     };
                     _ = socket.nanosleep(&ts, null);
                 } else {
-                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(heartbeat_secs * std.time.ns_per_s)) }, .real) catch {};
+                    std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(@as(u64, heartbeat_secs) * std.time.ns_per_s)) }, .real) catch {};
                 }
                 continue;
             };
@@ -871,13 +898,23 @@ fn sendAll(fd: i32, data: []const u8) isize {
         }
         return @intCast(sent);
     } else if (is_windows) {
-        // On Windows, sockets are HANDLE (*anyopaque), not i32.
-        // Use std.c.write which goes through the C runtime and handles
-        // the fd translation. The C runtime on Windows (UCRT/MinGW)
-        // translates fd-based writes to HANDLE-based WriteFile calls.
+        // On Windows, SSE fds are winsock SOCKET values (small positive
+        // ints truncated from the pointer-sized handle). MSVCRT's
+        // `write()` is for file/console HANDLEs (it calls `WriteFile`
+        // which fails on sockets); the only correct way to send on a
+        // winsock socket from a fd-shaped value is `winsock.send()`
+        // (which corresponds to libc's send(2)). The winsock API takes
+        // `c_int` (the same shape as the SOCKET), so we pass the i32
+        // `fd` straight through after the same sign-extension that
+        // `http_server.zig`'s `sendToClient` applies.
         var sent: usize = 0;
         while (sent < data.len) {
-            const rc = std.c.write(@ptrFromInt(@as(usize, @bitCast(@as(isize, fd)))), data[sent..].ptr, data.len - sent);
+            const rc = winsock.send(
+                fd,
+                data[sent..].ptr,
+                @intCast(data.len - sent),
+                0,
+            );
             if (rc < 0) return -1;
             if (rc == 0) return -1;
             sent += @as(usize, @intCast(rc));

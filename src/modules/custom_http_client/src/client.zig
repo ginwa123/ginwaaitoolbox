@@ -94,8 +94,16 @@ pub const Client = struct {
         defer curl.easy_cleanup(handle);
 
         // Per-handle error buffer (filled by libcurl on failure).
+        // CURLOPT_ERRORBUFFER takes a `char *` (pointer to a writable
+        // buffer), NOT a long — the prior `@intCast(@intFromPtr(&errbuf))`
+        // cast silently works on Linux (c_long = 64-bit) and panics on
+        // Windows (c_long = 32-bit; the pointer's high bits overflow the
+        // 32-bit destination). `setoptPtr` is the right helper — same
+        // signature as `setoptPtr` for URL / CUSTOMREQUEST / POSTFIELDS
+        // below, all of which are *const u8 buffers that libcurl copies
+        // or reads into.
         var errbuf: [ERRBUF_LEN]u8 = [_]u8{0} ** ERRBUF_LEN;
-        _ = setoptLong(handle, curl.OPT.ERRORBUFFER, @as(c_long, @intCast(@intFromPtr(&errbuf))));
+        _ = setoptPtr(handle, curl.OPT.ERRORBUFFER, &errbuf);
 
         // URL — must outlive curl_easy_perform. We allocate a sentinel-
         // terminated copy because libcurl requires NUL-terminated strings

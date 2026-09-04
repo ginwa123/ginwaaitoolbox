@@ -80,9 +80,12 @@ def _resolve_nalar_bin() -> Path:
         candidates.append(Path(env_bin))
     candidates.extend([
         Path("./zig-out/bin/nalar"),
+        Path("./zig-out/bin/nalar.exe"),
         Path("./zig-out/bin/nalarcore-linux-x86_64"),
         Path("./zig-out/bin/nalarcore-macos-aarch64"),
         Path("./zig-out/bin/nalarcore-macos-x86_64"),
+        Path("./zig-out/bin/nalarcore-windows-x86_64"),
+        Path("./zig-out/bin/nalarcore-windows-x86_64.exe"),
     ])
     for c in candidates:
         if c.exists() and os.access(c, os.X_OK):

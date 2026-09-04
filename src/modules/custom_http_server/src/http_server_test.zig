@@ -2,6 +2,10 @@ const std = @import("std");
 const http_server = @import("http_server.zig");
 const http_parser = @import("http_parser.zig");
 const linux = std.posix.system;
+const helpers = @import("test_helpers.zig");
+const closeI32Fd = helpers.closeI32Fd;
+const builtin = @import("builtin");
+const posix = std.posix;
 
 // ============================================================================
 // Address Struct Tests
@@ -10,7 +14,7 @@ const linux = std.posix.system;
 test "Address.init creates socket and binds" {
     // Use a high port number to avoid permission issues
     const addr = try http_server.Address.init("127.0.0.1", 45678);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     try std.testing.expect(addr.sock_fd >= 0);
     try std.testing.expectEqual(@as(u16, 45678), addr.port);
@@ -18,17 +22,17 @@ test "Address.init creates socket and binds" {
 
 test "Address.init with different port" {
     const addr = try http_server.Address.init("127.0.0.1", 45679);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     try std.testing.expectEqual(@as(u16, 45679), addr.port);
 }
 
 test "Address.init multiple instances on different ports" {
     const addr1 = try http_server.Address.init("127.0.0.1", 45680);
-    defer _ = linux.close(addr1.sock_fd);
+    defer _ = closeI32Fd(addr1.sock_fd);
 
     const addr2 = try http_server.Address.init("127.0.0.1", 45681);
-    defer _ = linux.close(addr2.sock_fd);
+    defer _ = closeI32Fd(addr2.sock_fd);
 
     try std.testing.expect(addr1.sock_fd >= 0);
     try std.testing.expect(addr2.sock_fd >= 0);
@@ -45,7 +49,7 @@ test "GinwaServer.init creates server instance" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45682);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -60,7 +64,7 @@ test "GinwaServer.init router is initialized" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45683);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -80,7 +84,7 @@ test "GinwaServer with registered route" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45684);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -105,7 +109,7 @@ test "GinwaServer.security_headers defaults to library baseline" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45686);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -122,7 +126,7 @@ test "GinwaServer.applySecurityHeadersTo uses server-level CSP override" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45687);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -201,7 +205,7 @@ test "Address.init fails on invalid port (0 is technically valid, use reserved)"
     // on the same port (note: SO_REUSEADDR may allow this on some systems,
     // so this test may need adjustment based on platform behavior)
     const addr1 = try http_server.Address.init("127.0.0.1", 45685);
-    defer _ = linux.close(addr1.sock_fd);
+    defer _ = closeI32Fd(addr1.sock_fd);
 
     // On Linux with SO_REUSEADDR, this should succeed. On other platforms
     // this might fail. We test that at minimum one succeeds.
@@ -215,7 +219,7 @@ test "Address.init fails on invalid port (0 is technically valid, use reserved)"
 test "Address port is correctly stored" {
     const test_port: u16 = 45686;
     const addr = try http_server.Address.init("127.0.0.1", test_port);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     try std.testing.expectEqual(test_port, addr.port);
     try std.testing.expect(addr.sock_fd >= 0);
@@ -223,7 +227,7 @@ test "Address port is correctly stored" {
 
 test "Address sock_fd is valid file descriptor" {
     const addr = try http_server.Address.init("127.0.0.1", 45687);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     // On Linux, valid file descriptors are non-negative
     try std.testing.expect(addr.sock_fd >= 0);
@@ -239,7 +243,7 @@ test "GinwaServer.getClientPort returns 0 for invalid fd" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45688);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -259,7 +263,7 @@ test "GinwaServer.recvFromClient fails on invalid fd" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45689);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -275,7 +279,7 @@ test "GinwaServer.sendToClient fails on invalid fd" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45690);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -294,7 +298,7 @@ test "Server accepts client connection" {
     defer arena.deinit();
 
     const addr = try http_server.Address.init("127.0.0.1", 45691);
-    defer _ = linux.close(addr.sock_fd);
+    defer _ = closeI32Fd(addr.sock_fd);
 
     var server = try http_server.GinwaServer.init(allocator, undefined, addr);
     defer server.destroy(allocator);
@@ -302,11 +306,11 @@ test "Server accepts client connection" {
     // Create a client socket and connect
     const client_fd_sock = linux.socket(2, 1, 0);
     const client_fd: i32 = @intCast(client_fd_sock);
-    defer _ = linux.close(client_fd);
+    defer _ = closeI32Fd(client_fd);
 
     // Connect to server
     const addr2 = try http_server.Address.init("127.0.0.1", 45692);
-    defer _ = linux.close(addr2.sock_fd);
+    defer _ = closeI32Fd(addr2.sock_fd);
 
     // Socket creation verified - full integration test would require actual server listening
 }
@@ -327,16 +331,29 @@ test "RequestBuffer.init creates empty buffer" {
 test "RequestBuffer.readFullRequest with exact POST headers (13248 body)" {
     const allocator = std.testing.allocator;
 
-    // Create a socket pair for testing
-    var pipe_fds: [2]i32 = undefined;
-    const rc = linux.socketpair(2, 1, 0, &pipe_fds);
+    // Create a socket pair for testing. Cross-platform: socketpair on
+    // POSIX, CreatePipe on Windows (no AF_UNIX socketpair(2) in Winsock).
+    var pipe_fds: [2]std.c.fd_t = undefined;
+    const rc = if (comptime builtin.os.tag == .windows)
+        blk: {
+            // Use the shared helper (kernel32 CreatePipe) directly so the
+            // call returns the same error type as the POSIX branch.
+            const pair = helpers.createSocketPair() catch {
+                // pipe creation failed, skip test
+                return;
+            };
+            pipe_fds = pair;
+            break :blk 0;
+        }
+    else
+        posix.system.socketpair(posix.AF.UNIX, posix.SOCK.STREAM, 0, &pipe_fds);
     if (rc < 0) {
         // socketpair not supported, skip test
         return;
     }
     defer {
-        _ = linux.close(pipe_fds[0]);
-        _ = linux.close(pipe_fds[1]);
+        _ = std.c.close(pipe_fds[0]);
+        _ = std.c.close(pipe_fds[1]);
     }
 
     // Build the exact headers you sent
@@ -386,7 +403,10 @@ test "RequestBuffer.readFullRequest with exact POST headers (13248 body)" {
     var rb = http_server.RequestBuffer.init(allocator);
     defer rb.deinit();
 
-    const result = rb.readFullRequest(pipe_fds[0]) catch |err| {
+    const result = rb.readFullRequest(if (comptime builtin.os.tag == .windows)
+        @intCast(@intFromPtr(pipe_fds[0]))
+    else
+        @intCast(pipe_fds[0])) catch |err| {
         std.debug.print("readFullRequest failed: {s}\n", .{@errorName(err)});
         return err;
     };

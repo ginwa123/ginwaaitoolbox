@@ -136,7 +136,12 @@ def test_tui_empty_cwd_falls_back_to_sandbox(
 
     got = _wait_for_session_cwd(harness, session_id, timeout_s=5.0)
     assert got is not None, f"sessions row for {session_id!r} never appeared within 5s"
-    assert ".local/share/nalar/data/apps" in got or "/tmp" in got, (
+    # Windows joins the sandbox with backslashes
+    # (C:\...\nalar-func-XXX\.local\share\nalar\data\apps\<session>);
+    # POSIX uses forward slashes. Normalize before asserting so the
+    # same contract holds on both.
+    normalized = got.replace("\\", "/")
+    assert ".local/share/nalar/data/apps" in normalized or "/tmp" in normalized, (
         f"empty cwd_session should fall back to sandbox (or /tmp). Got {got!r}"
     )
     # Must NOT be the explicit /tmp/my-proj from the other test

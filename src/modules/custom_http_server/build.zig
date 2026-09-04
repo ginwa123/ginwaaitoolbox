@@ -16,6 +16,19 @@ pub fn build(b: *std.Build) void {
     exe.root_module.linkSystemLibrary("c", .{});
     b.installArtifact(exe);
 
+    // Importable module for sibling packages (e.g. custom_http_client's
+    // TestServer fixtures do `@import("custom_http_server")` and use
+    // GinwaServer / Address / HttpContext / HttpRequest / HttpResponse —
+    // all re-exported by src/http_server.zig, whose transitive closure
+    // is self-contained: std + builtin + relative *.zig siblings only).
+    const server_mod = b.addModule("custom_http_server", .{
+        .root_source_file = b.path("src/http_server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    server_mod.linkSystemLibrary("c", .{});
+    server_mod.link_libc = true;
+
     // Run step
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);

@@ -135,7 +135,12 @@ pub fn installCrashHandlers() void {
 /// the most likely cause is visible without decoding anything else.
 pub fn signalDescription(sig: std.c.SIG) []const u8 {
     if (sig == std.c.SIG.SEGV) return "invalid memory reference (null deref, use-after-free, bad pointer, stack overflow)";
-    if (sig == std.c.SIG.BUS) return "bus error (misaligned access, truncated mmap'd file, hardware fault)";
+    // SIGBUS is POSIX-only — std.c.SIG has no BUS member on Windows,
+    // so the reference must live behind a comptime gate (untaken
+    // branches of `if (comptime ...)` are never analyzed).
+    if (comptime builtin.os.tag != .windows) {
+        if (sig == std.c.SIG.BUS) return "bus error (misaligned access, truncated mmap'd file, hardware fault)";
+    }
     if (sig == std.c.SIG.ABRT) return "abort (explicit abort(), failed assertion, debug-allocator error such as Invalid free)";
     if (sig == std.c.SIG.ILL) return "illegal instruction (corrupt code, bad JIT emit, wrong-arch binary)";
     if (sig == std.c.SIG.FPE) return "arithmetic exception (divide by zero, integer overflow trap)";
@@ -168,13 +173,16 @@ pub fn siCodeMeaning(sig: std.c.SIG, code: i32) []const u8 {
             else => "unknown SEGV code",
         };
     }
-    if (sig == std.c.SIG.BUS) {
-        return switch (code) {
-            1 => "BUS_ADRALN (invalid address alignment)",
-            2 => "BUS_ADRERR (nonexistent physical address)",
-            3 => "BUS_OBJERR (object-specific hardware error)",
-            else => "unknown BUS code",
-        };
+    // Same POSIX-only gate as signalDescription above.
+    if (comptime builtin.os.tag != .windows) {
+        if (sig == std.c.SIG.BUS) {
+            return switch (code) {
+                1 => "BUS_ADRALN (invalid address alignment)",
+                2 => "BUS_ADRERR (nonexistent physical address)",
+                3 => "BUS_OBJERR (object-specific hardware error)",
+                else => "unknown BUS code",
+            };
+        }
     }
     if (sig == std.c.SIG.ILL) {
         return switch (code) {

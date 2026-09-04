@@ -547,7 +547,154 @@ fn createPlatformExe(
     return exe;
 }
 
+/// Prepend `C:\vcpkg\installed\x64-windows\bin` to the test process's
+/// PATH so the Windows DLL loader can find the runtime DLLs that the
+/// test executable depends on (`libcurl.dll`, `sqlite3.dll`,
+/// `libssl-3-x64.dll`, `libcrypto-3-x64.dll`, `libpq.dll`, …).
+///
+/// WHY: when the `databases` + `custom_http_client` packages link the
+/// system-installed copies of these libs (probed at config time),
+/// they pull in the import `.lib` from `C:\vcpkg\installed\x64-windows\
+/// lib\`, but the actual `.dll` implementations live one level up at
+/// `C:\vcpkg\installed\x64-windows\bin\`. vcpkg's installer does NOT
+/// add `bin\` to `%PATH%` — only `lib\` and `include\` are wired into
+/// the MSVC env. So a freshly-built `test.exe` runs, the Windows
+/// process loader walks its DLL search order, doesn't find
+/// `libcurl.dll`, and the process aborts with
+/// `STATUS_ENTRYPOINT_NOT_FOUND` (0xC0000139) before main() runs.
+///
+/// CI works around this in `.github/workflows/ci.yml` step
+/// `Test + build (single zig invocation, Windows)` by literally
+/// appending `C:\vcpkg\installed\x64-windows\bin;` to `$env:PATH`
+/// before the `zig build test nalar-desktop` line (see the comment
+/// block "vcpkg bin dir — libcurl.dll, libssl-3.dll, libcrypto-3.dll,
+/// sqlite3.dll live here and the test binary needs them at runtime.").
+/// Local dev boxes don't have that env setup, so without this fix the
+/// same crash happens the moment you run `zig build test` outside CI.
+///
+/// We apply the PATH prepend here at build.zig config time, so the
+/// fix is host-transparent: any dev box that has the vcpkg-installed
+/// libs (which the `system-deps probe` already required to be present)
+/// Just Works. Non-Windows targets are no-ops (`linkSystemLibrary`
+/// on Linux/macOS resolves to the system's `.so` / `.dylib` directly,
+/// which IS on the runtime search path).
+///
+/// Edge case: if vcpkg lives at a non-default path, `dirExists`
+/// returns false and the function is a no-op (PATH is left alone).
+/// Dev boxes with non-standard vcpkg layouts should add the bin dir
+/// to their system PATH manually.
+fn prependVcpkgBinToPath(b: *std.Build, run: *std.Build.Step.Run) void {
+    if (b.graph.host.result.os.tag != .windows) return;
+    const vcpkg_bin = "C:/vcpkg/installed/x64-windows/bin";
+    // Only prepend if the dir actually exists — otherwise leave PATH
+    // alone (so we don't accidentally shadow a real vcpkg on PATH with
+    // a bogus one on a host that doesn't have vcpkg installed).
+    if (!dirExists(b, vcpkg_bin)) return;
+    const env_map = run.getEnvMap();
+    const current = env_map.get("PATH") orelse "";
+    // Windows convention: separate paths with `;`, prepend the new one.
+    // If PATH is empty (rare), just use the new dir verbatim.
+    const new_path = if (current.len == 0) vcpkg_bin else b.fmt("{s};{s}", .{ vcpkg_bin, current });
+    env_map.put("PATH", new_path) catch @panic("OOM");
+}
+
+/// Detect the Zig 0.16 aarch64-windows crash bug and abort the build
+/// early with a clear, actionable message.
+///
+/// WHY: the native `zig-aarch64-windows-0.16.x` binary has a crash
+/// bug in `zig build` / `zig run` (see AGENTS.md "Recent changes" —
+/// the same issue documented in
+/// docs/superpowers/plans/2026-08-20-fix-windows-build-zig.md §"Out
+/// of scope"). When it crashes mid-write, it truncates the global ZIR
+/// cache files at `%LOCALAPPDATA%\zig\z\…`, which then surfaces on
+/// every subsequent build as:
+///
+///     warning(zcu): unexpected EOF reading cached ZIR for
+///         ...zig-aarch64-windows-0.16.0\lib\std\fs\path.zig
+///
+/// (plus similar warnings for every other stdlib file it was parsing
+/// at crash time). Clearing `%LOCALAPPDATA%\zig` only papers over the
+/// symptom — the warning reappears as soon as the next crash happens.
+///
+/// The fix is the same one used on CI: use the
+/// `zig-x86_64-windows-0.16.x` binary instead (same Zig version, no
+/// crash bug, runs natively on ARM64 Windows via emulation).
+/// `.github/workflows/ci.yml` uses `mlugg/setup-zig@v2` with the
+/// x86_64-windows-gnu variant; most dev boxes already have it
+/// installed alongside the WinGet one (WinGet's `zig.zig` package id
+/// ships both arches; the x86_64 dir usually lands at
+/// `C:\Users\<you>\zig_x64\zig-x86_64-windows-0.16.0\zig.exe` or
+/// wherever you extracted it manually).
+///
+/// Detection: WinGet names the install dir `zig-aarch64-windows-0.16.0\`
+/// (and the future `zig-aarch64-windows-0.17.0\` etc.). We match BOTH
+/// `aarch64` (binary is the wrong arch) AND `0.16` (this specific bug
+/// series) — so a hypothetical 0.17+ aarch64 fix doesn't false-positive,
+/// and a custom-dir aarch64 install that doesn't follow the WinGet
+/// naming convention is let through (the user clearly knows what
+/// they're doing in that case).
+///
+/// Returns void. On match, prints an error to stderr and `exit(1)`s
+/// the build runner before any work is done — so the global ZIR cache
+/// is left untouched (no partial writes, no `unexpected EOF` next run).
+fn detectAarch64ZigBug(b: *std.Build) void {
+    if (b.graph.host.result.os.tag != .windows) return;
+    const exe = b.graph.zig_exe;
+    const is_aarch64 = std.mem.indexOf(u8, exe, "aarch64") != null;
+    const is_0_16 = std.mem.indexOf(u8, exe, "0.16") != null;
+    if (!(is_aarch64 and is_0_16)) return;
+    std.log.err(
+        "FATAL: Zig 0.16 aarch64-windows binary detected:\n" ++
+            "    {s}\n" ++
+            "\n" ++
+            "  This binary has a known crash bug in `zig build` / `zig run`\n" ++
+            "  (see AGENTS.md 'Recent changes'). When it crashes mid-write, it\n" ++
+            "  truncates the global ZIR cache files under %LOCALAPPDATA%\\zig\\\n" ++
+            "  z\\, which surfaces on every subsequent build as:\n" ++
+            "\n" ++
+            "      warning(zcu): unexpected EOF reading cached ZIR for\n" ++
+            "          ...zig-aarch64-windows-0.16.0\\lib\\std\\fs\\path.zig\n" ++
+            "\n" ++
+            "  (and similar lines for every other stdlib file it was parsing\n" ++
+            "  at crash time). Clearing %LOCALAPPDATA%\\zig only papers over the\n" ++
+            "  symptom — the warning reappears as soon as the next crash.\n" ++
+            "\n" ++
+            "  FIX: use the x86_64-windows Zig 0.16 binary instead — same Zig\n" ++
+            "  version, no crash bug, runs natively on ARM64 Windows via\n" ++
+            "  emulation. CI uses exactly this setup (.github/workflows/ci.yml\n" ++
+            "  uses mlugg/setup-zig@v2 with the x86_64-windows-gnu variant).\n" ++
+            "\n" ++
+            "  Most dev boxes already have the x86_64 binary installed\n" ++
+            "  alongside the WinGet aarch64 one (WinGet's zig.zig package id\n" ++
+            "  ships both arches). The x86_64 dir usually lands at:\n" ++
+            "    C:\\Users\\<you>\\zig_x64\\zig-x86_64-windows-0.16.0\\\n" ++
+            "  or wherever you extracted it manually.\n" ++
+            "\n" ++
+            "  Quick test:\n" ++
+            "    C:\\Users\\<you>\\zig_x64\\zig-x86_64-windows-0.16.0\\zig.exe build --list-steps\n" ++
+            "  should list steps without this error.\n" ++
+            "\n" ++
+            "  To make it permanent, move the x86_64 install dir ahead of\n" ++
+            "  the WinGet shim dir (C:\\Users\\<you>\\AppData\\Local\\Microsoft\\\n" ++
+            "  WinGet\\Links) in your PATH environment variable.",
+        .{exe},
+    );
+    std.process.exit(1);
+}
+
 pub fn build(b: *std.Build) void {
+    // Hard-fail at config time if the active Zig binary is the
+    // known-bugged aarch64-windows 0.16.x variant. Without this, the
+    // build starts, crashes mid-write, and leaves the global ZIR cache
+    // truncated — every subsequent build then emits
+    // `warning(zcu): unexpected EOF reading cached ZIR for ...path.zig`
+    // until the cache is cleared (and the next crash re-truncates it).
+    // Calling this BEFORE standardTargetOptions / probeSystemLibs /
+    // addSystemCommand etc. means we never touch the cache when the
+    // binary is wrong — the fix has a chance to take effect on the
+    // next run.
+    detectAarch64ZigBug(b);
+
     // Target glibc 2.38 on Linux hosts — needed for vendored curl's
     // references to `__isoc23_*` (glibc 2.38+) and `arc4random`
     // (glibc 2.36+ in weak-symbol form). Older glibc versions fail to
@@ -612,6 +759,12 @@ pub fn build(b: *std.Build) void {
         },
     } });
     const optimize = b.standardOptimizeOption(.{});
+
+    // CLI flag: `--no-webapp-rebuild` / `-Dno-webapp-rebuild` skips the
+    // webapp-rebuild + mcp-hello-world chains. Used by Windows CI runners
+    // with ~2-3 GB usable RAM where the vite build and pnpm installs OOM.
+    // Defined EARLY so the mcp and webapp sections below can be gated.
+    const no_webapp_rebuild = b.option(bool, "no-webapp-rebuild", "Skip the webapp-rebuild + mcp-hello-world chains (Windows CI OOM / no-pnpm workaround)") orelse false;
 
     // `helpers` package (`src/helpers/`): project-wide portable sleep /
     // time / file-existence helpers. Created EARLY (before any
@@ -1104,18 +1257,30 @@ pub fn build(b: *std.Build) void {
     mcp_wrapper_install.step.dependOn(&mcp_wrapper_write.step);
 
     // chmod 0755 on the installed path so `node dist/index.js` actually
-    // runs when invoked as `zig-out/bin/mcp-hello-world`.
-    const mcp_wrapper_chmod = b.addSystemCommand(&.{
-        "chmod",
-        "755",
-        b.pathJoin(&.{ b.install_path, "bin", "mcp-hello-world" }),
-    });
-    mcp_wrapper_chmod.step.dependOn(&mcp_wrapper_install.step);
-    mcp_hello_world_step.dependOn(&mcp_wrapper_chmod.step);
+    // runs when invoked as `zig-out/bin/mcp-hello-world`. POSIX-only —
+    // Windows has no `chmod` on PATH (chmod lives at `/usr/bin/chmod`
+    // inside Git Bash, which isn't guaranteed to be on PATH for zig's
+    // `addSystemCommand` spawn). Windows file permissions are a no-op
+    // anyway (every .exe / .cmd / .bat is executable by default), so
+    // skipping the chmod step on Windows is the right behavior.
+    if (target.result.os.tag != .windows) {
+        const mcp_wrapper_chmod = b.addSystemCommand(&.{
+            "chmod",
+            "755",
+            b.pathJoin(&.{ b.install_path, "bin", "mcp-hello-world" }),
+        });
+        mcp_wrapper_chmod.step.dependOn(&mcp_wrapper_install.step);
+        mcp_hello_world_step.dependOn(&mcp_wrapper_chmod.step);
+    } else {
+        mcp_hello_world_step.dependOn(&mcp_wrapper_install.step);
+    }
 
     // Make `zig build` (the default) include mcp-hello-world so
-    // functional tests can rely on it being present.
-    b.getInstallStep().dependOn(mcp_hello_world_step);
+    // functional tests can rely on it being present. Skipped when
+    // -Dno-webapp-rebuild (Windows CI: pnpm FileNotFound + OOM).
+    if (!no_webapp_rebuild) {
+        b.getInstallStep().dependOn(mcp_hello_world_step);
+    }
 
     // === mcp-http-hello-world: TypeScript test MCP server (Streamable HTTP) ===
     // Sibling of mcp-hello-world: same 3 tools, different transport.
@@ -1183,13 +1348,25 @@ pub fn build(b: *std.Build) void {
     );
     mcp_http_wrapper_install.step.dependOn(&mcp_http_wrapper_write.step);
 
-    const mcp_http_wrapper_chmod = b.addSystemCommand(&.{
-        "chmod",
-        "755",
-        b.pathJoin(&.{ b.install_path, "bin", "mcp-http-hello-world" }),
-    });
-    mcp_http_wrapper_chmod.step.dependOn(&mcp_http_wrapper_install.step);
-    mcp_http_hello_world_step.dependOn(&mcp_http_wrapper_chmod.step);
+    // chmod 0755 on the installed path. POSIX-only — same rationale
+    // as the mcp-hello-world chain above: Windows has no `chmod` on
+    // PATH for zig's `addSystemCommand` spawn (it resolves via
+    // CreateProcess, not Git Bash), and Windows file permissions are
+    // a no-op anyway (every .exe / .cmd / .bat is executable by
+    // default). Without this guard `zig build mcp-http-hello-world`
+    // (and therefore `zig build functional-test`, which depends on
+    // this step) fails on Windows with "failed to spawn chmod".
+    if (target.result.os.tag != .windows) {
+        const mcp_http_wrapper_chmod = b.addSystemCommand(&.{
+            "chmod",
+            "755",
+            b.pathJoin(&.{ b.install_path, "bin", "mcp-http-hello-world" }),
+        });
+        mcp_http_wrapper_chmod.step.dependOn(&mcp_http_wrapper_install.step);
+        mcp_http_hello_world_step.dependOn(&mcp_http_wrapper_chmod.step);
+    } else {
+        mcp_http_hello_world_step.dependOn(&mcp_http_wrapper_install.step);
+    }
 
     // Don't include mcp-http-hello-world in the default `zig build` —
     // it's not needed by the desktop binary. Users invoke it explicitly
@@ -1227,30 +1404,66 @@ pub fn build(b: *std.Build) void {
     // node + pnpm must be on PATH so the developer (or CI) can invoke
     // vue-tsc via Node's real CJS loader. We fail fast with a clear
     // error rather than letting vue-tsc's cryptic TS2307 noise leak out.
-    const check_webapp_node = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\
-        \\for tool in node pnpm; do
-        \\    command -v "$tool" >/dev/null 2>&1 || {
-        \\        echo "" >&2
-        \\        echo "ERROR: '$tool' was not found on PATH." >&2
-        \\        echo "  vue-tsc (which runs inside 'pnpm run build' via the type-check" >&2
-        \\        echo "  script) patches tsc's source via fs.readFileSync to register" >&2
-        \\        echo "  .vue as a TypeScript source extension; a JS-runtime shim whose" >&2
-        \\        echo "  loader bypasses fs.readFileSync breaks that patching and" >&2
-        \\        echo "  fails with hundreds of TS2307 errors." >&2
-        \\        echo "  pnpm is the project's package manager (replaced npm on" >&2
-        \\        echo "  2026-08-28) — see the workspace .npmrc + build.zig." >&2
-        \\        echo "" >&2
-        \\        echo "  Install nodejs + pnpm for your platform:" >&2
-        \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs pnpm" >&2
-        \\        echo "    Debian/Ubnt:  sudo apt install nodejs && corepack enable && corepack prepare pnpm@latest --activate" >&2
-        \\        echo "    macOS:        brew install node pnpm" >&2
-        \\        echo "    Alpine:       apk add nodejs pnpm" >&2
-        \\        echo "" >&2
-        \\        exit 1
-        \\    }
-        \\done
+const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+        // Windows: `sh` isn't on PATH (Git for Windows ships it under
+        // C:\Program Files\Git\bin\, not auto-added). Use cmd.exe with the
+        // equivalent `where` lookup + a label + goto for the same
+        // print-and-exit-1 logic. The user-facing error message is
+        // slightly shorter on Windows (no "Install for your platform"
+        // list) since CI installs Node 24 via actions/setup-node@v4 and
+        // Windows dev boxes get Node via the standard nvm-windows /
+        // winget / Chocolatey channels.
+        .windows => &.{
+            "cmd.exe", "/c",
+            \\
+            \\@echo off
+            \\for %%t in (node pnpm) do (
+            \\    where %%t >nul 2>&1 || (
+            \\        echo.
+            \\        echo ERROR: '%%t' was not found on PATH.
+            \\        echo   vue-tsc (which runs inside 'pnpm run build' via the type-check
+            \\        echo   script) patches tsc's source via fs.readFileSync to register
+            \\        echo   .vue as a TypeScript source extension; a JS-runtime shim whose
+            \\        echo   loader bypasses fs.readFileSync breaks that patching and
+            \\        echo   fails with hundreds of TS2307 errors.
+            \\        echo   pnpm is the project's package manager (replaced npm on
+            \\        echo   2026-08-28) — see the workspace .npmrc + build.zig.
+            \\        echo.
+            \\        echo   Install Node.js + pnpm for Windows:
+            \\        echo     winget install OpenJS.NodeJS.LTS
+            \\        echo     OR nvm-windows / Chocolatey / the official msi.
+            \\        echo.
+            \\        exit /b 1
+            \\    )
+            \\)
+        },
+        // Linux + macOS: POSIX `command -v` loop. Same error message as
+        // the original pre-Windows-fix check.
+        else => &.{
+            "sh", "-c",
+            \\
+            \\for tool in node pnpm; do
+            \\    command -v "$tool" >/dev/null 2>&1 || {
+            \\        echo "" >&2
+            \\        echo "ERROR: '$tool' was not found on PATH." >&2
+            \\        echo "  vue-tsc (which runs inside 'pnpm run build' via the type-check" >&2
+            \\        echo "  script) patches tsc's source via fs.readFileSync to register" >&2
+            \\        echo "  .vue as a TypeScript source extension; a JS-runtime shim whose" >&2
+            \\        echo "  loader bypasses fs.readFileSync breaks that patching and" >&2
+            \\        echo "  fails with hundreds of TS2307 errors." >&2
+            \\        echo "  pnpm is the project's package manager (replaced npm on" >&2
+            \\        echo "  2026-08-28) — see the workspace .npmrc + build.zig." >&2
+            \\        echo "" >&2
+            \\        echo "  Install nodejs + pnpm for your platform:" >&2
+            \\        echo "    Arch Linux:   sudo pacman -S --needed nodejs pnpm" >&2
+            \\        echo "    Debian/Ubnt:  sudo apt install nodejs && corepack enable && corepack prepare pnpm@latest --activate" >&2
+            \\        echo "    macOS:        brew install node pnpm" >&2
+            \\        echo "    Alpine:       apk add nodejs pnpm" >&2
+            \\        echo "" >&2
+            \\        exit 1
+            \\    }
+            \\done
+        },
     });
 
     // Check if node_modules exists — if so, skip `pnpm install` (saves
@@ -1634,6 +1847,7 @@ pub fn build(b: *std.Build) void {
             // the symbols as no-ops so `zig build nalar-desktop` still
             // succeeds on dev boxes without MSVC + NuGet extraction.
             const use_real_webview = blk: {
+                if (no_webapp_rebuild) break :blk false; // Windows CI OOM/fast path — use stub
                 if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
                 if (webview2MissingPrereq(b)) |missing| {
                     std.log.warn(
@@ -1686,7 +1900,7 @@ pub fn build(b: *std.Build) void {
                 msvc_include.shared_include,
                 msvc_include.winrt_include,
             };
-            var cpp_args: [24][]const u8 = undefined;
+            var cpp_args: [28][]const u8 = undefined;
             var n: usize = 0;
             cpp_args[n] = b.graph.zig_exe;
             n += 1;
@@ -1705,6 +1919,46 @@ pub fn build(b: *std.Build) void {
             cpp_args[n] = "-DWEBVIEW_STATIC";
             n += 1;
             cpp_args[n] = "-Ivendor/webview";
+            n += 1;
+            // MSVC's vcruntime.h / sal.h use the MSVC-specific
+            // `__pragma(x)` macro to embed `#pragma` statements inside
+            // `_CRT_BEGIN_C_HEADER` / `_CRT_END_C_HEADER` (and similar).
+            // `zig cc` is clang, which doesn't recognise `__pragma` and
+            // dies with `a type specifier is required for all declarations`
+            // the moment vcruntime.h gets included (the vendor webview.cc
+            // pulls it in via `<algorithm>` → `<yvals_core.h>` →
+            // `<vcruntime.h>`). `clang` has its own equivalent — `_Pragma`
+            // — that takes a string literal: `_Pragma("pack(push, 8)")`.
+            // Forward the MSVC `__pragma(x)` call to `_Pragma` so the
+            // embedded `#pragma pack(push/pop)`, warning suppressions,
+            // etc. still take effect for the compiled translation unit.
+            // The function-like macro `#x` stringifies its argument; the
+            // resulting `"pack(push, 8)"` is exactly the spelling clang's
+            // `_Pragma` expects. (CI run 33067379610, job 98500726647,
+            // 2026-08-27 — reproduced 20 errors after PR #359's
+            // directory-creation fix unblocked the staging step.)
+            // `-nostdinc++` excludes zig's bundled libc++ headers from
+            // the include search path. zig cc on Windows defaults to its
+            // own libc++ (`zig/lib/include/yvals_core.h`, `cstddef`,
+            // `__stddef_max_align_t.h`, etc.), but the build is wired to
+            // use the host's MSVC STL (`MSVC/<ver>/include/algorithm`,
+            // `vcruntime.h`, `cstddef`, ...) so WebView2.h's transitive
+            // `<wrl/client.h>` -> `<cstddef>` resolves cleanly. Mixing
+            // the two STLs in the same TU is the root cause of the
+            // second wave of compile errors after the `__pragma` fix:
+            // zig's `__stddef_max_align_t.h` defines `max_align_t` as a
+            // struct, then MSVC's `cstddef` re-declares it as a typedef
+            // (`using _STD max_align_t;`), and the compiler chokes on
+            // the conflict. Same class of conflict for `wchar_t`,
+            // `_Mbstatet`, `uintptr_t`, `_THROW`, `_STL_INTERNAL_CHECK`,
+            // `_STL_VERIFY`, `_STL_ASSERT` -- every internal MSVC STL
+            // identifier collides with whatever the zig libc++ headers
+            // happened to declare first.
+            //
+            // (-D__pragma(x) is set two entries below this comment.)
+            cpp_args[n] = "-nostdinc++";
+            n += 1;
+            cpp_args[n] = "-D__pragma(x)=_Pragma(#x)";
             n += 1;
             for (candidate_dirs) |dir| {
                 if (dir.len == 0) continue;
@@ -1746,29 +2000,65 @@ pub fn build(b: *std.Build) void {
             });
             desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
             } else {
-                // Dev-box fallback: no MSVC C++ stdlib (or no WebView2
-                // NuGet headers) available. The webview/webview library
-                // hard-requires both for Windows — webview.h's win32
-                // implementation includes <wrl/client.h> which transitively
-                // pulls MSVC's <cstddef>, and webview.h itself includes
-                // <EventToken.h> from the NuGet. Without those, the
-                // compile fails deep inside Microsoft's headers.
+                // === Dev-box fallback: no MSVC + WebView2 ===
                 //
-                // After the webview-lib swap (PR #354), the old
-                // nalar_webview_stub.cpp fallback (which implemented the
-                // removed nalar_webview_* C ABI as no-ops) is gone too.
-                // The only honest option here is to abort the build
-                // with a clear message — we won't ship a silent no-op
-                // desktop binary that pretends to work.
-                std.log.err(
-                    "nalar-desktop: Windows requires both MSVC C++ toolchain AND " ++
-                        "the Microsoft.Web.WebView2 NuGet headers under " ++
-                        "src/apps/desktop_app/platform/windows/ " ++
-                        "(build/native/include/WebView2.h + EventToken.h + runtimes/win-x64/native/WebView2Loader.dll). " ++
-                        "Install Visual Studio Build Tools and extract the NuGet, then re-run zig build nalar-desktop.",
+                // The webview/webview library hard-requires MSVC's C++
+                // STL (webview.h's win32 path includes <wrl/client.h>
+                // which transitively pulls <cstddef>) AND the
+                // Microsoft.Web.WebView2 NuGet headers (WebView2.h +
+                // EventToken.h, staged under
+                // src/apps/desktop_app/platform/windows/). Without both,
+                // `zig cc vendor/webview/webview.cc` fails deep inside
+                // Microsoft's headers.
+                //
+                // The previous design (bf008b4d) called
+                // `std.process.exit(1)` here at config time — killing
+                // every `zig build` invocation (including `zig build
+                // test`, which doesn't need nalar-desktop at all) on a
+                // Windows dev box without MSVC + WebView2. That broke
+                // the test-only workflow on Windows.
+                //
+                // Fix: link a no-op C stub (webview_stub.c) instead of
+                // bailing out. The stub provides empty implementations
+                // of every webview_* C symbol declared in
+                // webview_lib.zig; webview_create() returns NULL,
+                // main.zig's runWindow surfaces
+                // `error.WebviewCreateFailed`, and the user sees a
+                // clear log line. nalar-desktop.exe compiles + links +
+                // the `--smoke-test` path runs cleanly, but the window
+                // can't actually open (no WebView2 runtime).
+                //
+                // This matches Linux/macOS semantics: on Linux, a
+                // dev box without webkit2gtk-4.1 still produces a
+                // nalar-desktop binary that fails at runtime when it
+                // tries to call webview_create; on macOS, the same with
+                // Cocoa/WebKit missing. The Windows path now matches.
+                //
+                // The CI runner installs MSVC + WebView2 NuGet and
+                // takes the real webview.cc compile path above. This
+                // stub is only for dev boxes without those
+                // prerequisites.
+                std.log.warn(
+                    "nalar-desktop: MSVC C++ toolchain and/or Microsoft.Web.WebView2 " ++
+                        "NuGet headers not found on this host — using no-op stub " ++
+                        "(nalar-desktop will build but cannot open a webview window). " ++
+                        "Install Visual Studio Build Tools + extract the " ++
+                        "Microsoft.Web.WebView2 NuGet to get a real webview.",
                     .{},
                 );
-                std.process.exit(1);
+                desktop_exe.root_module.addCSourceFile(.{
+                    .file = b.path("src/apps/desktop_app/platform/windows/webview_stub.c"),
+                    .flags = &.{},
+                });
+                // Win32 / WinSock2 deps for Zig's std extern decls
+                // (extraction.zig / subprocess.zig). Zig's MinGW (gnu)
+                // link line doesn't auto-pull kernel32.dll / ws2_32.dll
+                // for raw `extern "kernel32"` / `extern "ws2_32"` decls
+                // in Zig code. Add them explicitly so the Win32 externs
+                // resolve at link time. Same as the real-webview branch
+                // above.
+                desktop_exe.root_module.linkSystemLibrary("kernel32", .{});
+                desktop_exe.root_module.linkSystemLibrary("ws2_32", .{});
             }
         },
         else => {},
@@ -1782,13 +2072,48 @@ pub fn build(b: *std.Build) void {
     // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
 
+    // Late alias kept for comment continuity — actual flag is defined
+    // early (near target/optimize) so mcp/webapp sections could be gated.
+    // Reuse the early `no_webapp_rebuild` value here; do not re-parse.
+
     // Make the desktop binary depend on the FRESH-ASSETS codegen chain:
     // clean → `bun run build` → codegen. Every nalar-desktop build
     // rebuilds the webapp from current sources and re-embeds it, so the
     // binary always matches the .vue files on disk (user-requested
     // behavior; see the "Webapp rebuild workflow" comment above for the
     // cost trade-off).
-    desktop_exe.step.dependOn(&webapp_rebuild_codegen.step);
+    if (!no_webapp_rebuild) {
+        desktop_exe.step.dependOn(&webapp_rebuild_codegen.step);
+    } else {
+        // When skipping the webapp rebuild, ensure a stub exists so the
+        // @import("embedded/webapp_assets.zig") in main.zig doesn't fail
+        // with FileNotFound on a fresh checkout (gitignored file).
+        // Do it synchronously at configure time — b.addWriteFiles would
+        // only place the file in .zig-cache, not in the source tree where
+        // the import resolves.
+        const stub_path = "src/apps/desktop_app/embedded/webapp_assets.zig";
+        if (!fileExists(stub_path)) {
+            const stub_content =
+                \\// GENERATED stub — webapp rebuild skipped (-Dno-webapp-rebuild)
+                \\const std = @import("std");
+                \\pub const Asset = struct { path: []const u8, content: []const u8, mime: []const u8 };
+                \\pub const assets: []const Asset = &.{};
+                \\
+            ;
+            // Use std.Io (Zig 0.16) — create parent dirs + file.
+            const io = b.graph.io;
+            // Ensure parent dir exists.
+            std.Io.Dir.cwd().createDirPath(io, "src/apps/desktop_app/embedded") catch {};
+            if (std.Io.Dir.cwd().createFile(io, stub_path, .{ .truncate = true })) |file| {
+                defer file.close(io);
+                std.Io.File.writeStreamingAll(file, io, stub_content) catch |err| {
+                    std.log.warn("failed to write stub {s}: {any}", .{ stub_path, err });
+                };
+            } else |err| {
+                std.log.warn("failed to create stub {s}: {any}", .{ stub_path, err });
+            }
+        }
+    }
 
     // `zig build nalar-desktop` alias — depends on:
     //   - the install step (which includes `nalar` via b.installArtifact
@@ -1819,6 +2144,9 @@ pub fn build(b: *std.Build) void {
     });
     desktop_tests.root_module.linkSystemLibrary("c", .{});
     const run_desktop_tests = b.addRunArtifact(desktop_tests);
+    // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, …) is on PATH
+    // at test runtime — see `prependVcpkgBinToPath` doc comment.
+    prependVcpkgBinToPath(b, run_desktop_tests);
     test_desktop.dependOn(&run_desktop_tests.step);
 
     // =====================================================================
@@ -1894,6 +2222,9 @@ pub fn build(b: *std.Build) void {
     cli_tests.root_module.link_libc = true;
     const test_cli = b.step("test:cli", "Run nalarcli unit tests");
     const run_cli_tests = b.addRunArtifact(cli_tests);
+    // Windows: ensure vcpkg bin (libcurl.dll, …) is on PATH at test
+    // runtime — see `prependVcpkgBinToPath` doc comment.
+    prependVcpkgBinToPath(b, run_cli_tests);
     test_cli.dependOn(&run_cli_tests.step);
 
     // === nalarcli install-only (`zig build install:cli`) ===
@@ -2076,6 +2407,12 @@ pub fn build(b: *std.Build) void {
     if (test_target.result.os.tag == .windows) {
     }
     const run_mod_tests = b.addRunArtifact(mod_tests);
+    // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, libssl-3-x64.dll,
+    // libcrypto-3-x64.dll, libpq.dll, …) is on PATH at test runtime —
+    // see `prependVcpkgBinToPath` doc comment. Without this the test
+    // process aborts with STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139)
+    // before main() runs.
+    prependVcpkgBinToPath(b, run_mod_tests);
 
     const test_step = b.step("test", "Run tests");
     // Fresh checkouts need both vendor dirs populated before any
@@ -2109,6 +2446,9 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_ai_workflow_tui_tests = b.addRunArtifact(ai_workflow_tui_test_mod);
+    // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, …) is on
+    // PATH at test runtime — see `prependVcpkgBinToPath` doc comment.
+    prependVcpkgBinToPath(b, run_ai_workflow_tui_tests);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
     // Same race-condition fix as `test_step` above — the TUI test
     // reuses `mod_tests_module` (which transitively imports the
@@ -2315,31 +2655,106 @@ pub fn build(b: *std.Build) void {
     // Unset (the default) keeps the historical `.venv-func` behavior for
     // local developers. NOTE: this must be read at CONFIG time so the
     // literal path can be baked into the addSystemCommand argv below.
-    const venv_dir = b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
-    const venv_bin = std.fmt.allocPrint(b.allocator, "{s}/bin", .{venv_dir}) catch unreachable;
-    const install_venv = b.addSystemCommand(&.{
-        python_exe, "-m", "venv", venv_dir,
-    });
+    const venv_dir_raw = b.graph.environ_map.get("NALAR_FUNC_VENV_DIR") orelse ".venv-func";
+    // Normalize Windows mixed separators (runner.temp is C:\...\ _temp + "/nalar-ci-venv" → "C:\...\ _temp/nalar-ci-venv").
+    // Use forward slashes internally; Python on Windows handles both.
+    const venv_dir = blk: {
+        const dup = b.allocator.dupe(u8, venv_dir_raw) catch unreachable;
+        for (dup) |*c| {
+            if (c.* == '\\') c.* = '/';
+        }
+        break :blk dup;
+    };
+    const is_windows_host = b.graph.host.result.os.tag == .windows;
+    const venv_bin = if (is_windows_host)
+        std.fmt.allocPrint(b.allocator, "{s}/Scripts", .{venv_dir}) catch unreachable
+    else
+        std.fmt.allocPrint(b.allocator, "{s}/bin", .{venv_dir}) catch unreachable;
+    // On Windows, `python` is the canonical exe; `python3` is often a shim.
+    const default_python = if (is_windows_host) "python" else "python3";
+    const effective_python = if (std.mem.eql(u8, python_exe, "python3") and is_windows_host) default_python else python_exe;
+    // Windows venv creation must survive the Microsoft Store `python`
+    // stub ("Python was not found") and must not redo an existing venv:
+    //   1. If the venv interpreter already exists, the step is a no-op
+    //      (`pip install -r` below still runs every time).
+    //   2. Else pick an interpreter at config time: explicit `-Dpython`
+    //      wins; otherwise scan PATH for python.exe/python3.exe
+    //      (skipping 0-byte Store stubs), then the `py` launcher.
+    //      Nothing found → bare `python` (loud Store-stub failure, same
+    //      as before this change).
+    // Everything is direct argv (no cmd.exe shell), so paths with
+    // spaces work and there is no shell-quoting to get wrong.
+    const venv_python_name = if (is_windows_host) "python.exe" else "python";
+    const venv_python_rel = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ venv_bin, venv_python_name }) catch unreachable;
+    const have_venv = blk: {
+        _ = std.Io.Dir.cwd().statFile(b.graph.io, venv_python_rel, .{}) catch break :blk false;
+        break :blk true;
+    };
+    const install_venv = blk: {
+        if (have_venv) {
+            if (is_windows_host) break :blk b.addSystemCommand(&.{ "cmd.exe", "/c", "exit", "0" });
+            break :blk b.addSystemCommand(&.{"true"});
+        }
+        if (!is_windows_host) break :blk b.addSystemCommand(&.{
+            effective_python, "-m", "venv", venv_dir,
+        });
+        var chosen: ?[]const u8 = null;
+        var chosen_args: []const []const u8 = &.{};
+        if (!std.mem.eql(u8, python_exe, "python3")) {
+            chosen = python_exe; // explicit -Dpython: trust it (old behavior)
+        } else if (b.graph.environ_map.get("PATH")) |path_var| {
+            var it = std.mem.splitScalar(u8, path_var, ';');
+            const probes = [_][]const u8{ "python.exe", "python3.exe", "py.exe" };
+            outer: while (it.next()) |dir| {
+                if (dir.len == 0) continue;
+                for (probes) |name| {
+                    const cand = std.fmt.allocPrint(b.allocator, "{s}/{s}", .{ dir, name }) catch unreachable;
+                    // Absolute sub_path: the cwd handle is ignored.
+                    const st = std.Io.Dir.cwd().statFile(b.graph.io, cand, .{}) catch continue;
+                    if (st.size == 0) continue; // Microsoft Store stub
+                    chosen = cand;
+                    if (std.mem.eql(u8, name, "py.exe")) chosen_args = &.{"-3"};
+                    break :outer;
+                }
+            }
+        }
+        var argv: std.ArrayList([]const u8) = .empty;
+        argv.append(b.allocator, chosen orelse "python") catch unreachable;
+        argv.appendSlice(b.allocator, chosen_args) catch unreachable;
+        argv.appendSlice(b.allocator, &.{ "-m", "venv", venv_dir }) catch unreachable;
+        break :blk b.addSystemCommand(argv.items);
+    };
     install_venv.setCwd(b.path(""));
 
+    const pip_exe = if (is_windows_host) "pip.exe" else "pip";
     const install_requirements = b.addSystemCommand(&.{
-        b.fmt("{s}/pip", .{venv_bin}), "install", "-q", "-r", "tests/functional/requirements.txt",
+        b.fmt("{s}/{s}", .{ venv_bin, pip_exe }), "install", "-q", "-r", "tests/functional/requirements.txt",
     });
     install_requirements.setCwd(b.path(""));
     install_requirements.step.dependOn(&install_venv.step);
 
-    // Probe python3 — skip the step if missing. Without a probe,
-    // `addSystemCommand(&.{ "python3", ... })` would error at config
-    // time on hosts that don't have python3.
-    const python_probe = b.addSystemCommand(&.{
-        "sh", "-c",
-        \\command -v python3 >/dev/null 2>&1 || { echo 'zig build functional-test: python3 not found, skipping (install with `brew install python@3.11` or set -Dpython=...)'; exit 0; }
-    ,
+    // Probe python — skip the step if missing. Without a probe,
+    // `addSystemCommand` would error at config time on hosts that don't have python.
+    //
+    // Shell selection (cross-platform fix): use cmd.exe with `where` on
+    // Windows (the previous `sh -c` failed because Git for Windows
+    // doesn't add its bin/ to PATH automatically). Check both `python`
+    // and `python3` on Windows.
+    const python_probe = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
+        .windows => &.{
+            "cmd.exe", "/c",
+            \\@where python >nul 2>&1 || @where python3 >nul 2>&1 || echo zig build functional-test: python not found, skipping (install Python from python.org or set -Dpython=...)
+        },
+        else => &.{
+            "sh", "-c",
+            \\command -v python3 >/dev/null 2>&1 || { echo 'zig build functional-test: python3 not found, skipping (install with `brew install python@3.11` or set -Dpython=...)'; exit 0; }
+        },
     });
     python_probe.setCwd(b.path(""));
 
+    const python_venv_exe = if (is_windows_host) "python.exe" else "python";
     const run_functional = b.addSystemCommand(&.{
-        b.fmt("{s}/python", .{venv_bin}), "-m", "pytest", "tests/functional/", "-v", "--tb=short",
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }), "-m", "pytest", "tests/functional/", "-v", "--tb=short",
     });
     run_functional.setCwd(b.path(""));
     run_functional.step.dependOn(&install_requirements.step);
@@ -2378,7 +2793,7 @@ pub fn build(b: *std.Build) void {
     // missing browser.
     // =====================================================================
     const install_ui_requirements = b.addSystemCommand(&.{
-        b.fmt("{s}/pip", .{venv_bin}), "install", "-q", "-r", "tests/functional_ui/requirements.txt",
+        b.fmt("{s}/{s}", .{ venv_bin, pip_exe }), "install", "-q", "-r", "tests/functional_ui/requirements.txt",
     });
     install_ui_requirements.setCwd(b.path(""));
     install_ui_requirements.step.dependOn(&install_requirements.step);
@@ -2388,13 +2803,13 @@ pub fn build(b: *std.Build) void {
     // cached. We run it as a separate step so CI logs surface the
     // ~150 MB download progress.
     const install_playwright_browsers = b.addSystemCommand(&.{
-        b.fmt("{s}/python", .{venv_bin}), "-m", "playwright", "install", "chromium",
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }), "-m", "playwright", "install", "chromium",
     });
     install_playwright_browsers.setCwd(b.path(""));
     install_playwright_browsers.step.dependOn(&install_ui_requirements.step);
 
     const run_functional_ui = b.addSystemCommand(&.{
-        b.fmt("{s}/python", .{venv_bin}), "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }), "-m", "pytest", "tests/functional_ui/", "-v", "--tb=short",
     });
     run_functional_ui.setCwd(b.path(""));
     run_functional_ui.step.dependOn(&install_playwright_browsers.step);
@@ -2611,7 +3026,15 @@ pub fn build(b: *std.Build) void {
     build_all_step.dependOn(host_install_step);
     build_all_step.dependOn(&desktop_install.step);
     build_all_step.dependOn(&cli_install.step);
-    build_all_step.dependOn(&tui_install.step);
+    // nalar-tui is POSIX-only: src/apps/cli/src/tui/terminal.zig passes
+    // integer fds (std.posix.STDIN_FILENO) where Windows' fd_t is
+    // *anyopaque, so it cannot compile on Windows. Skip it in
+    // `build:all` there so `zig build` stays green; explicit
+    // `zig build install:tui` still attempts the build (and fails the
+    // same way) until the TUI is ported.
+    if (b.graph.host.result.os.tag != .windows) {
+        build_all_step.dependOn(&tui_install.step);
+    }
     build_all_step.dependOn(&build_banner.step);
     // Make `zig build` (default) auto-fetch the vendored curl archive
     // when missing. The fetch script is idempotent — re-running on a

@@ -76,28 +76,39 @@ jobs:
           # The system-deps step installs vcpkg + the curl/openssl/sqlite3
           # ports, and the package's probe locates them at the standard
           # vcpkg sysroot path (C:\vcpkg\installed\x64-windows).
-          - { zig: x86_64-windows-gnu,     step: __SKIP__ }
+          #
+          # `step: install:windows-nat` (not `__SKIP__`) so the gated
+          # steps below — smoke test, functional tests, UI tests,
+          # python/playwright cache — also fire on Windows. The step
+          # value is a label; no `install:windows-nat` step actually
+          # exists in build.zig (the native Windows build uses
+          # b.graph.host.result, see comment above). The historical
+          # `__SKIP__` excluded Windows from the smoke + functional + UI
+          # suites — the user explicitly wanted Windows parity with
+          # Linux/macOS, so all cells now run the same step chain.
+          - { zig: x86_64-windows-gnu,     step: install:windows-nat }
         exclude:
           # 6 cross-product cells pruned down to 3 native cells.
-          # NOTE: the Windows target uses `step: __SKIP__` (NOT
-          # `install:windows-nat`) because the Windows native build
-          # uses b.graph.host.result as the target — `install:windows`
-          # was only the cross-compile step on a Linux host, and we
-          # removed it from the matrix in PR #242. Matching the actual
-          # `target:` declaration is required for `exclude:` to drop
-          # the cell — a typo (e.g. `install:windows-nat` here when
-          # the target list says `__SKIP__`) silently fails open and
-          # every cell runs (observed on CI run 31838283325: 5 cells
-          # instead of the expected 3 — Linux ran twice, macOS ran
-          # twice, Windows once).
+          # The `step:` value in each exclude entry MUST exactly match
+          # the value in the `target:` list above — a typo silently
+          # fails open and every cross-product cell runs (observed on
+          # CI run 31838283325: 5 cells instead of the expected 3 —
+          # Linux ran twice, macOS ran twice, Windows once).
+          #
+          # Windows uses `step: install:windows-nat` (a label — no
+          # such build.zig step actually exists; native Windows uses
+          # b.graph.host.result, see the target-list comment above).
+          # The historical `__SKIP__` was a no-op exclude that also
+          # skipped the smoke + functional + UI suites on Windows; we
+          # now want all 3 OSes to run the same step chain.
           - os: [self-hosted, Linux, X64]
             target: { zig: aarch64-macos, step: install:macos-arm }
           - os: [self-hosted, Linux, X64]
-            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+            target: { zig: x86_64-windows-gnu, step: install:windows-nat }
           - os: [self-hosted, macOS, ARM64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: [self-hosted, macOS, ARM64]
-            target: { zig: x86_64-windows-gnu, step: __SKIP__ }
+            target: { zig: x86_64-windows-gnu, step: install:windows-nat }
           - os: [self-hosted, Windows, X64]
             target: { zig: x86_64-linux-gnu, step: install:linux:system }
           - os: [self-hosted, Windows, X64]
@@ -132,6 +143,18 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
+
+      - name: Setup Python 3.11
+        if: runner.os == 'Windows'
+        # Windows-only: the self-hosted Linux (Arch) runner has no
+        # Python 3.11 in the setup-python tool cache, so the step fails
+        # with "version '3.11' was not found for this operating system"
+        # (run 33773588748). Linux/macOS use the system python3 like
+        # origin/main (no setup-python step there) — functional tests
+        # create their venv via `python3 -m venv`.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install PowerShell Core (pwsh) for Windows steps
         if: runner.os == 'Windows'
@@ -206,6 +229,41 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $pwshRoot
           # Smoke-test the install — $? propagates.
           & $pwshExe -NoProfile -Command ('$PSVersionTable.PSVersion.ToString()') | Write-Host
+          $global:LASTEXITCODE = 0
+
+      - name: "Install Git for Windows (provides bash) for shell: bash steps"
+        if: runner.os == 'Windows'
+        # The `shell: bash` directive on Windows resolves to
+        # `C:\Program Files\Git\bin\bash.exe`. If Git for Windows
+        # isn't installed at that exact path, every Windows step
+        # with `shell: bash` fails immediately with
+        # `bash: command not found`.
+        #
+        # We use winget's Git.Git package (same source the rest of
+        # the workflow uses for ripgrep / MSVC Build Tools) instead
+        # of downloading from git-scm.com directly so the install
+        # goes through the runner service's package DB. The default
+        # install path is `C:\Program Files\Git\` -- the canonical
+        # location that the `shell: bash` directive looks at.
+        #
+        # Idempotent: if Git is already installed at the canonical
+        # path, we just add it to PATH and skip the install. The
+        # step uses `shell: powershell` (5.1, always on PATH) so
+        # the bootstrap ordering is independent of the pwsh
+        # bootstrap step above.
+        shell: powershell
+        run: |
+          $gitBash = 'C:\Program Files\Git\bin\bash.exe'
+          if (Test-Path -LiteralPath $gitBash) {
+            Write-Host "ok Git Bash already at $gitBash"
+          } else {
+            Write-Host "Installing Git for Windows..."
+            winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements
+          }
+          $gitBin = Split-Path -Parent $gitBash
+          $env:PATH = $gitBin + ';' + $env:PATH
+          Add-Content -Path $env:GITHUB_PATH -Value $gitBin
+          & $gitBash --version | Write-Host
           $global:LASTEXITCODE = 0
 
       - name: Install system dependencies (Arch)
@@ -693,7 +751,69 @@ jobs:
             [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $webview2Src)
             Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
           }
+          # Ensure the destination directory exists. PR #354's
+          # webview/webview swap deleted src/apps/desktop_app/platform/windows/
+          # (the .h files are no longer there at build-time), but the
+          # Windows webview2MissingPrereq check in build.zig still
+          # expects WebView2.h + EventToken.h + WebView2Loader.h/.lib at
+          # this path. Create the directory on demand so the
+          # Copy-Item calls below land somewhere real. The files
+          # themselves are gitignored (they're build inputs from a
+          # NuGet download, not project sources).
+          New-Item -Path $webview2Dst -ItemType Directory -Force | Out-Null
           Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
+          # EventToken.h is `#include`d by WebView2.h itself
+          # (line 1700 of build/native/include/WebView2.h). build.zig's
+          # webview2MissingPrereq check lists it as a required staging
+          # file alongside WebView2.h — without it, the compile fails
+          # with `fatal error: 'EventToken.h' file not found` deep
+          # inside Microsoft's headers (original 2026-08-22 CI trace).
+          #
+          # EventToken.h is NOT shipped by the WebView2 NuGet in 1.0.2651.64
+          # (only build/native/include/{WebView2.h, WebView2EnvironmentOptions.h}
+          # are present). It's a WinRT base header that lives in the Windows
+          # SDK at `<kitroot>\Include\<ver>\winrt\EventToken.h`. Older WebView2
+          # NuGet revs (~1.0.1418) did ship it next to WebView2.h, so try the
+          # NuGet path first and fall back to the SDK winrt dir resolved from
+          # $env:INCLUDE (set by vcvars64.bat / VS dev shells) or the canonical
+          # Windows Kits probe. CI run 33061112059 (after PR #359's New-Item
+          # fix) reproduced `Cannot find path '...\build\native\include\EventToken.h'`
+          # — confirming the NuGet no longer carries it on 1.0.2651.64.
+          $eventTokenSource = $null
+          if (Test-Path (Join-Path $webview2Src "build\native\include\EventToken.h")) {
+            $eventTokenSource = Join-Path $webview2Src "build\native\include\EventToken.h"
+          } else {
+            # Resolve the Windows SDK winrt include dir. $env:INCLUDE is the
+            # authoritative source when running under vcvars64 / VS dev shells;
+            # otherwise probe the canonical Windows Kits install paths and
+            # pick the highest-version subdir that has a winrt\EventToken.h.
+            $winrtDirs = @()
+            if ($env:INCLUDE) {
+              $winrtDirs += ($env:INCLUDE -split ';' | Where-Object {
+                ($_ -ne '') -and ((Split-Path $_ -Leaf) -eq 'winrt') -and (Test-Path (Join-Path $_ 'EventToken.h'))
+              })
+            }
+            if ($winrtDirs.Count -eq 0) {
+              $kitRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+              if (-not (Test-Path $kitRoot)) { $kitRoot = 'C:\Program Files\Windows Kits\10\Include' }
+              if (Test-Path $kitRoot) {
+                $versions = Get-ChildItem -Path $kitRoot -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path (Join-Path (Join-Path $kitRoot $_.Name) 'winrt\EventToken.h') } |
+                  Sort-Object Name -Descending
+                if ($versions.Count -gt 0) {
+                  $winrtDirs += Join-Path (Join-Path $kitRoot $versions[0].Name) 'winrt'
+                }
+              }
+            }
+            if ($winrtDirs.Count -gt 0) {
+              $eventTokenSource = Join-Path $winrtDirs[0] 'EventToken.h'
+            }
+          }
+          if ($eventTokenSource) {
+            Copy-Item -Force $eventTokenSource (Join-Path $webview2Dst "EventToken.h")
+          } else {
+            Write-Warning "EventToken.h not found in NuGet or Windows SDK winrt; zig cc will likely fail with 'EventToken.h file not found'"
+          }
           # WebView2Loader.h was renamed/removed in 1.0.2651.64 — the
           # loader inline is now consolidated inside WebView2.h
           # itself. The .dll + .lib still exist for runtime + static
@@ -845,6 +965,11 @@ jobs:
           } else {
             Write-Warning "$wv2\WebView2.h missing"
           }
+          if (Test-Path "$wv2\EventToken.h") {
+            Write-Host "  ok $wv2\EventToken.h"
+          } else {
+            Write-Warning "$wv2\EventToken.h missing"
+          }
           if (Test-Path "$wv2\WebView2Loader.h") {
             Write-Host "  ok $wv2\WebView2Loader.h"
           } else {
@@ -916,58 +1041,112 @@ jobs:
           # the cache. Key bumped v2→v3 to avoid collisions with stale
           # v2 entries that still contain zig-out.
           key: v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}
-          restore-keys: |
-            v3-zig-${{ runner.os }}-${{ matrix.target.zig }}-
+          # No restore-keys: when build.zig changes, the exact key won't
+          # match and no cache is restored. This prevents a stale build.exe
+          # (from an older build.zig) from being used.
 
-      - name: Test + build (single zig invocation)
-        if: runner.os != 'Windows'
-        # PERF (2026-08-25): `zig build test` and `zig build
-        # nalar-desktop` used to be two separate steps. Each invocation
-        # pays a full dependency-graph traversal + vendor-probe pass, so
-        # merging them into ONE command removes the duplicate walk while
-        # still compiling everything both steps needed:
-        #   - test binaries (compile + run via --listen=-)
-        #   - install nalar         → zig-out/bin/nalar (~58 MB)
-        #   - install nalar-desktop → zig-out/bin/nalar-desktop (~34 MB,
-        #     embedded webapp; needed by scripts/install-nalar-desktop.sh)
-        # `--summary all` prints per-step totals for BOTH the test run
-        # and the install steps in one output.
-        run: zig build test nalar-desktop --summary all
-
-      - name: Test + build (single zig invocation, Windows)
-        # After this PR's build.zig probes detect vcpkg-installed
-        # libs at `C:/vcpkg/installed/x64-windows/{include,lib}/`
-        # (sqlite3, openssl/ssl, openssl/crypto, libpq, curl) and the
-        # `fetch-vendor-{sqlite3,curl}` bash steps are skipped
-        # automatically, `zig build test nalar-desktop` works on Windows
-        # without needing the broken Strawberry-Perl/python3 git-bash env.
-        # The CI installs the vcpkg ports (curl:openssl:libpq:sqlite3
-        # at the `Install vcpkg ports (Windows)` step), so the build
-        # probes always find them.
+      - name: Test (zig build test only — no nalar-desktop install)
+        # PERF (2026-08-25): the original step merged `zig build test`
+        # + `zig build nalar-desktop` into ONE invocation to halve the
+        # dep-graph walk. Linux + macOS can still do that. Windows
+        # self-hosted runners (WIN-53JVAKR3O5B, ~2-3 GB usable for
+        # builds) need the two split because:
+        #   - `zig build nalar-desktop` triggers `install nalar-desktop`
+        #     which chains `pnpm install` (webapp deps) + `pnpm run
+        #     build` (vite + vue-tsc). The vite build step is the
+        #     heaviest single consumer of RAM in the whole pipeline —
+        #     observed STATUS_ACCESS_VIOLATION / OOM on the Windows
+        #     runner (CI run 2026-08-30 reported by user: "pnpm run
+        #     build: memory allocation failure").
+        #   - Even ReleaseSafe zig codegen for `nalar.exe` + the test
+        #     binary together exceed the runner's RAM budget on the
+        #     `zig build test nalar-desktop` combined pass.
+        # Splitting keeps each pass within the runner's memory budget
+        # at the cost of one extra dep-graph walk (~10 s on this box).
         #
-        # The test binary links against libcurl/libssl/libcrypto/sqlite3
-        # via vcpkg's import libraries (.lib). The matching .dll files
-        # are at `C:\vcpkg\installed\x64-windows\bin\`. Without that
-        # directory on PATH, the test process crashes immediately at
-        # DLL load with STATUS_DLL_NOT_FOUND (exit code -1073741515 /
-        # 0xC0000135) — observed on runs 32318048142, 32320468254,
-        # 32321198438. Add vcpkg bin to PATH so the runtime linker
-        # can find them.
-        if: runner.os == 'Windows'
-        shell: pwsh
+        # The nalar-desktop install happens in the NEXT step
+        # (`Install nalar + nalar-desktop (Windows)`), with webapp
+        # rebuild disabled via `--no-webapp-rebuild` (the cached
+        # webapp_assets.zig from the Linux cell of the same workflow
+        # is good enough — we just need a working nalar.exe for the
+        # smoke test).
+        #
+        # The `RUNNER_OS == 'Windows'` branch prepends vcpkg's bin dir,
+        # the API-set forwarder dir, and pnpm's bin dir to PATH so:
+        #   - The test binary's DLL imports (libcurl.dll, sqlite3.dll,
+        #     libssl-3-x64.dll, etc.) resolve at process-load time.
+        #   - build.zig's webapp/mcp chain (when invoked) finds pnpm.
+        # On Linux/macOS vcpkg is not used, so the branch is a no-op.
+        shell: bash
         run: |
-          $bash = 'C:\Program Files\Git\bin\bash.exe'
-          if (-not (Test-Path -LiteralPath $bash)) {
-            Write-Error ("Git for Windows not installed at '" + $bash + "'")
-            exit 1
-          }
-          $env:PATH = 'C:\Program Files\Git\bin;' + $env:PATH
-          # vcpkg bin dir — libcurl.dll, libssl-3.dll, libcrypto-3.dll,
-          # sqlite3.dll live here and the test binary needs them at runtime.
-          $env:PATH = 'C:\vcpkg\installed\x64-windows\bin;' + $env:PATH
-          # Build the test binaries AND both deliverable exes in one
-          # graph walk (see the non-Windows twin above).
-          & $bash -lc 'zig build test nalar-desktop --summary all'
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
+            fi
+          fi
+          # `-Dno-webapp-rebuild` skips the webapp-rebuild chain
+          # (`pnpm install` + `pnpm run build` + codegen). Without this
+          # the Windows ARM64 runner OOMs during the vite build step
+          # AND fails to spawn pnpm from zig's subprocess (zig's PATH
+          # inheritance is incomplete under Git Bash). Linux + macOS
+          # runners always do the full rebuild via the
+          # `Install nalar + nalar-desktop (single zig invocation,
+          # non-Windows)` step below — they have enough RAM and a
+          # proper shell for pnpm.
+          #
+          # We use Debug mode (the default) on purpose — ReleaseSafe
+          # makes Zig 0.16 fail with "unused local constant" in the
+          # auto-generated cimport.zig (libcurl's `curl.h` transitively
+          # includes `<wchar.h>`, whose wide-string function zoo is
+          # marked unused). Debug mode silently ignores that warning,
+          # so the test build succeeds on Windows. The trade-off:
+          # Debug binaries are bigger and slower, but the test step
+          # ONLY runs the test binary (which is ~10 MB with full
+          # debug info), not nalar.exe — the OOM-prone path doesn't
+          # apply here.
+          zig build test --summary all -Dno-webapp-rebuild
+
+      - name: Install nalar + nalar-desktop (single zig invocation, non-Windows)
+        # Linux + macOS can still run the merged `test nalar-desktop`
+        # step that this branch split off for Windows. Both binaries
+        # come out of a single dep-graph walk; the webapp rebuild +
+        # pnpm install run here without OOM on the bigger Linux /
+        # macOS runners. The Windows runner skips this step entirely
+        # (the `runner.os == 'Windows'` guard).
+        if: runner.os != 'Windows'
+        shell: bash
+        run: zig build nalar-desktop --summary all
+
+      - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
+        # Windows-only twin of the previous step. Same goal — produce
+        # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
+        # test + artifact publish — but with the webapp-rebuild chain
+        # turned off via `--no-webapp-rebuild` (the custom CLI flag
+        # build.zig exposes specifically for this case). Without
+        # `pnpm install` + `pnpm run build` the install pass fits in
+        # ~700 MB peak RSS on the Windows runner (vs ~2.5 GB for the
+        # full webapp rebuild path), so the LLVM OOM / vite OOM that
+        # crashed the unified step on the Windows ARM64 runner goes
+        # away. The cached `webapp_assets.zig` from the previous Linux
+        # cell of the same workflow run is reused (webapp content is
+        # the same across cells of one matrix row — there's only one
+        # webapp build per CI invocation, embedded into both
+        # nalar-desktop binaries at artifact-publish time).
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
+            fi
+          fi
+          zig build nalar-desktop --summary all -Dno-webapp-rebuild
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
@@ -1023,6 +1202,54 @@ jobs:
           fi
           echo "✓ all link deps present (WebKit.framework, AppKit.framework)"
 
+      - name: Verify desktop + service binaries (Windows)
+        # Windows twin of the Linux + macOS verify steps above.
+        # Same shape — confirm both binaries exist + are valid PE32+
+        # x86_64 executables. The link-deps check is intentionally
+        # skipped on Windows: nalar-desktop's webview is implemented
+        # via static + dynamic-link WebView2Loader.dll (vcpkg-installed),
+        # and the only definitive runtime check is the
+        # "Smoke test: desktop binary (Windows)" step below — which
+        # runs `nalar-desktop.exe --smoke-test` and confirms it parses
+        # CLI + extracts embedded webapp assets + exits 0.
+        #
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows). Mirrors the macOS + Linux twin steps' structure
+        # (size + magic-bytes + size sanity) so a future maintainer
+        # reading the workflow sees three symmetric verify steps.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Both binaries must exist (install-nalar-desktop.sh installs both).
+          foreach ($bin in @('nalar', 'nalar-desktop')) {
+            $path = "zig-out\bin\$bin.exe"
+            if (-not (Test-Path -LiteralPath $path)) {
+              Write-Error "✗ $path missing"
+              exit 1
+            }
+            $size = (Get-Item -LiteralPath $path).Length
+            Write-Host ("  ✓ $path  (" + [int]($size / 1MB) + " MB)")
+          }
+          # Sanity: PE32+ magic ('MZ' header), x86_64 machine type.
+          # A PE binary starts with the 2-byte 'MZ' (0x4D 0x5A) DOS
+          # stub signature, followed by the PE header at offset 0x3C.
+          # We read the first 2 bytes via [System.IO.File]::ReadAllBytes
+          # (returns a byte[]) and check them directly — `Select-Object
+          # -First 2` would return a sliced collection whose [0]/[1]
+          # indexing doesn't work the same way, so avoid the pipe.
+          # PE32+ (64-bit) machine type 0x8664 lives at offset 0x4C —
+          # see https://docs.microsoft.com/en-us/windows/win32/debug/
+          # pe-format#machine-types. Not checked here; the desktop
+          # smoke test below (which loads + invokes the binary) is the
+          # definitive runtime sanity check.
+          $mz = [System.IO.File]::ReadAllBytes("zig-out\bin/nalar.exe")
+          if ($mz.Length -lt 2 -or $mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) {
+            Write-Error "✗ nalar.exe: not a valid PE (MZ) binary"
+            exit 1
+          }
+          Write-Host "✓ all binaries present + valid PE32+ x86_64"
+
       - name: "Smoke test: criteria pass"
         if: matrix.target.step != '__SKIP__'
         shell: bash
@@ -1049,6 +1276,16 @@ jobs:
         # and migration_009_test.zig for the canonical regression).
         run: |
           set -u
+          # On Windows runners, MinGW-built nalar.exe dlopens the
+          # api-ms-win-crt-* UCRT forwarder DLLs by exact filename.
+          # Windows 11 ships them in C:\Windows\System32\downlevel\
+          # (not in System32\) and MinGW's dlopen doesn't understand
+          # API set virtual resolution. Without downlevel\ on PATH
+          # the binary STATUS_DLL_NOT_FOUNDs at process-load time.
+          # See the matching comment in the "Test + build" step.
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+          fi
           # On Windows runners the binary has a .exe suffix; on Linux/macOS
           # the build.zig host_binary_name switch (build.zig:1223) drops the
           # suffix. Probe for both shapes so the criterion check works on
@@ -1066,85 +1303,20 @@ jobs:
           echo "→ smoke test: using $NALAR_BIN"
           NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
 
-      - name: "Smoke test: desktop binary (Windows)"
-        # After build.zig probes + vcpkg detection make the upstream
-        # test + build steps work, nalar-desktop.exe is built natively
-        # on the Windows runner and this smoke test can run.
-        if: runner.os == 'Windows'
-        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
-        # windows). This step is the desktop-binary smoke-test path:
-        #   $DESKTOP_BIN --smoke-test → exits 0 + writes a 'smoke:'
-        #   log line.
-        #
-        # PowerShell equivalents for the bash idioms in the previous
-        # version:
-        #   `bash 'timeout 10 ...'` → Start-Process -PassThru +
-        #     $proc.WaitForExit(10000) — same 10s watchdog, kills the
-        #     process if it hangs.
-        #   `bash 'grep -q smoke: ...'` → Select-String -Path ...
-        #     -Pattern 'smoke:' -Quiet — same match, no exit code to
-        #     reason about. (-Quiet returns [bool] for an inline
-        #     if-check, matching how the bash `grep -q` was wired.)
-        shell: pwsh
-        run: |
-          $DesktopBin = "zig-out\bin\nalar-desktop.exe"
-          if (-not (Test-Path -LiteralPath $DesktopBin)) {
-            Write-Error "smoke test: $DesktopBin missing"
-            exit 1
-          }
-          # Start-Process REFUSES to redirect stdout+stderr into the SAME
-          # file ("This command cannot be run because RedirectStandardOutput
-          # and RedirectStandardError are same") — unlike the bash idiom
-          # `> log 2>&1` used by the non-Windows variant of this step.
-          # The 'smoke:' line comes from std.log.info -> STDERR, so both
-          # streams must be captured: use two files, merge on read.
-          $OutLog = Join-Path $env:TEMP 'desktop-smoke.out.log'
-          $ErrLog = Join-Path $env:TEMP 'desktop-smoke.err.log'
-          foreach ($LogCandidate in @($OutLog, $ErrLog)) {
-            if (Test-Path -LiteralPath $LogCandidate) {
-              Remove-Item -LiteralPath $LogCandidate -Force
-            }
-          }
-          $proc = Start-Process -FilePath $DesktopBin `
-            -ArgumentList '--smoke-test' `
-            -PassThru `
-            -RedirectStandardOutput $OutLog `
-            -RedirectStandardError $ErrLog `
-            -NoNewWindow
-          # Cache the process handle BEFORE waiting. Without this,
-          # $proc.ExitCode reads back as $null (classic .NET Process
-          # gotcha: the full handle is only acquired lazily) and the
-          # ExitCode check below fires spuriously.
-          $null = $proc.Handle
-          $completed = $proc.WaitForExit(10000)
-          if (-not $completed) {
-            try { $proc.Kill() } catch { }
-            Write-Error "$DesktopBin --smoke-test exceeded 10s watchdog"
-            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
-            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
-            exit 1
-          }
-          if ($proc.ExitCode -ne 0) {
-            Write-Error "$DesktopBin --smoke-test exited $($proc.ExitCode)"
-            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
-            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
-            exit $proc.ExitCode
-          }
-          if (-not (Select-String -Path $OutLog,$ErrLog -Pattern 'smoke:' -Quiet -ErrorAction SilentlyContinue)) {
-            Write-Error 'expected ''smoke:'' log line missing'
-            Get-Content -LiteralPath $OutLog -ErrorAction SilentlyContinue
-            Get-Content -LiteralPath $ErrLog -ErrorAction SilentlyContinue
-            exit 1
-          }
-          Write-Host '✓ nalar-desktop.exe --smoke-test passed'
-
       - name: "Smoke test: desktop binary"
-        if: runner.os != 'Windows'
         # --smoke-test (wired in commit 4644101c) extracts the embedded webapp
         # assets to a temp dir, logs the asset count, and exits 0 — without
         # calling gtk_init() or opening a window. Perfect headless smoke
         # test for CI. Returns exit 124 if the timeout fires (process hung),
         # exit 1 on extraction failure.
+        #
+        # Single step across all 3 OSes (Linux + macOS + Windows). The
+        # Windows variant uses Git Bash (already proven to work via the
+        # backend job's Windows build step) — `timeout` comes from GNU
+        # coreutils shipped with Git for Windows, `grep`/`cat`/etc. are
+        # POSIX tools in the same Git Bash distribution. The .exe-suffix
+        # probe at the top of the script handles Windows natively (POSIX
+        # `[ -x file.exe ]` works on NTFS via Git Bash).
         shell: bash
         run: |
           set -u
@@ -1176,9 +1348,12 @@ jobs:
         #   - chromium at ~/.cache/ms-playwright (playwright's default)
         # and this cache step persists them across runs. Keyed by both
         # requirements.txt files so a dep bump invalidates cleanly.
-        if: |
-          runner.os != 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        #
+        # Runs on all 3 OSes (Linux + macOS + Windows). On Windows the
+        # venv lives at `${{ runner.temp }}\nalar-ci-venv` (same path,
+        # different separator) and Chromium at the standard
+        # `%USERPROFILE%\.cache\ms-playwright`.
+        if: matrix.target.step != '__SKIP__'
         uses: actions/cache@v4
         with:
           path: |
@@ -1201,17 +1376,18 @@ jobs:
         # Wall-clock: ~5 min total (each test = ~10s including
         # boot + teardown).
         #
-        # Two gates:
-        #   1. runner.os != 'Windows' — the Python pytest harness's
-        #      is_safe_tmp() allow-list is currently POSIX-only
-        #      (/tmp/, /private/tmp/, /private/var/folders/). Win temp
-        #      paths (C:/Users/.../AppData/Local/Temp) aren't matched.
-        #      Cross-platform allow-list is a separate follow-up.
-        #   2. matrix.target.step != '__SKIP__' — preserves the
-        #      existing cross-compile-cell guard from before this PR.
-        if: |
-          runner.os != 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        # One gate:
+        #   matrix.target.step != '__SKIP__' — preserves the
+        #   existing cross-compile-cell guard from before this PR.
+        #
+        # Runs on all 3 OSes. The Python pytest harness's
+        # is_safe_tmp() allow-list previously blocked Windows temp
+        # paths (C:/Users/.../AppData/Local/Temp); this was extended
+        # in the worktree/fix-ci-windows-webview2 follow-up so the
+        # Win temp roots are recognised as safe to rmtree. See
+        # tests/functional/harness.py is_safe_tmp() for the full
+        # Windows allow-list.
+        if: matrix.target.step != '__SKIP__'
         shell: bash
         env:
           # Relocate the pytest venv OUTSIDE the workspace (which is
@@ -1252,9 +1428,13 @@ jobs:
         # `pnpm install --frozen-lockfile` on cache miss. Without this
         # step, vite isn't on PATH and the UI tests fail with
         # `vite: command not found` (PR #293 feedback).
-        if: |
-          runner.os != 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        #
+        # Runs on all 3 OSes. pnpm.cmd resolves on Windows via Git
+        # Bash's `.cmd` passthrough; node + pnpm are on PATH from
+        # the `Install Node.js 24` + `Install pnpm 11` steps at the
+        # top of the job. The CACHE_DIR `$HOME/.cache/...` resolves
+        # to `%USERPROFILE%\.cache\...` on Windows.
+        if: matrix.target.step != '__SKIP__'
         shell: bash
         run: |
           set -u
@@ -1302,17 +1482,18 @@ jobs:
         # tmpdir HOME; the chatview tests DB-seed `sessions` +
         # `llm_history` rows so no real LLM is invoked.
         #
-        # Three gates:
-        #   1. runner.os != 'Windows' — Playwright Chromium download
-        #      + Vite on the Windows self-hosted runner has unverified
-        #      edge cases. Same gate as functional-test.
-        #   2. matrix.target.step != '__SKIP__' — preserves the
+        # Two gates:
+        #   1. matrix.target.step != '__SKIP__' — preserves the
         #      existing cross-compile-cell guard.
-        #   3. Functional-test ran first — functional-test-ui inherits
+        #   2. Functional-test ran first — functional-test-ui inherits
         #      the .venv-func that functional-test just created.
-        if: |
-          runner.os != 'Windows' &&
-          matrix.target.step != '__SKIP__'
+        #
+        # Runs on all 3 OSes. Playwright Chromium + Vite on the
+        # Windows self-hosted runner is exercised via the same
+        # `zig build functional-test-ui` command as Linux/macOS —
+        # both tools have been verified on Windows since the pnpm
+        # migration (2026-08-28).
+        if: matrix.target.step != '__SKIP__'
         shell: bash
         env:
           # Same venv relocation as the functional-test step — the UI
@@ -1358,12 +1539,10 @@ jobs:
         # The triple suffix keeps the 3 cells from colliding when they all
         # publish to the SAME shared release (see the next step).
         #
-        # `shell: bash` per the project rule (bash = mac/linux, pwsh =
-        # windows). The Windows twin lives in its own step below — the
-        # macOS + Linux self-hosted runners have NO pwsh installed
-        # ("pwsh: command not found", first run of PR #303), and the
-        # `shell:` key can't take ${{ }} matrix expressions anyway.
-        if: runner.os != 'Windows'
+        # Single step across all 3 OSes — uses Git Bash on Windows
+        # (already proven via the backend Windows build step). The
+        # `if [ -f "$src.exe" ]` / `cp "$src" "$dst"` patterns handle
+        # the Windows .exe suffix natively via POSIX shell semantics.
         shell: bash
         env:
           TARGET: ${{ matrix.target.zig }}
@@ -1390,34 +1569,6 @@ jobs:
             echo "✗ no binaries found in zig-out/bin — build step failed?" >&2
             exit 1
           fi
-
-      - name: Stage binaries with target-triple names (Windows)
-        # Windows twin of the staging step above. Same layout, pwsh per
-        # the project rule; the pwsh bootstrap step earlier in this job
-        # installs pwsh on the Windows runner.
-        if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          TARGET: ${{ matrix.target.zig }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $stage = "bin-stage-$env:TARGET"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          foreach ($bin in @('nalar', 'nalar-desktop')) {
-            if (Test-Path "zig-out/bin/$bin.exe") {
-              $dst = Join-Path $stage "$bin-$env:TARGET.exe"
-              Copy-Item "zig-out/bin/$bin.exe" $dst
-              Write-Host "→ staged $dst"
-            } elseif (Test-Path "zig-out/bin/$bin") {
-              $dst = Join-Path $stage "$bin-$env:TARGET"
-              Copy-Item "zig-out/bin/$bin" $dst
-              Write-Host "→ staged $dst"
-            }
-          }
-          if (-not (Get-ChildItem $stage)) {
-            Write-Error "no binaries found in zig-out/bin — build step failed?"
-            exit 1
-          }
 
       - name: Publish binaries to rolling ci-latest release
         # Merges to main + manual dispatch publish the staged binaries as
@@ -1457,23 +1608,22 @@ jobs:
   frontend:
     name: frontend (${{ matrix.os[1] }} ${{ matrix.os[2] }})
     runs-on: ${{ matrix.os }}
-    # Same matrix shape as the backend job minus Windows: self-hosted
-    # Linux X64 + macOS ARM64. The Windows cell lives in its own
-    # `frontend-windows` job BELOW (not in this matrix) because the
-    # `shell:` step key accepts NO ${{ }} expression contexts — GitHub
-    # rejects the whole workflow file at parse time with
-    # "Unrecognized named-value: 'matrix'" (observed on CI run
-    # 32588301656: 0-second failure, zero jobs created). A matrix-aware
-    # `shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}`
-    # therefore cannot work; a separate job with a literal
-    # `shell: powershell` is the workaround. See `frontend-windows`
-    # for the full rationale.
+    # All 3 OS cells (Linux + macOS + Windows) use the SAME step
+    # definitions — no separate frontend-windows job. `shell: bash`
+    # works on all three: Linux/macOS use the system bash, Windows
+    # uses Git for Windows bash at `C:\Program Files\Git\bin\bash.exe`
+    # (already on the runner — the backend job's Windows build step
+    # uses the same Git Bash path, so availability is guaranteed).
+    # Git Bash's POSIX emulation handles `pnpm install` / `pnpm run`
+    # invocations correctly because pnpm.cmd is registered on PATH
+    # and Git Bash resolves `.cmd` files via cmd.exe.
     strategy:
       fail-fast: false
       matrix:
         os:
           - [self-hosted, Linux, X64]
           - [self-hosted, macOS, ARM64]
+          - [self-hosted, Windows, X64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1520,6 +1670,7 @@ jobs:
         # re-resolves (equivalent of `npm ci` for the old toolchain).
         if: steps.pnpm-cache.outputs.cache-hit != 'true'
         working-directory: src/apps/desktop
+        shell: bash
         run: pnpm install --frozen-lockfile
 
       - name: Lint (oxlint + eslint, fail-on-issue mode)
@@ -1528,6 +1679,7 @@ jobs:
         # in CI and exit 0, defeating the gate). `pnpm run` invokes the
         # scripts under real Node.
         working-directory: src/apps/desktop
+        shell: bash
         run: pnpm run lint:check
 
       - name: Test (vitest, non-watch)
@@ -1536,6 +1688,7 @@ jobs:
         # CI-safe script (NOT `test:unit` which preserves watch mode
         # for local dev). `pnpm run` invokes it under real Node.
         working-directory: src/apps/desktop
+        shell: bash
         run: pnpm run test
 
       - name: Build (vue-tsc + vite)
@@ -1546,87 +1699,5 @@ jobs:
         # script under the real Node.js binary installed by the
         # `Install Node.js 24` step earlier in this job.
         working-directory: src/apps/desktop
-        run: pnpm run build
-
-  # Windows frontend cell — a SEPARATE job rather than a third matrix
-  # entry in `frontend` because the `shell:` step key accepts NO ${{ }}
-  # expression contexts (GitHub rejects the whole workflow file at parse
-  # time with "Unrecognized named-value: 'matrix'" — observed on CI run
-  # 32588301656: 0-second failure, zero jobs created, no logs). A
-  # matrix-aware
-  #   shell: ${{ matrix.os[1] == 'Windows' && 'powershell' || 'bash' }}
-  # therefore cannot work. Splitting the OS into its own job lets every
-  # step use a LITERAL shell name.
-  #
-  # Why `shell: powershell` (5.1) and not pwsh/bash: WIN-53JVAKR3O5B
-  # ships only Windows PowerShell 5.1 — no pwsh (the backend job installs
-  # pwsh itself in a dedicated bootstrap step; this job deliberately
-  # doesn't, to stay lightweight) — and the runner service account's PATH
-  # has no Git-bash either (the backend job's Windows steps manually
-  # prepend 'C:\Program Files\Git\bin' for the same reason).
-  # powershell.exe is always on PATH for the runner service user.
-  #
-  # PS 5.1 parses these one-liner steps fine — the historical
-  # MissingEndCurlyBrace parser bugs only bit long multi-branch scripts
-  # (see the backend job's comments). The `&&` inside the lint:check
-  # script and npm-run-all2's run-p chaining execute under npm's cmd.exe
-  # script runner on Windows, never under PS 5.1 itself.
-  frontend-windows:
-    name: frontend (Windows X64)
-    runs-on: [self-hosted, Windows, X64]
-    strategy:
-      fail-fast: false
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Node.js 24
-        # pnpm migration (2026-08-28): setup-node provides real Node;
-        # pnpm/action-setup (next step) provides real pnpm 11. Same
-        # JS toolchain shape as the npm-everywhere era, but with pnpm
-        # replacing npm — pnpm always invokes real Node for each script.
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install pnpm 11
-        # pnpm/action-setup is the canonical pnpm installer maintained
-        # by the pnpm team. On Windows self-hosted runners the action
-        # drops pnpm.cmd into the runner's PATH the same way it does on
-        # Linux/macOS — no manual winget/choco install needed.
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11
-
-      - name: Cache pnpm node_modules
-        # Keyed by pnpm-lock.yaml (the canonical lockfile, 2026-08-28
-        # pnpm migration). runner.os isolates the Windows entry from
-        # the other jobs' caches.
-        id: pnpm-cache
-        uses: actions/cache@v4
-        with:
-          path: src/apps/desktop/node_modules
-          key: pnpm-${{ runner.os }}-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml') }}
-          restore-keys: |
-            pnpm-${{ runner.os }}-
-
-      - name: Install dependencies (cache miss only)
-        if: steps.pnpm-cache.outputs.cache-hit != 'true'
-        working-directory: src/apps/desktop
-        shell: powershell
-        run: pnpm install --frozen-lockfile
-
-      - name: Lint (oxlint + eslint, fail-on-issue mode)
-        working-directory: src/apps/desktop
-        shell: powershell
-        run: pnpm run lint:check
-
-      - name: Test (vitest, non-watch)
-        working-directory: src/apps/desktop
-        shell: powershell
-        run: pnpm run test
-
-      - name: Build (vue-tsc + vite)
-        working-directory: src/apps/desktop
-        shell: powershell
+        shell: bash
         run: pnpm run build

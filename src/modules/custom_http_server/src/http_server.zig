@@ -42,6 +42,13 @@ pub const MiddlewareChain = router.MiddlewareChain;
 const socket = posix.system;
 
 /// Winsock extern declarations for Windows
+// Winsock SOCKET type — opaque handle (pointer-sized) returned by
+// socket() and accepted by all other winsock calls. Locally declared
+// as `*anyopaque` (same ABI as the underlying HANDLE on Win32/Win64).
+// Used at the call-site @ptrCast boundaries so the winsock decls can
+// stay typed as `c_int` (matching SocketFd = i32).
+const SOCKET = *anyopaque;
+
 const winsock = if (builtin.os.tag == .windows) struct {
     extern "ws2_32" fn WSAStartup(wVersionRequested: c_ushort, wsaData: *WSADATA) callconv(.c) c_int;
     extern "ws2_32" fn WSACleanup() callconv(.c) c_int;
@@ -138,6 +145,18 @@ const AF_UNIX = if (builtin.os.tag == .windows) @as(u32, 1) else posix.AF.UNIX;
 const SOCK_STREAM = if (builtin.os.tag == .windows) @as(u32, 1) else posix.SOCK.STREAM;
 const IPPROTO_TCP = if (builtin.os.tag == .windows) @as(u32, 6) else posix.IPPROTO.TCP;
 
+// Cross-platform socket fd type. On Linux/macOS this is i32 (no behavior
+// change vs. the prior hard-coded `i32`). On Windows the production code
+// uses winsock handles via SOCKET (= *anyopaque); callers cast
+// `addr.sock_fd` to `c_int` at the winsock call site when needed.
+//
+// NB: keeping this as `i32` (not `std.c.fd_t`) is deliberate — the test
+// suite compares `addr.sock_fd` against integer literals (e.g. `>= 0`,
+// `== -1`) and casts it via `@intCast`/`@intFromPtr` in only a handful of
+// places. Switching to `std.c.fd_t` (= *anyopaque on Windows) would
+// cascade into 50+ test-comparison sites. The winsock declarations use
+// `SOCKET` directly, so the type mismatch surfaces only at the @ptrCast
+// boundaries that already exist.
 pub const SocketFd = i32;
 
 pub const Address = struct {
@@ -186,15 +205,23 @@ pub const Address = struct {
     }
 
     fn createSocket() !SocketFd {
-        if (builtin.os.tag == .windows) {
+        if (comptime builtin.os.tag == .windows) {
             ensureWinsockInitialized();
-            const fd = winsock.socket(@intCast(AF_INET), @intCast(SOCK_STREAM), @intCast(IPPROTO_TCP));
-            if (fd < 0) return error.SocketCreationFailed;
-            return fd;
+            const fd_raw = winsock.socket(@intCast(AF_INET), @intCast(SOCK_STREAM), @intCast(IPPROTO_TCP));
+            // winsock.socket returns c_int — but the underlying return
+            // value is a SOCKET (pointer-sized). Compare to the Winsock
+            // sentinel INVALID_SOCKET (the C constant ((SOCKET)(LONG_PTR)-1), i.e.
+            // ~0usize) via intFromPtr == maxInt(usize), then narrow
+            // fd_raw back to SocketFd (= i32) — Windows socket handles
+            // are small integers assigned sequentially by the kernel
+            // (typically < 2^31) so the @intCast is safe here.
+            const fd_handle: SOCKET = @ptrFromInt(@as(usize, @intCast(fd_raw)));
+            if (@intFromPtr(fd_handle) == std.math.maxInt(usize)) return error.SocketCreationFailed;
+            return @intCast(fd_raw); // narrow SOCKET → SocketFd (i32)
         } else {
             const fd = socket.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             if (fd < 0) return error.SocketCreationFailed;
-            return @as(i32, @intCast(fd));
+            return @intCast(fd);
         }
     }
 
@@ -1061,7 +1088,7 @@ pub const GinwaServer = struct {
 
 fn recvFromSock(fd: SocketFd, buf: [*]u8, len: usize) isize {
     if (builtin.os.tag == .windows) {
-        return winsock.recv(fd, buf, @intCast(len), 0);
+        return winsock.recv(@intCast(fd), buf, @intCast(len), 0);
     } else {
         return socket.read(fd, buf, len);
     }

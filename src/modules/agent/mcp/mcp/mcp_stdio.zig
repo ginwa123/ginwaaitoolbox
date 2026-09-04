@@ -773,10 +773,12 @@ pub const StdioRegistry = struct {
     // Process-global singleton. Lives for the whole nalar process.
     // Cleaned up via the shutdown hook in main.zig (Task 7).
     //
-    // The arena is created with the parent allocator passed to `global()`
-    // — typically the dependency-injected `di.allocator` from main.zig,
-    // which has process lifetime. NOT std.heap.page_allocator (per project
-    // convention: the user always passes an explicit allocator).
+    // Backing rule (use-after-free post-mortem, see
+    // `mcp_http.HttpRegistry.global`): production reaches this through
+    // the eager init in main.zig (process-lifetime GPA) and the cached
+    // `di.mcp_stdio_registry` handle. The lazy `global(allocator)`
+    // path below only serves unit tests — never pass a per-run arena
+    // there, or the first call poisons all later runs with dead memory.
 
     var global_registry: ?StdioRegistry = null;
     var global_init_mutex: std.atomic.Mutex = .unlocked;

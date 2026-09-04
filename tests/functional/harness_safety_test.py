@@ -88,6 +88,40 @@ def test_is_safe_tmp_resolves_symlinks_in_path() -> None:
 # ─── teardown safety net ──────────────────────────────────────────────────
 
 
+#: Every env var teardown() restores (harness.py step 1). Tests that
+#: call teardown() on a directly-constructed (never-booted) instance
+#: must snapshot/restore these: teardown unconditionally writes
+#: orig_home into the parent env (and pops the Windows/XDG keys when
+#: the instance carries empty originals), so without a restore the
+#: leaked values poison every LATER test in the session — e.g.
+#: smoke_boot's orig_home assertion, which passed on POSIX only
+#: because the leak made both sides of its comparison equal.
+_TEARDOWN_ENV_KEYS = (
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+)
+
+
+def _snapshot_env() -> dict[str, str | None]:
+    """Snapshot teardown-touched vars; None means absent."""
+    return {k: os.environ.get(k) for k in _TEARDOWN_ENV_KEYS}
+
+
+def _restore_env(saved: dict[str, str | None]) -> None:
+    """Restore a _snapshot_env mapping (removing vars that were absent)."""
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 def test_teardown_refuses_unsafe_temp_dir() -> None:
     """Constructing a harness with an unsafe temp_dir makes teardown raise.
 
@@ -97,20 +131,38 @@ def test_teardown_refuses_unsafe_temp_dir() -> None:
     from harness import FunctionalHarness as _FH
 
     # Build a harness instance WITHOUT calling boot (which creates its
-    # own tempdir). Use a clearly-unsafe temp_dir.
+    # own tempdir). Use a clearly-unsafe temp_dir: an absolute path
+    # that is neither under the tmp prefix nor namespaced — and that
+    # EXISTS, so the post-teardown "still exists" assertion is real.
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        unsafe_dir = Path(system_root) / "System32" / "drivers" / "etc" / "hosts"
+        if not unsafe_dir.exists():
+            pytest.skip(f"expected system file missing: {unsafe_dir}")
+        unsafe_home = os.environ.get("USERPROFILE", str(unsafe_dir.parent))
+    else:
+        unsafe_dir = Path("/etc/passwd")
+        unsafe_home = "/home/alice"
     h = _FH(
         port=9999,
         nalar_bin=Path("/nonexistent"),
-        temp_dir=Path("/etc/passwd"),  # unsafe: not in tmp, no substring
-        orig_home="/home/alice",
+        temp_dir=unsafe_dir,  # unsafe: not in tmp, no substring
+        orig_home=unsafe_home,
         log_path=Path("/dev/null"),
         pid=None,
     )
-    with pytest.raises(FunctionalHarnessError) as exc:
-        h.teardown()
+    # teardown() writes orig_home into the parent env BEFORE the safety
+    # check raises — snapshot/restore so the probe values don't leak
+    # into later tests in this session (see _TEARDOWN_ENV_KEYS).
+    saved_env = _snapshot_env()
+    try:
+        with pytest.raises(FunctionalHarnessError) as exc:
+            h.teardown()
+    finally:
+        _restore_env(saved_env)
     assert "REFUSING to rmtree" in str(exc.value)
     # And the file MUST still exist.
-    assert os.path.exists("/etc/passwd")
+    assert os.path.exists(unsafe_dir)
 
 
 def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
@@ -134,7 +186,15 @@ def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
     # - pytest's tmp_path is on /tmp/... on Linux (or /var/folders/... on macOS)
     # - safe contains the substring
     # - safe != orig_home
-    h.teardown()
+    # teardown() leaves orig_home in the parent env by design (step 1
+    # restores it for post-test code). This directly-constructed probe
+    # never booted, so restore afterwards — otherwise "/home/nonexistent"
+    # leaks into later tests in this session (see _TEARDOWN_ENV_KEYS).
+    saved_env = _snapshot_env()
+    try:
+        h.teardown()
+    finally:
+        _restore_env(saved_env)
     assert not safe.exists()
 
 
@@ -143,7 +203,11 @@ def test_teardown_with_safe_temp_dir_runs_rmtree(tmp_path: Path) -> None:
 
 def test_allowed_tmp_prefixes_contains_gettempdir() -> None:
     """The allow-list must include tempfile.gettempdir() (defensive)."""
-    assert (tempfile.gettempdir() + "/") in ALLOWED_TMP_PREFIXES
+    if os.name == "nt":
+        # Windows prefixes use native backslashes (see harness.py).
+        assert (tempfile.gettempdir().rstrip("\\") + "\\") in ALLOWED_TMP_PREFIXES
+    else:
+        assert (tempfile.gettempdir() + "/") in ALLOWED_TMP_PREFIXES
 
 
 def test_required_substring_is_namespaced() -> None:
@@ -153,16 +217,21 @@ def test_required_substring_is_namespaced() -> None:
     assert REQUIRED_TMP_SUBSTR.endswith("-")
 
 
-def test_orig_home_must_exist_for_boot() -> None:
-    """boot() refuses if HOME is unset (no path to validate against)."""
-    saved = os.environ.pop("HOME", None)
-    try:
-        with pytest.raises(FunctionalHarnessError) as exc:
-            FunctionalHarness.boot()
-        assert "HOME not set" in str(exc.value)
-    finally:
-        if saved is not None:
-            os.environ["HOME"] = saved
+def test_orig_home_must_exist_for_boot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """boot() refuses if no home can be determined (no path to validate against)."""
+    # boot() resolves orig_home as HOME → USERPROFILE (Windows) →
+    # Path.home(). Remove both env vars AND break Path.home so every
+    # layer fails deterministically on all platforms.
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: (_ for _ in ()).throw(OSError("no home"))),
+    )
+    with pytest.raises(FunctionalHarnessError) as exc:
+        FunctionalHarness.boot()
+    assert "HOME not set" in str(exc.value)
 
 
 # ─── boot() signature: port default must be None (random), not 8080 ────────

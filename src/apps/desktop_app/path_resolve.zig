@@ -55,19 +55,67 @@ pub fn resolve(
     //    the absolute case is useful.
     if (std.fs.path.isAbsolute(self_exe_path)) {
         const self_dir = std.fs.path.dirname(self_exe_path) orelse ".";
-        const candidate = std.fs.path.join(allocator, &.{ self_dir, "nalar" }) catch return null;
+        // On Windows, the actual on-disk name has the `.exe` suffix
+        // — `std.c.access("...\nalar", F_OK)` returns ENOENT even
+        // though `...\nalar.exe` exists, because the UCRT `access`
+        // call does NOT auto-append `.exe` the way CreateProcessW
+        // does. Linux/macOS have no extension to worry about, so we
+        // hardcode the suffix per-platform rather than probing both.
+        //
+        // Build the candidate as a SINGLE `[]const u8` rather than
+        // passing the suffix as a separate component to `path.join`:
+        // `std.fs.path.join` uses `/` as the separator on every
+        // platform (including Windows — see Zig issue #16589), which
+        // would split the joined segments into
+        // `dir/nalar/.exe` → `dir\nalar\.exe` after the OS rewrites
+        // the slashes, which is interpreted as a subdirectory `nalar`
+        // containing a file named `.exe`. That file doesn't exist, so
+        // the fileExists probe returns false even though
+        // `dir\nalar.exe` is sitting right there. Concatenating
+        // `nalar` + `.exe` ourselves and passing the single
+        // `dir\nalar.exe` to `path.join` sidesteps the bug.
+        const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+        const base_name = if (exe_suffix.len > 0)
+            std.fmt.allocPrint(allocator, "nalar{s}", .{exe_suffix}) catch return null
+        else
+            allocator.dupe(u8, "nalar") catch return null;
+        defer allocator.free(base_name);
+        const candidate = std.fs.path.join(allocator, &.{ self_dir, base_name }) catch return null;
         if (fileExists(candidate)) {
             return candidate; // hand off ownership
         }
         allocator.free(candidate);
     }
 
-    // 3. $PATH lookup. tokenizeScalar on ':' is the Unix convention
-    //    (PATH is `:`-separated on Linux/macOS, `;`-separated on Windows —
-    //    we only run on Unix for v1 so ':' is correct).
-    var it = std.mem.tokenizeScalar(u8, path_env, ':');
+    // 3. $PATH lookup. PATH separator is OS-specific: `:` on
+    //    Linux/macOS, `;` on Windows. We pick the separator by
+    //    `builtin.os.tag` so this works on every platform that
+    //    nalar-desktop can run on (was: hardcoded `:` which broke
+    //    Windows — PATH on Windows is `;`-separated, so tokenizing
+    //    by `:` treated the whole PATH as ONE giant directory and
+    //    `fileExists(<giant-path>/nalar)` always returned false,
+    //    surfacing as `error.NalarNotFound` in attach.zig).
+    //
+    // Same `.exe` caveat as the next-to-self branch above: on
+    // Windows the binary on disk has the suffix, but `std.c.access`
+    // doesn't auto-append it. Without this, even a correctly
+    // tokenized PATH like `C:\vcpkg\installed\x64-windows\bin` fails
+    // its fileExists probe for `nalar` when the real file is
+    // `nalar.exe`.
+    //
+    // Same single-segment caveat as above: concatenate `nalar` +
+    // `.exe` ourselves before passing to `path.join`, otherwise
+    // `path.join` splits on `/` and produces `dir/nalar/.exe`.
+    const path_separator: u8 = if (builtin.os.tag == .windows) ';' else ':';
+    const exe_suffix = if (builtin.os.tag == .windows) ".exe" else "";
+    const base_name = if (exe_suffix.len > 0)
+        std.fmt.allocPrint(allocator, "nalar{s}", .{exe_suffix}) catch return null
+    else
+        allocator.dupe(u8, "nalar") catch return null;
+    defer allocator.free(base_name);
+    var it = std.mem.tokenizeScalar(u8, path_env, path_separator);
     while (it.next()) |dir| {
-        const candidate = std.fs.path.join(allocator, &.{ dir, "nalar" }) catch continue;
+        const candidate = std.fs.path.join(allocator, &.{ dir, base_name }) catch continue;
         if (fileExists(candidate)) {
             return candidate;
         }
@@ -78,14 +126,15 @@ pub fn resolve(
 
 /// Return the absolute path to the running executable. Linux reads
 /// `/proc/self/exe` via `readlink(2)`; macOS calls `_NSGetExecutablePath`
-/// from libSystem (the Apple-blessed way to find your own exe path).
-/// Windows is still unimplemented — main.zig falls back to "." on it,
-/// which makes `resolve()` skip the "next to self" check and go
-/// straight to $PATH lookup.
+/// from libSystem (the Apple-blessed way to find your own exe path);
+/// Windows calls `GetModuleFileNameW(NULL, …)` from kernel32, which
+/// returns the absolute path of the main executable as a NUL-terminated
+/// UTF-16 string that we then convert to WTF-8 for Zig's `[]u8` API.
 pub fn selfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     return switch (builtin.os.tag) {
         .linux => linuxSelfExePath(allocator),
         .macos => macosSelfExePath(allocator),
+        .windows => windowsSelfExePath(allocator),
         else => return error.UnsupportedPlatform,
     };
 }
@@ -101,6 +150,46 @@ fn linuxSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     // size, so a value > 4096 means an error occurred.
     if (rc > buf.len) return error.ReadLinkFailed;
     return allocator.dupe(u8, buf[0..rc]) catch return error.OutOfMemory;
+}
+
+// Win32 GetModuleFileNameW — returns the absolute path of the main
+// executable. Declared locally because std.os.windows in Zig 0.16
+// doesn't expose it (same pattern as build.zig's GetFileAttributesW).
+// kernel32.dll exports it natively; Zig's MinGW (gnu) link line needs
+// the explicit `linkSystemLibrary("kernel32", .{})` that desktop_exe
+// already adds (see build.zig:1680 region).
+extern "kernel32" fn GetModuleFileNameW(
+    hModule: ?*anyopaque,
+    lpFilename: [*]u16,
+    nSize: u32,
+) callconv(.winapi) u32;
+
+// Win32 self-exe resolution. GetModuleFileNameW with hModule=NULL
+// returns the full path of the running .exe as a NUL-terminated
+// UTF-16LE string. Returns the count of UTF-16 units written
+// (excluding the NUL terminator), or nSize on buffer-too-small.
+//
+// We allocate 32767 u16 units up front — the Win32 long-path max
+// (\\?\ paths raise it from MAX_PATH=260). On the (vanishingly rare)
+// platforms where 32 KiB still isn't enough, GetModuleFileNameW
+// returns nSize (== buffer len) and we'd need to grow; for now we
+// bail out with ReadLinkFailed and let the caller skip the "next to
+// self" check. Returning the path through the WTF-16 → WTF-8
+// converter (std.unicode.wtf16LeToWtf8) gives us the `[]u8` slice
+// Zig's filesystem APIs expect.
+fn windowsSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
+    var wide: [32767]u16 = undefined;
+    const written = GetModuleFileNameW(null, &wide, wide.len);
+    if (written == 0 or written >= wide.len) return error.ReadLinkFailed;
+    // WTF-16LE → WTF-8. The reverse of the conversion build.zig uses
+    // to call GetFileAttributesW. wtf16LeToWtf8 writes up to
+    // `wtf8.len` UTF-8 bytes and returns the count actually written;
+    // any unpaired surrogates in the source are dropped (per the
+    // function's documented behavior). Worst case: every UTF-16 unit
+    // encodes as 3 UTF-8 bytes (low-surrogate half → 3 bytes).
+    var narrow: [32767 * 3]u8 = undefined;
+    const utf8_len = std.unicode.wtf16LeToWtf8(&narrow, wide[0..written]);
+    return allocator.dupe(u8, narrow[0..utf8_len]) catch return error.OutOfMemory;
 }
 
 fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {

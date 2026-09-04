@@ -450,8 +450,17 @@ pub const HttpRegistry = struct {
         const alloc = self.arena.allocator();
         const client = try alloc.create(HttpClient);
         const key_dup = try alloc.dupe(u8, name);
+        // Deep-dupe the headers (structs AND strings): the caller's
+        // Header slice is per-run memory (stack buf + run-arena strings)
+        // that dies with the run, while the cached client must stay
+        // valid for the process lifetime. A shallow struct copy leaves
+        // dangling name/value pointers → segfault in buildMcpHeaders
+        // on the next run. Same lifetime rule as the registry itself.
         const hdrs_dup = try alloc.alloc(custom_http_client_mod.Header, custom_headers.len);
-        for (custom_headers, 0..) |h, i| hdrs_dup[i] = h;
+        for (custom_headers, 0..) |h, i| hdrs_dup[i] = .{
+            .name = try alloc.dupe(u8, h.name),
+            .value = try alloc.dupe(u8, h.value),
+        };
         client.* = try HttpClient.init(alloc, url, hdrs_dup);
         try self.entries.put(key_dup, client);
         return client;
@@ -466,6 +475,14 @@ pub const HttpRegistry = struct {
     /// Get the process-global registry. Lazily initialized on first
     /// call. `allocator` is the long-lived allocator (typically
     /// `di.allocator` from main.zig) — NOT `std.heap.page_allocator`.
+    ///
+    /// NOTE: first call wins. Production goes through the eager init
+    /// in main.zig (process-lifetime GPA) and the cached
+    /// `di.mcp_http_registry` handle, so the lazy path only serves
+    /// unit tests. Never pass a per-run/per-request arena here: it
+    /// would back the process-global cache with dead memory (segfault
+    /// in ArenaAllocator.loadBuf on the next run — see post-mortem in
+    /// getOrConnect below).
     pub fn global(allocator: std.mem.Allocator) *HttpRegistry {
         mutexLock(&global_init_mutex);
         defer global_init_mutex.unlock();
@@ -521,7 +538,9 @@ pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types
     const headers = try buildMcpHeaders(allocator, "tools/list", "", client.custom_headers);
     defer allocator.free(headers);
 
-    // POST.
+    // POST. Response memory belongs to the client's registry arena
+    // (perform allocates from client.http.allocator), NOT the caller's
+    // run arena — free with client.allocator or the arenas mismatch.
     const result = custom_http_client_mod.post(
         &client.http,
         client.url,
@@ -529,7 +548,7 @@ pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types
         headers,
         .{ .timeout_ms = 30_000 },
     ) catch return &[_]mcp_types.McpTool{};
-    defer result.deinit(allocator);
+    defer result.deinit(client.allocator);
 
     if (result.status_code != 200) {
         return &[_]mcp_types.McpTool{};

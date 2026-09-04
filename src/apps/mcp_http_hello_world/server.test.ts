@@ -62,8 +62,14 @@ async function getFreePort(): Promise<number> {
 }
 
 /** Spawn the binary, return when it prints `listening on` to stderr.
- * Throws on timeout or spawn failure. */
-async function spawnAndWaitForReady(port: number, timeoutMs = 5000): Promise<ChildProcess> {
+ * Throws on timeout or spawn failure.
+ *
+ * Default readiness is generous (15s): under `zig build` this test runs
+ * while the box is saturated (zig compiling nalar.exe + parallel pnpm
+ * installs), and cold node + MCP-SDK import can take several seconds
+ * when CPU-starved — 5s flaked in CI with an alive-but-silent process
+ * and empty stderr (i.e. still starting, not crashed). */
+async function spawnAndWaitForReady(port: number, timeoutMs = 15000): Promise<ChildProcess> {
   const proc = spawn("node", [BINARY_PATH, String(port)], {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -275,5 +281,5 @@ describe("mcp-http-hello-world wire roundtrip", () => {
     expect(name.status).toBe(200);
     const nameText = name.json.result?.content?.[0]?.text;
     expect(nameText).toBe("i am mcp-http-hello-world v0.0.1");
-  }, 15000); // 15s timeout — covers spawn + 3 roundtrips
+  }, 30000); // 30s timeout — covers slow spawn under zig-build load + 3 roundtrips
 });

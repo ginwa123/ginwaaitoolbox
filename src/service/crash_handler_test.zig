@@ -45,7 +45,10 @@ test "installCrashHandlers is safe to call twice" {
 
 test "signalDescription names each crash signal" {
     try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.SEGV), "invalid memory reference") != null);
-    try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.BUS), "bus error") != null);
+    // SIGBUS doesn't exist on Windows (see crash_handler.zig) — skip.
+    if (comptime builtin.os.tag != .windows) {
+        try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.BUS), "bus error") != null);
+    }
     try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.ABRT), "abort") != null);
     try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.ILL), "illegal instruction") != null);
     try testing.expect(std.mem.indexOf(u8, crash_handler.signalDescription(std.c.SIG.FPE), "arithmetic") != null);
@@ -57,7 +60,9 @@ test "siCodeMeaning decodes hardware sub-reasons" {
     const SEGV = std.c.SIG.SEGV;
     try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(SEGV, 1), "MAPERR") != null);
     try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(SEGV, 2), "ACCERR") != null);
-    try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.BUS, 1), "ADRALN") != null);
+    if (comptime builtin.os.tag != .windows) {
+        try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.BUS, 1), "ADRALN") != null);
+    }
     try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.ILL, 1), "ILLOPC") != null);
     try testing.expect(std.mem.indexOf(u8, crash_handler.siCodeMeaning(std.c.SIG.FPE, 1), "INTDIV") != null);
 }
