@@ -69,6 +69,7 @@ test {
     _ = @import("tools/remove_skill.zig");
     _ = @import("tools/show_preview.zig");
     _ = @import("tools/pwsh.zig");
+    _ = @import("tools/command.zig");
     _ = @import("tools/get_plan.zig");
     _ = @import("tools/write_file.zig");
     _ = @import("tools/move_element_to_page.zig");

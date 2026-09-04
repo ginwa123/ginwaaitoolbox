@@ -108,7 +108,7 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
     }
     try final_system.appendSlice(allocator, prompts_const.Agent);
-    if (hasTool(filtered_tools, "bash")) {
+    if (hasTool(filtered_tools, "bash") or hasTool(filtered_tools, "command")) {
         try final_system.appendSlice(allocator, prompts_const.GitPrompt);
     }
     try final_system.appendSlice(allocator, prompts_const.ResponseFormatting);

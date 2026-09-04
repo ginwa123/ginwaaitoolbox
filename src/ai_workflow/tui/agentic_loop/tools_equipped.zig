@@ -67,6 +67,7 @@ const semantic_search_mod = nalarcore.semantic_search;
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 const kanban_create_task_tool = nalarcore.create_kanban_task;
 const pwsh_tool_mod = nalarcore.pwsh_tool;
+const command_tool_mod = nalarcore.command_tool;
 const xmlEscape = helpers.xml_escape;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
@@ -97,6 +98,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         edit_skill_mod.edit_skill_tool,
         bash_tool_mod.bash_tool,
         pwsh_tool_mod.pwsh_tool,
+        command_tool_mod.command_tool,
         read_file_mod.read_file_tool,
         write_file_mod.write_file_tool,
         text_replace_mod.text_replace_tool,
@@ -186,6 +188,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === FILE OPERATIONS ===
         .{ .name = "bash", .exec = tools.execBash, .tool_def = bash_tool_mod.bash_tool },
         .{ .name = "pwsh", .exec = tools.execPwsh, .tool_def = pwsh_tool_mod.pwsh_tool },
+        .{ .name = "command", .exec = tools.execCommand, .tool_def = command_tool_mod.command_tool },
         .{ .name = "read_file", .exec = tools.execReadFile, .tool_def = read_file_mod.read_file_tool },
         .{ .name = "write_file", .exec = tools.execWriteFile, .tool_def = write_file_mod.write_file_tool },
         .{ .name = "text_replace", .exec = tools.execTextReplace, .tool_def = text_replace_mod.text_replace_tool },
