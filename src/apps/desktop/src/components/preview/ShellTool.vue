@@ -6,11 +6,13 @@ import { parseShell } from '../tool_outputs/_shared/toolOutputParser'
  * ShellTool — the canonical renderer for shell-tool outputs.
  *
  * Replaces the bash-only `Bash.vue` with a parameterised component. The
- * tool name ('bash' | 'pwsh' | future shells) is passed in as a prop and
- * rendered as the violet pill in the card. The XML envelope is identical
- * across shells (per D2 + D10 in the 2026-08-14-pwsh-tool plan), so
- * `parseShell(toolName, content)` dispatches to the right parser based on
- * the tool name.
+ * tool name ('bash' | 'pwsh' | 'command' | future shells) is passed in
+ * as a prop and rendered as the violet pill in the card (pill renders the
+ * raw prop verbatim, so toolName 'command' shows `command`). The XML
+ * envelope is identical across shells (per D2 + D10 in the
+ * 2026-08-14-pwsh-tool plan; the unified `command` tool reuses the same
+ * 9-tag envelope), so `parseShell(toolName, content)` dispatches to the
+ * right parser based on the tool name.
  *
  * Wire schema parity is locked via two tests:
  *   1. backend (Zig): shell_test.zig asserts `@typeName(ShellInput) ==

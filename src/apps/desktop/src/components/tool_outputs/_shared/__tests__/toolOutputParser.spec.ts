@@ -12,9 +12,11 @@ import {
   extractTag,
   parseAddSkill,
   parseBash,
+  parseCommand,
   parseEditSkill,
   parseMcp,
   parsePwsh,
+  parseShell,
   parseListSkills,
   parseMetadata,
   parseNalarBrowser,
@@ -584,6 +586,45 @@ describe('parsePwsh', () => {
     // Lock-down test: pwsh + bash share the wire envelope. If a future
     // refactor diverges them, this assertion fails closed.
     expect(parsePwsh(envelope)).toEqual(parseBash(envelope))
+  })
+})
+
+// unify-command Phase C: `command` (unified shell) reuses the identical
+// 9-tag envelope. `parseBash` / `parsePwsh` specs above are untouched;
+// these cases only lock the new alias + dispatcher branch.
+describe('parseCommand', () => {
+  const envelope =
+    '<command>ls -la</command>' +
+    '<stdout>file1\nfile2</stdout>' +
+    '<stderr></stderr>' +
+    '<exit_code>0</exit_code>' +
+    '<truncated>false</truncated>' +
+    '<timeout>false</timeout>' +
+    '<stdout_lines>2</stdout_lines>' +
+    '<stderr_lines>0</stderr_lines>' +
+    '<is_self>false</is_self>'
+
+  it('parses a unified command result with the same shape as parseBash', () => {
+    const r = parseCommand(envelope)
+    expect(r.command).toBe('ls -la')
+    expect(r.stdout).toBe('file1\nfile2')
+    expect(r.exitCode).toBe(0)
+    expect(r.stdoutLines).toBe(2)
+    expect(r.timedOut).toBe(false)
+  })
+
+  it('returns the same ParsedBash shape as parseBash for the same input', () => {
+    expect(parseCommand(envelope)).toEqual(parseBash(envelope))
+  })
+
+  it("parseShell('command') equals parseBash for the same input", () => {
+    expect(parseShell('command', envelope)).toEqual(parseBash(envelope))
+  })
+
+  it("parseShell still dispatches legacy names (bash/pwsh/run_command)", () => {
+    expect(parseShell('bash', envelope)).toEqual(parseBash(envelope))
+    expect(parseShell('pwsh', envelope)).toEqual(parseBash(envelope))
+    expect(parseShell('run_command', envelope)).toEqual(parseBash(envelope))
   })
 })
 

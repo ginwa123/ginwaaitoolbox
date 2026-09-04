@@ -330,10 +330,24 @@ export function parsePwsh(content: string): ParsedBash {
 }
 
 /**
+ * Parse a `command` (unified shell) tool result. Same wire envelope as bash —
+ * the unified `command` tool reuses the identical 9-tag envelope
+ * (`command`/`stdout`/`stderr`/`exit_code`/`truncated`/`timeout`/
+ * `stdout_lines`/`stderr_lines`/`is_self`), only the `tool_name` wrapper
+ * differs. Functionally an alias of `parseBash` so future envelope
+ * divergence is a one-line change here. Tests assert
+ * `parseCommand(x) === parseBash(x)` to catch accidental drift.
+ * `parseBash` / `parsePwsh` are intentionally left untouched.
+ */
+export function parseCommand(content: string): ParsedBash {
+  return parseBash(content)
+}
+
+/**
  * Dispatcher: parse a tool result based on the `toolName` it was registered
- * under. 'bash' / 'pwsh' / 'run_command' (legacy alias) all use the same
- * envelope. New shells with divergent envelope shapes must add their own
- * branch here.
+ * under. 'bash' / 'pwsh' / 'run_command' (legacy alias) / 'command'
+ * (unified shell) all use the same envelope. New shells with divergent
+ * envelope shapes must add their own branch here.
  */
 export function parseShell(toolName: string, content: string): ParsedBash {
   switch (toolName) {
@@ -343,6 +357,8 @@ export function parseShell(toolName: string, content: string): ParsedBash {
       return parsePwsh(content)
     case 'run_command':
       return parseBash(content)
+    case 'command':
+      return parseCommand(content)
     default:
       return parseBash(content)
   }

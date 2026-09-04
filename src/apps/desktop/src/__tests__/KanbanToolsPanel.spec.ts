@@ -255,4 +255,33 @@ describe('KanbanToolsPanel', () => {
     const calledTools = enableSpy.mock.calls.map((c) => c[1]).sort()
     expect(calledTools).toEqual(['bash', 'read_file', 'write_file'])
   })
+
+  // unify-command Phase C: the preset also enables `command` (unified
+  // shell) when the registry advertises it; `bash` stays for compat.
+  it('includes command in the recommended starter set when the registry advertises it', async () => {
+    vi.spyOn(api, 'getAgentToolsRegistry').mockResolvedValue({
+      tools: [
+        { name: 'bash', description: 'Run shell commands (legacy)' },
+        { name: 'command', description: 'Run shell commands (unified)' },
+        { name: 'read_file', description: 'Read a file from disk' },
+        { name: 'write_file', description: 'Write content to disk' },
+      ],
+    })
+    vi.spyOn(api, 'getAgentKanban').mockResolvedValue({
+      ...configuredBundle,
+      tools: [],
+    })
+    const enableSpy = vi
+      .spyOn(api, 'enableAgentKanbanTool')
+      .mockResolvedValue({} as Awaited<ReturnType<typeof api.enableAgentKanbanTool>>)
+
+    mountPanel()
+    await flushPromises()
+    const preset = q<HTMLButtonElement>('kanban-tools-preset-recommended')
+    preset.click()
+    await flushPromises()
+
+    const calledTools = enableSpy.mock.calls.map((c) => c[1]).sort()
+    expect(calledTools).toEqual(['bash', 'command', 'read_file', 'write_file'])
+  })
 })
