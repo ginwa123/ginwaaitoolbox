@@ -30,6 +30,10 @@ pub const agent_memories = @import("agentic_loop/agent_memories.zig");
 // In-flight stream snapshot registry (task_1787673548905_0
 // stream-resume-on-reselect) — read by http_handlers/stream_get.zig.
 pub const stream_snapshot = @import("agentic_loop/stream_snapshot.zig");
+// Live spawn-batch snapshot registry (task_1788505292766_1
+// spawn-subagent-refresh-persist) — mirrored on every progress emit,
+// read by http_handlers/subagent_progress_get.zig.
+pub const subagent_progress = @import("agentic_loop/subagent_progress.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;
