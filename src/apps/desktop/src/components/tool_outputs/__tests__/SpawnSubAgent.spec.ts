@@ -160,11 +160,29 @@ describe('SpawnSubAgent.vue — live progress', () => {
     expect(wrapper.text()).toContain('3 running')
   })
 
-  it('tolerates empty progress array without crashing (falls back to old behaviour)', () => {
+  it('tolerates empty progress array without crashing (shows starting placeholder, not 0)', () => {
     const wrapper = mountAt({ content: '', progress: [] })
-    // Without progress AND without parsed-results content, the card
-    // should render its empty-state header (mirrors pre-feature UX).
-    expect(wrapper.text()).toContain('0 sub-agents')
+    // Without progress AND without parsed-results content, the card is
+    // still in the Phase 1 placeholder state (tool running, no
+    // <results> yet) — 2026-09-04 refresh fix shows an honest
+    // "starting…" loading card instead of the confusing "0 sub-agents".
+    expect(wrapper.text()).toContain('starting')
+    expect(wrapper.text()).not.toContain('0 sub-agents')
+  })
+
+  it('shows expected count in starting header when subAgentArgs are known', () => {
+    const subAgentArgs = [
+      { agent_name: 'a', instruction: 'do a', inherited_context: 'none' },
+      { agent_name: 'b', instruction: 'do b', inherited_context: 'none' },
+      { agent_name: 'c', instruction: 'do c', inherited_context: 'none' },
+    ]
+    const wrapper = mountAt({ content: '', progress: [], subAgentArgs })
+    expect(wrapper.text()).toContain('3 sub-agents starting')
+    expect(wrapper.text()).toContain('Spawning sub-agents')
+    // Requested names are listed so refresh still shows intent.
+    expect(wrapper.text()).toContain('a')
+    expect(wrapper.text()).toContain('b')
+    expect(wrapper.text()).toContain('c')
   })
 
   it('does not crash on a progress entry whose sessionId is undefined AND no agentName', () => {
