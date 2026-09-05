@@ -605,13 +605,20 @@ pub fn run_shell_command(
 
     const stdout_thread = try std.Thread.spawn(.{}, readLoopFn, .{stdout_ctx});
     const stderr_thread = try std.Thread.spawn(.{}, readLoopFn, .{stderr_ctx});
+    // Join-gate (same as search.zig): explicit joins below run on the
+    // happy path; any later `return error.X` fires this errdefer.
+    // Double-join is UB — SIGABRT on macOS — so the flag makes the
+    // errdefer a no-op once the explicit joins have run.
+    var threads_joined = false;
     errdefer {
-        if (comptime builtin.os.tag != .windows) _ = std.posix.kill(-child_pgid, .KILL) catch {};
-        _ = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
-        if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
-        if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
-        stdout_thread.join();
-        stderr_thread.join();
+        if (!threads_joined) {
+            if (comptime builtin.os.tag != .windows) _ = std.posix.kill(-child_pgid, .KILL) catch {};
+            _ = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
+            if (child.stdout) |stdout_pipe| stdout_pipe.close(io);
+            if (child.stderr) |stderr_pipe| stderr_pipe.close(io);
+            stdout_thread.join();
+            stderr_thread.join();
+        }
     }
 
     var timeout_hit = false;
@@ -650,6 +657,7 @@ pub fn run_shell_command(
 
     stdout_thread.join();
     stderr_thread.join();
+    threads_joined = true;
     if (child_term == null) {
         const wait_result = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
         child_term = term_from_wait(wait_result);
