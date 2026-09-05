@@ -369,7 +369,12 @@ pub fn run_shell_command(
     input: ShellInput,
 ) !ShellOutput {
     // --- URL encoding if requested ---
-    const command = if (input.do_encoding)
+    // cmd.exe treats single quotes literally (no quoting semantics), so the
+    // `"…"` → `'…'` swap would corrupt URLs on the cmd fallback path — skip
+    // it when the resolved shell is cmd. Detected via argv_prefix so the
+    // kill/reader logic stays shared (no fork).
+    const is_cmd_shell = argv_prefix.len > 0 and std.mem.eql(u8, argv_prefix[0], "cmd.exe");
+    const command = if (input.do_encoding and !is_cmd_shell)
         try encode_command_urls(allocator, input.command)
     else
         try allocator.dupe(u8, input.command);
