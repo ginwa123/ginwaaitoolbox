@@ -1,32 +1,54 @@
 /**
  * Tests for SubAgentPeekPanel — the slide-over for watching a
  * sub-agent's progress without leaving the parent chat.
+ *
+ * Since the reuse refactor (task_1788604407681_2) the panel is thin
+ * chrome (header / error banner / footer) around an embedded ChatView
+ * in read-only mode. Message rendering + tool output components are
+ * ChatView's job — this spec asserts the chrome and the embed wiring,
+ * not message bubbles (those belong to ChatView's own specs).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import SubAgentPeekPanel from '../components/nalar/SubAgentPeekPanel.vue'
 import type { Message } from '../api'
 
-// Mock the heavy tool output components so we can assert they're
-// invoked without their actual rendering chewing test time.
-vi.mock('../components/tool_outputs/ReadFile.vue', () => ({
-  default: { name: 'ReadFile', props: ['content', 'expanded', 'cwd'], render: () => null },
-}))
-vi.mock('../components/tool_outputs/TextReplace.vue', () => ({
-  default: {
-    name: 'TextReplace',
-    props: ['content', 'expanded', 'diffview_before', 'diffview_after', 'cwd'],
-    render: () => null,
-  },
-}))
-vi.mock('../components/tool_outputs/SpawnSubAgent.vue', () => ({
-  default: {
-    name: 'SpawnSubAgent',
-    props: ['content', 'expanded', 'subAgentArgs'],
-    render: () => null,
-  },
-}))
+// Stub the embedded ChatView so we can assert the embed wiring
+// without mounting the full 4000-line chat (VirtualScroller, SSE,
+// FileInput, …). The stub records its props for assertions.
+//
+// NOTE: the stub is defined inline (not via a top-level const) because
+// `vi.mock` factories are hoisted above the module body — referencing
+// an outer const from the factory hits the TDZ at import time. Lookup
+// in tests uses `findComponent({ name: 'ChatView' })`.
+vi.mock('../components/views/ChatView.vue', async () => {
+  const { h } = await vi.importActual<typeof import('vue')>('vue')
+  return {
+    default: {
+      name: 'ChatView',
+      // Typed props (not a string array) so Vue applies Boolean
+      // casting: the panel passes bare `embedded` / `hide-input`
+      // attributes, which arrive as `""` and must cast to `true` —
+      // exactly like the real ChatView's `embedded?: boolean` /
+      // `hideInput?: boolean`.
+      props: {
+        chatId: String,
+        chatName: String,
+        embedded: Boolean,
+        hideInput: Boolean,
+      },
+      setup(props: { chatId: string; chatName: string }) {
+        return () =>
+          h(
+            'div',
+            { 'data-testid': 'chatview-stub' },
+            `${props.chatId} / ${props.chatName}`,
+          )
+      },
+    },
+  }
+})
 // Stub Teleport (the panel uses Teleport to mount into <body>) so
 // @vue/test-utils' `find()` traverses inside.
 vi.mock('vue', async () => {
@@ -125,55 +147,6 @@ describe('SubAgentPeekPanel', () => {
     expect(preview.attributes('title')).toBe(longInstruction)
   })
 
-  it('renders user messages with the user role label', () => {
-    const messages: Message[] = [
-      { id: 'u1', role: 'user', content: 'do the task', created_at: 1000 },
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages }),
-    })
-    const row = wrapper.find('[data-testid="peek-msg-user"]')
-    expect(row.exists()).toBe(true)
-    expect(row.text()).toContain('do the task')
-    expect(row.text()).toContain('user')
-  })
-
-  it('renders assistant messages with the assistant role label + content', () => {
-    const messages: Message[] = [
-      { id: 'a1', role: 'assistant', content: 'starting now', created_at: 1000 },
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages, status: 'streaming' }),
-    })
-    const row = wrapper.find('[data-testid="peek-msg-assistant"]')
-    expect(row.exists()).toBe(true)
-    expect(row.text()).toContain('starting now')
-  })
-
-  it('shows a streaming cursor on the last assistant message when status=streaming', () => {
-    const messages: Message[] = [
-      { id: 'u1', role: 'user', content: 'do X', created_at: 1000 },
-      { id: 'a1', role: 'assistant', content: 'partial answer', created_at: 1001 },
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages, status: 'streaming' }),
-    })
-    const row = wrapper.find('[data-testid="peek-msg-assistant"]')
-    expect(row.classes()).toContain('streaming')
-    // The streaming class adds a ▍ via CSS ::after; assert the class is applied.
-  })
-
-  it('does NOT show the streaming cursor when status=complete', () => {
-    const messages: Message[] = [
-      { id: 'a1', role: 'assistant', content: 'final answer', created_at: 1000 },
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages, status: 'complete' }),
-    })
-    const row = wrapper.find('[data-testid="peek-msg-assistant"]')
-    expect(row.classes()).not.toContain('streaming')
-  })
-
   it('renders the footer with session_id + token count', () => {
     const wrapper = mount(SubAgentPeekPanel, {
       props: makeBaseProps({ totalTokens: 4217 }),
@@ -182,78 +155,65 @@ describe('SubAgentPeekPanel', () => {
     expect(wrapper.text()).toContain('4,217')
   })
 
-  // ── Reuse of existing tool output components ─────────────────────────
-  // The user requirement: when the sub-agent's message stream
-  // includes a tool result (role='tool' with the standard
-  // <tool>...</tool> envelope), the panel MUST reuse the existing
-  // tool output components (ReadFile, TextReplace, Bash, etc.)
-  // instead of rendering plain text.
+  // ── ChatView embed (task_1788604407681_2) ───────────────────────────
+  // The panel body reuses ChatView in read-only mode instead of a
+  // hand-mirrored tool-dispatch chain. Message bubbles, tool cards,
+  // markdown, and error cards are ChatView's responsibility.
 
-  it('reuses the ReadFile tool output component for read_file tool results', async () => {
-    const toolEnvelope =
-      '<tool><name>read_file</name><parameters>{"path":"/tmp/foo.txt"}</parameters>' +
-      '<success>true</success><data>' +
-      '<path>/tmp/foo.txt</path><content>hello world</content>' +
-      '</data></tool>'
-
-    const messages: Message[] = [
-      { id: 't1', role: 'tool', content: toolEnvelope, created_at: 1000, tool_name: 'read_file' } as Message,
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages }),
-    })
-    await flushPromises()
-    // The component should render <ReadFile> (mocked; we assert
-    // the vnode was emitted with the right name).
-    expect(wrapper.html()).toContain('read_file')
+  it('embeds ChatView with the sub-agent session id + name', () => {
+    const wrapper = mount(SubAgentPeekPanel, { props: makeBaseProps() })
+    const stub = wrapper.find('[data-testid="chatview-stub"]')
+    expect(stub.exists()).toBe(true)
+    expect(stub.text()).toContain('subagent_1_foo')
+    expect(stub.text()).toContain('foo')
   })
 
-  it('reuses the TextReplace tool output component for text_replace tool results', async () => {
-    const toolEnvelope =
-      '<tool><name>text_replace</name><parameters>{"path":"/tmp/x.txt"}</parameters>' +
-      '<success>true</success><data>' +
-      '<result>replaced</result></data></tool>'
-
-    const messages: Message[] = [
-      { id: 't2', role: 'tool', content: toolEnvelope, created_at: 1000, tool_name: 'text_replace' } as Message,
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages }),
-    })
-    await flushPromises()
-    expect(wrapper.html()).toContain('text_replace')
+  it('embeds ChatView in read-only mode (embedded + hide-input)', () => {
+    const wrapper = mount(SubAgentPeekPanel, { props: makeBaseProps() })
+    const chatView = wrapper.findComponent({ name: 'ChatView' })
+    expect(chatView.exists()).toBe(true)
+    expect(chatView.props('chatId')).toBe('subagent_1_foo')
+    expect(chatView.props('chatName')).toBe('foo')
+    expect(chatView.props('embedded')).toBe(true)
+    expect(chatView.props('hideInput')).toBe(true)
   })
 
-  it('reuses the SpawnSubAgent tool output component recursively for nested spawn_sub_agent calls', async () => {
-    // A sub-agent inside a sub-agent: the same component renders
-    // it and the user can recursively open another peek panel.
-    const toolEnvelope =
-      '<tool><name>spawn_sub_agent</name><parameters>{"sub_agents":[{"name":"deeper"}]}</parameters>' +
-      '<success>true</success><data>' +
-      '<results><agent name="deeper" success="true" random_fallback="false">' +
-      '<session_id>subagent_nested</session_id>' +
-      '<response>did the deeper task</response>' +
-      '</agent><summary succeeded="1" failed="0" /></results></data></tool>'
-
-    const messages: Message[] = [
-      { id: 't3', role: 'tool', content: toolEnvelope, created_at: 1000, tool_name: 'spawn_sub_agent' } as Message,
-    ]
-    const wrapper = mount(SubAgentPeekPanel, {
-      props: makeBaseProps({ messages }),
-    })
-    await flushPromises()
-    expect(wrapper.html()).toContain('spawn_sub_agent')
+  it('renders the embedded ChatView inside the peek scroll container', () => {
+    const wrapper = mount(SubAgentPeekPanel, { props: makeBaseProps() })
+    const scroll = wrapper.find('[data-testid="peek-messages-scroll"]')
+    expect(scroll.exists()).toBe(true)
+    expect(scroll.find('[data-testid="chatview-stub"]').exists()).toBe(true)
   })
 
-  it('falls back to plain-text rendering for tool messages whose envelope is malformed', () => {
+  it('renders one ChatView per session id (A → B swap wiring)', () => {
+    // Production swaps by REMOUNTING the host (`:key="sessionId"` on
+    // SubAgentPeekHost in ChatView), not by mutating the panel's props
+    // in place — so assert per-mount wiring: each session id reaches
+    // the embedded ChatView as `chat-id` / `chat-name`.
+    const first = mount(SubAgentPeekPanel, {
+      props: makeBaseProps({ sessionId: 'subagent_1_foo', agentName: 'foo' }),
+    })
+    expect(first.findComponent({ name: 'ChatView' }).props('chatId')).toBe(
+      'subagent_1_foo',
+    )
+    const second = mount(SubAgentPeekPanel, {
+      props: makeBaseProps({ sessionId: 'subagent_2_bar', agentName: 'bar' }),
+    })
+    const secondChat = second.findComponent({ name: 'ChatView' })
+    expect(secondChat.props('chatId')).toBe('subagent_2_bar')
+    expect(secondChat.props('chatName')).toBe('bar')
+  })
+
+  it('does NOT render its own message bubbles (ChatView owns them)', () => {
     const messages: Message[] = [
-      { id: 't4', role: 'tool', content: 'not a tool envelope', created_at: 1000, tool_name: 'unknown_tool' } as Message,
+      { id: 'u1', role: 'user', content: 'do the task', created_at: 1000 },
+      { id: 'a1', role: 'assistant', content: 'starting now', created_at: 1001 },
     ]
     const wrapper = mount(SubAgentPeekPanel, {
       props: makeBaseProps({ messages }),
     })
-    // Should still render without crashing — falls back to a
-    // generic <pre> bubble with the raw content + the tool name.
-    expect(wrapper.text()).toContain('unknown_tool')
+    expect(wrapper.find('[data-testid="peek-msg-user"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="peek-msg-assistant"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="peek-msg-tool"]').exists()).toBe(false)
   })
 })

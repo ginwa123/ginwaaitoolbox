@@ -99,6 +99,24 @@ const props = defineProps<{
    * memory for the broader pattern.
    */
   showHeader?: boolean
+  /**
+   * Embedded mode for SubAgentPeekPanel: hides ChatView's own header
+   * (the peek panel renders its own agent-name/status header above).
+   * ChatView still owns fetch + SSE for `chatId` — the panel only
+   * provides the slide-over chrome around it.
+   *
+   * Defaults to `false` so all existing call sites are unaffected.
+   */
+  embedded?: boolean
+  /**
+   * Hide the composer footer (FileInput + Compact/profile/tokens
+   * status bar). The peek panel passes this so the sub-agent view is
+   * read-only — sending messages into a sub-agent session from the
+   * peek would fork its tool loop mid-run.
+   *
+   * Defaults to `false` so all existing call sites are unaffected.
+   */
+  hideInput?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -2793,7 +2811,7 @@ const compactSession = async () => {
         concerns.
       -->
       <header
-        v-if="showHeader"
+        v-if="showHeader && !embedded"
         class="h-11 flex items-center gap-2 px-3 shrink-0"
         style="
           background-color: var(--semantic-sidebar-bg);
@@ -3452,8 +3470,9 @@ const compactSession = async () => {
         </button>
       </Transition>
 
-      <!-- Input -->
+      <!-- Input (hidden in peek-embed read-only mode) -->
       <div
+        v-if="!hideInput"
         class="p-4"
         style="
           border-top: 1px solid var(--color-border);
@@ -3703,9 +3722,20 @@ const compactSession = async () => {
     <!-- Sub-agent peek panel — slide-over from the right.
          Renders only when navigationStore.peekPanel is set;
          teardown happens when ChatView unmounts (route change
-         away from this chat). -->
+         away from this chat).
+
+         The `!embedded` guard is load-bearing (task_1788604407681_2):
+         the peek panel itself embeds a read-only ChatView for the
+         sub-agent session, and `peekPanel` is GLOBAL store state. An
+         embedded instance that also rendered the host would recurse
+         Host → Panel → ChatView → Host → … forever and the panel
+         would never appear. Exactly one host exists — the one in the
+         outermost non-embedded ChatView. Eye-clicks inside the peek
+         still drill down: they call `nav.openPeek` (kept below on
+         SpawnSubAgent), which swaps the payload the outer host
+         renders (it is `:key`d by sessionId). -->
     <SubAgentPeekHost
-      v-if="nav.peekPanel"
+      v-if="nav.peekPanel && !embedded"
       :key="nav.peekPanel.sessionId"
       :session-id="nav.peekPanel.sessionId"
       :agent-name="nav.peekPanel.agentName"

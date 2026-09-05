@@ -3,51 +3,23 @@
  * SubAgentPeekPanel — right-side slide-over panel for watching a
  * sub-agent's progress without leaving the parent chat.
  *
- * The component is pure presentational — it renders refs passed in
- * via props (messages / status / errorMessage / totalTokens from
- * `useSubAgentPeek`). It owns no SSE or fetch lifecycle.
+ * The panel is thin chrome (header / error banner / footer) around an
+ * embedded ChatView in read-only mode. ChatView owns fetch + SSE for
+ * `sessionId` and renders the full message list with the same tool
+ * output components, markdown, reasoning blocks, and error cards as
+ * the main chat — there is no duplicated tool-dispatch chain here to
+ * keep in sync with ChatView.vue.
  *
- * CRITICAL: per the user's "reuse tool output components" requirement,
- * when rendering a tool message (role='tool'), the panel parses the
- * standard `<tool>...</tool>` envelope (see helpers/unwrapToolOutput.ts)
- * and dispatches to the SAME tool output components used by the parent
- * chat (ReadFile, TextReplace, Bash, SpawnSubAgent, …). See the
- * `renderToolMessage()` function — the v-if chain mirrors
- * `ChatView.vue:2124-2232` so a peek'd sub-agent's tool output looks
- * identical to the one in the parent chat.
+ * The `messages` prop is kept for backward compat (SubAgentPeekHost
+ * still passes the composable's rows; header-adjacent consumers and
+ * existing tests reference it) but the body renders via ChatView, not
+ * from this prop. Status / error / tokens continue to come from
+ * `useSubAgentPeek` via the host so the header stays live even while
+ * ChatView owns the message list lifecycle.
  */
-import { computed, nextTick, ref, watch } from 'vue'
-import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '../../helpers/unwrapToolOutput'
+import { computed } from 'vue'
+import ChatView from '../views/ChatView.vue'
 import type { Message } from '../../api'
-
-// Reuse the existing tool output components — same set the parent
-// ChatView uses, so the peek visually matches the main chat.
-import ReadFile from '../tool_outputs/ReadFile.vue'
-import WriteFile from '../tool_outputs/WriteFile.vue'
-import UpdateActivity from '../preview/UpdateActivity.vue'
-import Search from '../tool_outputs/Search.vue'
-import Glob from '../preview/Glob.vue'
-import TextReplace from '../tool_outputs/TextReplace.vue'
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used in <template> as <Bash> (~line 293); typescript-eslint doesn't always see template usages via the Vue parser
-import Bash from '../preview/Bash.vue'
-import ShellTool from '../preview/ShellTool.vue'
-import GetSkill from '../preview/GetSkill.vue'
-import ViewSkill from '../tool_outputs/ViewSkill.vue'
-import ListSkills from '../tool_outputs/ListSkills.vue'
-import AddSkill from '../tool_outputs/AddSkill.vue'
-import EditSkill from '../tool_outputs/EditSkill.vue'
-import RemoveSkill from '../tool_outputs/RemoveSkill.vue'
-import RemoveFile from '../tool_outputs/RemoveFile.vue'
-import SpawnSubAgent from '../tool_outputs/SpawnSubAgent.vue'
-import NalarBrowser from '../tool_outputs/NalarBrowser.vue'
-import SetGitWorktree from '../tool_outputs/SetGitWorktree.vue'
-import ReadCompactedMessages from '../tool_outputs/ReadCompactedMessages.vue'
-import KanbanMove from '../tool_outputs/KanbanMove.vue'
-import KanbanList from '../tool_outputs/KanbanList.vue'
-import SaveMemory from '../tool_outputs/SaveMemory.vue'
-import LoadMemory from '../tool_outputs/LoadMemory.vue'
-import DeleteMemory from '../tool_outputs/DeleteMemory.vue'
-import McpTool from '../tool_outputs/McpTool.vue'
 
 type PeekStatus = 'idle' | 'loading' | 'streaming' | 'complete' | 'error'
 
@@ -57,6 +29,11 @@ const props = defineProps<{
   instruction: string
   status: PeekStatus
   errorMessage: string | null
+  /**
+   * Retained for backward compat — SubAgentPeekHost still passes the
+   * composable's rows. The body renders via the embedded ChatView
+   * (which fetches the same session itself), not from this prop.
+   */
   messages: Message[]
   totalTokens?: number
 }>()
@@ -95,68 +72,6 @@ const statusClass = computed(() => {
     default: return 'peek-status-idle'
   }
 })
-
-// ── Per-message render helpers ────────────────────────────────────────
-
-/**
- * Strip the `<tool>...</tool>` envelope from a tool message's content,
- * returning the inner `<data>` body (or null if the envelope is
- * malformed). Mirrors ChatView's `innerToolData()` helper.
- */
-function innerToolData(msg: Message): string | null {
-  const unwrapped: UnwrappedToolOutput | null = tryUnwrapToolOutput(msg.content)
-  if (unwrapped === null) return null
-  return unwrapped.data
-}
-
-/**
- * Get the JSON-string parameters for a tool message, mirroring
- * ChatView's `getParametersForMessage()`. Returns `'{}'` for
- * malformed envelopes.
- */
-function getParametersForMessage(msg: Message): string {
-  const unwrapped = tryUnwrapToolOutput(msg.content)
-  return unwrapped?.parameters ?? '{}'
-}
-
-/**
- * Try to identify which tool output component should render a given
- * tool message. Returns `{ component: toolName, toolCallId: ... }`
- * for the first match in the dispatch chain, or `null` if no known
- * component handles this tool. Chain mirrors ChatView.vue:2124-2232.
- */
-function isLastAssistant(idx: number): boolean {
-  // True if this is the last assistant message in the array AND no
-  // message after it has a finish_reason we recognise. Used to add
-  // the streaming-cursor class on the most-recent in-progress bubble.
-  for (let i = props.messages.length - 1; i >= 0; i--) {
-    if (props.messages[i]!.role === 'assistant') {
-      return i === idx
-    }
-  }
-  return false
-}
-
-// ── Auto-scroll to the bottom on new content ──────────────────────────
-
-const scrollRef = ref<HTMLElement | null>(null)
-
-watch(
-  () => props.messages.map((m) => m.content?.length ?? 0).join(','),
-  async () => {
-    await nextTick()
-    if (scrollRef.value) {
-      // Explicit bottom computation — see ChatView.vue onContentShift
-      // for the rationale (avoid relying on the browser's implicit
-      // scrollTop clamp, which is timing-fragile when the DOM hasn't
-      // finished flushing).
-      scrollRef.value.scrollTop = Math.max(
-        0,
-        scrollRef.value.scrollHeight - scrollRef.value.clientHeight,
-      )
-    }
-  },
-)
 </script>
 
 <template>
@@ -230,162 +145,20 @@ watch(
           </button>
         </div>
 
-        <!-- Empty state -->
+        <!-- Message list — full ChatView in read-only embed mode.
+             Keyed by sessionId so eye-click A → B without remount still
+             swaps the conversation (mirrors SubAgentPeekHost's key). -->
         <div
-          v-if="messages.length === 0 && status !== 'loading' && status !== 'error'"
-          class="peek-empty"
-        >
-          <em>No messages yet.</em>
-        </div>
-
-        <!-- Message list -->
-        <div
-          ref="scrollRef"
-          class="peek-messages"
+          class="peek-chat-embed"
           data-testid="peek-messages-scroll"
         >
-          <template v-for="(msg, idx) in messages" :key="msg.id ?? `${idx}`">
-            <!-- ── User message ── -->
-            <div
-              v-if="msg.role === 'user'"
-              class="peek-msg peek-msg-user"
-              data-testid="peek-msg-user"
-            >
-              <div class="peek-msg-label">user</div>
-              <pre class="peek-msg-content">{{ msg.content }}</pre>
-            </div>
-
-            <!-- ── Assistant message ── -->
-            <div
-              v-else-if="msg.role === 'assistant'"
-              class="peek-msg peek-msg-assistant"
-              :class="{
-                streaming: status === 'streaming' && isLastAssistant(idx),
-              }"
-              data-testid="peek-msg-assistant"
-            >
-              <div class="peek-msg-label">assistant</div>
-              <pre class="peek-msg-content">{{ msg.content }}</pre>
-            </div>
-
-            <!-- ── Tool message — dispatch to existing components ── -->
-            <div
-              v-else-if="msg.role === 'tool'"
-              class="peek-msg peek-msg-tool"
-              data-testid="peek-msg-tool"
-              :data-tool-name="msg.tool_name"
-            >
-              <ReadFile
-                v-if="msg.tool_name === 'read_file'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <WriteFile
-                v-else-if="msg.tool_name === 'write_file'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <UpdateActivity
-                v-else-if="msg.tool_name === 'update_activity'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <Search
-                v-else-if="msg.tool_name === 'search'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <Glob
-                v-else-if="msg.tool_name === 'glob'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <TextReplace
-                v-else-if="msg.tool_name === 'text_replace'"
-                :content="innerToolData(msg) ?? msg.content"
-                :diffview-before="msg.diffview_before"
-                :diffview-after="msg.diffview_after"
-              />
-              <ShellTool
-                v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command' || msg.tool_name === 'command'"
-                :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : msg.tool_name === 'command' ? 'command' : 'bash'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <GetSkill
-                v-else-if="msg.tool_name === 'get_skill'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <ViewSkill
-                v-else-if="msg.tool_name === 'view_skill'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <ListSkills
-                v-else-if="msg.tool_name === 'list_skills'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <AddSkill
-                v-else-if="msg.tool_name === 'add_skill'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <EditSkill
-                v-else-if="msg.tool_name === 'edit_skill'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <RemoveSkill
-                v-else-if="msg.tool_name === 'remove_skill'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <RemoveFile
-                v-else-if="msg.tool_name === 'remove_file'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <SpawnSubAgent
-                v-else-if="msg.tool_name === 'spawn_sub_agent'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <NalarBrowser
-                v-else-if="msg.tool_name === 'nalar_browser'"
-                :content="innerToolData(msg) ?? msg.content"
-                :parameters="getParametersForMessage(msg)"
-              />
-              <SetGitWorktree
-                v-else-if="msg.tool_name === 'set_git_worktree'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <ReadCompactedMessages
-                v-else-if="msg.tool_name === 'read_compacted_messages'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <KanbanMove
-                v-else-if="msg.tool_name === 'kanban_move_task'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <KanbanList
-                v-else-if="msg.tool_name === 'kanban_list'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <SaveMemory
-                v-else-if="msg.tool_name === 'save_memory'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <LoadMemory
-                v-else-if="msg.tool_name === 'load_memory'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <DeleteMemory
-                v-else-if="msg.tool_name === 'delete_memory'"
-                :content="innerToolData(msg) ?? msg.content"
-              />
-              <McpTool
-                v-else-if="msg.tool_name?.startsWith('mcp_')"
-                :content="innerToolData(msg) ?? msg.content"
-                :tool-name="msg.tool_name ?? 'mcp_tool'"
-                :parameters="getParametersForMessage(msg)"
-              />
-              <!-- Fallback: unknown tool name — generic <pre> bubble. -->
-              <div v-else class="peek-tool-fallback">
-                <div class="peek-msg-label">
-                  {{ msg.tool_name ?? 'tool' }}
-                </div>
-                <pre class="peek-msg-content">{{ msg.content }}</pre>
-              </div>
-            </div>
-          </template>
+          <ChatView
+            :key="sessionId"
+            :chat-id="sessionId"
+            :chat-name="agentName"
+            embedded
+            hide-input
+          />
         </div>
 
         <!-- Footer -->
@@ -548,103 +321,18 @@ watch(
 }
 .peek-error-retry:hover { background: rgba(239, 68, 68, 0.1); }
 
-.peek-empty {
+/* Embedded ChatView host — gives the inner ChatView (which is
+ * `flex h-full w-full` with its own VirtualScroller at
+ * `flex: 1 1 0`) a bounded flex column to fill. ChatView brings its
+ * own message styling, tool cards, and empty state; nothing to mirror
+ * here anymore.
+ */
+.peek-chat-embed {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--semantic-text-muted);
-  font-size: 12px;
-}
-
-.peek-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.peek-msg {
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 11px;
-  line-height: 1.5;
-}
-.peek-msg-label {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 600;
-  margin-bottom: 4px;
-  opacity: 0.7;
-}
-.peek-msg-content {
-  white-space: pre-wrap;
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-  word-break: break-word;
-  margin: 0;
-}
-
-.peek-msg-user {
-  background: var(--semantic-content-bg);
-  border: 1px solid var(--color-border);
-}
-.peek-msg-user .peek-msg-label { color: var(--semantic-text-muted); }
-
-.peek-msg-assistant {
-  background: rgba(139, 92, 246, 0.05);
-  border: 1px solid rgba(139, 92, 246, 0.2);
-}
-.peek-msg-assistant .peek-msg-label { color: var(--color-violet); }
-.peek-msg-assistant.streaming .peek-msg-content::after {
-  content: '▍';
-  color: var(--color-violet);
-  margin-left: 2px;
-  animation: peek-blink 1s steps(2, start) infinite;
-}
-@keyframes peek-blink {
-  to { opacity: 0; }
-}
-
-.peek-msg-tool {
-  /* The tool output components bring their own styling — leave
-   * the wrapper minimal.
-   */
-}
-
-/* Mirror of ChatView.vue's :deep(.chat-tool-card) — the peek panel
- * renders the same tool-output components (Glob, ShellTool, Search,
- * …) whose root element carries the shared `.chat-tool-card` class.
- * Without this deep rule the class is inert here and cards fall back
- * to Tailwind defaults (transparent bg, no left rule). Keep in sync
- * with ChatView.vue's definition. */
-:deep(.chat-tool-card) {
-  background-color: transparent;
-  border: none;
-  border-left: 2px solid var(--color-border);
-  border-radius: 0;
-  overflow: visible;
-  transition: background-color 0.15s ease, border-left-color 0.15s ease;
-}
-
-:deep(.chat-tool-card:hover) {
-  background-color: color-mix(in srgb, var(--color-violet) 4%, transparent);
-  border-left-color: var(--color-violet);
-}
-
-.peek-tool-fallback {
-  background: rgba(63, 63, 70, 0.3);
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  padding: 8px 10px;
-  font-size: 11px;
-}
-.peek-tool-fallback .peek-msg-label { color: var(--semantic-text-dim); }
-.peek-tool-fallback .peek-msg-content {
-  font-family: ui-monospace, monospace;
-  font-size: 10px;
+  overflow: hidden;
 }
 
 .peek-footer {
