@@ -10,6 +10,7 @@ const models = @import("models.zig");
 const ai_workflow = @import("workflow.zig");
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 const subagent_progress = @import("subagent_progress.zig");
+const xml_escape = @import("helpers").xml_escape;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
@@ -71,6 +72,32 @@ const ThreadResult = struct {
     /// `resolveSubAgent` returns.
     is_random_fallback: bool = false,
 };
+
+// 2026-09-04 subagent-peek fix (P0): child session ids embed the agent
+// name verbatim, so `backend implementer` produced
+// `subagent_{ns}_backend implementer` — a raw space in the REST path
+// breaks the HTTP request line (`GET <path> HTTP/1.1` splits on ' ')
+// and `/`/`%` break router segment matching even when encoded
+// (http_parser decodes %2F to '/' BEFORE matchPathWithParams splits).
+// Slugify to [A-Za-z0-9_-] (space -> '_', rest dropped) so the sid is
+// always a single URL-safe path segment. Uniqueness still comes from
+// the nanosecond prefix. Empty result falls back to "agent".
+pub fn slugifySubAgentName(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (name) |c| {
+        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or c == '-' or c == '_') {
+            try out.append(allocator, c);
+        } else if (c == ' ' or c == '\t') {
+            try out.append(allocator, '_');
+        }
+        // All other bytes (/, %, <, >, &, non-ASCII, …) are dropped.
+    }
+    if (out.items.len == 0) {
+        try out.appendSlice(allocator, "agent");
+    }
+    return out.toOwnedSlice(allocator);
+}
 
 // Top-level function required by group.concurrent — takes a single *SubAgentThreadArgs.
 // The function signature must NOT return an error union if you want group.await
@@ -166,10 +193,12 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
     else
         args_ptr.agent_name;
 
+    // 2026-09-04 subagent-peek P0: slugify so the sid is URL-safe.
+    const slugged_name = slugifySubAgentName(sub_agent_allocator, resolved_display_name) catch resolved_display_name;
     const sess_id = std.fmt.allocPrint(
         sub_agent_allocator,
         "subagent_{}_{s}",
-        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, resolved_display_name },
+        .{ std.Io.Timestamp.now(args_ptr.io, .real).nanoseconds, slugged_name },
     ) catch {
         // Mirror the workflow.zig error message pattern (workflow.zig:68)
         // for consistency with the rest of the runSubAgent error paths.
@@ -545,18 +574,24 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     for (shared_results.results) |result| {
         const success = if (result.success) "true" else "false";
         const random_fallback = if (result.is_random_fallback) "true" else "false";
-        try w.print("<agent name=\"{s}\" success=\"{s}\" random_fallback=\"{s}\">\n", .{ result.name, success, random_fallback });
+        // 2026-09-04 subagent-peek P3: escape XML so names with <>&"
+        // don't corrupt SpawnSubAgent.vue's <session_id> regex extraction.
+        const name_esc = try xml_escape(ctx.allocator, result.name);
+        try w.print("<agent name=\"{s}\" success=\"{s}\" random_fallback=\"{s}\">\n", .{ name_esc, success, random_fallback });
         if (result.session_id.len > 0) {
-            try w.print("<session_id>{s}</session_id>\n", .{result.session_id});
+            const sid_esc = try xml_escape(ctx.allocator, result.session_id);
+            try w.print("<session_id>{s}</session_id>\n", .{sid_esc});
         }
         if (result.success) {
             if (result.response) |resp| {
-                try w.print("<response>{s}</response>\n", .{resp});
+                const resp_esc = try xml_escape(ctx.allocator, resp);
+                try w.print("<response>{s}</response>\n", .{resp_esc});
             } else {
                 try w.print("<response></response>\n", .{});
             }
         } else if (result.error_message) |err| {
-            try w.print("<error>{s}</error>\n", .{err});
+            const err_esc = try xml_escape(ctx.allocator, err);
+            try w.print("<error>{s}</error>\n", .{err_esc});
         } else {
             try w.print("<error>unknown error</error>\n", .{});
         }
@@ -686,4 +721,43 @@ test "execSpawnSubAgent clears snapshot when final envelope is built" {
     try testing.expect(std.mem.count(u8, source, "clearSnapshot(ctx.tool_call_id)") >= 1);
     // Failure paths: errdefer covers every error return.
     try testing.expect(std.mem.indexOf(u8, source, "errdefer subagent_progress.clearSnapshot(ctx.tool_call_id)") != null);
+}
+
+test "slugifySubAgentName keeps URL-safe chars, space->underscore" {
+    // 2026-09-04 subagent-peek P0: sid must be a single URL-safe path
+    // segment. Would have failed before slugify existed (raw spaces
+    // broke the HTTP request line, '/' broke router segment matching).
+    const alloc = testing.allocator;
+    const s1 = try slugifySubAgentName(alloc, "backend implementer");
+    defer alloc.free(s1);
+    try testing.expectEqualStrings("backend_implementer", s1);
+
+    const s2 = try slugifySubAgentName(alloc, "code-reviewer");
+    defer alloc.free(s2);
+    try testing.expectEqualStrings("code-reviewer", s2);
+
+    const s3 = try slugifySubAgentName(alloc, "a/b%c<d>e&f");
+    defer alloc.free(s3);
+    try testing.expectEqualStrings("abcdef", s3);
+
+    const s4 = try slugifySubAgentName(alloc, "");
+    defer alloc.free(s4);
+    try testing.expectEqualStrings("agent", s4);
+
+    const s5 = try slugifySubAgentName(alloc, "///");
+    defer alloc.free(s5);
+    try testing.expectEqualStrings("agent", s5);
+}
+
+test "execSpawnSubAgent envelope escapes XML" {
+    // 2026-09-04 subagent-peek P3: raw <session_id>/<response> broke
+    // SpawnSubAgent.vue's regex extraction for names with <>&.
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, result.name)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, result.session_id)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, resp)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, err)") != null);
 }

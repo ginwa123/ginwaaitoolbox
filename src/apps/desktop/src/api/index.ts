@@ -1243,7 +1243,7 @@ export async function getChatHistory(
     // 404/5xx would be noise.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     const data = await apiFetch<any>(
-      `/llm/session/${sessionId}/messages?${params}`,
+      `/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`,
       { silent: true },
     )
     return {
@@ -1431,6 +1431,11 @@ export interface SseEvent {
   is_output?: boolean,
   parent_session_id?: string
   parent_id?: string
+  // 2026-09-04 subagent-peek fix: progress events (role="subagent_progress")
+  // carry the child sid + lifecycle status on the same SseEvent wire.
+  // Optional so existing llm_chunk/llm_full payloads are unaffected.
+  subagent_session_id?: string
+  status?: string
   created_at?: number
   // Legacy type field for compatibility (not used by backend)
   type?: 'chunk' | 'reasoning_chunk' | 'chunk_final' | 'tool_call_delta' | 'connected' | 'full'
