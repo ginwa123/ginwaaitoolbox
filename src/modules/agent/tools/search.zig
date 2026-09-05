@@ -31,7 +31,81 @@ pub const SearchError = error{
     /// ripgrep could not access the path (path doesn't exist, permission
     /// denied, etc). Wraps the ripgrep stderr text in the error name.
     PathError,
+    /// ripgrep did not finish before timeout_ms elapsed. The child was
+    /// killed and reaped — the worker never blocks forever. Returned for
+    /// timeout_ms == 0 as well (fail-fast path used by tests).
+    Timeout,
+    /// The ripgrep binary itself is missing (spawn FileNotFound while the
+    /// cwd probes fine). Distinct from PathError so the LLM installs rg
+    /// instead of retrying with a different path.
+    RgNotFound,
 };
+
+/// Default deadline for one ripgrep invocation (30s). Windows Defender +
+/// NTFS make broad scans 10-50x slower than POSIX; without a bound a
+/// single slow scan blocked the agent worker forever (2026-09-05 freeze).
+pub const default_search_timeout_ms: u64 = 30_000;
+
+/// Upper clamp for timeout_ms (1h). A caller-supplied astronomic value
+/// would overflow the ns conversion below; clamp instead of erroring so
+/// normal calls never fail validation on this field.
+pub const max_search_timeout_ms: u64 = 3_600_000;
+
+const SearchNanoSleepTimespec = extern struct {
+    sec: c_long,
+    nsec: c_long,
+};
+// Raw nanosleep (NOT std.Io.sleep): the workflow runs tools inside an
+// Io.Group worker and parking that worker deadlocks the group. Same
+// rationale as shell.zig's NanoSleepTimespec.
+extern "c" fn nanosleep(req: *const SearchNanoSleepTimespec, rem: ?*SearchNanoSleepTimespec) c_int;
+
+/// Probe whether rg_binary resolves: spawn `<rg> --version` with an
+/// inherited cwd. True = binary exists (cwd was the problem), false =
+/// binary missing. Only called on the rare spawn-FileNotFound path.
+fn probeRg(io: std.Io, rg_binary: []const u8) bool {
+    var probe = std.process.spawn(io, .{
+        .argv = &.{ rg_binary, "--version" },
+        .stdin = .close,
+        .stdout = .ignore,
+        .stderr = .ignore,
+        .cwd = .inherit,
+    }) catch return false;
+    _ = probe.wait(io) catch {};
+    return true;
+}
+
+/// Per-pipe reader context (one per stdout/stderr thread). File scope —
+/// std.Thread.spawn takes a plain function, not a struct namespace.
+const SearchPipeReadContext = struct {
+    stream: std.Io.File,
+    io: std.Io,
+    buf: *[4096]u8,
+    data: *std.ArrayList(u8),
+    overflow: *bool,
+    max_output: usize,
+    eof_flag: *std.atomic.Value(bool),
+    allocator: std.mem.Allocator,
+};
+
+fn readSearchPipe(ctx: SearchPipeReadContext) void {
+    defer ctx.eof_flag.store(true, .release);
+    while (true) {
+        const n = std.Io.File.readStreaming(ctx.stream, ctx.io, &.{ctx.buf}) catch return;
+        if (n == 0) return;
+        // Over cap: keep draining (never block the child on a full
+        // pipe) but discard — overflow is reported after join.
+        if (ctx.overflow.*) continue;
+        if (ctx.data.items.len + n > ctx.max_output) {
+            ctx.overflow.* = true;
+            continue;
+        }
+        ctx.data.appendSlice(ctx.allocator, ctx.buf[0..n]) catch {
+            ctx.overflow.* = true;
+            return;
+        };
+    }
+}
 
 pub const SearchMatch = struct {
     file: []const u8,
@@ -79,6 +153,14 @@ pub const SearchInput = struct {
     /// argv branch and the snippet-rendering logic; for Chunk 1 this
     /// field exists in the struct but has no effect on rg's behavior.
     only_matching: bool = false,
+    /// Deadline for one rg invocation in milliseconds (null → 30s default,
+    /// clamped to 1h). 0 fails fast with error.Timeout. Without a bound a
+    /// single slow scan (Windows Defender + NTFS) blocked the agent worker
+    /// forever — every call is now bounded, killed, and reaped.
+    timeout_ms: ?u64 = null,
+    /// ripgrep binary override (null → "rg" from PATH). Test hook for the
+    /// RgNotFound path + escape hatch for boxes where rg lives outside PATH.
+    rg_binary: ?[]const u8 = null,
 };
 
 pub const SearchResult = struct {
@@ -161,6 +243,17 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     const max_results = input.max_results orelse 50;
     if (max_results == 0) return error.InvalidMaxResults;
 
+    const rg_binary = input.rg_binary orelse "rg";
+    const timeout_ms = input.timeout_ms orelse default_search_timeout_ms;
+    // Fail fast BEFORE spawning (also the deterministic hook for tests).
+    if (timeout_ms == 0) return error.Timeout;
+    // Clamp WITHOUT @min: `@min(u64, u64) * std.time.ns_per_ms` miscompiles
+    // on Zig 0.16.0 (compile error in isolation, phantom overflow at
+    // runtime). Plain u64 × u64 with an explicitly-typed constant is safe.
+    const clamped_ms: u64 = if (timeout_ms > max_search_timeout_ms) max_search_timeout_ms else timeout_ms;
+    const ns_per_ms_u64: u64 = std.time.ns_per_ms;
+    const timeout_ns: u64 = clamped_ms * ns_per_ms_u64;
+
     // === Build ripgrep argv with flag-injection defense ===
     //
     // We use `-e <pattern>` to tell ripgrep "next arg is the pattern", which
@@ -182,7 +275,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     var args: std.ArrayList([]const u8) = .empty;
     defer args.deinit(allocator);
 
-    try args.append(allocator, "rg");
+    try args.append(allocator, rg_binary);
     try args.append(allocator, "--json");
     try args.append(allocator, "--line-number");
     try args.append(allocator, "--no-config");
@@ -217,19 +310,109 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     try args.append(allocator, "--");
     try args.append(allocator, input.path);
 
-    const result = std.process.run(allocator, io, .{
+    var child = std.process.spawn(io, .{
         .argv = args.items,
-        .stdout_limit = std.Io.Limit.limited(max_output),
+        .stdin = .close,
+        .stdout = .pipe,
+        .stderr = .pipe,
         .cwd = .{ .path = input.cwd orelse cwd },
     }) catch |err| {
-        // Map clear errors to our domain:
-        // - FileNotFound on cwd → tell the caller the working directory is wrong
-        if (err == error.FileNotFound) return error.PathError;
+        // FileNotFound is ambiguous: missing rg binary vs missing cwd.
+        // Probe the binary from an inherited cwd to disambiguate.
+        if (err == error.FileNotFound) {
+            if (probeRg(io, rg_binary)) return error.PathError;
+            return error.RgNotFound;
+        }
         return err;
     };
+    // Cleanup for every error return below: pipes are nulled after close
+    // so this never double-closes; child_waited skips the second wait
+    // (double-wait on a reaped child aborts). kill on a dead child is safe.
+    var child_waited = false;
+    errdefer {
+        child.kill(io);
+        if (child.stdout) |p| p.close(io);
+        if (child.stderr) |p| p.close(io);
+        if (!child_waited) _ = child.wait(io) catch {};
+    }
 
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+    var stdout_data: std.ArrayList(u8) = .empty;
+    defer stdout_data.deinit(allocator);
+    var stderr_data: std.ArrayList(u8) = .empty;
+    defer stderr_data.deinit(allocator);
+    var stdout_overflow = false;
+    var stderr_overflow = false;
+    var stdout_eof = std.atomic.Value(bool).init(false);
+    var stderr_eof = std.atomic.Value(bool).init(false);
+
+    const ReadContext = SearchPipeReadContext;
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stderr_buf: [4096]u8 = undefined;
+    const stdout_stream = child.stdout orelse return error.PathError;
+    const stderr_stream = child.stderr orelse return error.PathError;
+    const stdout_thread = try std.Thread.spawn(.{}, readSearchPipe, .{ReadContext{
+        .stream = stdout_stream,
+        .io = io,
+        .buf = &stdout_buf,
+        .data = &stdout_data,
+        .overflow = &stdout_overflow,
+        .max_output = max_output,
+        .eof_flag = &stdout_eof,
+        .allocator = allocator,
+    }});
+    const stderr_thread = try std.Thread.spawn(.{}, readSearchPipe, .{ReadContext{
+        .stream = stderr_stream,
+        .io = io,
+        .buf = &stderr_buf,
+        .data = &stderr_data,
+        .overflow = &stderr_overflow,
+        .max_output = max_output,
+        .eof_flag = &stderr_eof,
+        .allocator = allocator,
+    }});
+    errdefer {
+        stdout_thread.join();
+        stderr_thread.join();
+    }
+
+    // Deadline poll (10ms nanosleep cadence, same as shell.zig). No
+    // std.Io.sleep — it would park the Io.Group worker. Timestamp is i96
+    // in Zig 0.16: keep the inferred width, don't narrow to i64.
+    const deadline_ns = std.Io.Timestamp.now(io, .real).nanoseconds + @as(i64, @intCast(timeout_ns));
+    var timeout_hit = false;
+    while (!(stdout_eof.load(.acquire) and stderr_eof.load(.acquire))) {
+        if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
+            timeout_hit = true;
+            break;
+        }
+        const ts = SearchNanoSleepTimespec{ .sec = 0, .nsec = 10 * std.time.ns_per_ms };
+        _ = nanosleep(&ts, null);
+    }
+
+    // Close pipes (unblocks readers) BEFORE join — same order as shell.zig.
+    if (child.stdout) |p| {
+        p.close(io);
+        child.stdout = null;
+    }
+    if (child.stderr) |p| {
+        p.close(io);
+        child.stderr = null;
+    }
+    stdout_thread.join();
+    stderr_thread.join();
+
+    if (timeout_hit) {
+        child.kill(io);
+        _ = child.wait(io) catch {};
+        child_waited = true;
+        return error.Timeout;
+    }
+    const term = child.wait(io) catch return error.PathError;
+    child_waited = true;
+
+    // stdout_limit semantics preserved: over-cap output is StreamTooLong.
+    if (stdout_overflow or stderr_overflow) return error.StreamTooLong;
 
     // === Map ripgrep exit code to a domain error or accept stdout ===
     //
@@ -243,13 +426,13 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // CAN pattern-match on stderr text. The heuristics here are deliberately
     // conservative — if the heuristic misses, we still surface a clear
     // error.
-    switch (result.term) {
+    switch (term) {
         .exited => |code| switch (code) {
             0 => {}, // success — fall through
             1 => {}, // no match — fall through (empty matches list will yield "pattern not found" later)
             else => {
                 // exit 2 (or other non-zero) → distinguish by stderr
-                const stderr_text = result.stderr;
+                const stderr_text: []const u8 = stderr_data.items;
                 if (std.mem.indexOf(u8, stderr_text, "regex") != null or
                     std.mem.indexOf(u8, stderr_text, "Regex") != null or
                     std.mem.indexOf(u8, stderr_text, "pattern") != null)
@@ -283,7 +466,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     var file_stats = std.StringHashMap(usize).init(allocator);
     defer file_stats.deinit();
 
-    const stdout_slice = result.stdout;
+    const stdout_slice: []const u8 = stdout_data.items;
     var line_start: usize = 0;
     var current_file: ?[]const u8 = null;
 
@@ -502,13 +685,13 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     }
 
     if (matches.items.len == 0) {
-        if (result.stderr.len > 0) {
+        if (stderr_data.items.len > 0) {
             // ripgrep surfaced an error (regex parse error, permission
             // denied, etc). Surface stderr verbatim — it already names the
             // root cause. Don't append pattern/path because the stderr is
             // the source of truth.
             try output.appendSlice(allocator, "<warning>");
-            try output.appendSlice(allocator, result.stderr);
+            try output.appendSlice(allocator, stderr_data.items);
             try output.appendSlice(allocator, "</warning>");
         } else {
             // Clean no-match (rg exit code 1, empty stderr). Include the
@@ -835,6 +1018,11 @@ pub const search_tool = AgentTool{
                     .name = "only_matching",
                     .type = "boolean",
                     .description = "Return only the matched substring (-o flag), not the full surrounding line. Useful for short tokens in noisy lines. Default: false.",
+                },
+                .{
+                    .name = "timeout_ms",
+                    .type = "number",
+                    .description = "Deadline for one search in milliseconds. Default: 30000 (30s), clamped to 1h. On timeout the search is killed and you get a Timeout error — narrow your path or pattern and retry.",
                 },
             },
             .required = &.{ "pattern", "path" },
@@ -2796,6 +2984,8 @@ test "agentic_loop/tools_exec_search.zig maps new SearchErrors to LLM-friendly m
     try testing.expect(std.mem.indexOf(u8, source, "error.InvalidMaxResults") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.RegexParseError") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.PathError") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.Timeout") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.RgNotFound") != null);
 }
 
 test "agentic_loop/tools_exec_search.zig honors group_by_file flag (no longer dead code)" {
@@ -2830,4 +3020,37 @@ test "search.zig tool schema documents word_boundary, literal, only_matching" {
     // The 'required' array must stay minimal — only pattern + path are
     // required. The 3 new flags are optional with defaults.
     try testing.expect(std.mem.indexOf(u8, source, ".required = &.{ \"pattern\", \"path\" }") != null);
+}
+
+test "search: timeout_ms=0 returns Timeout without spawning rg" {
+    // Windows-only freeze (2026-09-05): executeSearch used bare
+    // std.process.run with NO deadline — a slow/hung rg blocked the
+    // agent worker forever. timeout_ms=0 must fail fast with
+    // error.Timeout before any spawn.
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const result = search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "foo",
+        .path = ".",
+        .timeout_ms = 0,
+    });
+    try testing.expectError(error.Timeout, result);
+}
+
+test "search: bogus rg_binary returns RgNotFound (not generic PathError)" {
+    // On Windows boxes without ripgrep on PATH the old code mapped the
+    // spawn FileNotFound to PathError ("verify the path exists"), sending
+    // the LLM down the wrong path. A missing binary must be distinguishable.
+    const allocator = testing.allocator;
+    const io = testing.io;
+    const result = search.executeSearch(allocator, io, "/tmp", .{
+        .pattern = "foo",
+        .path = ".",
+        .rg_binary = "/nonexistent-rg-binary-xyz-123",
+    });
+    try testing.expectError(error.RgNotFound, result);
+}
+
+test "search: default search timeout is 30s" {
+    try testing.expectEqual(@as(u64, 30_000), search.default_search_timeout_ms);
 }
