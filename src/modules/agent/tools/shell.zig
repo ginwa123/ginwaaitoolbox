@@ -86,6 +86,25 @@ const NanoSleepTimespec = extern struct {
 };
 extern "c" fn nanosleep(req: *const NanoSleepTimespec, rem: ?*NanoSleepTimespec) c_int;
 
+/// Sleep ~10ms between deadline polls.
+///
+/// Windows: Win32 Sleep via helpers.sleepMillis. Raw nanosleep's
+/// timespec is LLP64-broken here — c_long is 32-bit while MinGW reads
+/// 64-bit time_t, so {0, 10ms} is misread as a ~millions-of-years sleep
+/// (same hang as search.zig's deadline poll hung `zig build test`).
+/// POSIX: raw nanosleep, unchanged.
+fn pollSleep10ms() void {
+    if (builtin.os.tag == .windows) {
+        helpers.sleepMillis(10);
+    } else {
+        const ts = NanoSleepTimespec{
+            .sec = 0,
+            .nsec = 10 * std.time.ns_per_ms,
+        };
+        _ = nanosleep(&ts, null);
+    }
+}
+
 // Win32 GetExitCodeProcess — declared locally because std.os.windows
 // 0.16 doesn't expose it (only the imports the stdlib's own files
 // need). kernel32.dll is always linked on Windows.
@@ -201,11 +220,7 @@ fn wait_pid_boundedPosix(child: *const std.process.Child, deadline_ns: u64) Wait
         if (helpers.monotonicTimestampNanos() >= deadline_ns) {
             return .{ .outcome = .grace_period_expired, .status = 0 };
         }
-        const ts = NanoSleepTimespec{
-            .sec = 0,
-            .nsec = 10 * std.time.ns_per_ms,
-        };
-        _ = nanosleep(&ts, null);
+        pollSleep10ms();
     }
 }
 
@@ -644,11 +659,7 @@ pub fn run_shell_command(
                 const wait_result = wait_pid_bounded(io, &child, KILL_GRACE_PERIOD_NS);
                 break :blk term_from_wait(wait_result);
             }
-            const ts = NanoSleepTimespec{
-                .sec = 0,
-                .nsec = 10 * std.time.ns_per_ms,
-            };
-            _ = nanosleep(&ts, null);
+            pollSleep10ms();
         }
     };
 
