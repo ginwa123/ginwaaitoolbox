@@ -19,6 +19,10 @@
   Updated 2026-08-21 (plan 2026-08-21-agent-knowledge-manual-text):
   added the File/Text mode toggle + textarea for inline knowledge;
   `create` emit gained the `content` arg.
+  Updated 2026-09-05 (Windows cwd fix): path validation accepts Windows
+  absolutes (`C:\...`, `C:/...`, UNC `\\server\share`) in addition to
+  POSIX `/...` — the old `startsWith('/')` check rejected every Windows
+  pick with "Path must be absolute" and disabled submit.
 -->
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue'
@@ -43,17 +47,34 @@ const pathInput = ref<HTMLInputElement | null>(null)
 const pathTouched = ref(false)
 const showPicker = ref(false)
 
+// Absolute on either platform: POSIX `/...` or Windows `C:\...`,
+// `C:/...`, UNC `\\server\share` / `//server/share`. Mirrors the
+// backend's resolvePath + the FilePickerDialog isWindowsAbs helper.
+function isAbsolutePath(p: string): boolean {
+  if (!p) return false
+  if (p.startsWith('/')) return true
+  if (/^[A-Za-z]:[\\/]/.test(p)) return true
+  if (p.startsWith('\\\\') || p.startsWith('//')) return true
+  return false
+}
+
+/** Basename across both `/` and `\` separators. */
+function basenameOf(p: string): string {
+  const segs = p.split(/[\\/]/).filter(Boolean)
+  return segs.length > 0 ? (segs[segs.length - 1] as string) : p
+}
+
 const pathError = computed<string | null>(() => {
   if (!pathTouched.value) return null
   if (filePath.value.length === 0) return 'Path is required'
-  if (!filePath.value.startsWith('/')) return 'Path must be absolute'
+  if (!isAbsolutePath(filePath.value)) return 'Path must be absolute'
   return null
 })
 
 const canSubmit = computed(() => {
   if (props.busy) return false
   if (mode.value === 'file') {
-    return filePath.value.startsWith('/') && filePath.value.length > 0
+    return filePath.value.length > 0 && isAbsolutePath(filePath.value)
   }
   return content.value.trim().length > 0
 })
@@ -90,8 +111,7 @@ const handleFileSelected = (path: string) => {
   showPicker.value = false
   // Auto-fill the label from the basename if empty.
   if (!label.value.trim()) {
-    const idx = path.lastIndexOf('/')
-    const base = idx === -1 ? path : path.slice(idx + 1)
+    const base = basenameOf(path)
     const dot = base.lastIndexOf('.')
     label.value = dot > 0 ? base.slice(0, dot) : base
   }

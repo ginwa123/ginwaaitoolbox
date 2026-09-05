@@ -361,7 +361,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         .eof_flag = &stdout_eof,
         .allocator = allocator,
     }});
-    const stderr_thread = try std.Thread.spawn(.{}, readSearchPipe, .{ReadContext{
+    const stderr_thread = std.Thread.spawn(.{}, readSearchPipe, .{ReadContext{
         .stream = stderr_stream,
         .io = io,
         .buf = &stderr_buf,
@@ -370,10 +370,29 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         .max_output = max_output,
         .eof_flag = &stderr_eof,
         .allocator = allocator,
-    }});
-    errdefer {
+    }}) catch |err| {
+        // stderr spawn failed AFTER the stdout reader is already running
+        // with a stack-borrowed buf. Close the pipe (unblocks the reader)
+        // and join before returning, or the thread outlives this frame
+        // (use-after-free on stdout_buf/stdout_data).
+        if (child.stdout) |p| {
+            p.close(io);
+            child.stdout = null;
+        }
         stdout_thread.join();
-        stderr_thread.join();
+        return err;
+    };
+    // Join-gate: the explicit joins below run on the happy path; any
+    // later `return error.X` (Timeout, PathError, StreamTooLong,
+    // RegexParseError, …) fires this errdefer. Joining an already-joined
+    // thread is UB — SIGABRT on macOS (pthread). The flag makes the
+    // errdefer a no-op once the explicit joins have run.
+    var threads_joined = false;
+    errdefer {
+        if (!threads_joined) {
+            stdout_thread.join();
+            stderr_thread.join();
+        }
     }
 
     // Deadline poll (10ms nanosleep cadence, same as shell.zig). No
@@ -401,6 +420,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     }
     stdout_thread.join();
     stderr_thread.join();
+    threads_joined = true;
 
     if (timeout_hit) {
         child.kill(io);
