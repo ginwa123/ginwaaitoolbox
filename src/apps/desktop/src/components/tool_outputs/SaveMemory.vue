@@ -35,10 +35,14 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Used as a fallback
+   *  so a still-running tool (empty content) shows its target id. */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -53,9 +57,14 @@ const errorMessage = computed(() => {
 
 const memoryId = computed(() => {
   const match = props.content.match(/<id>([\s\S]*?)<\/id>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
+  if (match?.[1]?.trim()) return match[1].trim()
+  // In-progress fallback: the result envelope is still empty, so show the
+  // id the tool was called with (from the `parameters` prop).
+  return extractParam(props.parameters, 'id')
 })
+
+// Running: result envelope is still empty (no <error>, no <id>).
+const isRunning = computed(() => props.content.trim() === '')
 
 const createdAt = computed(() => {
   const match = props.content.match(/<created_at>([\s\S]*?)<\/created_at>/)
@@ -73,7 +82,7 @@ const updatedAt = computed(() => {
 
 const isSuccess = computed(() => errorMessage.value === null)
 
-const statusIndicator = computed(() => (isSuccess.value ? '✓' : '✗'))
+const statusIndicator = computed(() => (isRunning.value ? '…' : isSuccess.value ? '✓' : '✗'))
 
 // Header label: "<id>" on success (truncated), "error" on failure.
 // We trim+strip the save_memory wrapper so the user sees the mem_<id>
@@ -130,6 +139,15 @@ const copyId = async (e: Event) => {
       <!-- Status indicator -->
       <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
+      </span>
+
+      <!-- Live badge (tool call underway, envelope still empty) -->
+      <span
+        v-if="isRunning"
+        data-testid="save-memory-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      >
+        running…
       </span>
 
       <!-- Copy id button (only on success — there's something to copy) -->

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 /**
  * ReadCompactedMessages — renders the rich `<read_compacted_messages>`
@@ -50,6 +51,7 @@ interface MessageEntry {
 const props = defineProps<{
   content: string
   expanded?: boolean
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -64,6 +66,13 @@ const mode = computed((): 'index' | 'full' | 'unknown' => {
   }
   return match[1] === 'full' ? 'full' : 'index'
 })
+
+// In-progress fallback: prefer envelope, fall back to tool-call parameters
+const displayMode = computed((): string | null => {
+  if (mode.value !== 'unknown') return mode.value
+  return extractParam(props.parameters, 'mode')
+})
+const isRunning = computed(() => props.content.trim() === '' && displayMode.value !== null)
 
 const sessionId = computed((): string | null => {
   const match = props.content.match(/<session_id>([\s\S]*?)<\/session_id>/)
@@ -124,7 +133,8 @@ const summaryText = computed((): string => {
   if (errorMessage.value) return errorMessage.value
 
   const parts: string[] = []
-  parts.push(mode.value === 'unknown' ? 'read' : `${mode.value} mode`)
+  const effectiveMode = mode.value !== 'unknown' ? mode.value : displayMode.value
+  parts.push(effectiveMode && effectiveMode !== 'unknown' ? `${effectiveMode} mode` : 'read')
   if (count.value !== null) {
     parts.push(`${count.value} ${count.value === 1 ? 'message' : 'messages'}`)
   }
@@ -192,6 +202,8 @@ const toggleContent = (id: string): void => {
       >
         Error
       </span>
+
+      <span v-if="isRunning" data-testid="read-compacted-messages-running" class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0">running…</span>
 
       <!-- Toggle indicator: hidden when there's nothing to expand -->
       <span

@@ -862,3 +862,6 @@ export function parseMcp(toolName: string, content: string): ParsedMcp {
     error,
   }
 }
+
+// Re-export shared param helper (single source of truth in helpers/).
+export { extractParam } from '../../../helpers/extractParam'

@@ -70,9 +70,16 @@ interface TaskSummary {
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Accepted so the
+   *  dispatcher can thread call args uniformly; the list result carries
+   *  no "unknown" fallback that needs it today. */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+
+// Running: result envelope is still empty (no columns/tasks/error yet).
+const isRunning = computed(() => props.content.trim() === '')
 
 // ---- Error / hint detection ------------------------------------------------
 
@@ -194,6 +201,7 @@ const copyId = async (e: Event, id: string) => {
   <div
     class="chat-tool-card font-mono text-xs"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
+    data-testid="kanban-list"
   >
     <!-- Header -->
     <div
@@ -213,6 +221,15 @@ const copyId = async (e: Event, id: string) => {
       <!-- Status indicator -->
       <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
+      </span>
+
+      <!-- Live badge (tool call underway, envelope still empty) -->
+      <span
+        v-if="isRunning"
+        data-testid="kanban-list-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      >
+        running…
       </span>
 
       <!-- Toggle indicator -->
