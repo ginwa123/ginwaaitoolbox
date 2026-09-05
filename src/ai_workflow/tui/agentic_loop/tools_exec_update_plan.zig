@@ -60,10 +60,18 @@ pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     // than a successful wrapper around an error body). The inner XML
     // is still surfaced in <data> so the LLM can see the per-tool
     // detail (e.g. "content must be non-empty (1 byte minimum)").
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+    //
+    // NOTE: match the full "<update_plan><error>" envelope marker, NOT bare
+    // "<error>" — the success shape echoes user plan markdown inside
+    // <plan><![CDATA[...]]></plan>, so a plan containing the literal text
+    // "<error>" (e.g. "handle <error> case") must NOT false-trigger the
+    // error branch. The old bare search + `orelse inner.len` fallback OOB'd
+    // at inner[err_start..err_start+inner.len] (SIGABRT in sub-agent thread)
+    // whenever the plan mentioned <error> without a closing </error>.
+    if (std.mem.indexOf(u8, inner, "<update_plan><error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
-        const err_msg = inner[err_start .. err_start + err_end];
+        const err_end_rel = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
+        const err_msg = inner[err_start .. err_start + err_end_rel];
         const output = try wrapToolOutput(ctx.allocator, "update_plan", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
@@ -222,4 +230,51 @@ test "execUpdatePlan: malformed JSON returns wrapped parse error" {
     const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
     defer alloc.free(stored);
     try testing.expectEqualStrings("", stored);
+}
+
+// ─── Test 4 (regression): plan mentioning <error> without </error> ─────────
+// Crash repro: success XML echoes plan markdown inside <plan><![CDATA[..]]></plan>.
+// Old code searched bare "<error>" -> false-positive on plan text like
+// "handle <error> case", then `orelse inner.len` OOB'd at
+// inner[err_start..err_start+inner.len] (SIGABRT, tools_exec_update_plan.zig:66).
+// Must return success=true, not crash.
+test "execUpdatePlan: plan containing <error> without closing tag does not crash" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const tcx = makeTestCtx(alloc, &ctx.db);
+    const tc = fakeToolCall("update_plan", "{\"content\":\"# Plan\\nHandle <error> case\\n- [ ] step\"}");
+
+    const result = try execUpdatePlan(tcx, tc);
+    defer if (result.output_allocated) alloc.free(result.output);
+
+    try testing.expect(result.output_allocated);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "Handle <error> case") != null);
+
+    const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
+    defer alloc.free(stored);
+    try testing.expectEqualStrings("# Plan\nHandle <error> case\n- [ ] step", stored);
+}
+
+// ─── Test 5 (regression): plan with both <error> and </error> still success ─
+// Even when the plan text contains a balanced pair, the envelope marker is
+// "<update_plan><error>" (no such prefix in success XML), so this must NOT
+// be misclassified as a tool failure.
+test "execUpdatePlan: plan containing balanced error tags still succeeds" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const tcx = makeTestCtx(alloc, &ctx.db);
+    const tc = fakeToolCall("update_plan", "{\"content\":\"# Plan\\n<error>oops</error>\\n- [ ] step\"}");
+
+    const result = try execUpdatePlan(tcx, tc);
+    defer if (result.output_allocated) alloc.free(result.output);
+
+    try testing.expect(result.output_allocated);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
 }

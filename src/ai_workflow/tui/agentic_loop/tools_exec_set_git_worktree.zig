@@ -40,7 +40,7 @@ pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
 
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
         const err_msg = inner[err_start .. err_start + err_end];
         const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -53,7 +53,7 @@ pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     // inner XML and persist it.
     const effective: ?[]const u8 = if (parsed.value.clear) null else blk: {
         const path_start = (std.mem.indexOf(u8, inner, "<path>") orelse 0) + "<path>".len;
-        const path_end = std.mem.indexOf(u8, inner[path_start..], "</path>") orelse inner.len;
+        const path_end = std.mem.indexOf(u8, inner[path_start..], "</path>") orelse (inner.len - path_start);
         const worktree_path = inner[path_start .. path_start + path_end];
         if (worktree_path.len == 0) break :blk null;
         // Borrow the slice from `inner` (still alive for the duration
