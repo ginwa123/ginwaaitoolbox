@@ -562,7 +562,7 @@ pub fn executeCreateKanbanTaskToString(
         const raw = input.cwd;
         if (raw.len == 0) return errorXml(allocator, "cwd is required (pass the absolute path to this task's project root — the UI form supports cwd-less tasks, but the LLM tool requires it because a cwd-less session has nothing to bash into)");
         if (raw.len > 4096) return errorXml(allocator, "cwd path too long (max 4 KiB)");
-        if (raw[0] != '/') return errorXml(allocator, "cwd must be an absolute path (start with `/`)");
+        if (!std.fs.path.isAbsolute(raw)) return errorXml(allocator, "cwd must be an absolute path");
         for (raw) |c| {
             if (c < 0x20 or c == 0x7f) return errorXml(allocator, "cwd contains a control character");
         }
