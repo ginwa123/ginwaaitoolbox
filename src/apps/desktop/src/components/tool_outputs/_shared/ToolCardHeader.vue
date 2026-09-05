@@ -49,6 +49,9 @@ interface Props {
   inlineTagClass?: string | undefined
   /** Small text shown after the primary field (e.g. "12L", "3 matches"). */
   rightMeta?: string | null | undefined
+  /** In-progress tool call (envelope still empty). Shows a yellow
+   *  "running…" badge next to the status. Default: false. */
+  running?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -61,6 +64,7 @@ const props = withDefaults(defineProps<Props>(), {
   inlineTag: null,
   inlineTagClass: 'text-[var(--color-orange)]',
   rightMeta: null,
+  running: false,
 })
 
 const emit = defineEmits<{
@@ -124,6 +128,11 @@ const openInEditorClick = (e: Event) => {
       :title="primaryTitle ?? primary ?? ''"
     >{{ primary || 'unknown' }}</span>
     <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-xs">{{ rightMeta }}</span>
+    <span
+      v-if="running"
+      data-testid="tool-card-running"
+      class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+    >running…</span>
     <span class="text-xs font-semibold" :class="success ? 'text-green-500' : 'text-red-500'">
       {{ success ? '✓' : '✗' }}
     </span>

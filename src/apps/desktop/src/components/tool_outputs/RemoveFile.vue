@@ -2,15 +2,33 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import { parseRemoveFile } from './_shared/toolOutputParser'
+import { extractParam } from '@/helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
   cwd?: string
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseRemoveFile(props.content))
+
+const contentPath = computed((): string | null => {
+  const p = parsed.value.path
+  return p && p.trim() !== '' ? p : null
+})
+
+// Prefer the envelope's path; fall back to the parameters prop so a
+// still-running tool (placeholder envelope with empty <data>) shows its path.
+const displayPath = computed((): string | null => {
+  return contentPath.value ?? extractParam(props.parameters, 'path')
+})
+
+// Running: empty envelope content, but we know the path.
+const isRunning = computed(() => {
+  return props.content.trim().length === 0 && displayPath.value !== null
+})
 
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
@@ -24,12 +42,13 @@ const handleToggle = (next: boolean) => {
   >
     <ToolCardHeader
       tool-name="remove_file"
-      :primary="parsed.path"
+      :primary="displayPath"
       :success="parsed.deleted"
       :expanded="isExpanded"
       :expandable="!!parsed.error"
       :cwd="cwd"
       :inline-tag="parsed.recursive ? '(recursive)' : null"
+      :right-meta="isRunning ? 'running…' : null"
       @update:expanded="handleToggle"
     />
 

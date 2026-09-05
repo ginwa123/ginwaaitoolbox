@@ -41,12 +41,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { parseListDirectory } from './_shared/toolOutputParser'
+import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
   cwd?: string
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -59,7 +61,23 @@ const parsed = computed(() => parseListDirectory(props.content))
 
 // ---- Derived display values ------------------------------------------------
 
-const path = computed(() => parsed.value.path || null)
+const contentPath = computed((): string | null => {
+  const v = parsed.value.path
+  return v && v.trim() !== '' ? v : null
+})
+
+// Prefer the envelope's path; fall back to the parameters prop so a
+// still-running tool (placeholder envelope with empty <data>) shows its path.
+const displayPath = computed((): string | null => {
+  return contentPath.value ?? extractParam(props.parameters, 'path')
+})
+
+// Running: empty envelope content, but we know the path.
+const isRunning = computed(() => {
+  return props.content.trim().length === 0 && displayPath.value !== null
+})
+
+const path = computed(() => displayPath.value)
 const count = computed(() => parsed.value.count)
 const entries = computed(() => parsed.value.entries)
 const errorMessage = computed(() => parsed.value.error)
@@ -146,6 +164,7 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
         {{ headerLabel }}
       </span>
       <span class="text-[var(--semantic-text-muted)] text-[0.65rem] shrink-0">{{ countLabel }}</span>
+      <span v-if="isRunning" data-testid="list-directory-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
       <span
         class="text-xs font-semibold shrink-0"
         :class="isSuccess ? 'text-green-500' : 'text-red-500'"

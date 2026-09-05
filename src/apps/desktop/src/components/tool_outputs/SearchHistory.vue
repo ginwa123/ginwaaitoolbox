@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 /**
  * SearchHistory — renders the rich `<search_history>` envelope returned by the
@@ -86,6 +87,7 @@ interface SessionEntry {
 const props = defineProps<{
   content: string
   expanded?: boolean
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -108,6 +110,14 @@ const queryText = computed((): string | null => {
   if (!match || !match[1]) return null
   return match[1].trim()
 })
+
+// In-progress fallback: prefer envelope, fall back to tool-call parameters
+const displayMode = computed((): string | null => {
+  if (mode.value !== 'unknown') return mode.value
+  return extractParam(props.parameters, 'mode')
+})
+const displayQuery = computed((): string | null => queryText.value ?? extractParam(props.parameters, 'query'))
+const isRunning = computed(() => props.content.trim() === '' && (displayMode.value !== null || displayQuery.value !== null))
 
 const sessionId = computed((): string | null => {
   const match = props.content.match(/<session_id>([\s\S]*?)<\/session_id>/)
@@ -216,6 +226,8 @@ const summaryText = computed((): string => {
   if (errorMessage.value) return errorMessage.value
 
   const parts: string[] = []
+  const effectiveMode = mode.value !== 'unknown' ? mode.value : displayMode.value
+  const effectiveQuery = queryText.value ?? displayQuery.value
   if (mode.value === 'text') {
     parts.push('text search')
     if (queryText.value) parts.push(`"${truncateMiddle(queryText.value, 48)}"`)
@@ -223,6 +235,9 @@ const summaryText = computed((): string => {
     parts.push('session')
     if (sessionId.value) parts.push(truncateMiddle(sessionId.value, 32))
     if (order.value) parts.push(`order=${order.value}`)
+  } else if (effectiveMode) {
+    parts.push(effectiveMode === 'session' ? 'session' : 'text search')
+    if (effectiveQuery) parts.push(`"${truncateMiddle(effectiveQuery, 48)}"`)
   } else {
     parts.push('search_history')
   }
@@ -363,6 +378,8 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       >
         Error
       </span>
+
+      <span v-if="isRunning" data-testid="search-history-running" class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0">running…</span>
 
       <span
         v-if="hasEntries || isError"

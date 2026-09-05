@@ -15,9 +15,10 @@ import ShellTool from './ShellTool.vue'
 defineProps<{
   content: string
   expanded?: boolean
+  parameters?: string
 }>()
 </script>
 
 <template>
-  <ShellTool tool-name="bash" :content="content" :expanded="expanded" />
+  <ShellTool tool-name="bash" :content="content" :expanded="expanded" :parameters="parameters" />
 </template>

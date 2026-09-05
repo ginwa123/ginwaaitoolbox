@@ -2,11 +2,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
   cwd?: string
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -17,6 +19,17 @@ const globPattern = computed(() => {
   const match = props.content.match(/pattern="([^"]+)"/)
   return match ? match[1] : null
 })
+
+// Parse glob path
+const globPath = computed(() => {
+  const match = props.content.match(/path="([^"]+)"/)
+  return match ? match[1] : null
+})
+
+// In-progress fallback: prefer envelope, fall back to tool-call parameters
+const displayPattern = computed(() => globPattern.value ?? extractParam(props.parameters, 'pattern'))
+const displayPath = computed(() => globPath.value ?? extractParam(props.parameters, 'path'))
+const isRunning = computed(() => props.content.trim() === '' && displayPattern.value !== null)
 
 // Parse total count
 const totalCount = computed(() => {
@@ -91,9 +104,13 @@ const handleOpenInEditor = (e: Event, path: string) => {
     class="group flex items-center flex-wrap gap-1.5 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
     @click="toggle">
       <span class="gl-title">glob</span>
-      <span class="gl-pattern" :title="globPattern || ''">
-        "{{ globPattern || 'unknown' }}"
+      <span class="gl-pattern" :title="displayPattern || ''">
+        "{{ displayPattern || 'unknown' }}"
       </span>
+      <span v-if="displayPath" class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate" :title="displayPath">
+        in {{ displayPath }}
+      </span>
+      <span v-if="isRunning" data-testid="glob-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
 
       <!-- Results summary -->
       <template v-if="!warningMessage">
