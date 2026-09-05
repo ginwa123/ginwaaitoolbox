@@ -21,6 +21,17 @@
     ↑ / ↓    : move highlight in content pane
     /        : focus search
     Backspace: go to parent path
+
+  Cross-platform note (Windows fix, 2026-09-05): every path helper below
+  accepts BOTH `/` and `\` separators and understands Windows absolutes
+  (`C:\...`, `C:/...`, UNC `\\server\share`). The backend's listDirectory
+  returns OS-native absolute paths (backslash-joined on Windows via
+  std.fs.path.join). The old POSIX-only helpers mangled those into mixed
+  shapes like `/Users\ginwa\...` (leading slash + backslashes, drive letter
+  lost) — that malformed string was then persisted as workspace_items.path
+  and flowed into sessions.cwd and the agent prompt. All helpers stay
+  byte-identical to the old behavior for POSIX inputs; the Windows branches
+  only trigger on drive-letter / UNC prefixes.
 -->
 <script setup lang="ts" generic="T">
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
@@ -139,11 +150,60 @@ let previouslyFocused: HTMLElement | null = null
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
+// ── Cross-platform path helpers (Windows fix, 2026-09-05) ──────────────
+// See the file header for the full rationale. POSIX inputs produce
+// byte-identical results to the old POSIX-only implementations.
+
+/** True for Windows absolutes: `C:\...`, `C:/...`, UNC `\\s\s` / `//s/s`. */
+function isWindowsAbs(path: string): boolean {
+  if (!path) return false
+  if (/^[A-Za-z]:[\\/]/.test(path)) return true
+  if (path.startsWith('\\\\') || path.startsWith('//')) return true
+  return false
+}
+
+/** True for any absolute path on either platform. */
+function isAbsPath(path: string): boolean {
+  return path.startsWith('/') || isWindowsAbs(path)
+}
+
+/** Split on BOTH separators, dropping empties. */
+function splitSegments(path: string): string[] {
+  return path.split(/[\\/]/).filter(Boolean)
+}
+
+/** Basename across both separators. */
+function basenameOf(path: string): string {
+  const segs = splitSegments(path)
+  return segs.length > 0 ? (segs[segs.length - 1] as string) : path
+}
+
+/** True when `path` is a filesystem root: `/`, `C:\`, `C:/`, `C:`, or a UNC share root. */
+function isRootPath(path: string): boolean {
+  if (path === '/' || path === '') return true
+  if (/^[A-Za-z]:[\\/]?$/.test(path)) return true
+  if (/^[\\/]{2}[^\\/]+[\\/]+[^\\/]+\/?$/.test(path)) return true
+  return false
+}
+
 function parentPath(path: string): string {
   if (!path || path === '/') return '/'
-  const idx = path.lastIndexOf('/')
+  // Windows drive root (`C:\`, `C:/`, `C:`) and UNC share roots have no
+  // parent in this picker — step out to the system root (''), which the
+  // callers resolve via getSystemFolder (backend home / USERPROFILE).
+  if (/^[A-Za-z]:[\\/]?$/.test(path)) return ''
+  if (/^[\\/]{2}[^\\/]+[\\/]+[^\\/]+\/?$/.test(path)) return ''
+  // Strip ONE trailing run of separators (never the root itself).
+  const stripped = path.length > 1 ? path.replace(/[\\/]+$/, '') : path
+  if (/^[A-Za-z]:$/.test(stripped)) return ''
+  if (stripped === '' || stripped === '/') return '/'
+  const idx = Math.max(stripped.lastIndexOf('/'), stripped.lastIndexOf('\\'))
   if (idx <= 0) return '/'
-  return path.substring(0, idx)
+  const parent = stripped.substring(0, idx)
+  // A bare drive (`C:`) isn't navigable — surface the drive root instead
+  // so the ancestor chain keeps the `C:\` level.
+  if (/^[A-Za-z]:$/.test(parent)) return `${parent}\\`
+  return parent || '/'
 }
 
 function defaultIconFor(item: T): string {
@@ -164,12 +224,41 @@ function getIcon(item: T): string {
 
 function isHiddenItem(path: string): boolean {
   // Hidden iff the basename (last path segment) starts with '.'
-  const basename = path.split('/').pop() ?? ''
+  const basename = basenameOf(path)
   return basename.startsWith('.')
 }
 
 function parseBreadcrumb(path: string): Array<{ name: string; path: string }> {
   if (!path || path === '/') return []
+  // Windows drive: preserve the drive root and join with backslashes so
+  // every crumb stays a valid absolute the backend can list.
+  const driveMatch = /^[A-Za-z]:/.exec(path)
+  if (driveMatch) {
+    const drive = driveMatch[0]!
+    const rest = splitSegments(path.slice(drive.length))
+    const segments: Array<{ name: string; path: string }> = []
+    let acc = `${drive}\\`
+    segments.push({ name: drive, path: acc })
+    for (const part of rest) {
+      acc = acc.replace(/[\\/]+$/, '') + '\\' + part
+      segments.push({ name: part, path: acc })
+    }
+    return segments
+  }
+  // Windows UNC: `\\server\share` is the root crumb.
+  const uncMatch = /^[\\/]{2}([^\\/]+)[\\/]+([^\\/]+)/.exec(path)
+  if (uncMatch) {
+    const root = `\\\\${uncMatch[1]!}\\${uncMatch[2]!}`
+    const rest = splitSegments(path.slice(uncMatch[0]!.length))
+    const segments: Array<{ name: string; path: string }> = [{ name: root, path: `${root}\\` }]
+    let acc = root
+    for (const part of rest) {
+      acc = acc + '\\' + part
+      segments.push({ name: part, path: acc })
+    }
+    return segments
+  }
+  // POSIX (unchanged legacy behavior).
   const segments: Array<{ name: string; path: string }> = []
   const parts = path.split('/').filter(Boolean)
   let acc = ''
@@ -184,24 +273,38 @@ const breadcrumb = computed(() => parseBreadcrumb(currentPath.value))
 
 // ─── Address-bar normalization ────────────────────────────────────────────
 // Accepts whatever the user typed in the address input and returns a
-// canonical absolute POSIX path, or `null` when the input is unusable.
+// canonical absolute path, or `null` when the input is unusable.
 //
 // Rules:
-//   - empty / whitespace / '~' / '~/'           → '/'
-//   - relative path starting with './' or '../' → relative to currentPath
-//   - bare relative path like 'docs' or 'a/b'   → joined with currentPath
-//   - anything else                             → used as-is (must start
-//                                                 with '/' or be rejected
-//                                                 by the upstream loadItems
-//                                                 caller; we don't try to
-//                                                 validate against the FS
-//                                                 here — that's the
-//                                                 loadItems job).
-// Trailing slashes are stripped except for the root.
+//   - empty / whitespace                              → null (no-op)
+//   - '~' / '~/'                                      → '/'
+//   - Windows absolute (`C:\...`, `C:/...`, UNC)      → accepted as-is
+//     (separator runs collapsed, one trailing separator stripped
+//     unless the result is a root)
+//   - POSIX absolute (starts with '/')                → collapsed runs of
+//     slashes, trailing slash stripped unless root
+//   - relative path starting with './' or '../'       → relative to currentPath
+//   - bare relative path like 'docs' or 'a/b'         → joined with currentPath
+// Trailing slashes are stripped except for roots.
 function normalizeAddressInput(raw: string): string | null {
   const trimmed = raw.trim()
   if (!trimmed) return null
   if (trimmed === '~' || trimmed === '~/') return '/'
+
+  // Windows absolute (drive or UNC). Previously these fell through to the
+  // relative branch and came out as `/C:\...` garbage — the exact mixed
+  // shape that ended up persisted as workspace_items.path on Windows.
+  if (isWindowsAbs(trimmed)) {
+    let out: string
+    if (trimmed.startsWith('\\\\') || trimmed.startsWith('//')) {
+      out = trimmed.slice(0, 2) + trimmed.slice(2).replace(/[\\/]+/g, '\\')
+    } else {
+      out = trimmed.replace(/[\\/]+/g, (m) => (m.includes('\\') ? '\\' : '/'))
+    }
+    // Strip a trailing separator unless the whole thing is a root.
+    if (!isRootPath(out)) out = out.replace(/[\\/]+$/, '')
+    return out || null
+  }
 
   // Already absolute (starts with '/'). Collapse runs of slashes and
   // strip a trailing slash unless the result would be empty.
@@ -213,7 +316,7 @@ function normalizeAddressInput(raw: string): string | null {
   // Relative path: resolve against currentPath so a bare "docs" jumps
   // into "./docs" inside the current view instead of being treated as
   // invalid. Dot-prefixed relpaths ('./a', '../a/b') are normalized as
-  // POSIX path concatenation (no realpath — we don't have access to a
+  // path concatenation (no realpath — we don't have access to a
   // filesystem here and the upstream caller's loadItems will be the
   // one that surfaces "not found" if the path doesn't exist).
   const base = currentPath.value
@@ -224,12 +327,21 @@ function normalizeAddressInput(raw: string): string | null {
   return joinRelative(base, trimmed)
 }
 
-// Tiny POSIX-flavoured relative-path join: walks the joined segments
-// and applies '../' to pop the base. Returns the result without
-// touching the filesystem.
+// Relative-path join with `..` support. Preserves a Windows drive/UNC
+// prefix on the base so `notes` from `C:\Users\ginwa` resolves to
+// `C:\Users\ginwa\notes` (not `/notes`). Purely lexical — no filesystem
+// access. POSIX inputs behave exactly like the old POSIX-only version.
 function joinRelative(base: string, rel: string): string {
-  const baseParts = base === '/' ? [] : base.split('/').filter(Boolean)
-  const relParts = rel.split('/').filter((p) => p !== '.' && p !== '')
+  const driveMatch = /^[A-Za-z]:/.exec(base)
+  const uncMatch = !driveMatch ? /^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/.exec(base) : null
+  const isWindowsBase = !!driveMatch || !!uncMatch
+  const baseRest = driveMatch
+    ? base.slice(driveMatch[0]!.length)
+    : uncMatch
+      ? base.slice(uncMatch[0]!.length)
+      : base
+  const baseParts = baseRest.split(/[\\/]/).filter((p) => p !== '' && p !== '.')
+  const relParts = rel.split(/[\\/]/).filter((p) => p !== '.' && p !== '')
   const out = [...baseParts]
   for (const part of relParts) {
     if (part === '..') {
@@ -238,7 +350,10 @@ function joinRelative(base: string, rel: string): string {
       out.push(part)
     }
   }
-  return '/' + out.join('/')
+  if (!isWindowsBase) return '/' + out.join('/')
+  const prefix = driveMatch ? `${driveMatch[0]!}\\` : `${uncMatch![0].replace(/\//g, '\\')}`
+  if (out.length === 0) return prefix
+  return prefix.replace(/[\\/]+$/, '') + '\\' + out.join('\\')
 }
 
 // ─── Data loading ──────────────────────────────────────────────────────────
@@ -261,14 +376,30 @@ async function loadPath(path: string): Promise<T[]> {
 }
 
 async function expandAncestors(targetPath: string) {
-  // Build ancestor chain root → … → target
+  // Build ancestor chain root → … → target.
   const chain: string[] = []
-  let p: string = targetPath
-  while (p && p !== '/') {
-    chain.unshift(p)
-    p = parentPath(p)
+  if (!targetPath) {
+    // System root (''): a single backend call with '' so the caller's
+    // loadItems can route to getSystemFolder (backend home / USERPROFILE).
+    chain.push('')
+  } else if (isWindowsAbs(targetPath)) {
+    // Windows: chain from the drive/UNC root down.
+    let p: string = targetPath
+    while (p && !isRootPath(p)) {
+      chain.unshift(p)
+      const parent = parentPath(p)
+      if (parent === p) break // safety: never loop forever
+      p = parent
+    }
+    if (p) chain.unshift(p)
+  } else {
+    let p: string = targetPath
+    while (p && p !== '/') {
+      chain.unshift(p)
+      p = parentPath(p)
+    }
+    chain.unshift('/')
   }
-  chain.unshift('/')
 
   for (const path of chain) {
     const items = await loadPath(path)
@@ -282,7 +413,9 @@ async function expandAncestors(targetPath: string) {
 }
 
 async function navigateTo(path: string) {
-  const target = path || '/'
+  // NOTE: '' is meaningful (system root → getSystemFolder), so unlike the
+  // old `path || '/'` fallback we pass the value through untouched.
+  const target = path
   if (target === currentPath.value) return
   currentPath.value = target
   selectedPath.value = ''
@@ -341,6 +474,11 @@ async function handleItemDoubleClick(item: T) {
 function handleSelect() {
   const path = effectiveSelection.value
   if (!path) return
+  // Defense-in-depth (Windows cwd fix, 2026-09-05): never emit a relative
+  // path. Selections must be absolute on at least one platform — this is
+  // the last gate before a picked path is persisted as
+  // workspace_items.path and flows into sessions.cwd and the agent prompt.
+  if (!isAbsPath(path)) return
   emit('select', path)
   // Note: Vue 3.5 auto-defaults `boolean?` to `false`, so the only way to opt
   // INTO close-on-select is to explicitly pass `closeOnSelect={true}`. If the
@@ -362,13 +500,14 @@ const canSelect = computed(() => !!effectiveSelection.value)
 //   2. currentPath — the user navigated to a folder via the tree, breadcrumb,
 //      Up button, Backspace, or address bar. The currently-open folder is a
 //      valid selection (mirrors Finder / Explorer / zenity --directory).
-// The root path '/' is treated as "no selection" — falling back to it would
-// emit a meaningless path that every caller rejects. Plan:
+// The POSIX root '/' and the system root '' are treated as "no selection" —
+// falling back to either would emit a meaningless path that every caller
+// rejects. Windows drive roots (`C:\`) ARE valid selections. Plan:
 // docs/superpowers/plans/2026-08-13-folder-picker-select-button-current-folder.md
 const effectiveSelection = computed<string>(() => {
   if (mode.value !== 'folder') return selectedPath.value
   if (selectedPath.value) return selectedPath.value
-  if (currentPath.value && currentPath.value !== '/') return currentPath.value
+  if (currentPath.value && currentPath.value !== '/' && currentPath.value !== '') return currentPath.value
   return ''
 })
 
@@ -463,7 +602,15 @@ const filteredContent = computed<ContentItem[]>(() => {
 // Flattened tree (recursive from root, with depth)
 const treeFlat = computed<TreeRow[]>(() => {
   const result: TreeRow[] = []
-  const rootChildren = treeEntriesCache.value['/'] || []
+  const cache = treeEntriesCache.value
+  // Root key is '/' on POSIX, '' when the dialog opened at the system root
+  // (resolved via getSystemFolder), or a drive/UNC root (`C:\`,
+  // `\\server\share`) on Windows. Prefer '' (a failed '/' load leaves a
+  // stale empty '/' entry behind after the system-root fallback).
+  const rootKey =
+    Object.keys(cache).find((k) => k === '') ??
+    Object.keys(cache).find((k) => k === '/' || isRootPath(k))
+  const rootChildren = (rootKey !== undefined ? cache[rootKey] : undefined) || []
 
   const add = (entries: T[], depth: number) => {
     for (const raw of entries) {
@@ -656,11 +803,22 @@ async function openDialog() {
   showHiddenLocal.value = showHiddenDefault.value
   isPathEditing.value = false
   pathDraft.value = ''
+  loadError.value = null
   // Reset to the Recent tab on every open. The user always re-enters
   // through Recent — the Browse tab is one click away when they need it.
   activeTab.value = 'recent'
 
   await expandAncestors(startPath)
+
+  // Windows first-open fallback: the POSIX default '/' doesn't exist on
+  // Windows, so the chain above loads nothing and sets loadError. Retry
+  // once at the system root ('') which the callers resolve via
+  // getSystemFolder (backend home / USERPROFILE). On POSIX '/' virtually
+  // always loads, so this branch never fires there.
+  if (startPath === '/' && contentEntries.value.length === 0 && loadError.value) {
+    loadError.value = null
+    await expandAncestors('')
+  }
 
   await nextTick()
   searchInput.value?.focus()
@@ -884,7 +1042,7 @@ onBeforeUnmount(() => {
             </button>
 
             <button
-              v-if="currentPath !== '/' && !isPathEditing"
+              v-if="currentPath !== '/' && currentPath !== '' && !isPathEditing"
               @click="navigateTo(parentPath(currentPath))"
               data-testid="file-picker-up"
               class="px-2 py-0.5 rounded text-xs transition-all hover:opacity-80"
@@ -1328,7 +1486,7 @@ onBeforeUnmount(() => {
                 <!-- Name + path stack -->
                 <span class="flex-1 min-w-0 flex flex-col gap-0.5">
                   <span class="font-medium truncate">
-                    {{ entry.path.split('/').pop() || entry.path }}
+                    {{ basenameOf(entry.path) || entry.path }}
                     <span
                       v-if="entry.pinned"
                       class="ml-1 text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold"
