@@ -508,7 +508,14 @@ fn streamWorker(state: *SharedState) void {
         if (err_msg_slice.len > 0) {
             std.log.warn("curl_easy_perform failed: code={d} msg={s}", .{ rc, err_msg_slice });
         } else {
-            std.log.warn("curl_easy_perform failed: code={d}", .{rc});
+            // Same strerror fallback as client.zig's perform path —
+            // keeps the worker log human-readable on every platform.
+            const str_ptr = curl.easy_strerror(rc);
+            const str_slice: []const u8 = if (str_ptr != null)
+                std.mem.sliceTo(str_ptr, 0)
+            else
+                "unknown error";
+            std.log.warn("curl_easy_perform failed: code={d} msg={s}", .{ rc, str_slice });
         }
         state.worker_error = mapStreamError(rc);
     }
@@ -561,6 +568,26 @@ fn mapStreamError(rc: c_uint) LocalError {
         @intCast(curl.C.CURLE_UNSUPPORTED_PROTOCOL) => LocalError.UnsupportedProtocol,
         @intCast(curl.C.CURLE_TOO_MANY_REDIRECTS) => LocalError.TooManyRedirects,
         @intCast(curl.C.CURLE_OUT_OF_MEMORY) => LocalError.OutOfMemory,
+        @intCast(curl.C.CURLE_FAILED_INIT) => LocalError.InitFailed,
+        @intCast(curl.C.CURLE_WEIRD_SERVER_REPLY),
+        @intCast(curl.C.CURLE_REMOTE_ACCESS_DENIED),
+        @intCast(curl.C.CURLE_HTTP_RETURNED_ERROR),
+        @intCast(curl.C.CURLE_HTTP_RANGE_ERROR),
+        @intCast(curl.C.CURLE_HTTP_POST_ERROR),
+        @intCast(curl.C.CURLE_GOT_NOTHING) => LocalError.HttpError,
+        @intCast(curl.C.CURLE_WRITE_ERROR) => LocalError.WriteError,
+        @intCast(curl.C.CURLE_READ_ERROR) => LocalError.ReadError,
+        @intCast(curl.C.CURLE_SEND_ERROR),
+        @intCast(curl.C.CURLE_SEND_FAIL_REWIND) => LocalError.SendError,
+        @intCast(curl.C.CURLE_RECV_ERROR) => LocalError.RecvError,
+        @intCast(curl.C.CURLE_PARTIAL_FILE) => LocalError.PartialFile,
+        @intCast(curl.C.CURLE_SSL_ENGINE_NOTFOUND),
+        @intCast(curl.C.CURLE_SSL_ENGINE_SETFAILED),
+        @intCast(curl.C.CURLE_USE_SSL_FAILED),
+        @intCast(curl.C.CURLE_SSL_CACERT_BADFILE),
+        @intCast(curl.C.CURLE_SSL_SHUTDOWN_FAILED),
+        @intCast(curl.C.CURLE_SSL_CRL_BADFILE),
+        @intCast(curl.C.CURLE_SSL_ISSUER_ERROR) => LocalError.TlsError,
         @intCast(curl.C.CURLE_ABORTED_BY_CALLBACK) => LocalError.OperationTimedOut,
         else => LocalError.UnknownCurl,
     };

@@ -61,6 +61,12 @@ See `Error` in `root.zig`. The most common:
 - `OperationTimedOut` (CURLE_OPERATION_TIMEDOUT — also covers connect timeouts in libcurl 8.x)
 - `TlsError` (CURLE_PEER_FAILED_VERIFICATION, _SSL_*)
 - `TooManyRedirects` (only when `follow_redirects=true` and the cap is hit)
+- `HttpError` (CURLE_HTTP_RETURNED_ERROR / WEIRD_SERVER_REPLY / GOT_NOTHING / RANGE+POST errors / REMOTE_ACCESS_DENIED)
+- `WriteError` (CURLE_WRITE_ERROR — our own write callback aborted, usually allocation failure)
+- `ReadError` (CURLE_READ_ERROR)
+- `SendError` (CURLE_SEND_ERROR / SEND_FAIL_REWIND)
+- `RecvError` (CURLE_RECV_ERROR — connection reset / server hung up mid-stream)
+- `PartialFile` (CURLE_PARTIAL_FILE — fewer bytes than expected)
 - `UnknownCurl` (libcurl version added a new CURLcode we haven't classified)
 
 ### Limits (v1)
