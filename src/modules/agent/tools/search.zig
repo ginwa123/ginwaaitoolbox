@@ -60,6 +60,22 @@ const SearchNanoSleepTimespec = extern struct {
 // rationale as shell.zig's NanoSleepTimespec.
 extern "c" fn nanosleep(req: *const SearchNanoSleepTimespec, rem: ?*SearchNanoSleepTimespec) c_int;
 
+/// Sleep ~10ms between deadline polls.
+///
+/// Windows: Win32 Sleep via helpers.sleepMillis. Raw nanosleep's
+/// timespec is LLP64-broken here — c_long is 32-bit while MinGW reads
+/// 64-bit time_t, so {0, 10ms} is misread as a ~millions-of-years sleep
+/// (hung `zig build test` at the first spawning validation test).
+/// POSIX: raw nanosleep, unchanged.
+fn pollSleep10ms() void {
+    if (builtin.os.tag == .windows) {
+        @import("helpers").sleepMillis(10);
+    } else {
+        const ts = SearchNanoSleepTimespec{ .sec = 0, .nsec = 10 * std.time.ns_per_ms };
+        _ = nanosleep(&ts, null);
+    }
+}
+
 /// Probe whether rg_binary resolves: spawn `<rg> --version` with an
 /// inherited cwd. True = binary exists (cwd was the problem), false =
 /// binary missing. Only called on the rare spawn-FileNotFound path.
@@ -395,9 +411,9 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         }
     }
 
-    // Deadline poll (10ms nanosleep cadence, same as shell.zig). No
-    // std.Io.sleep — it would park the Io.Group worker. Timestamp is i96
-    // in Zig 0.16: keep the inferred width, don't narrow to i64.
+    // Deadline poll (10ms cadence, same as shell.zig). No std.Io.sleep
+    // — it would park the Io.Group worker. Timestamp is i96 in Zig
+    // 0.16: keep the inferred width, don't narrow to i64.
     const deadline_ns = std.Io.Timestamp.now(io, .real).nanoseconds + @as(i64, @intCast(timeout_ns));
     var timeout_hit = false;
     while (!(stdout_eof.load(.acquire) and stderr_eof.load(.acquire))) {
@@ -405,8 +421,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
             timeout_hit = true;
             break;
         }
-        const ts = SearchNanoSleepTimespec{ .sec = 0, .nsec = 10 * std.time.ns_per_ms };
-        _ = nanosleep(&ts, null);
+        pollSleep10ms();
     }
 
     // Close pipes (unblocks readers) BEFORE join — same order as shell.zig.
