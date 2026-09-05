@@ -110,7 +110,7 @@ pub const command_result_to_string = shell.result_to_xml;
 pub const command_tool_system_prompt =
     \\## Command Tool — Behavior
     \\Use `command` to execute shell commands. The host OS picks the shell automatically: `bash` on Linux/macOS, `pwsh` (PowerShell Core) on Windows, with automatic fallback to `cmd.exe /c` on Windows when `pwsh` is not installed (stderr carries a note when the fallback fires — adapt your syntax to cmd).
-    \\Every command MUST start with `timeout <seconds>` and bound output with `| head -n <N>` or `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh).
+    \\Every command MUST start with `timeout <seconds>` and bound output with `| head -n <N>` or `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) (except under the cmd.exe fallback — see below).
     \\- Prefer `search`/`read_file`/`glob` for code exploration over shell `rg`/`grep`/`find`.
     \\- Always set `cwd` explicitly to an absolute path. Never assume the working directory.
     \\- Use `background=true` for long-running processes; it returns PID + log path.
@@ -353,7 +353,7 @@ test "command.execute_command runs on the host shell (bash off-Windows)" {
 fn cmd_available() bool {
     if (builtin.os.tag != .windows) return false;
     var child = std.process.spawn(std.testing.io, .{
-        .argv = &.{ "cmd.exe", "/c", "echo" },
+        .argv = &.{ "cmd.exe", "/c", "exit 0" },
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .pipe,
