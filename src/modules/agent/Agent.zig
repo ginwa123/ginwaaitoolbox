@@ -1872,10 +1872,44 @@ pub const Agent = struct {
                     }
                 }
             } else if (msg.role == .tool) {
+                // Gateway (Console Go → upstream, url_style="openai-response")
+                // validates `function_call_output` strictly: it rejects the
+                // request with `input[N].output[0] did not match any supported
+                // type` when `output` is not a valid UTF-8 JSON string (e.g. a
+                // `bash` tool output containing `cat` of an ELF binary embeds
+                // 0x80-0xFF bytes that std.json emits raw) or when `call_id`
+                // is empty and can never pair with a `function_call`.
+                // Sanitize + truncate HERE (not at persistence) so already
+                // poisoned rows in llm_history are fixed on replay.
+                // OpenAI Responses reference (POST /v1/responses):
+                // `function_call_output.output` is a plain string — keep the
+                // string shape, just make it valid + bounded.
+                const raw_output = msg.content orelse "";
+                const clean_output = helpers.sanitize.sanitizeUtf8(arena_alloc, raw_output) catch raw_output;
+                // Bound oversize outputs (ls -R + binary dumps). Cap is
+                // approximate: 20k content bytes + short marker suffix.
+                const max_tool_output_len: usize = 20_000;
+                var final_output = clean_output;
+                if (clean_output.len > max_tool_output_len) {
+                    var keep: usize = max_tool_output_len;
+                    // Back off to a UTF-8 char boundary (clean_output is
+                    // valid UTF-8 here, so a start byte is always found).
+                    while (keep > 0 and clean_output[keep] & 0xC0 == 0x80) keep -= 1;
+                    const dropped = clean_output.len - keep;
+                    const suffix = std.fmt.allocPrint(arena_alloc, "\n...[truncated {d} of {d} bytes]", .{ dropped, clean_output.len }) catch "";
+                    final_output = std.fmt.allocPrint(arena_alloc, "{s}{s}", .{ clean_output[0..keep], suffix }) catch clean_output[0..keep];
+                }
+                const cid = msg.tool_call_id orelse "";
+                if (cid.len == 0) {
+                    // An empty call_id can never pair with a function_call —
+                    // emitting it poisons the whole request, so skip + log.
+                    self.log_fmt(.err, "[RESPONSES] skipping function_call_output with empty call_id (output len={d})", .{final_output.len});
+                    continue;
+                }
                 input_items[input_count] = .{
                     .item_type = "function_call_output",
-                    .call_id = msg.tool_call_id orelse "",
-                    .output = msg.content orelse "",
+                    .call_id = cid,
+                    .output = final_output,
                 };
                 input_count += 1;
             }

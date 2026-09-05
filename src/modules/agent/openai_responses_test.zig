@@ -1885,3 +1885,84 @@ test "buildJsonResponsesRequest: iterates output — not output[0] reasoning ass
     try testing.expect(found_reasoning);
     try testing.expect(found_message);
 }
+
+// ---------------------------------------------------------------------------
+// Builder: function_call_output sanitization (input[N].output[M] rejection)
+// ---------------------------------------------------------------------------
+// Regression for: `input[20].output[0] did not match any supported type`
+// (muse-spark via Console Go, url_style="openai-response"). A `bash` tool
+// output containing a `cat` of an ELF binary embedded invalid UTF-8 bytes
+// into `function_call_output.output`; std.json emits those bytes raw, so the
+// request body was not valid UTF-8 JSON and the gateway rejected the item.
+
+test "buildJsonResponsesRequest: tool output with invalid UTF-8 is sanitized" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    // ELF magic + invalid bytes, mimicking `cat` of a binary in tool stdout.
+    const raw_output = "\x7fELF\x02\x01\x01\x00\xFF\xFEbinary\x80\x81done";
+    const messages = [_]agent.AgentMessage{
+        userMsg("hi"),
+        .{ .role = .tool, .content = raw_output, .tool_call_id = "call_elf", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    var found = false;
+    for (input.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("type").?.string, "function_call_output")) continue;
+        found = true;
+        const out = it.object.get("output").?.string;
+        // Raw invalid bytes must be gone; U+FFFD (EF BF BD) marks each one.
+        try testing.expect(std.mem.indexOf(u8, out, "\xFF") == null);
+        try testing.expect(std.mem.indexOf(u8, out, "\x80") == null);
+        try testing.expect(std.mem.indexOf(u8, out, "\xEF\xBF\xBD") != null);
+        // Body itself must be valid UTF-8 so the gateway can parse it.
+        try testing.expect(std.unicode.utf8ValidateSlice(body.raw));
+    }
+    try testing.expect(found);
+}
+
+test "buildJsonResponsesRequest: tool without call_id is skipped, not emitted empty" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    const messages = [_]agent.AgentMessage{
+        userMsg("hi"),
+        .{ .role = .tool, .content = "orphan output", .tool_call_id = null, .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    for (input.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("type").?.string, "function_call_output")) continue;
+        const cid = it.object.get("call_id").?.string;
+        // An empty call_id can never pair with a function_call — must not be sent.
+        try testing.expect(cid.len > 0);
+    }
+}
+
+test "buildJsonResponsesRequest: oversize tool output is truncated with marker" {
+    var a = makeResponsesAgent(.{});
+    defer a.deinit();
+    const big = try testing.allocator.alloc(u8, 25_000);
+    defer testing.allocator.free(big);
+    @memset(big, 'x');
+    const messages = [_]agent.AgentMessage{
+        userMsg("hi"),
+        .{ .role = .tool, .content = big, .tool_call_id = "call_big", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParse(&a, &messages, &.{}, null, null, true);
+    defer freeBody(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    var found = false;
+    for (input.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("type").?.string, "function_call_output")) continue;
+        found = true;
+        const out = it.object.get("output").?.string;
+        try testing.expect(out.len < big.len);
+        try testing.expect(std.mem.indexOf(u8, out, "[truncated") != null);
+    }
+    try testing.expect(found);
+}
