@@ -51,12 +51,6 @@ pub const COMMAND_CMD_PREFIX: []const []const u8 = &.{
     "cmd.exe", "/c",
 };
 
-/// One-line note appended to stderr when the cmd.exe fallback fires, so
-/// the LLM sees which shell actually ran and can self-correct syntax
-/// (pwsh cmdlets / `| Select-Object` won't parse under cmd).
-pub const CMD_FALLBACK_NOTE: []const u8 =
-    "[command] pwsh not found, retried with cmd.exe /c";
-
 /// Run a shell command on the host-appropriate shell: `pwsh` on Windows
 /// (with a `cmd.exe` retry when pwsh is missing), `bash` everywhere else.
 /// Same semantics as the old `execute_bash` / `execute_pwsh`: mandatory
@@ -83,19 +77,7 @@ pub fn execute_command(
             // forbidden, spawn permission, …) propagates unchanged so real
             // failures are never masked as "try the other shell".
             if (err != error.FileNotFound) return err;
-            var fb = try shell.execute_shell(allocator, io, COMMAND_CMD_PREFIX, input);
-            // Surface which shell ran: post-process stderr ONLY on the
-            // fallback path. The 9-tag XML shape is untouched
-            // (result_to_xml stays shared).
-            const noted = try std.fmt.allocPrint(
-                allocator,
-                "{s}\n{s}",
-                .{ fb.stderr, CMD_FALLBACK_NOTE },
-            );
-            allocator.free(fb.stderr);
-            fb.stderr = noted;
-            fb.stderr_lines += 1;
-            return fb;
+            return try shell.execute_shell(allocator, io, COMMAND_CMD_PREFIX, input);
         };
         return pwsh_out;
     } else {
@@ -109,7 +91,7 @@ pub const command_result_to_string = shell.result_to_xml;
 
 pub const command_tool_system_prompt =
     \\## Command Tool — Behavior
-    \\Use `command` to execute shell commands. The host OS picks the shell automatically: `bash` on Linux/macOS, `pwsh` (PowerShell Core) on Windows, with automatic fallback to `cmd.exe /c` on Windows when `pwsh` is not installed (stderr carries a note when the fallback fires — adapt your syntax to cmd).
+    \\Use `command` to execute shell commands. The host OS picks the shell automatically: `bash` on Linux/macOS, `pwsh` (PowerShell Core) on Windows, with automatic silent fallback to `cmd.exe /c` on Windows when `pwsh` is not installed.
     \\Every command MUST start with `timeout <seconds>` and bound output with `| head -n <N>` or `| tail -n <N>` (bash) or `| Select-Object -First <N>` (pwsh) (except under the cmd.exe fallback — see below).
     \\- Prefer `search`/`read_file`/`glob` for code exploration over shell `rg`/`grep`/`find`.
     \\- Always set `cwd` explicitly to an absolute path. Never assume the working directory.
@@ -129,10 +111,8 @@ pub const command_tool = AgentTool{
         \\## Per-OS shell dispatch (automatic — you do NOT choose)
         \\- Linux / macOS: runs `bash -c <command>`.
         \\- Windows: runs `pwsh -NoProfile -NonInteractive -Command <command>`,
-        \\  falling back to `cmd.exe /c <command>` when `pwsh` is not on PATH.
-        \\  The fallback appends a `[command] pwsh not found, retried with
-        \\  cmd.exe /c` note to stderr so you know which shell ran; it is
-        \\  foreground-only (background=true on a pwsh-less box fails instead
+        \\  falling back silently to `cmd.exe /c <command>` when `pwsh` is not on PATH.
+        \\  It is foreground-only (background=true on a pwsh-less box fails instead
         \\  of detaching).
         \\
         \\## Command Rules (enforced in code)
