@@ -75,6 +75,11 @@ tests/functional_ui/__pycache__/
 # WebView2 fails with "file not found" because the .c source is
 # missing).
 !/src/apps/desktop_app/platform/windows/webview_stub.c
+# Exception: guard_tables_stub.c provides the 5 CFG/XFG guard symbols
+# nothing else in the link defines (see build.zig's real-WebView2
+# branch + the doc comment at the top of that file). Committed for
+# the same reason as webview_stub.c.
+!/src/apps/desktop_app/platform/windows/guard_tables_stub.c
 
 # === Editor backup / merge resolution files ===
 *.orig

@@ -137,7 +137,13 @@ fn hasMsvcCppStllib(b: *std.Build, io: std.Io) bool {
         // Any subdir under `MSVC/` (e.g. `14.44.35207/`) means MSVC is
         // installed. Don't recurse — just check if the MSVC root dir
         // contains at least one subdir.
-        const d = std.Io.Dir.cwd().openDir(io, root, .{}) catch continue;
+        //
+        // `OpenOptions.iterate` MUST be true here: iterating a handle
+        // opened without it fails with `error.AccessDenied` on Windows
+        // (verified live — `openDir` succeeds, first `it.next` fails),
+        // which the `else |_| {}` below would swallow as "not installed"
+        // and silently force the webview-stub fallback.
+        const d = std.Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch continue;
         defer d.close(io);
         var it = d.iterate();
         // `it.next` returns `Error!?Entry` (error union of optional).
@@ -267,6 +273,51 @@ fn fillWindowsSdkIncludes(b: *std.Build, result: *MsvcIncludePaths) void {
     }
 }
 
+/// Stage a pruned copy of MSVC's `msvcrt.lib` into the NuGet staging
+/// dir: satisfies `/DEFAULTLIB:MSVCRT` (emitted by msvcprt.lib members)
+/// without the CFG/TLS startup members that collide with mingw's
+/// (`duplicate symbol` on `__guard_*_icall_fptr` et al). Always
+/// re-copies fresh first (8 MB, milliseconds) so `ar d` below applies
+/// to a known-good baseline. IO failures return silently (best-effort:
+/// the link then fails loudly on the missing lib); prune failure
+/// fatals via `b.run` (a half-pruned CRT would mislink silently).
+fn stagePrunedMsvcrt(b: *std.Build, msvc_lib_root: []const u8, stage_dir: []const u8) void {
+    const src_path = b.fmt("{s}/msvcrt.lib", .{msvc_lib_root});
+    const dst_path = b.fmt("{s}/msvcrt.lib", .{stage_dir});
+    const bytes = std.Io.Dir.cwd().readFileAlloc(b.graph.io, src_path, b.allocator, .unlimited) catch return;
+    defer b.allocator.free(bytes);
+    std.Io.Dir.cwd().writeFile(b.graph.io, .{ .sub_path = dst_path, .data = bytes }) catch return;
+    // Prune list is evidence-driven: guard_support.obj (proven dup —
+    // lld names it against mingw's mingw_cfguard_support.obj) + the
+    // TLS-init family (dup set from the full-lib link). The
+    // CFG-dispatch members (guard_dispatch, guard_xfg_dispatch,
+    // cfg_fo) STAY: they define no mingw-colliding storage, and the
+    // XFG/dummy symbols they provide are referenced by msvcprt
+    // members with no other provider (else `undefined symbol`).
+    const prune_members = [_][]const u8{
+        "guard_support.obj",
+        "dyn_tls_init.obj",     "dyn_tls_dtor.obj",
+        "tlsdtor.obj",          "tlsdyn.obj",
+        "tlssup.obj",
+    };
+    var ar_argv: [4 + prune_members.len][]const u8 = undefined;
+    ar_argv[0] = b.graph.zig_exe;
+    ar_argv[1] = "ar";
+    ar_argv[2] = "d";
+    ar_argv[3] = dst_path;
+    for (prune_members, 0..) |m, i| ar_argv[4 + i] = m;
+    _ = b.run(ar_argv[0 .. 4 + prune_members.len]);
+}
+
+/// True when `dst` is missing or its size differs from `src` (used
+/// for the config-time MSVC runtime-lib staging copy). Size-only
+/// comparison: cheap, no hashing, and exact for these
+/// never-edited-in-place import libs.
+fn staleOrMissing(b: *std.Build, src_path: []const u8, dst_path: []const u8) bool {    const src_stat = std.Io.Dir.cwd().statFile(b.graph.io, src_path, .{}) catch return true;
+    const dst_stat = std.Io.Dir.cwd().statFile(b.graph.io, dst_path, .{}) catch return true;
+    return src_stat.size != dst_stat.size;
+}
+
 /// Return true when `abs_path` exists and is a directory. Mirrors the
 /// openDir probe pattern used by `hasMsvcCppStllib` (fileExists only
 /// matches files — it explicitly rejects FILE_ATTRIBUTE_DIRECTORY).
@@ -274,6 +325,18 @@ fn dirExists(b: *std.Build, abs_path: []const u8) bool {
     const d = std.Io.Dir.cwd().openDir(b.graph.io, abs_path, .{}) catch return false;
     d.close(b.graph.io);
     return true;
+}
+
+/// Resolve the MSVC toolset version root (`.../VC/Tools/MSVC/<ver>`)
+/// for the `-include` compat header below. Prefers `$VCToolsInstallDir`
+/// (CI sets it), else the first enumerated install (same fallback as
+/// `findMsvcInclude`). Returns null when nothing resolves.
+fn msvcVersionRoot(b: *std.Build) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    if (b.graph.environ_map.get("VCToolsInstallDir")) |p| {
+        if (dirExists(b, p)) return p;
+    }
+    return firstMsvcRoot(b);
 }
 
 /// Walk the canonical VS install locations and return the first
@@ -290,8 +353,10 @@ fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
     for (roots) |msvc_root| {
         // Open the MSVC root and pick the first subdir (the version
         // dir like `14.44.35207`). Without that subdir, MSVC isn't
-        // installed at this root.
-        const d = std.Io.Dir.openDirAbsolute(b.graph.io, msvc_root, .{}) catch continue;
+        // installed at this root. `OpenOptions.iterate` is required —
+        // without it the first `it.next` fails with AccessDenied on
+        // Windows (see hasMsvcCppStllib).
+        const d = std.Io.Dir.openDirAbsolute(b.graph.io, msvc_root, .{ .iterate = true }) catch continue;
         defer d.close(b.graph.io);
         var it = d.iterate();
         while (it.next(b.graph.io) catch null) |entry| {
@@ -307,7 +372,9 @@ fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
 /// directories (`14.44.35207`, `10.0.22621.0`) without hard-coding them.
 fn firstSubdir(b: *std.Build, root: []const u8) ?[]const u8 {
     if (b.graph.host.result.os.tag != .windows) return null;
-    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{}) catch return null;
+    // `OpenOptions.iterate` is required — without it `it.next` fails
+    // with AccessDenied on Windows (see hasMsvcCppStllib).
+    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{ .iterate = true }) catch return null;
     defer d.close(b.graph.io);
     var it = d.iterate();
     while (it.next(b.graph.io) catch null) |entry| {
@@ -1656,6 +1723,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     });
     desktop_exe.root_module.linkSystemLibrary("c", .{});
 
+    // Set by the `.windows` prong below when the real WebView2 build is
+    // taken: install step copying WebView2Loader.dll next to the exe.
+    // Declared here (outside the switch) because `desktop_install` —
+    // the step that must depend on it — is declared after the switch.
+    var webview2_dll_install_step: ?*std.Build.Step = null;
     // Platform-specific system libraries (Chunks 5-7 add the real deps).
     // Switch kept here so the pattern is validated by the Chunk 1 build.
     switch (target.result.os.tag) {
@@ -1849,6 +1921,10 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             const use_real_webview = blk: {
                 if (no_webapp_rebuild) break :blk false; // Windows CI OOM/fast path — use stub
                 if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
+                // cl.exe path + MSVC lib dir below need the resolved
+                // version root (hasMsvc alone doesn't bind it, e.g.
+                // INCLUDE-env-only setups with custom install paths).
+                if (msvcVersionRoot(b) == null) break :blk false;
                 if (webview2MissingPrereq(b)) |missing| {
                     std.log.warn(
                         "nalar-desktop: MSVC C++ toolchain found, but WebView2 prerequisite {s} is missing under " ++
@@ -1862,36 +1938,38 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 break :blk true;
             };
             if (use_real_webview) {
+            // Compile vendor/webview/webview.cc with the REAL cl.exe
+            // (MSVC), not `zig cc`.
             //
-            // Compile vendor/webview/webview.cc with zig cc. We can't use
-            // `addCSourceFile` here because Zig 0.16's build-exe CLI
-            // doesn't accept multiple flags after `-cflags` (each flag has
-            // to be its own `-cflags <flag>`, and the second `-cflags`
-            // is rejected as "unknown argument"). The MSVC-style flags
-            // `/std:c++17` and `/EHsc` also don't work with `zig cc` (the
-            // leading `/` makes them look like file paths). Switch to the
-            // clang-style equivalents: `-std=c++17` and `-fcxx-exceptions`.
-            //
-            // The vendored library needs C++17 (for std::filesystem
-            // features in webview.h) and exception handling (for
-            // WebView2 COM callbacks). Compile to a .obj, then
-            // addObjectFile so the desktop_exe links it.
-            //
-            // CRITICAL: `zig cc` on Windows does NOT auto-pick up the MSVC
-            // include path. WebView2.h transitively includes <wrl/client.h>
-            // which starts with `#include <cstddef>` — without `-isystem`
-            // pointing at the MSVC `VC/Tools/MSVC/<ver>/include/` dir, the
-            // compile dies with `fatal error: 'cstddef' file not found`.
-            // Re-derive the path from `VCToolsInstallDir` (set by
-            // `vcvars64.bat`) with a fallback to the canonical install
-            // locations — matching `hasMsvcCppStllib` above.
+            // Why not clang: MSVC 14.44 headers + COM + MS C++ ABI cannot
+            // be satisfied by clang-on-windows-gnu, verified through a
+            // full round of attempts (2026-09-05, see git history):
+            // mingw `yvals.h` shadowing (`-nostdinc` + `-I` ordering
+            // fixes that) → `__int64` needs `-fms-extensions` →
+            // UCRT/winnt arch gates need `_M_X64`/`_M_AMD64`/`_AMD64_` →
+            // COM `DECLSPEC_UUID` needs `_MSC_VER`, which `zig cc`
+            // cannot express (`-D_MSC_VER=` dies with bogus
+            // `FileNotFound`; `-fms-compatibility-version` ignored;
+            // `-include` header works) → Itanium ABI object references
+            // `__cxa_*`/`__gxx_personality_seh0`, unsatisfiable since
+            // msvcprt.lib is MS-mangled → `-mabi=ms` is silently
+            // IGNORED by `zig cc` (proven via strings on the output) →
+            // `-fms-compatibility` flips the ABI but kills the
+            // `char16_t`/`char32_t` keywords with no recourse.
+            // cl.exe is installed alongside the detected MSVC (same box
+            // that provides the headers) and needs no vcvars env for a
+            // `/c` compile — explicit `/I` covers everything. Only the
+            // `extern "C"` boundary crosses into the gnu-ABI exe (x64
+            // has no leading-underscore decoration), so the MSVC-compiled
+            // object links cleanly. `/MD` (DLL runtime) keeps one shared
+            // heap with the rest of the exe; `/Z7` embeds debug info in
+            // the obj (no mspdb server needed).
+            const ver_root = msvcVersionRoot(b) orelse unreachable; // gate above guarantees this
+            const cl_exe = b.fmt("{s}/bin/Hostx64/x64/cl.exe", .{ver_root});
             const cpp_src = "vendor/webview/webview.cc";
-            const cpp_obj = "vendor/webview/webview.obj";
             const msvc_include = findMsvcInclude(b);
-            // Build the arg list dynamically: skip any include dir that
-            // failed to resolve. Emitting `-isystem ""` is a confusing
-            // no-op and previously leaked four bare `-isystem` flags
-            // into the CI compile command line.
+            // Skip dirs that failed to resolve (same rationale as
+            // before: a bare `/I ""` is a confusing no-op).
             const candidate_dirs = [_][]const u8{
                 msvc_include.c_stddef,
                 msvc_include.msvc_include,
@@ -1900,83 +1978,61 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 msvc_include.shared_include,
                 msvc_include.winrt_include,
             };
-            var cpp_args: [28][]const u8 = undefined;
+            var cpp_args: [32][]const u8 = undefined;
             var n: usize = 0;
-            cpp_args[n] = b.graph.zig_exe;
+            cpp_args[n] = cl_exe;
             n += 1;
-            cpp_args[n] = "cc";
+            cpp_args[n] = "/nologo";
             n += 1;
-            cpp_args[n] = "-target";
+            cpp_args[n] = "/c";
             n += 1;
-            cpp_args[n] = "x86_64-windows-gnu";
+            cpp_args[n] = "/std:c++17";
             n += 1;
-            cpp_args[n] = "-c";
+            cpp_args[n] = "/EHsc";
             n += 1;
-            cpp_args[n] = "-std=c++17";
+            cpp_args[n] = "/MD";
             n += 1;
-            cpp_args[n] = "-fcxx-exceptions";
+            cpp_args[n] = "/Z7";
             n += 1;
-            cpp_args[n] = "-DWEBVIEW_STATIC";
+            // No Control Flow Guard in this TU (`/guard:cf-`; cl.exe
+            // enables it by default since VS2022). CFG-instrumented code
+            // references the `__guard_*_icall_fptr` dispatch tables,
+            // which would pull vcruntime.lib's table object into a link
+            // where mingw's startup objects already define them
+            // (`duplicate symbol`). The TU's indirect calls go through
+            // WebView2 COM vtables resolved at runtime anyway; the rest
+            // of the exe keeps its own guard posture unchanged.
+            cpp_args[n] = "/guard:cf-";
             n += 1;
-            cpp_args[n] = "-Ivendor/webview";
+            cpp_args[n] = "/DWEBVIEW_STATIC";
             n += 1;
-            // MSVC's vcruntime.h / sal.h use the MSVC-specific
-            // `__pragma(x)` macro to embed `#pragma` statements inside
-            // `_CRT_BEGIN_C_HEADER` / `_CRT_END_C_HEADER` (and similar).
-            // `zig cc` is clang, which doesn't recognise `__pragma` and
-            // dies with `a type specifier is required for all declarations`
-            // the moment vcruntime.h gets included (the vendor webview.cc
-            // pulls it in via `<algorithm>` → `<yvals_core.h>` →
-            // `<vcruntime.h>`). `clang` has its own equivalent — `_Pragma`
-            // — that takes a string literal: `_Pragma("pack(push, 8)")`.
-            // Forward the MSVC `__pragma(x)` call to `_Pragma` so the
-            // embedded `#pragma pack(push/pop)`, warning suppressions,
-            // etc. still take effect for the compiled translation unit.
-            // The function-like macro `#x` stringifies its argument; the
-            // resulting `"pack(push, 8)"` is exactly the spelling clang's
-            // `_Pragma` expects. (CI run 33067379610, job 98500726647,
-            // 2026-08-27 — reproduced 20 errors after PR #359's
-            // directory-creation fix unblocked the staging step.)
-            // `-nostdinc++` excludes zig's bundled libc++ headers from
-            // the include search path. zig cc on Windows defaults to its
-            // own libc++ (`zig/lib/include/yvals_core.h`, `cstddef`,
-            // `__stddef_max_align_t.h`, etc.), but the build is wired to
-            // use the host's MSVC STL (`MSVC/<ver>/include/algorithm`,
-            // `vcruntime.h`, `cstddef`, ...) so WebView2.h's transitive
-            // `<wrl/client.h>` -> `<cstddef>` resolves cleanly. Mixing
-            // the two STLs in the same TU is the root cause of the
-            // second wave of compile errors after the `__pragma` fix:
-            // zig's `__stddef_max_align_t.h` defines `max_align_t` as a
-            // struct, then MSVC's `cstddef` re-declares it as a typedef
-            // (`using _STD max_align_t;`), and the compiler chokes on
-            // the conflict. Same class of conflict for `wchar_t`,
-            // `_Mbstatet`, `uintptr_t`, `_THROW`, `_STL_INTERNAL_CHECK`,
-            // `_STL_VERIFY`, `_STL_ASSERT` -- every internal MSVC STL
-            // identifier collides with whatever the zig libc++ headers
-            // happened to declare first.
-            //
-            // (-D__pragma(x) is set two entries below this comment.)
-            cpp_args[n] = "-nostdinc++";
+            cpp_args[n] = "/Ivendor/webview";
             n += 1;
-            cpp_args[n] = "-D__pragma(x)=_Pragma(#x)";
+            // WebView2.h + EventToken.h (NuGet-staged). webview.h pulls
+            // `"WebView2.h"` as a quoted include.
+            cpp_args[n] = "/Isrc/apps/desktop_app/platform/windows";
             n += 1;
             for (candidate_dirs) |dir| {
                 if (dir.len == 0) continue;
-                cpp_args[n] = "-isystem";
+                cpp_args[n] = "/I";
                 n += 1;
                 cpp_args[n] = dir;
                 n += 1;
             }
-            cpp_args[n] = "-o";
-            n += 1;
-            cpp_args[n] = cpp_obj;
+            // NOTE: cl.exe only accepts the GLUED form (`/Fopath`, no
+            // space — the separate form warns D9027 `source file
+            // ignored` and emits nothing where addOutputFileArg
+            // expects it). The tree path is gitignored
+            // (`vendor/webview/webview.obj`) and the step re-runs
+            // whenever argv changes, so no stale-object hazard.
+            cpp_args[n] = "/Fovendor/webview/webview.obj";
             n += 1;
             cpp_args[n] = cpp_src;
             n += 1;
             const cpp_compile = b.addSystemCommand(cpp_args[0..n]);
             cpp_compile.setCwd(b.path(""));
             desktop_exe.step.dependOn(&cpp_compile.step);
-            desktop_exe.root_module.addObjectFile(.{ .cwd_relative = cpp_obj });
+            desktop_exe.root_module.addObjectFile(.{ .cwd_relative = "vendor/webview/webview.obj" });
             // Win32 / COM / WebView2 link deps (same as the old shim used).
             desktop_exe.root_module.linkSystemLibrary("ole32", .{});
             desktop_exe.root_module.linkSystemLibrary("user32", .{});
@@ -1998,7 +2054,107 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             desktop_exe.root_module.addLibraryPath(.{
                 .cwd_relative = "src/apps/desktop_app/platform/windows",
             });
-            desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});
+            // WebView2Loader.lib back in place: the bisection proved it
+            // innocent (same 2 duplicates without it — the CFG-table
+            // references come from msvcprt.lib's own members).
+            desktop_exe.root_module.linkSystemLibrary("WebView2Loader", .{});            // Link deps for the real webview object. `#pragma
+            // comment(lib, ...)` directives embedded in the TU (MSVC
+            // headers auto-link the C++ runtime; webview.h links ole32 /
+            // shell32 / shlwapi / version / advapi32 / user32) name libs
+            // lld must resolve: `msvcprt` (DLL C++ runtime — see -D_DLL),
+            // `uuid`, `shlwapi`, `version` (ole32/shell32/user32/advapi32
+            // already resolve via zig's mingw libs). MSVC's `lib/x64`
+            // provides msvcprt; the SDK's `Lib/<ver>/um/x64` provides
+            // uuid/shlwapi/version. Without these the link fails with
+            // `lld-link: could not open 'lib<name>.a'`.
+            // MSVC C++ runtime libs WITHOUT the shadowing hazard below.
+            // `msvcprt.lib` + `vcruntime.lib` are COPIED from the MSVC
+            // install into the NuGet staging dir (already on the search
+            // path for WebView2Loader) instead of adding MSVC's
+            // `lib/x64` to the search paths. Reason: that dir also
+            // contains `msvcrt.lib`, and lld resolves the name `msvcrt`
+            // to MSVC's copy INSTEAD OF mingw's `libmsvcrt.a` — MSVC's
+            // copy drags in `guard_support.obj` whose CFG dispatch
+            // tables (`__guard_*_icall_fptr`) collide with mingw's
+            // `mingw_cfguard_support.obj` (`duplicate symbol`; lld names
+            // both). The two copied libs have no mingw counterparts, so
+            // no shadowing is possible. Copy-if-missing-or-stale at
+            // config time (few MB, one-time cost).
+            {
+                const runtime_libs = [_][]const u8{ "msvcprt.lib", "vcruntime.lib", "oldnames.lib" };
+                const msvc_lib_root = b.fmt("{s}/lib/x64", .{ver_root});
+                const stage_dir = "src/apps/desktop_app/platform/windows";
+                for (runtime_libs) |lib_name| {
+                    const src_path = b.fmt("{s}/{s}", .{ msvc_lib_root, lib_name });
+                    const dst_path = b.fmt("{s}/{s}", .{ stage_dir, lib_name });
+                    if (staleOrMissing(b, src_path, dst_path)) {
+                        const bytes = std.Io.Dir.cwd().readFileAlloc(
+                            b.graph.io,
+                            src_path,
+                            b.allocator,
+                            .unlimited,
+                        ) catch break;
+                        defer b.allocator.free(bytes);
+                        std.Io.Dir.cwd().writeFile(
+                            b.graph.io,
+                            .{ .sub_path = dst_path, .data = bytes },
+                        ) catch break;
+                    }
+                }
+                // `msvcrt.lib`: PRUNE the CFG-table + TLS startup members
+                // that collide with mingw's (`duplicate symbol` with a
+                // full copy). Everything else in the archive (C-runtime
+                // imports used by msvcprt members) stays. Always re-copy
+                // fresh first (8 MB, milliseconds) so the prune list
+                // below applies to a known-good baseline — `ar d` on an
+                // already-absent member would fail the configure. Prune list is
+                // evidence-driven: guard_support.obj (proven dup, lld
+                // names it) + the TLS-init family (dup set from the
+                // full-lib link). Cookie members stay: no dup evidence
+                // (they resolve via mingw today).
+                // Best-effort: any IO failure skips staging (the link
+                // will then fail loudly on the missing lib).
+                stagePrunedMsvcrt(b, msvc_lib_root, stage_dir);
+            }
+            const kit_lib_root = firstSubdir(b, "C:/Program Files (x86)/Windows Kits/10/Lib") orelse
+                firstSubdir(b, "C:/Program Files/Windows Kits/10/Lib");
+            if (kit_lib_root) |kl| {
+                desktop_exe.root_module.addLibraryPath(.{
+                    .cwd_relative = b.fmt("{s}/um/x64", .{kl}),
+                });
+                // ucrt.lib lives in its own leaf (Lib/<ver>/ucrt/x64),
+                // NOT under um/ — without this dir the link fails with
+                // `unable to find dynamic system library 'ucrt'`.
+                desktop_exe.root_module.addLibraryPath(.{
+                    .cwd_relative = b.fmt("{s}/ucrt/x64", .{kl}),
+                });
+            }
+            desktop_exe.root_module.linkSystemLibrary("msvcprt", .{});
+            desktop_exe.root_module.linkSystemLibrary("uuid", .{});
+            desktop_exe.root_module.linkSystemLibrary("shlwapi", .{});
+            desktop_exe.root_module.linkSystemLibrary("version", .{});
+            // vcruntime: sole provider of `__CxxFrameHandler4` +
+            // `__security_cookie` for the cl.exe object. DLL import —
+            // no static-CRT heap risk.
+            desktop_exe.root_module.linkSystemLibrary("vcruntime", .{});
+            // Guard-table stubs (5 CFG/XFG symbols nothing else defines
+            // — see guard_tables_stub.c). Plain C, no includes: compiles
+            // through the normal Zig CC path, no MSVC involvement.
+            desktop_exe.root_module.addCSourceFile(.{
+                .file = b.path("src/apps/desktop_app/platform/windows/guard_tables_stub.c"),
+                .flags = &.{},
+            });            // The import lib only records the dependency — at RUNTIME the
+            // Windows loader resolves WebView2Loader.dll via the standard
+            // search order (exe dir first). Install the NuGet-staged copy
+            // next to the exe so a fresh `zig-out/bin/nalar-desktop.exe`
+            // starts without requiring the DLL on PATH. Wired into
+            // `desktop_install` after the switch (it doesn't exist yet
+            // here).
+            const wv2_dll_install = b.addInstallBinFile(
+                b.path("src/apps/desktop_app/platform/windows/WebView2Loader.dll"),
+                "WebView2Loader.dll",
+            );
+            webview2_dll_install_step = &wv2_dll_install.step;
             } else {
                 // === Dev-box fallback: no MSVC + WebView2 ===
                 //
@@ -2071,7 +2227,10 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // already. Adding it twice causes the desktop install to be skipped
     // when `zig build` runs (some kind of graph dedup issue).
     const desktop_install = b.addInstallArtifact(desktop_exe, .{});
-
+    // Real-WebView2 Windows builds need WebView2Loader.dll beside the
+    // exe at runtime (see the `.windows` prong above). DependOn pulls
+    // the dll install into `build:all` via desktop_install's edge.
+    if (webview2_dll_install_step) |dll_step| desktop_install.step.dependOn(dll_step);
     // Late alias kept for comment continuity — actual flag is defined
     // early (near target/optimize) so mcp/webapp sections could be gated.
     // Reuse the early `no_webapp_rebuild` value here; do not re-parse.

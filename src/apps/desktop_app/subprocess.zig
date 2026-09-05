@@ -13,16 +13,26 @@
 // the caller uses to `terminate()` on shutdown.
 //
 // Zig 0.16 API notes (relative to the plan's draft code):
-//   * `std.Io.net.IpAddress.connect(io, ...)` + `stream.reader` works
-//     for long-lived HTTP streams but has surprising behavior for
-//     one-shot health probes: the Io's `readVec` returns an error on
-//     `EAGAIN` (the underlying socket is non-blocking and there's no
-//     data yet), so a probe that hits the server before the response
-//     is ready fails instead of blocking. To get reliable "block
-//     until the response arrives" semantics, we use raw libc socket
-//     calls (`std.c.socket/connect/recv/close`) which are blocking by
+//   * Probing is platform-split: POSIX uses raw libc socket calls
+//     (`std.c.socket/connect/recv/close`) which are blocking by
 //     default on Linux + macOS and map `EAGAIN` to a real timeout via
-//     `SO_RCVTIMEO`.
+//     `SO_RCVTIMEO`. Windows uses the winsock API directly
+//     (`WSAStartup` + `socket`/`connect`/`send`/`recv`/`closesocket`
+//     from ws2_32) — UCRT's `write`/`recvfrom`/`close` operate on the
+//     CRT fd table and fail on SOCKET handles (same root cause as the
+//     `sse_manager.sendAll` Windows fix), and winsock requires
+//     `WSAStartup` before any other call (without it every `socket()`
+//     fails with WSANOTINITIALISED and the probe can never succeed).
+//     (`std.Io.net.IpAddress.connect(io, ...)` + `stream.reader` was
+//     tried first and abandoned: the Io's `readVec` returns an error on
+//     `EAGAIN` — the underlying socket is non-blocking and there's no
+//     data yet — so a probe that hits the server before the response
+//     is ready fails instead of blocking.)
+//   * Deadline tracking uses `helpers.monotonicTimestampNanos` (QPC on
+//     Windows, CLOCK_MONOTONIC on POSIX) and the poll sleep uses
+//     `helpers.sleepMillis` (kernel32 Sleep on Windows, nanosleep on
+//     POSIX) — the raw `clock_gettime`/`nanosleep` externs are
+//     POSIX-only with no UCRT provider on Windows.
 //   * `std.process.spawn(io, options)` returns a `Child` directly
 //     (no `init` + `spawn`). `child.kill()` and `child.wait(io)`
 //     take no extra args in 0.16.
@@ -40,23 +50,64 @@ const std = @import("std");
 const builtin = @import("builtin");
 const helpers = @import("helpers");
 
-// Windows-only WinSock2 `socket` extern, declared at module scope so it
-// can be `@import`ed by the inline `if (builtin.os.tag == .windows)`
-// branch in `tryProbe`. On non-Windows targets this `extern` block is
-// compiled to an empty placeholder (matching the `if (builtin.os.tag ==
-// .windows)` guard below), so the linker never sees a missing-symbol
-// error for `socket` on Linux/macOS.
+// Windows-only WinSock2 externs, declared at module scope so they
+// can be used by the Windows branch of `tryProbe`.
 //
-// Why not use `std.c.socket`? — Zig 0.16's `std.c.private.socket` is
-// declared as returning `c_int` on all platforms, but the actual MSVCRT/
-// UCRT `socket()` returns `SOCKET` (= `*anyopaque` = `std.c.fd_t` on
-// Windows). The 32-bit `c_int` binding truncates the high bits of the
-// handle on x64 — fine for typical user-mode handles, but the type
-// mismatch means the returned `c_int` can't be passed to `setsockopt`/
-// `connect`/`close` (all of which expect `fd_t`). Declaring our own
-// `socket` with the correct `fd_t` return type avoids the cast entirely.
-const win_socket_api = if (builtin.os.tag == .windows) struct {
-    extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) std.c.fd_t;
+// Why a full winsock block instead of `std.c.socket`? — Two reasons:
+//   1. Zig 0.16's `std.c.private.socket` is declared as returning
+//      `c_int` on all platforms, but the actual MSVCRT/UCRT `socket()`
+//      returns `SOCKET` (= `*anyopaque` = `std.c.fd_t` on Windows).
+//      The 32-bit `c_int` binding truncates the high bits of the
+//      handle on x64.
+//   2. More importantly, UCRT's `write`/`recvfrom`/`close` operate on
+//      the CRT fd table (they route to `WriteFile`, which fails on
+//      sockets with an error). The only correct way to send/receive
+//      on a winsock SOCKET is the winsock API itself (`send`/`recv`)
+//      plus `closesocket` for teardown — same root cause as the
+//      `sse_manager.sendAll` Windows fix (see sse_manager.zig).
+//
+// The struct is empty on non-Windows so non-Windows builds never link
+// ws2_32 (build.zig already links ws2_32 + kernel32 into
+// nalar-desktop on Windows).
+const win_net = if (builtin.os.tag == .windows) struct {
+    extern "ws2_32" fn WSAStartup(wVersionRequested: c_ushort, wsaData: *WSADATA) callconv(.c) c_int;
+    extern "ws2_32" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) callconv(.c) c_int;
+    extern "ws2_32" fn connect(sockfd: c_int, addr: [*]const u8, addrlen: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn send(sockfd: c_int, buf: [*]const u8, len: c_int, flags: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn recv(sockfd: c_int, buf: [*]u8, len: c_int, flags: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn setsockopt(sockfd: c_int, level: c_int, optname: c_int, optval: ?*const anyopaque, optlen: c_int) callconv(.c) c_int;
+
+    /// WSADATA struct passed to WSAStartup. 400 bytes is the canonical
+    /// size per Winsock 2 docs; the contents are intentionally ignored
+    /// (we just need the call to succeed so the winsock runtime is
+    /// available for subsequent socket() calls).
+    const WSADATA = [400]u8;
+
+    var wsa_init_lock: std.atomic.Mutex = .unlocked;
+    var wsa_initialized: bool = false;
+
+    /// Winsock must be initialised with WSAStartup() before any other
+    /// winsock call. Without it, `socket()` returns INVALID_SOCKET
+    /// (WSANOTINITIALISED) on every invocation — which is exactly the
+    /// `HealthCheckTimeout` → `AutoSpawnFailed` failure this fix
+    /// addresses. The runtime ref-counts startup calls, so the
+    /// lazy-init pattern is safe (mirrors http_server.zig).
+    fn ensureWinsockInitialized() void {
+        if (wsa_initialized) return;
+        while (!wsa_init_lock.tryLock()) std.atomic.spinLoopHint();
+        defer wsa_init_lock.unlock();
+        if (wsa_initialized) return;
+        var wsa_data: WSADATA = undefined;
+        // MAKEWORD(2, 2) = 0x0202 — request Winsock 2.2.
+        const version: c_ushort = (2 << 8) | 2;
+        const rc = WSAStartup(version, &wsa_data);
+        if (rc != 0) {
+            std.log.err("WSAStartup failed with rc={d}", .{rc});
+            return;
+        }
+        wsa_initialized = true;
+    }
 } else struct {};
 
 /// Handle to a running nalar subprocess. Caller MUST call `terminate()`
@@ -104,39 +155,32 @@ pub fn waitForHealth(
     timeout_ms: u32,
     poll_ms: u32,
 ) !void {
-    // The deadline is in monotonic-clock nanoseconds. We poll until
-    // `now` exceeds `start + timeout_ms * ns_per_ms`.
-    const start_ts = readMonotonicNs();
-    const deadline_ns: u64 = start_ts + (@as(u64, timeout_ms) * std.time.ns_per_ms);
-    const poll_ns: u64 = @as(u64, poll_ms) * std.time.ns_per_ms;
+    // Deadline tracking uses `helpers.monotonicTimestampNanos` (QPC on
+    // Windows, CLOCK_MONOTONIC on POSIX — immune to NTP step
+    // adjustments) and the poll sleep uses `helpers.sleepMillis`
+    // (kernel32 Sleep on Windows, nanosleep on POSIX). Both are
+    // cross-platform; the previous version of this loop called the
+    // POSIX-only `clock_gettime`/`nanosleep` externs directly, which
+    // have no UCRT provider on Windows.
+    //
+    // Elapsed-based comparison (`now - start >= timeout`) instead of
+    // an absolute deadline avoids u64-wraparound edge cases.
+    const start_ns = helpers.monotonicTimestampNanos();
+    const timeout_ns: u64 = @as(u64, timeout_ms) * std.time.ns_per_ms;
 
     while (true) {
         if (tryProbe(port)) return;
 
-        const now_ts = readMonotonicNs();
-        if (now_ts >= deadline_ns) return error.HealthCheckTimeout;
+        const elapsed_ns = helpers.monotonicTimestampNanos() - start_ns;
+        if (elapsed_ns >= timeout_ns) return error.HealthCheckTimeout;
 
-        // Sleep until the next poll. The poll budget is a sleep, so
-        // we cap the remaining deadline and pick the smaller of
-        // (deadline - now) and poll_ns. For typical small poll_ms
-        // values this is just poll_ns.
-        //
-        // Zig 0.16: `std.c.timespec` is `void` on Windows, so we
-        // route the nanosleep through `helpers` which exposes
-        // `PosixTimespec` + `nanosleep` (POSIX-only — but the
-        // process never reaches this branch on Windows because
-        // `ntdll.WaitForSingleObject` etc. instead pump the loop;
-        // see `tryProbe` which uses Win32 APIs on Windows hosts).
-        // The cross-platform `sleepMillis` helper would quantize
-        // to millisecond granularity — too coarse for the 50ms
-        // poll cadence — so we keep the ns-precision path here.
-        const remaining = deadline_ns - now_ts;
-        const sleep_ns: u64 = if (remaining < poll_ns) remaining else poll_ns;
-        const sleep_ts: helpers.PosixTimespec = .{
-            .sec = @intCast(@divFloor(sleep_ns, std.time.ns_per_s)),
-            .nsec = @intCast(@mod(sleep_ns, std.time.ns_per_s)),
-        };
-        _ = helpers.nanosleep(&sleep_ts, null);
+        // Sleep until the next poll, capped at the remaining budget so
+        // we don't overshoot the deadline by a full poll interval.
+        // `poll_ms` is already millisecond-granular, so ms sleep is
+        // exact for the typical 50/100ms cadences.
+        const remaining_ms: u64 = @divFloor(timeout_ns - elapsed_ns, std.time.ns_per_ms);
+        const sleep_ms: u32 = @intCast(@min(@as(u64, poll_ms), remaining_ms));
+        helpers.sleepMillis(sleep_ms);
     }
 }
 
@@ -144,38 +188,83 @@ pub fn waitForHealth(
 /// on any other outcome (connect refused, timeout, non-2xx status, etc).
 /// The caller treats `false` as "not ready, sleep and retry".
 fn tryProbe(port: u16) bool {
+    // Platform dispatch: winsock on Windows (UCRT socket calls don't
+    // work on SOCKET handles), libc sockets on POSIX.
+    if (comptime builtin.os.tag == .windows) return tryProbeWindows(port);
+    return tryProbePosix(port);
+}
+
+/// Windows probe via the winsock API directly. Requires WSAStartup
+/// (lazy-init'd above) — without it every `socket()` call fails with
+/// WSANOTINITIALISED and the probe can never succeed.
+fn tryProbeWindows(port: u16) bool {
+    win_net.ensureWinsockInitialized();
+
+    // AF_INET=2, SOCK_STREAM=1, IPPROTO_TCP=6 (same constants
+    // http_server.zig and test_helpers.zig use on Windows).
+    const sock = win_net.socket(2, 1, 6);
+    if (sock == -1) return false; // INVALID_SOCKET
+    defer _ = win_net.closesocket(sock);
+
+    // 1-second per-call recv() timeout so a half-dead server can't hang
+    // the probe past the next-poll interval. NOTE: on Windows
+    // SO_RCVTIMEO takes a DWORD of milliseconds (not a timeval struct
+    // like POSIX) — SOL_SOCKET=0xFFFF, SO_RCVTIMEO=0x1006.
+    const timeout_ms_win: u32 = 1000;
+    _ = win_net.setsockopt(sock, 0xFFFF, 0x1006, @ptrCast(&timeout_ms_win), @sizeOf(u32));
+
+    // sockaddr_in for 127.0.0.1:port. Layout matches test_helpers.zig's
+    // TCP-loopback fixture (family/port/addr/zero); 0x0100007f is
+    // 127.0.0.1 as a little-endian u32 (wire bytes 127,0,0,1).
+    var addr: std.c.sockaddr.in = .{
+        .family = std.c.AF.INET,
+        .port = std.mem.nativeToBig(u16, port),
+        .addr = 0x0100007f,
+        .zero = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 },
+    };
+    if (win_net.connect(sock, std.mem.asBytes(&addr), @sizeOf(std.c.sockaddr.in)) != 0) return false;
+
+    // Send a minimal HTTP/1.0 request (server closes after one response
+    // — no keep-alive bookkeeping needed).
+    const req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    var sent: usize = 0;
+    while (sent < req.len) {
+        const n = win_net.send(sock, req[sent..].ptr, @intCast(req.len - sent), 0);
+        if (n <= 0) return false;
+        sent += @intCast(n);
+    }
+
+    // Read until we can check the status code: "HTTP/1.x N" — the 9th
+    // byte (index 9) is the first status digit; '2' means 2xx.
+    var buf: [512]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = win_net.recv(sock, buf[total..].ptr, @intCast(buf.len - total), 0);
+        if (n == -1) return false;
+        if (n == 0) break; // EOF — server closed
+        total += @intCast(n);
+        if (total >= 12 and
+            std.mem.startsWith(u8, buf[0..total], "HTTP/1.") and
+            buf[9] == '2')
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn tryProbePosix(port: u16) bool {
     // Open a blocking TCP socket. SO_RCVTIMEO gives the recv() call a
     // per-attempt deadline so a half-dead server can't make the probe
     // hang past the next-poll interval.
     //
-    // Uses libc `std.c.socket` (cross-platform). The previous version
-    // called `std.os.linux.socket` which compiles on macOS but invokes
-    // the Linux syscall number — which doesn't exist on the Darwin
-    // kernel, so the process gets killed with SIGSYS on the first probe.
-    //
-    // Windows note: Zig 0.16's `std.c.private.socket` declares its return
-    // type as `c_int`, but the actual MSVCRT/UCRT `socket()` returns
-    // `SOCKET` (= `*anyopaque` = `std.c.fd_t` on Windows). On x64 the
-    // 32-bit `c_int` binding truncates the high bits of the handle —
-    // fine for typical user-mode handles, but the type mismatch means
-    // we can't pass it to `setsockopt`/`connect`/`close` which all expect
-    // `fd_t`. We declare our own `ws2_32` `socket` extern so the return
-    // type matches `fd_t` directly, avoiding the truncation cast entirely.
-    // On POSIX, `fd_t` == `c_int` so `std.c.socket` works as-is.
-    const fd: std.c.fd_t = if (builtin.os.tag == .windows)
-        win_socket_api.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0)
-    else
-        std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
-    // INVALID_SOCKET on Windows is (SOCKET)(~0) == 0xFFFFFFFFFFFFFFFF;
-    // @intFromPtr extracts the underlying address as usize so we can do
-    // an idiomatic `-1` check. On POSIX, `fd_t == c_int`, so the
-    // standard `-1` check is used; on Windows, fd is a pointer and we
-    // use @intFromPtr. The branch must be COMPTIME-gated on the OS —
-    // @intFromPtr on a non-pointer c_int is a Zig 0.16 compile error.
-    if (switch (builtin.os.tag) {
-        .windows => @intFromPtr(fd) == std.math.maxInt(usize),
-        else => fd == -1,
-    }) return false;
+    // Uses libc `std.c.socket`. An earlier version called
+    // `std.os.linux.socket` which compiles on macOS but invokes the
+    // Linux syscall number — which doesn't exist on the Darwin kernel,
+    // so the process gets killed with SIGSYS on the first probe.
+    // (Windows never reaches this function — see `tryProbe` dispatch.)
+    const fd: std.c.fd_t = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
+    if (fd == -1) return false;
     defer _ = std.c.close(fd);
 
     // 1-second per-call recv() timeout. If the server hasn't responded
@@ -244,30 +333,6 @@ fn tryProbe(port: u16) bool {
         }
     }
     return false;
-}
-
-fn readMonotonicNs() u64 {
-    // Uses libc `helpers.clock_gettime` (POSIX) instead of
-    // `std.os.linux.clock_gettime`. The latter invokes the Linux
-    // syscall number directly, which doesn't exist on Darwin
-    // (SIGSYS = "Bad system call: 12"). `helpers.clock_gettime` is
-    // declared as a plain `extern "c"` and routes through libc,
-    // which dispatches the correct syscall per platform. std.c's
-    // version requires `clockid_t` (a `void` param on Windows in
-    // Zig 0.16 — same Windows compile-error class as `std.c.timespec`),
-    // so we expose `PosixTimespec` + a clean extern decl in
-    // helpers/mod.zig. helpers.CLOCK_MONOTONIC is platform-correct
-    // (Linux 1 / Darwin 6).
-    var ts: helpers.PosixTimespec = undefined;
-    const rc = helpers.clock_gettime(helpers.CLOCK_MONOTONIC, &ts);
-    if (rc != 0) {
-        // Fall back to CLOCK_REALTIME rather than reading an undefined
-        // timespec (@intCast would panic on the garbage bytes in Debug).
-        var wall: helpers.PosixTimespec = undefined;
-        if (helpers.clock_gettime(helpers.CLOCK_REALTIME, &wall) != 0) return 0;
-        return @as(u64, @intCast(wall.sec)) * std.time.ns_per_s + @as(u64, @intCast(wall.nsec));
-    }
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 /// Spawn nalar as a child process with `--port <port>` and, optionally,
