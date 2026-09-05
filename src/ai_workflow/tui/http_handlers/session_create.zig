@@ -15,8 +15,13 @@ fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const 
     // Create the data/apps directory and all parent directories if they don't exist
     try std.Io.Dir.cwd().createDirPath(io, data_apps_dir);
 
-    // Generate a unique folder name using session_id
-    const sandbox_name = try allocator.dupe(u8, session_id);
+    // session_id is caller-supplied (frontend / curl / LLM tool) — it
+    // may contain path separators (`../`), backslashes, or
+    // Windows-reserved characters (`<>:"|?*`, device names). Using it
+    // raw as a folder name breaks mkdir on Windows and is a
+    // path-traversal risk on every platform. Sanitize to a single safe
+    // component (a no-op for generated `sess_<ts>_<hex>` ids).
+    const sandbox_name = try helpers.sanitize.sanitizePathComponent(allocator, session_id);
     errdefer allocator.free(sandbox_name);
 
     const sandbox_path = try std.fs.path.join(allocator, &[_][]const u8{
@@ -33,6 +38,18 @@ fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const 
     };
 
     return sandbox_path;
+}
+
+/// Last-resort cwd when createSandbox itself fails (disk full,
+/// permission denied, no HOME/USERPROFILE). Mirrors main.zig's
+/// TMPDIR → TEMP → TMP → "/tmp" chain — Windows sets TEMP/TMP, not
+/// TMPDIR, so a TMPDIR-only lookup always fell through to the
+/// POSIX-only "/tmp" literal on Windows.
+fn sandboxTempFallback(environment: *const std.process.Environ.Map) []const u8 {
+    return environment.get("TMPDIR") orelse
+        environment.get("TEMP") orelse
+        environment.get("TMP") orelse
+        "/tmp";
 }
 
 pub const RequestSession = struct {
@@ -200,15 +217,15 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
                     .{@errorName(err)},
                 );
                 break :blk createSandbox(alloc, io, environment, session_id) catch
-                    environment.get("TMPDIR") orelse "/tmp";
+                    sandboxTempFallback(environment);
             };
             if (effective_cwd.len == 0) {
                 effective_cwd = createSandbox(alloc, io, environment, session_id) catch
-                    environment.get("TMPDIR") orelse "/tmp";
+                    sandboxTempFallback(environment);
             }
         } else {
             effective_cwd = createSandbox(alloc, io, environment, session_id) catch
-                environment.get("TMPDIR") orelse "/tmp";
+                sandboxTempFallback(environment);
         }
     }
 
@@ -601,5 +618,100 @@ test "session_create.zig does NOT import or alias the chat-side stamp helper in 
             .{HANDLER_PATH},
         );
         return error.SessionHumanTouchedStampAnyReference;
+    }
+}
+
+// ─── Windows sandbox hardening (task_1788609013221_1) ───────────────────
+//
+// createSandbox failed on native Windows three ways: (1) getDataAppsDir
+// only read HOME (unset on cmd/pwsh — now falls back to USERPROFILE in
+// helpers/dir.zig); (2) the useCase's last-resort fallback was
+// TMPDIR-only with a "/tmp" literal (Windows sets TEMP/TMP — now the
+// sandboxTempFallback chain below, mirroring main.zig); (3) the raw
+// session_id was used as the folder name (separators / reserved chars
+// break Windows mkdir and allow ../ traversal — now sanitized via
+// helpers.sanitize.sanitizePathComponent).
+
+test "session_create sandboxTempFallback prefers TMPDIR over TEMP/TMP" {
+    const allocator = testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("TMPDIR", "/tmp/posix");
+    try env_map.put("TEMP", "C:\\Windows\\Temp");
+    try env_map.put("TMP", "C:\\Windows\\Tmp");
+
+    try testing.expectEqualStrings("/tmp/posix", sandboxTempFallback(&env_map));
+}
+
+test "session_create sandboxTempFallback falls back to TEMP then TMP" {
+    const allocator = testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    // No TMPDIR — the native Windows case.
+    try env_map.put("TEMP", "C:\\Windows\\Temp");
+    try env_map.put("TMP", "C:\\Windows\\Tmp");
+
+    try testing.expectEqualStrings("C:\\Windows\\Temp", sandboxTempFallback(&env_map));
+
+    var env_tmp_only = std.process.Environ.Map.init(allocator);
+    defer env_tmp_only.deinit();
+    try env_tmp_only.put("TMP", "C:\\Windows\\Tmp");
+
+    try testing.expectEqualStrings("C:\\Windows\\Tmp", sandboxTempFallback(&env_tmp_only));
+}
+
+test "session_create sandboxTempFallback returns /tmp when no temp var is set" {
+    const allocator = testing.allocator;
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    try testing.expectEqualStrings("/tmp", sandboxTempFallback(&env_map));
+}
+
+test "session_create.zig createSandbox sanitizes the session_id folder name" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // Fail closed if a future refactor drops the sanitizer call and
+    // goes back to `allocator.dupe(u8, session_id)` as the folder
+    // name — raw ids break Windows mkdir and allow ../ traversal.
+    // NOTE: the needle is built via concatenation so this test's own
+    // source does not contain it verbatim (otherwise `contains`
+    // would self-match and the test could never fail).
+    const needle = "sanitizePathComponent(allo" ++ "cator, session_id)";
+    if (!contains(source, needle)) {
+        std.debug.print(
+            "\n!! {s} createSandbox does not sanitize session_id !!\n"
+            ++ "   The session_id is caller-supplied and becomes a folder\n"
+            ++ "   name under data/apps/. It must go through\n"
+            ++ "   helpers.sanitize.sanitizePathComponent first.\n",
+            .{HANDLER_PATH},
+        );
+        return error.SandboxNameNotSanitized;
+    }
+}
+
+test "session_create.zig useCase has no TMPDIR-only fallback left" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    // All three useCase fallback sites must go through
+    // sandboxTempFallback (TMPDIR → TEMP → TMP → "/tmp"). A raw
+    // TMPDIR-only lookup left anywhere means the Windows TEMP/TMP
+    // vars are ignored on that path.
+    // NOTE: the needle is built via concatenation so this test's own
+    // source does not contain it verbatim (otherwise `contains`
+    // would self-match and the test could never fail).
+    const needle = "environment.get(\"TMP" ++ "DIR\") orelse \"/tmp\"";
+    if (contains(source, needle)) {
+        std.debug.print(
+            "\n!! {s} still has a TMPDIR-only fallback !!\n"
+            ++ "   Use sandboxTempFallback(environment) so Windows\n"
+            ++ "   TEMP/TMP are honoured (mirrors main.zig).\n",
+            .{HANDLER_PATH},
+        );
+        return error.TmpdirOnlyFallbackRemains;
     }
 }

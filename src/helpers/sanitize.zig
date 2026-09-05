@@ -132,3 +132,147 @@ test "sanitizeUtf8 invalid continuation byte" {
     // Replaced with U+FFFD (EF BF BD), then 'orld' remains
     try std.testing.expectEqualStrings("hello\xEF\xBF\xBDorld", result);
 }
+
+/// Sanitize an arbitrary string into a single safe filesystem path
+/// component (one folder/file name — never a multi-level path).
+///
+/// Replaces `/ \ < > : " | ? *` and control bytes (< 0x20) with `_`
+/// (the Windows-reserved set; `/` is the POSIX separator), rewrites
+/// trailing `.`/space (rejected by the Windows API), and prefixes
+/// Windows-reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+/// with `_`. A no-op for already-safe names (e.g. generated
+/// `sess_<ts>_<hex>` session ids).
+///
+/// Returns `error.InvalidPathComponent` when nothing usable remains
+/// (empty input). Caller must free the returned slice.
+///
+/// Used by `session_create.zig::createSandbox`, where the session_id
+/// is caller-supplied (frontend / curl / LLM tool) and becomes a
+/// folder name under `data/apps/`. Using it raw breaks mkdir on
+/// Windows and is a `../` path-traversal risk on every platform.
+pub fn sanitizePathComponent(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    if (input.len == 0) return error.InvalidPathComponent;
+
+    var out = try allocator.dupe(u8, input);
+    errdefer allocator.free(out);
+
+    for (out) |*b| {
+        const c = b.*;
+        if (c == '/' or c == '\\' or c == '<' or c == '>' or c == ':' or
+            c == '"' or c == '|' or c == '?' or c == '*' or c < 0x20)
+        {
+            b.* = '_';
+        }
+    }
+
+    // Windows rejects names ending in dots/spaces — rewrite them.
+    // (This also neutralizes "." and "..": they become "_" / "__",
+    // both valid leaf names.)
+    var end: usize = out.len;
+    while (end > 0 and (out[end - 1] == '.' or out[end - 1] == ' ')) {
+        out[end - 1] = '_';
+        end -= 1;
+    }
+
+    if (isWindowsReservedName(out)) {
+        const prefixed = try std.fmt.allocPrint(allocator, "_{s}", .{out});
+        allocator.free(out);
+        return prefixed;
+    }
+
+    return out;
+}
+
+/// Windows-reserved device names, matched case-insensitively against
+/// the stem (before the first '.'): CON, PRN, AUX, NUL, COM1-9, LPT1-9.
+/// `mkdir CON` fails on Windows even with an extension (`CON.txt`).
+fn isWindowsReservedName(name: []const u8) bool {
+    const stem = if (std.mem.indexOfScalar(u8, name, '.')) |i| name[0..i] else name;
+    const reserved = [_][]const u8{
+        "CON",  "PRN",  "AUX",  "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5",
+        "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+        "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    for (reserved) |r| {
+        if (std.ascii.eqlIgnoreCase(stem, r)) return true;
+    }
+    return false;
+}
+
+test "sanitizePathComponent leaves safe names untouched" {
+    const allocator = std.testing.allocator;
+    const result = try sanitizePathComponent(allocator, "sess_1788360596_abcdef1234567890");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("sess_1788360596_abcdef1234567890", result);
+}
+
+test "sanitizePathComponent replaces separators and traversal" {
+    const allocator = std.testing.allocator;
+    const result = try sanitizePathComponent(allocator, "../../etc/passwd");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(".._.._etc_passwd", result);
+}
+
+test "sanitizePathComponent replaces backslashes and reserved chars" {
+    const allocator = std.testing.allocator;
+    const result = try sanitizePathComponent(allocator, "a\\b<c>d:e\"f|g?h*i");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("a_b_c_d_e_f_g_h_i", result);
+}
+
+test "sanitizePathComponent replaces control bytes" {
+    const allocator = std.testing.allocator;
+    const result = try sanitizePathComponent(allocator, "ab\x01\x1fcd");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("ab__cd", result);
+}
+
+test "sanitizePathComponent rewrites trailing dots and spaces" {
+    const allocator = std.testing.allocator;
+    const dotted = try sanitizePathComponent(allocator, "session-123.");
+    defer allocator.free(dotted);
+    try std.testing.expectEqualStrings("session-123_", dotted);
+
+    const spaced = try sanitizePathComponent(allocator, "session-123 ");
+    defer allocator.free(spaced);
+    try std.testing.expectEqualStrings("session-123_", spaced);
+}
+
+test "sanitizePathComponent neutralizes dot-only names" {
+    const allocator = std.testing.allocator;
+    const dot = try sanitizePathComponent(allocator, ".");
+    defer allocator.free(dot);
+    try std.testing.expectEqualStrings("_", dot);
+
+    const dotdot = try sanitizePathComponent(allocator, "..");
+    defer allocator.free(dotdot);
+    try std.testing.expectEqualStrings("__", dotdot);
+}
+
+test "sanitizePathComponent prefixes Windows device names" {
+    const allocator = std.testing.allocator;
+    const con = try sanitizePathComponent(allocator, "CON");
+    defer allocator.free(con);
+    try std.testing.expectEqualStrings("_CON", con);
+
+    const com_lower = try sanitizePathComponent(allocator, "com1");
+    defer allocator.free(com_lower);
+    try std.testing.expectEqualStrings("_com1", com_lower);
+
+    const nul_ext = try sanitizePathComponent(allocator, "NUL.txt");
+    defer allocator.free(nul_ext);
+    try std.testing.expectEqualStrings("_NUL.txt", nul_ext);
+
+    // Non-reserved names with similar prefixes are untouched.
+    const console = try sanitizePathComponent(allocator, "console");
+    defer allocator.free(console);
+    try std.testing.expectEqualStrings("console", console);
+}
+
+test "sanitizePathComponent rejects empty input" {
+    const allocator = std.testing.allocator;
+    const result = sanitizePathComponent(allocator, "");
+    try std.testing.expectError(error.InvalidPathComponent, result);
+}

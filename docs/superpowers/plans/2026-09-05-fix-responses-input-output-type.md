@@ -1,0 +1,55 @@
+# Responses `input[20].output[0]` Rejection Fix Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Stop `url_style="openai-response"` runs from dying with `stream ended without finish_reason after 0 chunk(s)` when history contains `bash` tool calls, by making `function_call` / `function_call_output` replay pass the gateway's `input[N].output[M]` union validation.
+
+**Architecture:** Reproduce with the exact failing history, capture which `input[i]` is index 20, harden `buildJsonResponsesRequest` (sanitize + shape + truncate) and add red-green regression tests at builder + functional layers.
+
+**Tech Stack:** Zig 0.16 (`src/modules/agent/Agent.zig`, `src/ai_workflow/tui/agentic_loop/parsing.zig`, `openai_responses_test.zig`), SQLite `llm_history`, Python functional harness (`tests/functional/harness.py`).
+
+## Global Constraints
+
+- Do NOT change legacy `url_style="openai"` (`buildJsonOpenAIRequest`) or Anthropic (`buildJsonAnthropicRequest`) paths.
+- No migration / no schema change / no config change (fix is builder + sanitize only).
+- DONT KILL the port 8081 server; functional tests use harness ports 8080..8199.
+- Per-request arena owns `ctx.allocator` bytes — no `defer free` for arena slices in handlers.
+- Every builder change needs a builder unit test + a functional wire-replay test (see `.nalar/skills/replay-frontend-wire-payload-in-functional-tests`).
+
+## Background (Phase 1 evidence, already gathered — executor must verify, not trust)
+
+- User error: `stream ended without finish_reason after 0 chunk(s); first server lines: {"model":"muse-spark-1.3-contributor","error":{"param":"input[20].output[0]","type":"invalid_request_error","message":"Error from provider (Console Go): Upstream request failed: [invalid_request_error] `input[20].output[0]` did not match any supported type"}}`.
+- The `stream ended without finish_reason` text is built at `src/modules/agent/Agent.zig:2985` (`detail` fmt) after the 2-nulls EOF break at `:2953-2954`; the `first server lines` sample is the raw non-SSE error body captured at `:2938-2941`. So "0 chunks" + JSON error body = server rejected the request before streaming (not a mid-stream cut).
+- Builder is `src/modules/agent/Agent.zig:1730 buildJsonResponsesRequest`, dispatched at `:2686-2690` for `UrlStyle == "openai-response"`. Expansion contract at `:1755-1759`: `user -> 1 message`, `assistant+tool_calls -> 1 message (if content) + N function_call`, `tool -> 1 function_call_output`, `assistant (no tools) -> 1 message`.
+- `ResponsesInputItem` struct at `Agent.zig:612-623`: fields `item_type/role/content/call_id/name/arguments/output/id/summary/encrypted_content`, where `output` is `?[]const u8` (plain string). Serializer branches at `:625-679`: `message` writes only `role+content`; `function_call` writes `call_id+name+arguments`; `function_call_output` writes only `call_id+output` (`:668-677`); `reasoning` writes `id+summary+encrypted_content`. **No request-path item emits an `output[]` array** — `output[]` appears only on the parse side (`:2555-2580`).
+- Assistant emit at `:1843-1873`: text (if any) as `{type:"message",role:"assistant",content:[{type:"output_text",text}]}` then one `{type:"function_call",call_id,name,arguments}` per tool call. Tool emit at `:1874-1881`: `{type:"function_call_output",call_id=msg.tool_call_id orelse "",output=msg.content orelse ""}`.
+- History write: assistant row carries `tool_calls_json='[{"id":"call_...","type":"function","function":{"name":"bash","arguments":"..."}}]'` via `handle_tool.zig:430-456` -> `llm_history.zig:1223-1383 saveMessage` (`serializeToolCalls` at `:1182-1187` uses `std.json.fmt`, `type` defaults to `"function"` at `Agent.zig:83-92`). Tool row carries the `<tool><name>bash</name>...` XML envelope in `response_content` (envelope built by `tools_wrap_output.zig:9-30 wrapToolOutput`), reconstructed as `.role=.tool, .content=stripToolEnvelope(response_content), .tool_call_id=tools column` by `parsing.zig:22-33 transformLLMHistoryToAgentMessage`.
+- Failing history specifics from the report: one `bash` call with `arguments={"command":"timeout 10 ls -R ... | head -n 100; echo ---; timeout 5 cat /home/ginwa/.local/bin/qs-glauncher ...","cwd":"/home/ginwa/.config/quickshell","mandatory_timeout":15.0}` and a tool output whose `<data><stdout>` contains (a) a large `ls -R` listing, (b) a `cat` of an ELF binary (`/home/ginwa/.local/bin/qs-glauncher` — output shows `ELF` + NUL/control bytes), (c) correctly-escaped `2&gt;&amp;1` (that escaping is CORRECT for `2>&1`, not a bug).
+- `input[20].output[0]` decode: the only request item with a field literally named `output` is `function_call_output`. `message` uses `content`, `function_call` uses `arguments`, `reasoning` uses `summary`. So index 20 is almost certainly a `function_call_output` whose `output` value the gateway parsed as an ARRAY (or tried to coerce to its `string | content-array` union and validated element 0). Our builder always sends `output` as a JSON STRING, so either (a) the gateway expects the array shape and rejects strings by reporting the array branch (`output[0]`), or (b) the string payload is not a valid string on the wire (embedded NUL / invalid UTF-8 / unescaped control chars from the ELF `cat`) so the gateway falls through to the array branch and fails there.
+
+## Hypotheses (ranked — executor must confirm exactly one before fixing)
+
+1. **Binary-payload poisoning (most likely):** `cat` of the ELF binary embedded NUL bytes / invalid UTF-8 / raw control chars into `function_call_output.output`. Zig `std.json.fmt` may emit them raw or as invalid JSON string content; the Console-Go gateway then fails string-union validation and reports the array branch `output[0] did not match any supported type`. Fix = sanitize (see Task 4).
+2. **String-vs-array shape mismatch:** the `muse-spark` gateway (Claude behind OpenAI-compat relay) only accepts `output: [{type:"input_text",text:...}]` and rejects our `output: "<string>"`, reporting the failure at `output[0]`. Fix = emit array shape (or dual-shape behind a flag). Check the OpenAI Responses reference + gateway docs first; do NOT guess.
+3. **Empty `call_id`:** if any `.tool` row has NULL/empty `tools` column, `parsing.zig` yields `tool_call_id=""` and the builder emits `call_id:""` (`orelse ""` at `:1877`). The gateway may reject the pairing (`function_call_output` with no matching `function_call.call_id`) as an unsupported type at that index. Fix = skip-or-error loudly instead of emitting `""`.
+4. **Oversize output:** `ls -R | head -n 100` + full binary dump exceeds the gateway's per-item limit and it surfaces as a type error rather than a length error. Fix = truncate with a `[truncated N bytes]` marker (same convention as existing content caps).
+
+## Steps
+
+- [ ] 1. Write the failing builder test (red): in `openai_responses_test.zig`, add `buildJsonResponsesRequest emits function_call_output for bash history with ELF bytes` — construct `AgentMessage{role=.assistant, tool_calls=[{id:"call_01a06...",function:{name:"bash",arguments:"{...}"}}]}` + `AgentMessage{role=.tool, tool_call_id:"call_01a06...", content:"<tool>...ELF\x00\x01..."}` (copy the exact stdout bytes from the report, including NULs), call `buildJsonResponsesRequest`, assert it currently produces `output` containing raw NUL/invalid-UTF8 (document the failure mode in the test name). Run it to confirm it fails/panics or shows the bad bytes.
+- [ ] 2. Run the new test to confirm red.
+- [ ] 3. Capture which input index is 20: add a TEMPORARY debug log (or a test that prints indexes) mapping each `input[i]` -> `{type, call_id/name preview, output.len}` for a 21+-item history built from the user's `llm_history` shape (assistant+tool+assistant+tool...). Assert `input[20]` is `type=function_call_output` with `call_id=call_01a06...`. Keep the log behind the existing `[RESPONSES DEBUG]` gate (`Agent.zig:1935`), extend the preview to include per-item types (first 30 items). Verify, then keep only the useful part.
+- [ ] 4. Check the Responses spec for `function_call_output.output`: read the vendored docs / OpenAI reference (`POST /v1/responses` — `input[].function_call_output.output: string | array`). Record the answer as a code comment citing the URL + date. If array-shape is valid, note the exact element shape (`{type:"input_text",text}` vs `{type:"output_text",...}`).
+- [ ] 5. Implement the minimal builder fix in `Agent.zig:1874-1881` ONLY: (a) sanitize `msg.content` before assigning to `output` — strip NUL bytes, replace invalid UTF-8 with U+FFFD, drop ASCII controls except `\n\t` (reuse existing `stripToolEnvelope`/sanitize helper if one exists — grep first, do NOT invent a second sanitizer); (b) truncate to a cap (suggest 20_000 chars with `\n...[truncated N bytes]` suffix, matching any existing cap convention in the file); (c) if spec says array-shape is required by this gateway, emit `output` as a single-element array instead of string — otherwise keep string. No changes to `message`/`function_call`/`reasoning` branches.
+- [ ] 6. Guard the empty-`call_id` case at the same site: if `msg.tool_call_id` is null/empty, log `.err` with the history row id and either skip the item or return `error.BuildRequestFailed` (pick skip + log to avoid killing the whole run; document the choice in a comment). Add a unit test for it.
+- [ ] 7. Re-run the Task 1 test (green) + full `zig build test --summary all` (no regressions; baseline ~3051 pass per 2026-09-04 skill entry).
+- [ ] 8. Add a functional wire-replay test `tests/functional/responses_tool_output_sanitize_test.py` (harness boots fresh binary on an isolated HOME/port, replays the EXACT failing shape: assistant `tool_calls_json` + tool XML with ELF bytes via the real `POST /api/llm/session` or direct history insert + streaming call against a stub Responses server): assert the request the backend sends contains no NUL bytes and `output` is valid JSON string (or array per Task 4), and the run does not end with `stream ended without finish_reason`. See `.nalar/skills/replay-frontend-wire-payload-in-functional-tests` for the harness pattern. Run with `NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/responses_tool_output_sanitize_test.py -v` (rebuild via `install:linux` first — `nalar-desktop` does NOT rebuild the core binary).
+- [ ] 9. Remove the temporary per-item debug log if it is too noisy (keep the `[RESPONSES DEBUG] input_items=N` line, drop anything over ~2000 chars).
+- [ ] 10. Commit: `fix(openai-response): sanitize function_call_output + guard empty call_id (input[N].output[M] rejection)`.
+
+## Verification
+
+- [ ] Plan saved to `docs/superpowers/plans/2026-09-05-fix-responses-input-output-type.md`
+- [ ] Plan header includes Goal, Architecture, Tech Stack, Global Constraints
+- [ ] Each task has bite-sized steps (test → implement → verify → commit)
+- [ ] User has reviewed the plan before execution begins
