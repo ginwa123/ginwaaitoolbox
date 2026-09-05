@@ -2,11 +2,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
   cwd?: string
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -22,6 +24,11 @@ const searchPath = computed(() => {
   const match = props.content.match(/path="([^"]+)"/)
   return match ? match[1] : null
 })
+
+// In-progress fallback: prefer envelope, fall back to tool-call parameters
+const displayPattern = computed(() => searchPattern.value ?? extractParam(props.parameters, 'pattern'))
+const displayPath = computed(() => searchPath.value ?? extractParam(props.parameters, 'path'))
+const isRunning = computed(() => props.content.trim() === '' && displayPattern.value !== null)
 
 // Parse warning if no matches
 const warningMessage = computed(() => {
@@ -125,12 +132,13 @@ const handleOpenInEditor = (e: Event, path: string) => {
       tabindex="0"
     >
       <span class="text-[var(--color-violet)] font-semibold text-xs">search</span>
-      <span class="text-[var(--color-violet)] font-semibold max-w-[200px] truncate" :title="searchPattern || ''">
-        "{{ searchPattern || 'unknown' }}"
+      <span class="text-[var(--color-violet)] font-semibold max-w-[200px] truncate" :title="displayPattern || ''">
+        "{{ displayPattern || 'unknown' }}"
       </span>
-      <span class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate" :title="searchPath || ''">
-        in {{ searchPath || 'unknown' }}
+      <span class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate" :title="displayPath || ''">
+        in {{ displayPath || 'unknown' }}
       </span>
+      <span v-if="isRunning" data-testid="search-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
       
       <!-- Results summary -->
       <template v-if="!hasWarning && !hasError">

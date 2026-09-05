@@ -40,10 +40,14 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Used as a fallback
+   *  so a still-running tool (empty content) shows its target id. */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -58,9 +62,14 @@ const errorMessage = computed(() => {
 
 const memoryId = computed(() => {
   const match = props.content.match(/<id>([\s\S]*?)<\/id>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
+  if (match?.[1]?.trim()) return match[1].trim()
+  // In-progress fallback: the result envelope is still empty, so show the
+  // id the tool was called with (from the `parameters` prop).
+  return extractParam(props.parameters, 'id')
 })
+
+// Running: result envelope is still empty (no <error>, no <id>).
+const isRunning = computed(() => props.content.trim() === '')
 
 const deletedFlag = computed(() => {
   const match = props.content.match(/<deleted>([\s\S]*?)<\/deleted>/)
@@ -72,7 +81,7 @@ const deletedFlag = computed(() => {
 
 const isSuccess = computed(() => errorMessage.value === null)
 
-const statusIndicator = computed(() => (isSuccess.value ? '✓' : '✗'))
+const statusIndicator = computed(() => (isRunning.value ? '…' : isSuccess.value ? '✓' : '✗'))
 
 // Header label: "<id>" on success (truncated), "error" on failure.
 const headerLabel = computed(() => {
@@ -132,16 +141,18 @@ const copyId = async (e: Event) => {
         {{ headerLabel }}
       </span>
 
-      <!-- Status chip (success only) — removed vs not found -->
+      <!-- Status chip (success only, hidden while underway — a missing
+           <deleted> flag on an empty envelope is "not started", not
+           "not found") -->
       <span
-        v-if="isRemoved"
+        v-if="isRemoved && !isRunning"
         class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-red-500/15 text-red-600 border border-red-500/30"
         data-testid="delete-memory-status-removed"
       >
         removed
       </span>
       <span
-        v-else-if="statusChip === 'not found'"
+        v-else-if="statusChip === 'not found' && !isRunning"
         class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-zinc-500/10 text-zinc-500 border border-zinc-500/20"
         data-testid="delete-memory-status-notfound"
       >
@@ -151,6 +162,15 @@ const copyId = async (e: Event) => {
       <!-- Status indicator -->
       <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
+      </span>
+
+      <!-- Live badge (tool call underway, envelope still empty) -->
+      <span
+        v-if="isRunning"
+        data-testid="delete-memory-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      >
+        running…
       </span>
 
       <!-- Copy id button (only on success — there's something to copy) -->

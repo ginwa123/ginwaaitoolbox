@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import DiffView from './_shared/DiffView.vue'
 import { parseTextReplace } from './_shared/toolOutputParser'
+import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
 const props = defineProps<{
@@ -11,6 +12,7 @@ const props = defineProps<{
   diffviewBefore?: string
   diffviewAfter?: string
   cwd?: string
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -36,6 +38,27 @@ const diffAfter = computed(() => props.diffviewAfter ?? parsed.value.after)
 
 const hasDiff = computed(() => diffBefore.value !== '' || diffAfter.value !== '')
 
+const contentPath = computed((): string | null => {
+  const p = parsed.value.path
+  return p && p.trim() !== '' ? p : null
+})
+
+// Prefer the envelope's path; fall back to the parameters prop so a
+// still-running tool (placeholder envelope with empty <data>) shows its path.
+// The parser uses the `path` tag; also try `file_path` for forward-compat.
+const displayPath = computed((): string | null => {
+  return (
+    contentPath.value ??
+    extractParam(props.parameters, 'path') ??
+    extractParam(props.parameters, 'file_path')
+  )
+})
+
+// Running: empty envelope content, but we know the path.
+const isRunning = computed(() => {
+  return props.content.trim().length === 0 && displayPath.value !== null
+})
+
 const openInEditor = useInjectOpenInCodeEditor()
 
 // Forward the diff-view's @jump-to-line to the in-app code editor so the
@@ -45,9 +68,10 @@ const openInEditor = useInjectOpenInCodeEditor()
 // ignore the click (the line-number still renders the hover affordance
 // but won't do anything, which is correct for tests / standalone renders).
 const handleJumpToLine = (line: number) => {
-  if (!openInEditor || !props.cwd || !parsed.value.path) return
+  const targetPath = displayPath.value ?? parsed.value.path
+  if (!openInEditor || !props.cwd || !targetPath) return
   openInEditor({
-    filePath: parsed.value.path,
+    filePath: targetPath,
     cwd: props.cwd,
     line,
   })
@@ -66,11 +90,12 @@ const handleToggle = (next: boolean) => {
   >
     <ToolCardHeader
       tool-name="text_replace"
-      :primary="parsed.path"
+      :primary="displayPath"
       :success="parsed.success"
       :expanded="isExpanded"
       :expandable="!!parsed.error || hasDiff"
       :cwd="cwd"
+      :right-meta="isRunning ? 'running…' : null"
       @update:expanded="handleToggle"
     />
 
@@ -86,7 +111,7 @@ const handleToggle = (next: boolean) => {
         v-if="hasDiff"
         :before="diffBefore"
         :after="diffAfter"
-        :file-path="parsed.path || undefined"
+        :file-path="displayPath || undefined"
         class="rounded-none border-0"
         @jump-to-line="handleJumpToLine"
       />

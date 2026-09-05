@@ -3070,12 +3070,14 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <WriteFile
                             v-else-if="msg.tool_name === 'write_file'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <UpdateActivity
                             v-else-if="msg.tool_name === 'update_activity'"
@@ -3087,16 +3089,19 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <SearchHistory
                             v-else-if="msg.tool_name === 'search_history'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
                             :content="innerToolData(msg)"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <TextReplace
                             v-else-if="msg.tool_name === 'text_replace'"
@@ -3105,17 +3110,20 @@ const compactSession = async () => {
                             :diffview-before="msg.diffview_before"
                             :diffview-after="msg.diffview_after"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <ShellTool
                             v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command' || msg.tool_name === 'command'"
                             :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : msg.tool_name === 'command' ? 'command' : 'bash'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <GetSkill
                             v-else-if="msg.tool_name === 'get_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <ViewSkill
                             v-else-if="msg.tool_name === 'view_skill'"
@@ -3147,6 +3155,7 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <SpawnSubAgent
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
@@ -3165,21 +3174,25 @@ const compactSession = async () => {
                           <SetGitWorktree
                             v-else-if="msg.tool_name === 'set_git_worktree'"
                             :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <ReadCompactedMessages
                             v-else-if="msg.tool_name === 'read_compacted_messages'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <KanbanMove
                             v-else-if="msg.tool_name === 'kanban_move_task'"
                             :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <KanbanList
                             v-else-if="msg.tool_name === 'kanban_list'"
                             :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <ListDirectory
@@ -3187,20 +3200,24 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <SaveMemory
                             v-else-if="msg.tool_name === 'save_memory'"
                             :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <LoadMemory
                             v-else-if="msg.tool_name === 'load_memory'"
                             :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <DeleteMemory
                             v-else-if="msg.tool_name === 'delete_memory'"
                             :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <!--

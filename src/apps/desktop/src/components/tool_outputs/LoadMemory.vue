@@ -64,9 +64,16 @@ interface MemoryEntry {
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Accepted so the
+   *  dispatcher can thread call args uniformly; the load result carries
+   *  no "unknown" fallback that needs it today. */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+
+// Running: result envelope is still empty (no entries/error yet).
+const isRunning = computed(() => props.content.trim() === '')
 
 // ── Parse outer envelope ──────────────────────────────────────────────────
 
@@ -294,6 +301,15 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         Error
       </span>
 
+      <!-- Live badge (tool call underway, envelope still empty) -->
+      <span
+        v-if="isRunning"
+        data-testid="load-memory-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      >
+        running…
+      </span>
+
       <span
         v-if="hasEntries || isError"
         class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
@@ -313,10 +329,11 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
     </div>
 
     <!-- Empty-result hint — always visible when there's no error but
-         also no entries. Saves the user a click to discover
-         "no results". -->
+         also no entries. Suppressed while running (an empty envelope is
+         "not started", not "no results"). Saves the user a click to
+         discover "no results". -->
     <div
-      v-else-if="!hasEntries"
+      v-else-if="!hasEntries && !isRunning"
       class="border-t border-[var(--color-border)] px-3 py-4 text-center text-[var(--semantic-text-muted)] text-xs"
       data-testid="load-memory-empty"
     >

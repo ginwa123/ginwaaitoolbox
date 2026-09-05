@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -13,6 +15,10 @@ const skillName = computed(() => {
   const match = props.content.match(/<skill_name>(.*?)<\/skill_name>/)
   return match ? match[1] : null
 })
+
+// In-progress fallback: prefer envelope, fall back to tool-call parameters
+const displaySkillName = computed(() => skillName.value ?? extractParam(props.parameters, 'skill_name'))
+const isRunning = computed(() => props.content.trim() === '' && displaySkillName.value !== null)
 
 // Parse loaded status
 const isLoaded = computed(() => {
@@ -62,8 +68,8 @@ const toggle = () => {
 
 const copySkillName = async (e: Event) => {
   e.stopPropagation()
-  if (skillName.value) {
-    await navigator.clipboard.writeText(skillName.value)
+  if (displaySkillName.value) {
+    await navigator.clipboard.writeText(displaySkillName.value)
   }
 }
 </script>
@@ -82,9 +88,10 @@ const copySkillName = async (e: Event) => {
       tabindex="0"
     >
       <span class="text-[var(--color-violet)] font-semibold text-xs">get_skill</span>
-      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="skillName || ''">
-        {{ skillName || 'unknown' }}
+      <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="displaySkillName || ''">
+        {{ displaySkillName || 'unknown' }}
       </span>
+      <span v-if="isRunning" data-testid="get-skill-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
       
       <!-- Status indicator -->
       <span class="text-xs font-semibold" :class="isLoaded ? 'text-green-500' : 'text-red-500'">

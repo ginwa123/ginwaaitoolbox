@@ -24,12 +24,12 @@ const props = defineProps<{
   content: string
   toolName: string
   expanded?: boolean
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseShell(props.toolName, props.content))
 
-const command = computed(() => parsed.value.command)
 const stdout = computed(() => parsed.value.stdout)
 const stderr = computed(() => parsed.value.stderr)
 const exitCode = computed(() => parsed.value.exitCode)
@@ -38,6 +38,43 @@ const isTimeout = computed(() => parsed.value.timedOut)
 const stdoutLines = computed(() => parsed.value.stdoutLines)
 const stderrLines = computed(() => parsed.value.stderrLines)
 const isSelf = computed(() => parsed.value.isSelf)
+
+// Command from the `parameters` prop (tool-call args, not the result
+// envelope). `parameters` is XML like `<command>sleep 10</command>...`
+// from jsonArgsToXml — NOT JSON — but try JSON first for forward-compat.
+const parsedParamsCommand = computed((): string | null => {
+  const raw = props.parameters
+  if (!raw || raw.trim() === '') return null
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object' && typeof (obj as Record<string, unknown>).command === 'string') {
+      const cmd = ((obj as Record<string, unknown>).command as string).trim()
+      if (cmd !== '') return (obj as Record<string, unknown>).command as string
+    }
+  } catch {
+    // Not JSON — fall through to XML extraction below.
+  }
+  const m = /<command>([\s\S]*?)<\/command>/.exec(raw)
+  if (m) {
+    const raw_cmd = m[1] ?? '';
+    if (raw_cmd.trim() !== '') return raw_cmd
+  }
+  return null
+})
+
+// Prefer the envelope's command; fall back to the parameters prop so a
+// still-running tool (placeholder envelope with empty <data>) shows its
+// command. Treat empty string as null.
+const displayCommand = computed((): string | null => {
+  const fromEnvelope = parsed.value.command
+  if (fromEnvelope && fromEnvelope.trim() !== '') return fromEnvelope
+  return parsedParamsCommand.value
+})
+
+// Running: no exit code yet, empty envelope content, but we know the command.
+const isRunning = computed(() => {
+  return exitCode.value === null && props.content.trim().length === 0 && displayCommand.value !== null
+})
 
 // Has stderr content (not empty and not "No errors.")
 const hasStderr = computed(() => {
@@ -58,8 +95,8 @@ const toggle = () => {
 
 const copyCommand = async (e: Event) => {
   e.stopPropagation()
-  if (command.value) {
-    await navigator.clipboard.writeText(command.value)
+  if (displayCommand.value) {
+    await navigator.clipboard.writeText(displayCommand.value)
   }
 }
 
@@ -99,9 +136,10 @@ const copyStderr = async (e: Event) => {
         class="text-[var(--color-violet)] font-semibold text-xs"
         >{{ toolName }}</span
       >
-      <span class="flex-1 truncate text-left text-[var(--semantic-text-dim)]" :title="command || ''">
-        $ {{ command || 'unknown' }}
+      <span class="flex-1 truncate text-left text-[var(--semantic-text-dim)]" :title="displayCommand || ''">
+        $ {{ displayCommand || 'unknown' }}
       </span>
+      <span v-if="isRunning" data-testid="shell-tool-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
 
       <!-- Exit code badge -->
       <span

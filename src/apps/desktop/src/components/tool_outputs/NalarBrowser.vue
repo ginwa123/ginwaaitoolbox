@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   /** Inner <data> XML from the nalar_browser result envelope.
    *  (parent unwraps the <tool> envelope via tryUnwrapToolOutput and
    *  passes the inner <data> payload here). */
   content: string
-  /** Tool-call arguments as a JSON string. Used to detect the
-   *  action (launch / open_page / snapshot / click / fill / press /
-   *  close_page / close_browser) and to display action-specific args
-   *  in the header. */
-  parameters: string
+  /** Tool-call arguments. Production shape is XML from jsonArgsToXml
+   *  (`<action>open_page</action><url>…</url>…`); JSON is kept as a
+   *  fallback for forward-compat. Used to detect the action (launch /
+   *  open_page / snapshot / click / fill / press / close_page /
+   *  close_browser) and to display action-specific args in the header. */
+  parameters?: string
   /** Whether the row is already expanded in the parent chat. */
   expanded?: boolean
 }>()
@@ -29,16 +31,39 @@ interface BrowserActionArgs {
 }
 
 const args = computed<BrowserActionArgs>(() => {
-  try {
-    const parsed = JSON.parse(props.parameters)
-    if (parsed && typeof parsed === 'object') return parsed as BrowserActionArgs
-  } catch {
-    /* fall through */
+  // Production `parameters` is XML (`<action>…</action><url>…</url>…`);
+  // extractParam tries XML first, then JSON fallback. Per-field lookup
+  // (instead of one JSON.parse) so a mixed shape still resolves.
+  const get = (tag: string): string | undefined =>
+    extractParam(props.parameters, tag) ?? undefined
+  const action = get('action')
+  if (!action) {
+    // Legacy JSON-only fast path: a raw JSON object still parses even
+    // when no single <action> tag matched (e.g. extra whitespace or
+    // namespaced envelopes extractParam misses).
+    try {
+      const parsed = JSON.parse(props.parameters ?? '')
+      if (parsed && typeof parsed === 'object') return parsed as BrowserActionArgs
+    } catch {
+      /* fall through */
+    }
+    return {}
   }
-  return {}
+  return {
+    action,
+    browser_id: get('browser_id'),
+    page_id: get('page_id'),
+    url: get('url'),
+    ref: get('ref'),
+    text: get('text'),
+    key: get('key'),
+  }
 })
 
 const action = computed(() => args.value.action ?? 'unknown')
+
+// Running: result envelope is still empty (no ids/title/status yet).
+const isRunning = computed(() => props.content.trim() === '')
 
 // ── Inner-data XML parsing ──────────────────────────────────────────────
 function findTag(haystack: string, tag: string): string | null {
@@ -193,6 +218,13 @@ const toggle = () => {
       >
       <span v-if="statusClass" class="text-xs font-semibold" :class="statusClass">
         {{ statusStr }}
+      </span>
+      <span
+        v-if="isRunning"
+        data-testid="nalar-browser-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      >
+        running…
       </span>
       <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
         {{ isExpanded ? '−' : '+' }}

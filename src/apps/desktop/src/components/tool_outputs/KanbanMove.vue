@@ -36,10 +36,17 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { extractParam } from '../../helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). The backend input
+   *  shape (`KanbanMoveTaskInput`) uses `task_id` + `target_column_id` /
+   *  `target_column_name` — none of which appear in the result envelope
+   *  until the move completes. Used as a fallback so a still-running tool
+   *  (empty content) shows its target instead of "unknown". */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -53,22 +60,35 @@ const isSuccess = computed(() => {
 
 const taskId = computed(() => {
   const match = props.content.match(/<task_id>([\s\S]*?)<\/task_id>/)
-  return match?.[1]?.trim() ?? null
+  if (match?.[1]?.trim()) return match[1].trim()
+  return extractParam(props.parameters, 'task_id')
 })
 
 const taskName = computed(() => {
   const match = props.content.match(/<task_name>([\s\S]*?)<\/task_name>/)
-  return match?.[1]?.trim() ?? null
+  if (match?.[1]?.trim()) return match[1].trim()
+  // Best effort: the input shape has no `task_name` — fall back to the
+  // raw `task_id` the tool was called with so the header shows something
+  // meaningful while running.
+  return extractParam(props.parameters, 'task_name') ?? extractParam(props.parameters, 'task_id')
 })
 
 const columnId = computed(() => {
   const match = props.content.match(/<column_id>([\s\S]*?)<\/column_id>/)
-  return match?.[1]?.trim() ?? null
+  if (match?.[1]?.trim()) return match[1].trim()
+  return extractParam(props.parameters, 'target_column_id') ?? extractParam(props.parameters, 'column_id')
 })
 
 const columnName = computed(() => {
   const match = props.content.match(/<column_name>([\s\S]*?)<\/column_name>/)
-  return match?.[1]?.trim() ?? null
+  if (match?.[1]?.trim()) return match[1].trim()
+  // Best effort across both input + envelope naming (`target_column_name`
+  // is the backend input field; `column_name` covers JSON callers).
+  return (
+    extractParam(props.parameters, 'column_name') ??
+    extractParam(props.parameters, 'target_column_name') ??
+    extractParam(props.parameters, 'target_column_id')
+  )
 })
 
 const position = computed(() => {
@@ -83,13 +103,17 @@ const errorMessage = computed(() => {
 
 // ---- Derived display values ------------------------------------------------
 
-const statusIndicator = computed(() => (isSuccess.value ? '✓' : '✗'))
+// Running: result envelope is still empty (no <success> yet).
+const isRunning = computed(() => props.content.trim() === '')
 
-// Header label: "<task_name> · <column_name>" on success, "error" on failure.
+const statusIndicator = computed(() => (isRunning.value ? '…' : isSuccess.value ? '✓' : '✗'))
+
+// Header label: "<task_name> · <column_name>" on success (or while running,
+// from the parameters fallback), "error" on failure.
 // We trim+strip the kanban_move wrapper so the user sees "fix-blocking-sse-call"
 // not the raw XML.
 const headerLabel = computed(() => {
-  if (!isSuccess.value) return 'error'
+  if (!isSuccess.value && !isRunning.value) return 'error'
   const name = taskName.value ?? 'unknown task'
   const col = columnName.value ?? 'unknown column'
   return `${name} · ${col}`
@@ -116,7 +140,8 @@ const copyTaskId = async (e: Event) => {
 <template>
   <div
     class="chat-tool-card font-mono text-xs"
-    :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
+    :class="{ 'border-red-500/50 opacity-90': !isSuccess && !isRunning }"
+    data-testid="kanban-move"
   >
     <!-- Header -->
     <div
@@ -136,6 +161,15 @@ const copyTaskId = async (e: Event) => {
       <!-- Status indicator -->
       <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
+      </span>
+
+      <!-- Live badge (tool call underway, envelope still empty) -->
+      <span
+        v-if="isRunning"
+        data-testid="kanban-move-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      >
+        running…
       </span>
 
       <!-- Copy task_id button (only on success — there's something to copy) -->

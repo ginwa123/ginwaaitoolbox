@@ -6,10 +6,18 @@ import { parseSetGitWorktree } from './_shared/toolOutputParser'
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Accepted so the
+   *  dispatcher can thread call args uniformly; the worktree result
+   *  carries no "unknown" fallback that needs it today. */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseSetGitWorktree(props.content))
+
+// Running: result envelope is still empty (neither created nor cleared,
+// no error yet).
+const isRunning = computed(() => props.content.trim() === '')
 
 const pathBasename = (p: string): string => {
   const parts = p.split('/').filter(Boolean)
@@ -32,7 +40,8 @@ const handleToggle = (next: boolean) => {
 <template>
   <div
     class="chat-tool-card font-mono text-xs"
-    :class="{ 'border-red-500/50 opacity-80': !parsed.success }"
+    :class="{ 'border-red-500/50 opacity-80': !parsed.success && !isRunning }"
+    data-testid="set-git-worktree"
   >
     <ToolCardHeader
       tool-name="set_git_worktree"
@@ -44,6 +53,7 @@ const handleToggle = (next: boolean) => {
       :expandable="true"
       :show-copy="!!parsed.path"
       :show-open-in-editor="false"
+      :running="isRunning"
       @update:expanded="handleToggle"
     />
 

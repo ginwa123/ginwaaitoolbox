@@ -2,11 +2,13 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import { parseReadFile } from './_shared/toolOutputParser'
+import { extractParam } from '@/helpers/extractParam'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
   cwd?: string
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -21,6 +23,22 @@ const lineCount = computed(() => {
   return c.split('\n').length
 })
 
+const contentPath = computed((): string | null => {
+  const p = parsed.value.path
+  return p && p.trim() !== '' ? p : null
+})
+
+// Prefer the envelope's path; fall back to the parameters prop so a
+// still-running tool (placeholder envelope with empty <data>) shows its path.
+const displayPath = computed((): string | null => {
+  return contentPath.value ?? extractParam(props.parameters, 'path')
+})
+
+// Running: empty envelope content, but we know the path.
+const isRunning = computed(() => {
+  return props.content.trim().length === 0 && displayPath.value !== null
+})
+
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
 }
@@ -33,12 +51,12 @@ const handleToggle = (next: boolean) => {
   >
     <ToolCardHeader
       tool-name="read_file"
-      :primary="parsed.path"
+      :primary="displayPath"
       :success="parsed.success"
       :expanded="isExpanded"
       :expandable="true"
       :cwd="cwd"
-      :right-meta="parsed.error ? 'Error' : `${lineCount}L`"
+      :right-meta="isRunning ? 'running…' : parsed.error ? 'Error' : `${lineCount}L`"
       @update:expanded="handleToggle"
     />
 
