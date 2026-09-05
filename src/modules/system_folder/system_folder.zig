@@ -30,15 +30,18 @@ pub const SystemFolder = struct {
     /// 
     /// Returns "/" if path equals home exactly.
     pub fn getRelativePathFromHome(allocator: std.mem.Allocator, full_path: []const u8, home: []const u8) SystemFolderError![]u8 {
-        // Normalize home path (remove trailing slash)
-        const normalized_home = if (std.mem.endsWith(u8, home, "/"))
-            home[0..home.len-1]
+        // Normalize home path (remove trailing slash or backslash).
+        // Windows homes look like `C:\Users\ginwa` (or `C:/Users/ginwa`
+        // under Git Bash) — strip one trailing separator of either kind.
+        const normalized_home = if (home.len > 0 and (home[home.len - 1] == '/' or home[home.len - 1] == '\\'))
+            home[0..home.len - 1]
         else
             home;
-        
-        // Normalize full_path to remove trailing slash
-        const normalized_path = if (std.mem.endsWith(u8, full_path, "/"))
-            full_path[0..full_path.len-1]
+
+        // Normalize full_path to remove trailing slash/backslash (but keep
+        // filesystem roots like `/`, `C:\`, `C:/` intact).
+        const normalized_path = if (full_path.len > 1 and (full_path[full_path.len - 1] == '/' or full_path[full_path.len - 1] == '\\'))
+            full_path[0..full_path.len - 1]
         else
             full_path;
         
@@ -56,8 +59,10 @@ pub const SystemFolder = struct {
             return allocator.dupe(u8, "/");
         }
         
-        // Remove leading slash from the remainder
-        const remainder = if (std.mem.startsWith(u8, after_home, "/"))
+        // Remove leading slash/backslash from the remainder
+        // (Windows remainder looks like `\Documents` when home is
+        // `C:\Users\ginwa`).
+        const remainder = if (after_home.len > 0 and (after_home[0] == '/' or after_home[0] == '\\'))
             after_home[1..]
         else
             after_home;
@@ -68,12 +73,32 @@ pub const SystemFolder = struct {
     }
     
     /// Get home directory from environment
+    ///
+    /// On POSIX the canonical var is `HOME`. On native Windows
+    /// (cmd/pwsh — NOT Git Bash, which sets HOME to %USERPROFILE%)
+    /// `HOME` is typically unset; fall back to `USERPROFILE`
+    /// (Windows' canonical user-home variable), then to
+    /// `HOMEDRIVE`+`HOMEPATH`. Only used if HOME is missing or empty.
+    /// Mirrors helpers.db_path.getDbPath / helpers.dir.getDataAppsDir
+    /// (same HOME -> USERPROFILE chain).
     pub fn getHomeDirectory(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) SystemFolderError![]u8 {
         const env = environment orelse return SystemFolderError.HomeNotFound;
-        const home = env.get("HOME") orelse {
-            return SystemFolderError.HomeNotFound;
-        };
-        return allocator.dupe(u8, home);
+        if (env.get("HOME")) |h| {
+            if (h.len > 0) return allocator.dupe(u8, h) catch return SystemFolderError.OutOfMemory;
+        }
+        if (env.get("USERPROFILE")) |u| {
+            if (u.len > 0) return allocator.dupe(u8, u) catch return SystemFolderError.OutOfMemory;
+        }
+        // Last resort on Windows: HOMEDRIVE (e.g. "C:") + HOMEPATH (e.g. "\Users\ginwa")
+        if (env.get("HOMEDRIVE")) |drive| {
+            if (env.get("HOMEPATH")) |hpath| {
+                if (drive.len > 0 and hpath.len > 0) {
+                    const joined = std.fs.path.join(allocator, &.{ drive, hpath }) catch return SystemFolderError.OutOfMemory;
+                    return joined;
+                }
+            }
+        }
+        return SystemFolderError.HomeNotFound;
     }
     
     /// Get the current working directory
@@ -104,6 +129,16 @@ pub const SystemFolder = struct {
 
         // If path starts with /, it's an absolute Unix path - return as-is
         if (std.mem.startsWith(u8, relative_path, "/")) {
+            return allocator.dupe(u8, relative_path);
+        }
+
+        // Windows absolute path: drive letter (`C:\...`, `C:/...`) or
+        // UNC (`\\server\share`). Return as-is so `listDirectory` can
+        // open it directly via `openDirAbsolute`.
+        if (relative_path.len >= 2 and std.ascii.isAlphabetic(relative_path[0]) and relative_path[1] == ':') {
+            return allocator.dupe(u8, relative_path);
+        }
+        if (std.mem.startsWith(u8, relative_path, "\\\\") or std.mem.startsWith(u8, relative_path, "//")) {
             return allocator.dupe(u8, relative_path);
         }
 
@@ -196,8 +231,18 @@ pub const SystemFolder = struct {
         const home = try getHomeDirectory(allocator, environment);
         defer allocator.free(home);
 
-        // Don't go above home
-        if (std.mem.eql(u8, dir_path, home)) {
+        // Don't go above home. Compare normalized forms so
+        // `C:\Users\ginwa\` (trailing separator) still matches home
+        // `C:\Users\ginwa` on Windows.
+        const norm_dir = if (dir_path.len > 1 and (dir_path[dir_path.len - 1] == '/' or dir_path[dir_path.len - 1] == '\\'))
+            dir_path[0..dir_path.len - 1]
+        else
+            dir_path;
+        const norm_home = if (home.len > 0 and (home[home.len - 1] == '/' or home[home.len - 1] == '\\'))
+            home[0..home.len - 1]
+        else
+            home;
+        if (std.mem.eql(u8, norm_dir, norm_home)) {
             return null;
         }
 

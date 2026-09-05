@@ -104,13 +104,35 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
         }
 
         if (parent_relative) |pr| {
+            // Escape top-level path fields: on Windows they contain
+            // backslashes (`C:\Users\...`) which must be `\\`-escaped
+            // for valid JSON. Entries above are already escaped; these
+            // were inserted raw and broke JSON parsing on Windows.
+            const esc_rel = jsonEscape(allocator, relative) catch relative;
+            const esc_abs = jsonEscape(allocator, target_path) catch target_path;
+            const esc_home = jsonEscape(allocator, home) catch home;
+            const esc_parent = jsonEscape(allocator, pr) catch pr;
+            defer {
+                if (esc_rel.ptr != relative.ptr) allocator.free(esc_rel);
+                if (esc_abs.ptr != target_path.ptr) allocator.free(esc_abs);
+                if (esc_home.ptr != home.ptr) allocator.free(esc_home);
+                if (esc_parent.ptr != pr.ptr) allocator.free(esc_parent);
+            }
             return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
                 "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\",\"entries\":[{s}]}}",
-                .{ relative, target_path, home, pr, entries_json.items }) });
+                .{ esc_rel, esc_abs, esc_home, esc_parent, entries_json.items }) });
         } else {
+            const esc_rel = jsonEscape(allocator, relative) catch relative;
+            const esc_abs = jsonEscape(allocator, target_path) catch target_path;
+            const esc_home = jsonEscape(allocator, home) catch home;
+            defer {
+                if (esc_rel.ptr != relative.ptr) allocator.free(esc_rel);
+                if (esc_abs.ptr != target_path.ptr) allocator.free(esc_abs);
+                if (esc_home.ptr != home.ptr) allocator.free(esc_home);
+            }
             return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
                 "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"entries\":[{s}]}}",
-                .{ relative, target_path, home, entries_json.items }) });
+                .{ esc_rel, esc_abs, esc_home, entries_json.items }) });
         }
     }
 
@@ -118,10 +140,14 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     const do_read_write = std.mem.eql(u8, action orelse "", "read") or std.mem.eql(u8, action orelse "", "write");
     if (do_read_write) {
         const file_name = req.query.get("file") orelse "";
-        
+
         // If file_name is an absolute path, use it directly
-        // Otherwise, join with target_path
-        const full_path: []u8 = if (std.mem.startsWith(u8, file_name, "/"))
+        // Otherwise, join with target_path. Windows absolutes
+        // (`C:\...`, `C:/...`, `\\server\share`) must also count.
+        const is_abs = std.mem.startsWith(u8, file_name, "/") or
+            (file_name.len >= 2 and std.ascii.isAlphabetic(file_name[0]) and file_name[1] == ':') or
+            std.mem.startsWith(u8, file_name, "\\\\");
+        const full_path: []u8 = if (is_abs)
             allocator.dupe(u8, file_name) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) })
         else
             std.fs.path.join(allocator, &.{ target_path, file_name }) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to build path" }) });
@@ -147,13 +173,31 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     }
 
     if (parent_relative) |pr| {
+        const esc_rel = jsonEscape(allocator, relative) catch relative;
+        const esc_abs = jsonEscape(allocator, target_path) catch target_path;
+        const esc_home = jsonEscape(allocator, home) catch home;
+        const esc_parent = jsonEscape(allocator, pr) catch pr;
+        defer {
+            if (esc_rel.ptr != relative.ptr) allocator.free(esc_rel);
+            if (esc_abs.ptr != target_path.ptr) allocator.free(esc_abs);
+            if (esc_home.ptr != home.ptr) allocator.free(esc_home);
+            if (esc_parent.ptr != pr.ptr) allocator.free(esc_parent);
+        }
         return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
             "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\",\"parent\":\"{s}\"}}",
-            .{ relative, target_path, home, pr }) });
+            .{ esc_rel, esc_abs, esc_home, esc_parent }) });
     } else {
+        const esc_rel = jsonEscape(allocator, relative) catch relative;
+        const esc_abs = jsonEscape(allocator, target_path) catch target_path;
+        const esc_home = jsonEscape(allocator, home) catch home;
+        defer {
+            if (esc_rel.ptr != relative.ptr) allocator.free(esc_rel);
+            if (esc_abs.ptr != target_path.ptr) allocator.free(esc_abs);
+            if (esc_home.ptr != home.ptr) allocator.free(esc_home);
+        }
         return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
             "{{\"path\":\"{s}\",\"absolute\":\"{s}\",\"home\":\"{s}\"}}",
-            .{ relative, target_path, home }) });
+            .{ esc_rel, esc_abs, esc_home }) });
     }
 }
 

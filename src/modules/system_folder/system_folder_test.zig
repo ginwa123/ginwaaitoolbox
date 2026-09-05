@@ -687,3 +687,138 @@ test "integration: getParentPath + getRelativePathFromHome produces /-relative b
     defer allocator.free(abs_rel);
     try testing.expectEqualStrings("/projects/nalar", abs_rel);
 }
+
+// ─── Windows regression tests (issue: kanban folder picker fails on Windows) ───
+// The picker calls GET /api/system/folder?action=list with no path, which
+// hits getHomeDirectory. On native Windows (cmd/pwsh) HOME is unset —
+// only USERPROFILE / HOMEDRIVE+HOMEPATH exist. These tests run on ALL
+// platforms (no `if windows return` skip) because they use synthetic env maps.
+
+test "getHomeDirectory: falls back to USERPROFILE when HOME is missing (Windows)" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\testuser");
+    const home = try SystemFolder.getHomeDirectory(allocator, &env);
+    defer allocator.free(home);
+    try testing.expectEqualStrings("C:\\Users\\testuser", home);
+}
+
+test "getHomeDirectory: falls back to USERPROFILE when HOME is empty (Windows)" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "");
+    try env.put("USERPROFILE", "C:\\Users\\testuser");
+    const home = try SystemFolder.getHomeDirectory(allocator, &env);
+    defer allocator.free(home);
+    try testing.expectEqualStrings("C:\\Users\\testuser", home);
+}
+
+test "getHomeDirectory: prefers HOME over USERPROFILE when both set" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/testuser");
+    try env.put("USERPROFILE", "C:\\Users\\testuser");
+    const home = try SystemFolder.getHomeDirectory(allocator, &env);
+    defer allocator.free(home);
+    try testing.expectEqualStrings("/home/testuser", home);
+}
+
+test "getHomeDirectory: falls back to HOMEDRIVE+HOMEPATH when HOME+USERPROFILE missing (Windows)" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("HOMEDRIVE", "C:");
+    try env.put("HOMEPATH", "\\Users\\testuser");
+    const home = try SystemFolder.getHomeDirectory(allocator, &env);
+    defer allocator.free(home);
+    // std.fs.path.join normalizes to C:\Users\testuser (or C:/Users/testuser on POSIX)
+    try testing.expect(home.len > 0);
+    try testing.expect(std.mem.indexOf(u8, home, "testuser") != null);
+}
+
+test "getHomeDirectory: empty env yields HomeNotFound even on Windows" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    const result = SystemFolder.getHomeDirectory(allocator, &env);
+    try testing.expectError(SystemFolderError.HomeNotFound, result);
+}
+
+test "getRelativePathFromHome: Windows backslash subdir returns /Documents" {
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "C:\\Users\\ginwa\\Documents",
+        "C:\\Users\\ginwa",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("/Documents", rel);
+}
+
+test "getRelativePathFromHome: Windows home with trailing backslash handled" {
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "C:\\Users\\ginwa\\Documents",
+        "C:\\Users\\ginwa\\",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("/Documents", rel);
+}
+
+test "getRelativePathFromHome: Windows path equals home returns /" {
+    const allocator = testing.allocator;
+    const rel = try SystemFolder.getRelativePathFromHome(
+        allocator,
+        "C:\\Users\\ginwa",
+        "C:\\Users\\ginwa",
+    );
+    defer allocator.free(rel);
+    try testing.expectEqualStrings("/", rel);
+}
+
+test "resolvePath: Windows drive absolute path returns unchanged" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const resolved = try SystemFolder.resolvePath(allocator, "C:\\Users\\ginwa\\Documents", &env);
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings("C:\\Users\\ginwa\\Documents", resolved);
+}
+
+test "resolvePath: Windows forward-slash drive path returns unchanged" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const resolved = try SystemFolder.resolvePath(allocator, "C:/Users/ginwa/Documents", &env);
+    defer allocator.free(resolved);
+    try testing.expectEqualStrings("C:/Users/ginwa/Documents", resolved);
+}
+
+test "getParentPath: Windows subdir returns Windows parent" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const parent = try SystemFolder.getParentPath(allocator, "C:\\Users\\ginwa\\Documents", &env);
+    if (parent) |p| {
+        defer allocator.free(p);
+        try testing.expectEqualStrings("C:\\Users\\ginwa", p);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "getParentPath: Windows home with trailing backslash returns null" {
+    const allocator = testing.allocator;
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    try env.put("USERPROFILE", "C:\\Users\\ginwa");
+    const result = try SystemFolder.getParentPath(allocator, "C:\\Users\\ginwa\\", &env);
+    try testing.expect(result == null);
+}
