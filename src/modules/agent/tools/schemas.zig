@@ -9,6 +9,8 @@ const std = @import("std");
 // Keep the schema ergonomic by aliasing here.
 pub const BashInput = @import("shell.zig").ShellInput;
 pub const BashOutput = @import("shell.zig").ShellOutput;
+pub const CommandInput = @import("command.zig").CommandInput;
+pub const CommandOutput = @import("command.zig").CommandOutput;
 
 // Deprecated alias kept for any caller still using the long name. The
 // BashResult is a subset of BashOutput (3 fields), so this aliasing is

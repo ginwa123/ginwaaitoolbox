@@ -161,13 +161,13 @@ class TestEnableTool:
     ) -> None:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
-        tool = _enable_tool(harness, agent_id, "bash")
-        assert tool["tool_name"] == "bash"
+        tool = _enable_tool(harness, agent_id, "command")
+        assert tool["tool_name"] == "command"
         assert tool["enabled"] == 1
 
         # The DB row persists beyond the create call —
         # list now reflects it.
-        assert _list_tools(harness, agent_id) == ["bash"]
+        assert _list_tools(harness, agent_id) == ["command"]
 
     def test_post_rejects_duplicate_with_409(
         self, harness: FunctionalHarness
@@ -175,19 +175,19 @@ class TestEnableTool:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "bash")
+        _enable_tool(harness, agent_id, "command")
 
         # Second POST with the same (agent_id, tool_name) hits
         # the UNIQUE index → 409 Conflict.
         harness.http(
             "POST",
             f"/api/agents/{agent_id}/tools",
-            json_body={"tool_name": "bash"},
+            json_body={"tool_name": "command"},
             expect=409,
         )
 
         # State unchanged — exactly one row.
-        assert _list_tools(harness, agent_id) == ["bash"]
+        assert _list_tools(harness, agent_id) == ["command"]
 
     def test_post_rejects_unknown_tool_with_400(
         self, harness: FunctionalHarness
@@ -269,10 +269,10 @@ class TestDisableTool:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "bash")
-        assert _list_tools(harness, agent_id) == ["bash"]
+        _enable_tool(harness, agent_id, "command")
+        assert _list_tools(harness, agent_id) == ["command"]
 
-        _disable_tool(harness, agent_id, "bash")
+        _disable_tool(harness, agent_id, "command")
         assert _list_tools(harness, agent_id) == []
 
     def test_delete_is_idempotent(
@@ -281,15 +281,15 @@ class TestDisableTool:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "bash")
+        _enable_tool(harness, agent_id, "command")
 
         # First delete removes the row.
-        _disable_tool(harness, agent_id, "bash")
+        _disable_tool(harness, agent_id, "command")
         assert _list_tools(harness, agent_id) == []
 
         # Second delete is a no-op (200, not 404) — matches the
         # useCase's scope-by-agent_id design + handler semantics.
-        _disable_tool(harness, agent_id, "bash")
+        _disable_tool(harness, agent_id, "command")
         assert _list_tools(harness, agent_id) == []
 
     def test_delete_unknown_tool_name_no_ops(
@@ -373,14 +373,14 @@ class TestToolToggleLifecycle:
         agent_a = _create_agent(harness, ws_a, name="agent-A")
         agent_b = _create_agent(harness, ws_b, name="agent-B")
 
-        _enable_tool(harness, agent_a, "bash")
+        _enable_tool(harness, agent_a, "command")
 
         # agent_B has its own (empty) allowlist — proving no
         # cross-agent leakage regardless of workspace.
         assert _list_tools(harness, agent_b) == []
-        assert _list_tools(harness, agent_a) == ["bash"]
+        assert _list_tools(harness, agent_a) == ["command"]
 
-        # DELETE scoping: deleting 'bash' from agent_B is a no-op
+        # DELETE scoping: deleting 'command' from agent_B is a no-op
         # (agent_B never had it), and agent_A's row is untouched.
-        _disable_tool(harness, agent_b, "bash")
-        assert _list_tools(harness, agent_a) == ["bash"]
+        _disable_tool(harness, agent_b, "command")
+        assert _list_tools(harness, agent_a) == ["command"]

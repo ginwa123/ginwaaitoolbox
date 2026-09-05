@@ -120,7 +120,7 @@ def test_knowledge_create_with_inline_content(harness: FunctionalHarness) -> Non
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=201,
     )
 
@@ -148,7 +148,7 @@ def test_knowledge_reorder_reaches_reorder_handler(harness: FunctionalHarness) -
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=201,
     )
 
@@ -198,7 +198,7 @@ def test_tools_duplicate_returns_409(harness: FunctionalHarness) -> None:
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=201,
     )
 
@@ -206,7 +206,7 @@ def test_tools_duplicate_returns_409(harness: FunctionalHarness) -> None:
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=409,
     )
 
@@ -220,7 +220,7 @@ def test_tools_unknown_returns_400(harness: FunctionalHarness) -> None:
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=201,
     )
 
@@ -242,7 +242,7 @@ def test_system_prompt_first_row_position_zero(harness: FunctionalHarness) -> No
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=201,
     )
 
@@ -263,7 +263,7 @@ def test_system_prompt_empty_content_returns_400(harness: FunctionalHarness) -> 
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "bash"},
+        json_body={"tool_name": "command"},
         expect=201,
     )
 

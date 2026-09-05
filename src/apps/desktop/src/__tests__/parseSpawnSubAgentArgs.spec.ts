@@ -191,4 +191,36 @@ describe('parseSpawnSubAgentArgs', () => {
       },
     ])
   })
+
+  // unify-command Phase C: `command` is a valid tool name in
+  // sub_agents.tools (bash/pwsh stay accepted — no valid-names gate in
+  // the parser, this locks the pass-through contract for the new name).
+  it('accepts command as a valid tool name in the sub_agents.tools array', () => {
+    const args = JSON.stringify({
+      sub_agents: [
+        {
+          agent_name: 'shellops',
+          instruction: 'run shell commands',
+          tools: ['command', 'read_file'],
+          timeout_seconds: 600,
+        },
+      ],
+    })
+    const json = JSON.stringify([
+      {
+        id: 'call_xyz',
+        type: 'function',
+        function: { name: 'spawn_sub_agent', arguments: args },
+      },
+    ])
+    const result = parseSpawnSubAgentArgs(json, 'call_xyz')
+    expect(result).toEqual([
+      {
+        agent_name: 'shellops',
+        instruction: 'run shell commands',
+        tools: ['command', 'read_file'],
+        timeout_seconds: 600,
+      },
+    ])
+  })
 })

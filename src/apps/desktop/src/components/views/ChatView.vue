@@ -3089,8 +3089,8 @@ const compactSession = async () => {
                             :cwd="sessionCwd"
                           />
                           <ShellTool
-                            v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command'"
-                            :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : 'bash'"
+                            v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command' || msg.tool_name === 'command'"
+                            :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : msg.tool_name === 'command' ? 'command' : 'bash'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
