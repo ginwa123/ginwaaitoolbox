@@ -29,6 +29,7 @@ const winsock = if (is_windows) struct {
         len: c_int,
         flags: c_int,
     ) callconv(.c) c_int;
+    extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
 } else struct {};
 
 const LOOP_COUNT = 4;
@@ -101,13 +102,15 @@ pub const SseClient = struct {
     pub fn deinit(self: *SseClient) void {
         self.message_queue.deinit(self.allocator());
         self.arena.deinit();
-        // On Windows, socket handles are *anyopaque (HANDLE), not i32.
-        // The fd is only valid on non-Windows platforms where it's a POSIX fd.
-        if (!is_windows) _ = socket.close(self.fd);
+        if (is_windows) {
+            _ = winsock.closesocket(self.fd);
+        } else _ = socket.close(self.fd);
     }
 
     pub fn forceDestroy(self: *SseClient) void {
-        if (!is_windows) _ = socket.close(self.fd);
+        if (is_windows) {
+            _ = winsock.closesocket(self.fd);
+        } else _ = socket.close(self.fd);
     }
 
     pub fn markDisconnected(self: *SseClient) void {
@@ -488,15 +491,27 @@ pub const SseManager = struct {
             // readiness, which doesn't exist on Windows (use WSAPoll from
             // std.os.windows.ws2_32 with different namespace + types). The
             // SSE server on Windows still works — clients receive data via
-            // the direct `sendHeartbeat` / `broadcast` write paths — but
-            // the event loop is reduced to a sleep + heartbeat cycle. This
-            // is acceptable for the Windows CI build because (a) the
-            // primary use case (CI tests) doesn't depend on real-time
-            // socket readiness detection, and (b) full Windows SSE
-            // support requires porting the poll-based loop to WSAPoll,
-            // which is out of scope for the fix-windows-ci task.
+            // the direct `sendHeartbeat` / `broadcast` write paths below.
+            // Full Windows SSE support requires porting the poll-based
+            // loop to WSAPoll, which is out of scope for the fix-windows-ci
+            // task. Disconnect detection on Windows therefore relies on
+            // heartbeat write failures + the periodic sweep (same as the
+            // Linux belt-and-suspenders path), NOT on poll HUP/ERR.
+            //
+            // CRITICAL: this branch MUST call sendHeartbeat + sweep on the
+            // same cadence as the Linux path. The frontend SseClient has a
+            // 7s stall detector (stallThresholdMs) with stallRecovery that
+            // force-reconnects on silence. Skipping the heartbeat here
+            // leaves Windows clients silent forever → EventSource
+            // connects, gets `connected`, then stall-reconnects every 7s.
             if (is_windows) {
                 std.Io.sleep(self.io, .{ .nanoseconds = @as(i96, @intCast(@as(u64, heartbeat_secs) * std.time.ns_per_s)) }, .real) catch {};
+                const now_win: i64 = @intCast(timestamp(self.io));
+                if (now_win - last_hb >= heartbeat_ms) {
+                    self.sendHeartbeat(loop_id);
+                    last_hb = now_win;
+                    self.sweepStaleClients(@as(u64, @intCast(heartbeat_ms)) * 3, 64);
+                }
                 continue;
             }
 
