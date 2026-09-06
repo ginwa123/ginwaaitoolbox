@@ -1,27 +1,19 @@
 /**
- * Regression test for the "gap below the last message" bug
- * (task_1787551495337_9 follow-up, reported after P1+P2 merged).
+ * Tail-estimation contract (2026-09-06, task_1788648119245_5).
  *
- * Symptom: during SSE streaming, a large empty space appeared between
- * the last message bubble and the bottom of the scroll area.
+ * History: this file once pinned the "tail at static 64px" contract
+ * (gap-below-last-message fix) — the median was blamed for extending
+ * the sizer past a fresh streaming bubble. That contract became the
+ * shrink bug: with 100+ messages the model total collapsed to less
+ * than half the real height (unmeasured tail at 64 vs ~400 real),
+ * shrinking scrollHeight and bouncing scrollTop.
  *
- * Root cause: the P1 adaptive estimator estimates UNMEASURED items at
- * the running median of measured heights (e.g. 300px for a history of
- * tall bubbles). When a new streaming message is appended, it has no
- * stored height yet, so the sizer counts it at the median — far taller
- * than its real (streaming, short) height. The sizer therefore extends
- * past the real content, and stick-to-bottom (scrollTop = scrollHeight)
- * lands the viewport in that empty over-estimated region.
- *
- * The old static 64px default never showed this because it
- * UNDER-estimated — content overflowed the estimate instead of leaving
- * a gap.
- *
- * Fix contract: the learned median may only estimate items AT OR BEFORE
- * the highest measured index (history above/around the viewport, where
- * the median is representative). Items AFTER the last measured index —
- * the growing tail — fall back to the static `defaultItemHeight` prop,
- * which under-estimates and keeps the sizer tight against real content.
+ * New contract: ALL unmeasured items estimate at the clamped adaptive
+ * median (32..1600px). The old gap concern is handled structurally
+ * instead — the sizer is a pure function of the model (scroll changes
+ * can no longer resize it, so overshoot cannot bounce) and
+ * scrollToBottom targets the real DOM bottom at the tail (so an
+ * over-estimated sizer never parks the viewport in empty space).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -47,7 +39,7 @@ describe('VirtualScroller tail estimation (no gap below last message)', () => {
     return { wrapper, el }
   }
 
-  it('estimates tail items (after the last measured index) at the static prop, not the median', async () => {
+  it('estimates appended tail items at the learned median (no shrink)', async () => {
     // 100 items. Scroll to the middle (index ~50), measure them all at
     // 300px → estimator median = 300. Then APPEND a new item (the
     // streaming message) at the end. It is unmeasured AND after the
@@ -73,27 +65,26 @@ describe('VirtualScroller tail estimation (no gap below last message)', () => {
     await wrapper.setProps({ items: [...Array.from({ length: 100 }, (_, i) => ({ id: i })), { id: 100 }], totalCount: 101 })
     await nextTick()
 
-    // With fix for blank viewport, ALL unmeasured use 64 (not median),
-    // so sizer is conservative: measured 23 items (45..67) at 300, plus
-    // 78 unmeasured at 64 = 23*300 + 78*64 = 6900+4992=11892.
-    // Previously 68*300+33*64=22512 used median for history, but that
-    // overestimated and caused blank gap with 100 msgs.
+    // Median-300 backs every unmeasured item: 23 measured at 300 plus
+    // 78 unmeasured (incl. the appended streaming row) at median 300 =
+    // 101*300 = 30300. The old 23*300+78*64=11892 collapsed the sizer
+    // to under half the real height (the shrink symptom).
     const sizer = el.querySelector('.virtual-scroller-sizer') as HTMLElement
     const total = parseFloat(sizer.style.height)
-    expect(total).toBe(23 * 300 + 78 * 64)
+    expect(total).toBe(101 * 300)
     wrapper.unmount()
   })
 
-  it('still uses the learned median for unmeasured HISTORY items above the viewport', async () => {
+  it('estimates unmeasured history AND tail at the learned median', async () => {
     // The P1 win must survive: unmeasured history items BEFORE the last
     // measured index estimate at the median, while only the TAIL (after
     // the last measured index) falls back to the prop.
     //
     // Geometry: 200 items, scroll to index ~90, measure the rendered
     // window (indices 85..107) at 300px. maxMeasuredIndex=107.
-    // With fix, ALL unmeasured use 64: 23 measured at 300, 177
-    // unmeasured at 64 = 23*300+177*64=6900+11328=18228. Previously
-    // 108*300+92*64=38288 used median for history, but overestimated.
+    // Median-300 backs every unmeasured item: 23 measured at 300 plus
+    // 177 unmeasured at median 300 = 200*300 = 60000. The old
+    // 23*300+177*64=18228 collapsed the sizer (the shrink symptom).
     const { wrapper, el } = mountScroller(200)
     await nextTick()
 
@@ -112,7 +103,7 @@ describe('VirtualScroller tail estimation (no gap below last message)', () => {
 
     const sizer = el.querySelector('.virtual-scroller-sizer') as HTMLElement
     const total = parseFloat(sizer.style.height)
-    expect(total).toBe(23 * 300 + 177 * 64)
+    expect(total).toBe(200 * 300)
     wrapper.unmount()
   })
 })

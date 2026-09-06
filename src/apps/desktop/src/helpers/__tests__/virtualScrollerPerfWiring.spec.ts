@@ -227,11 +227,17 @@ describe('VirtualScroller adaptive item-height estimation', () => {
     expect(events).toBeTruthy()
     const last = events![events!.length - 1]![0]
 
-    // With fix for 100-msg blank viewport, ALL unmeasured use 64
-    // (not median), so bottomSpacer for ~95 tail items is 95*64≈6080.
-    // Previously adaptive median(300) gave ≈28500, but that overestimated
-    // and caused sizer too tall → blank gap. Now conservative.
-    expect(last.bottomSpacer).toBeLessThan(10000)
+    // 2026-09-06 (task_1788648119245_5): ALL unmeasured items estimate
+    // at the adaptive median (~300px, clamped to [32,1600]), NOT the
+    // static 64px prop — the 64px fallback collapsed the model total to
+    // less than half the real height with 100+ messages (audit T2).
+    // Median overshoot is safe now: stick-to-bottom targets the real DOM
+    // bottom (not scrollHeight) and the sizer is scroll-independent, so
+    // it cannot feed a bounce. Static-64 would give at most 200*64 =
+    // 12800; median-300 gives ~50700 here ((200-31)*300 after the window
+    // re-settles on taller estimates).
+    expect(last.bottomSpacer).toBeGreaterThan(30000)
+    expect(last.bottomSpacer).toBeLessThan(60000)
     wrapper.unmount()
   })
 

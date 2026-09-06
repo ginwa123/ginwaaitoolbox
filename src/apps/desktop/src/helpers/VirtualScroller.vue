@@ -263,11 +263,10 @@ const emit = defineEmits<{
 // decisions are logged via the same scrollLogger infra as ChatView,
 // so a single `grep chat=task_...` shows both sides of the loop.
 const vsLogger = computed(() => props.debugChatId ? createScrollLogger(props.debugChatId) : null)
-let lastSizerClamped = false
 
 const containerRef = ref<HTMLElement | null>(null)
-// The content div is measured via the onContentRef callback (see the
-// sizer-clamp comment near updateAccumulatedHeights) — no ref needed.
+// The content div needs no template ref: the sizer is a pure function of the
+// height model (see sizerHeight), and per-child heights come from measureItems.
 const scrollTop = ref(0)
 const lastScrollTop = ref(0)
 const containerHeight = ref(0)
@@ -341,34 +340,44 @@ const heightEstimator = new AdaptiveItemHeightEstimator({
   maxSamples: 64,
 })
 
-// Highest index that has a real measured height. The learned median is
-// only trusted for items AT OR BEFORE this index (history the user has
-// actually scrolled through). Items AFTER it — the growing tail during
-// SSE streaming — fall back to the static `defaultItemHeight` prop.
+// Highest index that has a real measured height (vestigial frontier,
+// 2026-09-06: estimateHeight now trusts the running median for ALL
+// unmeasured items — the old index-gated fallback to the static prop
+// collapsed the tail to 64px/item and shrank the list. Kept updated by
+// measureItems/beginPreserve for diagnostics; not read by the model.)
 //
-// WHY (gap-below-last-message bug, reported after P1+P2): the median of
-// a chat's history is much taller than a freshly-appended streaming
-// bubble. Estimating the tail at the median made the sizer extend past
-// the real content, and stick-to-bottom (scrollTop = scrollHeight) put
-// the viewport in that empty over-estimated region — a large blank gap
-// below the last message. The old static 64px default never showed this
-// because it UNDER-estimated (content overflowed the estimate instead).
+// WHY the median is safe for the tail now (gap-below-last-message bug,
+// reported after P1+P2): the median CAN be taller than a fresh streaming
+// bubble, extending the sizer past real content — but stick-to-bottom
+// targets the real DOM bottom (scrollToBottom real-bottom override), not
+// scrollHeight, so the viewport never parks in the over-estimated
+// region. And the sizer itself is scroll-independent (see sizerHeight),
+// so an overshoot cannot feed back into a bounce.
 let maxMeasuredIndex = -1
 
 /**
  * Estimated height for an item with no stored measurement.
- * Fix for blank viewport with 100 msgs: previously used median for
- * history (index ≤ maxMeasuredIndex) which could be 300px and
- * overestimate 50 unmeasured history items by 15000px → sizer too
- * tall → blank gap. Now uses defaultItemHeight (64) for ALL
- * unmeasured, so sizer underestimates (too short) not overestimates.
- * Undershoot is safe: scrollToBottom real-bottom shows last message,
- * and as items are measured sizer grows to accurate. No blank gap.
+ *
+ * 2026-09-06 (task_1788648119245_5): uses the adaptive running MEDIAN
+ * of measured heights instead of the static `defaultItemHeight` (64).
+ * Real chat bubbles are ~400px; estimating the unmeasured tail at 64
+ * collapsed the model total (and sizer + scrollHeight) to less than
+ * half the real height with 100+ messages — the "list becomes small"
+ * symptom. The median is robust against single giant code-block rows;
+ * clampEstimate bounds it to a sane bubble range.
  */
+// Bounds for the adaptive estimate (2026-09-06): the running median can
+// overshoot fresh/short rows (e.g. a 3000px code-block median applied to
+// one-line tool cards) or undershoot after a short-history chat. Clamping
+// keeps any single estimate within a sane chat-bubble range; measured
+// heights (stored above) are always exact and unaffected.
+const ESTIMATE_MIN_PX = 32
+const ESTIMATE_MAX_PX = 1600
+const clampEstimate = (px: number): number => Math.min(ESTIMATE_MAX_PX, Math.max(ESTIMATE_MIN_PX, px))
 const estimateHeight = (index: number): number => {
   const stored = itemHeights.value.get(keyOf(index))
   if (stored !== undefined) return stored
-  return props.defaultItemHeight
+  return clampEstimate(heightEstimator.estimate())
 }
 
 /**
@@ -450,117 +459,41 @@ const updateAccumulatedHeights = () => {
   accumulatedHeights.value = h
 }
 
-// ── Render-level sizer clamp (2026-08-26 blank-viewport fix) ─────────────────
+// ── Sizer height — pure function of the height model (2026-09-06) ──────────
 //
-// The model total (Σ stored/estimated heights) can overshoot the real
-// content — the browser then lets the user scroll into the phantom
-// region below the last message (the "big gap / blank viewport"
-// symptom, sizer 29389px vs real ~13720px). This computed clamps the
-// RENDERED sizer height to the real content bottom whenever the
-// rendered window includes the LAST item (every tail item is in the
-// DOM, so the real bottom is directly measurable).
+// Bounce root cause (task_1788648119245_5 audit): the previous version read
+// `visibleRange` (a function of scrollTop) in its at-bottom branch and
+// expanded to `topSpacer + realContentHeight`, where realContentHeight was
+// STALE — the template ref callback only fires on mount/replace, never on
+// child updates, so it described an OLD window. Scrolling to the bottom
+// with a stale tall window blew the sizer up ~3x; scrolling up collapsed
+// it back to the model total. sizer → scrollHeight → contentShift →
+// scrollToBottom → scrollTop → visibleRange → sizer: a loop.
 //
-// CRITICAL SAFETY PROPERTY: this NEVER writes the height model — it
-// only clamps the style binding. The model stays the source of truth
-// for positioning (topSpacer/visibleRange); the clamp only trims the
-// scrollable void. Because it is a pure function of reactive state
-// (no DOM writes, no scrollTop writes), it CANNOT oscillate — the
-// failure mode that killed the earlier tail clamp.
-//
-// `realContentHeight` is measured in the template ref callback below
-// (after each render, before paint) and stored non-reactively; the
-// reactive trigger is `renderTick`, bumped by that callback.
+// Fixed invariant: the RENDERED sizer is ALWAYS the model total (plus the
+// hysteresis dead-band). It changes only when the height MODEL changes
+// (measurement, items mutation) — never from scrolling. Undershoot is
+// safe: scrollToBottom targets the real DOM bottom at the tail, and the
+// model converges as items measure. Overshoot from stale reads is gone
+// by construction — there is no scroll-derived input left.
 const modelTotal = computed(() => accumulatedHeights.value[props.items.length] ?? 0)
-let realContentHeight = 0
-const renderTick = ref(0)
-// Ref callback: runs after every commit of the content div (mount +
-// each patch that reuses the element). Measure the real rendered
-// height and bump the tick so sizerHeight re-evaluates. Guarded
-// against no-op bumps (same height → no reactive write → no loop).
-const onContentRef = (el: unknown) => {
-  const h = el ? (el as HTMLElement).offsetHeight : 0
-  if (h > 0 && Math.abs(h - realContentHeight) > HYSTERESIS_PX) {
-    realContentHeight = h
-    renderTick.value++
-  }
-}
-// ── Sizer height — FIX for 100-message blinking + blank viewport (2026-09-02) ─
-// Previous clamp: realTotal = topSpacer + realContentHeight when at bottom,
-// overshoot = modelTotal - realTotal, clamp if overshoot > 50. But topSpacer
-// = accumulatedHeights[start] where start = f(scrollTop), so sizerHeight
-// depended on scrollTop → loop: sizerHeight → scrollHeight → onContentShift
-// → scrollToBottom → scrollTop → visibleRange → topSpacer → sizerHeight
-// (60Hz blinking with 100 msgs). Removing clamp entirely (modelTotal only)
-// fixed blinking but reintroduced blank viewport (sizer 29389 vs real 13720).
-//
-// Fix v2: sizerHeight is modelTotal, but when at bottom and sizer is
-// too short (underestimate, realTotal > modelTotal), expand to realTotal
-// so scrollToBottom can reach realBottom (otherwise cut off). When too
-// tall (overestimate, blank gap), scrollToBottom real-bottom handles it
-// without sizer clamp. Sizer update only when realContentHeight changes
-// >50 or total changes >50, not on every scroll-driven topSpacer change
-// → no loop. estimateHeight uses 64 for all unmeasured (conservative)
-// so sizer underestimates, not overestimates, and grows to accurate as
-// items are measured.
 let cachedSizerHeight = -1
-let lastRealContentHeightForSizer = -1
 const sizerHeight = computed(() => {
-  void renderTick.value
   const total = modelTotal.value
-  const range = visibleRange.value
-  // Not at bottom → use modelTotal (stable)
-  if (range.end < props.items.length || realContentHeight <= 0) {
-    if (Math.abs(total - cachedSizerHeight) > HYSTERESIS_PX) {
-      cachedSizerHeight = total
-      lastSizerClamped = false
-      lastRealContentHeightForSizer = realContentHeight
-      if (vsLogger.value) {
-        try {
-          vsLogger.value.info({
-            scrollTop: containerRef.value?.scrollTop ?? scrollTop.value,
-            scrollHeight: containerRef.value?.scrollHeight ?? total,
-            clientHeight: containerRef.value?.clientHeight ?? containerHeight.value,
-            messages: props.items.length,
-            isAtBottom: false,
-            containerInfo: { null: !containerRef.value, offsetHeight: containerRef.value?.offsetHeight ?? 0, offsetParent: null },
-            reason: 'sizer-recomputed',
-            caller: 'VirtualScroller.sizerHeight',
-            extra: { modelTotal: total, sizerHeight: total, hysteresis: HYSTERESIS_PX, renderTick: renderTick.value, atBottom: false },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          } as any)
-        } catch {}
-      }
-    }
-    return cachedSizerHeight
-  }
-  // At bottom: if sizer too short (realTotal > modelTotal), expand to realTotal
-  // so you can scroll to last message. If too tall, keep modelTotal and let
-  // scrollToBottom real-bottom handle gap (no sizer clamp needed).
-  const realTotal = range.topSpacer + realContentHeight
-  const isTooShort = realTotal > total + HYSTERESIS_PX
-  const target = isTooShort ? realTotal : total
-  const isClamped = isTooShort
-  const contentHeightChanged = Math.abs(realContentHeight - lastRealContentHeightForSizer) > HYSTERESIS_PX
-  const totalChanged = Math.abs(total - cachedSizerHeight) > HYSTERESIS_PX
-  const clampFlipped = isClamped !== lastSizerClamped
-  const shouldUpdate = contentHeightChanged || totalChanged || clampFlipped
-  if (shouldUpdate) {
-    cachedSizerHeight = target
-    lastSizerClamped = isClamped
-    lastRealContentHeightForSizer = realContentHeight
+  if (cachedSizerHeight < 0 || Math.abs(total - cachedSizerHeight) > HYSTERESIS_PX) {
+    cachedSizerHeight = total
     if (vsLogger.value) {
-      const c = containerRef.value
       try {
         vsLogger.value.info({
-          scrollTop: c?.scrollTop ?? scrollTop.value,
-          scrollHeight: c?.scrollHeight ?? target,
-          clientHeight: c?.clientHeight ?? containerHeight.value,
+          scrollTop: containerRef.value?.scrollTop ?? scrollTop.value,
+          scrollHeight: containerRef.value?.scrollHeight ?? total,
+          clientHeight: containerRef.value?.clientHeight ?? containerHeight.value,
           messages: props.items.length,
-          isAtBottom: true,
-          containerInfo: { null: !c, offsetHeight: c?.offsetHeight ?? 0, offsetParent: c?.offsetParent ? (c.offsetParent as HTMLElement).tagName : null },
-          reason: clampFlipped ? 'sizer-clamp' : 'sizer-recomputed',
+          isAtBottom: false,
+          containerInfo: { null: !containerRef.value, offsetHeight: containerRef.value?.offsetHeight ?? 0, offsetParent: null },
+          reason: 'sizer-recomputed',
           caller: 'VirtualScroller.sizerHeight',
-          extra: { modelTotal: total, realTotal, sizerHeight: target, isClamped, hysteresis: HYSTERESIS_PX, renderTick: renderTick.value, contentHeightChanged, totalChanged },
+          extra: { modelTotal: total, sizerHeight: total, hysteresis: HYSTERESIS_PX },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
       } catch {}
@@ -568,7 +501,6 @@ const sizerHeight = computed(() => {
   }
   return cachedSizerHeight
 })
-
 // CRITICAL: `{ immediate: true }` is required here. Without it,
 // `updateAccumulatedHeights` only runs when `props.items.length`
 // *changes* — but on initial mount the items are already present
@@ -1148,6 +1080,26 @@ const scrollToItem = (index: number, behavior: ScrollBehavior = 'auto') =>
  * Call inside nextTick (or later) so the DOM already reflects the
  * mutation — offsetHeight reads need the patched layout.
  */
+/**
+ * Transfer a stored height across an identity swap (2026-09-06).
+ * ChatView's groupKey is group.messages[0].id; on message-complete the
+ * `streaming-*` placeholder row is replaced by the canonical DB row, so
+ * the group's key changes and its measured height would be lost (sizer
+ * shrinks by real−estimate for a frame, then remeasure() heals it — a
+ * visible flicker on long streams). ChatView calls this at the swap
+ * site BEFORE mutating the array. Returns true when a height moved.
+ * Never overwrites an existing target height (the DB row may already
+ * have been measured under its own key).
+ */
+const rekeyHeight = (oldKey: string, newKey: string): boolean => {
+  if (!oldKey || !newKey || oldKey === newKey) return false
+  const h = itemHeights.value.get(oldKey)
+  if (h === undefined) return false
+  if (!itemHeights.value.has(newKey)) itemHeights.value.set(newKey, h)
+  itemHeights.value.delete(oldKey)
+  updateAccumulatedHeights()
+  return true
+}
 const remeasure = () => {
   measureItems()
 }
@@ -1180,6 +1132,7 @@ defineExpose({
   scrollToPosition,
   scrollToItem,
   remeasure,
+  rekeyHeight,
   beginPreserve,
   endPreserve,
   preserveScrollPosition: endPreserve, // legacy alias
@@ -1213,7 +1166,6 @@ defineExpose({
     -->
     <div class="virtual-scroller-sizer" :style="{ height: sizerHeight + 'px' }">
       <div
-        :ref="onContentRef"
         class="virtual-scroller-content"
         :style="{ transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)` }"
       >
