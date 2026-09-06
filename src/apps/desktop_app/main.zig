@@ -235,6 +235,19 @@ fn runWebview(
         cfg.force_x11,
     ) catch |err| {
         std.log.err("Webview error: {s}", .{@errorName(err)});
+        // Windows: webview_create fails when the WebView2 EVERGREEN RUNTIME
+        // is not installed on the machine. The WebView2Loader.dll beside
+        // the exe is only the SDK forwarder -- it is not the runtime.
+        // Tell the user exactly what to install instead of leaving them
+        // with a bare error + stack trace. The backend from the attach
+        // step above keeps running, so the app stays usable in any
+        // Chromium browser at the logged URL in the meantime.
+        if (builtin.os.tag == .windows) {
+            std.log.err("The WebView2 window could not be created.", .{});
+            std.log.err("Install the WebView2 evergreen runtime and re-run:", .{});
+            std.log.err("  https://go.microsoft.com/fwlink/p/?LinkId=2124703", .{});
+            std.log.err("Workaround: open {s} in Edge/Chrome (backend is running).", .{url});
+        }
         return err;
     };
     std.log.info("Window closed. Exiting.", .{});
