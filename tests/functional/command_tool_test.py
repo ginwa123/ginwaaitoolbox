@@ -123,42 +123,48 @@ class TestCommandRegistry:
 
 
 class TestCommandEnableDisable:
+    # Fresh agents are born with DEFAULT_AGENT_TOOLS
+    # (command, read_file, write_file) — see
+    # docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md.
+    _DEFAULTS = ["command", "read_file", "write_file"]
+
     def test_command_enable_list_disable_lifecycle(
         self, harness: FunctionalHarness
     ) -> None:
-        """POST command → 201, GET lists it, DELETE removes it."""
+        """DELETE command removes it; re-POST restores it (round-trip)."""
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        assert _list_tools(harness, agent_id) == []
-
-        _enable_tool(harness, agent_id, "command")
-        assert _list_tools(harness, agent_id) == ["command"]
+        assert _list_tools(harness, agent_id) == self._DEFAULTS
 
         r = harness.http(
             "DELETE", f"/api/agents/{agent_id}/tools/command", expect=200
         )
         assert r.json().get("ok") is True, f"expected ok=true, got {r.json()!r}"
-        assert _list_tools(harness, agent_id) == []
+        assert _list_tools(harness, agent_id) == ["read_file", "write_file"]
+
+        _enable_tool(harness, agent_id, "command")
+        assert _list_tools(harness, agent_id) == self._DEFAULTS
 
     def test_command_enable_duplicate_is_409(
         self, harness: FunctionalHarness
     ) -> None:
-        """Second POST of `command` hits the UNIQUE index → 409."""
+        """POST of seeded `command` hits the UNIQUE index → 409."""
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "command")
         harness.http(
             "POST",
             f"/api/agents/{agent_id}/tools",
             json_body={"tool_name": "command"},
             expect=409,
         )
-        assert _list_tools(harness, agent_id) == ["command"]
+        assert _list_tools(harness, agent_id) == self._DEFAULTS
 
 
 class TestLegacyNamesRejected:
+    _DEFAULTS = ["command", "read_file", "write_file"]
+
     def test_bash_enable_now_400s_after_unify(
         self, harness: FunctionalHarness
     ) -> None:
@@ -172,7 +178,7 @@ class TestLegacyNamesRejected:
             json_body={"tool_name": "bash"},
             expect=400,
         )
-        assert _list_tools(harness, agent_id) == []
+        assert _list_tools(harness, agent_id) == self._DEFAULTS
 
     def test_pwsh_enable_now_400s_after_unify(
         self, harness: FunctionalHarness
@@ -187,4 +193,4 @@ class TestLegacyNamesRejected:
             json_body={"tool_name": "pwsh"},
             expect=400,
         )
-        assert _list_tools(harness, agent_id) == []
+        assert _list_tools(harness, agent_id) == self._DEFAULTS

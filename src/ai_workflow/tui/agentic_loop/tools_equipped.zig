@@ -257,3 +257,58 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
     };
 }
 
+// =====================================================================
+// Default tools seeded at workspace-item creation (2026-09-06).
+// Fresh `agent` / `kanban` items are born with a small, safe,
+// immediately-useful toolset so the user can chat/run without opening
+// the Tools tab first. Mirrors the frontend preset
+// (`KanbanToolsPanel.vue:76-79` RECOMMENDED_TOOLS) — backend and UI agree.
+// `command` is the unified shell (bash/pwsh were removed 2026-09-04).
+// Plan: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
+// =====================================================================
+
+/// Canonical default toolset seeded on creation. Single source of truth —
+/// both `workspace_items_create_agent.zig` and
+/// `workspace_items_create_kanban.zig` seed exactly this list.
+pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{ "command", "read_file", "write_file" };
+
+/// Seed DEFAULT_AGENT_TOOLS into `agent_tools` for `agent_id`.
+/// Uses `INSERT OR IGNORE` so re-seeding never trips
+/// UNIQUE(agent_id, tool_name). Ids are `at_<nanos>_<index>` (matches the
+/// `at_<nanos>` convention in `agent_tools_create.zig`, index-suffixed so
+/// the 3 rows in one call can't collide on the PK).
+pub fn seedDefaultAgentTools(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    agent_id: []const u8,
+) !void {
+    const ts = helpers.unixTimestampNanos();
+    for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
+        const id = try std.fmt.allocPrint(allocator, "at_{d}_{d}", .{ ts, i });
+        defer allocator.free(id);
+        try db.exec(allocator,
+            "INSERT OR IGNORE INTO agent_tools (id, agent_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
+            &.{ id, agent_id, tool_name },
+        );
+    }
+}
+
+/// Seed DEFAULT_AGENT_TOOLS into `agent_kanban_tools` for `kanban_id`.
+/// Same contract as `seedDefaultAgentTools` with the kanban table shape
+/// (`akt_<nanos>_<index>`, UNIQUE(kanban_id, tool_name)).
+pub fn seedDefaultKanbanTools(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    kanban_id: []const u8,
+) !void {
+    const ts = helpers.unixTimestampNanos();
+    for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
+        const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, i });
+        defer allocator.free(id);
+        try db.exec(allocator,
+            "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
+            &.{ id, kanban_id, tool_name },
+        );
+    }
+}
+

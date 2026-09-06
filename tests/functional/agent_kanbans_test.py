@@ -8,8 +8,10 @@ KanbanAgentSettings dialog sends.
   Task: task_1787597624259_2
 
 Covers:
-  * BUNDLE GET      — unconfigured kanban → 404 NotConfigured; configured
-                       kanban → 200 with all 3 child arrays.
+  * BUNDLE GET      — fresh kanban → 200 configured with default tools
+                       (command, read_file, write_file); agent-type item
+                       → 400 ItemNotKanban (regression: route order
+                       shadowing would return 200 with the agent payload).
   * GET wrong type  — agent-type item → 400 ItemNotKanban (regression:
                        route order shadowing would return 200 with the
                        agent payload).
@@ -65,19 +67,19 @@ def _create_agent(harness: FunctionalHarness, workspace_id: str, name: str = "ag
 # ─── Tests ────────────────────────────────────────────────────────────────
 
 
-def test_bundle_get_unconfigured_returns_404(harness: FunctionalHarness) -> None:
-    """Fresh kanban → 404 NotConfigured (frontend treats as empty settings)."""
+def test_bundle_get_fresh_returns_defaults(harness: FunctionalHarness) -> None:
+    """Fresh kanban is born configured with default tools (no longer 404)."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id, "bare")
 
     r = harness.http(
         "GET",
         f"/api/workspaces/{ws_id}/items/{kanban_id}/agent_kanban",
-        expect=404,
+        expect=200,
     )
     body = r.json()
-    assert "not configured" in body.get("error", "").lower(), (
-        f"expected NotConfigured message, got: {body!r}"
+    assert body.get("tools") == ["command", "read_file", "write_file"], (
+        f"fresh kanban should seed defaults, got: {body!r}"
     )
 
 
@@ -115,12 +117,12 @@ def test_knowledge_create_with_inline_content(harness: FunctionalHarness) -> Non
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
-    # Seed the agent_kanbans config directly via a tool enablement
-    # (the simplest path that creates the row).
+    # Seed an extra tool (fresh kanbans are born with command/read_file/
+    # write_file, so use a non-default to get a clean 201).
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
+        json_body={"tool_name": "glob"},
         expect=201,
     )
 
@@ -148,7 +150,7 @@ def test_knowledge_reorder_reaches_reorder_handler(harness: FunctionalHarness) -
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
+        json_body={"tool_name": "glob"},
         expect=201,
     )
 
@@ -194,11 +196,12 @@ def test_tools_duplicate_returns_409(harness: FunctionalHarness) -> None:
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
-    # First POST creates the agent_kanbans row + the tool row.
+    # Fresh kanbans already seed command/read_file/write_file — use a
+    # non-default for a clean first 201.
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
+        json_body={"tool_name": "glob"},
         expect=201,
     )
 
@@ -206,7 +209,7 @@ def test_tools_duplicate_returns_409(harness: FunctionalHarness) -> None:
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
+        json_body={"tool_name": "glob"},
         expect=409,
     )
 
@@ -216,15 +219,8 @@ def test_tools_unknown_returns_400(harness: FunctionalHarness) -> None:
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
-    # First create the agent_kanbans row by enabling a known tool.
-    harness.http(
-        "POST",
-        f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
-        expect=201,
-    )
-
-    # Now try an unknown tool → 400.
+    # Fresh kanbans are born configured — no seed POST needed.
+    # Try an unknown tool → 400.
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
@@ -238,13 +234,7 @@ def test_system_prompt_first_row_position_zero(harness: FunctionalHarness) -> No
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
-    # Seed config via a tool enablement.
-    harness.http(
-        "POST",
-        f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
-        expect=201,
-    )
+    # Fresh kanbans are born configured — no seed POST needed.
 
     r = harness.http(
         "POST",
@@ -259,13 +249,6 @@ def test_system_prompt_empty_content_returns_400(harness: FunctionalHarness) -> 
     """POST with whitespace-only content returns 400 ContentRequired."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
-
-    harness.http(
-        "POST",
-        f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "command"},
-        expect=201,
-    )
 
     harness.http(
         "POST",

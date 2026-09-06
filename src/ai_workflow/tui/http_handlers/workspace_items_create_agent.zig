@@ -22,18 +22,21 @@
 //!   7. Return 201 with `{item, agent}` envelope (the frontend's
 //!      `api.createAgent` destructures both).
 //!
-//! No seed data — the agent starts with empty knowledge list AND
-//! empty tool allowlist (zero tools by default per spec D1 —
-//! secure-by-default).
+//! No seed data for knowledge / system prompt — the agent starts with an
+//! empty knowledge list. The tool allowlist IS seeded with
+//! DEFAULT_AGENT_TOOLS (command, read_file, write_file) so a fresh agent
+//! is immediately usable.
 //!
 //! Plan: docs/superpowers/plans/2026-08-15-agent-mode.md (Task 4)
 //! Spec: docs/superpowers/specs/2026-08-15-agent-mode-design.md
+//! Defaults: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
+const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 
 /// Request body for the agent-item create endpoint. Both fields are
 /// required (the Agent has a cwd like Kanban/Design).
@@ -137,6 +140,12 @@ fn useCase(
         "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, input.workspace_id },
     ) catch return error.DatabaseError;
+
+    // 3. Seed default tools (command, read_file, write_file) so a fresh
+    //    agent is immediately usable. Inside the same txn — a seed failure
+    //    rolls back the whole create via the errdefer ROLLBACK above.
+    //    agent_tools.agent_id references agents.id (= item_id).
+    tools_equipped.seedDefaultAgentTools(allocator, db, item_id) catch return error.DatabaseError;
 
     // COMMIT.
     db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.DatabaseError;
@@ -319,6 +328,10 @@ fn setupDb() !TestCtx {
         "CREATE TABLE agents (id TEXT PRIMARY KEY, workspace_item_id TEXT NOT NULL UNIQUE, description TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         &[_][]const u8{},
     );
+    try db.exec(testing.allocator,
+        "CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &[_][]const u8{},
+    );
 
     return .{ .db = db, .threaded = threaded };
 }
@@ -432,4 +445,36 @@ test "useCase: position increments per workspace" {
     const p2_pos = try std.json.parseFromSliceLeaky(PosView, alloc, a2, .{});
     try testing.expectEqual(@as(i64, 0), p2_pos.item.position);
     try testing.expectEqualStrings("ws_2", p2_pos.item.workspace_id);
+}
+
+test "useCase: seeds default tools (command, read_file, write_file)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const json = try useCase(alloc, &ctx.db, .{
+        .workspace_id = "ws_1",
+        .body = .{ .name = "My Agent", .path = "/tmp/agent" },
+    });
+    defer alloc.free(json);
+
+    const parsed = try std.json.parseFromSliceLeaky(CreateAgentResponseFull, alloc, json, .{});
+    var q = try ctx.db.query(alloc,
+        "SELECT tool_name FROM agent_tools WHERE agent_id = ? ORDER BY tool_name ASC",
+        &.{parsed.item.id},
+    );
+    defer q.deinit();
+    var names: [3][]const u8 = undefined;
+    var n: usize = 0;
+    while ((q.next() catch null)) |row| {
+        defer row.deinit(alloc);
+        if (n < 3) names[n] = try alloc.dupe(u8, row.values[0]);
+        n += 1;
+    }
+    defer for (names[0..@min(n, 3)]) |s| alloc.free(s);
+    try testing.expectEqual(@as(usize, 3), n);
+    try testing.expectEqualStrings("command", names[0]);
+    try testing.expectEqualStrings("read_file", names[1]);
+    try testing.expectEqualStrings("write_file", names[2]);
 }

@@ -77,8 +77,9 @@ def _create_agent(
 def _list_tools(harness: FunctionalHarness, agent_id: str) -> list[str]:
     """Return the enabled tool_names for the agent (sorted ASC).
 
-    Empty list (not 404) means the agent exists but has no tools
-    enabled — secure-by-default behaviour.
+    Fresh agents are born with DEFAULT_AGENT_TOOLS
+    (command, read_file, write_file); an empty list means the user
+    deleted every tool (never 404).
     """
     r = harness.http(
         "GET",
@@ -150,6 +151,14 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
     return names
 
 
+# Fresh agents are born with DEFAULT_AGENT_TOOLS
+# (command, read_file, write_file) — see
+# docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md.
+# Tests that need a clean enable use `glob` (in-registry, never a default).
+EXPECTED_DEFAULTS = ["command", "read_file", "write_file"]
+NON_DEFAULT_TOOL = "glob"
+
+
 # ─── Tests ────────────────────────────────────────────────────────────────
 
 
@@ -161,13 +170,15 @@ class TestEnableTool:
     ) -> None:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
-        tool = _enable_tool(harness, agent_id, "command")
-        assert tool["tool_name"] == "command"
+        tool = _enable_tool(harness, agent_id, NON_DEFAULT_TOOL)
+        assert tool["tool_name"] == NON_DEFAULT_TOOL
         assert tool["enabled"] == 1
 
         # The DB row persists beyond the create call —
-        # list now reflects it.
-        assert _list_tools(harness, agent_id) == ["command"]
+        # list now reflects defaults + the new tool (sorted ASC).
+        assert _list_tools(harness, agent_id) == sorted(
+            EXPECTED_DEFAULTS + [NON_DEFAULT_TOOL]
+        )
 
     def test_post_rejects_duplicate_with_409(
         self, harness: FunctionalHarness
@@ -175,19 +186,21 @@ class TestEnableTool:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "command")
+        _enable_tool(harness, agent_id, NON_DEFAULT_TOOL)
 
         # Second POST with the same (agent_id, tool_name) hits
         # the UNIQUE index → 409 Conflict.
         harness.http(
             "POST",
             f"/api/agents/{agent_id}/tools",
-            json_body={"tool_name": "command"},
+            json_body={"tool_name": NON_DEFAULT_TOOL},
             expect=409,
         )
 
-        # State unchanged — exactly one row.
-        assert _list_tools(harness, agent_id) == ["command"]
+        # State unchanged — defaults + exactly one extra row.
+        assert _list_tools(harness, agent_id) == sorted(
+            EXPECTED_DEFAULTS + [NON_DEFAULT_TOOL]
+        )
 
     def test_post_rejects_unknown_tool_with_400(
         self, harness: FunctionalHarness
@@ -204,8 +217,8 @@ class TestEnableTool:
             expect=400,
         )
 
-        # No row created.
-        assert _list_tools(harness, agent_id) == []
+        # No row created — defaults unchanged.
+        assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_post_rejects_empty_tool_name_with_400(
         self, harness: FunctionalHarness
@@ -224,15 +237,15 @@ class TestEnableTool:
 class TestListTools:
     """GET /api/agents/:agent_id/tools — list enabled names sorted ASC."""
 
-    def test_empty_when_no_tools_enabled(
+    def test_defaults_seeded_on_create(
         self, harness: FunctionalHarness
     ) -> None:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        # Secure-by-default: a brand-new agent with no tools
-        # enabled returns an EMPTY list (not 404).
-        assert _list_tools(harness, agent_id) == []
+        # Fresh agents are born with DEFAULT_AGENT_TOOLS
+        # (command, read_file, write_file), sorted ASC.
+        assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_returns_sorted_ascending(
         self, harness: FunctionalHarness
@@ -241,18 +254,21 @@ class TestListTools:
         agent_id = _create_agent(harness, ws_id)
 
         # Enable in NON-alphabetical order: the agent loop filter
-        # + frontend list depend on sorted ASC.
+        # + frontend list depend on sorted ASC. Pick tools outside the
+        # seeded defaults so the enables are clean 201s.
         registry = _registry_tools(harness)
-        assert len(registry) >= 3, (
-            f"need >=3 tools in registry for this test; got {len(registry)}"
+        candidates = [n for n in registry if n not in EXPECTED_DEFAULTS]
+        assert len(candidates) >= 3, (
+            f"need >=3 non-default tools in registry; got {candidates!r}"
         )
-        for name in reversed(registry[:3]):  # insert in reverse order
+        picked = candidates[:3]
+        for name in reversed(picked):  # insert in reverse order
             _enable_tool(harness, agent_id, name)
 
         listed = _list_tools(harness, agent_id)
-        assert listed == sorted(registry[:3]), (
+        assert listed == sorted(EXPECTED_DEFAULTS + picked), (
             f"GET /tools should return sorted ASC; got {listed!r} "
-            f"vs sorted {sorted(registry[:3])!r}"
+            f"vs sorted {sorted(EXPECTED_DEFAULTS + picked)!r}"
         )
 
 
@@ -269,11 +285,13 @@ class TestDisableTool:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "command")
-        assert _list_tools(harness, agent_id) == ["command"]
+        _enable_tool(harness, agent_id, NON_DEFAULT_TOOL)
+        assert _list_tools(harness, agent_id) == sorted(
+            EXPECTED_DEFAULTS + [NON_DEFAULT_TOOL]
+        )
 
-        _disable_tool(harness, agent_id, "command")
-        assert _list_tools(harness, agent_id) == []
+        _disable_tool(harness, agent_id, NON_DEFAULT_TOOL)
+        assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_delete_is_idempotent(
         self, harness: FunctionalHarness
@@ -281,16 +299,16 @@ class TestDisableTool:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        _enable_tool(harness, agent_id, "command")
+        _enable_tool(harness, agent_id, NON_DEFAULT_TOOL)
 
         # First delete removes the row.
-        _disable_tool(harness, agent_id, "command")
-        assert _list_tools(harness, agent_id) == []
+        _disable_tool(harness, agent_id, NON_DEFAULT_TOOL)
+        assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
         # Second delete is a no-op (200, not 404) — matches the
         # useCase's scope-by-agent_id design + handler semantics.
-        _disable_tool(harness, agent_id, "command")
-        assert _list_tools(harness, agent_id) == []
+        _disable_tool(harness, agent_id, NON_DEFAULT_TOOL)
+        assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_delete_unknown_tool_name_no_ops(
         self, harness: FunctionalHarness
@@ -301,7 +319,7 @@ class TestDisableTool:
         # No row exists for this tool_name → DELETE should be
         # a no-op (200), not 404. Documented contract.
         _disable_tool(harness, agent_id, "totally_nonexistent_tool_xyz")
-        assert _list_tools(harness, agent_id) == []
+        assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_delete_rejects_empty_tool_name(
         self, harness: FunctionalHarness
@@ -329,34 +347,35 @@ class TestToolToggleLifecycle:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
         registry = _registry_tools(harness)
-        assert len(registry) >= 2, (
-            f"need >=2 tools for lifecycle test; got {len(registry)}"
+        candidates = [n for n in registry if n not in EXPECTED_DEFAULTS]
+        assert len(candidates) >= 2, (
+            f"need >=2 non-default tools for lifecycle; got {candidates!r}"
         )
 
-        tool_a, tool_b = registry[0], registry[1]
+        tool_a, tool_b = candidates[0], candidates[1]
+        baseline = list(EXPECTED_DEFAULTS)
 
         # 1. Enable tool_a.
         _enable_tool(harness, agent_id, tool_a)
-        assert _list_tools(harness, agent_id) == [tool_a]
+        assert _list_tools(harness, agent_id) == sorted(baseline + [tool_a])
 
         # 2. Enable tool_b (mixed alphabetical order — proves list
         #    returns ASC sorted regardless of insertion order).
         _enable_tool(harness, agent_id, tool_b)
-        expected_sorted = sorted([tool_a, tool_b])
-        assert _list_tools(harness, agent_id) == expected_sorted
+        assert _list_tools(harness, agent_id) == sorted(baseline + [tool_a, tool_b])
 
         # 3. Disable tool_a. tool_b should remain.
         _disable_tool(harness, agent_id, tool_a)
-        assert _list_tools(harness, agent_id) == [tool_b]
+        assert _list_tools(harness, agent_id) == sorted(baseline + [tool_b])
 
-        # 4. Disable tool_b. Empty.
+        # 4. Disable tool_b. Back to seeded defaults.
         _disable_tool(harness, agent_id, tool_b)
-        assert _list_tools(harness, agent_id) == []
+        assert _list_tools(harness, agent_id) == baseline
 
         # 5. State survives: re-enabling tool_a starts fresh —
         #    no UNIQUE violation since the row was deleted.
         _enable_tool(harness, agent_id, tool_a)
-        assert _list_tools(harness, agent_id) == [tool_a]
+        assert _list_tools(harness, agent_id) == sorted(baseline + [tool_a])
 
     def test_scoped_to_agent_id(
         self, harness: FunctionalHarness
@@ -373,14 +392,18 @@ class TestToolToggleLifecycle:
         agent_a = _create_agent(harness, ws_a, name="agent-A")
         agent_b = _create_agent(harness, ws_b, name="agent-B")
 
-        _enable_tool(harness, agent_a, "command")
+        _enable_tool(harness, agent_a, NON_DEFAULT_TOOL)
 
-        # agent_B has its own (empty) allowlist — proving no
+        # agent_B keeps its own seeded defaults — proving no
         # cross-agent leakage regardless of workspace.
-        assert _list_tools(harness, agent_b) == []
-        assert _list_tools(harness, agent_a) == ["command"]
+        assert _list_tools(harness, agent_b) == EXPECTED_DEFAULTS
+        assert _list_tools(harness, agent_a) == sorted(
+            EXPECTED_DEFAULTS + [NON_DEFAULT_TOOL]
+        )
 
-        # DELETE scoping: deleting 'command' from agent_B is a no-op
+        # DELETE scoping: deleting the extra tool from agent_B is a no-op
         # (agent_B never had it), and agent_A's row is untouched.
-        _disable_tool(harness, agent_b, "command")
-        assert _list_tools(harness, agent_a) == ["command"]
+        _disable_tool(harness, agent_b, NON_DEFAULT_TOOL)
+        assert _list_tools(harness, agent_a) == sorted(
+            EXPECTED_DEFAULTS + [NON_DEFAULT_TOOL]
+        )

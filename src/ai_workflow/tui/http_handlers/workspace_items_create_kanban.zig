@@ -1,7 +1,9 @@
 //! `POST /api/workspaces/:workspace_id/items/kanban`.
 //!
-//! Creates a new workspace item of `item_type='kanban'` and seeds its
-//! default 3-column flow (`todo / in progress / done`).
+//! Creates a new workspace item of `item_type='kanban'`, seeds its
+//! default 3-column flow (`todo / in progress / done`), creates the
+//! `agent_kanbans` config row, and seeds default tools
+//! (command, read_file, write_file) so a fresh board is immediately usable.
 //!
 //! Body: `{name, path?}` — `name` is required, `path` is optional
 //! (NULL is stored when omitted; the kanban is cwd-less until the
@@ -29,6 +31,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const kanban_model = @import("../agentic_loop/kanban_model.zig");
+const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 const helpers = @import("helpers");
 
@@ -137,6 +140,12 @@ fn useCase(
     const item_id = try std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
     defer allocator.free(item_id);
 
+    // BEGIN so workspace_item + columns + agent_kanbans + tools are atomic.
+    db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.InsertFailed;
+    errdefer {
+        db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
+    }
+
     // Compute the new item's position as
     // COALESCE(MAX(position), -1) + 1 within this workspace. The
     // COALESCE handles the empty-workspace case (no rows → MAX is
@@ -152,6 +161,18 @@ fn useCase(
 
     // Seed the 3 default columns (`todo / in progress / done`).
     kanban_model.seedDefaultColumns(allocator, db, item_id) catch return error.SeedFailed;
+
+    // Seed the agent_kanbans config row + default tools (command,
+    // read_file, write_file) so a fresh board is immediately usable.
+    // INSERT OR IGNORE keeps re-entry safe; tools seed uses OR IGNORE
+    // per row so it never trips UNIQUE(kanban_id, tool_name).
+    db.exec(allocator,
+        "INSERT OR IGNORE INTO agent_kanbans (id, workspace_item_id) VALUES (?, ?)",
+        &.{ item_id, item_id },
+    ) catch return error.SeedFailed;
+    tools_equipped.seedDefaultKanbanTools(allocator, db, item_id) catch return error.SeedFailed;
+
+    db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.SeedFailed;
 
     // Read back the freshly-seeded columns so the response can
     // include them in the `columns` field of the wire envelope.
