@@ -203,6 +203,11 @@ pub fn main(init: std.process.Init) !void {
     //    is now decoupled from nalar's. Closing the window does NOT
     //    signal nalar; only `nalar service stop` does.
     std.log.info("Attaching to nalar at {s} (we_spawned={any})", .{ url, attach_target.we_spawned });
+    // Windows: prefer a bundled fixed-version WebView2 runtime when the
+    // release zip shipped one next to the exe (no install needed).
+    if (comptime builtin.os.tag == .windows) {
+        pointWebView2AtBundledRuntime(allocator, self_exe_owned);
+    }
     try runWebview(allocator, cfg, url);
 }
 
@@ -214,6 +219,42 @@ pub fn main(init: std.process.Init) !void {
 ///
 /// The backend serves the webapp over http://127.0.0.1:PORT, so no
 /// custom scheme handler or embedded asset table is needed.
+// Windows-only: point the WebView2 loader at a bundled fixed-version
+// runtime when `<exe-dir>\webview2-runtime\msedgewebview2.exe` exists
+// (release-zip layout; see the CI bundle step). The vendored webview
+// library passes nullptr as browser_dir, so the loader honors the
+// WEBVIEW2_BROWSER_EXECUTABLE_FOLDER env var with no C++ changes.
+// No-op when no bundled runtime is present -- the loader then falls back
+// to the evergreen registry lookup as before.
+//
+// Fixed-version layout (Microsoft docs): `expand <.cab> -F:* <dir>`
+// yields a dir whose ROOT holds msedgewebview2.exe -- that dir is what
+// the env var must point at.
+extern "kernel32" fn SetEnvironmentVariableW(lpName: [*:0]const u16, lpValue: [*:0]const u16) callconv(.winapi) c_int;
+
+fn pointWebView2AtBundledRuntime(allocator: std.mem.Allocator, self_exe_path: []const u8) void {
+    if (comptime builtin.os.tag != .windows) return;
+    const exe_dir = std.fs.path.dirname(self_exe_path) orelse return;
+    const runtime_dir = std.fs.path.join(allocator, &.{ exe_dir, "webview2-runtime" }) catch return;
+    defer allocator.free(runtime_dir);
+    const probe = std.fs.path.join(allocator, &.{ runtime_dir, "msedgewebview2.exe" }) catch return;
+    defer allocator.free(probe);
+    var probe_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (probe.len >= probe_buf.len) return;
+    @memcpy(probe_buf[0..probe.len], probe);
+    probe_buf[probe.len] = 0;
+    if (std.c.access(&probe_buf, std.c.F_OK) != 0) return; // no bundled runtime -- evergreen lookup as usual
+    var name_wide: [64]u16 = undefined;
+    var value_wide: [std.fs.max_path_bytes]u16 = undefined;
+    const name_len = std.unicode.wtf8ToWtf16Le(&name_wide, "WEBVIEW2_BROWSER_EXECUTABLE_FOLDER") catch return;
+    if (name_len >= name_wide.len) return;
+    name_wide[name_len] = 0;
+    const value_len = std.unicode.wtf8ToWtf16Le(&value_wide, runtime_dir) catch return;
+    if (value_len >= value_wide.len) return;
+    value_wide[value_len] = 0;
+    if (SetEnvironmentVariableW(@ptrCast(&name_wide), @ptrCast(&value_wide)) == 0) return;
+    std.log.info("Using bundled WebView2 runtime at {s}", .{runtime_dir});
+}
 fn runWebview(
     allocator: std.mem.Allocator,
     cfg: cli.Config,
