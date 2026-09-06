@@ -379,6 +379,8 @@ interface VirtualScrollerExposed {
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
   /** Full height-model recompute from the live DOM (append-gap fix). */
   remeasure: () => void
+  /** Transfer a stored height across an identity swap (shrink fix). */
+  rekeyHeight: (oldKey: string, newKey: string) => boolean
   beginPreserve: (newItemsCount: number) => void
   endPreserve: () => Promise<void>
   preserveScrollPosition: () => Promise<void>
@@ -1118,6 +1120,18 @@ const messageGroups = computed((): MessageGroup[] => {
   // template remains as defense-in-depth.
   return groups.filter((g, i) => hasBubbleContent(g, i))
 })
+
+/**
+ * Group key of the group containing a message id (2026-09-06
+ * virtual-scroller shrink fix). Used at the streaming->DB swap site to
+ * transfer the measured height to the new key. Null when the message
+ * is not in any group (already filtered, empty chat).
+ */
+const groupKeyForMessageId = (messageId: string): string | null => {
+  if (!messageId) return null
+  const g = messageGroups.value.find((grp) => grp.messages.some((m) => m.id === messageId))
+  return g ? groupKey(g) : null
+}
 
 // Per-message envelope unwrap lookup. Keyed by message id; value is the
 // parsed envelope or null if the content is not a <tool> envelope (legacy
@@ -2260,6 +2274,13 @@ const connectSse = () => {
         console.log('[SSE ChatView] clearing agent error card on non-error full event')
         agentErrorStore.clearForSession(sid)
       }
+      // 2026-09-06 virtual-scroller shrink fix: capture the streaming
+      // group's height key BEFORE the filter drops the placeholder —
+      // the canonical row pushed below has a new DB id (new group key,
+      // no stored height → sizer dip). Transferred after the push.
+      const streamingGroupKey = groupKeyForMessageId(
+        messages.value.find((m) => m.id.startsWith('streaming-'))?.id ?? '',
+      )
       messages.value = messages.value.filter((m) => !m.id.startsWith('streaming-'))
 
       const role =
@@ -2377,6 +2398,16 @@ const connectSse = () => {
         // thinking-only turns render their collapsible section.
         reasoning_content: event.reasoning_content || undefined
       })
+      // 2026-09-06 virtual-scroller shrink fix: move the streaming
+      // group's measured height onto the canonical row's key so the
+      // sizer never dips through the 64px estimate for a frame.
+      // Best-effort — missing keys are a no-op (rekeyHeight guards).
+      if (streamingGroupKey && event.id) {
+        const newGroupKey = groupKeyForMessageId(event.id)
+        if (newGroupKey && newGroupKey !== streamingGroupKey) {
+          virtualScrollerRef.value?.rekeyHeight(streamingGroupKey, newGroupKey)
+        }
+      }
       streamingContent.value = ''
       isStreaming.value = false
       scrollLogger.markProgrammatic()

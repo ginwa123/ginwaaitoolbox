@@ -644,6 +644,58 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             );
         };
 
+        // handler for case subagents, subagent should update the parent activity session
+        // Top-level runs have parent==self so the guard skips the duplicate bump + double SSE;
+        // the parent bump keeps the parent worker row alive while it is blocked in handle_tool
+        // awaiting sub-agents (prevents cleanup_stale_worker 600s wipe).
+        // update for parent worker
+        // NOTE: resolve the PARENT worker's own cwd from the DB — never pass the
+        // sub-agent's copy_cwd straight through, since updateWorker does
+        // ON CONFLICT DO UPDATE SET working_directory = excluded.working_directory
+        // and would overwrite the parent row with the child's cwd.
+        if (copy_is_sub_agent and copy_parent_session_id.len > 0 and !std.mem.eql(u8, copy_parent_session_id, copy_session_id)) {
+            const parent_cwd: []const u8 = blk: {
+                // (1) parent worker row's own working_directory — preserves it verbatim
+                {
+                    var w_rows = db.query(allocator, "SELECT working_directory FROM worker WHERE id = ? LIMIT 1", &.{copy_parent_session_id}) catch null;
+                    if (w_rows) |*r| {
+                        defer r.deinit();
+                        if (r.next() catch null) |w_row| {
+                            defer w_row.deinit(allocator);
+                            if (w_row.values.len > 0 and w_row.values[0].len > 0) break :blk allocator.dupe(u8, w_row.values[0]) catch copy_cwd;
+                        }
+                    }
+                }
+                // (2) parent session's cwd
+                {
+                    var s_rows = db.query(allocator, "SELECT cwd FROM sessions WHERE id = ? LIMIT 1", &.{copy_parent_session_id}) catch null;
+                    if (s_rows) |*r| {
+                        defer r.deinit();
+                        if (r.next() catch null) |s_row| {
+                            defer s_row.deinit(allocator);
+                            if (s_row.values.len > 0 and s_row.values[0].len > 0) break :blk allocator.dupe(u8, s_row.values[0]) catch copy_cwd;
+                        }
+                    }
+                }
+                break :blk copy_cwd;
+            };
+            updateWorker(UpdateWorkerInput{
+                .allocator = allocator,
+                .db = db,
+                .logger = logger,
+                .worker_id = copy_parent_session_id,
+                .session_id = copy_parent_session_id,
+                .working_directory = parent_cwd,
+                .event_bus = event_bus,
+                .is_emit_sse = true,
+            }) catch |err| {
+                logger.errFmt(
+                    "[CHECKPOINT] worker update failed session_id={s}: {s}\n",
+                    .{ copy_parent_session_id, @errorName(err) },
+                );
+            };
+        }
+
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;
             const flag_row = flag_rows.next() catch break :blk false;
@@ -751,46 +803,55 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     };
                 }
 
-                _ = try insertLLMHistories(.{ .allocator = allocator, .io = io, .db = db, .logger = logger, .event_bus = event_bus, .is_emit_sse = true, .cwd = copy_cwd, .entity = .{
-                    .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-                    .session_id = copy_session_id,
-                    .model = eff.model,
-                    .response_content = queued.message,
-                    .reasoning_content = null,
-                    .role = agent.Role.user.to_str(),
-                    .finish_reason = "null",
-                    .tool_calls_json = "",
-                    .tool_call_id = null,
-                    .agent = initial_agent,
-                    .loop_index = 0,
-                    .temperature = initial_agent_state.temperature,
-                    // === Model-thinking (plan 2026-08-23-model-thinking) ===
-                    // Override the prior session state's `is_thinking` with
-                    // the profile-resolved value. The previous behavior of
-                    // carrying the last assistant turn's value forward
-                    // meant a user who toggled Thinking Off mid-session
-                    // would still see the next turn forced on (because the
-                    // `COALESCE(is_thinking, 1)` in
-                    // `get_current_agent_by_session_id` defaults to 1 for
-                    // a brand-new session, and that value would echo
-                    // forward forever). The profile is now the source of
-                    // truth — sub-agent overrides (when present, see the
-                    // `if (ov.is_thinking) |t| isThinking = t;` block
-                    // below) win over the profile, and the session's own
-                    // mid-conversation `set_agent_properties` tool call
-                    // wins over both via its own `ov.is_thinking` path.
-                    .is_thinking = eff.is_thinking orelse initial_agent_state.is_thinking,
-                    .prompt_tokens = 0,
-                    .completion_tokens = 0,
-                    .total_tokens = 0,
-                    .parent_id = copy_parent_session_id,
-                    .parent_session_id = copy_parent_session_id,
-                    .is_input = true,
-                    .is_output = false,
-                    .image_urls = image_urls,
-                    .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
-                    .is_feed_to_llm = true,
-                } });
+                _ = try insertLLMHistories(.{
+                    .allocator = allocator,
+                    .io = io,
+                    .db = db,
+                    .logger = logger,
+                    .event_bus = event_bus,
+                    .is_emit_sse = true,
+                    .cwd = copy_cwd,
+                    .entity = .{
+                        .id = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                        .session_id = copy_session_id,
+                        .model = eff.model,
+                        .response_content = queued.message,
+                        .reasoning_content = null,
+                        .role = agent.Role.user.to_str(),
+                        .finish_reason = "null",
+                        .tool_calls_json = "",
+                        .tool_call_id = null,
+                        .agent = initial_agent,
+                        .loop_index = 0,
+                        .temperature = initial_agent_state.temperature,
+                        // === Model-thinking (plan 2026-08-23-model-thinking) ===
+                        // Override the prior session state's `is_thinking` with
+                        // the profile-resolved value. The previous behavior of
+                        // carrying the last assistant turn's value forward
+                        // meant a user who toggled Thinking Off mid-session
+                        // would still see the next turn forced on (because the
+                        // `COALESCE(is_thinking, 1)` in
+                        // `get_current_agent_by_session_id` defaults to 1 for
+                        // a brand-new session, and that value would echo
+                        // forward forever). The profile is now the source of
+                        // truth — sub-agent overrides (when present, see the
+                        // `if (ov.is_thinking) |t| isThinking = t;` block
+                        // below) win over the profile, and the session's own
+                        // mid-conversation `set_agent_properties` tool call
+                        // wins over both via its own `ov.is_thinking` path.
+                        .is_thinking = eff.is_thinking orelse initial_agent_state.is_thinking,
+                        .prompt_tokens = 0,
+                        .completion_tokens = 0,
+                        .total_tokens = 0,
+                        .parent_id = copy_parent_session_id,
+                        .parent_session_id = copy_parent_session_id,
+                        .is_input = true,
+                        .is_output = false,
+                        .image_urls = image_urls,
+                        .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
+                        .is_feed_to_llm = true,
+                    },
+                });
 
                 try deleteQueuedMessage(.{
                     .allocator = allocator,
@@ -1555,7 +1616,10 @@ fn saveRetryAttemptMessage(
     // failure doesn't shadow the actual error emit. The diagnostic
     // INSERT above already succeeded; failing here would be noise.
     llm_history.updateSessionLastHumanTouchedAt(
-        allocator, db, session_id, null,
+        allocator,
+        db,
+        session_id,
+        null,
     ) catch |stamp_err| {
         logger.warnFmt(
             "saveRetryAttemptMessage: stamp session last_human_touched_at failed (non-fatal): {s}",
@@ -2426,17 +2490,12 @@ test "saveRetryAttemptMessage stamps sessions.last_human_touched_at (Task 5 inva
     const needle = "updateSessi" ++ "onLastHumanTouchedAt";
     if (std.mem.indexOf(u8, fn_body, needle) == null) {
         std.debug.print(
-            "\n!! saveRetryAttemptMessage does NOT call the chat-side stamp helper !!\n"
-            ++ "   The also-when-error semantic requires every retry/bail\n"
-            ++ "   diagnostic to bump sessions.last_human_touched_at_nano. Adding the\n"
-            ++ "   stamp here covers all 3 call sites (retry-catch + finish_reason +\n"
-            ++ "   bail) via the existing funnel. Plan Task 5.\n",
+            "\n!! saveRetryAttemptMessage does NOT call the chat-side stamp helper !!\n" ++ "   The also-when-error semantic requires every retry/bail\n" ++ "   diagnostic to bump sessions.last_human_touched_at_nano. Adding the\n" ++ "   stamp here covers all 3 call sites (retry-catch + finish_reason +\n" ++ "   bail) via the existing funnel. Plan Task 5.\n",
             .{},
         );
         return error.RetryHelperStampMissing;
     }
 }
-
 
 test "filterAndMergeTools: MCP tools appear in agent tool list (agent sees MCP)" {
     // Proves the user-visible contract: when buildMCPToolsRun returns
