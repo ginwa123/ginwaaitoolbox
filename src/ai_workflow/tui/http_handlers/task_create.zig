@@ -467,10 +467,12 @@ fn createStandardTask(
         const raw = input.body.cwd orelse "";
         if (raw.len == 0) break :blk raw;
         if (raw.len > 4096) return error.CwdTooLong;
-        // Must start with '/' (absolute path). Frontend's
-        // FilePickerDialog only emits absolute paths; this guard
-        // protects against a misbehaving API client (curl, etc.).
-        if (raw[0] != '/') return error.CwdNotAbsolute;
+        // Must be absolute (POSIX '/' or Windows 'C:\', '\\', ...).
+        // Frontend's FilePickerDialog only emits absolute paths; this
+        // guard protects against a misbehaving API client (curl, etc.).
+        // Use std.fs.path.isAbsolute so Windows paths like
+        // C:\Users\... are accepted on Windows builds.
+        if (!std.fs.path.isAbsolute(raw)) return error.CwdNotAbsolute;
         // Reject any control characters (\x00..\x1f or \x7f). Paths
         // with embedded NULs would crash std.fs.path.join downstream.
         for (raw) |c| {

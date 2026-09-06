@@ -64,10 +64,22 @@ const pathInput = ref<HTMLInputElement | null>(null)
 // The row's CURRENT mode at open time (content non-empty = inline).
 const rowIsInline = computed(() => !!props.row && !!props.row.content)
 
+// Absolute on either platform: POSIX `/...` or Windows `C:\...`,
+// `C:/...`, UNC `\\server\share` / `//server/share`. Mirrors
+// AgentKnowledgeDialog.vue + backend resolvePath + FilePickerDialog isWindowsAbs.
+// POSIX inputs behave byte-identically to the old startsWith('/') check.
+function isAbsolutePath(p: string): boolean {
+  if (!p) return false
+  if (p.startsWith('/')) return true
+  if (/^[A-Za-z]:[\\/]/.test(p)) return true
+  if (p.startsWith('\\\\') || p.startsWith('//')) return true
+  return false
+}
+
 const pathError = computed<string | null>(() => {
   if (mode.value !== 'file' || !pathTouched.value) return null
   if (filePath.value.length === 0) return 'Path is required'
-  if (!filePath.value.startsWith('/')) return 'Path must be absolute'
+  if (!isAbsolutePath(filePath.value)) return 'Path must be absolute'
   return null
 })
 
@@ -75,7 +87,7 @@ const canSubmit = computed(() => {
   if (props.busy || !props.row) return false
   if (label.value.trim().length === 0) return false
   if (mode.value === 'file') {
-    return filePath.value.startsWith('/') && filePath.value.length > 0
+    return filePath.value.length > 0 && isAbsolutePath(filePath.value)
   }
   return content.value.trim().length > 0
 })

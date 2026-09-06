@@ -98,7 +98,12 @@ const props = defineProps<{
 
 // Defaults applied at use sites (avoid withDefaults quirks with function-typed optional props)
 const mode = computed<Mode>(() => props.mode ?? 'folder')
-const initialPath = computed(() => props.initialPath || '/')
+// Windows-safe default: '' routes to getSystemFolder (home / %USERPROFILE%),
+// '/' routes to listFolder('/'). No caller passes initialPath today, so the
+// default IS the open path. POSIX keeps '/' (byte-identical), Windows gets ''.
+const isWindowsPlatform =
+  typeof navigator !== 'undefined' && /Win/i.test(navigator.platform || (navigator as unknown as { userAgent?: string }).userAgent || '')
+const initialPath = computed(() => props.initialPath ?? (isWindowsPlatform ? '' : '/'))
 const showHiddenDefault = computed(() => props.showHidden ?? false)
 const selectLabel = computed(() => props.selectButtonText ?? 'Select')
 // Default enableRecentHistory to true (Recent tab is the user's primary

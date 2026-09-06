@@ -54,13 +54,12 @@ const errorMessage = ref<string | null>(null)
 
 // Compute the absolute path we'll fetch. The chip stores `/path/to/file`
 // (relative to cwd). The backend endpoint resolves against its `path`
-// query param, so we pass `cwd` as the path and `filePath` (with the
-// leading `/` stripped — the endpoint joins non-absolute paths with
-// the path param).
+// query param, so we pass `cwd` as the path and `filePath` (with leading
+// separators stripped — the endpoint joins non-absolute paths with
+// the path param). Windows-safe: strips both `/` and `\` runs;
+// POSIX `/a` -> `a` byte-identical to the old startsWith('/') branch.
 const absolutePath = computed<string>(() => {
-  const stripped = props.filePath.startsWith('/')
-    ? props.filePath.slice(1)
-    : props.filePath
+  const stripped = props.filePath.replace(/^[\\/]+/, '')
   return stripped
 })
 

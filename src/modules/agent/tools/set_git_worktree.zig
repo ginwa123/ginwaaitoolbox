@@ -86,7 +86,7 @@ pub fn validatePath(path: []const u8) ?[]const u8 {
     if (path.len == 0) return "path cannot be empty";
     if (path.len > 4096) return "path exceeds 4096 characters";
     if (std.mem.indexOfScalar(u8, path, 0) != null) return "path contains null byte";
-    if (!std.fs.path.isAbsolute(path)) return "path must be absolute (start with /)";
+    if (!std.fs.path.isAbsolute(path)) return "path must be absolute";
     if (std.mem.indexOf(u8, path, "..") != null) return "path must not contain '..' segments";
 
     // Basename must be a legal branch name fragment.

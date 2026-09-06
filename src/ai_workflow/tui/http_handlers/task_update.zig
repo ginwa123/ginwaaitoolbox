@@ -328,7 +328,7 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         // path exactly so a value that's accepted at create time
         // is also accepted at update time (and vice versa).
         if (raw_cwd.len > 4096) return error.CwdTooLong;
-        if (raw_cwd.len > 0 and raw_cwd[0] != '/') return error.CwdNotAbsolute;
+        if (raw_cwd.len > 0 and !std.fs.path.isAbsolute(raw_cwd)) return error.CwdNotAbsolute;
         for (raw_cwd) |c| {
             if (c < 0x20 or c == 0x7f) return error.CwdContainsControlChar;
         }

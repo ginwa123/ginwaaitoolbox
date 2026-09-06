@@ -26,6 +26,24 @@ pub const Error = error{
     TooManyRedirects,
     UnsupportedProtocol,
     OutOfMemory,
+    /// Server spoke HTTP but the transfer failed at the HTTP layer
+    /// (CURLE_HTTP_RETURNED_ERROR, WEIRD_SERVER_REPLY, GOT_NOTHING,
+    /// RANGE/POST errors, REMOTE_ACCESS_DENIED).
+    HttpError,
+    /// Local write callback aborted the transfer (CURLE_WRITE_ERROR).
+    /// Usually means our own header/body append failed to allocate.
+    WriteError,
+    /// Local read callback failed (CURLE_READ_ERROR).
+    ReadError,
+    /// Failed sending data to the server (CURLE_SEND_ERROR,
+    /// SEND_FAIL_REWIND).
+    SendError,
+    /// Failed receiving data from the server (CURLE_RECV_ERROR) —
+    /// the classic "connection reset / server hung up mid-stream".
+    RecvError,
+    /// Transfer completed but fewer bytes arrived than expected
+    /// (CURLE_PARTIAL_FILE).
+    PartialFile,
     /// Catch-all for CURLcodes we haven't classified yet.
     /// New libcurl versions add codes; we don't want a code bump to
     /// crash the process.
@@ -228,7 +246,17 @@ pub const Client = struct {
             if (err_msg.len > 0) {
                 std.log.warn("curl_easy_perform failed: code={d} msg={s}", .{ rc, err_msg });
             } else {
-                std.log.warn("curl_easy_perform failed: code={d}", .{rc});
+                // errbuf is empty for many failures (e.g. connection
+                // reset before any server text). Fall back to libcurl's
+                // built-in string so the log always names the real
+                // reason instead of a bare number. easy_strerror exists
+                // in every libcurl version (and in our Windows stub).
+                const str_ptr = curl.easy_strerror(rc);
+                const str_slice: []const u8 = if (str_ptr != null)
+                    std.mem.sliceTo(str_ptr, 0)
+                else
+                    "unknown error";
+                std.log.warn("curl_easy_perform failed: code={d} msg={s}", .{ rc, str_slice });
             }
             return mapCurlCode(rc);
         }
@@ -361,6 +389,32 @@ fn mapCurlCode(rc: c_uint) Error {
         @intCast(curl.C.CURLE_UNSUPPORTED_PROTOCOL) => Error.UnsupportedProtocol,
         @intCast(curl.C.CURLE_TOO_MANY_REDIRECTS) => Error.TooManyRedirects,
         @intCast(curl.C.CURLE_OUT_OF_MEMORY) => Error.OutOfMemory,
+        @intCast(curl.C.CURLE_FAILED_INIT) => Error.InitFailed,
+        // HTTP-layer failures: server spoke but the exchange failed.
+        @intCast(curl.C.CURLE_WEIRD_SERVER_REPLY),
+        @intCast(curl.C.CURLE_REMOTE_ACCESS_DENIED),
+        @intCast(curl.C.CURLE_HTTP_RETURNED_ERROR),
+        @intCast(curl.C.CURLE_HTTP_RANGE_ERROR),
+        @intCast(curl.C.CURLE_HTTP_POST_ERROR),
+        @intCast(curl.C.CURLE_GOT_NOTHING) => Error.HttpError,
+        // Local callback / transfer-direction failures.
+        @intCast(curl.C.CURLE_WRITE_ERROR) => Error.WriteError,
+        @intCast(curl.C.CURLE_READ_ERROR) => Error.ReadError,
+        @intCast(curl.C.CURLE_SEND_ERROR),
+        @intCast(curl.C.CURLE_SEND_FAIL_REWIND) => Error.SendError,
+        @intCast(curl.C.CURLE_RECV_ERROR) => Error.RecvError,
+        @intCast(curl.C.CURLE_PARTIAL_FILE) => Error.PartialFile,
+        // Remaining TLS-engine failures fold into TlsError.
+        @intCast(curl.C.CURLE_SSL_ENGINE_NOTFOUND),
+        @intCast(curl.C.CURLE_SSL_ENGINE_SETFAILED),
+        @intCast(curl.C.CURLE_USE_SSL_FAILED),
+        @intCast(curl.C.CURLE_SSL_CACERT_BADFILE),
+        @intCast(curl.C.CURLE_SSL_SHUTDOWN_FAILED),
+        @intCast(curl.C.CURLE_SSL_CRL_BADFILE),
+        @intCast(curl.C.CURLE_SSL_ISSUER_ERROR) => Error.TlsError,
+        // Aborted by our own callback (e.g. OOM in writeCallback):
+        // surfaced as a timeout so callers retry rather than crash.
+        @intCast(curl.C.CURLE_ABORTED_BY_CALLBACK) => Error.OperationTimedOut,
         else => Error.UnknownCurl,
     };
 }
