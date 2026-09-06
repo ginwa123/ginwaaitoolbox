@@ -665,6 +665,51 @@ fn prependVcpkgBinToPath(b: *std.Build, run: *std.Build.Step.Run) void {
     env_map.put("PATH", new_path) catch @panic("OOM");
 }
 
+/// Bundle vcpkg runtime DLLs next to the exe so Explorer double-click works.
+///
+/// WHY: `databases` + `custom_http_client` link the vcpkg IMPORT `.lib`
+/// files (`sqlite3.lib`, `libcurl.lib`, `libssl.lib`, ...) on Windows.
+/// At runtime the Windows loader must find the matching `.dll`
+/// (`sqlite3.dll`, `libcurl.dll`, `libssl-3-x64.dll`, ...) via the
+/// standard search order (exe dir first, then PATH). vcpkg does NOT add
+/// `C:\vcpkg\installed\x64-windows\bin\` to the system PATH, and
+/// prependVcpkgBinToPath only fixes zig build test processes -- not
+/// a user double-clicking `zig-out/bin/nalar-desktop.exe` in Explorer
+/// (clean env, no vcpkg on PATH) vs running from a dev `cmd` where the
+/// user already exported vcpkg bin. Result: double-click dies with
+/// "libcurl.dll / sqlite3.dll not found" while cmd works.
+///
+/// FIX: copy every vcpkg runtime DLL that our import libs can pull in
+/// next to the exe at install time (same pattern as the existing
+/// `WebView2Loader.dll` install). The loader checks the exe dir FIRST,
+/// so a fresh `zig-out/bin/` Just Works from Explorer with no PATH
+/// setup. Missing files are skipped (dev box without vcpkg = no-op).
+/// Non-Windows hosts are no-ops.
+fn installVcpkgDlls(b: *std.Build, parent: *std.Build.Step) void {
+    if (b.graph.host.result.os.tag != .windows) return;
+    const vcpkg_bin = "C:/vcpkg/installed/x64-windows/bin";
+    if (!dirExists(b, vcpkg_bin)) return;
+    const dlls = [_][]const u8{
+        "libcurl.dll",
+        "sqlite3.dll",
+        "libssl-3-x64.dll",
+        "libcrypto-3-x64.dll",
+        "libpq.dll",
+        "z.dll",
+        "lz4.dll",
+        "legacy.dll",
+        "libecpg.dll",
+        "libecpg_compat.dll",
+        "libpgtypes.dll",
+    };
+    for (dlls) |dll| {
+        const src = b.fmt("{s}/{s}", .{ vcpkg_bin, dll });
+        if (!fileExists(src)) continue;
+        const install = b.addInstallBinFile(.{ .cwd_relative = src }, dll);
+        parent.dependOn(&install.step);
+    }
+}
+
 /// Detect the Zig 0.16 aarch64-windows crash bug and abort the build
 /// early with a clear, actionable message.
 ///
@@ -2231,6 +2276,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // exe at runtime (see the `.windows` prong above). DependOn pulls
     // the dll install into `build:all` via desktop_install's edge.
     if (webview2_dll_install_step) |dll_step| desktop_install.step.dependOn(dll_step);
+    // Windows: bundle vcpkg runtime DLLs (libcurl.dll, sqlite3.dll, ...)
+    // next to nalar-desktop.exe AND the nalar service exe so Explorer
+    // double-click works with a clean PATH (see installVcpkgDlls doc).
+    installVcpkgDlls(b, &desktop_install.step);
+    installVcpkgDlls(b, b.getInstallStep());
     // Late alias kept for comment continuity — actual flag is defined
     // early (near target/optimize) so mcp/webapp sections could be gated.
     // Reuse the early `no_webapp_rebuild` value here; do not re-parse.

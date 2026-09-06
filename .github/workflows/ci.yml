@@ -1563,6 +1563,39 @@ jobs:
             exit 1
           fi
 
+      - name: Bundle Windows exes + DLLs into zips
+        # A bare Windows .exe cannot start on its own: the loader needs
+        # libcurl.dll / sqlite3.dll / ... (installed next to the exe by
+        # build.zig installVcpkgDlls) + WebView2Loader.dll in the exe dir.
+        # The stage step above only copies the exes, so without this step
+        # a user downloading the release asset hits the same "DLL not
+        # found" failure as an Explorer double-click on a bare exe.
+        # Each staged exe becomes a self-contained .zip; the bare .exes
+        # are removed so nobody downloads a broken asset.
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          TARGET: ${{ matrix.target.zig }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "bin-stage-$env:TARGET"
+          $exes = Get-ChildItem "$stage/*.exe" -ErrorAction SilentlyContinue
+          if (-not $exes) { Write-Error "no staged exes in $stage"; exit 1 }
+          $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
+          foreach ($exe in $exes) {
+            $base = [System.IO.Path]::GetFileNameWithoutExtension($exe.Name)
+            $tmp = Join-Path $stage "$base-bundle"
+            New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+            Copy-Item $exe.FullName (Join-Path $tmp "$base.exe")
+            foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
+            $zip = Join-Path $stage "$base.zip"
+            if (Test-Path $zip) { Remove-Item $zip -Force }
+            Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip
+            Remove-Item $tmp -Recurse -Force
+            Remove-Item $exe.FullName -Force
+            Write-Output ("packaged " + $zip)
+          }
+
       - name: Publish binaries to rolling ci-latest release
         # Merges to main + manual dispatch publish the staged binaries as
         # assets on a single ROLLING GitHub Release tagged `ci-latest`.
@@ -1587,11 +1620,14 @@ jobs:
             - Commit: ${{ github.sha }}
             - Built: ${{ github.run_id }}
 
-            Asset names carry the binary name + zig target triple:
-            `nalar-<target>[.exe]`, `nalar-desktop-<target>[.exe]` —
-            e.g. `nalar-x86_64-linux-gnu`,
-            `nalar-desktop-aarch64-macos`,
-            `nalar-desktop-x86_64-windows-gnu.exe`.
+            Asset names carry the binary name + zig target triple.
+            Linux/macOS ship bare binaries, e.g. `nalar-x86_64-linux-gnu`,
+            `nalar-desktop-aarch64-macos`.
+            Windows ships self-contained .zips, e.g.
+            `nalar-desktop-x86_64-windows-gnu.zip` -- each zip holds the
+            .exe plus its runtime DLLs (libcurl / sqlite3 / ssl / ... +
+            WebView2Loader.dll). Extract the zip and run the .exe; the
+            bare .exe alone cannot start (loader needs the DLLs beside it).
             Install both binaries with
             `sudo scripts/install-nalar-desktop.sh` after downloading.
           prerelease: true
