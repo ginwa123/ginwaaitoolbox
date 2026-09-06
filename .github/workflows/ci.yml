@@ -1574,6 +1574,20 @@ jobs:
         # next-to-self lookup finds the backend. A bare .exe alone cannot
         # start (loader needs the DLLs beside it), so the staged bare
         # exes are removed and only the zip is published.
+        #
+        # Fixed-version runtime (optional): when $fixedCabUrl below holds
+        # the Fixed Version x64 CAB link from
+        # https://developer.microsoft.com/microsoft-edge/webview2/
+        # ("Fixed Version" section, right-click -> copy link), the step
+        # downloads it once into C:\webview2-fixed-cache (self-hosted
+        # runner disk persists between runs), expands it with inbox
+        # expand.exe, and stages it as webview2-runtime/ inside the zip.
+        # The desktop points the loader at it via
+        # WEBVIEW2_BROWSER_EXECUTABLE_FOLDER (see
+        # pointWebView2AtBundledRuntime in main.zig) -- no install, no
+        # admin on the user machine. Until the URL is set the block skips
+        # with a warning and the zip ships without a runtime (evergreen
+        # install needed, same as today).
         if: runner.os == 'Windows'
         shell: powershell
         env:
@@ -1591,6 +1605,39 @@ jobs:
           Copy-Item $service.FullName (Join-Path $tmp "nalar.exe")
           $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
           foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
+          # Fixed-version WebView2 runtime -- see the step header comment
+          # for how to enable (paste the CAB link into $fixedCabUrl).
+          $fixedCabUrl = ""
+          if ($fixedCabUrl -ne "") {
+            $cacheRoot = "C:/webview2-fixed-cache"
+            $cabName = $fixedCabUrl.Split("/")[-1]
+            $cabPath = Join-Path $cacheRoot $cabName
+            $rtCache = Join-Path $cacheRoot ([System.IO.Path]::GetFileNameWithoutExtension($cabName))
+            $rtProbe = Join-Path $rtCache "msedgewebview2.exe"
+            if (-not (Test-Path $rtProbe)) {
+              New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+              Write-Output ("downloading fixed WebView2 runtime " + $cabName)
+              Invoke-WebRequest -Uri $fixedCabUrl -OutFile $cabPath -UseBasicParsing -TimeoutSec 600
+              if (Test-Path $rtCache) { Remove-Item $rtCache -Recurse -Force }
+              New-Item -ItemType Directory -Force -Path $rtCache | Out-Null
+              & expand.exe $cabPath -F:* $rtCache | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Error "expand.exe failed, see the CAB link"; exit 1 }
+              Remove-Item $cabPath -Force -ErrorAction SilentlyContinue
+              if (-not (Test-Path $rtProbe)) {
+                $inner = Get-ChildItem $rtCache -Directory | Where-Object { Test-Path (Join-Path $_.FullName "msedgewebview2.exe") } | Select-Object -First 1
+                if (-not $inner) { Write-Error "msedgewebview2.exe not found after expand -- bad CAB link"; exit 1 }
+                Get-ChildItem $inner.FullName | Move-Item -Destination $rtCache -Force
+                Remove-Item $inner.FullName -Recurse -Force
+              }
+            } else {
+              Write-Output ("reusing cached fixed runtime " + $cabName)
+            }
+            New-Item -ItemType Directory -Force -Path (Join-Path $tmp "webview2-runtime") | Out-Null
+            Copy-Item (Join-Path $rtCache "*") (Join-Path $tmp "webview2-runtime") -Recurse -Force
+            Write-Output "staged embedded WebView2 runtime"
+          } else {
+            Write-Warning "fixedCabUrl not set -- zip ships WITHOUT embedded WebView2 runtime (evergreen install needed)"
+          }
           $zip = Join-Path $stage "nalar-desktop-$env:TARGET.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
           Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip
