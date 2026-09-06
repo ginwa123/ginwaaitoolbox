@@ -1563,15 +1563,17 @@ jobs:
             exit 1
           fi
 
-      - name: Bundle Windows exes + DLLs into zips
-        # A bare Windows .exe cannot start on its own: the loader needs
-        # libcurl.dll / sqlite3.dll / ... (installed next to the exe by
-        # build.zig installVcpkgDlls) + WebView2Loader.dll in the exe dir.
-        # The stage step above only copies the exes, so without this step
-        # a user downloading the release asset hits the same "DLL not
-        # found" failure as an Explorer double-click on a bare exe.
-        # Each staged exe becomes a self-contained .zip; the bare .exes
-        # are removed so nobody downloads a broken asset.
+      - name: Bundle Windows exes + DLLs into one zip
+        # nalar-desktop auto-spawns the nalar service binary sitting next
+        # to itself (path_resolve.zig next-to-self lookup for plain
+        # `nalar.exe`, PATH fallback), so both must ship TOGETHER: one
+        # self-contained .zip holding nalar-desktop.exe + nalar.exe +
+        # every runtime DLL (libcurl/sqlite3/... via build.zig
+        # installVcpkgDlls + WebView2Loader.dll). Inside the zip the exes
+        # carry their plain names (triple suffix stripped) so the
+        # next-to-self lookup finds the backend. A bare .exe alone cannot
+        # start (loader needs the DLLs beside it), so the staged bare
+        # exes are removed and only the zip is published.
         if: runner.os == 'Windows'
         shell: powershell
         env:
@@ -1579,22 +1581,23 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $stage = "bin-stage-$env:TARGET"
-          $exes = Get-ChildItem "$stage/*.exe" -ErrorAction SilentlyContinue
-          if (-not $exes) { Write-Error "no staged exes in $stage"; exit 1 }
+          $desktop = Get-ChildItem "$stage/nalar-desktop-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $service = Get-ChildItem "$stage/nalar-*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike 'nalar-desktop-*' } | Select-Object -First 1
+          if (-not $desktop) { Write-Error "no staged desktop exe in $stage"; exit 1 }
+          if (-not $service) { Write-Error "no staged service exe in $stage"; exit 1 }
+          $tmp = Join-Path $stage "bundle"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          Copy-Item $desktop.FullName (Join-Path $tmp "nalar-desktop.exe")
+          Copy-Item $service.FullName (Join-Path $tmp "nalar.exe")
           $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
-          foreach ($exe in $exes) {
-            $base = [System.IO.Path]::GetFileNameWithoutExtension($exe.Name)
-            $tmp = Join-Path $stage "$base-bundle"
-            New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-            Copy-Item $exe.FullName (Join-Path $tmp "$base.exe")
-            foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
-            $zip = Join-Path $stage "$base.zip"
-            if (Test-Path $zip) { Remove-Item $zip -Force }
-            Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip
-            Remove-Item $tmp -Recurse -Force
-            Remove-Item $exe.FullName -Force
-            Write-Output ("packaged " + $zip)
-          }
+          foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
+          $zip = Join-Path $stage "nalar-desktop-$env:TARGET.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip
+          Remove-Item $tmp -Recurse -Force
+          Remove-Item $desktop.FullName -Force
+          Remove-Item $service.FullName -Force
+          Write-Output ("packaged " + $zip)
 
       - name: Publish binaries to rolling ci-latest release
         # Merges to main + manual dispatch publish the staged binaries as
@@ -1623,11 +1626,13 @@ jobs:
             Asset names carry the binary name + zig target triple.
             Linux/macOS ship bare binaries, e.g. `nalar-x86_64-linux-gnu`,
             `nalar-desktop-aarch64-macos`.
-            Windows ships self-contained .zips, e.g.
-            `nalar-desktop-x86_64-windows-gnu.zip` -- each zip holds the
-            .exe plus its runtime DLLs (libcurl / sqlite3 / ssl / ... +
-            WebView2Loader.dll). Extract the zip and run the .exe; the
-            bare .exe alone cannot start (loader needs the DLLs beside it).
+            Windows ships ONE self-contained .zip, e.g.
+            `nalar-desktop-x86_64-windows-gnu.zip` -- it holds
+            nalar-desktop.exe + nalar.exe (the desktop auto-spawns
+            the service beside itself) plus every runtime DLL
+            (libcurl / sqlite3 / ssl / ... + WebView2Loader.dll).
+            Extract the zip and run nalar-desktop.exe; a bare .exe
+            alone cannot start (loader needs the DLLs beside it).
             Install both binaries with
             `sudo scripts/install-nalar-desktop.sh` after downloading.
           prerelease: true
