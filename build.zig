@@ -459,6 +459,12 @@ fn webview2MissingPrereq(b: *std.Build) ?[]const u8 {
         "EventToken.h",
         "WebView2Loader.h",
         "WebView2Loader.lib",
+        // Runtime DLL (NuGet-staged). Without it the link succeeds (import
+        // lib only records the dependency) but the exe dies at load time
+        // and the CI zip ships broken. Requiring it here forces the
+        // stub-fallback warning to name the DLL explicitly instead of
+        // silently building a no-webview exe.
+        "WebView2Loader.dll",
     };
     for (prereqs) |name| {
         const full = b.fmt("src/apps/desktop_app/platform/windows/{s}", .{name});
