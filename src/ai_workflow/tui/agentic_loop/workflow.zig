@@ -1450,6 +1450,7 @@ fn generateSessionNameNew(
     name_agent.model = model;
     name_agent.baseUrl = base_url;
     name_agent.UrlStyle = url_style;
+    name_agent.sessionId = session_id;
     name_agent.thinkingEnabled = false;
     name_agent.httpOptions.read_timeout_ms = 300_000; // 10 minutes
 
@@ -1678,6 +1679,7 @@ fn callDynamicAgentNew(
     dynamic_agent.model = model;
     dynamic_agent.baseUrl = base_url;
     dynamic_agent.UrlStyle = url_style;
+    dynamic_agent.sessionId = session_id;
     // `messages_list.items` is `[]agent.AgentMessage`; the local
     // `agent.AgentCall.messages` wants the same type — direct assignment.
     const messages_for_agent: []const agent.AgentMessage = messages_list.items;

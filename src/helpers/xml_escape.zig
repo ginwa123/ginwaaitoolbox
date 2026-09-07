@@ -11,6 +11,13 @@ pub fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
             '&' => try result.appendSlice(allocator, "&amp;"),
             '"' => try result.appendSlice(allocator, "&quot;"),
             '\'' => try result.appendSlice(allocator, "&apos;"),
+            // XML 1.0 forbids C0 controls except \t \n \r, plus DEL.
+            // Binary stdout (e.g. ELF header 0x7F 'E' 'L' 'F' 0x02 0x01
+            // 0x00 ...) embeds NUL + control bytes that truncate SQLite
+            // TEXT at the first NUL and break XML parsers — the envelope
+            // then never closes (no </stdout></data></tool>). Replace
+            // them with U+FFFD so the envelope always survives.
+            0x00...0x08, 0x0B, 0x0C, 0x0E...0x1F, 0x7F => try result.appendSlice(allocator, "�"),
             else => try result.append(allocator, c),
         }
     }

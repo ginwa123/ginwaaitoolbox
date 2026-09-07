@@ -800,6 +800,17 @@ fn spawn_background(
 /// envelope (`wrapToolOutput` wraps it with `<data>` / `<error>` /
 /// `<parameters>` on the agentic-loop side).
 pub fn result_to_xml(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
+    // Binary stdout (e.g. `head $(which qs)` dumping the ELF header)
+    // embeds NUL + C0 controls + `<>&` that break the XML envelope —
+    // the stored history then ends at `ELF` with no </stdout></data>
+    // </tool>. Escape everything so the envelope always closes.
+    // xmlEscape also replaces illegal XML 1.0 bytes with U+FFFD.
+    const esc_command = try xmlEscape(allocator, result.command);
+    defer allocator.free(esc_command);
+    const esc_stdout = try xmlEscape(allocator, result.stdout);
+    defer allocator.free(esc_stdout);
+    const esc_stderr = try xmlEscape(allocator, result.stderr);
+    defer allocator.free(esc_stderr);
     return try std.fmt.allocPrint(allocator,
         \\<command>{s}</command>
         \\<stdout>{s}</stdout>
@@ -811,9 +822,9 @@ pub fn result_to_xml(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
         \\<stderr_lines>{d}</stderr_lines>
         \\<is_self>{}</is_self>
     , .{
-        result.command,
-        result.stdout,
-        result.stderr,
+        esc_command,
+        esc_stdout,
+        esc_stderr,
         result.exit_code,
         result.truncated,
         result.timeout,
@@ -1016,4 +1027,52 @@ test "ShellInput is structurally identical to BashInput AND PwshInput (alias liv
     try testing.expectEqualStrings(b.value.command, c.value.command);
     try testing.expect(a.value.mandatory_timeout.? == b.value.mandatory_timeout.?);
     try testing.expect(b.value.mandatory_timeout.? == c.value.mandatory_timeout.?);
+}
+
+test "result_to_xml escapes binary ELF stdout so envelope always closes" {
+    // Regression for user report: `head -n 40 $(which qs)` dumps the
+    // ELF header (0x7F 'E' 'L' 'F' 0x02 0x01 ... 0x00 + controls).
+    // Old result_to_xml interpolated raw bytes — NUL truncated SQLite
+    // TEXT and illegal XML 1.0 chars broke parsers, so the stored
+    // history ended at `ELF` with no </stdout></data></tool>.
+    const elf_stdout = "\x7FELF\x02\x01\x01\x00\x00\x01\x02<a>&\"'\x0B\x0C\x1F\x7Fend";
+    const out = shell.ShellOutput{
+        .command = "head -n 40 /usr/bin/quickshell",
+        .stdout = elf_stdout,
+        .stderr = "No errors.",
+        .exit_code = 0,
+        .truncated = false,
+        .timeout = false,
+        .stdout_lines = 1,
+        .stderr_lines = 0,
+    };
+    const xml = try shell.result_to_xml(testing.allocator, out);
+    defer testing.allocator.free(xml);
+
+    // Envelope must always close, even with binary input.
+    try testing.expect(std.mem.indexOf(u8, xml, "</stdout>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "</is_self>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<exit_code>0</exit_code>") != null);
+    // Markup chars escaped, not raw.
+    try testing.expect(std.mem.indexOf(u8, xml, "&lt;a&gt;") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "&amp;") != null);
+    // No raw NUL / C0 control / DEL may survive (illegal in XML 1.0).
+    // \t \n \r are legal and may appear; everything else below 0x20
+    // plus 0x7F must have been replaced with U+FFFD (bytes EF BF BD).
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x00) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x01) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x02) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x0B) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x0C) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x1F) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x7F) == null);
+    // Replacement char present proves sanitization ran.
+    try testing.expect(std.mem.indexOf(u8, xml, "�") != null);
+}
+
+test "xmlEscape replaces NUL and C0 controls with U+FFFD" {
+    const xml = try helpers.xml_escape(testing.allocator, "a\x00b\x01c\x08d\x0Ae\x0Df");
+    defer testing.allocator.free(xml);
+    // \n (0x0A) and \r (0x0D) are legal XML — preserved.
+    try testing.expectEqualStrings("a�b�c�d\x0Ae\x0Df", xml);
 }

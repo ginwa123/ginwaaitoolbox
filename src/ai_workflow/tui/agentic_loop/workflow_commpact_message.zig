@@ -41,6 +41,12 @@ pub const CallCompactAgentInput = struct {
     /// for callers that haven't been updated yet (back-compat with
     /// existing in-flight sessions). Plan: this file's task card.
     url_style: []const u8 = "openai",
+    /// Stable per-conversation session id, forwarded to
+    /// `Agent.sessionId` so the compaction call sends the same
+    /// `x-opencode-session` header as the main loop (OpenCode Go
+    /// requires it — see Agent.sessionId doc). Empty = header omitted
+    /// (back-compat for callers/tests that don't set it).
+    session_id: []const u8 = "",
 };
 
 /// Call the CompactionAgent to compress the conversation history into a
@@ -108,6 +114,7 @@ pub fn callCompactAgent(obj: CallCompactAgentInput) ?[]const u8 {
     // session still balloons to 497K+ tokens) — the compaction just
     // never completes. This propagation fixes that.
     compaction_agent.UrlStyle = url_style;
+    compaction_agent.sessionId = obj.session_id;
 
     const response = compaction_agent.callStreaming(.{
         .tools = &.{},
@@ -284,6 +291,7 @@ pub fn maybeCompactMessagesNew(
             .model = model,
             .base_url = base_url,
             .url_style = url_style,
+            .session_id = session_id,
             .logger = logger,
         },
     ) orelse {
