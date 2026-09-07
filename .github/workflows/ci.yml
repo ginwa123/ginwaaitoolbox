@@ -831,7 +831,15 @@ jobs:
           if (-not (Test-Path $wv2DllSource)) {
             $wv2DllSource = Join-Path $webview2Src "runtimes\win-x64\native\WebView2Loader.dll"
           }
+          if (-not (Test-Path $wv2DllSource)) {
+            Write-Error ("WebView2Loader.dll not found in NuGet " + $nugetVersion + " at build/native/x64/ nor runtimes/win-x64/native/ -- NuGet layout changed, update staging paths")
+            exit 1
+          }
           Copy-Item -Force $wv2DllSource (Join-Path $webview2Dst "WebView2Loader.dll")
+          if (-not (Test-Path (Join-Path $webview2Dst "WebView2Loader.dll"))) {
+            Write-Error "WebView2Loader.dll staging copy failed -- destination missing after Copy-Item"
+            exit 1
+          }
           if (Test-Path (Join-Path $webview2Src "build\native\x64\WebView2Loader.dll.lib")) {
             Copy-Item -Force (Join-Path $webview2Src "build\native\x64\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
           } elseif (Test-Path (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib")) {
@@ -1605,6 +1613,23 @@ jobs:
           Copy-Item $service.FullName (Join-Path $tmp "nalar.exe")
           $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
           foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
+          # WebView2Loader.dll is NOT a vcpkg DLL -- it comes from the NuGet
+          # staging dir via build.zig's addInstallBinFile. If the build took
+          # the stub fallback (missing EventToken.h etc.), zig-out/bin/ has
+          # no such DLL and the zip would ship broken. Fail loud, with a
+          # staging-dir fallback so a stub-build still bundles a runnable exe.
+          $bundledWv2 = Join-Path $tmp "WebView2Loader.dll"
+          if (-not (Test-Path $bundledWv2)) {
+            $stagedWv2 = "src\apps\desktop_app\platform\windows\WebView2Loader.dll"
+            if (Test-Path $stagedWv2) {
+              Write-Warning "WebView2Loader.dll missing in zig-out/bin (stub build?) -- copying from staging dir"
+              Copy-Item -Force $stagedWv2 $bundledWv2
+            } else {
+              Write-Error "WebView2Loader.dll missing in zig-out/bin AND staging dir -- real WebView2 branch did not run (check EventToken.h / MSVC logs above)"
+              exit 1
+            }
+          }
+          Write-Host "ok WebView2Loader.dll bundled"
           # Fixed-version WebView2 runtime -- see the step header comment
           # for how to enable (paste the CAB link into $fixedCabUrl).
           $fixedCabUrl = ""
