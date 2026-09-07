@@ -1154,7 +1154,11 @@ jobs:
               export PATH="$(dirname "$local_pnpm_path"):$PATH"
             fi
           fi
-          zig build nalar-desktop --summary all -Dno-webapp-rebuild
+          # -Drequire-real-webview: fail loudly instead of shipping the
+          # no-op stub (whose webview_create() always returns NULL ->
+          # WebviewCreateFailed even with the evergreen runtime installed).
+          # The stub fallback exists for dev boxes; CI must never ship it.
+          zig build nalar-desktop --summary all -Dno-webapp-rebuild -Drequire-real-webview
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
