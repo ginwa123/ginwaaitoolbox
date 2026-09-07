@@ -270,7 +270,44 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 /// Canonical default toolset seeded on creation. Single source of truth —
 /// both `workspace_items_create_agent.zig` and
 /// `workspace_items_create_kanban.zig` seed exactly this list.
-pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{ "command", "read_file", "write_file" };
+pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
+    // basic tools
+    command_tool_mod.command_tool.function.name,
+    read_file_mod.read_file_tool.function.name,
+    write_file_mod.write_file_tool.function.name,
+    text_replace_mod.text_replace_tool.function.name,
+    remove_file_mod.remove_file_tool.function.name,
+    list_directory_mod.list_directory_tool.function.name,
+    search_tool_mod.search_tool.function.name,
+
+    // for context-aware tools
+    update_plan_mod.update_plan_tool.function.name,
+    get_plan_mod.get_plan_tool.function.name,
+    update_activity_mod.update_activity_tool.function.name,
+
+    // for memory tools // addon
+    save_memory_mod.save_memory_tool.function.name,
+    load_memory_mod.load_memory_tool.function.name,
+    delete_memory_mod.delete_memory_tool.function.name, 
+    search_history_mod.search_history_tool.function.name,
+
+
+    // skill tools
+    get_skill_mod.get_skill_tool.function.name,
+    view_skill_mod.view_skill_tool.function.name,
+    remove_skill_mod.remove_skill_tool.function.name,
+    add_skill_mod.add_skill_tool.function.name,
+    edit_skill_mod.edit_skill_tool.function.name,
+    list_skills_mod.list_skills_tool.function.name,
+
+    // spawn
+    spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
+};
+
+pub const DEFAULT_KANBAN_TOOLS: []const []const u8 = &.{
+    kanban_list_mod.kanban_list_tool.function.name,
+    kanban_move_task_mod.kanban_move_task_tool.function.name,
+};
 
 /// Seed DEFAULT_AGENT_TOOLS into `agent_tools` for `agent_id`.
 /// Uses `INSERT OR IGNORE` so re-seeding never trips
@@ -303,6 +340,15 @@ pub fn seedDefaultKanbanTools(
 ) !void {
     const ts = helpers.unixTimestampNanos();
     for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
+        const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, i });
+        defer allocator.free(id);
+        try db.exec(allocator,
+            "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
+            &.{ id, kanban_id, tool_name },
+        );
+    }
+
+    for (DEFAULT_KANBAN_TOOLS, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, i });
         defer allocator.free(id);
         try db.exec(allocator,
