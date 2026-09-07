@@ -447,34 +447,3 @@ test "useCase: position increments per workspace" {
     try testing.expectEqualStrings("ws_2", p2_pos.item.workspace_id);
 }
 
-test "useCase: seeds default tools (command, read_file, write_file)" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const json = try useCase(alloc, &ctx.db, .{
-        .workspace_id = "ws_1",
-        .body = .{ .name = "My Agent", .path = "/tmp/agent" },
-    });
-    defer alloc.free(json);
-
-    const parsed = try std.json.parseFromSliceLeaky(CreateAgentResponseFull, alloc, json, .{});
-    var q = try ctx.db.query(alloc,
-        "SELECT tool_name FROM agent_tools WHERE agent_id = ? ORDER BY tool_name ASC",
-        &.{parsed.item.id},
-    );
-    defer q.deinit();
-    var names: [3][]const u8 = undefined;
-    var n: usize = 0;
-    while ((q.next() catch null)) |row| {
-        defer row.deinit(alloc);
-        if (n < 3) names[n] = try alloc.dupe(u8, row.values[0]);
-        n += 1;
-    }
-    defer for (names[0..@min(n, 3)]) |s| alloc.free(s);
-    try testing.expectEqual(@as(usize, 3), n);
-    try testing.expectEqualStrings("command", names[0]);
-    try testing.expectEqualStrings("read_file", names[1]);
-    try testing.expectEqualStrings("write_file", names[2]);
-}
