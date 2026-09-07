@@ -1209,6 +1209,18 @@ pub const Agent = struct {
     httpOptions: HttpOptions = .{},
     UrlStyle: []const u8 = "openai",
     userIdentifier: []const u8 = "AnakMagang",
+    /// Stable per-conversation session id for OpenCode Go / Zen routing.
+    /// Sent as the `x-opencode-session` HTTP header on every LLM request
+    /// when non-empty. See https://opencode.ai/docs/go/#where-can-i-use-it
+    /// ("Send a stable session ID in `x-opencode-session` for each
+    /// conversation so we can optimize routing and prompt caching").
+    /// Without it Console Go answers with
+    /// `{"type":"error","error":{"type":"MissingSessionID",...}}` on a
+    /// 200 SSE stream, which surfaces here as
+    /// "stream ended without finish_reason after 0 chunk(s)".
+    /// BORROWED slice — the workflow sets it from `copy_session_id`
+    /// (per-iteration arena) for the duration of one `callStreaming`.
+    sessionId: []const u8 = "",
     /// Most recent server/transporter error detail (e.g. the JSON error body
     /// the LLM provider returned for HTTP >=400, or a synthesized reason for
     /// mid-stream failures like scanner errors / missing finish_reason).
@@ -2792,7 +2804,20 @@ pub const Agent = struct {
         defer self.allocator.free(auth_value);
 
         // 4. Build the custom_http_client.Request.
-        const headers = [_]custom_http_client.Header{
+        // OpenCode Go / Zen routing requires a stable per-conversation
+        // `x-opencode-session` header (see Agent.sessionId doc). Without
+        // it Console Go returns 200 + `{"type":"error",
+        // "error":{"type":"MissingSessionID",...}}`, which the SSE loop
+        // below surfaces as "stream ended without finish_reason after
+        // 0 chunk(s)". Only emit when non-empty so non-Go providers
+        // see a byte-identical request to before.
+        const headers_with_session = [_]custom_http_client.Header{
+            .{ .name = "authorization", .value = auth_value },
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "accept-encoding", .value = "identity" },
+            .{ .name = "x-opencode-session", .value = self.sessionId },
+        };
+        const headers_without_session = [_]custom_http_client.Header{
             .{ .name = "authorization", .value = auth_value },
             .{ .name = "content-type", .value = "application/json" },
             .{ .name = "accept-encoding", .value = "identity" },
@@ -2800,18 +2825,23 @@ pub const Agent = struct {
         const req = custom_http_client.Request{
             .method = .POST,
             .url = uri_str,
-            .headers = &headers,
+            .headers = if (self.sessionId.len > 0) &headers_with_session else &headers_without_session,
             .body = json_body,
         };
 
         // 5. Build Options. Standard libcurl timeouts — no custom watchdog.
         // CURLOPT_TIMEOUT_MS covers the total deadline; libcurl will fire it
         // when the server stalls without sending bytes.
+        // user_agent is our own client id (not the generic
+        // "custom_http_client/0.1.0" default) — OpenCode Go asks clients
+        // to "identify itself with its own user agent ... rather than a
+        // generic SDK or HTTP-library name".
         const options = custom_http_client.Options{
             .timeout_ms = self.httpOptions.read_timeout_ms,
             .connect_timeout_ms = 30_000,
             .follow_redirects = false,
             .verify_ssl = true,
+            .user_agent = "nalar/1.0",
         };
 
         // 6. Open the streaming request.
@@ -3016,8 +3046,18 @@ pub const Agent = struct {
             const detail: ?[]u8 = if (sample_for_msg.len > 0)
                 std.fmt.allocPrint(
                     self.allocator,
-                    "stream ended without finish_reason after {d} chunk(s); first server lines: {s}",
-                    .{ chunk_count, sample_for_msg },
+                    "stream ended without finish_reason after {d} chunk(s); first server lines: {s}{s}",
+                    .{
+                        chunk_count,
+                        sample_for_msg,
+                        // Console Go gateway error when `x-opencode-session`
+                        // was missing. Point at the fix instead of leaving
+                        // the user to decode the raw JSON envelope.
+                        if (std.mem.indexOf(u8, sample_for_msg, "MissingSessionID") != null)
+                            " [hint: provider requires x-opencode-session header — Agent.sessionId was empty or not sent; see https://opencode.ai/docs/go/#where-can-i-use-it]"
+                        else
+                            "",
+                    },
                 ) catch null
             else
                 std.fmt.allocPrint(
