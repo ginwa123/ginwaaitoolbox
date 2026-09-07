@@ -884,6 +884,16 @@ pub fn build(b: *std.Build) void {
     // Defined EARLY so the mcp and webapp sections below can be gated.
     const no_webapp_rebuild = b.option(bool, "no-webapp-rebuild", "Skip the webapp-rebuild + mcp-hello-world chains (Windows CI OOM / no-pnpm workaround)") orelse false;
 
+    // CLI flag: `-Drequire-real-webview` turns the no-op webview stub
+    // fallback (see use_real_webview below) into a hard config-time error.
+    // CI passes this on the Windows nalar-desktop build so a runner without
+    // MSVC + WebView2 NuGet staging fails loudly instead of shipping a
+    // nalar-desktop.exe whose webview_create() always returns NULL
+    // (surface symptom: WebviewCreateFailed + evergreen-runtime prompt on a
+    // machine that HAS the runtime — the binary is stub, not the runtime
+    // missing). Dev boxes omit it and keep the warn-and-stub behavior.
+    const require_real_webview = b.option(bool, "require-real-webview", "Fail the build instead of falling back to the no-op webview stub") orelse false;
+
     // `helpers` package (`src/helpers/`): project-wide portable sleep /
     // time / file-existence helpers. Created EARLY (before any
     // `b.addExecutable(...)` or `b.createModule(...)` calls below) so
@@ -1970,7 +1980,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             // the symbols as no-ops so `zig build nalar-desktop` still
             // succeeds on dev boxes without MSVC + NuGet extraction.
             const use_real_webview = blk: {
-                if (no_webapp_rebuild) break :blk false; // Windows CI OOM/fast path — use stub
+                // NOTE: -Dno-webapp-rebuild does NOT force the stub — it
+                // only skips the vite/pnpm chain (the OOM source). The
+                // cl.exe single-TU compile below is cheap. Forcing stub here
+                // used to ship CI zips whose webview_create() always returns
+                // NULL (WebviewCreateFailed on machines WITH the runtime).
                 if (!hasMsvcCppStllib(b, b.graph.io)) break :blk false;
                 // cl.exe path + MSVC lib dir below need the resolved
                 // version root (hasMsvc alone doesn't bind it, e.g.
@@ -1988,6 +2002,15 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 }
                 break :blk true;
             };
+            if (require_real_webview and !use_real_webview) {
+                std.log.err(
+                    "nalar-desktop: -Drequire-real-webview is set but the real webview/webview build is unavailable on this host " ++
+                        "(missing MSVC C++ toolchain or WebView2 NuGet staging under src/apps/desktop_app/platform/windows/) — " ++
+                        "refusing to build the no-op stub whose webview_create() always returns NULL. See the warnings above for the missing piece.",
+                    .{},
+                );
+                std.process.exit(1);
+            }
             if (use_real_webview) {
             // Compile vendor/webview/webview.cc with the REAL cl.exe
             // (MSVC), not `zig cc`.
