@@ -261,11 +261,15 @@ const hasEntries = computed(() =>
     ? textEntries.value.length > 0
     : sessionEntries.value.length > 0,
 )
+const hasArgs = computed(() => {
+  const v = (props.parameters ?? '').trim()
+  return v !== '' && v !== '{}'
+})
 
 // ── Actions ──────────────────────────────────────────────────────────────
 
 const toggle = () => {
-  if (hasEntries.value || isError.value) {
+  if (hasEntries.value || isError.value || hasArgs.value) {
     isExpanded.value = !isExpanded.value
   }
 }
@@ -383,7 +387,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       <span v-if="isRunning" data-testid="search-history-running" class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0">running…</span>
 
       <span
-        v-if="hasEntries || isError"
+        v-if="hasEntries || isError || hasArgs"
         class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
       >
         {{ isExpanded ? '−' : '+' }}
@@ -600,6 +604,9 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           </div>
         </li>
       </ul>
+      <ToolParameters :parameters="parameters" />
+    </div>
+    <div v-if="isExpanded && !hasEntries && !isError">
       <ToolParameters :parameters="parameters" />
     </div>
   </div>

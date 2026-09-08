@@ -16,6 +16,11 @@ const props = defineProps<{
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseAddSkill(props.content))
 
+const hasArgs = computed(() => {
+  const p = (props.parameters ?? '').trim()
+  return p !== '' && p !== '{}'
+})
+
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
 }
@@ -31,7 +36,7 @@ const handleToggle = (next: boolean) => {
       :primary="parsed.skillName"
       :success="parsed.created"
       :expanded="isExpanded"
-      :expandable="!parsed.created || !!parsed.error || !!parsed.path"
+      :expandable="!parsed.created || !!parsed.error || !!parsed.path || hasArgs"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
     />

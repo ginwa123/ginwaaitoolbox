@@ -172,6 +172,10 @@ const summaryText = computed((): string => {
 
 const isError = computed(() => !!errorMessage.value)
 const hasEntries = computed(() => entries.value.length > 0)
+const hasArgs = computed(() => {
+  const v = (props.parameters ?? '').trim()
+  return v !== '' && v !== '{}'
+})
 const isPaginated = computed(() => {
   const c = count.value
   const t = totalCount.value
@@ -181,7 +185,7 @@ const isPaginated = computed(() => {
 // ── Actions ───────────────────────────────────────────────────────────────
 
 const toggle = () => {
-  if (hasEntries.value || isError.value) {
+  if (hasEntries.value || isError.value || hasArgs.value) {
     isExpanded.value = !isExpanded.value
   }
 }
@@ -312,7 +316,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       </span>
 
       <span
-        v-if="hasEntries || isError"
+        v-if="hasEntries || isError || hasArgs"
         class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
       >
         {{ isExpanded ? '−' : '+' }}
@@ -445,6 +449,9 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           >{{ entry.content }}</pre>
         </div>
       </div>
+      <ToolParameters :parameters="parameters" />
+    </div>
+    <div v-if="isExpanded && !hasEntries && !isError">
       <ToolParameters :parameters="parameters" />
     </div>
   </div>

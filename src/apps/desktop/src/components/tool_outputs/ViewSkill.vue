@@ -16,6 +16,11 @@ const props = defineProps<{
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseViewSkill(props.content))
 
+const hasArgs = computed(() => {
+  const p = (props.parameters ?? '').trim()
+  return p !== '' && p !== '{}'
+})
+
 const hasAvailableSkills = computed(() => parsed.value.availableSkills.length > 0)
 const rightMeta = computed(() =>
   hasAvailableSkills.value ? `${parsed.value.availableSkills.length} available` : null,
@@ -36,7 +41,7 @@ const handleToggle = (next: boolean) => {
       :primary="parsed.skillName"
       :success="parsed.found"
       :expanded="isExpanded"
-      :expandable="!parsed.found || !!parsed.error || hasAvailableSkills || !!parsed.description"
+      :expandable="!parsed.found || !!parsed.error || hasAvailableSkills || !!parsed.description || hasArgs"
       :right-meta="rightMeta"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"

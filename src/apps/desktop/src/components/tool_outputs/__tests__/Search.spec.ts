@@ -54,7 +54,7 @@ const oneMatchEnvelope = (pattern = 'TODO', path = '/tmp/repo/src') =>
   `</search>\n`
 
 const makeWrapper = (
-  props: { content: string; cwd?: string; expanded?: boolean },
+  props: { content: string; cwd?: string; expanded?: boolean; parameters?: string },
   provideOpenInEditor?: OpenInCodeEditorFn,
 ) => {
   if (provideOpenInEditor) {
@@ -161,5 +161,40 @@ describe('Search.vue — match-found envelope (regression guard)', () => {
     const html = wrapper.html()
     expect(html).not.toContain('"unknown"')
     expect(html).not.toContain('in unknown')
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────
+// Empty/no-match results — Arguments must still be reachable.
+//
+// Bug: the expanded body was `v-if="isExpanded && fileResults.length > 0"`
+// and toggle() refused to expand on a warning/empty envelope, so a no-match
+// search (warning envelope) could never show its Arguments block.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('Search.vue — warning envelope still shows Arguments (empty/no-match)', () => {
+  const warningContent =
+    `<search pattern="foo" path="/tmp">\n` +
+    `<warning>no matches for pattern</warning>\n` +
+    `</search>\n`
+  const params = `<pattern>foo</pattern><path>/tmp</path>`
+
+  it('shows Arguments when expanded via prop', () => {
+    const wrapper = makeWrapper({ content: warningContent, parameters: params, expanded: true })
+
+    const html = wrapper.html()
+    expect(html).toContain('Arguments')
+    expect(html).toContain('foo')
+  })
+
+  it('shows Arguments after header click', async () => {
+    const wrapper = makeWrapper({ content: warningContent, parameters: params })
+
+    // Collapsed initially: Arguments hidden.
+    expect(wrapper.html()).not.toContain('Arguments')
+    await wrapper.find('[role="button"]').trigger('click')
+    const html = wrapper.html()
+    expect(html).toContain('Arguments')
+    expect(html).toContain('foo')
   })
 })

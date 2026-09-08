@@ -33,6 +33,11 @@ watch(
 
 const parsed = computed(() => parseTextReplace(props.content))
 
+const hasArgs = computed(() => {
+  const p = (props.parameters ?? '').trim()
+  return p !== '' && p !== '{}'
+})
+
 // Diff content: prefer explicit props.diffviewBefore/After, then parsed before/after.
 const diffBefore = computed(() => props.diffviewBefore ?? parsed.value.before)
 const diffAfter = computed(() => props.diffviewAfter ?? parsed.value.after)
@@ -94,7 +99,7 @@ const handleToggle = (next: boolean) => {
       :primary="displayPath"
       :success="parsed.success"
       :expanded="isExpanded"
-      :expandable="!!parsed.error || hasDiff"
+      :expandable="!!parsed.error || hasDiff || hasArgs"
       :cwd="cwd"
       :right-meta="isRunning ? 'running…' : null"
       @update:expanded="handleToggle"
