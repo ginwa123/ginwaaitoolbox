@@ -465,6 +465,28 @@ export async function listFolder(path: string): Promise<FolderInfo> {
   )
 }
 
+/**
+ * Server-side recursive file search for the ChatView `@` picker
+ * (plan: docs/superpowers/plans/2026-09-08-chatview-search-files-perf.md
+ * Task 2). Single round-trip — replaces the old N-sequential-fetch
+ * full-tree walk. Uses `apiFetch` (not raw fetch) for timeout/auth
+ * handling. Backend: `GET /api/system/folder?action=search` returns
+ * `{ entries: [{name, path, is_directory, is_symlink}] }` (snake_case,
+ * length <= limit, fat dirs skipped server-side).
+ */
+export async function searchFiles(
+  cwd: string,
+  q: string,
+  limit = 50,
+  max_depth = 8,
+  signal?: AbortSignal,
+): Promise<{ entries: FolderEntry[] }> {
+  return await apiFetch<{ entries: FolderEntry[] }>(
+    `/system/folder?path=${encodeURIComponent(cwd)}&action=search&q=${encodeURIComponent(q)}&limit=${limit}&max_depth=${max_depth}`,
+    { signal, silent: true },
+  )
+}
+
 // Workspace API
 export async function getWorkspaces(): Promise<{ workspaces: Workspace[] }> {
   // Items are loaded separately via getWorkspacesItems(workspace_id) —
