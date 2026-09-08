@@ -1032,8 +1032,8 @@ jobs:
         # serves 404 at / (caught by the smoke steps below; run
         # 34184202159 went red on exactly that shape).
         #
-        # The Linux cell saves the real file to this OS-agnostic cache
-        # after its full rebuild (see "Save shared webapp_assets.zig").
+        # The Linux/macOS cells save the real file to this OS-agnostic cache
+        # after their full rebuild (see "Save shared webapp_assets.zig").
         # The key deliberately omits runner.os so all cells share it:
         # exact-hash hit on same-commit reruns, prefix fallback to the
         # newest previous webapp otherwise (stale-but-real still serves
@@ -1108,7 +1108,7 @@ jobs:
         # (`Install nalar + nalar-desktop (Windows)`), with webapp
         # rebuild disabled via `--no-webapp-rebuild`. The real
         # `webapp_assets.zig` arrives via the "Restore shared
-        # webapp_assets.zig (Windows)" cache step above (Linux-saved,
+        # webapp_assets.zig (Windows)" cache step above (Linux/macOS-saved,
         # OS-agnostic key) — without a cache hit, a fresh Windows
         # checkout embeds the EMPTY STUB from build.zig, and the
         # Windows-only "desktop webapp serves 200" smoke step below
@@ -1163,14 +1163,22 @@ jobs:
         shell: bash
         run: zig build nalar-desktop --summary all
 
-      - name: Save shared webapp_assets.zig (Linux)
-        # Linux-only writer for the OS-agnostic cache the Windows cell
+      - name: Save shared webapp_assets.zig (non-Windows)
+        # Non-Windows writer for the OS-agnostic cache the Windows cell
         # restores above. Runs right after the full webapp rebuild, so
-        # the file is fresh. Single writer (Linux, not macOS) so two
-        # cells never race to save the same immutable key. macOS needs
-        # no save — same sources + same key = same content, and the
-        # Windows restore only needs ONE copy to exist.
-        if: runner.os == 'Linux'
+        # the file is fresh. Both Linux AND macOS write (same sources +
+        # same key = same content): whoever finishes first wins, which
+        # keeps Windows unblocked when one runner is offline (the Linux
+        # self-hosted runner was offline for run 34185612175 while
+        # macOS was up).
+        #
+        # `continue-on-error`: cache keys are reserve-once — when both
+        # cells save the same key, the loser gets a reserve conflict.
+        # A failed SAVE must never fail the job (the build + tests
+        # already passed; worst case Windows falls back to an older
+        # cached webapp, which still serves 200).
+        if: runner.os != 'Windows'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: src/apps/desktop_app/embedded/webapp_assets.zig
@@ -1187,7 +1195,7 @@ jobs:
         # full webapp rebuild path), so the LLVM OOM / vite OOM that
         # crashed the unified step on the Windows ARM64 runner goes
         # away. The real `webapp_assets.zig` arrives via the "Restore
-        # shared webapp_assets.zig (Windows)" cache step (Linux-saved,
+        # shared webapp_assets.zig (Windows)" cache step (Linux/macOS-saved,
         # OS-agnostic key) — without a cache hit, a fresh Windows
         # checkout embeds the EMPTY STUB from build.zig (zero assets).
         # The Windows-only "desktop webapp serves 200" smoke step below
