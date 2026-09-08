@@ -470,23 +470,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     );
 
     var config = nalarcore.getLlmConfig(di.di);
-    // === Profile resolution (plan 2026-08-23-refactor-profile-resolution)
-    // ONE typed cascade — selected_profile → active_profile → top-level —
-    // for ALL fields (model/base_url/api_key/url_style + the
-    // model-thinking trio). Replaces ~120 lines of hand-rolled cascade
-    // blocks previously duplicated across this entry site and the
-    // per-iteration re-read below.
-    //
-    // Model-thinking semantics preserved: `is_thinking` /
-    // `thinking_adaptive` are derived ONCE from the final
-    // `thinking_str` inside resolveEffectiveProfile ("auto" →
-    // null/true, "on" → true/false, "off" → false/false, garbage →
-    // null/false). The profile's choice is persisted onto the session's
-    // initial llm_history.is_thinking via the user-message INSERT below.
-    //
-    // For sub-agents, params.sub_agent_overrides (built from
-    // ResolvedSubAgent) overrides these values at the override site
-    // further down the loop body.
     var eff = config.resolveEffectiveProfile(params.selected_profile_model);
 
     logger.infoFmt(
@@ -499,19 +482,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_message = try parent_allocator.dupe(u8, params.message);
     const copy_cwd = try parent_allocator.dupe(u8, params.cwd);
 
-    // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
-    // If this is a top-level session bound to an Agent workspace_item,
-    // OVERRIDE `copy_allowed_tools` with the agent's allowlist from
-    // the `agent_tools` table. Secure-by-default semantics per D1:
-    //   - Empty allowlist → `""` → `filterAndMergeTools` registers
-    //     zero tools (no tools in the LLM's function-call schema)
-    //   - Non-empty allowlist → comma-separated tool_names (passed
-    //     to `filterAndMergeTools` which already supports this)
-    //
-    // Sub-agents (params.is_sub_agent == true) are NOT filtered —
-    // the spawned sub-agent's `allowed_tools` is set by the
-    // `spawn_sub_agent` tool call (see tools_exec_spawn_sub_agent.zig),
-    // and we don't override that.
     var copy_allowed_tools: []const u8 = parent_allocator.dupe(u8, params.allowed_tools) catch "";
     if (!params.is_sub_agent) {
         if (try maybeOverrideAllowedToolsForAgent(
@@ -589,22 +559,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
     defer active_loops.remove(io, copy_session_id);
 
-    // updateWorker is now called INSIDE the while loop body (see
-    // below) — the original insertion here (PR #269) was redundant
-    // with the per-iteration update. Removing it also fixes the
-    // trade-off documented in
-    // docs/superpowers/plans/2026-08-19-cleanup-stale-worker-cron.md §2.6
-    // (long-running workflows would have stale last_activity_nano if
-    // updateWorker only ran once at entry).
-    //
-    // Plan: docs/superpowers/reviews/2026-08-18-pr-269-update-worker-in-loop.md
-
-    // Queue the initial message — unless the caller asked us to skip
-    // it (the start_agent endpoint triggers a worker on an existing
-    // session without queueing a new user message; the agent then runs
-    // against the existing chat history alone).
-    //
-    // Plan: docs/superpowers/specs/2026-08-18-kanban-task-detail-start-agent.md
     if (!params.skip_initial_queue_message) {
         try insertQueueMessage(InsertQueueMessageInput{
             .allocator = parent_allocator,
@@ -631,33 +585,26 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var retry_count: u32 = 0;
     var last_retry_error: anyerror = error.Unknown;
     var last_retry_source: []const u8 = "unknown";
-    // Most recent server-side reason string (HTTP status+body, scanner
-    // error, raw SSE sample) captured from `last_dynamic_agent_error_message`
-    // at each retry. Arena-owned (duped inside callDynamicAgentNew into the
-    // per-iteration arena, which outlives both bail sites in the same
-    // iteration) — never freed manually. Reset alongside `last_retry_error`
-    // everywhere that resets those.
     var last_retry_server_detail: ?[]const u8 = null;
     var current_max_tokens: usize = 20000;
     var loop_counter: u32 = 0;
     var last_iter_start_ns: i128 = 0;
 
-    // One-shot config read for the once-per-workflow setup (MCP tool
-    // list). The per-iteration LLM-call fields are re-read inside the
-    // loop body — see "Live config re-read" below.
     const initial_config = nalarcore.getLlmConfig(di.di);
+
+    touchCheckpointWorkers(.{
+        .allocator = parent_allocator,
+        .db = db,
+        .logger = logger,
+        .event_bus = event_bus,
+        .session_id = params.session_id,
+        .parent_session_id = params.parent_session_id,
+        .cwd = params.cwd,
+        .is_sub_agent = params.is_sub_agent,
+    });
 
     // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
     const mcp_tools_fetched = (blk: {
-        // Wire `isWorkerCancelled` through to the MCP stdio recv
-        // callback so the Stop button aborts a hung fetch within
-        // one syscall. We package the (db, session_id) pair into a
-        // small heap-allocated context + a static adapter fn;
-        // captured by value, intentionally leaked for the
-        // workflow-run lifetime. The per-request arena cleanup rule
-        // doesn't apply here — `parent_allocator` lives for the
-        // whole run, NOT a single request, so the leak is bounded
-        // by run count (O(1) per workflow run).
         const McpCancelCtx = struct {
             db: *sqlite.SqliteBackend,
             session_id: []const u8,
@@ -675,11 +622,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             }
         };
 
-        // Alloc the captured-state box on `parent_allocator` (lives
-        // for the run) so the context survives across the loop
-        // body's many recv calls. On OOM (extremely unlikely — the
-        // arena is unbounded), fall back to a no-cancel fetch; the
-        // 30s deadline still saves us from an infinite hang.
         const box = parent_allocator.create(McpCancelCtx) catch null;
         if (box) |b| {
             b.* = .{ .db = db, .session_id = copy_session_id };
@@ -695,10 +637,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
         break :blk null;
     });
-    // Keep nullable (don't collapse to empty slice here): null means
-    // "no MCP servers configured OR fetch threw" — distinct from an
-    // empty slice ("servers configured but zero tools"). Unwrapped
-    // at the use site so the log can report which case we're in.
 
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);
