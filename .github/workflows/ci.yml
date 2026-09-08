@@ -1072,6 +1072,7 @@ jobs:
           key: webapp-dist-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/index.html', 'src/apps/desktop/vite.config.*', 'src/apps/desktop/src/**', 'src/apps/desktop/public/**') }}
 
       - name: Test (zig build test only — no nalar-desktop install)
+        timeout-minutes: 30 # fail fast: Windows self-hosted has wedged here (2026-09-08: idle 55+ min, zero CPU, all artifacts built) and the default 6h cap burns the single runner
         # PERF (2026-08-25): the original step merged `zig build test`
         # + `zig build nalar-desktop` into ONE invocation to halve the
         # dep-graph walk. Linux + macOS can still do that. Windows
@@ -1147,6 +1148,7 @@ jobs:
         run: zig build nalar-desktop --summary all
 
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
+        timeout-minutes: 30 # fail fast: this step wedged for 1h+ on 2026-09-08 (build finished in ~1 min, then zig/build.exe sat idle with no children) and twice before (4.5h/6.5h cancelled runs); default 6h cap blocks the only Windows runner
         # Windows-only twin of the previous step. Same goal — produce
         # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
         # test + artifact publish — but with the webapp-rebuild chain
