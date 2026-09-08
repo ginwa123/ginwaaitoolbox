@@ -1306,6 +1306,7 @@ export async function getChatHistory(
       max_total_tokens: undefined,
       max_capacity_total_tokens: undefined,
       total_count: undefined,
+      skills: [],
     }
   }
 }
@@ -1450,6 +1451,12 @@ export interface SseEvent {
   // without attached images (most assistant responses, error paths,
   // tool results that don't carry image data).
   image_url?: string
+  // Live session skills pushed on the SSE wire (backend:
+  // sse_on_event_send_llm_history.zig:45 SseEventLLMHistory.session_skills,
+  // next to is_error). REST-vs-SSE key note: the REST GET /messages path
+  // exposes these as `skills` (getChatHistory) while SSE uses
+  // `session_skills` — keep both keys, don't unify.
+  session_skills?: SkillInfo[]
   // True when this event is an agentic-loop diagnostic (retry attempt or
   // TooManyRetries bail) rather than a real chat turn. Backend:
   // sse_on_event_send_llm_history.zig SseEventLLMHistory.is_error — set

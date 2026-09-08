@@ -231,6 +231,8 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-08-06-chat-scroll-position-persistence.md` | ✅ | `useChatScrollRestore` composable + `VirtualScroller.scrollToPosition()` + ChatView initial-load branch + `isInitialLoad` guard |
 | `sse-reconnect-plan.md` (root) | ⏳ | Frontend SSE auto-reconnect plan — 4 `EventSource` connection sites (`App.vue::initWorkersSse`, `ChatsList.vue::connectSessionsSse`, `ChatView.vue::connectSse` × 2 streams, `Sidebar.vue::connectSessionsSse` stub). Only `App.vue` reconnects (naive `setTimeout(…, 5000)`, contains a bug). Plan calls for exponential backoff + jitter, tab-visibility awareness, online/offline handling, max-retry cap, UI feedback (`onStateChange` channel → "Reconnecting…" badge), per-stream unified protocol. See `docs/sse-reconnect-plan.md` (kept on disk as a protocol reference, not a per-feature plan). |
 
+Chat skills badge: live source = SSE `llm_full.session_skills`; initial load = REST top-level `skills`.
+
 ### 3.7 Frontend — Kanban (Workspace Item Type)
 
 | Plan | Status | Key file / PR |
