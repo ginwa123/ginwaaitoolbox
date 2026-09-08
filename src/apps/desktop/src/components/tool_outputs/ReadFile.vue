@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import { parseReadFile } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
 
@@ -69,6 +70,7 @@ const handleToggle = (next: boolean) => {
         v-else
         class="p-2 m-0 bg-black/[0.02] whitespace-pre overflow-x-visible leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
       >{{ fileContent || '(empty)' }}</pre>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

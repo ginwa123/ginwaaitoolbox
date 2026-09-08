@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
   /** Inner <data> XML from the nalar_browser result envelope.
@@ -382,6 +383,7 @@ const toggle = () => {
           </span>
         </div>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

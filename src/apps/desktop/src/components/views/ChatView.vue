@@ -3114,6 +3114,7 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'update_activity'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <Search
                             v-else-if="msg.tool_name === 'search'"
@@ -3160,26 +3161,31 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'view_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <ListSkills
                             v-else-if="msg.tool_name === 'list_skills'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <AddSkill
                             v-else-if="msg.tool_name === 'add_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <EditSkill
                             v-else-if="msg.tool_name === 'edit_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <RemoveSkill
                             v-else-if="msg.tool_name === 'remove_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <RemoveFile
                             v-else-if="msg.tool_name === 'remove_file'"
@@ -3194,6 +3200,7 @@ const compactSession = async () => {
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
                             :progress="msg.tool_call_id ? subAgentProgressMap[msg.tool_call_id] : null"
+                            :parameters="getParametersForMessage(msg)"
                             @peek="nav.openPeek($event)"
                           />
                           <NalarBrowser

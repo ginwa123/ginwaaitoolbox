@@ -1,15 +1,25 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import { parseViewSkill } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Surfaced via the
+   *  shared <ToolParameters> block in the expanded body; empty/'{}'
+   *  renders nothing (see ToolParameters.vue hasArgs guard). */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseViewSkill(props.content))
+
+const hasArgs = computed(() => {
+  const p = (props.parameters ?? '').trim()
+  return p !== '' && p !== '{}'
+})
 
 const hasAvailableSkills = computed(() => parsed.value.availableSkills.length > 0)
 const rightMeta = computed(() =>
@@ -31,7 +41,7 @@ const handleToggle = (next: boolean) => {
       :primary="parsed.skillName"
       :success="parsed.found"
       :expanded="isExpanded"
-      :expandable="!parsed.found || !!parsed.error || hasAvailableSkills || !!parsed.description"
+      :expandable="!parsed.found || !!parsed.error || hasAvailableSkills || !!parsed.description || hasArgs"
       :right-meta="rightMeta"
       :show-open-in-editor="false"
       @update:expanded="handleToggle"
@@ -82,6 +92,7 @@ const handleToggle = (next: boolean) => {
           class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs overflow-auto"
         >{{ parsed.description }}</pre>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 interface SkillInfo {
   name: string
@@ -10,6 +11,10 @@ interface SkillInfo {
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Surfaced via the
+   *  shared <ToolParameters> block in the expanded body; empty/'{}'
+   *  renders nothing (see ToolParameters.vue hasArgs guard). */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -175,6 +180,7 @@ const copySkillName = async (e: Event, name: string) => {
           </div>
         </div>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

@@ -1,6 +1,7 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 import { extractParam } from '../../helpers/extractParam'
 
@@ -61,6 +62,8 @@ const warningMessage = computed(() => {
   return match ? match[1] : null
 })
 
+const hasWarning = computed(() => !!warningMessage.value)
+
 // Parse all file paths
 const filePaths = computed((): string[] => {
   const results: string[] = []
@@ -72,9 +75,22 @@ const filePaths = computed((): string[] => {
   return results
 })
 
+// Arguments guard (mirrors ToolParameters.vue hasArgs): non-empty params
+// mean there is something worth expanding even with zero file results.
+const hasArgs = computed(() => {
+  const p = (props.parameters ?? '').trim()
+  return p !== '' && p !== '{}'
+})
+
+// Expandable unless pure-running-empty (in-flight, no display info yet).
+const isExpandable = computed(() => {
+  if (isRunning.value) return false
+  return hasWarning.value || filePaths.value.length > 0 || hasArgs.value
+})
+
 // Toggle expansion
 const toggle = () => {
-  if (!warningMessage.value && filePaths.value.length > 0) {
+  if (isExpandable.value) {
     isExpanded.value = !isExpanded.value
   }
 }
@@ -131,27 +147,30 @@ const handleOpenInEditor = (e: Event, path: string) => {
       </template>
 
       <!-- Toggle indicator -->
-      <span v-if="!warningMessage && filePaths.length > 0" class="gl-toggle">
+      <span v-if="isExpandable" class="gl-toggle">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
 
     <!-- File list (expanded state only - no scroll) -->
-    <div v-if="isExpanded && filePaths.length > 0" class="gl-content">
-      <div v-for="(path, idx) in filePaths" :key="idx" class="gl-file">
-        <span class="gl-file-path" :title="path">{{ path }}</span>
-        <button class="gl-copy" @click="(e) => copyPath(e, path)" title="Copy path">⎘</button>
-        <button
-          v-if="props.cwd && openInEditor"
-          class="gl-copy"
-          @click="(e) => handleOpenInEditor(e, path)"
-          title="Open in code editor"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-        </button>
+    <div v-if="isExpanded" class="gl-content">
+      <div v-if="filePaths.length > 0">
+        <div v-for="(path, idx) in filePaths" :key="idx" class="gl-file">
+          <span class="gl-file-path" :title="path">{{ path }}</span>
+          <button class="gl-copy" @click="(e) => copyPath(e, path)" title="Copy path">⎘</button>
+          <button
+            v-if="props.cwd && openInEditor"
+            class="gl-copy"
+            @click="(e) => handleOpenInEditor(e, path)"
+            title="Open in code editor"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
+        </div>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

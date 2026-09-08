@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import { parseRemoveFile } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
 
@@ -13,6 +14,11 @@ const props = defineProps<{
 
 const isExpanded = ref(props.expanded ?? false)
 const parsed = computed(() => parseRemoveFile(props.content))
+
+const hasArgs = computed(() => {
+  const p = (props.parameters ?? '').trim()
+  return p !== '' && p !== '{}'
+})
 
 const contentPath = computed((): string | null => {
   const p = parsed.value.path
@@ -45,7 +51,7 @@ const handleToggle = (next: boolean) => {
       :primary="displayPath"
       :success="parsed.deleted"
       :expanded="isExpanded"
-      :expandable="!!parsed.error"
+      :expandable="!!parsed.error || hasArgs"
       :cwd="cwd"
       :inline-tag="parsed.recursive ? '(recursive)' : null"
       :right-meta="isRunning ? 'running…' : null"
@@ -53,13 +59,14 @@ const handleToggle = (next: boolean) => {
     />
 
     <div
-      v-if="isExpanded && parsed.error"
+      v-if="isExpanded && (parsed.error || hasArgs)"
       class="border-t border-[var(--color-border)] bg-black/[0.02]"
     >
-      <div class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

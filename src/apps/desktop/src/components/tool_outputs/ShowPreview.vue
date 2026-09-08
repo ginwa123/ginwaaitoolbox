@@ -52,6 +52,7 @@ import { computed } from 'vue'
 import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import PreviewContentRenderer from '@/components/preview/PreviewContentRenderer.vue'
 import { extractPreviewArgs, type PreviewArgs } from '@/helpers/previewArgs'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 interface Props {
   /** The XML envelope produced by the show_preview tool. */
@@ -355,5 +356,6 @@ const copyPreviewId = async (e: Event) => {
     >
       <span class="font-semibold mr-1">Error:</span>{{ errorMessage }}
     </div>
+    <ToolParameters :parameters="parameters" />
   </div>
 </template>

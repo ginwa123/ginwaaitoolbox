@@ -41,6 +41,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { parseListDirectory } from './_shared/toolOutputParser'
+import ToolParameters from './_shared/ToolParameters.vue'
 import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
@@ -231,6 +232,7 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
           </button>
         </div>
       </template>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

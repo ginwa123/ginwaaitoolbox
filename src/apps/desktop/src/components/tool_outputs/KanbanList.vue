@@ -51,6 +51,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 interface ColumnSummary {
   id: string
@@ -376,6 +377,7 @@ const copyId = async (e: Event, id: string) => {
           </div>
         </template>
       </template>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

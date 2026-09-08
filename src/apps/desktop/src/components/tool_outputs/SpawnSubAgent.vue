@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import type { SubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentProgress } from '../../helpers/subagentProgress'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
   content: string
@@ -19,6 +20,9 @@ const props = defineProps<{
    * then deleted from ChatView via `clearProgressFor(tool_call_id)`.
    */
   progress?: SubAgentProgress[] | null
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Rendered via the
+   *  shared ToolParameters block after the agent rows. */
+  parameters?: string
 }>()
 
 const emit = defineEmits<{
@@ -503,6 +507,7 @@ function formatElapsed(ms: number): string {
           </div>
         </div>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

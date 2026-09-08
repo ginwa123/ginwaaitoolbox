@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import { parseSetGitWorktree } from './_shared/toolOutputParser'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
   content: string
@@ -91,6 +92,7 @@ const handleToggle = (next: boolean) => {
       >
         <span>Worktree binding removed and directory deleted.</span>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -162,6 +164,7 @@ const copyThought = async (e: Event) => {
       <div v-else-if="thoughtContent" class="p-2 text-[var(--semantic-text)] text-xs whitespace-pre-wrap">
         {{ thoughtContent }}
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>
