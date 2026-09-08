@@ -1041,13 +1041,23 @@ jobs:
         #
         # Restore-ONLY (actions/cache/restore, NOT actions/cache):
         # Windows must never OVERWRITE the good cache with its stub.
+        #
+        # `enableCrossOsArchive: true` is REQUIRED on both ends: without
+        # it the cache service will not return entries created on another
+        # OS — the restore reports "Cache not found" even when a
+        # prefix-matching entry exists (observed 04:59 UTC: entry
+        # webapp-assets-v1-5220… saved by macOS 16 min earlier, restore
+        # with the v1 key still missed). Key bumped v1→v2 because the old
+        # entry was saved without the flag and stays unrestorable (same
+        # key would just hit a reserve conflict on re-save).
         if: runner.os == 'Windows'
         uses: actions/cache/restore@v4
         with:
           path: src/apps/desktop_app/embedded/webapp_assets.zig
-          key: webapp-assets-v1-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
+          key: webapp-assets-v2-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
           restore-keys: |
-            webapp-assets-v1-
+            webapp-assets-v2-
+          enableCrossOsArchive: true
 
       - name: Cache Zig build artifacts
         uses: actions/cache@v4
@@ -1071,7 +1081,7 @@ jobs:
           # EVERY build by design (fresh-assets policy, see build.zig's
           # webapp-rebuild workflow) so caching it HERE was dead weight —
           # cross-cell sharing lives in the dedicated OS-agnostic
-          # `webapp-assets-v1-*` cache instead ("Restore shared
+          # `webapp-assets-v2-*` cache instead ("Restore shared
           # webapp_assets.zig (Windows)" / "Save shared
           # webapp_assets.zig (Linux)"), which the Windows cell needs
           # because it builds with -Dno-webapp-rebuild and can never
@@ -1177,12 +1187,17 @@ jobs:
         # A failed SAVE must never fail the job (the build + tests
         # already passed; worst case Windows falls back to an older
         # cached webapp, which still serves 200).
+        #
+        # `enableCrossOsArchive: true` must match the restore step —
+        # without it on BOTH ends, Windows restores report "Cache not
+        # found" for macOS/Linux-saved entries.
         if: runner.os != 'Windows'
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: src/apps/desktop_app/embedded/webapp_assets.zig
-          key: webapp-assets-v1-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
+          key: webapp-assets-v2-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
+          enableCrossOsArchive: true
 
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
         # Windows-only twin of the previous step. Same goal — produce
