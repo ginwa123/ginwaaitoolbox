@@ -1023,6 +1023,32 @@ jobs:
       # two caches racing to populate the same
       # src/apps/desktop/node_modules.
 
+      - name: Restore shared webapp_assets.zig (Windows)
+        # Windows-only, runs BEFORE any `zig build` (build.zig writes the
+        # EMPTY STUB at configure time when this gitignored file is
+        # absent). The Windows cell builds with -Dno-webapp-rebuild (the
+        # runner OOMs on the vite build), so it can never GENERATE this
+        # file itself — without this restore it embeds 0 assets and
+        # serves 404 at / (caught by the smoke steps below; run
+        # 34184202159 went red on exactly that shape).
+        #
+        # The Linux cell saves the real file to this OS-agnostic cache
+        # after its full rebuild (see "Save shared webapp_assets.zig").
+        # The key deliberately omits runner.os so all cells share it:
+        # exact-hash hit on same-commit reruns, prefix fallback to the
+        # newest previous webapp otherwise (stale-but-real still serves
+        # 200, never 404).
+        #
+        # Restore-ONLY (actions/cache/restore, NOT actions/cache):
+        # Windows must never OVERWRITE the good cache with its stub.
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: src/apps/desktop_app/embedded/webapp_assets.zig
+          key: webapp-assets-v1-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
+          restore-keys: |
+            webapp-assets-v1-
+
       - name: Cache Zig build artifacts
         uses: actions/cache@v4
         with:
@@ -1043,7 +1069,13 @@ jobs:
           # seconds; caching it cost ~124 MB of archive I/O (upload AND
           # download) on every run. webapp_assets.zig is regenerated on
           # EVERY build by design (fresh-assets policy, see build.zig's
-          # webapp-rebuild workflow) so caching it was dead weight.
+          # webapp-rebuild workflow) so caching it HERE was dead weight —
+          # cross-cell sharing lives in the dedicated OS-agnostic
+          # `webapp-assets-v1-*` cache instead ("Restore shared
+          # webapp_assets.zig (Windows)" / "Save shared
+          # webapp_assets.zig (Linux)"), which the Windows cell needs
+          # because it builds with -Dno-webapp-rebuild and can never
+          # generate the file itself.
           #
           # Cache key includes `build.zig` so a build.zig change invalidates
           # the cache. Key bumped v2→v3 to avoid collisions with stale
@@ -1074,12 +1106,13 @@ jobs:
         #
         # The nalar-desktop install happens in the NEXT step
         # (`Install nalar + nalar-desktop (Windows)`), with webapp
-        # rebuild disabled via `--no-webapp-rebuild`. NOTE: there is NO
-        # cross-cell reuse — webapp_assets.zig is gitignored and NOT in
-        # the CI cache (per-OS cache keys), so a fresh Windows checkout
-        # embeds the EMPTY STUB from build.zig. The Windows-only
-        # "desktop webapp serves 200" smoke step below exists precisely
-        # to fail fast on that stub (it would serve 404 at /).
+        # rebuild disabled via `--no-webapp-rebuild`. The real
+        # `webapp_assets.zig` arrives via the "Restore shared
+        # webapp_assets.zig (Windows)" cache step above (Linux-saved,
+        # OS-agnostic key) — without a cache hit, a fresh Windows
+        # checkout embeds the EMPTY STUB from build.zig, and the
+        # Windows-only "desktop webapp serves 200" smoke step below
+        # fails fast on that stub (it would serve 404 at /).
         #
         # The `RUNNER_OS == 'Windows'` branch prepends vcpkg's bin dir,
         # the API-set forwarder dir, and pnpm's bin dir to PATH so:
@@ -1130,6 +1163,19 @@ jobs:
         shell: bash
         run: zig build nalar-desktop --summary all
 
+      - name: Save shared webapp_assets.zig (Linux)
+        # Linux-only writer for the OS-agnostic cache the Windows cell
+        # restores above. Runs right after the full webapp rebuild, so
+        # the file is fresh. Single writer (Linux, not macOS) so two
+        # cells never race to save the same immutable key. macOS needs
+        # no save — same sources + same key = same content, and the
+        # Windows restore only needs ONE copy to exist.
+        if: runner.os == 'Linux'
+        uses: actions/cache/save@v4
+        with:
+          path: src/apps/desktop_app/embedded/webapp_assets.zig
+          key: webapp-assets-v1-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
+
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
         # Windows-only twin of the previous step. Same goal — produce
         # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
@@ -1140,13 +1186,12 @@ jobs:
         # ~700 MB peak RSS on the Windows runner (vs ~2.5 GB for the
         # full webapp rebuild path), so the LLVM OOM / vite OOM that
         # crashed the unified step on the Windows ARM64 runner goes
-        # away. NOTE: there is NO cross-cell webapp reuse —
-        # `webapp_assets.zig` is gitignored and NOT in the CI cache
-        # (per-OS cache keys, and the cache step deliberately excludes
-        # it), so a fresh Windows checkout embeds the EMPTY STUB from
-        # build.zig (zero assets). The Windows-only "desktop webapp
-        # serves 200" smoke step below fails fast on exactly that
-        # shape (it would serve 404 at /).
+        # away. The real `webapp_assets.zig` arrives via the "Restore
+        # shared webapp_assets.zig (Windows)" cache step (Linux-saved,
+        # OS-agnostic key) — without a cache hit, a fresh Windows
+        # checkout embeds the EMPTY STUB from build.zig (zero assets).
+        # The Windows-only "desktop webapp serves 200" smoke step below
+        # fails fast on exactly that shape (it would serve 404 at /).
         if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -1342,8 +1387,15 @@ jobs:
             echo "✗ smoke test: $DESKTOP_BIN missing" >&2
             exit 1
           fi
-          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1
-          rc=$?
+          # `rc=0 ... || rc=$?`: a failing --smoke-test must NOT kill
+          # this script via `set -e` (bash runs with `-e -o pipefail`
+          # here). Without the `||`, a non-zero `timeout` exit skips
+          # `rc=$?` AND the `if` diagnostics below — the step dies
+          # silently with no ✗ line and no log contents (observed on
+          # the Windows cell, run 34184202159, when smoke.zig's 0-asset
+          # stub guard fired).
+          rc=0
+          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1 || rc=$?
           if [[ $rc -ne 0 ]]; then
             echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
             cat /tmp/desktop-smoke.log
@@ -1355,12 +1407,13 @@ jobs:
 
       - name: "Smoke test: desktop webapp serves 200 (Windows)"
         # Windows-only 404 guard for nalar-desktop.exe. The Windows cell
-        # builds with -Dno-webapp-rebuild, and webapp_assets.zig is
-        # gitignored + NOT in the CI cache (per-OS cache keys — the Linux
-        # cell's file never reaches this runner), so a fresh checkout
-        # embeds the EMPTY STUB from build.zig (zero assets, no
-        # index.html). The desktop would then serve `404 Not Found` at
-        # `/` inside its window instead of the app.
+        # builds with -Dno-webapp-rebuild and restores webapp_assets.zig
+        # from the shared OS-agnostic cache (see "Restore shared
+        # webapp_assets.zig (Windows)" above). On a cache MISS, a fresh
+        # checkout embeds the EMPTY STUB from build.zig (zero assets, no
+        # index.html) — the desktop would then serve `404 Not Found` at
+        # `/` inside its window instead of the app, and this step fails
+        # fast on exactly that shape.
         #
         # Headless (no WebView2 window needed — the runner has no display):
         #   1. Run nalar-desktop.exe --smoke-test with NALAR_SMOKE_KEEP=1
