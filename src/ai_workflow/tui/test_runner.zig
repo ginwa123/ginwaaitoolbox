@@ -53,6 +53,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/mcp_test.zig");
     _ = @import("http_handlers/frontend_log_post_test.zig"); // Chunk 2 of frontend-error-logs
     _ = @import("http_handlers/frontend_log_get_test.zig");  // Chunk 3 of frontend-error-logs
+    _ = @import("http_handlers/system_folder_search_test.zig"); // action=search static contracts (plan 2026-09-08-chatview-search-files-perf Task 1)
     // _ = @import("llm_history_is_input_output_test.zig"); // phase 5: inlined into agentic_loop/llm_history.zig
     // _ = @import("llm_history_compacted_messages_test.zig"); // phase 5
     // _ = @import("llm_history_search_messages_fts_test.zig"); // phase 5

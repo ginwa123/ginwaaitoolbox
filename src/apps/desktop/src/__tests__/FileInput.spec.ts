@@ -19,36 +19,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import FileInput from '@/components/file/FileInput.vue'
+import * as api from '@/api'
 
-interface FakeResponse extends Partial<Response> {
-  ok: boolean
-  status: number
-  json: () => Promise<unknown>
-  text: () => Promise<string>
-}
-
-function jsonResponse(body: unknown, status = 200): FakeResponse {
+vi.mock('@/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api')>()
   return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-  } as FakeResponse
-}
+    ...actual,
+    searchFiles: vi.fn(),
+  }
+})
+
+const searchFilesMock = api.searchFiles as unknown as ReturnType<typeof vi.fn>
 
 /**
- * Mock `/system/folder?path=...&action=list` lookups against a small
- * in-memory tree. The component's `loadAllFiles` does a depth-first
- * scan, so we need to return the entries for any scanned path.
+ * Mock `api.searchFiles` with pre-ranked server rows (Task 2: the server
+ * owns ranking now — the old N-sequential-fetch full-tree walk via raw
+ * `fetch` is deleted). Each test sets the rows its query should return.
  */
-function mockFolderTree(
-  tree: Record<string, Array<{ name: string; path: string; is_directory: boolean }>>,
+function mockSearchResults(
+  entries: Array<{ name: string; path: string; is_directory: boolean }>,
 ) {
-  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-    const urlStr = typeof input === 'string' ? input : input.toString()
-    const m = urlStr.match(/[?&]path=([^&]+)/)
-    const path = m ? decodeURIComponent(m[1] ?? '') : ''
-    return jsonResponse({ entries: tree[path] ?? [] })
+  searchFilesMock.mockResolvedValue({
+    entries: entries.map((e) => ({ ...e, is_symlink: false })),
   })
 }
 
@@ -66,8 +58,9 @@ async function typeInTextarea(
   await textareaWrapper.setValue(value)
   element.setSelectionRange(value.length, value.length)
   element.dispatchEvent(new Event('input', { bubbles: true }))
-  // Wait for the 150ms debounce on detectAtTrigger + any async scan chain.
-  await new Promise((resolve) => setTimeout(resolve, 250))
+  // Wait for BOTH debounces (150ms `@`-detect + 150ms server-search)
+  // plus promise flushes.
+  await new Promise((resolve) => setTimeout(resolve, 450))
   await flushPromises()
 }
 
@@ -89,6 +82,9 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
     setActivePinia(createPinia())
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
+    searchFilesMock.mockReset()
+    // Default: empty server result (picker shows "No files found").
+    searchFilesMock.mockResolvedValue({ entries: [] })
   })
 
   afterEach(() => {
@@ -97,22 +93,13 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
   })
 
   it('preserves @ when the user types a query and presses Enter to pick the first match', async () => {
-    // /home/user has both `/docs` (matches "d") and a non-matching `/bin`.
-    // /home/user/docs has `/docs/superpowers` (also matches "d"). Lexical
-    // order: "/docs" < "/docs/superpowers", so /docs lands at index 0.
-    // The picker is sorted by relative path ascending, so the highlighted
-    // first entry for "@d" is always the shortest path starting with "d".
-    mockFolderTree({
-      '/home/user': [
-        { name: 'bin', path: '/home/user/bin', is_directory: true },
-        { name: 'docs', path: '/home/user/docs', is_directory: true },
-      ],
-      '/home/user/bin': [],
-      '/home/user/docs': [
-        { name: 'superpowers', path: '/home/user/docs/superpowers', is_directory: true },
-      ],
-      '/home/user/docs/superpowers': [],
-    })
+    // Server owns ranking now: pre-ranked rows for query "d" — `/docs`
+    // first (shortest path), `/docs/superpowers` second. The picker
+    // renders them directly (no client-side walk or re-sort).
+    mockSearchResults([
+      { name: 'docs', path: '/home/user/docs', is_directory: true },
+      { name: 'superpowers', path: '/home/user/docs/superpowers', is_directory: true },
+    ])
 
     const wrapper = await mountInput()
     const textarea = wrapper.find('textarea')
@@ -133,12 +120,9 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
   })
 
   it('preserves @ when prefix text is present (e.g. "Hello @d")', async () => {
-    mockFolderTree({
-      '/home/user': [
-        { name: 'docs', path: '/home/user/docs', is_directory: true },
-      ],
-      '/home/user/docs': [],
-    })
+    mockSearchResults([
+      { name: 'docs', path: '/home/user/docs', is_directory: true },
+    ])
 
     const wrapper = await mountInput()
     const textarea = wrapper.find('textarea')
@@ -153,14 +137,11 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
   })
 
   it('preserves @ when the user clicks a folder in the picker (just "@", no query)', async () => {
-    mockFolderTree({
-      '/home/user': [
-        { name: 'bin', path: '/home/user/bin', is_directory: true },
-        { name: 'docs', path: '/home/user/docs', is_directory: true },
-      ],
-      '/home/user/bin': [],
-      '/home/user/docs': [],
-    })
+    // Empty query: server returns the cwd top-N pre-ranked.
+    mockSearchResults([
+      { name: 'bin', path: '/home/user/bin', is_directory: true },
+      { name: 'docs', path: '/home/user/docs', is_directory: true },
+    ])
 
     const wrapper = await mountInput()
     const textarea = wrapper.find('textarea')
@@ -178,15 +159,10 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
   })
 
   it('preserves @ when the user types a partial path like "@/doc" then selects', async () => {
-    mockFolderTree({
-      '/home/user': [
-        { name: 'docs', path: '/home/user/docs', is_directory: true },
-      ],
-      '/home/user/docs': [
-        { name: 'superpowers', path: '/home/user/docs/superpowers', is_directory: true },
-      ],
-      '/home/user/docs/superpowers': [],
-    })
+    mockSearchResults([
+      { name: 'docs', path: '/home/user/docs', is_directory: true },
+      { name: 'superpowers', path: '/home/user/docs/superpowers', is_directory: true },
+    ])
 
     const wrapper = await mountInput()
     const textarea = wrapper.find('textarea')
@@ -203,8 +179,8 @@ describe('FileInput — @ autocomplete on select keeps the @ symbol', () => {
   })
 
   it('does not modify the input when Enter is pressed without a selection (no matches)', async () => {
-    // Empty tree — no matches.
-    mockFolderTree({ '/home/user': [] })
+    // Empty server result — no matches.
+    mockSearchResults([])
 
     const wrapper = await mountInput()
     const textarea = wrapper.find('textarea')
@@ -244,6 +220,8 @@ describe('FileInput — paste image (Ctrl+V) attaches to preview', () => {
     setActivePinia(createPinia())
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
+    searchFilesMock.mockReset()
+    searchFilesMock.mockResolvedValue({ entries: [] })
   })
 
   afterEach(() => {

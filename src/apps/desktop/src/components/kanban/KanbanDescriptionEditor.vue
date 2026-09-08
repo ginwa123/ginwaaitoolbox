@@ -40,7 +40,7 @@
     See docs/superpowers/plans/2026-08-06-kanban-no-base64-in-desc.md.
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import FilePreview, { type PreviewFile } from '../file/FilePreview.vue'
 import * as api from '../../api'
 
@@ -94,6 +94,7 @@ const selectedFileIndex = ref(0)
 const fileDebounceTimer: { value: ReturnType<typeof setTimeout> | null } = { value: null }
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const nativeFileInput = ref<HTMLInputElement | null>(null)
+const filePickerRef = ref<HTMLElement | null>(null)
 
 // Caps
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024
@@ -114,8 +115,138 @@ watch(text, (v) => {
 const counterText = computed<string>(() => `${text.value.length} / ${props.maxLength}`)
 
 // ─── @-trigger file picker ──────────────────────────────────────────────
-// Pattern is mirrored from FileInput.vue — recursive scan via
-// /system/folder?action=list, debounced 150ms after typing.
+// Ported 1:1 from FileInput.vue Task 2 (plan:
+// docs/superpowers/plans/2026-09-08-chatview-search-files-perf.md).
+// Single round-trip per query via `api.searchFiles` — replaces the old
+// N-sequential-fetch full-tree walk (`loadAllFiles`, deleted).
+let fileSearchTimer: ReturnType<typeof setTimeout> | null = null
+let fileSearchGen = 0
+let fileSearchAbort: AbortController | null = null
+// Per-cwd cache for EMPTY-query top-N only (bounded: max 3 cwds, oldest
+// evicted). Non-empty queries always hit the server (fresh ranking).
+const fileSearchCache = new Map<string, FileEntry[]>()
+const FILE_SEARCH_CACHE_MAX_CWDS = 3
+// Total entries returned by the server for the current query (footer Y).
+const serverTotal = ref(0)
+// True when the server errored and `filteredFiles` falls back to the
+// client subsequence filter over the cached top-N.
+const serverFailed = ref(false)
+
+onBeforeUnmount(() => {
+  if (fileDebounceTimer.value) clearTimeout(fileDebounceTimer.value)
+  if (fileSearchTimer) clearTimeout(fileSearchTimer)
+  fileSearchAbort?.abort()
+})
+
+const setFileSearchCache = (cwd: string, entries: FileEntry[]) => {
+  if (!fileSearchCache.has(cwd) && fileSearchCache.size >= FILE_SEARCH_CACHE_MAX_CWDS) {
+    const oldest = fileSearchCache.keys().next()
+    if (!oldest.done) fileSearchCache.delete(oldest.value)
+  }
+  fileSearchCache.set(cwd, entries)
+}
+
+// Server rows are snake_case (`is_directory`); legacy raw-walk rows were
+// camelCase (`isDirectory`). Accept both so mixed shapes never render a
+// dir as 📄.
+const toRelativeFileEntry = (
+  rootPath: string,
+  entry: { name: string; path: string; is_directory?: boolean; isDirectory?: boolean },
+): FileEntry => ({
+  name: entry.name,
+  path: entry.path.startsWith(rootPath) ? entry.path.slice(rootPath.length) : entry.path,
+  isDirectory: entry.is_directory ?? entry.isDirectory ?? false,
+})
+
+const runFileSearch = async (cwd: string, query: string, gen: number, signal: AbortSignal) => {
+  isLoadingFiles.value = true
+  try {
+    const data = await api.searchFiles(cwd, query, 50, 8, signal)
+    if (gen !== fileSearchGen) return // stale — superseded by a newer query
+    const mapped = (data.entries ?? []).map((e) => toRelativeFileEntry(cwd, e))
+    fileList.value = mapped
+    serverTotal.value = mapped.length
+    serverFailed.value = false
+    if (query === '') setFileSearchCache(cwd, mapped)
+  } catch {
+    if (gen !== fileSearchGen) return // stale — superseded, stay silent
+    if (signal.aborted) return // cancelled on retype/close — expected, silent
+    // Error fallback: client subsequence filter over the cached top-N.
+    serverFailed.value = true
+    fileList.value = fileSearchCache.get(cwd) ?? []
+    serverTotal.value = fileList.value.length
+  } finally {
+    if (gen === fileSearchGen) isLoadingFiles.value = false
+  }
+}
+
+const scheduleFileSearch = (immediate: boolean) => {
+  if (fileSearchTimer) {
+    clearTimeout(fileSearchTimer)
+    fileSearchTimer = null
+  }
+  // Cancel any in-flight request (retype/close) — the generation counter
+  // below discards responses that still resolve afterwards.
+  fileSearchAbort?.abort()
+  const run = () => {
+    const cwd = props.cwd
+    const query = fileQuery.value
+    if (!cwd || !showFilePicker.value) return
+    // Empty-query cache hit: sync, no network.
+    if (query === '' && fileSearchCache.has(cwd)) {
+      const cached = fileSearchCache.get(cwd)!
+      fileList.value = cached
+      serverTotal.value = cached.length
+      serverFailed.value = false
+      isLoadingFiles.value = false
+      return
+    }
+    fileSearchGen++
+    const gen = fileSearchGen
+    fileSearchAbort = new AbortController()
+    void runFileSearch(cwd, query, gen, fileSearchAbort.signal)
+  }
+  if (immediate) run()
+  else fileSearchTimer = setTimeout(run, 150)
+}
+
+const closeFilePicker = () => {
+  showFilePicker.value = false
+  fileQuery.value = ''
+  if (fileSearchTimer) {
+    clearTimeout(fileSearchTimer)
+    fileSearchTimer = null
+  }
+  fileSearchAbort?.abort()
+  fileSearchGen++ // invalidate in-flight responses
+  isLoadingFiles.value = false
+}
+
+// Out-of-order char match (FileInput pattern): "comp" matches
+// "components" because all chars appear in order, not contiguously.
+// Used ONLY as the server-error fallback (operates on cached top-N).
+const matchesOutOfOrder = (path: string, query: string): boolean => {
+  const lowerPath = path.toLowerCase()
+  const lowerQuery = query.toLowerCase()
+  let pathIdx = 0
+  let queryIdx = 0
+  while (queryIdx < lowerQuery.length && pathIdx < lowerPath.length) {
+    if (lowerPath[pathIdx] === lowerQuery[queryIdx]) queryIdx++
+    pathIdx++
+  }
+  return queryIdx === lowerQuery.length
+}
+
+const filteredFiles = computed<FileEntry[]>(() => {
+  // Server results are already ranked + filtered — use them directly.
+  if (!serverFailed.value) return fileList.value
+  if (!fileQuery.value) return fileList.value
+  const q = fileQuery.value.toLowerCase()
+  return fileList.value.filter((f) => matchesOutOfOrder(f.path, q))
+})
+
+// Render cap: at most 50 rows in the DOM (v1 — no virtual list).
+const visibleFiles = computed(() => filteredFiles.value.slice(0, 50))
 
 const detectAtTrigger = () => {
   if (!textareaRef.value) return
@@ -123,78 +254,22 @@ const detectAtTrigger = () => {
   const textBeforeCursor = text.value.slice(0, pos)
   const atMatch = textBeforeCursor.match(/@([\w./\\:-]*)$/)
   if (atMatch) {
-    fileQuery.value = atMatch[1] ?? ''
-    if (!showFilePicker.value) {
+    const q = atMatch[1] ?? ''
+    const wasOpen = showFilePicker.value
+    const queryChanged = q !== fileQuery.value
+    fileQuery.value = q
+    if (!wasOpen) {
       showFilePicker.value = true
       selectedFileIndex.value = 0
-      loadAllFiles(props.cwd)
+      scheduleFileSearch(true) // immediate on open
+    } else if (queryChanged) {
+      selectedFileIndex.value = 0
+      scheduleFileSearch(false) // debounced 150ms on retype
     }
   } else {
-    showFilePicker.value = false
-    fileQuery.value = ''
+    closeFilePicker()
   }
 }
-
-const loadAllFiles = async (rootPath: string) => {
-  if (!rootPath) return
-  isLoadingFiles.value = true
-  fileList.value = []
-
-  const results: FileEntry[] = []
-  const scanDir = async (dirPath: string) => {
-    try {
-      const response = await fetch(
-        `${api.API_BASE}/system/folder?path=${encodeURIComponent(dirPath)}&action=list`,
-      )
-      if (!response.ok) return
-      const data = (await response.json()) as { entries?: FileEntry[] }
-      const entries = data.entries ?? []
-      for (const entry of entries) {
-        if (entry.name.startsWith('.')) continue
-        const relativePath = entry.path.replace(rootPath, '')
-        results.push({
-          name: entry.name,
-          path: relativePath,
-          isDirectory: entry.isDirectory,
-        })
-        if (entry.isDirectory) {
-          await scanDir(entry.path)
-        }
-      }
-    } catch (err) {
-      console.error('Failed to scan:', dirPath, err)
-    }
-  }
-
-  try {
-    await scanDir(rootPath)
-    results.sort((a, b) => {
-      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
-      return a.path.localeCompare(b.path)
-    })
-    fileList.value = results
-  } finally {
-    isLoadingFiles.value = false
-  }
-}
-
-const filteredFiles = computed<FileEntry[]>(() => {
-  if (!fileQuery.value) return fileList.value
-  const q = fileQuery.value.toLowerCase()
-  // Out-of-order char match (FileInput pattern): "comp" matches
-  // "components" because all chars appear in order, not contiguously.
-  const matchesOutOfOrder = (path: string, query: string): boolean => {
-    const lowerPath = path.toLowerCase()
-    let pathIdx = 0
-    let queryIdx = 0
-    while (queryIdx < query.length && pathIdx < lowerPath.length) {
-      if (lowerPath[pathIdx] === query[queryIdx]) queryIdx++
-      pathIdx++
-    }
-    return queryIdx === query.length
-  }
-  return fileList.value.filter((f) => matchesOutOfOrder(f.path, q))
-})
 
 const selectFile = (file: FileEntry) => {
   if (!textareaRef.value) return
@@ -225,6 +300,53 @@ const selectFile = (file: FileEntry) => {
 const handleTextareaInput = () => {
   if (fileDebounceTimer.value) clearTimeout(fileDebounceTimer.value)
   fileDebounceTimer.value = setTimeout(detectAtTrigger, 150)
+}
+
+const scrollSelectedIntoView = () => {
+  setTimeout(() => {
+    // Scoped to this picker's DOM node (not document) so sibling chat
+    // tabs / kanban editors never steal the scroll target.
+    const root = filePickerRef.value
+    if (!root) return
+    const buttons = root.querySelectorAll('button')
+    const selectedBtn = buttons[selectedFileIndex.value]
+    if (selectedBtn) {
+      selectedBtn.scrollIntoView({ behavior: 'auto', block: 'nearest' })
+    }
+  }, 50)
+}
+
+const handleKeydown = (e: KeyboardEvent) => {
+  if (!showFilePicker.value) return
+  const files = filteredFiles.value
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    e.stopPropagation()
+    selectedFileIndex.value = Math.min(selectedFileIndex.value + 1, files.length - 1)
+    scrollSelectedIntoView()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    e.stopPropagation()
+    selectedFileIndex.value = Math.max(selectedFileIndex.value - 1, 0)
+    scrollSelectedIntoView()
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    e.stopPropagation()
+    const selectedFile = files[selectedFileIndex.value]
+    if (selectedFile) {
+      selectFile(selectedFile)
+    }
+  } else if (e.key === 'Escape') {
+    e.stopPropagation()
+    closeFilePicker()
+  } else if (e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    const selectedFile = files[selectedFileIndex.value]
+    if (selectedFile) {
+      selectFile(selectedFile)
+    }
+  }
 }
 
 const onTextareaInput = (event: Event) => {
@@ -541,18 +663,18 @@ defineExpose({ pendingFiles })
     <!-- File picker dropdown (above the textarea) -->
     <div
       v-if="showFilePicker && (filteredFiles.length > 0 || isLoadingFiles)"
+      ref="filePickerRef"
       class="file-picker-list mb-2 p-2 rounded-lg shadow-lg max-h-72 overflow-y-auto"
       style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+      tabindex="0"
     >
+      <!-- Loading state (driven by the request lifecycle, not fileList) -->
       <div v-if="isLoadingFiles" class="p-4 text-center">
         <div
           class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
           style="border-color: var(--color-violet); border-top-color: transparent;"
         />
-        <p class="text-sm" style="color: var(--semantic-text-dim)">Scanning files…</p>
-        <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">
-          {{ fileList.length }} found
-        </p>
+        <p class="text-sm" style="color: var(--semantic-text-dim)">Searching…</p>
       </div>
       <div
         v-else-if="filteredFiles.length === 0"
@@ -563,7 +685,7 @@ defineExpose({ pendingFiles })
       </div>
       <div v-else>
         <button
-          v-for="(file, idx) in filteredFiles"
+          v-for="(file, idx) in visibleFiles"
           :key="file.path"
           type="button"
           class="w-full text-left px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors"
@@ -579,6 +701,11 @@ defineExpose({ pendingFiles })
           <span>{{ file.isDirectory ? '📁' : '📄' }}</span>
           <span class="truncate font-mono text-xs">{{ file.path }}</span>
         </button>
+      </div>
+      <!-- Footer info (render cap vs server total) -->
+      <div v-if="!isLoadingFiles && filteredFiles.length > 0" class="px-3 py-1.5 text-xs rounded mt-1"
+        style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim);">
+        showing {{ visibleFiles.length }} of {{ serverTotal }} files
       </div>
     </div>
 
@@ -607,6 +734,7 @@ defineExpose({ pendingFiles })
           min-height: 160px;
         "
         @input="onTextareaInput"
+        @keydown="handleKeydown"
         @paste="handlePaste"
       />
       <button

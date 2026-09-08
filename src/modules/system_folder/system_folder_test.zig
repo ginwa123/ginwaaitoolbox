@@ -822,3 +822,251 @@ test "getParentPath: Windows home with trailing backslash returns null" {
     const result = try SystemFolder.getParentPath(allocator, "C:\\Users\\ginwa\\", &env);
     try testing.expect(result == null);
 }
+
+// ─── searchFiles tests (plan 2026-09-08-chatview-search-files-perf Task 1) ───
+//
+// NOTE: `setupRootInTmp` roots live under `.zig-cache/tmp/<rand>/`, so the
+// root_abs PREFIX itself contains ".zig-cache". Negative path assertions
+// must strip the root prefix first (relContains), or every entry
+// false-positives on the skip-list substring.
+
+fn freeSearchResults(allocator: std.mem.Allocator, entries: []system_folder.FolderEntry) void {
+    for (entries) |entry| {
+        allocator.free(entry.name);
+        allocator.free(entry.path);
+    }
+    allocator.free(entries);
+}
+
+/// True when `needle` appears in the portion of `full_path` BELOW root.
+/// (Strips the root_abs prefix so the `.zig-cache/tmp/...` tmp parent
+/// never trips skip-list substring checks.)
+fn relContains(root_abs: []const u8, full_path: []const u8, needle: []const u8) bool {
+    const rel = if (std.mem.startsWith(u8, full_path, root_abs))
+        full_path[root_abs.len..]
+    else
+        full_path;
+    return std.mem.indexOf(u8, rel, needle) != null;
+}
+
+fn relContainsAny(root_abs: []const u8, entries: []system_folder.FolderEntry, needle: []const u8) bool {
+    for (entries) |e| {
+        if (relContains(root_abs, e.path, needle)) return true;
+    }
+    return false;
+}
+
+test "searchFiles: skips node_modules, zig-out, zig-cache, target, dist" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "src/components");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "node_modules/big");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, ".zig-cache/tmp/x");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "zig-cache/y");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "target/z");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "dist/w");
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "zig-out/v");
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "src/components/Button.vue", .{});
+        defer f.close(testing.io);
+    }
+    // Decoys with matchable names inside skipped dirs — must never surface.
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "node_modules/big/comp_decoy.js", .{});
+        defer f.close(testing.io);
+    }
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "zig-out/v/comp_decoy2.js", .{});
+        defer f.close(testing.io);
+    }
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "target/z/comp_decoy3.js", .{});
+        defer f.close(testing.io);
+    }
+
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "comp", 50, 8);
+    defer freeSearchResults(allocator, entries);
+
+    try testing.expect(relContainsAny(tenv.root_abs, entries, "components"));
+    try testing.expect(!relContainsAny(tenv.root_abs, entries, "node_modules"));
+    try testing.expect(!relContainsAny(tenv.root_abs, entries, "zig-out"));
+    try testing.expect(!relContainsAny(tenv.root_abs, entries, ".zig-cache"));
+    try testing.expect(!relContainsAny(tenv.root_abs, entries, "zig-cache"));
+    try testing.expect(!relContainsAny(tenv.root_abs, entries, "target"));
+    try testing.expect(!relContainsAny(tenv.root_abs, entries, "dist"));
+}
+
+test "searchFiles: subsequence 'comp' matches 'components' dir" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "src/components");
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "src/components/Button.vue", .{});
+        defer f.close(testing.io);
+    }
+
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "comp", 50, 8);
+    defer freeSearchResults(allocator, entries);
+
+    var found_components = false;
+    for (entries) |e| {
+        if (std.mem.eql(u8, e.name, "components")) {
+            try testing.expect(e.is_directory);
+            found_components = true;
+        }
+    }
+    try testing.expect(found_components);
+}
+
+test "searchFiles: pure-subsequence query (no substring) still matches" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "src/components");
+
+    // "cmps" is a subsequence of "components" (c-...-m-p-...-s) but NOT a
+    // substring — locks in the subsequence fallback.
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "cmps", 50, 8);
+    defer freeSearchResults(allocator, entries);
+
+    var found = false;
+    for (entries) |e| {
+        if (std.mem.eql(u8, e.name, "components")) found = true;
+    }
+    try testing.expect(found);
+}
+
+test "searchFiles: limit caps result count" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        const name = try std.fmt.allocPrint(allocator, "file_{d:0>2}.txt", .{i});
+        defer allocator.free(name);
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, name, .{});
+        defer f.close(testing.io);
+    }
+
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "file_", 3, 8);
+    defer freeSearchResults(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 3), entries.len);
+}
+
+test "searchFiles: empty query returns top-N, not the whole tree" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        const name = try std.fmt.allocPrint(allocator, "note_{d:0>2}.txt", .{i});
+        defer allocator.free(name);
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, name, .{});
+        defer f.close(testing.io);
+    }
+
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "", 4, 8);
+    defer freeSearchResults(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 4), entries.len);
+}
+
+test "searchFiles: substring hits rank before subsequence hits" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "compass.txt", .{});
+        defer f.close(testing.io);
+    }
+    {
+        // Matches "comp" by subsequence only (c-_-o-_-m-_-p), not substring.
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "c_o_m_p.txt", .{});
+        defer f.close(testing.io);
+    }
+
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "comp", 50, 8);
+    defer freeSearchResults(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    try testing.expectEqualStrings("compass.txt", entries[0].name);
+    try testing.expectEqualStrings("c_o_m_p.txt", entries[1].name);
+}
+
+test "searchFiles: max_depth bounds descent" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    try tenv.tmp_dir.dir.createDirPath(testing.io, "outer/inner");
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "outer/top.txt", .{});
+        defer f.close(testing.io);
+    }
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "outer/inner/deep.txt", .{});
+        defer f.close(testing.io);
+    }
+
+    // depth: outer=1, top.txt=2, inner=2, deep.txt=3. max_depth=1 visits
+    // only root children → "deep" matches nothing.
+    const shallow = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "deep", 50, 1);
+    defer freeSearchResults(allocator, shallow);
+    try testing.expectEqual(@as(usize, 0), shallow.len);
+
+    const deep = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "deep", 50, 8);
+    defer freeSearchResults(allocator, deep);
+    try testing.expectEqual(@as(usize, 1), deep.len);
+    try testing.expectEqualStrings("deep.txt", deep[0].name);
+}
+
+test "searchFiles: dotfiles and dot-dirs are skipped" {
+    const allocator = testing.allocator;
+    var tenv = try setupRootInTmp(allocator);
+    defer tenv.deinit(allocator);
+
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, ".hidden_comp.txt", .{});
+        defer f.close(testing.io);
+    }
+    {
+        const f = try tenv.tmp_dir.dir.createFile(testing.io, "visible_comp.txt", .{});
+        defer f.close(testing.io);
+    }
+
+    const entries = try SystemFolder.searchFiles(allocator, testing.io, tenv.root_abs, "comp", 50, 8);
+    defer freeSearchResults(allocator, entries);
+
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqualStrings("visible_comp.txt", entries[0].name);
+}
+
+test "parseSearchLimit: defaults, clamps 1..200, rejects garbage" {
+    try testing.expectEqual(@as(usize, 50), SystemFolder.parseSearchLimit(null));
+    try testing.expectEqual(@as(usize, 50), SystemFolder.parseSearchLimit(""));
+    try testing.expectEqual(@as(usize, 10), SystemFolder.parseSearchLimit("10"));
+    try testing.expectEqual(@as(usize, 1), SystemFolder.parseSearchLimit("0"));
+    try testing.expectEqual(@as(usize, 1), SystemFolder.parseSearchLimit("1"));
+    try testing.expectEqual(@as(usize, 200), SystemFolder.parseSearchLimit("200"));
+    try testing.expectEqual(@as(usize, 200), SystemFolder.parseSearchLimit("5000"));
+    try testing.expectEqual(@as(usize, 50), SystemFolder.parseSearchLimit("abc"));
+}
+
+test "parseSearchMaxDepth: defaults, clamps 1..16, rejects garbage" {
+    try testing.expectEqual(@as(usize, 8), SystemFolder.parseSearchMaxDepth(null));
+    try testing.expectEqual(@as(usize, 8), SystemFolder.parseSearchMaxDepth(""));
+    try testing.expectEqual(@as(usize, 3), SystemFolder.parseSearchMaxDepth("3"));
+    try testing.expectEqual(@as(usize, 1), SystemFolder.parseSearchMaxDepth("0"));
+    try testing.expectEqual(@as(usize, 16), SystemFolder.parseSearchMaxDepth("16"));
+    try testing.expectEqual(@as(usize, 16), SystemFolder.parseSearchMaxDepth("99"));
+    try testing.expectEqual(@as(usize, 8), SystemFolder.parseSearchMaxDepth("abc"));
+}

@@ -235,6 +235,251 @@ pub const SystemFolder = struct {
         return entries.toOwnedSlice(allocator);
     }
 
+    /// Exact entry names never descended into (nor returned) by
+    /// `searchFiles`. Single const array so `listDirectory` and search
+    /// share it later. Case-sensitive exact match on the entry name.
+    pub const search_skip_names: []const []const u8 = &.{
+        "node_modules",
+        "zig-out",
+        ".zig-cache",
+        "zig-cache",
+        "target",
+        "dist",
+    };
+
+    fn isSearchSkipped(name: []const u8) bool {
+        // Dotfiles/dot-dirs skipped, mirroring listDirectory.
+        if (name.len > 0 and name[0] == '.') return true;
+        for (search_skip_names) |skip| {
+            if (std.mem.eql(u8, name, skip)) return true;
+        }
+        return false;
+    }
+
+    /// Case-insensitive ASCII substring check (mirrors the
+    /// lessThanIgnoreCase sort used below).
+    pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        if (needle.len > haystack.len) return false;
+        var i: usize = 0;
+        while (i + needle.len <= haystack.len) : (i += 1) {
+            var ok = true;
+            for (needle, 0..) |nc, j| {
+                if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) return true;
+        }
+        return false;
+    }
+
+    /// Case-insensitive subsequence check (FileInput `matchesOutOfOrder`
+    /// semantics): every needle char appears in haystack in order, gaps
+    /// OK — so `tst` still matches `test`, `cmps` matches `components`.
+    pub fn matchesSubsequenceIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+        if (needle.len == 0) return true;
+        var hi: usize = 0;
+        for (needle) |nc| {
+            const lower_nc = std.ascii.toLower(nc);
+            var found = false;
+            while (hi < haystack.len) : (hi += 1) {
+                if (std.ascii.toLower(haystack[hi]) == lower_nc) {
+                    hi += 1;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return false;
+        }
+        return true;
+    }
+
+    /// Match rank: 0 = case-insensitive substring (best), 1 =
+    /// subsequence-only. Null when the name does not match at all.
+    /// Empty query matches everything at rank 0 (top-N listing).
+    fn matchRank(name: []const u8, query: []const u8) ?u8 {
+        if (query.len == 0) return 0;
+        if (containsIgnoreCase(name, query)) return 0;
+        if (matchesSubsequenceIgnoreCase(name, query)) return 1;
+        return null;
+    }
+
+    /// Parse the `limit` query param: default 50, clamp 1..200 (hard cap),
+    /// garbage → default. Pure helper so the HTTP layer is unit-testable.
+    pub fn parseSearchLimit(raw: ?[]const u8) usize {
+        const s = raw orelse "";
+        const trimmed = std.mem.trim(u8, s, " \t");
+        if (trimmed.len == 0) return 50;
+        const n = std.fmt.parseInt(usize, trimmed, 10) catch return 50;
+        if (n < 1) return 1;
+        if (n > 200) return 200;
+        return n;
+    }
+
+    /// Parse the `max_depth` query param: default 8, clamp 1..16,
+    /// garbage → default. Pure helper so the HTTP layer is unit-testable.
+    pub fn parseSearchMaxDepth(raw: ?[]const u8) usize {
+        const s = raw orelse "";
+        const trimmed = std.mem.trim(u8, s, " \t");
+        if (trimmed.len == 0) return 8;
+        const n = std.fmt.parseInt(usize, trimmed, 10) catch return 8;
+        if (n < 1) return 1;
+        if (n > 16) return 16;
+        return n;
+    }
+
+    const SearchHit = struct {
+        entry: FolderEntry,
+        rank: u8,
+    };
+
+    /// Recursive file search under `root_path` (iterative stack, NOT
+    /// recursion). Matching is on the entry BASENAME (not the full path).
+    ///
+    /// - `query`: case-insensitive substring first, subsequence fallback;
+    ///   empty query matches everything (top-N listing).
+    /// - `limit`: 0 → default 50; hard cap 200.
+    /// - `max_depth`: 0 → default 8. Entries deeper than max_depth are
+    ///   never visited; dirs AT max_depth are listed but not descended.
+    ///   Root children are depth 1.
+    /// - Skip-list (`search_skip_names`) + dotfiles are never descended
+    ///   into nor returned. `entry.kind` is reused (no extra stat), so
+    ///   symlinks are neither followed nor returned — same as
+    ///   listDirectory.
+    /// - `git check-ignore` semantics are identical to listDirectory
+    ///   (per-entry `-C <parent> check-ignore <name>`, spawn-failure
+    ///   falls through to "not ignored").
+    /// - Ranking: substring hits before subsequence hits, then
+    ///   dirs-first, then lessThanIgnoreCase. Results truncated to limit.
+    ///
+    /// Caller owns the returned slice + each entry's name/path (free
+    /// with the same pattern as listDirectory).
+    pub fn searchFiles(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        root_path: []const u8,
+        query: []const u8,
+        limit: usize,
+        max_depth: usize,
+    ) SystemFolderError![]FolderEntry {
+        const cap: usize = if (limit == 0) 50 else if (limit > 200) 200 else limit;
+        const depth_cap: usize = if (max_depth == 0) 8 else max_depth;
+
+        var matches = std.ArrayList(SearchHit).empty;
+        defer matches.deinit(allocator);
+
+        const StackFrame = struct {
+            path: []const u8,
+            depth: usize,
+        };
+        var stack = std.ArrayList(StackFrame).empty;
+        defer {
+            for (stack.items) |frame| allocator.free(frame.path);
+            stack.deinit(allocator);
+        }
+
+        const root_dup = allocator.dupe(u8, root_path) catch return SystemFolderError.OutOfMemory;
+        stack.append(allocator, .{ .path = root_dup, .depth = 0 }) catch return SystemFolderError.OutOfMemory;
+
+        while (stack.items.len > 0) {
+            const frame = stack.pop().?;
+            defer allocator.free(frame.path);
+
+            var dir = std.Io.Dir.openDirAbsolute(io, frame.path, .{ .iterate = true }) catch continue;
+            defer std.Io.Dir.close(dir, io);
+
+            var iter = dir.iterate();
+            while (iter.next(io) catch null) |entry| {
+                const name = entry.name;
+                if (name.len == 0) break;
+
+                if (isSearchSkipped(name)) continue;
+
+                const is_dir = entry.kind == .directory;
+                const is_link = entry.kind == .sym_link;
+                const is_file = entry.kind == .file;
+                if (!is_dir and !is_file) continue;
+
+                const child_depth = frame.depth + 1;
+                if (child_depth > depth_cap) continue;
+
+                // git check-ignore — identical semantics to listDirectory
+                // (`-C` = immediate parent, spawn failure = not ignored).
+                const git_result = std.process.run(allocator, io, .{
+                    .argv = &.{ "git", "-C", frame.path, "check-ignore", name },
+                }) catch blk: {
+                    break :blk std.process.RunResult{
+                        .term = .{ .exited = 128 },
+                        .stdout = &[_]u8{},
+                        .stderr = &[_]u8{},
+                    };
+                };
+                defer allocator.free(git_result.stdout);
+                defer allocator.free(git_result.stderr);
+                if (git_result.term.exited == 0) continue;
+
+                // Non-matching dirs are still descended into (their
+                // children may match); non-matching files are dropped.
+                if (is_dir and child_depth < depth_cap) {
+                    const dir_path = std.fs.path.join(allocator, &.{ frame.path, name }) catch continue;
+                    stack.append(allocator, .{ .path = dir_path, .depth = child_depth }) catch {
+                        allocator.free(dir_path);
+                        continue;
+                    };
+                }
+
+                const rank = matchRank(name, query) orelse continue;
+                const entry_name = allocator.dupe(u8, name) catch continue;
+                const full_path = std.fs.path.join(allocator, &.{ frame.path, name }) catch {
+                    allocator.free(entry_name);
+                    continue;
+                };
+                matches.append(allocator, SearchHit{
+                    .entry = FolderEntry{
+                        .name = entry_name,
+                        .path = full_path,
+                        .is_directory = is_dir,
+                        .is_symlink = is_link,
+                    },
+                    .rank = rank,
+                }) catch {
+                    allocator.free(entry_name);
+                    allocator.free(full_path);
+                    continue;
+                };
+            }
+        }
+
+        // Rank: substring hits first, then dirs-first, then
+        // case-insensitive name order.
+        std.mem.sort(SearchHit, matches.items, {}, struct {
+            fn less(_: void, a: SearchHit, b: SearchHit) bool {
+                if (a.rank != b.rank) return a.rank < b.rank;
+                if (a.entry.is_directory != b.entry.is_directory) {
+                    return a.entry.is_directory;
+                }
+                return std.ascii.lessThanIgnoreCase(a.entry.name, b.entry.name);
+            }
+        }.less);
+
+        var out = std.ArrayList(FolderEntry).empty;
+        const n = @min(cap, matches.items.len);
+        for (matches.items[0..n]) |hit| {
+            out.append(allocator, hit.entry) catch continue;
+        }
+        // Dropped tail keeps no ownership — free its strings; the
+        // transferred head is owned by `out`. The `matches` backing
+        // array itself is freed by the top-of-function defer.
+        for (matches.items[n..]) |hit| {
+            allocator.free(hit.entry.name);
+            allocator.free(hit.entry.path);
+        }
+
+        return out.toOwnedSlice(allocator);
+    }
+
     /// Get parent directory path
     pub fn getParentPath(allocator: std.mem.Allocator, dir_path: []const u8, environment: ?*const std.process.Environ.Map) SystemFolderError!?[]u8 {
         const home = try getHomeDirectory(allocator, environment);

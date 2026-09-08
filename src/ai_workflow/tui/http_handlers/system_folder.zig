@@ -136,6 +136,69 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
         }
     }
 
+    // Recursive server-side search for the ChatView `@` picker:
+    // GET /api/system/folder?action=search&path=<root>&q=comp&limit=50
+    // Same route as list (no new main.zig registration); same entry
+    // shape ({name, path, is_directory, is_symlink}). Missing `q` =
+    // top-N listing (not an error); `limit` defaults to 50 (hard cap
+    // 200); `max_depth` defaults to 8 (clamp 1..16).
+    const do_search = std.mem.eql(u8, action orelse "", "search");
+    if (do_search) {
+        // Empty-slice-as-NULL rule: an explicitly empty `path=` is a
+        // 400 (missing `path` still falls back to home above).
+        if (path_param) |p| {
+            if (p.len == 0) {
+                return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "path required" }) });
+            }
+        }
+
+        const q = req.query.get("q") orelse "";
+        const limit = SystemFolder.parseSearchLimit(req.query.get("limit"));
+        const max_depth = SystemFolder.parseSearchMaxDepth(req.query.get("max_depth"));
+
+        const entries = SystemFolder.searchFiles(allocator, ctx.io, target_path, q, limit, max_depth) catch |err| {
+            const err_msg: []const u8 = switch (err) {
+                SystemFolderError.InvalidPath => "Directory not found",
+                SystemFolderError.AccessDenied => "Access denied",
+                SystemFolderError.NotDirectory => "Not a directory",
+                else => @errorName(err),
+            };
+            return res.jsonResponse( .{ .status_code = 403, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
+        };
+        defer {
+            for (entries) |entry| {
+                allocator.free(entry.name);
+                allocator.free(entry.path);
+            }
+            allocator.free(entries);
+        }
+
+        // Build entries JSON manually — SAME shape as the list branch.
+        var search_entries_json = std.ArrayList(u8).empty;
+        defer search_entries_json.deinit(allocator);
+
+        for (entries, 0..) |entry, i| {
+            if (i > 0) try search_entries_json.append(allocator, ',');
+            try search_entries_json.appendSlice(allocator, "{\"name\":\"");
+            const escaped_name = jsonEscape(allocator, entry.name) catch "";
+            const escaped_path = jsonEscape(allocator, entry.path) catch "";
+            try search_entries_json.appendSlice(allocator, escaped_name);
+            try search_entries_json.appendSlice(allocator, "\",\"path\":\"");
+            try search_entries_json.appendSlice(allocator, escaped_path);
+            try search_entries_json.appendSlice(allocator, "\",\"is_directory\":");
+            try search_entries_json.appendSlice(allocator, if (entry.is_directory) "true" else "false");
+            try search_entries_json.appendSlice(allocator, ",\"is_symlink\":");
+            try search_entries_json.appendSlice(allocator, if (entry.is_symlink) "true" else "false");
+            try search_entries_json.append(allocator, '}');
+            allocator.free(escaped_name);
+            allocator.free(escaped_path);
+        }
+
+        return res.jsonResponse( .{ .status_code = 200, .data = try std.fmt.allocPrint(allocator,
+            "{{\"entries\":[{s}]}}",
+            .{search_entries_json.items}) });
+    }
+
     // Handle read/write actions - read file content
     const do_read_write = std.mem.eql(u8, action orelse "", "read") or std.mem.eql(u8, action orelse "", "write");
     if (do_read_write) {
