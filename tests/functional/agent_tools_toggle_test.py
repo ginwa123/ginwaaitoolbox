@@ -77,7 +77,7 @@ def _create_agent(
 def _list_tools(harness: FunctionalHarness, agent_id: str) -> list[str]:
     """Return the enabled tool_names for the agent (sorted ASC).
 
-    Fresh agents are born with DEFAULT_AGENT_TOOLS (21 tools);
+    Fresh agents are born with DEFAULT_AGENT_TOOLS (22 tools);
     an empty list means the user deleted every tool (never 404).
     """
     r = harness.http(
@@ -150,9 +150,9 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
     return names
 
 
-# Fresh agents are born with DEFAULT_AGENT_TOOLS (21 tools) — see
+# Fresh agents are born with DEFAULT_AGENT_TOOLS (22 tools) — see
 # src/ai_workflow/tui/agentic_loop/tools_equipped.zig::DEFAULT_AGENT_TOOLS.
-# Tests that need a clean enable use `glob` (in-registry, never a default).
+# Tests that need a clean enable use `show_preview` (in-registry, never a default).
 EXPECTED_DEFAULTS = [
     "add_skill",
     "command",
@@ -160,6 +160,7 @@ EXPECTED_DEFAULTS = [
     "edit_skill",
     "get_plan",
     "get_skill",
+    "glob",
     "list_directory",
     "list_skills",
     "load_memory",
@@ -176,7 +177,7 @@ EXPECTED_DEFAULTS = [
     "view_skill",
     "write_file",
 ]
-NON_DEFAULT_TOOL = "glob"
+NON_DEFAULT_TOOL = "show_preview"
 
 
 # ─── Tests ────────────────────────────────────────────────────────────────
@@ -263,7 +264,7 @@ class TestListTools:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        # Fresh agents are born with DEFAULT_AGENT_TOOLS (21 tools, sorted ASC).
+        # Fresh agents are born with DEFAULT_AGENT_TOOLS (22 tools, sorted ASC).
         assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_returns_sorted_ascending(
