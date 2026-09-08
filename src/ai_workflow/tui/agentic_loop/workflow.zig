@@ -365,6 +365,93 @@ test "re_read_selected_profile_model: subsequent reads see UPDATEd value (live r
     try testing.expectEqualStrings("gamma", second);
 }
 
+/// Touch the checkpoint worker rows for one loop iteration.
+///
+/// Encapsulates the two `updateWorker` calls at the top of the `while (true)`
+/// loop in `runAgenticMultiStepnew`: always upserts the current session's
+/// worker row, and — for sub-agents — also upserts the parent session's
+/// worker row (preserving the parent's own `working_directory` verbatim via
+/// worker-row → sessions.cwd → fallback-to-child-cwd). Failures are logged
+/// and swallowed so a worker-table hiccup never kills the loop.
+const TouchCheckpointWorkersInput = struct {
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    event_bus: *event_bus_mod.EventBus,
+    session_id: []const u8,
+    parent_session_id: []const u8,
+    cwd: []const u8,
+    is_sub_agent: bool,
+};
+
+fn touchCheckpointWorkers(input: TouchCheckpointWorkersInput) void {
+    const allocator = input.allocator;
+    const db = input.db;
+    const logger = input.logger;
+    const event_bus = input.event_bus;
+
+    updateWorker(UpdateWorkerInput{
+        .allocator = allocator,
+        .db = db,
+        .logger = logger,
+        .worker_id = input.session_id,
+        .session_id = input.session_id,
+        .working_directory = input.cwd,
+        .event_bus = event_bus,
+        .is_emit_sse = true,
+    }) catch |err| {
+        logger.errFmt(
+            "[CHECKPOINT] worker update failed session_id={s}: {s}\n",
+            .{ input.session_id, @errorName(err) },
+        );
+    };
+
+    if (!input.is_sub_agent) return;
+    if (input.parent_session_id.len == 0) return;
+    if (std.mem.eql(u8, input.parent_session_id, input.session_id)) return;
+
+    const parent_cwd: []const u8 = blk: {
+        // (1) parent worker row's own working_directory — preserves it verbatim
+        {
+            var w_rows = db.query(allocator, "SELECT working_directory FROM worker WHERE id = ? LIMIT 1", &.{input.parent_session_id}) catch null;
+            if (w_rows) |*r| {
+                defer r.deinit();
+                if (r.next() catch null) |w_row| {
+                    defer w_row.deinit(allocator);
+                    if (w_row.values.len > 0 and w_row.values[0].len > 0) break :blk allocator.dupe(u8, w_row.values[0]) catch input.cwd;
+                }
+            }
+        }
+        // (2) parent session's cwd
+        {
+            var s_rows = db.query(allocator, "SELECT cwd FROM sessions WHERE id = ? LIMIT 1", &.{input.parent_session_id}) catch null;
+            if (s_rows) |*r| {
+                defer r.deinit();
+                if (r.next() catch null) |s_row| {
+                    defer s_row.deinit(allocator);
+                    if (s_row.values.len > 0 and s_row.values[0].len > 0) break :blk allocator.dupe(u8, s_row.values[0]) catch input.cwd;
+                }
+            }
+        }
+        break :blk input.cwd;
+    };
+    updateWorker(UpdateWorkerInput{
+        .allocator = allocator,
+        .db = db,
+        .logger = logger,
+        .worker_id = input.parent_session_id,
+        .session_id = input.parent_session_id,
+        .working_directory = parent_cwd,
+        .event_bus = event_bus,
+        .is_emit_sse = true,
+    }) catch |err| {
+        logger.errFmt(
+            "[CHECKPOINT] worker update failed session_id={s}: {s}\n",
+            .{ input.parent_session_id, @errorName(err) },
+        );
+    };
+}
+
 pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
@@ -619,82 +706,16 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         defer arenaAllocatorWhileLoop.deinit();
         const allocator = arenaAllocatorWhileLoop.allocator();
 
-        // Bump worker.last_activity_nano to "now" on every iteration
-        // so the cleanup_stale_worker cron (which deletes rows where
-        // last_activity_nano < now - 600s) doesn't wipe long-running
-        // workflows. The `ON CONFLICT(id) DO UPDATE` clause in
-        // updateWorker.zig handles both the first iteration (INSERT)
-        // and subsequent iterations (UPDATE) seamlessly.
-        //
-        // SSE event emitted by updateWorker also keeps the frontend's
-        // worker row visually alive; side effect of `is_emit_sse=true`.
-        updateWorker(UpdateWorkerInput{
+        touchCheckpointWorkers(.{
             .allocator = allocator,
             .db = db,
             .logger = logger,
-            .worker_id = copy_session_id,
-            .session_id = copy_session_id,
-            .working_directory = copy_cwd,
             .event_bus = event_bus,
-            .is_emit_sse = true,
-        }) catch |err| {
-            logger.errFmt(
-                "[CHECKPOINT] worker update failed session_id={s}: {s}\n",
-                .{ copy_session_id, @errorName(err) },
-            );
-        };
-
-        // handler for case subagents, subagent should update the parent activity session
-        // Top-level runs have parent==self so the guard skips the duplicate bump + double SSE;
-        // the parent bump keeps the parent worker row alive while it is blocked in handle_tool
-        // awaiting sub-agents (prevents cleanup_stale_worker 600s wipe).
-        // update for parent worker
-        // NOTE: resolve the PARENT worker's own cwd from the DB — never pass the
-        // sub-agent's copy_cwd straight through, since updateWorker does
-        // ON CONFLICT DO UPDATE SET working_directory = excluded.working_directory
-        // and would overwrite the parent row with the child's cwd.
-        if (copy_is_sub_agent and copy_parent_session_id.len > 0 and !std.mem.eql(u8, copy_parent_session_id, copy_session_id)) {
-            const parent_cwd: []const u8 = blk: {
-                // (1) parent worker row's own working_directory — preserves it verbatim
-                {
-                    var w_rows = db.query(allocator, "SELECT working_directory FROM worker WHERE id = ? LIMIT 1", &.{copy_parent_session_id}) catch null;
-                    if (w_rows) |*r| {
-                        defer r.deinit();
-                        if (r.next() catch null) |w_row| {
-                            defer w_row.deinit(allocator);
-                            if (w_row.values.len > 0 and w_row.values[0].len > 0) break :blk allocator.dupe(u8, w_row.values[0]) catch copy_cwd;
-                        }
-                    }
-                }
-                // (2) parent session's cwd
-                {
-                    var s_rows = db.query(allocator, "SELECT cwd FROM sessions WHERE id = ? LIMIT 1", &.{copy_parent_session_id}) catch null;
-                    if (s_rows) |*r| {
-                        defer r.deinit();
-                        if (r.next() catch null) |s_row| {
-                            defer s_row.deinit(allocator);
-                            if (s_row.values.len > 0 and s_row.values[0].len > 0) break :blk allocator.dupe(u8, s_row.values[0]) catch copy_cwd;
-                        }
-                    }
-                }
-                break :blk copy_cwd;
-            };
-            updateWorker(UpdateWorkerInput{
-                .allocator = allocator,
-                .db = db,
-                .logger = logger,
-                .worker_id = copy_parent_session_id,
-                .session_id = copy_parent_session_id,
-                .working_directory = parent_cwd,
-                .event_bus = event_bus,
-                .is_emit_sse = true,
-            }) catch |err| {
-                logger.errFmt(
-                    "[CHECKPOINT] worker update failed session_id={s}: {s}\n",
-                    .{ copy_parent_session_id, @errorName(err) },
-                );
-            };
-        }
+            .session_id = copy_session_id,
+            .parent_session_id = copy_parent_session_id,
+            .cwd = copy_cwd,
+            .is_sub_agent = copy_is_sub_agent,
+        });
 
         const is_auto_retry_until_stop: bool = blk: {
             var flag_rows = db.query(allocator, "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{copy_session_id}) catch break :blk false;

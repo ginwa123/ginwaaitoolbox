@@ -138,7 +138,7 @@ fn useCase(
     //    enforces 1-1 at the DB layer).
     db.exec(allocator,
         "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
-        &.{ item_id, input.workspace_id },
+        &.{ item_id, item_id },
     ) catch return error.DatabaseError;
 
     // 3. Seed default tools (command, read_file, write_file) so a fresh
@@ -168,7 +168,7 @@ fn useCase(
         },
         .agent = .{
             .id = item_id,
-            .workspace_item_id = input.workspace_id,
+            .workspace_item_id = item_id,
             .description = "",
             .created_at = "",
             .updated_at = "",

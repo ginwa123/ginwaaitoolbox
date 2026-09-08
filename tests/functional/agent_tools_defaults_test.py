@@ -4,9 +4,10 @@ Plan: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
 
 Covers:
   * AGENT — POST /api/workspaces/:ws/items/agent → GET /api/agents/:id/tools
-    returns ['command', 'read_file', 'write_file'] (sorted ASC).
+    returns the 21-tool DEFAULT_AGENT_TOOLS (sorted ASC).
   * KANBAN — POST /api/workspaces/:ws/items/kanban →
-    GET /api/agent-kanbans/:id/tools returns the same 3 defaults, and the
+    GET /api/agent-kanbans/:id/tools returns the 21 agent defaults +
+    2 kanban tools (kanban_list, kanban_move_task), and the
     bundle GET /api/workspaces/:ws/items/:id/agent_kanban is 200 (configured,
     not 404 NotConfigured).
   * NO-BACKFILL — deleting all tools on a fresh agent leaves [] (empty is
@@ -17,7 +18,58 @@ from __future__ import annotations
 
 from harness import FunctionalHarness
 
-EXPECTED_DEFAULTS = ["command", "read_file", "write_file"]
+EXPECTED_DEFAULTS = [
+    "add_skill",
+    "command",
+    "delete_memory",
+    "edit_skill",
+    "get_plan",
+    "get_skill",
+    "list_directory",
+    "list_skills",
+    "load_memory",
+    "read_file",
+    "remove_file",
+    "remove_skill",
+    "save_memory",
+    "search",
+    "glob",
+    "search_history",
+    "spawn_sub_agent",
+    "text_replace",
+    "update_activity",
+    "update_plan",
+    "view_skill",
+    "write_file",
+]
+
+# Kanban boards seed DEFAULT_AGENT_TOOLS + DEFAULT_KANBAN_TOOLS.
+EXPECTED_KANBAN_DEFAULTS = [
+    "add_skill",
+    "command",
+    "delete_memory",
+    "edit_skill",
+    "get_plan",
+    "get_skill",
+    "kanban_list",
+    "kanban_move_task",
+    "list_directory",
+    "list_skills",
+    "load_memory",
+    "read_file",
+    "remove_file",
+    "remove_skill",
+    "save_memory",
+    "search",
+    "glob",
+    "search_history",
+    "spawn_sub_agent",
+    "text_replace",
+    "update_activity",
+    "update_plan",
+    "view_skill",
+    "write_file",
+]
 
 
 def _create_workspace(harness: FunctionalHarness, name: str = "defaults-ws") -> str:
@@ -52,14 +104,14 @@ def test_kanban_create_seeds_agent_kanban_and_tools(harness: FunctionalHarness) 
     tools = harness.http(
         "GET", f"/api/agent-kanbans/{kanban_id}/tools", expect=200
     ).json()["tools"]
-    assert tools == EXPECTED_DEFAULTS, f"fresh kanban should seed defaults, got {tools!r}"
+    assert tools == EXPECTED_KANBAN_DEFAULTS, f"fresh kanban should seed defaults, got {tools!r}"
 
     bundle = harness.http(
         "GET",
         f"/api/workspaces/{ws_id}/items/{kanban_id}/agent_kanban",
         expect=200,
     ).json()
-    assert bundle["tools"] == EXPECTED_DEFAULTS, (
+    assert bundle["tools"] == EXPECTED_KANBAN_DEFAULTS, (
         f"fresh kanban bundle should carry defaults, got {bundle['tools']!r}"
     )
 

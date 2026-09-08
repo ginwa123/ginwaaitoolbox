@@ -3205,8 +3205,13 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   }
 
   // Empty subscriptions are meaningless; the backend would 400 anyway.
-  // Throw early with a developer-friendly message.
+  // Throw early with a developer-friendly message. The console.error
+  // before the throw matters: without it the only signal is an
+  // uncaught exception at the call site, which is easy to mistake for
+  // "SSE never receives data" when the real cause is "no EventSource
+  // was ever created because channels was empty".
   if (tokens.length === 0) {
+    console.error('[unifiedSSE] createUnifiedSseConnection: opts.channels is empty — no EventSource will be created', opts.channels)
     throw new Error('createUnifiedSseConnection: opts.channels is empty')
   }
 
@@ -3246,9 +3251,18 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'worker_created',
       'worker_updated',
       'worker_deleted',
+      // Throw-isolation / forward-compat: the backend emits these
+      // fallback/granular names (see on_event_sent.zig +
+      // on_event_sent_design.zig). Without pre-registration the
+      // browser's EventSource drops them silently before onEvent
+      // ever fires — indistinguishable from "stream is dead".
+      // Registered here so they always reach the fan-out below,
+      // which routes (or explicitly ignores) each one.
+      'worker_unknown',
       'session_created',
       'session_deleted',
       'session_updated', // task_1786507100896 — auto-rename on first user message + unattended toggle
+      'session_unknown',
       // Design-mode element events (see src/ai_workflow/tui/on_event_sent_design.zig).
       // All granular single-element events share the `DesignElementEvent`
       // payload; the `action` discriminator tells them apart. The single
@@ -3267,6 +3281,14 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       'design_element_updated',
       'design_element_deleted',
       'design_elements_geometry_batch_updated',
+      // Backend also emits `design_page_deleted` (routing key
+      // `design_page`) and `close` (server-shutdown frame). Neither
+      // has a dedicated frontend channel today — registered so the
+      // browser doesn't drop them silently; the fan-out below
+      // handles each explicitly (design page → design channel,
+      // close → ignored).
+      'design_page_deleted',
+      'close',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -3349,11 +3371,15 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
 
       // Worker events. The backend sets `worker_created` |
       // `worker_updated` | `worker_deleted` based on
-      // `OnEventInputWorkers.action` (see `on_event_sent.zig`).
+      // `OnEventInputWorkers.action` (see `on_event_sent.zig`), plus
+      // `worker_unknown` as a future-proofing fallback for new actions.
+      // Unknown actions are still forwarded — the consumer dispatches
+      // by `event.action` and can ignore what it doesn't know.
       if (
         eventType === 'worker_created' ||
         eventType === 'worker_updated' ||
-        eventType === 'worker_deleted'
+        eventType === 'worker_deleted' ||
+        eventType === 'worker_unknown'
       ) {
         if (!opts.channels.workers) return
         try {
@@ -3378,7 +3404,8 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       if (
         eventType === 'session_created' ||
         eventType === 'session_updated' ||
-        eventType === 'session_deleted'
+        eventType === 'session_deleted' ||
+        eventType === 'session_unknown'
       ) {
         if (!opts.channels.sessions) return
         try {
@@ -3386,6 +3413,30 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.sessions(data as SessionEvent)
         } catch (err) {
           console.error('[unifiedSSE] session event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Server-shutdown frame (`event: close`, see sse_manager.zig).
+      // Explicitly ignored — the browser fires `error` + the client
+      // reconnects via its own backoff. Without this branch the event
+      // would fall through to the default-message JSON buffer below
+      // and pollute it with non-JSON bytes.
+      if (eventType === 'close') {
+        return
+      }
+
+      // `design_page_deleted` shares the design channel (page-level
+      // delete; the consumer re-fetches). Registered so the browser
+      // doesn't drop it silently; forwarded best-effort like the
+      // element events above.
+      if (eventType === 'design_page_deleted') {
+        if (!opts.channels.design) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.design(data as DesignElementEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] design page event parse failed:', err, raw)
         }
         return
       }
@@ -3442,34 +3493,55 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
         // shape wins. If no shape matches, the event is silently
         // dropped (after the buffer advance below) so the buffer
         // stays bounded.
-        if (
-          opts.channels.sessions &&
-          typeof obj.action === 'string' &&
-          typeof obj.status === 'string' &&
-          typeof obj.cwd === 'string'
-        ) {
-          opts.channels.sessions(obj as unknown as SessionEvent)
-        } else if (
-          opts.channels.workers &&
-          typeof obj.action === 'string' &&
-          typeof obj.working_directory === 'string'
-        ) {
-          opts.channels.workers(obj as unknown as WorkerEvent)
-        } else if (
-          opts.channels.llm &&
-          (obj.type === 'chunk' || obj.type === 'full')
-        ) {
-          opts.channels.llm.onEvent(obj as unknown as SseEvent)
+        //
+        // Throw-isolation: each channel callback runs in its own
+        // try/catch so a throwing consumer can never skip the buffer
+        // advance below. Previously a throw here jumped straight to
+        // the outer catch, leaving the consumed bytes in the buffer —
+        // every subsequent default-message event then re-parsed the
+        // same stale bytes (unbounded growth + apparent stream stall).
+        try {
+          if (
+            opts.channels.sessions &&
+            typeof obj.action === 'string' &&
+            typeof obj.status === 'string' &&
+            typeof obj.cwd === 'string'
+          ) {
+            try {
+              opts.channels.sessions(obj as unknown as SessionEvent)
+            } catch (err) {
+              console.error('[unifiedSSE] session channel subscriber threw:', err)
+            }
+          } else if (
+            opts.channels.workers &&
+            typeof obj.action === 'string' &&
+            typeof obj.working_directory === 'string'
+          ) {
+            try {
+              opts.channels.workers(obj as unknown as WorkerEvent)
+            } catch (err) {
+              console.error('[unifiedSSE] worker channel subscriber threw:', err)
+            }
+          } else if (
+            opts.channels.llm &&
+            (obj.type === 'chunk' || obj.type === 'full')
+          ) {
+            try {
+              opts.channels.llm.onEvent(obj as unknown as SseEvent)
+            } catch (err) {
+              console.error('[unifiedSSE] llm channel subscriber threw:', err)
+            }
+          }
+        } finally {
+          // ALWAYS advance past the consumed JSON object, regardless of
+          // whether a consumer matched or threw. The single-stream design means
+          // every default-message event MUST produce forward progress —
+          // if a caller subscribed only to `kanban` and the backend
+          // emits a worker-shaped default-message event, we must still
+          // slice past it so the buffer doesn't grow unboundedly.
+          // (Code Reviewer Critical Fix, 2026-06-30.)
+          defaultMessageBuf.value = defaultMessageBuf.value.slice(jsonEnd + 1)
         }
-
-        // ALWAYS advance past the consumed JSON object, regardless of
-        // whether a consumer matched. The single-stream design means
-        // every default-message event MUST produce forward progress —
-        // if a caller subscribed only to `kanban` and the backend
-        // emits a worker-shaped default-message event, we must still
-        // slice past it so the buffer doesn't grow unboundedly.
-        // (Code Reviewer Critical Fix, 2026-06-30.)
-        defaultMessageBuf.value = defaultMessageBuf.value.slice(jsonEnd + 1)
       } catch (e) {
         console.error('[unifiedSSE] default message dispatch error:', e)
       }
@@ -3479,8 +3551,15 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       // only. Transient errors are retried internally by the SseClient.
       // See memory nalar-sse-incomplete-chunked-encoding.md for why
       // ChatView's isStreaming flag flips ONLY on 'failed'.
+      // Throw-isolation: a throwing onError must never break emitState's
+      // per-subscriber loop (emitState already guards, but guard here too
+      // so the error is attributed to the right channel).
       if (state === 'failed') {
-        opts.onError?.(info.lastError ?? new Event('error'))
+        try {
+          opts.onError?.(info.lastError ?? new Event('error'))
+        } catch (err) {
+          console.error('[unifiedSSE] onError subscriber threw:', err)
+        }
       }
     },
   })

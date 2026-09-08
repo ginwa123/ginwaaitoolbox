@@ -279,6 +279,7 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     remove_file_mod.remove_file_tool.function.name,
     list_directory_mod.list_directory_tool.function.name,
     search_tool_mod.search_tool.function.name,
+    glob_tool_mod.glob_tool.function.name,
 
     // for context-aware tools
     update_plan_mod.update_plan_tool.function.name,
@@ -349,7 +350,7 @@ pub fn seedDefaultKanbanTools(
     }
 
     for (DEFAULT_KANBAN_TOOLS, 0..) |tool_name, i| {
-        const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, i });
+        const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, DEFAULT_AGENT_TOOLS.len + i });
         defer allocator.free(id);
         try db.exec(allocator,
             "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
