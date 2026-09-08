@@ -77,9 +77,8 @@ def _create_agent(
 def _list_tools(harness: FunctionalHarness, agent_id: str) -> list[str]:
     """Return the enabled tool_names for the agent (sorted ASC).
 
-    Fresh agents are born with DEFAULT_AGENT_TOOLS
-    (command, read_file, write_file); an empty list means the user
-    deleted every tool (never 404).
+    Fresh agents are born with DEFAULT_AGENT_TOOLS (22 tools);
+    an empty list means the user deleted every tool (never 404).
     """
     r = harness.http(
         "GET",
@@ -151,12 +150,34 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
     return names
 
 
-# Fresh agents are born with DEFAULT_AGENT_TOOLS
-# (command, read_file, write_file) — see
-# docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md.
-# Tests that need a clean enable use `glob` (in-registry, never a default).
-EXPECTED_DEFAULTS = ["command", "read_file", "write_file"]
-NON_DEFAULT_TOOL = "glob"
+# Fresh agents are born with DEFAULT_AGENT_TOOLS (22 tools) — see
+# src/ai_workflow/tui/agentic_loop/tools_equipped.zig::DEFAULT_AGENT_TOOLS.
+# Tests that need a clean enable use `show_preview` (in-registry, never a default).
+EXPECTED_DEFAULTS = [
+    "add_skill",
+    "command",
+    "delete_memory",
+    "edit_skill",
+    "get_plan",
+    "get_skill",
+    "glob",
+    "list_directory",
+    "list_skills",
+    "load_memory",
+    "read_file",
+    "remove_file",
+    "remove_skill",
+    "save_memory",
+    "search",
+    "search_history",
+    "spawn_sub_agent",
+    "text_replace",
+    "update_activity",
+    "update_plan",
+    "view_skill",
+    "write_file",
+]
+NON_DEFAULT_TOOL = "show_preview"
 
 
 # ─── Tests ────────────────────────────────────────────────────────────────
@@ -243,8 +264,7 @@ class TestListTools:
         ws_id = _create_workspace(harness)
         agent_id = _create_agent(harness, ws_id)
 
-        # Fresh agents are born with DEFAULT_AGENT_TOOLS
-        # (command, read_file, write_file), sorted ASC.
+        # Fresh agents are born with DEFAULT_AGENT_TOOLS (22 tools, sorted ASC).
         assert _list_tools(harness, agent_id) == EXPECTED_DEFAULTS
 
     def test_returns_sorted_ascending(
@@ -382,10 +402,9 @@ class TestToolToggleLifecycle:
     ) -> None:
         """Tool toggles on agent_A do not affect agent_B.
 
-        Both agents live in separate workspaces (not the same one) to
-        avoid a pre-existing bug in workspace_items_create_agent.zig
-        that 500s on the second agent in a workspace — out of scope
-        for this plan (tracked separately).
+        Both agents live in separate workspaces (isolation proof;
+        same-workspace second create also works since the
+        workspace_item_id fix in workspace_items_create_agent.zig).
         """
         ws_a = _create_workspace(harness, name="ws-A")
         ws_b = _create_workspace(harness, name="ws-B")

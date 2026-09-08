@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 export interface LlmConfig {
   model: string
@@ -101,6 +101,41 @@ function setThresholdOverride(on: boolean) {
   )
 }
 
+// === Temperature freetext (auto or 0–1) ===
+// Free-text input with datalist suggestions for the old presets.
+// Valid: "auto" (case-insensitive, normalized to "auto") or a finite
+// number in [0, 1]. Invalid input shows an inline error and is NOT
+// emitted (last valid value is preserved). A local draft ref allows
+// intermediate typing states (e.g. clearing the field) without the
+// input snapping back to the prop on every keystroke.
+const temperatureDraft = ref(props.modelValue.temperature)
+watch(
+  () => props.modelValue.temperature,
+  (v) => {
+    temperatureDraft.value = v
+  },
+)
+
+const temperatureError = computed<string | null>(() => {
+  const trimmed = temperatureDraft.value.trim()
+  if (trimmed.toLowerCase() === 'auto') return null
+  if (trimmed === '') return 'Use auto or a number 0–1.'
+  const parsed = Number(trimmed)
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1)
+    return 'Use auto or a number 0–1.'
+  return null
+})
+
+function onTemperatureInput(raw: string) {
+  temperatureDraft.value = raw
+  if (temperatureError.value !== null) return
+  const trimmed = raw.trim()
+  const normalized =
+    trimmed.toLowerCase() === 'auto' ? 'auto' : trimmed
+  if (normalized !== props.modelValue.temperature)
+    update('temperature', normalized)
+}
+
 // === Per-style gating — plan 2026-09-01-migrate-openai-legacy-to-response ===
 // thinking_budget_tokens is Anthropic-only; reasoning_effort is OpenAI + Responses.
 // Hidden fields preserve values (not nulled) so switching styles doesn't lose data.
@@ -161,17 +196,25 @@ const isOpenAIStyle = computed(
       </div>
       <div>
         <label :class="labelBase" :style="labelStyle">Temperature</label>
-        <select
-          :value="modelValue.temperature"
-          @change="update('temperature', ($event.target as HTMLSelectElement).value)"
+        <input
+          :value="temperatureDraft"
+          @input="onTemperatureInput(($event.target as HTMLInputElement).value)"
+          type="text"
+          inputmode="decimal"
+          placeholder="auto or 0–1"
+          list="llm-temperature-presets"
+          autocomplete="off"
           :class="inputBase"
-          :style="inputStyle()"
-        >
-          <option value="auto">Auto</option>
-          <option value="0">0 — Precise</option>
-          <option value="0.5">0.5</option>
-          <option value="1">1 — Balanced</option>
-        </select>
+          :style="inputStyle(!!temperatureError)"
+          data-testid="temperature-input"
+        />
+        <datalist id="llm-temperature-presets">
+          <option value="auto" label="Auto" />
+          <option value="0" label="0 — Precise" />
+          <option value="0.5" />
+          <option value="1" label="1 — Balanced" />
+        </datalist>
+        <p v-if="temperatureError" class="text-xs mt-1" :style="errorStyle">{{ temperatureError }}</p>
       </div>
       <div>
         <label :class="labelBase" :style="labelStyle">URL style</label>

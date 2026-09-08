@@ -19,28 +19,32 @@ const baseValue = {
 }
 
 describe('LlmConfigForm', () => {
-  it('renders all 6 fields (openai: 4 selects incl. reasoning_effort)', () => {
+  it('renders all fields (openai: 3 selects + freetext temperature + reasoning_effort)', () => {
     const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue } } })
     expect(wrapper.find('input[placeholder="MiniMax-M2.7"]').exists()).toBe(true)
     expect(wrapper.find('input[placeholder="https://api.minimax.io/v1"]').exists()).toBe(true)
     const selects = wrapper.findAll('select')
-    // thinking, temperature, url_style, reasoning_effort — 4 selects.
+    // thinking, url_style, reasoning_effort — 3 selects.
+    // (temperature is freetext input, not a select.)
     // (plan 2026-08-23-model-thinking added reasoning_effort; plan 2026-09-01 gates it per style.)
-    expect(selects.length).toBe(4)
+    expect(selects.length).toBe(3)
+    expect(wrapper.find('[data-testid=temperature-input]').exists()).toBe(true)
     expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(true)
     expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(false)
   })
 
-  it('renders 3 selects for anthropic (budget input, no reasoning_effort)', () => {
+  it('renders 2 selects for anthropic (budget input, no reasoning_effort, freetext temperature)', () => {
     const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue, url_style: 'anthropic' } } })
-    expect(wrapper.findAll('select').length).toBe(3) // thinking, temperature, url_style
+    expect(wrapper.findAll('select').length).toBe(2) // thinking, url_style
+    expect(wrapper.find('[data-testid=temperature-input]').exists()).toBe(true)
     expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(true)
     expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(false)
   })
 
-  it('renders 4 selects for openai-response (reasoning_effort, no budget)', () => {
+  it('renders 3 selects for openai-response (reasoning_effort, no budget, freetext temperature)', () => {
     const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue, url_style: 'openai-response' } } })
-    expect(wrapper.findAll('select').length).toBe(4)
+    expect(wrapper.findAll('select').length).toBe(3)
+    expect(wrapper.find('[data-testid=temperature-input]').exists()).toBe(true)
     expect(wrapper.find('[data-testid=reasoning-effort-select]').exists()).toBe(true)
     expect(wrapper.find('[data-testid=thinking-budget-input]').exists()).toBe(false)
   })
@@ -155,6 +159,42 @@ describe('LlmConfigForm', () => {
     await wrapper.find('[data-testid="profile-threshold-slider"]').setValue('120')
     const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseValue
     expect(emitted.compaction_threshold_percent).toBe(100)  // clamped
+  })
+
+  // ─── Temperature freetext (auto or 0–1) ───
+
+  it('temperature offers auto/0/0.5/1 presets via datalist', () => {
+    const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue } } })
+    const input = wrapper.find('[data-testid="temperature-input"]')
+    expect(input.exists()).toBe(true)
+    expect(input.attributes('list')).toBe('llm-temperature-presets')
+    const options = wrapper.findAll('#llm-temperature-presets option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(options).toEqual(['auto', '0', '0.5', '1'])
+  })
+
+  it('temperature emits arbitrary values inside 0–1', async () => {
+    for (const v of ['0.7', '0.33', '0', '1']) {
+      const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue } } })
+      await wrapper.find('[data-testid="temperature-input"]').setValue(v)
+      const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseValue | undefined
+      expect(emitted?.temperature).toBe(v)
+    }
+  })
+
+  it('temperature normalizes AUTO to auto', async () => {
+    const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue, temperature: '0.5' } } })
+    await wrapper.find('[data-testid="temperature-input"]').setValue('AUTO')
+    const emitted = wrapper.emitted('update:modelValue')?.[0]?.[0] as typeof baseValue | undefined
+    expect(emitted?.temperature).toBe('auto')
+  })
+
+  it('temperature rejects out-of-range and garbage without emitting', async () => {
+    for (const v of ['1.5', '-0.1', '2', 'abc', '']) {
+      const wrapper = mount(LlmConfigForm, { props: { modelValue: { ...baseValue } } })
+      await wrapper.find('[data-testid="temperature-input"]').setValue(v)
+      expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+      expect(wrapper.text()).toContain('Use auto or a number 0–1.')
+    }
   })
 
   // Task task_1788535488395_0 (WebView2 white select): every select/input

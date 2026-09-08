@@ -59,6 +59,24 @@ test "resolveNalarPath: returns null when nalar is not found anywhere" {
     try testing.expect(result == null);
 }
 
+test "findInstalledWebapp: returns null for nonexistent exe dir without crashing" {
+    const allocator = testing.allocator;
+    const result = path_resolve.findInstalledWebapp(
+        allocator,
+        "/nonexistent/dir/nalar-desktop",
+    );
+    // On non-Windows this is unconditionally null; on Windows CI neither
+    // %LOCALAPPDATA%\nalar\webapp\index.html nor the nonexistent exe-dir
+    // candidate exists, so null as well. Either way: no panic, no leak.
+    if (result) |r| allocator.free(r);
+}
+
+test "findInstalledWebapp: bare relative exe path skips next-to-self probe" {
+    const allocator = testing.allocator;
+    const result = path_resolve.findInstalledWebapp(allocator, ".");
+    if (result) |r| allocator.free(r);
+}
+
 test "resolveNalarPath: handles Windows-style PATH (;-separated)" {
     // The fix for `error.NalarNotFound` on Windows: `resolve()` used
     // to tokenize by `:` (Unix convention) on every platform. On

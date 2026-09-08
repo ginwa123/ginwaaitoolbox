@@ -1415,4 +1415,81 @@ describe('createSseClient', () => {
 
     client.close()
   })
+
+  // Throw-isolation: a throwing onConnected must not break the handshake —
+  // onEvent still fires for `connected` and later data events dispatch.
+  it('a throwing onConnected still passes connected to onEvent and keeps the stream open', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onEvent = vi.fn()
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      pauseWhenHidden: false,
+      additionalEventTypes: ['llm_chunk'],
+      onConnected: () => {
+        throw new Error('onConnected bug')
+      },
+      onEvent,
+    })
+
+    vi.advanceTimersByTime(0)
+    // Must not throw out of the listener — handshake completes.
+    expect(() => instances[0]!.emit('connected', '{"connected":true}')).not.toThrow()
+    expect(client.getState()).toBe('open')
+    expect(onEvent).toHaveBeenCalledWith('{"connected":true}', 'connected')
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[SseClient] onConnected subscriber threw:',
+      expect.any(Error),
+    )
+
+    // Stream stays alive: a later named event still dispatches.
+    onEvent.mockClear()
+    instances[0]!.emit('llm_chunk', '{"type":"chunk"}')
+    expect(onEvent).toHaveBeenCalledWith('{"type":"chunk"}', 'llm_chunk')
+
+    errorSpy.mockRestore()
+    client.close()
+  })
+
+  // Throw-isolation: a throwing onEvent on one event must not silence the next.
+  it('a throwing onEvent on message does not silence the next event', () => {
+    const { ctor, instances } = createMockCtor()
+    const { target: visTarget } = createMockTarget(false)
+    const { target: onlineTarget } = createMockOnlineTarget()
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    let calls = 0
+    const throwOnCall = 2 // simulateOpen (connected) = call 1 (ok), message = call 2 (throws)
+    const client = createSseClient({
+      url: '/test',
+      EventSourceCtor: ctor,
+      visibilityTarget: visTarget,
+      onlineTarget: onlineTarget,
+      pauseWhenHidden: false,
+      additionalEventTypes: ['llm_chunk'],
+      onEvent: () => {
+        calls += 1
+        if (calls === throwOnCall) throw new Error('consumer bug')
+      },
+    })
+
+    vi.advanceTimersByTime(0)
+    instances[0]!.simulateOpen()
+    expect(calls).toBe(1)
+    expect(() => instances[0]!.emit('message', '{"a":1}')).not.toThrow()
+    expect(calls).toBe(2)
+    // Second event still dispatches despite the first throw.
+    expect(() => instances[0]!.emit('llm_chunk', '{"type":"chunk"}')).not.toThrow()
+    expect(calls).toBe(3)
+    expect(client.getState()).toBe('open')
+
+    errorSpy.mockRestore()
+    client.close()
+  })
 })

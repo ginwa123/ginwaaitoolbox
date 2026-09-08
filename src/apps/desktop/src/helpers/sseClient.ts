@@ -1014,7 +1014,16 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       // is true. (resetStallDetector early-returns otherwise — bug
       // introduced by reordering.)
       resetStallDetector()
-      opts.onConnected?.()
+      // Throw-isolation: a throwing onConnected must never break the
+      // handshake — the stream is already open and subsequent data
+      // events must still dispatch. Previously this call sat outside
+      // the try below, so a throw skipped the onEvent passthrough
+      // for this handshake (and surfaced as an uncaught exception).
+      try {
+        opts.onConnected?.()
+      } catch (err) {
+        console.error('[SseClient] onConnected subscriber threw:', err)
+      }
       // Also pass through to onEvent so adapters that want the
       // payload (e.g. `createSseConnection` adds it to the message
       // stream with `type: 'connected'`) can read it.

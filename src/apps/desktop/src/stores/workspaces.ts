@@ -1598,9 +1598,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // the SAME column is being refetched (cursor/refresh semantics):
       // the wire response carries the server-sorted (or per-column-
       // cursor-scoped) order for this column only.
+      //
+      // Double-task guard (task_1788811916878_4): also evict any
+      // existing entry whose id is in the fresh response. The old
+      // filter (`!== columnId` only) kept a stale source-column copy
+      // whenever the SSE mirror missed (event before load, unknown
+      // task, parallel per-column race, rapid A->B->C moves) and the
+      // fresh dest copy was appended alongside it — same id in 2
+      // columns until refresh. Last-writer-wins by id keeps one copy.
       if (!item.tasks) item.tasks = []
+      const freshIds = new Set(normalized.map((t) => t.id))
       const otherTasks = item.tasks.filter(
-        (t) => t.kanban_column_id !== columnId,
+        (t) => t.kanban_column_id !== columnId && !freshIds.has(t.id),
       )
       item.tasks = [...otherTasks, ...normalized]
 
@@ -3306,8 +3315,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // because tasks are ordered newest-first, so older tasks go at
       // the end of the list. Migration 067 — normalize tags from wire
       // string to in-memory string[] at every fetch site.
+      // Double-task guard (task_1788811916878_4): skip ids already
+      // present (cursor reuse / retry / concurrent move can return the
+      // same row twice; KanbanColumn filters by column so a dup id
+      // renders in two columns).
       if (!item.tasks) item.tasks = []
-      item.tasks.push(...tasks.map(normalizeTaskTags))
+      const seenIds = new Set(item.tasks.map((t) => t.id))
+      for (const t of tasks.map(normalizeTaskTags)) {
+        if (seenIds.has(t.id)) continue
+        seenIds.add(t.id)
+        item.tasks.push(t)
+      }
       // Update this column's pagination state with the new cursor +
       // hasMore. The backend tells us if THIS column has more pages.
       colState.cursor = next_cursor
