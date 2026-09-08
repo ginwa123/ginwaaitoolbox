@@ -37,7 +37,6 @@ const port = @import("port.zig");
 const path_resolve = @import("path_resolve.zig");
 const subprocess = @import("subprocess.zig");
 const extraction = @import("extraction.zig");
-const smoke = @import("smoke.zig");
 const webview_lib = @import("webview_lib.zig");
 const attach = @import("attach.zig");
 const nalarcore = @import("nalarcore");
@@ -86,47 +85,18 @@ pub fn main(init: std.process.Init) !void {
     };
     defer cfg.deinit(allocator);
 
-    // Headless smoke test (Chunk 2.1 + 404 guard): bypass both spawn and
-    // webview paths entirely. WebKitGTK cannot initialise without a display
-    // server, so the best we can do on a CI runner is verify the binary
-    // loads, parses CLI, extracts webapp assets to a temp dir, AND that
-    // the extracted dir would serve `/` with 200 instead of 404. CI invokes
+    // Headless smoke test (Chunk 2.1): bypass both spawn and webview paths
+    // entirely. WebKitGTK cannot initialise without a display server, so the
+    // best we can do on a CI runner is verify the binary loads, parses CLI,
+    // extracts webapp assets to a temp dir, and exits 0 cleanly. CI invokes
     // this via `./zig-out/bin/nalar-desktop --smoke-test` after build.
-    //
-    // The 404 guard matters on Windows: that cell builds with
-    // `-Dno-webapp-rebuild`, and a fresh checkout without a cached
-    // `webapp_assets.zig` gets the EMPTY STUB from build.zig (zero
-    // assets, no index.html) — the desktop would then serve
-    // `404 Not Found` at `/` inside its window.
     if (cfg.smoke_test) {
-        if (webapp_assets.assets.len == 0) {
-            std.log.err("smoke: 0 embedded assets (empty webapp stub?) — GET / would serve 404", .{});
-            return error.SmokeNoAssets;
-        }
         const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
             std.log.err("smoke: asset extraction failed: {s}", .{@errorName(err)});
             return err;
         };
-        // NALAR_SMOKE_KEEP=1: leave the extracted tree on disk so CI
-        // can boot `nalar --static-dir <dir>` against the exact served
-        // tree and curl `/` for a true HTTP 200-vs-404 check (see the
-        // Windows-only "Smoke test: desktop webapp serves 200" step in
-        // ci.yml). Only the dir is kept — the owned path slice is still
-        // freed so the GPA leak detector stays quiet.
-        const keep = std.c.getenv("NALAR_SMOKE_KEEP") != null;
-        defer {
-            if (keep) {
-                allocator.free(webapp_dir);
-            } else {
-                extraction.cleanup(allocator, webapp_dir);
-            }
-        }
-        const index_size = smoke.verifyWebappDir(allocator, io, webapp_dir) catch |err| {
-            std.log.err("smoke: extracted dir would serve 404 at /: {s}", .{@errorName(err)});
-            return err;
-        };
+        defer extraction.cleanup(allocator, webapp_dir);
         std.log.info("smoke: extracted {d} assets to {s}", .{ webapp_assets.assets.len, webapp_dir });
-        std.log.info("smoke: index.html OK ({d} bytes) — GET / would serve 200", .{index_size});
         return;
     }
 

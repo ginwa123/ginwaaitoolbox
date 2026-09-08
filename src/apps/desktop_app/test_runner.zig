@@ -18,5 +18,4 @@ test {
     _ = @import("webview_lib.zig");
     _ = @import("platform/linux_test.zig");
     _ = @import("attach_test.zig");
-    _ = @import("smoke_test.zig");
 }

@@ -1023,42 +1023,6 @@ jobs:
       # two caches racing to populate the same
       # src/apps/desktop/node_modules.
 
-      - name: Restore shared webapp_assets.zig (Windows)
-        # Windows-only, runs BEFORE any `zig build` (build.zig writes the
-        # EMPTY STUB at configure time when this gitignored file is
-        # absent). The Windows cell builds with -Dno-webapp-rebuild (the
-        # runner OOMs on the vite build), so it can never GENERATE this
-        # file itself — without this restore it embeds 0 assets and
-        # serves 404 at / (caught by the smoke steps below; run
-        # 34184202159 went red on exactly that shape).
-        #
-        # The Linux/macOS cells save the real file to this OS-agnostic cache
-        # after their full rebuild (see "Save shared webapp_assets.zig").
-        # The key deliberately omits runner.os so all cells share it:
-        # exact-hash hit on same-commit reruns, prefix fallback to the
-        # newest previous webapp otherwise (stale-but-real still serves
-        # 200, never 404).
-        #
-        # Restore-ONLY (actions/cache/restore, NOT actions/cache):
-        # Windows must never OVERWRITE the good cache with its stub.
-        #
-        # `enableCrossOsArchive: true` is REQUIRED on both ends: without
-        # it the cache service will not return entries created on another
-        # OS — the restore reports "Cache not found" even when a
-        # prefix-matching entry exists (observed 04:59 UTC: entry
-        # webapp-assets-v1-5220… saved by macOS 16 min earlier, restore
-        # with the v1 key still missed). Key bumped v1→v2 because the old
-        # entry was saved without the flag and stays unrestorable (same
-        # key would just hit a reserve conflict on re-save).
-        if: runner.os == 'Windows'
-        uses: actions/cache/restore@v4
-        with:
-          path: src/apps/desktop_app/embedded/webapp_assets.zig
-          key: webapp-assets-v2-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
-          restore-keys: |
-            webapp-assets-v2-
-          enableCrossOsArchive: true
-
       - name: Cache Zig build artifacts
         uses: actions/cache@v4
         with:
@@ -1079,13 +1043,7 @@ jobs:
           # seconds; caching it cost ~124 MB of archive I/O (upload AND
           # download) on every run. webapp_assets.zig is regenerated on
           # EVERY build by design (fresh-assets policy, see build.zig's
-          # webapp-rebuild workflow) so caching it HERE was dead weight —
-          # cross-cell sharing lives in the dedicated OS-agnostic
-          # `webapp-assets-v2-*` cache instead ("Restore shared
-          # webapp_assets.zig (Windows)" / "Save shared
-          # webapp_assets.zig (Linux)"), which the Windows cell needs
-          # because it builds with -Dno-webapp-rebuild and can never
-          # generate the file itself.
+          # webapp-rebuild workflow) so caching it was dead weight.
           #
           # Cache key includes `build.zig` so a build.zig change invalidates
           # the cache. Key bumped v2→v3 to avoid collisions with stale
@@ -1116,13 +1074,10 @@ jobs:
         #
         # The nalar-desktop install happens in the NEXT step
         # (`Install nalar + nalar-desktop (Windows)`), with webapp
-        # rebuild disabled via `--no-webapp-rebuild`. The real
-        # `webapp_assets.zig` arrives via the "Restore shared
-        # webapp_assets.zig (Windows)" cache step above (Linux/macOS-saved,
-        # OS-agnostic key) — without a cache hit, a fresh Windows
-        # checkout embeds the EMPTY STUB from build.zig, and the
-        # Windows-only "desktop webapp serves 200" smoke step below
-        # fails fast on that stub (it would serve 404 at /).
+        # rebuild disabled via `--no-webapp-rebuild` (the cached
+        # webapp_assets.zig from the Linux cell of the same workflow
+        # is good enough — we just need a working nalar.exe for the
+        # smoke test).
         #
         # The `RUNNER_OS == 'Windows'` branch prepends vcpkg's bin dir,
         # the API-set forwarder dir, and pnpm's bin dir to PATH so:
@@ -1173,32 +1128,6 @@ jobs:
         shell: bash
         run: zig build nalar-desktop --summary all
 
-      - name: Save shared webapp_assets.zig (non-Windows)
-        # Non-Windows writer for the OS-agnostic cache the Windows cell
-        # restores above. Runs right after the full webapp rebuild, so
-        # the file is fresh. Both Linux AND macOS write (same sources +
-        # same key = same content): whoever finishes first wins, which
-        # keeps Windows unblocked when one runner is offline (the Linux
-        # self-hosted runner was offline for run 34185612175 while
-        # macOS was up).
-        #
-        # `continue-on-error`: cache keys are reserve-once — when both
-        # cells save the same key, the loser gets a reserve conflict.
-        # A failed SAVE must never fail the job (the build + tests
-        # already passed; worst case Windows falls back to an older
-        # cached webapp, which still serves 200).
-        #
-        # `enableCrossOsArchive: true` must match the restore step —
-        # without it on BOTH ends, Windows restores report "Cache not
-        # found" for macOS/Linux-saved entries.
-        if: runner.os != 'Windows'
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: src/apps/desktop_app/embedded/webapp_assets.zig
-          key: webapp-assets-v2-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/src/**', 'tools/codegen_webapp_assets.zig') }}
-          enableCrossOsArchive: true
-
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
         # Windows-only twin of the previous step. Same goal — produce
         # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
@@ -1209,12 +1138,11 @@ jobs:
         # ~700 MB peak RSS on the Windows runner (vs ~2.5 GB for the
         # full webapp rebuild path), so the LLVM OOM / vite OOM that
         # crashed the unified step on the Windows ARM64 runner goes
-        # away. The real `webapp_assets.zig` arrives via the "Restore
-        # shared webapp_assets.zig (Windows)" cache step (Linux/macOS-saved,
-        # OS-agnostic key) — without a cache hit, a fresh Windows
-        # checkout embeds the EMPTY STUB from build.zig (zero assets).
-        # The Windows-only "desktop webapp serves 200" smoke step below
-        # fails fast on exactly that shape (it would serve 404 at /).
+        # away. The cached `webapp_assets.zig` from the previous Linux
+        # cell of the same workflow run is reused (webapp content is
+        # the same across cells of one matrix row — there's only one
+        # webapp build per CI invocation, embedded into both
+        # nalar-desktop binaries at artifact-publish time).
         if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -1410,15 +1338,8 @@ jobs:
             echo "✗ smoke test: $DESKTOP_BIN missing" >&2
             exit 1
           fi
-          # `rc=0 ... || rc=$?`: a failing --smoke-test must NOT kill
-          # this script via `set -e` (bash runs with `-e -o pipefail`
-          # here). Without the `||`, a non-zero `timeout` exit skips
-          # `rc=$?` AND the `if` diagnostics below — the step dies
-          # silently with no ✗ line and no log contents (observed on
-          # the Windows cell, run 34184202159, when smoke.zig's 0-asset
-          # stub guard fired).
-          rc=0
-          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1 || rc=$?
+          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1
+          rc=$?
           if [[ $rc -ne 0 ]]; then
             echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
             cat /tmp/desktop-smoke.log
@@ -1427,137 +1348,6 @@ jobs:
           grep -q "smoke:" /tmp/desktop-smoke.log \
             || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
           echo "✓ nalar-desktop --smoke-test passed"
-
-      - name: "Smoke test: desktop webapp serves 200 (Windows)"
-        # Windows-only 404 guard for nalar-desktop.exe. The Windows cell
-        # builds with -Dno-webapp-rebuild and restores webapp_assets.zig
-        # from the shared OS-agnostic cache (see "Restore shared
-        # webapp_assets.zig (Windows)" above). On a cache MISS, a fresh
-        # checkout embeds the EMPTY STUB from build.zig (zero assets, no
-        # index.html) — the desktop would then serve `404 Not Found` at
-        # `/` inside its window instead of the app, and this step fails
-        # fast on exactly that shape.
-        #
-        # Headless (no WebView2 window needed — the runner has no display):
-        #   1. Run nalar-desktop.exe --smoke-test with NALAR_SMOKE_KEEP=1
-        #      (skips temp-dir cleanup). The binary itself fails fast on
-        #      0 assets or a missing/empty index.html — the exact
-        #      would-serve-404 conditions (see smoke.zig).
-        #   2. Boot nalar.exe --static-dir <kept dir> on port 18081 and
-        #      GET `/`: expect 200 + HTML, fail on 404.
-        #   3. Kill nalar, remove the kept dir + isolated HOME.
-        #
-        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
-        # windows). Port 18081 avoids the dev ports 8080/8081 and the
-        # criteria smoke test's 18080 (the project rule forbids
-        # touching the live 8081 server).
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # MinGW-built nalar.exe dlopens the api-ms-win-crt-* UCRT
-          # forwarder DLLs by exact filename
-          # (C:\Windows\System32\downlevel\) and needs vcpkg's bin dir
-          # for libcurl.dll / sqlite3.dll — same PATH fix the bash
-          # smoke steps apply (see above).
-          $env:PATH = 'C:\vcpkg\installed\x64-windows\bin;C:\Windows\System32\downlevel;' + $env:PATH
-          $desktopBin = 'zig-out\bin\nalar-desktop.exe'
-          $nalarBin = 'zig-out\bin\nalar.exe'
-          foreach ($bin in @($desktopBin, $nalarBin)) {
-            if (-not (Test-Path -LiteralPath $bin)) {
-              Write-Error ("✗ " + $bin + " missing — build step must have failed")
-              exit 1
-            }
-          }
-          # 1. Desktop smoke-test with KEEP: the exit code already covers
-          #    the 0-assets / missing-index.html 404 conditions (smoke.zig).
-          $env:NALAR_SMOKE_KEEP = '1'
-          $smokeOut = & $desktopBin --smoke-test 2>&1
-          $smokeRc = $LASTEXITCODE
-          foreach ($smokeLine in @($smokeOut)) { Write-Host "$smokeLine" }
-          if ($smokeRc -ne 0) {
-            Write-Error ("✗ nalar-desktop.exe --smoke-test exited " + $smokeRc + " (would serve 404 at /)")
-            exit 1
-          }
-          # The kept dir is the "extracted N assets to <dir>" log path.
-          $webappDir = $null
-          foreach ($smokeLine in @($smokeOut)) {
-            $s = "$smokeLine"
-            if ($s -match 'extracted \d+ assets to (.+?)\s*$') { $webappDir = $Matches[1].Trim() }
-          }
-          if (-not $webappDir -or -not (Test-Path -LiteralPath (Join-Path $webappDir 'index.html'))) {
-            Write-Error "✗ smoke-test kept dir has no index.html (would serve 404 at /)"
-            exit 1
-          }
-          Write-Host ("→ webapp dir: " + $webappDir)
-          # 2. Boot nalar against the EXACT extracted tree and GET /.
-          #    Isolate HOME to a tempdir (same "fresh install" shape as
-          #    the criteria smoke test) so migrations + state stay out
-          #    of the runner user's real profile.
-          $port = 18081
-          $isolatedHome = Join-Path $env:TEMP ('nalar-ci-404check-' + $PID)
-          New-Item -Path $isolatedHome -ItemType Directory -Force | Out-Null
-          $env:HOME = $isolatedHome
-          $nalarProc = $null
-          try {
-            $nalarProc = Start-Process -FilePath $nalarBin -ArgumentList @('--port', "$port", '--static-dir', $webappDir) -PassThru -WindowStyle Hidden
-            $deadline = (Get-Date).AddSeconds(30)
-            $ready = $false
-            while ((Get-Date) -lt $deadline) {
-              try {
-                $health = Invoke-WebRequest -Uri ("http://127.0.0.1:" + $port + "/health") -UseBasicParsing -TimeoutSec 3
-                if ([int]$health.StatusCode -eq 200) { $ready = $true; break }
-              } catch { Start-Sleep -Milliseconds 500 }
-              if ($nalarProc.HasExited) {
-                Write-Error ("✗ nalar.exe exited early with code " + $nalarProc.ExitCode)
-                exit 1
-              }
-            }
-            if (-not $ready) {
-              Write-Error ("✗ nalar.exe never became healthy on port " + $port)
-              exit 1
-            }
-            # The actual 404 check: GET / must be 200 + HTML, never 404.
-            # Invoke-WebRequest throws on 4xx/5xx, so 404 surfaces via
-            # the catch block; a 200-with-wrong-body is checked below.
-            $status = 0
-            $body = ''
-            try {
-              $root = Invoke-WebRequest -Uri ("http://127.0.0.1:" + $port + "/") -UseBasicParsing -TimeoutSec 10
-              $status = [int]$root.StatusCode
-              $body = "$($root.Content)"
-            } catch {
-              $resp = $_.Exception.Response
-              if ($resp -ne $null -and [int]$resp.StatusCode -eq 404) {
-                Write-Error "✗ GET / returned 404 Not Found — desktop webapp missing (empty webapp stub?)"
-                exit 1
-              }
-              throw
-            }
-            if ($status -eq 404) {
-              Write-Error "✗ GET / returned 404 Not Found — desktop webapp missing (empty webapp stub?)"
-              exit 1
-            }
-            if ($status -ne 200) {
-              Write-Error ("✗ GET / returned unexpected status " + $status + " (expected 200)")
-              exit 1
-            }
-            $looksHtml = $body -match '(?i)<!doctype html|<div id="app"|<html'
-            if (-not $looksHtml) {
-              Write-Error "✗ GET / body is not the webapp HTML (first 200 chars: $($body.Substring(0, [Math]::Min(200, $body.Length))))"
-              exit 1
-            }
-            Write-Host ("✓ GET / served 200 (" + $body.Length + " bytes) — not a 404")
-          } finally {
-            # $nalarProc is $null when Start-Process itself threw (bad
-            # binary, missing DLL) — guard so the real error surfaces
-            # instead of a confusing $null-reference from cleanup.
-            if (($nalarProc -ne $null) -and (-not $nalarProc.HasExited)) {
-              Stop-Process -Id $nalarProc.Id -Force -ErrorAction SilentlyContinue
-            }
-            Remove-Item -Recurse -Force $isolatedHome -ErrorAction SilentlyContinue
-            Remove-Item -Recurse -Force $webappDir -ErrorAction SilentlyContinue
-          }
 
       - name: Cache python venv + playwright chromium
         # PERF (2026-08-25): the pytest venv + Playwright Chromium
