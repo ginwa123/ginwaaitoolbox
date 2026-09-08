@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import { parseRemoveFile } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
 
@@ -60,6 +61,7 @@ const handleToggle = (next: boolean) => {
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

@@ -37,6 +37,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
   content: string
@@ -239,6 +240,7 @@ const copyTaskId = async (e: Event) => {
           <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ position }}</span>
         </div>
       </template>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

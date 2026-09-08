@@ -46,6 +46,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import ToolParameters from './_shared/ToolParameters.vue'
+import { tryUnwrapToolOutput } from '../../helpers/unwrapToolOutput'
 
 // Minimal shape we need from the parent. ChatView.vue defines a
 // LOCAL `Message` interface (different from `api.Message`) so we
@@ -81,6 +83,17 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(false)
+
+/**
+ * Envelope `<parameters>` for this tool message (Task 6).
+ * `get_plan` takes no input, so this is `{}` on the real wire and
+ * <ToolParameters> renders nothing (its hasArgs guard skips '' / '{}').
+ * Derived here — NOT threaded as a prop — because this component takes
+ * `:message` (whole role=tool message), never `:content`/`:parameters`.
+ * Kept (rather than omitted) so any future input args surface with zero
+ * template changes. Falls back to '{}' for legacy raw-inner envelopes.
+ */
+const envelopeParams = computed(() => tryUnwrapToolOutput(props.message.content)?.parameters ?? '{}')
 
 /**
  * Find the inner `<get_plan>...</get_plan>` envelope anywhere inside
@@ -280,6 +293,12 @@ const handleToggle = (next: boolean) => {
           (plan body has no checklist lines)
         </div>
       </div>
+      <!--
+        Envelope params (Task 6): collapsed <details>, rendered only
+        when non-empty (ToolParameters v-ifs on hasArgs). Today this
+        is always '{}' for get_plan (no-input tool) so nothing shows.
+      -->
+      <ToolParameters :parameters="envelopeParams" />
     </div>
   </div>
 </template>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import DiffView from './_shared/DiffView.vue'
 import { parseTextReplace } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
@@ -115,6 +116,7 @@ const handleToggle = (next: boolean) => {
         class="rounded-none border-0"
         @jump-to-line="handleJumpToLine"
       />
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

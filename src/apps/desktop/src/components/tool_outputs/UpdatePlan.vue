@@ -276,6 +276,18 @@ const handleToggle = (next: boolean) => {
           (no fields in envelope)
         </div>
       </template>
+      <!--
+        NOTE (Task 6): no <ToolParameters> block here — deliberate.
+        `update_plan`'s only input arg is `content` (the markdown body),
+        and the backend echoes that SAME body back inside
+        `<plan><![CDATA[...]]></plan>`, which this card already renders
+        as the checklist above. Surfacing the raw envelope
+        `<parameters>{ "content": "..." }</parameters>` would duplicate
+        the checklist without adding signal, so the envelope params are
+        intentionally not surfaced (see UpdatePlan.spec.ts "real ChatView
+        dispatcher path" section: parameters = ignored, <plan> CDATA =
+        source of truth). Prop shape stays `:message` (no `:parameters`).
+      -->
     </div>
   </div>
 </template>

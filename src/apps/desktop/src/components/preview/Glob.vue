@@ -1,6 +1,7 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 import { extractParam } from '../../helpers/extractParam'
 
@@ -152,6 +153,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
           </svg>
         </button>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

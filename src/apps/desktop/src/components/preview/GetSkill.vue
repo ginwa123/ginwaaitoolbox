@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
+import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
 
 const props = defineProps<{
   content: string
@@ -150,6 +151,7 @@ const copySkillName = async (e: Event) => {
         </div>
         <pre class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs overflow-auto">{{ skillContent }}</pre>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

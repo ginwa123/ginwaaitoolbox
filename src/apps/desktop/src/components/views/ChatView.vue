@@ -3160,26 +3160,31 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'view_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <ListSkills
                             v-else-if="msg.tool_name === 'list_skills'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <AddSkill
                             v-else-if="msg.tool_name === 'add_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <EditSkill
                             v-else-if="msg.tool_name === 'edit_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <RemoveSkill
                             v-else-if="msg.tool_name === 'remove_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :parameters="getParametersForMessage(msg)"
                           />
                           <RemoveFile
                             v-else-if="msg.tool_name === 'remove_file'"

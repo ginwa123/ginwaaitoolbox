@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
 import { parseShell } from '../tool_outputs/_shared/toolOutputParser'
 
 /**
@@ -212,6 +213,7 @@ const copyStderr = async (e: Event) => {
           </div>
           <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stderr }}</pre>
         </div>
+        <ToolParameters :parameters="parameters" />
       </div>
   </div>
 </template>

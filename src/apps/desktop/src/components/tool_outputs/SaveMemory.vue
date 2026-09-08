@@ -36,6 +36,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
   content: string
@@ -218,6 +219,7 @@ const copyId = async (e: Event) => {
           (no fields in envelope)
         </div>
       </template>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

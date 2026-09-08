@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import { extractParam } from '../../helpers/extractParam'
 
 /**
@@ -599,6 +600,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           </div>
         </li>
       </ul>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

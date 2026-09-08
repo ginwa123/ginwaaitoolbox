@@ -47,6 +47,7 @@ import {
   parseGenerateImage,
   type ParsedGenerateImage,
 } from '@/components/tool_outputs/_shared/toolOutputParser'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
   /**
@@ -265,6 +266,7 @@ const copyPath = async (e: Event, path: string) => {
           </span>
         </div>
       </template>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

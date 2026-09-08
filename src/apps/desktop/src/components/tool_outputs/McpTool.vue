@@ -21,11 +21,12 @@
   Expanded body (click header to toggle):
     Success: `<pre>` with JSON-pretty output when parseable, else raw text.
     Failure: red error block.
-    Non-empty JSON args render as a collapsed `<details>` below the output.
+    Non-empty JSON args render via shared ToolParameters below the output.
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import { parseMcp } from './_shared/toolOutputParser'
 
 const props = defineProps<{
@@ -50,21 +51,6 @@ const rightMeta = computed(() => {
   if (!parsed.value.success) return 'Error'
   const lines = parsed.value.lineCount
   return `${lines}L`
-})
-
-const hasArgs = computed(() => {
-  const p = (props.parameters ?? '').trim()
-  return p !== '' && p !== '{}'
-})
-
-const prettyArgs = computed(() => {
-  const p = (props.parameters ?? '').trim()
-  if (!p) return ''
-  try {
-    return JSON.stringify(JSON.parse(p), null, 2)
-  } catch {
-    return p
-  }
 })
 
 const handleToggle = (next: boolean) => {
@@ -99,12 +85,7 @@ const handleToggle = (next: boolean) => {
         class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
         data-testid="mcp-tool-output"
       >{{ parsed.prettyOutput || '(empty)' }}</pre>
-      <details v-if="hasArgs" class="px-2 py-1.5 border-t border-[var(--color-border)]">
-        <summary class="cursor-pointer select-none text-[var(--semantic-text-dim)] hover:opacity-100 opacity-70">
-          Arguments
-        </summary>
-        <pre class="mt-1 p-2 m-0 whitespace-pre-wrap break-words text-[var(--semantic-text-dim)] text-xs">{{ prettyArgs }}</pre>
-      </details>
+      <ToolParameters :parameters="props.parameters" />
     </div>
   </div>
 </template>

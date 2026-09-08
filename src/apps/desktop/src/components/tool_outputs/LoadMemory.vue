@@ -50,6 +50,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 interface MemoryEntry {
   id: string
@@ -444,6 +445,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           >{{ entry.content }}</pre>
         </div>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

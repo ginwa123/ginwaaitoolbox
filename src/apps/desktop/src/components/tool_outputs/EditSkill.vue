@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import ToolParameters from './_shared/ToolParameters.vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import { parseEditSkill } from './_shared/toolOutputParser'
 
 const props = defineProps<{
   content: string
   expanded?: boolean
+  /** Tool-call args (XML from jsonArgsToXml, or JSON). Surfaced via the
+   *  shared <ToolParameters> block in the expanded body; empty/'{}'
+   *  renders nothing (see ToolParameters.vue hasArgs guard). */
+  parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
@@ -49,6 +54,7 @@ const handleToggle = (next: boolean) => {
         <span class="font-semibold shrink-0">Path:</span>
         <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{ parsed.path }}</span>
       </div>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>

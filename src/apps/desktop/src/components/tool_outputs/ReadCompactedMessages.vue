@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
+import ToolParameters from './_shared/ToolParameters.vue'
 
 /**
  * ReadCompactedMessages — renders the rich `<read_compacted_messages>`
@@ -333,6 +334,7 @@ const toggleContent = (id: string): void => {
           </div>
         </li>
       </ul>
+      <ToolParameters :parameters="parameters" />
     </div>
   </div>
 </template>
