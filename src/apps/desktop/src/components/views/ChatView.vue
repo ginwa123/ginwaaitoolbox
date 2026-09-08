@@ -2332,6 +2332,12 @@ const connectSse = () => {
           if (event.total_tokens) {
             maxTotalTokens.value = event.total_tokens
           }
+          // Live skills: backend piggybacks session_skills on every llm_full
+          // (fresh on tool-result emit, stale on assistant emit — see
+          // handle_tool.zig:459 vs :745). REST remains initial source.
+          // Scoped by the event.session_id !== sid filter at handler entry.
+          if (Array.isArray(event.session_skills))
+            sessionSkills.value = event.session_skills as api.SkillInfo[]
           return
         }
       }
@@ -2456,6 +2462,12 @@ const connectSse = () => {
       if (event.total_tokens) {
         maxTotalTokens.value = event.total_tokens
       }
+      // Live skills: backend piggybacks session_skills on every llm_full
+      // (fresh on tool-result emit, stale on assistant emit — see
+      // handle_tool.zig:459 vs :745). REST remains initial source.
+      // Scoped by the event.session_id !== sid filter at handler entry.
+      if (Array.isArray(event.session_skills))
+        sessionSkills.value = event.session_skills as api.SkillInfo[]
 
       return
     }

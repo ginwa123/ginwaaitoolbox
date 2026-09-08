@@ -186,6 +186,15 @@ pub fn onEventSendLLMHistory(
         .whitespace = .indent_4,
     })});
 
+    // The owned skills slice has served its purpose (serialized into buf
+    // above) — free it now. Guarded on len > 0: a zero-length toOwnedSlice
+    // result may not be a live allocation, and freeing it would trip the
+    // allocator. Production callers use a per-request arena (no-op here),
+    // but tests run on testing.allocator where an unfreed slice leaks.
+    if (session_skills_json) |sk| {
+        if (sk.len > 0) allocator.free(sk);
+    }
+
     // Duplicate the data so event owns its own copy (buf will be deallocated below)
     const data_copy = try allocator.dupe(u8, buf.items);
 
@@ -578,4 +587,41 @@ test "onEventSendLLMHistory: is_error defaults to false in the JSON payload" {
     // Default path must NOT claim to be an error — the frontend routes on
     // this exact field.
     try testing.expect(std.mem.indexOf(u8, ev.data, "\"is_error\": false") != null);
+}
+
+test "onEventSendLLMHistory: session_skills serializes into the JSON payload" {
+    var s = try setupLlmBusAndIo();
+    defer teardownLlmBus(&s);
+    defer freeCapturedLlmEventData();
+    captured_llm_event = null;
+    try s.bus.subscribe(SseEvent, "llm", captureLlmFn);
+
+    try onEventSendLLMHistory(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .logger = &s.logger,
+        .event_bus = &s.bus,
+        .entity = .{
+            .session_id = "s_skills",
+            .model = "m",
+            .cwd = "/tmp",
+            .content = "skills check",
+            .reasoning_content = null,
+            .role = "assistant",
+            .finish_reason = "stop",
+            .tool_calls_json = null,
+            .tool_call_id = null,
+            .agent_name = "Agent",
+            .loop_index = 0,
+            .temperature = 0.2,
+            .is_thinking = false,
+            .is_input = false,
+            .is_output = true,
+            .session_skills = &.{.{ .skill_name = @constCast("my-skill"), .content = @constCast("hello"), .loaded_at = 123 }},
+        },
+    });
+
+    const ev = captured_llm_event orelse return error.NoEventCaptured;
+    try testing.expect(std.mem.indexOf(u8, ev.data, "\"session_skills\"") != null);
+    try testing.expect(std.mem.indexOf(u8, ev.data, "my-skill") != null);
 }
