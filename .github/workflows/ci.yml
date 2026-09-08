@@ -1053,6 +1053,24 @@ jobs:
           # match and no cache is restored. This prevents a stale build.exe
           # (from an older build.zig) from being used.
 
+      - name: Cache webapp dist (shared Linux/macOS → Windows)
+        # Cross-cell channel for the Windows-only shipped webapp/ folder.
+        # Linux + macOS build src/apps/desktop/dist via the full webapp
+        # rebuild; the Windows cell can't (vite OOMs on the small runner,
+        # hence -Dno-webapp-rebuild) so it restores dist/ from this cache
+        # and build.zig installs it to zig-out/bin/webapp for the zip.
+        # Keyed ONLY by webapp sources (no runner.os) so all three cells
+        # share it. First run after a frontend change is a miss on every
+        # cell: Linux/macOS rebuild + save at job end, Windows ships
+        # old-style that run (bundle step warns) and picks it up next run.
+        # Parallel Linux+macOS saves race last-write-wins; both are valid
+        # vite emits from identical sources (byte-drift in sourcemaps is
+        # harmless here -- the desktop serves whatever is installed).
+        uses: actions/cache@v4
+        with:
+          path: src/apps/desktop/dist
+          key: webapp-dist-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/index.html', 'src/apps/desktop/vite.config.*', 'src/apps/desktop/src/**', 'src/apps/desktop/public/**') }}
+
       - name: Test (zig build test only — no nalar-desktop install)
         # PERF (2026-08-25): the original step merged `zig build test`
         # + `zig build nalar-desktop` into ONE invocation to halve the
@@ -1644,6 +1662,24 @@ jobs:
           if (-not (Test-Path $setupSrc)) { Write-Error "setup script missing at $setupSrc -- checkout incomplete?"; exit 1 }
           Copy-Item -Force $setupSrc (Join-Path $tmp "Install-Nalar.ps1")
           Write-Host "ok Install-Nalar.ps1 bundled"
+          # Shipped webapp (Windows-only persistent static dir). build.zig
+          # installs src/apps/desktop/dist to zig-out/bin/webapp when
+          # dist/index.html exists at configure time; the zip carries it
+          # as webapp/ and Install-Nalar.ps1 installs it to
+          # %LOCALAPPDATA%\nalar\webapp. The desktop prefers that dir and
+          # only falls back to embedded-asset temp extraction when missing.
+          # Warn (not fail) when absent: the Windows cell builds with
+          # -Dno-webapp-rebuild (vite OOMs on the small runner) and
+          # receives dist/ via the shared webapp-dist cache -- on a cache
+          # miss (first run after a frontend change) there is legitimately
+          # no dist/ and the zip ships old-style; the next run picks it up.
+          $webappSrc = "zig-out/bin/webapp"
+          if (Test-Path (Join-Path $webappSrc "index.html")) {
+            Copy-Item -Recurse -Force $webappSrc (Join-Path $tmp "webapp")
+            Write-Host "ok webapp/ bundled"
+          } else {
+            Write-Warning "webapp/index.html missing at $webappSrc (dist cache miss?) -- zip ships WITHOUT webapp/, desktop falls back to embedded extraction"
+          }
           # WebView2Loader.dll is NOT a vcpkg DLL -- it comes from the NuGet
           # staging dir via build.zig's addInstallBinFile. If the build took
           # the stub fallback (missing EventToken.h etc.), zig-out/bin/ has
@@ -1740,13 +1776,17 @@ jobs:
             nalar-desktop.exe + nalar.exe (the desktop auto-spawns
             the service beside itself) plus every runtime DLL
             (libcurl / sqlite3 / ssl / ... + WebView2Loader.dll)
+            plus webapp/ (the shipped UI, served via --static-dir;
+            absent on dist-cache-miss runs -- desktop then falls back
+            to embedded extraction)
             plus Install-Nalar.ps1 (the Windows setup script).
             Extract the zip and run nalar-desktop.exe; a bare .exe
             alone cannot start (loader needs the DLLs beside it).
             Windows setup (no admin): extract the zip, then run
             `powershell -ExecutionPolicy Bypass -File Install-Nalar.ps1`
             from the extracted folder -- installs both exes + DLLs to
-            %LOCALAPPDATA%\nalar\bin and adds a Start Menu shortcut
+            %LOCALAPPDATA%\nalar\bin, webapp/ to
+            %LOCALAPPDATA%\nalar\webapp, and adds a Start Menu shortcut
             (Win key -> "Nalar"). `-Uninstall` removes it again.
             Install both binaries with
             `sudo scripts/install-nalar-desktop.sh` after downloading.

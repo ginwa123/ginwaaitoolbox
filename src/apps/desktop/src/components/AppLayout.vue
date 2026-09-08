@@ -16,7 +16,7 @@ import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
-import AgentChatDialog from './dialogs/AgentChatDialog.vue'
+import AgentChatView from './views/AgentChatView.vue'
 import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
 import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
@@ -1069,11 +1069,10 @@ watch(
 )
 
 // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
-// agent chat dialog visibility. Driven by `activeTask` — when the
+// agent chat inline view. Driven by `activeTask` — when the
 // user clicks a chat task under an agent, `activeTaskWorkspaceItemId`
 // equals the agent's item id and `activeTaskWorkspaceItem.item_type`
-// is `'agent'`. The AgentChatDialog's v-if gates on this exact case.
-const agentChatDialogOpen = ref(false)
+// is `'agent'`. The AgentChatView's v-if gates on this exact case.
 const agentKnowledge = ref<api.AgentKnowledgeRow[]>([])
 const agentTools = ref<string[]>([])
 // Agent system prompts (Migration 080) — same plain-ref pattern as
@@ -1115,14 +1114,6 @@ watch(
       // Fire-and-forget; loadAgentData assigns the refs itself.
       void loadAgentData(id)
     }
-  },
-  { immediate: true },
-)
-
-watch(
-  () => activeTask.value,
-  (t) => {
-    agentChatDialogOpen.value = !!t && activeWorkspaceItem.value?.item_type === 'agent'
   },
   { immediate: true },
 )
@@ -2536,12 +2527,35 @@ defineExpose({
         @delete-element="handleDesignDeleteElement"
         @open-chat="handleDesignOpenChat"
       />
+      <!-- Agent chat (inline, non-dialog): when a chat task is open
+           under an agent item, the chat REPLACES the AgentView config
+           below (same swap semantics as StandardTaskChatView for
+           folder tasks). MUST be v-else-if in this chain and placed
+           BEFORE AgentView — a standalone v-if would start a new
+           chain and render BOTH stacked (config on top, chat
+           squeezed at the bottom). Closing the chat (@close →
+           handleCloseTaskView clears activeTask) falls back to
+           AgentView. -->
+      <AgentChatView
+        v-else-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'agent' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        :key="'agent-chat-' + activeTask.id"
+        :task="activeTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
+      />
       <!-- Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
-           4th workspace-item type. Mounted when item_type='agent'.
-           The view is responsible for fetching its own agent data
-           (knowledge + tools) via /api/workspaces/:wsId/items/:itemId/agent.
-           The chat dialog (below) opens when the user clicks a
-           chat task under this agent.
+           4th workspace-item type. Mounted when item_type='agent'
+           and NO chat task is open (the AgentChatView branch above
+           wins when a task is active). The view is responsible for
+           fetching its own agent data (knowledge + tools) via
+           /api/workspaces/:wsId/items/:itemId/agent.
            IMPORTANT: this v-else-if must come BEFORE the new
            standard-task ChatView below (origin/main's blank-chatview
            fix) so 'agent' items render AgentView, not a plain
@@ -2566,24 +2580,10 @@ defineExpose({
         @edit-system-prompt="handleAgentEditSystemPrompt"
         @remove-system-prompt="handleAgentRemoveSystemPrompt"
       />
-      <AgentChatDialog
-        v-if="
-          activeWorkspaceItem &&
-          activeWorkspaceItem.item_type === 'agent' &&
-          activeTask &&
-          activeTaskWorkspaceItemId === activeWorkspaceItem.id
-        "
-        v-model:show="agentChatDialogOpen"
-        :task="activeTask"
-        :workspace-id="activeWorkspace?.id ?? ''"
-        :item-id="activeWorkspaceItem.id"
-        :cwd="activeWorkspaceItem.path ?? ''"
-        @close="handleCloseTaskView"
-      />
       <!--
         AgentKnowledgeDialog — mounted at the AppLayout level so the
         AgentView's `+ Add` button emits up to open this dialog. Uses
-        the same v-model:show pattern as the AgentChatDialog above.
+        the same v-model:show pattern as the knowledge dialogs below.
         Gated on `item_type === 'agent'` so the dialog only opens
         while an agent item is active. The agent id == workspace item
         id per Migration 076 (agents.id is the workspace_item_id).

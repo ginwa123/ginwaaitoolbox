@@ -117,28 +117,41 @@ pub fn main(init: std.process.Init) !void {
 
     // ATTACH MODE (default + new behavior).
     //
-    // 1. Extract the embedded webapp assets to a per-pid temp dir.
-    //    Even if the user already has a nalar running, the desktop
-    //    owns the webapp and we want the next auto-spawn to be able
-    //    to serve it via `--static-dir`. If we end up attaching to
-    //    an existing nalar (no auto-spawn), the extracted dir goes
-    //    unused and is cleaned up at process exit.
+    // Resolve the desktop's own exe path early: attach.zig needs it for
+    // the "next to self" nalar lookup AND the Windows installed-webapp
+    // lookup below. Best-effort: on platforms without /proc/self/exe,
+    // fall back to "." and let both lookups skip their exe-relative
+    // checks.
+    const self_exe_owned = path_resolve.selfExePath(allocator) catch ".";
+    defer if (!std.mem.eql(u8, self_exe_owned, ".")) allocator.free(self_exe_owned);
+
+    // 1. Choose the webapp dir to serve via `--static-dir` on auto-spawn.
+    //    Windows-only shipped layout: prefer the persistent installed copy
+    //    (%LOCALAPPDATA%\nalar\webapp, then webapp/ next to the exe -- see
+    //    path_resolve.findInstalledWebapp) so close/reopen and reboot keep
+    //    working with no per-run temp extraction. Falls back to
+    //    embedded-asset temp extraction when no installed copy exists
+    //    (dev runs from zig-out/bin without install, old zips without
+    //    webapp/). Linux/macOS always extract (helper returns null there).
     //
-    //    NOTE: when the auto-spawn path fires, the spawned nalar
-    //    outlives the desktop (architectural commitment: closing the
-    //    window does NOT stop nalar). The temp dir becomes part of
-    //    nalar's runtime state, so we LEAK the path on auto-spawn
-    //    success — the OS will clean it up at next reboot. The leak
-    //    is bounded (one dir per process) and the temp name includes
-    //    the PID, so it's discoverable in `/tmp` if debugging is
-    //    ever needed. A future improvement is to register the dir
-    //    with a `nalar service register-static-dir <path>` call so
-    //    the user can clean it up via `service stop`.
-    const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
-        std.log.err("Failed to extract webapp assets to temp dir: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer extraction.cleanup(allocator, webapp_dir);
+    //    Ownership: extracted dirs are deleted at exit via
+    //    extraction.cleanup; an installed dir is only freed (never
+    //    deleted) -- hence the webapp_did_extract flag on the defer.
+    var webapp_dir: []u8 = undefined;
+    var webapp_did_extract = false;
+    if (path_resolve.findInstalledWebapp(allocator, self_exe_owned)) |installed| {
+        webapp_dir = installed;
+        std.log.info("Using installed webapp at {s}", .{webapp_dir});
+    } else {
+        webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
+            std.log.err("Failed to extract webapp assets to temp dir: {s}", .{@errorName(err)});
+            return err;
+        };
+        webapp_did_extract = true;
+    }
+    defer {
+        if (webapp_did_extract) extraction.cleanup(allocator, webapp_dir) else allocator.free(webapp_dir);
+    }
 
 
 
@@ -151,12 +164,8 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(state_path);
 
-    // Resolve the desktop's own exe path for attach.zig's "next to self"
-    // nalar lookup (auto-spawn path only). Best-effort: on platforms
-    // without /proc/self/exe, fall back to "." and let the auto-spawn
-    // path skip the "next to self" check.
-    const self_exe_owned = path_resolve.selfExePath(allocator) catch ".";
-    defer if (!std.mem.eql(u8, self_exe_owned, ".")) allocator.free(self_exe_owned);
+    // (self_exe_owned was resolved above -- it feeds both the
+    // installed-webapp lookup and the attach target below.)
 
     // PATH env (for the auto-spawn fallback when --nalar-path is unset
     // and nalar isn't next to the desktop binary).
