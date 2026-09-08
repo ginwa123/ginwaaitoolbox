@@ -1,15 +1,15 @@
-// Behavioural tests for AgentChatDialog.
+// Behavioural tests for AgentChatView (inline, non-dialog).
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
-import AgentChatDialog from '../components/dialogs/AgentChatDialog.vue'
+import AgentChatView from '../components/views/AgentChatView.vue'
 
 // Stub ChatView — it transitively pulls in many Pinia stores
 // (useNavigationStore, useWorkspacesStore, etc.) and a real SSE bus
 // instance, none of which we need to exercise here. We're only
-// asserting AgentChatDialog's wrapper behaviour.
+// asserting AgentChatView's wrapper behaviour.
 vi.mock('../components/views/ChatView.vue', () => ({
   default: {
     name: 'ChatView',
@@ -18,15 +18,11 @@ vi.mock('../components/views/ChatView.vue', () => ({
   },
 }))
 
-function mountChatDialog(props: Record<string, unknown> = {}) {
-  // The dialog uses <Teleport to="body">, so we attach to document.body
-  // and search via document.querySelector. Same pattern as
-  // AddAgentDialog.spec.ts / AgentKnowledgeDialog.spec.ts.
+function mountChatView(props: Record<string, unknown> = {}) {
   document.body.innerHTML = ''
-  return mount(AgentChatDialog, {
+  return mount(AgentChatView, {
     attachTo: document.body,
     props: {
-      show: true,
       task: { id: 'task_1', name: 'Test Chat' },
       workspaceId: 'ws_1',
       itemId: 'item_1',
@@ -36,20 +32,23 @@ function mountChatDialog(props: Record<string, unknown> = {}) {
   })
 }
 
-describe('AgentChatDialog', () => {
+describe('AgentChatView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.restoreAllMocks()
   })
 
-  it('renders the dialog when show=true', async () => {
-    mountChatDialog()
+  it('renders inline without Teleport/dialog chrome', async () => {
+    mountChatView()
     await nextTick()
-    expect(document.querySelector('[data-testid="agent-chat-dialog"]')).toBeTruthy()
+    expect(document.querySelector('[data-testid="agent-chat-view"]')).toBeTruthy()
+    // No dialog overlay, no backdrop, no aria-modal popup.
+    expect(document.querySelector('[data-testid="agent-chat-dialog"]')).toBeFalsy()
+    expect(document.querySelector('[role="dialog"]')).toBeFalsy()
   })
 
   it('emits close when close button clicked', async () => {
-    const wrapper = mountChatDialog()
+    const wrapper = mountChatView()
     await nextTick()
     const closeBtn = document.querySelector('[data-testid="agent-chat-close"]') as HTMLButtonElement
     closeBtn.click()
@@ -57,9 +56,9 @@ describe('AgentChatDialog', () => {
     expect(wrapper.emitted('close')).toBeTruthy()
   })
 
-  it('does not render when show=false', async () => {
-    mountChatDialog({ show: false })
+  it('falls back to default title when task has no name', async () => {
+    mountChatView({ task: { id: 'task_1' } })
     await nextTick()
-    expect(document.querySelector('[data-testid="agent-chat-dialog"]')).toBeFalsy()
+    expect(document.body.textContent).toContain('Agent Chat')
   })
 })

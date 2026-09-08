@@ -1,0 +1,54 @@
+<!--
+  AgentChatView — inline chat view for agent sessions.
+
+  Replaces the former AgentChatDialog modal overlay. Renders inline
+  (no Teleport, no backdrop, no show prop) so the agent chat lives
+  in the normal layout flow, mirroring StandardTaskChatView.
+
+  Public API:
+    props:  task, workspaceId, itemId, cwd
+    emits:  close
+-->
+<script setup lang="ts">
+import ChatView from './ChatView.vue'
+
+interface Props {
+  task: { id: string; name?: string; task_type?: string }
+  workspaceId: string
+  itemId: string
+  cwd: string
+}
+
+const props = defineProps<Props>()
+const emit = defineEmits<{ close: [] }>()
+
+function handleClose() {
+  emit('close')
+}
+</script>
+
+<template>
+  <div
+    class="w-full h-full flex flex-col overflow-hidden"
+    style="background-color: var(--semantic-card-bg);"
+    data-testid="agent-chat-view"
+  >
+    <div class="px-5 py-3 flex items-center justify-between shrink-0" style="border-bottom: 1px solid var(--color-border);">
+      <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">
+        {{ props.task.name || 'Agent Chat' }}
+      </h3>
+      <button type="button" @click="handleClose" data-testid="agent-chat-close" class="text-sm px-2 py-1 rounded" style="color: var(--semantic-text-dim);">
+        ✕ Close
+      </button>
+    </div>
+    <div class="flex-1 min-h-0">
+      <ChatView
+        :key="'agent-chat-' + props.task.id"
+        :chat-id="props.task.id"
+        :chat-name="props.task.name || 'Agent Chat'"
+        type="task"
+        :cwd="props.cwd"
+      />
+    </div>
+  </div>
+</template>
