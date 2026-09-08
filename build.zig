@@ -2310,6 +2310,38 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // double-click works with a clean PATH (see installVcpkgDlls doc).
     installVcpkgDlls(b, &desktop_install.step);
     installVcpkgDlls(b, b.getInstallStep());
+    // Windows-only shipped webapp (persistent, no temp extraction):
+    // copy src/apps/desktop/dist → zig-out/bin/webapp so the Windows
+    // release zip can bundle it and Install-Nalar.ps1 can install it to
+    // %LOCALAPPDATA%\nalar\webapp. The desktop (Windows-only, see
+    // path_resolve.findInstalledWebapp) prefers that persistent dir and
+    // only falls back to embedded-asset temp extraction when it is
+    // missing (dev runs, broken installs). Linux/macOS ignore this dir
+    // and keep the embedded flow unchanged.
+    //
+    // Configure-time guard: dist/ is gitignored and only exists after a
+    // webapp build. Windows CI builds with -Dno-webapp-rebuild (vite
+    // OOMs on the small runner) and receives dist/ via the shared
+    // webapp-dist cache -- on a cache miss there is no dist/ and the
+    // install step must be skipped, not failed (InstallDir.make errors
+    // on a missing source and would break the previously-working
+    // stub-embedded flow). Ordered after the webapp rebuild codegen so
+    // a fresh dist is copied; with -Dno-webapp-rebuild we install
+    // whatever dist is on disk (may be one cache-run stale) and skip
+    // the codegen edge so the flag keeps its meaning.
+    if (fileExists("src/apps/desktop/dist/index.html")) {
+        const webapp_dir_install = b.addInstallDirectory(.{
+            .source_dir = b.path("src/apps/desktop/dist"),
+            .install_dir = .bin,
+            .install_subdir = "webapp",
+        });
+        if (!no_webapp_rebuild) {
+            webapp_dir_install.step.dependOn(&webapp_rebuild_codegen.step);
+        }
+        desktop_install.step.dependOn(&webapp_dir_install.step);
+    } else {
+        std.log.warn("webapp dist/index.html missing -- skipping zig-out/bin/webapp (desktop falls back to embedded extraction)", .{});
+    }
     // Late alias kept for comment continuity — actual flag is defined
     // early (near target/optimize) so mcp/webapp sections could be gated.
     // Reuse the early `no_webapp_rebuild` value here; do not re-parse.

@@ -4,7 +4,10 @@
 
 .DESCRIPTION
   Copies nalar-desktop.exe + nalar.exe + runtime DLLs to
-  %LOCALAPPDATA%\nalar\bin and creates a per-user Start Menu shortcut
+  %LOCALAPPDATA%\nalar\bin, the shipped webapp/ folder to
+  %LOCALAPPDATA%\nalar\webapp (persistent -- the desktop serves it
+  via --static-dir, no per-run temp extraction), and creates a
+  per-user Start Menu shortcut
   (Nalar.lnk) so Win-key search finds it. Both exes ship together
   because the desktop auto-spawns the nalar service sitting next to
   itself (next-to-self lookup); a lone desktop exe cannot start its
@@ -16,14 +19,16 @@
       `zig build install:windows:app` does).
 
 .PARAMETER SourceDir
-  Directory holding nalar-desktop.exe, nalar.exe and *.dll.
+  Directory holding nalar-desktop.exe, nalar.exe, *.dll and the
+  shipped webapp/ folder.
   Defaults to the script's own directory (release-zip layout).
 
 .PARAMETER DesktopShortcut
   Also create Desktop\Nalar.lnk alongside the Start Menu entry.
 
 .PARAMETER Uninstall
-  Remove %LOCALAPPDATA%\nalar\bin, the Start Menu shortcut and the
+  Remove %LOCALAPPDATA%\nalar\bin, %LOCALAPPDATA%\nalar\webapp,
+  the Start Menu shortcut and the
   Desktop shortcut (if present), then exit.
 
 .EXAMPLE
@@ -58,16 +63,18 @@ function Get-NalarRoot {
 
 $nalarRoot = Get-NalarRoot
 $binDir = Join-Path $nalarRoot "bin"
+$webappDir = Join-Path $nalarRoot "webapp"
 $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $startMenuLink = Join-Path $startMenuDir "Nalar.lnk"
 $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Nalar.lnk"
 
 if ($Uninstall) {
     if (Test-Path $binDir) { Remove-Item $binDir -Recurse -Force }
+    if (Test-Path $webappDir) { Remove-Item $webappDir -Recurse -Force }
     foreach ($link in @($startMenuLink, $desktopLink)) {
         if (Test-Path $link) { Remove-Item $link -Force }
     }
-    Write-Output "Uninstalled Nalar (removed $binDir and shortcuts)."
+    Write-Output "Uninstalled Nalar (removed $binDir, $webappDir and shortcuts)."
     exit 0
 }
 
@@ -88,6 +95,20 @@ $dlls = Get-ChildItem (Join-Path $SourceDir "*.dll") -ErrorAction SilentlyContin
 foreach ($dll in $dlls) { Copy-Item -Force $dll.FullName $binDir }
 if (-not (Test-Path (Join-Path $binDir "WebView2Loader.dll"))) {
     Write-Warning "WebView2Loader.dll not found in $SourceDir -- the desktop needs the WebView2 Runtime (preinstalled on Win 10+) and its loader beside the exe."
+}
+
+# Persistent webapp (Windows-only shipped static dir). The desktop
+# prefers %LOCALAPPDATA%\nalar\webapp\index.html and serves it via
+# --static-dir -- no per-run temp extraction, survives close/reopen
+# and reboot. Missing webapp/ in SourceDir is a warning (not fatal):
+# old zips and bare zig-out/bin runs fall back to embedded-asset
+# temp extraction.
+$webappSrc = Join-Path $SourceDir "webapp"
+if (Test-Path (Join-Path $webappSrc "index.html")) {
+    if (Test-Path $webappDir) { Remove-Item $webappDir -Recurse -Force }
+    Copy-Item -Recurse -Force $webappSrc $webappDir
+} else {
+    Write-Warning "webapp/index.html not found in $SourceDir -- desktop falls back to embedded-asset temp extraction."
 }
 
 # Start Menu shortcut (per-user, no admin). WScript.Shell is inbox on

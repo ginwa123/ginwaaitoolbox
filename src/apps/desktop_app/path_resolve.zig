@@ -224,6 +224,53 @@ fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
     return allocator.dupe(u8, heap[0..len]) catch return error.OutOfMemory;
 }
 
+/// Windows-only shipped webapp lookup (persistent static dir).
+///
+/// Returns the duped absolute path of the installed `webapp/` dir when its
+/// `index.html` exists, else null. Caller owns the slice and must
+/// `allocator.free` it (but must NOT delete the dir -- it is the user's
+/// installed copy, not a per-run temp extraction).
+///
+/// Order (first hit wins):
+///   1. %LOCALAPPDATA%\nalar\webapp\index.html (Install-Nalar.ps1 layout)
+///   2. <dir_of_self_exe>\webapp\index.html (portable / repo-checkout layout:
+///      webapp/ sitting next to nalar-desktop.exe, e.g. zig-out/bin/webapp)
+///
+/// Non-Windows returns null immediately -- Linux/macOS keep the embedded
+/// + temp-extraction flow unchanged (Windows-only feature per request).
+pub fn findInstalledWebapp(
+    allocator: std.mem.Allocator,
+    self_exe_path: []const u8,
+) ?[]u8 {
+    if (builtin.os.tag != .windows) return null;
+
+    // 1. %LOCALAPPDATA%\nalar\webapp\index.html
+    if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
+        const appdata = std.mem.sliceTo(appdata_z, 0);
+        const probe = std.fs.path.join(allocator, &.{ appdata, "nalar", "webapp", "index.html" }) catch null;
+        if (probe) |p| {
+            defer allocator.free(p);
+            if (fileExists(p)) {
+                return std.fs.path.join(allocator, &.{ appdata, "nalar", "webapp" }) catch null;
+            }
+        }
+    }
+
+    // 2. <exe_dir>\webapp\index.html (only when we know our own dir).
+    if (std.fs.path.isAbsolute(self_exe_path)) {
+        const self_dir = std.fs.path.dirname(self_exe_path) orelse ".";
+        const probe = std.fs.path.join(allocator, &.{ self_dir, "webapp", "index.html" }) catch null;
+        if (probe) |p| {
+            defer allocator.free(p);
+            if (fileExists(p)) {
+                return std.fs.path.join(allocator, &.{ self_dir, "webapp" }) catch null;
+            }
+        }
+    }
+
+    return null;
+}
+
 fn fileExists(path: []const u8) bool {
     // Zig 0.16 removed `std.fs.accessAbsolute`; the new path is
     // `std.Io.Dir.accessAbsolute(io, path, .{})` which requires an io
