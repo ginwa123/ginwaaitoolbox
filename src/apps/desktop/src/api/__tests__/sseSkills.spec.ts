@@ -35,7 +35,7 @@ describe('SseEvent session_skills (live skills over SSE)', () => {
     const skills: SkillInfo[] = [{ skill_name: 'pdf', content: '...', loaded_at: 123 }]
     const evt: SseEvent = { session_id: 'sess_1', session_skills: skills }
     expect(evt.session_skills).toHaveLength(1)
-    expect(evt.session_skills?.[0].skill_name).toBe('pdf')
+    expect(evt.session_skills?.[0]?.skill_name).toBe('pdf')
   })
 
   it('leaves session_skills undefined when the backend omits it', () => {
