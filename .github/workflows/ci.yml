@@ -1617,6 +1617,15 @@ jobs:
           Copy-Item $service.FullName (Join-Path $tmp "nalar.exe")
           $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
           foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
+          # Setup script: makes the zip a setup package. The user extracts
+          # and runs `powershell -ExecutionPolicy Bypass -File
+          # Install-Nalar.ps1` for a user-local install (LOCALAPPDATA, no
+          # admin) + Start Menu shortcut. Fail loud if the script is
+          # missing from the checkout -- a zip without setup is a regression.
+          $setupSrc = "packaging/windows/Install-Nalar.ps1"
+          if (-not (Test-Path $setupSrc)) { Write-Error "setup script missing at $setupSrc -- checkout incomplete?"; exit 1 }
+          Copy-Item -Force $setupSrc (Join-Path $tmp "Install-Nalar.ps1")
+          Write-Host "ok Install-Nalar.ps1 bundled"
           # WebView2Loader.dll is NOT a vcpkg DLL -- it comes from the NuGet
           # staging dir via build.zig's addInstallBinFile. If the build took
           # the stub fallback (missing EventToken.h etc.), zig-out/bin/ has
@@ -1706,9 +1715,15 @@ jobs:
             `nalar-desktop-x86_64-windows-gnu.zip` -- it holds
             nalar-desktop.exe + nalar.exe (the desktop auto-spawns
             the service beside itself) plus every runtime DLL
-            (libcurl / sqlite3 / ssl / ... + WebView2Loader.dll).
+            (libcurl / sqlite3 / ssl / ... + WebView2Loader.dll)
+            plus Install-Nalar.ps1 (the Windows setup script).
             Extract the zip and run nalar-desktop.exe; a bare .exe
             alone cannot start (loader needs the DLLs beside it).
+            Windows setup (no admin): extract the zip, then run
+            `powershell -ExecutionPolicy Bypass -File Install-Nalar.ps1`
+            from the extracted folder -- installs both exes + DLLs to
+            %LOCALAPPDATA%\nalar\bin and adds a Start Menu shortcut
+            (Win key -> "Nalar"). `-Uninstall` removes it again.
             Install both binaries with
             `sudo scripts/install-nalar-desktop.sh` after downloading.
           prerelease: true

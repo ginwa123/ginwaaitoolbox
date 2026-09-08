@@ -2834,6 +2834,104 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     copy_to_system.step.dependOn(&install_linux_system.step);
     linux_system_step.dependOn(&copy_to_system.step);
 
+    // =====================================================================
+    // install:linux:app — Linux desktop launcher entry (GNOME/KDE search)
+    //
+    // `zig build nalar-desktop` only drops `zig-out/bin/nalar-desktop`,
+    // which the launcher never indexes. The freedesktop launcher only
+    // searches `*.desktop` files under `/usr/share/applications` (system)
+    // or `~/.local/share/applications` (user). This step installs the
+    // system-wide entry so Super-key search finds Nalar:
+    //
+    //   zig-out/bin/nalar-desktop        → /usr/local/bin/nalar-desktop
+    //   zig-out/bin/nalar (service)      → /usr/local/bin/nalar
+    //   packaging/linux/nalar.desktop    → /usr/share/applications/nalar.desktop
+    //   src/apps/desktop/public/favicon.ico → /usr/share/pixmaps/nalar.ico
+    //
+    // The service copy is REQUIRED, not optional: the desktop resolves
+    // its backend as `--nalar-path` → next-to-self → $PATH
+    // (src/apps/desktop_app/attach.zig). Without /usr/local/bin/nalar,
+    // next-to-self misses, $PATH misses, auto-spawn returns
+    // NalarNotFound to stderr (invisible from a launcher click — "nothing
+    // happens"), and only a manually pre-started `nalar service` lets the
+    // desktop attach. Installing both side-by-side restores one-click launch.
+    //
+    // Requires sudo (same as `install:linux:system` which writes to
+    // /usr/local/bin): `sudo zig build install:linux:app`.
+    // Database/icon-cache refreshes are best-effort (`|| true`) so a box
+    // without `update-desktop-database` still succeeds — the entry
+    // appears after next login regardless. The Quickshell `qs-glauncher`
+    // daemon (if running) scans .desktop files once at startup and serves
+    // every popup query from that warm cache, so a newly installed entry
+    // is invisible until it restarts — `pkill -x qs-glauncher || true`
+    // asks shell.qml's crash-only restart timer (1s) to respawn it fresh.
+    // Non-Quickshell boxes don't have the process; the `|| true` no-ops.
+    // =====================================================================
+    const linux_app_step = b.step("install:linux:app", "Build nalar-desktop and install launcher entry so it appears in GNOME/KDE search (requires sudo)");
+    linux_app_step.dependOn(&desktop_install.step);
+    linux_app_step.dependOn(b.getInstallStep());
+    const copy_desktop_bin = b.addSystemCommand(&.{
+        "cp",
+        "zig-out/bin/nalar-desktop",
+        "/usr/local/bin/nalar-desktop",
+    });
+    copy_desktop_bin.step.dependOn(&desktop_install.step);
+    linux_app_step.dependOn(&copy_desktop_bin.step);
+    const copy_nalar_svc = b.addSystemCommand(&.{
+        "cp",
+        "zig-out/bin/nalar",
+        "/usr/local/bin/nalar",
+    });
+    copy_nalar_svc.step.dependOn(b.getInstallStep());
+    linux_app_step.dependOn(&copy_nalar_svc.step);
+    const install_desktop_file = b.addSystemCommand(&.{
+        "/bin/sh", "-c",
+        "mkdir -p /usr/share/applications && cp packaging/linux/nalar.desktop /usr/share/applications/nalar.desktop && chmod 644 /usr/share/applications/nalar.desktop",
+    });
+    install_desktop_file.step.dependOn(&copy_desktop_bin.step);
+    install_desktop_file.step.dependOn(&copy_nalar_svc.step);
+    linux_app_step.dependOn(&install_desktop_file.step);
+    const install_desktop_icon = b.addSystemCommand(&.{
+        "/bin/sh", "-c",
+        "mkdir -p /usr/share/pixmaps && cp src/apps/desktop/public/favicon.ico /usr/share/pixmaps/nalar.ico && chmod 644 /usr/share/pixmaps/nalar.ico",
+    });
+    install_desktop_icon.step.dependOn(&install_desktop_file.step);
+    linux_app_step.dependOn(&install_desktop_icon.step);
+    const refresh_desktop_db = b.addSystemCommand(&.{
+        "/bin/sh", "-c",
+        "update-desktop-database /usr/share/applications || true; gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true; pkill -x qs-glauncher || true",
+    });
+    refresh_desktop_db.step.dependOn(&install_desktop_icon.step);
+    linux_app_step.dependOn(&refresh_desktop_db.step);
+
+    // =====================================================================
+    // install:windows:app — Windows user-local app install (Start Menu search)
+    //
+    // Windows-only (invoking on Linux/macOS fails at the powershell spawn
+    // with a clear error — the step still configures cleanly everywhere).
+    // Builds both binaries, then runs packaging/windows/Install-Nalar.ps1
+    // with -SourceDir zig-out/bin. The script copies
+    // nalar-desktop.exe + nalar.exe + *.dll (vcpkg runtimes +
+    // WebView2Loader.dll via installVcpkgDlls) to %LOCALAPPDATA%\nalar\bin
+    // and creates Nalar.lnk in the per-user Start Menu — Win-key search
+    // finds it. All user-local: no Program Files, no HKLM, no admin.
+    //
+    // The service exe ships alongside for the same reason as Linux (see
+    // above): the desktop auto-spawns `nalar.exe` next to itself, and a
+    // lone desktop exe silently fails to start its backend.
+    // =====================================================================
+    const windows_app_step = b.step("install:windows:app", "Build nalar-desktop + service and install user-local with Start Menu shortcut (Windows-only, no admin)");
+    windows_app_step.dependOn(&desktop_install.step);
+    windows_app_step.dependOn(b.getInstallStep());
+    const run_windows_app_install = b.addSystemCommand(&.{
+        "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", "packaging/windows/Install-Nalar.ps1",
+        "-SourceDir", "zig-out/bin",
+    });
+    run_windows_app_install.step.dependOn(&desktop_install.step);
+    run_windows_app_install.step.dependOn(b.getInstallStep());
+    windows_app_step.dependOn(&run_windows_app_install.step);
+
     const dev_optimize: std.builtin.OptimizeMode = .Debug;
 
     const dev_linux_system_step = b.step("install:dev:linux:system", "Build nalar-dev (debug) for Linux x86_64 and install to system");

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Nalar
+Comment=Nalar Desktop — agent workspace
+Exec=/usr/local/bin/nalar-desktop
+Icon=/usr/share/pixmaps/nalar.ico
+Terminal=false
+Type=Application
+Categories=Development;
+StartupWMClass=nalar-desktop
+Keywords=nalar;agent;ai;workspace;
