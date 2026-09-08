@@ -25,39 +25,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import KanbanDescriptionEditor from '../components/kanban/KanbanDescriptionEditor.vue'
+import * as api from '@/api'
 
-interface FakeResponse extends Partial<Response> {
-  ok: boolean
-  status: number
-  json: () => Promise<unknown>
-  text: () => Promise<string>
-}
-
-function jsonResponse(body: unknown, status = 200): FakeResponse {
+vi.mock('@/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api')>()
   return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-    text: () => Promise.resolve(JSON.stringify(body)),
-  } as FakeResponse
-}
+    ...actual,
+    searchFiles: vi.fn(),
+  }
+})
+
+const searchFilesMock = api.searchFiles as unknown as ReturnType<typeof vi.fn>
 
 /**
- * Mock `/system/folder?path=...&action=list` lookups against a small
- * in-memory tree. The component's loader does a depth-first scan, so
- * we need to return entries for any scanned path.
+ * Mock `api.searchFiles` with pre-ranked server rows (Task 3: the server
+ * owns ranking now — the old N-sequential-fetch full-tree walk via raw
+ * `fetch` is deleted). The picker renders rows directly in server order.
  */
-function mockFolderTree(
-  tree: Record<
-    string,
-    Array<{ name: string; path: string; is_directory: boolean }>
-  >,
+function mockSearchResults(
+  entries: Array<{ name: string; path: string; is_directory: boolean }>,
 ) {
-  fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
-    const urlStr = typeof input === 'string' ? input : input.toString()
-    const m = urlStr.match(/[?&]path=([^&]+)/)
-    const path = m ? decodeURIComponent(m[1] ?? '') : ''
-    return jsonResponse({ entries: tree[path] ?? [] })
+  searchFilesMock.mockResolvedValue({
+    entries: entries.map((e) => ({ ...e, is_symlink: false })),
   })
 }
 
@@ -85,6 +74,9 @@ describe('KanbanDescriptionEditor', () => {
   beforeEach(() => {
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
+    searchFilesMock.mockReset()
+    // Default: empty server result (picker shows "No files found").
+    searchFilesMock.mockResolvedValue({ entries: [] })
   })
 
   afterEach(() => {
@@ -138,20 +130,21 @@ describe('KanbanDescriptionEditor', () => {
   })
 
   it('opens the file picker dropdown when the user types @ and inserts /path on selection', async () => {
-    mockFolderTree({
-      '/home/user': [
-        {
-          name: 'main.zig',
-          path: '/home/user/main.zig',
-          is_directory: false,
-        },
-        {
-          name: 'docs',
-          path: '/home/user/docs',
-          is_directory: true,
-        },
-      ],
-    })
+    // Server owns ranking: pre-ranked rows in server order (dirs-first
+    // here, mirroring the old client sort). The file button is at
+    // index 1.
+    mockSearchResults([
+      {
+        name: 'docs',
+        path: '/home/user/docs',
+        is_directory: true,
+      },
+      {
+        name: 'main.zig',
+        path: '/home/user/main.zig',
+        is_directory: false,
+      },
+    ])
     const wrapper = await mountEditor({}, { attachTo: true })
     const textarea = wrapper.find('textarea')
     // Type `@` to trigger the picker.
@@ -159,8 +152,8 @@ describe('KanbanDescriptionEditor', () => {
     const element = textarea.element as HTMLTextAreaElement
     element.setSelectionRange(1, 1)
     element.dispatchEvent(new Event('input', { bubbles: true }))
-    // Wait for the 150ms debounce + scan.
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    // Wait for BOTH debounces (150ms `@`-detect + 150ms server-search).
+    await new Promise((resolve) => setTimeout(resolve, 450))
     await flushPromises()
     const html = wrapper.html()
     expect(html).toContain('file-picker-list')
@@ -303,6 +296,8 @@ describe('KanbanDescriptionEditor — create-mode image paste (no taskId)', () =
   beforeEach(() => {
     fetchMock.mockReset()
     global.fetch = fetchMock as unknown as typeof fetch
+    searchFilesMock.mockReset()
+    searchFilesMock.mockResolvedValue({ entries: [] })
   })
 
   afterEach(() => {
