@@ -2932,6 +2932,34 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     run_windows_app_install.step.dependOn(b.getInstallStep());
     windows_app_step.dependOn(&run_windows_app_install.step);
 
+    // =====================================================================
+    // install:macos:app — macOS user-local app install (Spotlight/Launchpad)
+    //
+    // macOS-only at runtime (invoking on Linux/Windows fails at the sh
+    // spawn with a clear error — the step still configures cleanly
+    // everywhere). Builds both binaries, then runs
+    // packaging/macos/install-nalar-app.sh with zig-out/bin: assembles
+    // ~/Applications/Nalar.app (Contents/MacOS/{nalar-desktop,nalar} +
+    // Info.plist), clears quarantine and ad-hoc signs (best-effort).
+    // All user-local: never /Applications, no sudo. Spotlight indexes
+    // ~/Applications, so Win-key-equivalent (Cmd+Space) finds "Nalar".
+    //
+    // The service binary ships inside the bundle for the same reason as
+    // Linux/Windows (see above): the desktop auto-spawns `nalar` next to
+    // itself, and a lone desktop binary silently fails its backend.
+    // No custom icon in v1 (only favicon.ico exists; .icns needs macOS
+    // iconutil) — the bundle still indexes by name.
+    // =====================================================================
+    const macos_app_step = b.step("install:macos:app", "Build nalar-desktop + service and install Nalar.app to ~/Applications (macOS-only, no sudo)");
+    macos_app_step.dependOn(&desktop_install.step);
+    macos_app_step.dependOn(b.getInstallStep());
+    const run_macos_app_install = b.addSystemCommand(&.{
+        "/bin/sh", "packaging/macos/install-nalar-app.sh", "zig-out/bin",
+    });
+    run_macos_app_install.step.dependOn(&desktop_install.step);
+    run_macos_app_install.step.dependOn(b.getInstallStep());
+    macos_app_step.dependOn(&run_macos_app_install.step);
+
     const dev_optimize: std.builtin.OptimizeMode = .Debug;
 
     const dev_linux_system_step = b.step("install:dev:linux:system", "Build nalar-dev (debug) for Linux x86_64 and install to system");

@@ -1575,6 +1575,24 @@ jobs:
             exit 1
           fi
 
+      - name: Bundle macOS Nalar.app into a zip
+        # macOS cell only: assemble Nalar.app with the SAME script the
+        # local `install:macos:app` step uses (dest = staging dir, not
+        # ~/Applications), then ditto-zip it. ditto (macOS inbox)
+        # preserves bundle bits where plain zip can break codesign.
+        # Bare nalar-*/nalar-desktop-* assets stay untouched -- the
+        # .app zip is an extra asset, published by the step below.
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target.zig }}
+        run: |
+          set -euo pipefail
+          stage="bin-stage-$TARGET"
+          packaging/macos/install-nalar-app.sh zig-out/bin "$stage/Nalar.app"
+          (cd "$stage" && ditto -c -k --keepParent Nalar.app "Nalar-$TARGET.zip")
+          echo "packaged $stage/Nalar-$TARGET.zip"
+
       - name: Bundle Windows exes + DLLs into one zip
         # nalar-desktop auto-spawns the nalar service binary sitting next
         # to itself (path_resolve.zig next-to-self lookup for plain
@@ -1711,6 +1729,12 @@ jobs:
             Asset names carry the binary name + zig target triple.
             Linux/macOS ship bare binaries, e.g. `nalar-x86_64-linux-gnu`,
             `nalar-desktop-aarch64-macos`.
+            macOS also ships `Nalar-aarch64-macos.zip` holding Nalar.app
+            (nalar-desktop + nalar service inside, ad-hoc signed).
+            macOS setup (no sudo): extract the zip, move Nalar.app to
+            ~/Applications -- Spotlight/Launchpad find it as "Nalar".
+            If Gatekeeper blocks the first launch, run
+            `xattr -dr com.apple.quarantine ~/Applications/Nalar.app`.
             Windows ships ONE self-contained .zip, e.g.
             `nalar-desktop-x86_64-windows-gnu.zip` -- it holds
             nalar-desktop.exe + nalar.exe (the desktop auto-spawns
