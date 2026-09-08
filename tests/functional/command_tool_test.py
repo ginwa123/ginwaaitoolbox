@@ -123,10 +123,12 @@ class TestCommandRegistry:
 
 
 class TestCommandEnableDisable:
-    # Fresh agents are born with DEFAULT_AGENT_TOOLS
-    # (command, read_file, write_file) — see
+    # Fresh agents are born with the 22-tool defaults (sorted ASC) — see
+    # commit 43e37c8e (22-tool defaults expansion) and
     # docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md.
-    _DEFAULTS = ["command", "read_file", "write_file"]
+    _DEFAULTS = ["add_skill", "command", "delete_memory", "edit_skill", "get_plan", "get_skill", "glob", "list_directory", "list_skills", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "spawn_sub_agent", "text_replace", "update_activity", "update_plan", "view_skill", "write_file"]
+    # Post-DELETE expectation: the 22-tool list minus "command" (21 others, ASC).
+    _DEFAULTS_MINUS_COMMAND = ["add_skill", "delete_memory", "edit_skill", "get_plan", "get_skill", "glob", "list_directory", "list_skills", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "spawn_sub_agent", "text_replace", "update_activity", "update_plan", "view_skill", "write_file"]
 
     def test_command_enable_list_disable_lifecycle(
         self, harness: FunctionalHarness
@@ -141,7 +143,7 @@ class TestCommandEnableDisable:
             "DELETE", f"/api/agents/{agent_id}/tools/command", expect=200
         )
         assert r.json().get("ok") is True, f"expected ok=true, got {r.json()!r}"
-        assert _list_tools(harness, agent_id) == ["read_file", "write_file"]
+        assert _list_tools(harness, agent_id) == self._DEFAULTS_MINUS_COMMAND
 
         _enable_tool(harness, agent_id, "command")
         assert _list_tools(harness, agent_id) == self._DEFAULTS
@@ -163,7 +165,8 @@ class TestCommandEnableDisable:
 
 
 class TestLegacyNamesRejected:
-    _DEFAULTS = ["command", "read_file", "write_file"]
+    # Fresh agents seed the 22-tool defaults (sorted ASC, commit 43e37c8e).
+    _DEFAULTS = ["add_skill", "command", "delete_memory", "edit_skill", "get_plan", "get_skill", "glob", "list_directory", "list_skills", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "spawn_sub_agent", "text_replace", "update_activity", "update_plan", "view_skill", "write_file"]
 
     def test_bash_enable_now_400s_after_unify(
         self, harness: FunctionalHarness
