@@ -452,6 +452,54 @@ fn touchCheckpointWorkers(input: TouchCheckpointWorkersInput) void {
     };
 }
 
+/// Fetch MCP tools fresh from all configured servers (plan:
+/// mcp-fetch-once-cache). Extracted verbatim from the old per-run blk in
+/// `runAgenticMultiStepnew` — same cancel-thunk, same 30s deadline inside
+/// `buildMCPToolsRun`, same fail-soft `catch → null`. The caller publishes
+/// the result via `ContextIPCTui.storeMcpToolsCache` so this runs exactly
+/// once per boot / per config mutation.
+fn fetchMcpToolsFresh(
+    parent_allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    copy_session_id: []const u8,
+    initial_config: *config_mod.LlmConfig,
+    logger: *logger_mod.Logger,
+) ?[]nalarcore.tool_models.AgentTool {
+    return (blk: {
+        const McpCancelCtx = struct {
+            db: *sqlite.SqliteBackend,
+            session_id: []const u8,
+        };
+        const mcp_cancel_thunk = struct {
+            threadlocal var state: ?McpCancelCtx = null;
+
+            fn call() bool {
+                const s = state orelse return false;
+                return isWorkerCancelled(IsWorkerCancelledInput{
+                    .allocator = std.heap.page_allocator,
+                    .db = s.db,
+                    .session_id = s.session_id,
+                });
+            }
+        };
+
+        const box = parent_allocator.create(McpCancelCtx) catch null;
+        if (box) |b| {
+            b.* = .{ .db = db, .session_id = copy_session_id };
+            mcp_cancel_thunk.state = b.*;
+        }
+        defer mcp_cancel_thunk.state = null;
+        break :blk build_msg_prompt.buildMCPToolsRun(
+            parent_allocator,
+            initial_config.mcpServers() orelse .null,
+            if (box) |_| &mcp_cancel_thunk.call else null,
+        );
+    } catch |err| blk: {
+        logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
+        break :blk null;
+    });
+}
+
 pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
@@ -603,40 +651,24 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         .is_sub_agent = params.is_sub_agent,
     });
 
-    // Fetch MCP tools once before the loop - avoids repeated fetching and potential recursive spawning
-    const mcp_tools_fetched = (blk: {
-        const McpCancelCtx = struct {
-            db: *sqlite.SqliteBackend,
-            session_id: []const u8,
-        };
-        const mcp_cancel_thunk = struct {
-            threadlocal var state: ?McpCancelCtx = null;
-
-            fn call() bool {
-                const s = state orelse return false;
-                return isWorkerCancelled(IsWorkerCancelledInput{
-                    .allocator = std.heap.page_allocator,
-                    .db = s.db,
-                    .session_id = s.session_id,
-                });
-            }
-        };
-
-        const box = parent_allocator.create(McpCancelCtx) catch null;
-        if (box) |b| {
-            b.* = .{ .db = db, .session_id = copy_session_id };
-            mcp_cancel_thunk.state = b.*;
+    // Fetch-once MCP tools cache (plan: mcp-fetch-once-cache). Fast path:
+    // cache hit (2nd session, queued message, retry) = zero `tools/list`
+    // I/O. Slow path: exactly one fetch per boot / per config mutation,
+    // published to the singleton for all future runs.
+    const mcp_tools_fetched: ?[]nalarcore.tool_models.AgentTool = if (di.di.isMcpToolsInit())
+        di.di.getMcpToolsCached(parent_allocator)
+    else blk: {
+        const fresh = fetchMcpToolsFresh(parent_allocator, db, copy_session_id, initial_config, logger);
+        // Publish for all future runs. On error (`fresh == null`) pass
+        // mark_init=false so the next run retries instead of caching
+        // the failure forever.
+        if (fresh) |f| {
+            di.di.storeMcpToolsCache(f, true);
+        } else {
+            di.di.storeMcpToolsCache(null, false);
         }
-        defer mcp_cancel_thunk.state = null;
-        break :blk build_msg_prompt.buildMCPToolsRun(
-            parent_allocator,
-            initial_config.mcpServers() orelse .null,
-            if (box) |_| &mcp_cancel_thunk.call else null,
-        );
-    } catch |err| blk: {
-        logger.errFmt("Failed to load MCP tools: {s}", .{@errorName(err)});
-        break :blk null;
-    });
+        break :blk di.di.getMcpToolsCached(parent_allocator);
+    };
 
     while (true) {
         _ = active_loops.tryInsert(io, copy_session_id);

@@ -491,6 +491,23 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         // Atomically swap. Previous-pointer free happens inside setLlmConfig.
         nalarcore.setLlmConfig(di, new_ptr);
         std.log.info("PUT /api/config/nalar: live-reloaded llm_config (model={s}, base_url={s})", .{ new_ptr.model, new_ptr.base_url });
+
+        // Fetch-once cache (plan: mcp-fetch-once-cache): lazy-invalidate
+        // so the next workflow run refetches once. Also force registry
+        // clients to rebuild on next fetch — otherwise an edited URL /
+        // command with the same server name would keep serving the old
+        // cached client (HTTP has no self-healing; stdio only heals on
+        // error). Config saves are rare; one reconnect per save is fine.
+        di.clearMcpToolsCache();
+        if (new_ptr.mcpServers()) |servers_val| {
+            if (servers_val == .object) {
+                var it = servers_val.object.iterator();
+                while (it.next()) |entry| {
+                    nalarcore.mcpStdioRegistry(di.allocator).markStale(entry.key_ptr.*);
+                    if (di.mcp_http_registry) |hreg| hreg.evict(entry.key_ptr.*);
+                }
+            }
+        }
     }
 
     return res.jsonResponse(.{

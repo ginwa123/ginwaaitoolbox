@@ -302,6 +302,12 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
     new_ptr.* = new_cfg;
     nalarcore.setLlmConfig(di, new_ptr);
 
+    // Fetch-once cache (plan: mcp-fetch-once-cache): lazy-invalidate so
+    // the next workflow run refetches once and picks up the new server.
+    // The best-effort probe below stays as-is (it warms the stdio child);
+    // the tools-list cache itself refreshes on the next run.
+    di.clearMcpToolsCache();
+
     return ctx.allocator.dupe(u8, "true") catch ctx.allocator.dupe(u8, "false") catch unreachable;
 }
 
