@@ -9,6 +9,7 @@ const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 const command_tool_mod = nalarcore.command_tool;
 const background_process = @import("background_process.zig");
+const background_watcher = @import("background_watcher.zig");
 const wrapToolOutput = tools.wrapToolOutput;
 const bash_args = @import("tools_exec_bash_args.zig");
 
@@ -84,6 +85,15 @@ pub fn runWithContext(
                         background_process.save(db_ptr, allocator, sess_id, pid, input.command, log_path, started_at) catch {
                             // Log error but don't fail the tool execution
                         };
+                        // Immediate watcher: poll the PID every 2s and queue
+                        // the completion the moment it exits (no cron wait).
+                        // Singleton is absent in unit tests → skip silently
+                        // (cron fallback covers production; the watcher core
+                        // is covered directly in background_watcher tests).
+                        // Dupes into di.allocator (process lifetime) inside.
+                        if (nalarcore.getSingleton() catch null) |di| {
+                            background_watcher.spawnCompletionWatcher(di, sess_id, pid, input.command, log_path);
+                        }
                     }
                 }
             }

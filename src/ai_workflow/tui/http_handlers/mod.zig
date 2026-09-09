@@ -207,6 +207,10 @@ pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;
+// Session background-process handlers — list + log tail for
+// `command background=true` rows (no new SSE event, no migration).
+pub const backgroundProcessesListHandler = @import("background_processes_list.zig").backgroundProcessesListHandler;
+pub const backgroundProcessLogGetHandler = @import("background_process_log_get.zig").backgroundProcessLogGetHandler;
 
 // Design-mode HTTP handlers (item_type='design') — v6 of the
 // design-mode redesign. See

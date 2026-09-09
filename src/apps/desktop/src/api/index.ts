@@ -4506,3 +4506,69 @@ export async function disableAgentKanbanTool(
     { method: 'DELETE' },
   )
 }
+
+// ─── Session background processes (bg-completion) ────────────────────────────
+// Backend: background_processes_list.zig + background_process_log_get.zig
+// (commit b69111f7). `running` is live per row (OS truth, not the status
+// column). Empty session -> `{ processes: [], count: 0 }` (200, not 404).
+// Log content is the TAIL; a missing log file returns 200 with the
+// `(log file not found)` marker content; unknown (session, pid) is 404.
+//
+// Both fns pass `silent: true` — they back a 5s poll + a 2s log-tail poll,
+// so a toast on every transient 404/5xx would be noise. Callers render
+// inline state (empty / error / marker) instead.
+
+export interface BackgroundProcess {
+  pid: number
+  command: string
+  log_path: string
+  started_at: number
+  status: string
+  running: boolean
+}
+
+export interface BackgroundProcessListResponse {
+  processes: BackgroundProcess[]
+  count: number
+}
+
+export interface BackgroundProcessLogResponse {
+  pid: number
+  log_path: string
+  total_bytes: number
+  truncated: boolean
+  content: string
+}
+
+/**
+ * List all background processes (`command background=true` rows) for a
+ * session, ordered by started_at ASC.
+ *
+ * GET /api/llm/session/:sid/background_processes
+ */
+export async function getBackgroundProcesses(
+  sessionId: string,
+): Promise<BackgroundProcessListResponse> {
+  return await apiFetch<BackgroundProcessListResponse>(
+    `/llm/session/${encodeURIComponent(sessionId)}/background_processes`,
+    { silent: true },
+  )
+}
+
+/**
+ * Read the TAIL of one background process's log file.
+ *
+ * GET /api/llm/session/:sid/background_processes/:pid/log?max_bytes=20480
+ * `maxBytes` defaults to 20480, clamped server-side to [1, 1048576].
+ */
+export async function getBackgroundProcessLog(
+  sessionId: string,
+  pid: number,
+  maxBytes = 20480,
+): Promise<BackgroundProcessLogResponse> {
+  const params = new URLSearchParams({ max_bytes: String(maxBytes) })
+  return await apiFetch<BackgroundProcessLogResponse>(
+    `/llm/session/${encodeURIComponent(sessionId)}/background_processes/${pid}/log?${params}`,
+    { silent: true },
+  )
+}
