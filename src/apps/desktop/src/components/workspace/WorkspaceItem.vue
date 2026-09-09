@@ -611,7 +611,14 @@ const handlePinnedDrop = (event: DragEvent) => {
             test-id="item-processing-spinner"
           />
         </button>
-        <!-- Add Task + Delete Item buttons (always visible). Previously
+        <!-- Add Task + Delete Item buttons. The `+` (Add Task) is
+             hidden for kanban items (2026-09-09): kanban tasks are
+             created from inside the kanban view (column "+ Add" →
+             KanbanTaskDetailDialog), so the sidebar picker would
+             bypass the board context. Agent/folder/design items keep
+             the `+`. The `×` (Delete Item) stays visible for all
+             item_types (see cascade note below).
+             Previously
              the kanban and design item_types were excluded from the
              sidebar delete, on the (false) assumption that they had
              their own delete UIs. Neither KanbanView nor DesignView
@@ -635,6 +642,7 @@ const handlePinnedDrop = (event: DragEvent) => {
              (only runs for item_type='design'). -->
         <template v-if="true">
           <button
+            v-if="item.item_type !== 'kanban'"
             @click="handleAddTask"
             class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim);"
