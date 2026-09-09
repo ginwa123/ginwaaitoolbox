@@ -271,10 +271,10 @@ jobs:
         # out BEFORE the repo's .gitattributes (PR #62, LF enforcement) may
         # still carry stale CRLF bytes: plain `git checkout` never rewrites
         # files whose content git considers unchanged, and `git clean` only
-        # removes untracked files. CRLF bytes change hashFiles() digests, so
-        # the cross-OS webapp-dist cache key computed here would never match
-        # the key Linux saved -- restore misses, dist/ absent, no html/.
-        # Force-rewrite every tracked file per current attributes (LF).
+        # removes untracked files. Stale CRLF bytes break the static-contract
+        # tests (multi-line needle matches, see .gitattributes) -- force-rewrite
+        # every tracked file per current attributes (LF) before anything reads
+        # the tree.
         # LF is strictly safer on Windows too: .sh NEEDS LF, .ps1/.zig accept it.
         # ORDERING (do not move): this step must run AFTER the
         # "Install Git for Windows" step above (`shell: bash` resolves to
@@ -1076,31 +1076,6 @@ jobs:
           # match and no cache is restored. This prevents a stale build.exe
           # (from an older build.zig) from being used.
 
-      - name: Cache webapp dist (shared Linux/macOS → Windows)
-        # Cross-cell channel for the Windows-only shipped html/ folder.
-        # Linux + macOS build src/apps/desktop/dist via the full webapp
-        # rebuild; the Windows cell can't (vite OOMs on the small runner,
-        # hence -Dno-webapp-rebuild) so it restores dist/ from this cache
-        # and build.zig installs it to zig-out/bin/html for the zip.
-        # Keyed ONLY by webapp sources (no runner.os) so all three cells
-        # share it. First run after a frontend change is a miss on every
-        # cell: Linux/macOS rebuild + save at job end, Windows FAILS at the
-        # bundle gate below (no silent UI-less zip) -- re-run once the cache
-        # is saved and Windows ships html/ alongside the exes.
-        # Parallel Linux+macOS saves race last-write-wins; both are valid
-        # vite emits from identical sources (byte-drift in sourcemaps is
-        # harmless here -- the desktop serves whatever is installed).
-        uses: actions/cache@v4
-        with:
-          path: src/apps/desktop/dist
-          key: webapp-dist-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/index.html', 'src/apps/desktop/vite.config.*', 'src/apps/desktop/src/**', 'src/apps/desktop/public/**') }}
-          # Prefix fallback: on exact-miss (first run after a frontend change,
-          # eviction) restore the NEWEST webapp-dist entry instead of nothing.
-          # At most one-run-stale UI, but html/ is present and the bundle gate
-          # stays green; the next run exact-hits with fresh UI.
-          restore-keys: |
-            webapp-dist-
-
       - name: Test (zig build test only — no nalar-desktop install)
         timeout-minutes: 30 # fail fast: Windows self-hosted has wedged here (2026-09-08: idle 55+ min, zero CPU, all artifacts built) and the default 6h cap burns the single runner
         # PERF (2026-08-25): the original step merged `zig build test`
@@ -1176,6 +1151,38 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: zig build nalar-desktop --summary all
+
+      - name: Build webapp dist (Windows)
+        # Windows self-builds its shipped UI -- no Linux dependency, no cache.
+        # Background: `zig build nalar-desktop` chains pnpm install + vite +
+        # vue-tsc + zig LLVM link CONCURRENTLY (~2.5 GB peak) and OOMs this
+        # runner, hence -Dno-webapp-rebuild on the install step below. Run
+        # alone, vite fits: no vue-tsc (Linux/macOS cells gate types), no zig
+        # link in flight, node heap capped. pnpm install is idempotent.
+        # Must run BEFORE the install step: build.zig installs dist/ to
+        # zig-out/bin/html at CONFIGURE time when dist/index.html exists.
+        # Missing afterwards = fail here (the bundle gate would fail anyway,
+        # but earlier with a clearer log).
+        if: runner.os == 'Windows'
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+          export PATH="/c/Windows/System32/downlevel:$PATH"
+          local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+          if [[ -n "$local_pnpm_path" ]]; then
+            export PATH="$(dirname "$local_pnpm_path"):$PATH"
+          fi
+          command -v pnpm >/dev/null || { echo "pnpm not on PATH" >&2; exit 1; }
+          command -v node >/dev/null || { echo "node not on PATH" >&2; exit 1; }
+          pushd src/apps/desktop >/dev/null
+          pnpm install --frozen-lockfile
+          NODE_OPTIONS="--max-old-space-size=1536" pnpm run build-only
+          popd >/dev/null
+          [[ -f "src/apps/desktop/dist/index.html" ]] \
+            || { echo "vite build produced no dist/index.html" >&2; exit 1; }
+          echo "ok dist/ built, html/ will install alongside the exes"
 
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
         timeout-minutes: 30 # fail fast: this step wedged for 1h+ on 2026-09-08 (build finished in ~1 min, then zig/build.exe sat idle with no children) and twice before (4.5h/6.5h cancelled runs); default 6h cap blocks the only Windows runner
@@ -1706,17 +1713,15 @@ jobs:
           # miss (first run after a frontend change) there is legitimately
           # no dist/ and the zip ships old-style; the next run picks it up.
           # HARD GATE: Windows never ships without html/. build.zig installs
-          # src/apps/desktop/dist to zig-out/bin/html (alongside the exes) when
-          # dist/index.html exists at configure time (shared webapp-dist cache).
-          # Missing here = cache miss with no recovery on this cell (no vite
-          # fallback by design) -- fail instead of shipping a UI-less zip.
-          # Recovery: re-run after the Linux/macOS cell saves the cache.
+          # src/apps/desktop/dist to zig-out/bin/html (alongside the exes);
+          # dist/ is built by the dedicated step above. Missing here = fail
+          # instead of shipping a UI-less zip.
           $webappSrc = "zig-out/bin/html"
           if (Test-Path (Join-Path $webappSrc "index.html")) {
             Copy-Item -Recurse -Force $webappSrc (Join-Path $tmp "html")
             Write-Host "ok html/ bundled alongside exe"
           } else {
-            Write-Error "html/index.html missing at $webappSrc (webapp-dist cache miss?) -- Windows cannot ship without html/; re-run after the Linux/macOS cell saves the cache"
+            Write-Error "html/index.html missing at $webappSrc -- Windows cannot ship without html/; see the Build webapp dist step log"
             exit 1
           }
           # WebView2Loader.dll is NOT a vcpkg DLL -- it comes from the NuGet
@@ -1816,8 +1821,7 @@ jobs:
             the service beside itself) plus every runtime DLL
             (libcurl / sqlite3 / ssl / ... + WebView2Loader.dll)
             plus html/ (the shipped UI, served via --static-dir;
-            absent on dist-cache-miss runs -- desktop then falls back
-            to embedded extraction)
+            always present -- the bundle gate fails the job otherwise)
             plus Install-Nalar.ps1 (the Windows setup script).
             Extract the zip and run nalar-desktop.exe; a bare .exe
             alone cannot start (loader needs the DLLs beside it).

@@ -2320,15 +2320,15 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // and keep the embedded flow unchanged.
     //
     // Configure-time guard: dist/ is gitignored and only exists after a
-    // webapp build. Windows CI builds with -Dno-webapp-rebuild (vite
-    // OOMs on the small runner) and receives dist/ via the shared
-    // webapp-dist cache -- on a cache miss there is no dist/ and the
-    // install step must be skipped, not failed (InstallDir.make errors
-    // on a missing source and would break the previously-working
+    // webapp build. Windows CI builds with -Dno-webapp-rebuild (the full
+    // vite+vue-tsc+zig-link chain OOMs on the small runner) and receives
+    // dist/ from a dedicated preceding vite-only step -- when dist/ is
+    // absent the install step must be skipped, not failed (InstallDir.make
+    // errors on a missing source and would break the previously-working
     // stub-embedded flow). Ordered after the webapp rebuild codegen so
     // a fresh dist is copied; with -Dno-webapp-rebuild we install
-    // whatever dist is on disk (may be one cache-run stale) and skip
-    // the codegen edge so the flag keeps its meaning.
+    // whatever dist is on disk and skip the codegen edge so the flag
+    // keeps its meaning.
     if (fileExists("src/apps/desktop/dist/index.html")) {
         const webapp_dir_install = b.addInstallDirectory(.{
             .source_dir = b.path("src/apps/desktop/dist"),
