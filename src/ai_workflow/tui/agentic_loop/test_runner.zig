@@ -22,6 +22,7 @@ test {
     _ = @import("update_worker.zig");
     _ = @import("delete_worker.zig");
     _ = @import("insert_queue_message.zig");
+    _ = @import("background_process.zig"); // bg-completion queue Task 1 — pure completion message helpers (no DB)
     _ = @import("delete_queue_worker.zig");
     _ = @import("insert_llm_histories.zig");
     _ = @import("get_llm_histories.zig");
@@ -83,6 +84,7 @@ test {
     _ = @import("tools_exec_bash.zig");
     _ = @import("tools_exec_pwsh.zig");
     _ = @import("tools_exec_command.zig");
+    _ = @import("background_watcher.zig"); // immediate bg-completion watcher — poll PID, notify on exit (no cron wait)
 
     // 2026-08-23 spawn-subagent-live-progress — `subagent_progress.zig`
     // builds the wire payload that rides the EXISTING `llm_full` SSE

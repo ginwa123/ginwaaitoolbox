@@ -89,6 +89,11 @@ pub const ContextIPCTui = struct {
     on_disconnect_cb: ?*fn (client_id: [16]u8) void = null,
     on_disconnect_lock: std.Io.Mutex = .init,
     group_emit_session_create: std.Io.Group,
+    /// Fire-and-forget group for background-command completion watchers
+    /// (background_watcher.zig). Same lifecycle as
+    /// `group_emit_session_create`: process-lifetime, never awaited or
+    /// cancelled. Field default keeps existing struct literals compiling.
+    group_bg_watchers: std.Io.Group = .init,
 
     static_dir_path: ?[]const u8 = null,
 
