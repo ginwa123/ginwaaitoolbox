@@ -2372,3 +2372,62 @@ test "backfill: url_style copied from profile even when default openai present" 
 
     try std.testing.expectEqualStrings("anthropic", cfg.url_style);
 }
+
+test "mcp_servers: enabled:false parses to disabled server" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": { "command": "mcp-hello-world", "enabled": false }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const server = cfg.mcpServerConfig("hello").?;
+    try std.testing.expect(!server.enabled);
+}
+
+test "mcp_servers: missing enabled defaults to true" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": { "command": "mcp-hello-world" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    const server = cfg.mcpServerConfig("hello").?;
+    try std.testing.expect(server.enabled);
+}
+
+test "mcp_servers: non-bool enabled is ignored (defaults true)" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": { "command": "mcp-hello-world", "enabled": "yes" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    // Non-bool is ignored, not fatal — server still parses, enabled stays true.
+    try std.testing.expect(cfg.hasMcpServer("hello"));
+    const server = cfg.mcpServerConfig("hello").?;
+    try std.testing.expect(server.enabled);
+}

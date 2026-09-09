@@ -388,6 +388,9 @@ pub const LlmConfig = struct {
         args: ?[]const []const u8,
         /// stdio transport: working directory. Null = inherit from parent.
         cwd: ?[]const u8,
+        /// Whether the server is enabled. Defaults to true — absent or
+        /// non-bool `enabled` values parse as true (ignored, not fatal).
+        enabled: bool = true,
 
         pub const Transport = enum { http, stdio };
 
@@ -1053,6 +1056,7 @@ pub const LlmConfig = struct {
             .command = null,
             .args = null,
             .cwd = null,
+            .enabled = true,
         };
         errdefer freeMcpServerConfig(&config, allocator);
 
@@ -1121,6 +1125,14 @@ pub const LlmConfig = struct {
                 if (cwd_field == .string) {
                     config.cwd = try allocator.dupe(u8, cwd_field.string);
                 }
+            }
+        }
+
+        // enabled (optional, both transports). Accept only .bool —
+        // absent or non-bool values keep the default true (ignored, not fatal).
+        if (obj.get("enabled")) |enabled_field| {
+            if (enabled_field == .bool) {
+                config.enabled = enabled_field.bool;
             }
         }
 
