@@ -69,7 +69,14 @@ function makeItem(itemType: string): any {
   }
 }
 
-let replaceMock: ReturnType<typeof vi.fn>
+// `any`: `ReturnType<typeof vi.fn>` resolves to
+// `Mock<Procedure | Constructable>` in this vitest version, which
+// `vue-tsc --build` rejects at the `mockReturnValue({ replace })`
+// call below (TS2322 — not assignable to `Mock<Procedure>`).
+// The mock is only asserted with `toHaveBeenCalled*`, so `any`
+// loses nothing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let replaceMock: any
 
 function mountSidebar() {
   return mount(Sidebar, {
