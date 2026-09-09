@@ -1,3 +1,14 @@
+### 2026-09-09: Background command completion -> session queue + wake idle worker
+
+**What landed.** When a background `command` finishes, its completion is now delivered as a `session_queue_messages` row wrapped in a `"""` envelope (exit code + stdout/stderr tail) instead of vanishing into the void. The stale-background-process cron (`cleanup_stale_background_process`) notifies-then-deletes: it inserts the completion queue message (which reuses the existing `queue_queued` SSE event — no new event names, no frontend change) and wakes the session's idle worker so the agent picks up the result on its next iteration. Pure helpers (`buildCompletionMessage`, envelope format/parse) live in `background_process.zig` with inline unit tests; the cron tick catches + logs every per-row error so one bad row can never crash the sweep.
+
+**Files.** 3 EDIT + 1 NEW test + 1 NEW plan: EDIT `src/ai_workflow/tui/agentic_loop/background_process.zig` (completion-message helpers + envelope), EDIT `src/schedulers/cleanup_stale_background_process.zig` (notify-then-delete + wake idle worker), EDIT `src/ai_workflow/tui/mod.zig` (re-export). New: `tests/functional/background_command_completion_test.py` (2 e2e tests), plan `docs/superpowers/plans/2026-09-09-background-command-completion-queue.md`. No frontend, no migration, no schema change, no new SSE event.
+
+**Tests.** `zig build test --summary all`: 3140/3148 pass (8 skip, 0 fail). `zig build nalar-desktop --summary all`: 22/22 steps OK. Functional `tests/functional/background_command_completion_test.py`: 2/2 pass.
+
+**Plan:** docs/superpowers/plans/2026-09-09-background-command-completion-queue.md
+**Branch:** worktree/nalar-bg-queue
+
 ### 2026-09-05: `command` tool falls back to cmd.exe when pwsh is missing (Windows)
 
 **What landed.** On Windows boxes without `pwsh` (PowerShell Core) on PATH, the unified `command` tool previously failed every invocation with `error.FileNotFound`. Now `execute_command` catches `FileNotFound` from the pwsh spawn and retries once with `COMMAND_CMD_PREFIX` (`cmd.exe /c <command>`), appending `CMD_FALLBACK_NOTE` to stderr so the LLM knows which shell ran and adapts its syntax (dir / where / type / %VAR% / && chaining / double-quotes for URLs). The shared `shell.zig` core gains an `is_cmd_shell` gate that skips the `do_encoding` single-to-double-quote rewrite (single quotes are literal under cmd). The fallback is foreground-only in Phase 1 — `background=true` on a pwsh-less box fails loudly instead of detaching. Prompt docs gain a cmd-syntax block plus a carve-out pointer on the shared Command Rules line (`timeout N` / `| head -n` must NOT be used under cmd — cmd has its own `timeout` builtin and `mandatory_timeout` is the enforcer). Review follow-up: probe argv switched from `cmd.exe /c echo` to output-free `cmd.exe /c exit 0`.
