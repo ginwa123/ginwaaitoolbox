@@ -805,11 +805,15 @@ const handleRunAllAgents = async (columnId: string) => {
       props.itemId || props.item.id,
       columnId,
     )
-    const started = result?.started ?? []
-    const skipped = result?.skipped ?? []
-    const failed = result?.failed ?? []
-    runAllSummary.value =
-      `Started ${started.length}, skipped ${skipped.length} (already running), failed ${failed.length}.`
+    if (result?.success === false) {
+      runAllSummary.value = 'Failed to run all agents in column.'
+    } else {
+      const started = result?.started ?? []
+      const skipped = result?.skipped ?? []
+      const failed = result?.failed ?? []
+      runAllSummary.value =
+        `Started ${started.length}, skipped ${skipped.length} (already running), failed ${failed.length}.`
+    }
   } catch (err) {
     console.error('Failed to run all agents in column:', err)
     runAllSummary.value = err instanceof Error ? err.message : String(err)
@@ -1246,6 +1250,8 @@ const handleCreateTaskSave = async (payload: {
       class="px-3 py-2 text-xs shrink-0"
       style="color: var(--semantic-text);"
       :data-testid="`kanban-view-${item.id}-run-all-summary`"
+      role="status"
+      aria-live="polite"
     >
       {{ runAllSummary }}
     </div>

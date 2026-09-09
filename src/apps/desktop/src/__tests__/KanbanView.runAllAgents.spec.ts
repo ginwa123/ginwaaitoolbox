@@ -131,6 +131,28 @@ describe('KanbanView.handleRunAllAgents', () => {
     expect(banner.text()).toContain('Started 2')
   })
 
+  it('renders an error banner when the store returns success:false (swallowed throw)', async () => {
+    const store = useWorkspacesStore()
+    vi.spyOn(store, 'runAllAgentsInColumn').mockResolvedValue({
+      success: false,
+      started: [],
+      skipped: [],
+      failed: [],
+    })
+
+    const view = await mountView()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vm: any = view.vm
+    await vm.handleRunAllAgents('col_todo')
+    await flushPromises()
+
+    expect(vm.runAllSummary).toContain('Failed to run all agents')
+    const banner = view.find('[data-testid="kanban-view-item_1-run-all-summary"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.attributes('role')).toBe('status')
+    expect(banner.attributes('aria-live')).toBe('polite')
+  })
+
   it('does not double-fire for the same column while a bulk run is in flight', async () => {
     const store = useWorkspacesStore()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
