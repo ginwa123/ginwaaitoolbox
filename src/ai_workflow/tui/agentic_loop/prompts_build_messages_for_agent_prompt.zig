@@ -435,6 +435,14 @@ pub fn buildMCPToolsRun(
             else => continue,
         };
 
+        // MCP server toggle: skip explicitly-disabled servers BEFORE any
+        // spawn/connect. Only `.bool false` disables — a missing or
+        // non-bool `enabled` means enabled (backward compat with configs
+        // that predate the flag).
+        if (server_obj.get("enabled")) |enabled_val| {
+            if (enabled_val == .bool and !enabled_val.bool) continue;
+        }
+
         // Transport dispatch: stdio (command) takes precedence over
         // HTTP (url). If the entry has a `command`, route to the stdio
         // helper; otherwise fall through to the existing HTTP path.
@@ -448,6 +456,11 @@ pub fn buildMCPToolsRun(
                 std.log.warn("Failed to fetch MCP tools from stdio server '{s}': {s}", .{ server_name, @errorName(err) });
                 continue;
             };
+            // `appendSlice` copies the structs (the name/description strings
+            // stay shared); free the intermediate slice itself. Without this,
+            // every successful in-process fetch leaks one slice allocation
+            // (masked in production, where `allocator` is an arena).
+            defer allocator.free(stdio_tools);
             try all_tools.appendSlice(allocator, stdio_tools);
             continue;
         }
@@ -504,6 +517,8 @@ pub fn buildMCPToolsRun(
             continue;
         };
         const tools = try convertMcpToolsToAgentTools(allocator, mcp_tools, server_name);
+        // Same intermediate-slice ownership as the stdio branch above.
+        defer allocator.free(tools);
         try all_tools.appendSlice(allocator, tools);
     }
 
@@ -650,7 +665,6 @@ fn fetchToolsFromServerStdio(
         const client = reg.getOrSpawn(server_name, argv) catch {
             last_err = error.MCPServerSpawnFailed;
             if (attempt + 1 < 3) {
-                
                 continue;
             }
             return error.MCPServerSpawnFailed;
@@ -685,14 +699,19 @@ fn fetchToolsFromServerStdio(
             const is_retryable = err == error.UnexpectedEof or err == error.RecvTimeout or err == error.BrokenPipe;
             if (is_retryable and attempt + 1 < 3) {
                 reg.markStale(server_name);
-                
+
                 continue;
             }
             if (err == error.RecvTimeout) return error.MCPServerRecvFailed;
             if (err == error.UnexpectedEof) return error.MCPServerRecvFailed;
             return err;
         };
-        defer allocator.free(resp);
+        // `resp` is owned by the client's allocator (the registry arena),
+        // not ours — free it there (matches the `init_resp` handling in
+        // `do_handshake` above). Freeing via `allocator` is an invalid
+        // free under DebugAllocator (surfaced by the first in-process
+        // live-handshake unit test); under an arena it was a silent no-op.
+        defer client.allocator.free(resp);
 
         // Parse result.tools[] into AgentTool records (same parser the HTTP
         // branch uses after `body_to_parse` is read).
@@ -1946,6 +1965,77 @@ test "buildMCPToolsRun: stdio server with empty command is skipped" {
     defer testing.allocator.free(result.?);
     // Empty command → MCPServerCommandNotFound → skipped
     try testing.expectEqual(@as(usize, 0), result.?.len);
+}
+
+test "buildMCPToolsRun: disabled servers are skipped (enabled server's tools only)" {
+    // MCP server toggle: a server with explicit `"enabled": false` must
+    // be skipped BEFORE any spawn/connect, so only the enabled server's
+    // `mcp_<server>_<tool>` names reach the agent.
+    //
+    // Both entries point at the same tiny POSIX fake MCP server: a
+    // `/bin/sh` loop that answers `initialize` + `tools/list` over NDJSON
+    // and stays silent on `notifications/initialized` (which carries no
+    // `params`, so the `*params*` branch only matches `initialize`).
+    // Before the filter, both prefixes appear (len == 2) and this test
+    // fails; after, only the enabled prefix remains (len == 1).
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\while read -r line; do case $line in *tools/list*) echo '{"jsonrpc":"2.0","id":"2","result":{"tools":[{"name":"hello","description":"says hi","inputSchema":{"type":"object","properties":{}}}]}}';; *params*) echo '{"jsonrpc":"2.0","id":"1","result":{"protocolVersion":"2024-11-05"}}';; esac; done
+    ;
+    var args_ena = std.json.Array.init(testing.allocator);
+    var args_dis = std.json.Array.init(testing.allocator);
+    var ena_obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    var dis_obj = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    var outer = try std.json.ObjectMap.init(testing.allocator, &.{}, &.{});
+    defer {
+        args_ena.deinit();
+        args_dis.deinit();
+        var oi = outer.iterator();
+        while (oi.next()) |kv| testing.allocator.free(kv.key_ptr.*);
+        outer.deinit(testing.allocator);
+        var ei = ena_obj.iterator();
+        while (ei.next()) |kv| testing.allocator.free(kv.key_ptr.*);
+        ena_obj.deinit(testing.allocator);
+        var di = dis_obj.iterator();
+        while (di.next()) |kv| testing.allocator.free(kv.key_ptr.*);
+        dis_obj.deinit(testing.allocator);
+    }
+    try args_ena.append(.{ .string = "-c" });
+    try args_ena.append(.{ .string = script });
+    try args_dis.append(.{ .string = "-c" });
+    try args_dis.append(.{ .string = script });
+    try ena_obj.put(testing.allocator, try testing.allocator.dupe(u8, "command"), .{ .string = "/bin/sh" });
+    try ena_obj.put(testing.allocator, try testing.allocator.dupe(u8, "args"), .{ .array = args_ena });
+    try ena_obj.put(testing.allocator, try testing.allocator.dupe(u8, "enabled"), .{ .bool = true });
+    try dis_obj.put(testing.allocator, try testing.allocator.dupe(u8, "command"), .{ .string = "/bin/sh" });
+    try dis_obj.put(testing.allocator, try testing.allocator.dupe(u8, "args"), .{ .array = args_dis });
+    try dis_obj.put(testing.allocator, try testing.allocator.dupe(u8, "enabled"), .{ .bool = false });
+    try outer.put(testing.allocator, try testing.allocator.dupe(u8, "ena"), .{ .object = ena_obj });
+    try outer.put(testing.allocator, try testing.allocator.dupe(u8, "dis"), .{ .object = dis_obj });
+
+    const result = try buildMCPToolsRun(testing.allocator, .{ .object = outer }, null);
+    // Kills the spawned `sh` children + frees the registry arena (same
+    // cleanup the bogus-command test does for its failed spawns).
+    defer mcp_stdio.StdioRegistry.deinitGlobal();
+    defer {
+        if (result) |tools| {
+            for (tools) |*t| {
+                testing.allocator.free(t.function.name);
+                testing.allocator.free(t.function.description);
+                for (t.function.parameters.properties) |*p| {
+                    testing.allocator.free(p.name);
+                    testing.allocator.free(p.type);
+                    testing.allocator.free(p.description);
+                }
+                if (t.function.parameters.properties.len > 0) testing.allocator.free(t.function.parameters.properties);
+                if (t.function.parameters.required.len > 0) testing.allocator.free(t.function.parameters.required);
+            }
+            testing.allocator.free(tools);
+        }
+    }
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(usize, 1), result.?.len);
+    try testing.expectEqualStrings("mcp_ena_hello", result.?[0].function.name);
 }
 
 // ============================================================================
