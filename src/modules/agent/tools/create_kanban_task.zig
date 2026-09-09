@@ -16,9 +16,15 @@
 //!   5. INSERT OR REPLACE INTO the `kanban` join table (post-
 //!      Migration 072) with `kanban_column_id` and `kanban_position`
 //!      (set to MAX(position)+1 within the target column).
-//!   6. Emit a `kanban_task` SSE event with `action="created"` for
-//!      multi-tab sync (fire-and-forget; log + continue on error).
-//!   7. Return the success XML to the LLM.
+//!   6. ALWAYS INSERT OR IGNORE INTO `sessions` keyed by the new
+//!      task's id (`task.id == session.id`, `sessions.name` =
+//!      card title) + INSERT the initial user `llm_history` row
+//!      (`"{name}\n\n{description}"`) — HTTP `create_session`
+//!      parity (plan:
+//!      docs/superpowers/plans/2026-09-09-fix-agent-create-kanban-task-session.md).
+//!   7. Emit `session_created` + `kanban_task created` SSE events
+//!      (fire-and-forget; log + continue on error).
+//!   8. Return the success XML to the LLM.
 //!
 //! Plan: docs/superpowers/plans/2026-07-29-create-kanban-task-tool.md
 //! Parallel HTTP handler: `src/ai_workflow/tui/http_handlers/task_create.zig`
@@ -101,18 +107,20 @@ pub const CreateKanbanTaskInput = struct {
     cwd: []const u8 = "",
     /// Optional unattended-mode flag. `"1"` enables the agent to
     /// retry past the 10-error TooManyRetries bail (overnight runs);
-    /// any other value normalizes to `"0"`. When set, an INSERT OR
-    /// IGNORE INTO `sessions` row is created keyed by the new
-    /// task's id (task.id == session.id convention). Matches the
-    /// wire shape `TaskCreateRequest.is_auto_retry_until_stop`.
+    /// any other value normalizes to `"0"`. A `sessions` row is
+    /// ALWAYS created keyed by the new task's id (task.id ==
+    /// session.id convention); this flag only sets its
+    /// `is_auto_retry_until_stop` column. Matches the wire shape
+    /// `TaskCreateRequest.is_auto_retry_until_stop`.
     is_auto_retry_until_stop: ?[]const u8 = null,
-    /// Optional profile name to bind on the new sessions row. When
-    /// set, the INSERT OR IGNORE INTO `sessions` includes
-    /// `selected_profile_model`. Null/empty = backend default
-    /// (`""` = top-level config). Matches the wire shape used by
-    /// `RequestSession.selected_profile_model` (Path A — the
-    /// frontend's plain-create path also does not persist this on
-    /// the task itself, only on the chat session it spawns later).
+    /// Optional profile name to bind on the new sessions row. A
+    /// `sessions` row is ALWAYS created; this only sets its
+    /// `selected_profile_model` column. Null/empty = backend
+    /// default (`""` = top-level config). Matches the wire shape
+    /// used by `RequestSession.selected_profile_model` (Path A —
+    /// the frontend's plain-create path also does not persist this
+    /// on the task itself, only on the chat session it spawns
+    /// later).
     selected_profile_model: ?[]const u8 = null,
 };
 
@@ -150,7 +158,7 @@ pub const create_kanban_task_tool = AgentTool{
             \\Optional fields (mirror the user-facing KanbanTaskDetailDialog form, Migration 062 / 067 / 069 / 071 — all four are persisted on create, not just on chat-spawn):
             \\  - tags: JSON-encoded array string like "[\"bug\",\"urgent\"]". Letters/digits/`_`/`-` only, ≤50 chars per tag, case-insensitive dedupe. Null/empty = no tags.
             \\  - image_urls: `||`-delimited `data:image/<mime>;base64,<payload>` URLs. Null/empty = no images. 10 MB cap.
-            \\  - is_auto_retry_until_stop: "1" enables unattended mode (agent keeps retrying past the 10-error TooManyRetries bail). Anything else normalizes to "0". When set, an INSERT OR IGNORE INTO sessions row is created keyed by the new task's id.
+            \\  - is_auto_retry_until_stop: "1" enables unattended mode (agent keeps retrying past the 10-error TooManyRetries bail). Anything else normalizes to "0". A sessions row is always created keyed by the new task's id; this flag only sets its column.
             \\  - selected_profile_model: name of the profile in `LlmConfig.profiles` to bind on the new sessions row (Path A — persisted on the chat session, not on the task). Null/empty = backend default.
             \\
             \\Workflow: (1) call kanban_list first to discover the kanban item id and (optionally) the column id if the user named one, (2) call create_kanban_task with those ids, (3) use kanban_move_task if the task needs to land in a non-default position. On error, recover by: (1) verify item_id from the Workspace Context listing; (2) if the parent item is not a kanban, the tool returns a structured error — pick the item marked `*(this task)*` instead; (3) if column_id was rejected, omit it and let auto-assign place the card.
@@ -201,7 +209,7 @@ pub const create_kanban_task_tool = AgentTool{
                 .{
                     .name = "is_auto_retry_until_stop",
                     .type = "string",
-                    .description = "Optional unattended-mode flag. `\"1\"` enables retrying past the 10-error TooManyRetries bail (overnight runs); any other value normalizes to `\"0\"`. When set, a sessions row is created keyed by the new task's id.",
+                    .description = "Optional unattended-mode flag. `\"1\"` enables retrying past the 10-error TooManyRetries bail (overnight runs); any other value normalizes to `\"0\"`. A sessions row is always created keyed by the new task's id; this flag only sets its column.",
                 },
                 .{
                     .name = "selected_profile_model",
@@ -643,71 +651,129 @@ pub fn executeCreateKanbanTaskToString(
         std.log.warn("create_kanban_task: stamp last_human_touched_at failed (non-fatal): {s}", .{@errorName(err)});
     };
 
-    // 11. INSERT OR IGNORE INTO `sessions` when unattended mode
-    //     and/or profile are set (Migrations 063 + 040). Uses the
-    //     same `task.id == session.id` convention as the HTTP
-    //     handler at `task_create.zig:587-605` so downstream SELECTs
-    //     that join `sessions` see a consistent id pair.
-    //     Dynamic SQL builder: include only the columns that have
-    //     a value so an empty `is_auto_retry_until_stop` + empty
-    //     `selected_profile_model` produces a minimal row that
-    //     still satisfies the (id, name) uniqueness on concurrent
-    //     chat-spawn INSERTs.
+    // 11. INSERT OR IGNORE INTO `sessions` — ALWAYS (HTTP
+    //     `create_session` parity, plan:
+    //     docs/superpowers/plans/2026-09-09-fix-agent-create-kanban-task-session.md).
+    //     Uses the `task.id == session.id` convention so downstream
+    //     SELECTs that join `sessions` see a consistent id pair.
+    //     Fixed column list mirrors
+    //     `kanban_tasks_create.zig:248-249` verbatim:
+    //     (id, name, status, cwd, created_at, updated_at,
+    //     selected_profile_model, is_auto_retry_until_stop).
+    //     INSERT OR IGNORE so a concurrent chat-spawn that landed
+    //     first doesn't trip a UNIQUE constraint failure.
     //
-    //     NEW (plan: docs/superpowers/plans/2026-08-13-kanban-task-
-    //     session-name-match.md): `sessions.name` is bound to
-    //     `trimmed_name` (NOT `task_id`), so the sidebar / chat
-    //     header / kanban card all show the user-facing title the
-    //     user typed. The `task.id == session.id` convention still
-    //     holds for the id column; only the name differs. trimmed_name
-    //     is already non-empty after the step-1 validation, so this
-    //     is safe.
-    if (input.is_auto_retry_until_stop != null or (input.selected_profile_model != null and input.selected_profile_model.?.len > 0)) {
-        var cols_buf: std.ArrayList(u8) = .empty;
-        defer cols_buf.deinit(allocator);
-        var vals_buf: std.ArrayList(u8) = .empty;
-        defer vals_buf.deinit(allocator);
-        var bind_values: std.ArrayList([]const u8) = .empty;
-        defer bind_values.deinit(allocator);
-
-        try cols_buf.appendSlice(allocator, "(id, name, status");
-        try vals_buf.appendSlice(allocator, "(?, ?, 'active'");
-        try bind_values.append(allocator, task_id); // id
-        try bind_values.append(allocator, trimmed_name); // name = user-facing title
-
-        if (input.is_auto_retry_until_stop) |flag| {
-            const normalized: []const u8 = if (std.mem.eql(u8, flag, "1")) "1" else "0";
-            try cols_buf.appendSlice(allocator, ", is_auto_retry_until_stop");
-            try vals_buf.appendSlice(allocator, ", ?");
-            try bind_values.append(allocator, normalized);
-        }
-
-        if (input.selected_profile_model) |profile| {
-            if (profile.len > 0) {
-                try cols_buf.appendSlice(allocator, ", selected_profile_model");
-                try vals_buf.appendSlice(allocator, ", ?");
-                try bind_values.append(allocator, profile);
+    //     `sessions.name` is bound to `trimmed_name` (NOT `task_id`),
+    //     so the sidebar / chat header / kanban card all show the
+    //     user-facing title (plan:
+    //     docs/superpowers/plans/2026-08-13-kanban-task-session-name-match.md).
+    //     trimmed_name is already non-empty after the step-1
+    //     validation, so this is safe.
+    //
+    //     Pre-fix this block was guarded by
+    //     `if (is_auto_retry_until_stop != null or profile set)` —
+    //     plain agent-created cards got NO sessions row and opened
+    //     as empty chats with the description silently dropped.
+    {
+        const normalized: []const u8 = blk: {
+            if (input.is_auto_retry_until_stop) |flag| {
+                if (std.mem.eql(u8, flag, "1")) break :blk "1";
             }
-        }
-
-        try cols_buf.appendSlice(allocator, ")");
-        try vals_buf.appendSlice(allocator, ")");
-
-        const sql = std.fmt.allocPrint(allocator, "INSERT OR IGNORE INTO sessions {s} VALUES {s}", .{
-            cols_buf.items,
-            vals_buf.items,
-        }) catch {
-            std.log.warn("create_kanban_task: allocPrint session SQL failed (non-fatal)", .{});
-            return successXml(allocator, task_id, target_column_id, position);
+            break :blk "0";
         };
-        defer allocator.free(sql);
+        const profile: []const u8 = input.selected_profile_model orelse "";
 
-        db.exec(allocator, sql, bind_values.items) catch |err| {
-            std.log.warn("create_kanban_task: session INSERT for unattended/profile failed (non-fatal): {s}", .{@errorName(err)});
+        db.exec(allocator,
+            "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
+                "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)",
+            &[_][]const u8{
+                task_id,
+                trimmed_name,
+                validated_cwd,
+                profile,
+                normalized,
+            },
+        ) catch |err| {
+            std.log.warn("create_kanban_task: session INSERT failed (non-fatal): {s}", .{@errorName(err)});
         };
     }
 
-    // 12. Emit SSE event.
+    // 12. Seed the initial user `llm_history` row so the chatview
+    //     lands on the user's description instead of the empty
+    //     "How can I help you?" state. Mirrors the
+    //     `if (is_create_session)` block at
+    //     `kanban_tasks_create.zig:300-352` verbatim:
+    //     content is `"{name}\n\n{description}"`, `image_urls` wire
+    //     value attached, `model=''` literal (NOT NULL + the
+    //     empty-slice-binds-as-NULL backend quirk). Non-fatal on
+    //     error — the card + session already exist.
+    {
+        const initial_message = std.fmt.allocPrint(
+            allocator,
+            "{s}\n\n{s}",
+            .{ trimmed_name, trimmed_description },
+        ) catch null;
+        if (initial_message) |msg| {
+            defer allocator.free(msg);
+            const now_ns = @import("helpers").unixTimestampNanos();
+            const id_str = std.fmt.allocPrint(allocator, "{d}", .{now_ns}) catch null;
+            if (id_str) |ids| {
+                defer allocator.free(ids);
+                const created_at_str = std.fmt.allocPrint(allocator, "{d}", .{now_ns}) catch null;
+                if (created_at_str) |cas| {
+                    defer allocator.free(cas);
+                    db.exec(
+                        allocator,
+                        "INSERT INTO llm_history " ++
+                            "(id, session_id, model, response_content, finish_reason, role, " ++
+                            "agent, parent_id, parent_session_id, is_input, image_url, " ++
+                            "is_feed_to_llm, created_at_nano, created_iso) " ++
+                            "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')",
+                        &[_][]const u8{
+                            ids,
+                            task_id,
+                            msg,
+                            task_id,
+                            task_id,
+                            validated_image_urls,
+                            cas,
+                        },
+                    ) catch |err| {
+                        std.log.warn("create_kanban_task: initial user llm_history insert failed (non-fatal): {s}", .{@errorName(err)});
+                    };
+                }
+            }
+        }
+    }
+
+    // 13. Emit SSE events: `session_created` so the sidebar's
+    //     ChatsList picks up the new session without a manual
+    //     refetch (mirrors `kanban_tasks_create.zig:362-376`), then
+    //     the existing `kanban_task created` event for kanban
+    //     multi-tab sync. Both fire-and-forget.
+    {
+        const normalized: []const u8 = blk: {
+            if (input.is_auto_retry_until_stop) |flag| {
+                if (std.mem.eql(u8, flag, "1")) break :blk "1";
+            }
+            break :blk "0";
+        };
+        const profile: []const u8 = input.selected_profile_model orelse "";
+        nalarcore.ai_mod.on_event_sent.onEventSendSessions(allocator, .{
+            .action = "created",
+            .id = task_id,
+            .name = trimmed_name,
+            .status = "active",
+            .cwd = validated_cwd,
+            .created_at = "",
+            .updated_at = "",
+            .selected_profile_model = profile,
+            .is_auto_retry_until_stop = normalized,
+            .last_finish_reason = "",
+        }) catch |err| {
+            std.log.warn("create_kanban_task: session_created SSE emit failed (non-fatal): {s}", .{@errorName(err)});
+        };
+    }
     nalarcore.ai_mod.on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
         .action = "created",
         .workspace_id = input.workspace_id,
@@ -719,7 +785,7 @@ pub fn executeCreateKanbanTaskToString(
         std.log.warn("create_kanban_task: SSE emit failed (non-fatal): {s}", .{@errorName(err)});
     };
 
-    // 13. Return success XML.
+    // 14. Return success XML.
     return successXml(allocator, task_id, target_column_id, position);
 }
 
@@ -851,6 +917,38 @@ test "create_kanban_task description marks column_id as optional" {
     }
 }
 
+test "create_kanban_task always inserts sessions with HTTP-parity columns" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // Regression guard for the 2026-09-09 fix: the sessions INSERT
+    // must be unconditional with the full HTTP create_session
+    // column list. Fails closed if a future refactor re-adds the
+    // `if (is_auto_retry_until_stop != null ...)` guard or drops
+    // the cwd/timestamp columns.
+    if (!contains(source, "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop)")) {
+        std.debug.print(
+            "\n!! create_kanban_task sessions INSERT is missing or not HTTP-parity !!\n" ++
+                "   The tool must always INSERT the full sessions row (create_session parity).\n", .{},
+        );
+        return error.SessionsInsertNotUnconditional;
+    }
+    if (!contains(source, "INSERT INTO llm_history")) {
+        std.debug.print(
+            "\n!! create_kanban_task does not seed llm_history !!\n" ++
+                "   The tool must INSERT the initial user llm_history row.\n", .{},
+        );
+        return error.LlmHistorySeedMissing;
+    }
+    if (!contains(source, "onEventSendSessions")) {
+        std.debug.print(
+            "\n!! create_kanban_task does not emit session_created SSE !!\n" ++
+                "   The tool must call onEventSendSessions(action=created).\n", .{},
+        );
+        return error.SessionCreatedSseMissing;
+    }
+}
+
 test "create_kanban_task description tells LLM ids come from Workspace Context" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOL_PATH);
@@ -935,17 +1033,42 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  cwd TEXT NOT NULL DEFAULT ''
         \\)
     , &[_][]const u8{});
-    // sessions table — required for the is_auto_retry_until_stop /
-    // selected_profile_model path. The agent tool does INSERT OR
-    // IGNORE INTO sessions keyed by the new task's id when either
-    // field is supplied (mirrors task_create.zig:587-605).
+    // sessions table — ALWAYS written by the tool (HTTP
+    // `create_session` parity). Full production shape for the
+    // columns the tool binds: id, name, status, cwd,
+    // created_at/updated_at (SQL timestamps), plus the
+    // unattended/profile columns.
     try db.exec(alloc,
         \\CREATE TABLE sessions (
         \\  id TEXT PRIMARY KEY,
         \\  name TEXT,
         \\  status TEXT,
+        \\  cwd TEXT NOT NULL DEFAULT '',
+        \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\  is_auto_retry_until_stop TEXT,
         \\  selected_profile_model TEXT
+        \\)
+    , &[_][]const u8{});
+    // llm_history table — the tool seeds one initial user row per
+    // created card (HTTP `create_session` parity). Only the
+    // columns the INSERT writes are modeled here.
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\  id TEXT PRIMARY KEY,
+        \\  session_id TEXT NOT NULL,
+        \\  model TEXT NOT NULL,
+        \\  response_content TEXT,
+        \\  finish_reason TEXT,
+        \\  role TEXT,
+        \\  agent TEXT DEFAULT 'Agent',
+        \\  parent_id TEXT,
+        \\  parent_session_id TEXT,
+        \\  is_input INTEGER,
+        \\  image_url TEXT,
+        \\  is_feed_to_llm INTEGER,
+        \\  created_at_nano DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  created_iso TEXT
         \\)
     , &[_][]const u8{});
     // Post-Migration-072: task→column mapping lives in `kanban` join table
@@ -1062,6 +1185,86 @@ test "executeCreateKanbanTaskToString inserts a row into workspace_item_tasks" {
     const task_id = xml[task_id_start .. task_id_start + end];
 
     try testing.expect(try taskRowExists(alloc, &s.db, task_id));
+}
+
+test "executeCreateKanbanTaskToString always inserts sessions row without flag or profile" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "plain card",
+        .description = "no flag no profile",
+        .cwd = "/test",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const name = try readColumn(alloc, &s.db, "SELECT name FROM sessions WHERE id = ?", &.{task_id});
+    defer alloc.free(name);
+    try testing.expectEqualStrings("plain card", name);
+    const status = try readColumn(alloc, &s.db, "SELECT status FROM sessions WHERE id = ?", &.{task_id});
+    defer alloc.free(status);
+    try testing.expectEqualStrings("active", status);
+    const cwd = try readColumn(alloc, &s.db, "SELECT cwd FROM sessions WHERE id = ?", &.{task_id});
+    defer alloc.free(cwd);
+    try testing.expectEqualStrings("/test", cwd);
+    const flag = try readColumn(alloc, &s.db, "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?", &.{task_id});
+    defer alloc.free(flag);
+    try testing.expectEqualStrings("0", flag);
+}
+
+test "executeCreateKanbanTaskToString sessions row honors flag and profile" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "flagged card",
+        .description = "with flag and profile",
+        .cwd = "/test",
+        .is_auto_retry_until_stop = "1",
+        .selected_profile_model = "code",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const flag = try readColumn(alloc, &s.db, "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?", &.{task_id});
+    defer alloc.free(flag);
+    try testing.expectEqualStrings("1", flag);
+    const profile = try readColumn(alloc, &s.db, "SELECT selected_profile_model FROM sessions WHERE id = ?", &.{task_id});
+    defer alloc.free(profile);
+    try testing.expectEqualStrings("code", profile);
+}
+
+test "executeCreateKanbanTaskToString inserts initial user llm_history row" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+        .workspace_id = "ws_1",
+        .item_id = "item_k1",
+        .name = "seed me",
+        .description = "seed desc here",
+        .cwd = "/test",
+    });
+    defer alloc.free(xml);
+
+    const task_id = try extractTaskId(xml);
+    const content = try readColumn(alloc, &s.db, "SELECT response_content FROM llm_history WHERE session_id = ?", &.{task_id});
+    defer alloc.free(content);
+    try testing.expectEqualStrings("seed me\n\nseed desc here", content);
+    const role = try readColumn(alloc, &s.db, "SELECT role FROM llm_history WHERE session_id = ?", &.{task_id});
+    defer alloc.free(role);
+    try testing.expectEqualStrings("user", role);
 }
 
 test "executeCreateKanbanTaskToString appends at MAX(kanban_position)+1 when column has existing tasks" {
