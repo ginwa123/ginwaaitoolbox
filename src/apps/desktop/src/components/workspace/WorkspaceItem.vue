@@ -608,7 +608,7 @@ const handlePinnedDrop = (event: DragEvent) => {
             test-id="item-processing-spinner"
           />
         </button>
-        <!-- Add Task + Delete Item buttons (show on hover). Previously
+        <!-- Add Task + Delete Item buttons (always visible). Previously
              the kanban and design item_types were excluded from the
              sidebar delete, on the (false) assumption that they had
              their own delete UIs. Neither KanbanView nor DesignView
@@ -633,18 +633,18 @@ const handlePinnedDrop = (event: DragEvent) => {
         <template v-if="true">
           <button
             @click="handleAddTask"
-            class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-green-400"
+            class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim);"
             title="Add Task"
             aria-label="Add Task"
           >
             +
           </button>
-          <!-- Delete Item Button (show on hover). Unicode × glyph
+          <!-- Delete Item Button (always visible). Unicode × glyph
                instead of SVG. -->
           <button
             @click="handleDelete"
-            class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/item:opacity-100 transition-opacity duration-150 hover:text-red-400"
+            class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-red-400"
             style="color: var(--semantic-text-dim);"
             title="Delete Item"
             aria-label="Delete Item"
