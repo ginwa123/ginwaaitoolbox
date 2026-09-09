@@ -265,17 +265,29 @@ pub fn build(b: *std.Build) void {
         "Skip the system probe and always compile the vendored sqlite3 amalgamation",
     ) orelse false;
 
-    // Backend selector — PASSTHROUGH ONLY. The decision lives in the
-    // app's root build.zig (`-Ddb_used`), which passes
-    // `.@"enable-postgres" = ...` via `b.dependency("databases", ...)`.
-    // Default false = sqlite-only: Postgres.zig is never @imported,
-    // libpq is never linked, pg tests are skipped. Standalone
-    // `zig build test` inside this package also defaults to sqlite-only.
-    const enable_postgres = b.option(
-        bool,
-        "enable-postgres",
-        "Opt in to the PostgreSQL backend (needs libpq). App sets this via -Ddb_used; do not set directly",
-    ) orelse false;
+    // Backend list — set by the app's root build.zig (`-Ddb_used`),
+    // forwarded verbatim via `b.dependency("databases", ...)`.
+    // Comma-separated (the build runner only passes strings on the
+    // CLI — no array-of-string option kind exists). Default `"sqlite"`
+    // = sqlite-only: Postgres.zig is never @imported, libpq is never
+    // linked, pg tests are skipped. Standalone `zig build test` inside
+    // this package also defaults to sqlite-only.
+    const db_used_str = b.option(
+        []const u8,
+        "db_used",
+        "Comma-separated database backends to compile: 'sqlite' (default, no libpq), add 'postgres' to also compile postgres (needs libpq)",
+    ) orelse "sqlite";
+    var enable_postgres = false;
+    var db_used_it = std.mem.splitScalar(u8, db_used_str, ',');
+    while (db_used_it.next()) |entry_raw| {
+        const entry = std.mem.trim(u8, entry_raw, " \t");
+        if (entry.len == 0 or std.mem.eql(u8, entry, "sqlite")) continue;
+        if (std.mem.eql(u8, entry, "postgres")) {
+            enable_postgres = true;
+        } else {
+            std.debug.panic("unknown database backend in -Ddb_used='{s}': '{s}' (known: sqlite, postgres)", .{ db_used_str, entry });
+        }
+    }
 
     const mod = b.addModule("databases", .{
         .root_source_file = b.path("src/root.zig"),
