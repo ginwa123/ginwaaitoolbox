@@ -1165,6 +1165,41 @@ export async function startAgentOnTask(
   )
 }
 
+/**
+ * Bulk "Run all agents" for one kanban column (plan:
+ * docs/superpowers/plans/2026-09-09-run-all-agents-by-column.md,
+ * Task 4, Option C).
+ *
+ *   POST /api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id/run_all_agents
+ *   200: `{ success: true, column_id, started: string[], skipped: string[], failed: string[] }`
+ *   404: unknown column
+ *   500: server error
+ *
+ * The server owns the task list (SELECTs all task ids for the column
+ * server-side and loops the single-task startAgentUseCase per id), so
+ * pagination is irrelevant — the frontend calls this once and surfaces
+ * the `{started, skipped, failed}` summary. No new SSE event; run-state
+ * visuals stay on the existing `processingState`/SessionSlider flow.
+ */
+export interface RunAllAgentsSummary {
+  success: boolean
+  column_id?: string
+  started: string[]
+  skipped: string[]
+  failed: string[]
+}
+
+export async function runAllAgentsInColumn(
+  workspaceId: string,
+  itemId: string,
+  columnId: string,
+): Promise<RunAllAgentsSummary> {
+  return await apiFetch<RunAllAgentsSummary>(
+    `/workspaces/${workspaceId}/items/${itemId}/kanban/columns/${columnId}/run_all_agents`,
+    { method: 'POST' },
+  )
+}
+
 // Chat API - Zig Backend Integration (Zig backend calls LLM backend internally)
 export interface Chat {
   session_id: string
