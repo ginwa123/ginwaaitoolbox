@@ -1,79 +1,15 @@
-# nalar cross-platform line-ending policy.
+# Force LF line endings on every checkout (all OSes).
 #
-# Force LF (Unix) line endings for all source files. Without this,
-# Windows Git with `core.autocrlf=true` (the default) checks out
-# text files with CRLF endings. The repo's static-contract tests
-# read source files at runtime and use literal "\n" in their
-# `indexOf` needles — CRLF breaks every multi-line needle match.
+# Why: the Windows-only shipped html/ rides the cross-OS `webapp-dist`
+# actions/cache, whose key is hashFiles() over working-tree bytes
+# (src/apps/desktop/**). Without this file, a Windows git with
+# core.autocrlf=true (Git for Windows default) checks out CRLF while
+# Linux checks out LF -- same commit, different bytes, different key,
+# restore ALWAYS misses on Windows, dist/ is absent, build.zig skips
+# zig-out/bin/html, and the bundle gate fails. Attributes override any
+# runner's core.autocrlf, so all three cells hash identical bytes.
 #
-# The symptoms:
-#   - `git_status_test.zig`: "could not find `is_git_repo = false` response literal"
-#     (needle uses `\n        };` but file has `\r\n        };`)
-#   - `set_git_worktree_test.zig`: "classifyPath signature does not match"
-#     (same CRLF problem in the 4-arg form needle)
-#   - Any other static-contract test that has a multi-line literal
-#
-# This file is read by Git on every checkout. Pair with the
-# "normalize CRLF before matching" helper in the test helpers
-# (see `src/ai_workflow/tui/test_text_normalize.zig` once added)
-# so even if a contributor's editor sneaks CRLF in, the tests
-# still pass.
-#
-# Pattern summary:
-#   `* text=auto`       — let Git auto-detect text vs binary
-#   `*.zig text eol=lf` — force LF for Zig source files (most
-#                         important for static-contract tests)
-#   `* text eol=lf`     — force LF for everything else
-#   `*.png binary`      — explicit binary (overrides `text=auto`)
-#
-# See https://git-scm.com/docs/gitattributes for the full syntax.
-
-*               text=auto eol=lf
-*.zig           text eol=lf
-*.md            text eol=lf
-*.txt           text eol=lf
-*.json          text eol=lf
-*.toml          text eol=lf
-*.yml           text eol=lf
-*.yaml          text eol=lf
-*.sh            text eol=lf
-*.bash          text eol=lf
-*.zsh           text eol=lf
-*.py            text eol=lf
-*.ts            text eol=lf
-*.tsx           text eol=lf
-*.vue           text eol=lf
-*.css           text eol=lf
-*.html          text eol=lf
-
-# Binary files (override `text=auto` from the first line)
-*.png           binary
-*.jpg           binary
-*.jpeg          binary
-*.gif           binary
-*.webp          binary
-*.ico           binary
-*.woff          binary
-*.woff2         binary
-*.ttf           binary
-*.eot           binary
-*.mp4           binary
-*.webm          binary
-*.ogg           binary
-*.mp3           binary
-*.zip           binary
-*.tar           binary
-*.gz            binary
-*.bz2           binary
-*.xz            binary
-*.7z            binary
-*.pdf           binary
-*.so            binary
-*.dll           binary
-*.dylib         binary
-*.exe           binary
-*.a             binary
-*.o             binary
-*.obj           binary
-*.lib           binary
-*.pdb           binary
+# Safe here: the repo is LF-pure (no tracked CRLF) and has no .bat/.cmd
+# files (the only common type that requires CRLF). .ps1/.sh/.zig/.vue/.ts
+# are all LF-safe -- and .sh REQUIRES LF.
+* text=auto eol=lf
