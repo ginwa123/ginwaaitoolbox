@@ -1,5 +1,4 @@
 const std = @import("std");
-const linux = std.posix.system;
 const Template = @import("template.zig");
 const context_mod = @import("context.zig");
 const ContextStore = context_mod.ContextStore;
@@ -134,10 +133,11 @@ pub const HttpRequest = struct {
     /// intentionally a hard error rather than a silent fall-back.
     session: *Session = undefined,
 
-    pub fn writeSSEEvent(self: *const HttpRequest, event: []const u8) void {
-        _ = linux.write(self._client_fd, event.ptr, event.len);
-    }
-
+    // NOTE: there is intentionally NO write-SSE-event helper here. The only
+    // correct way to write to a client socket is GinwaServer.sendToClient /
+    // SseManager.sendToClient (winsock.send on Windows; raw write()/WriteFile
+    // fails on winsock sockets). A previous writeSSEEvent using linux.write
+    // was deleted for exactly that reason -- do not re-add one.
     /// Parse the request body as `application/x-www-form-urlencoded` and
     /// return a `T` struct with each `[]const u8` field populated from the
     /// matching form key.
