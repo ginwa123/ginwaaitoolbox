@@ -469,7 +469,18 @@ function handleItemClick(item: T) {
   }
 }
 
-async function handleItemDoubleClick(item: T) {
+function handleItemDoubleClick(item: T) {
+  // Double-click on a folder navigates INTO it — it must never
+  // select + close the dialog. Single click already selects the
+  // folder (folder/both mode); the Select button / Enter confirms.
+  // This mirrors Finder / Explorer / zenity --directory.
+  if (props.isExpandable(item)) {
+    void navigateTo(props.pathFor(item))
+    return
+  }
+  // Double-click on a file confirms it (file/both mode only —
+  // handleItemClick is a no-op for files in folder mode, so
+  // selectedPath stays empty and we don't close).
   handleItemClick(item)
   if (selectedPath.value) {
     handleSelect()

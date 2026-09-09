@@ -1255,3 +1255,83 @@ describe('FilePickerDialog — Recent tab + tabstrip + pin', () => {
     ).toBe('3d')
   })
 })
+
+describe('FilePickerDialog — double-click navigates folders (never closes)', () => {
+  let wrapper: VueWrapper | null = null
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    document.body.style.overflow = ''
+    vi.restoreAllMocks()
+  })
+
+  function dblclickInDom(selector: string) {
+    const el = findInDom(selector)
+    if (!el) throw new Error(`No element found: ${selector}`)
+    el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+  }
+
+  it('folder mode: dblclick folder navigates in, emits NO select, dialog stays open', async () => {
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'folder',
+      closeOnSelect: true,
+      enableRecentHistory: false,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    dblclickInDom('[data-testid="file-picker-item-/home/user/notes"]')
+    await flushPromises()
+    // Navigated into /home/user/notes — its child file is now visible.
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).not.toBeNull()
+    // No select emitted, no close emitted.
+    expect(wrapper.emitted('select')).toBeFalsy()
+    expect(wrapper.emitted('update:modelValue')).toBeFalsy()
+  })
+
+  it('both mode: dblclick folder navigates in, emits NO select', async () => {
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'both',
+      closeOnSelect: true,
+      enableRecentHistory: false,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    dblclickInDom('[data-testid="file-picker-item-/home/user/notes"]')
+    await flushPromises()
+    expect(findInDom('[data-testid="file-picker-item-/home/user/notes/todo.txt"]')).not.toBeNull()
+    expect(wrapper.emitted('select')).toBeFalsy()
+  })
+
+  it('file mode: dblclick file still confirms (select + close)', async () => {
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'file',
+      closeOnSelect: true,
+      enableRecentHistory: false,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    dblclickInDom('[data-testid="file-picker-item-/home/user/readme.md"]')
+    await flushPromises()
+    expect(wrapper.emitted('select')?.[0]).toEqual(['/home/user/readme.md'])
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
+  })
+
+  it('folder mode: dblclick file is a no-op (no select, no close)', async () => {
+    wrapper = mountDialog({
+      initialPath: '/home/user',
+      mode: 'folder',
+      closeOnSelect: true,
+      enableRecentHistory: false,
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    dblclickInDom('[data-testid="file-picker-item-/home/user/readme.md"]')
+    await flushPromises()
+    expect(wrapper.emitted('select')).toBeFalsy()
+    expect(wrapper.emitted('update:modelValue')).toBeFalsy()
+  })
+})
