@@ -42,4 +42,26 @@ describe('McpServersSection', () => {
     await wrapper.find('[data-testid="delete-btn"]').trigger('click')
     expect(wrapper.emitted('delete')?.[0]).toEqual(['context7'])
   })
+
+  it('emits toggle with the server name when the toggle is clicked', async () => {
+    const wrapper = mount(McpServersSection, { props: { modelValue: [baseServer] } })
+    await wrapper.find('[data-testid="toggle-btn"]').trigger('click')
+    expect(wrapper.emitted('toggle')?.[0]).toEqual(['context7'])
+  })
+
+  it('shows a Disabled pill + dimmed row when enabled === false', () => {
+    const wrapper = mount(McpServersSection, {
+      props: { modelValue: [{ ...baseServer, enabled: false }] },
+    })
+    expect(wrapper.find('[data-testid="disabled-pill"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="toggle-btn"]').attributes('aria-pressed')).toBe('false')
+    expect(wrapper.find('li').classes()).toContain('opacity-60')
+  })
+
+  it('renders missing enabled as enabled (no pill, pressed)', () => {
+    const wrapper = mount(McpServersSection, { props: { modelValue: [baseServer] } })
+    expect(wrapper.find('[data-testid="disabled-pill"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="toggle-btn"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('li').classes()).not.toContain('opacity-60')
+  })
 })
