@@ -763,15 +763,57 @@ const handleCloseDesignPageRenameModal = () => {
   renameTargetDesignPageName.value = ''
 }
 
+// Shared standard-chat create+navigate flow (2026-09-09 agent-mode
+// direct-to-chat): auto-create a task named "New Chat" and navigate
+// straight to its ChatView. Used by BOTH the picker Standard-Chat pick
+// (`handleAddTaskPick('standard')` below) and the agent-mode direct path
+// (`handleAddTask` bypasses the picker for `item_type === 'agent'`).
+// The task row appears in the sidebar's task list under the parent item;
+// the chat name is "New Chat" until the user renames it or the first user
+// message auto-renames it (ChatView's existing convention).
+const createAndOpenStandardChat = async (workspaceId: string, itemId: string) => {
+  const taskId = await workspacesStore.addTask(workspaceId, itemId, {
+    name: DEFAULT_NEW_CHAT_NAME,
+  })
+  if (taskId) {
+    workspacesStore.setActiveTask(taskId)
+    // NEW (add-workspace-id-params, 2026-08-06): include the
+    // workspaceId + itemId in the URL so the auto-created chat task
+    // carries the kanban / folder / design breadcrumb. Pre-fix the
+    // URL was just `?view=task&task=X` — sharing / refreshing lost
+    // the workspace context. The helper reads from the active store
+    // state set by `handleSelectItem` (which fired before the
+    // picker opened).
+    router.replace({
+      path: '/app',
+      query: buildTaskUrlQuery({
+        taskId,
+        activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
+        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+      }),
+    })
+  }
+}
+
 // Open the picker when the user clicks the green `+` on a
-// non-kanban workspace item. Chunk 6: previously this directly
+// non-agent workspace item. Chunk 6: previously this directly
 // created a `Task <time>` row and auto-navigated. Now we route
 // through AddTaskPickerDialog → AddTaskDialog / AddRoutineDialog /
 // AddMemoryDialog. Kanban items handle "+ Add" locally inside
 // KanbanView.vue (no picker — kanban cards are always standard
 // chats; the picker is for non-kanban parents where the user might
 // want a routine / memory / chat task).
+//
+// Agent-mode items (`item_type === 'agent'`) skip the picker entirely
+// (2026-09-09): an agent item IS a chat container, so `+` directly
+// creates a Standard Chat and opens it — no Routine / Memory choice.
 const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
+  if (item.item_type === 'agent') {
+    void createAndOpenStandardChat(workspaceId, item.id)
+    return
+  }
   pickerWorkspaceId.value = workspaceId
   pickerItemId.value = item.id
   showAddTaskPicker.value = true
@@ -801,34 +843,10 @@ const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') =>
   pickerItemId.value = null
 
   if (taskType === 'standard') {
-    // No dialog — auto-create + navigate. The task row appears in
-    // the sidebar's task list under the parent item, the chat name
-    // is "New Chat" until the user renames it or the first user
-    // message auto-renames it (ChatView's existing convention).
+    // No dialog — auto-create + navigate via the shared helper (also
+    // used by the agent-mode direct path in `handleAddTask`).
     if (!workspaceId || !itemId) return
-    const taskId = await workspacesStore.addTask(workspaceId, itemId, {
-      name: DEFAULT_NEW_CHAT_NAME,
-    })
-    if (taskId) {
-      workspacesStore.setActiveTask(taskId)
-      // NEW (add-workspace-id-params, 2026-08-06): include the
-      // workspaceId + itemId in the URL so the auto-created chat task
-      // carries the kanban / folder / design breadcrumb. Pre-fix the
-      // URL was just `?view=task&task=X` — sharing / refreshing lost
-      // the workspace context. The helper reads from the active store
-      // state set by `handleSelectItem` (which fired before the
-      // picker opened).
-      router.replace({
-        path: '/app',
-        query: buildTaskUrlQuery({
-          taskId,
-          activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
-          activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
-          activeDesignPageId: workspacesStore.activeDesignPageId,
-          activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-        }),
-      })
-    }
+    await createAndOpenStandardChat(workspaceId, itemId)
     return
   }
 
