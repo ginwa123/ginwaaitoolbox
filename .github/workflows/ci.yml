@@ -117,6 +117,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalize worktree line endings (Windows)
+        # Self-hosted Windows workspaces persist between runs. Files checked
+        # out BEFORE the repo's .gitattributes (PR #62, LF enforcement) may
+        # still carry stale CRLF bytes: plain `git checkout` never rewrites
+        # files whose content git considers unchanged, and `git clean` only
+        # removes untracked files. CRLF bytes change hashFiles() digests, so
+        # the cross-OS webapp-dist cache key computed here would never match
+        # the key Linux saved -- restore misses, dist/ absent, no html/.
+        # Force-rewrite every tracked file per current attributes (LF).
+        # LF is strictly safer on Windows too: .sh NEEDS LF, .ps1/.zig accept it.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout-index -f -a
+          echo "✓ worktree normalized to LF per .gitattributes"
+
       - name: Install Node.js 24
         # pnpm migration (2026-08-28): the UIHarness now spawns `pnpm run dev`
         # to start the Vite dev server during Playwright tests. The harness
@@ -1071,6 +1088,12 @@ jobs:
         with:
           path: src/apps/desktop/dist
           key: webapp-dist-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml', 'src/apps/desktop/index.html', 'src/apps/desktop/vite.config.*', 'src/apps/desktop/src/**', 'src/apps/desktop/public/**') }}
+          # Prefix fallback: on exact-miss (first run after a frontend change,
+          # eviction) restore the NEWEST webapp-dist entry instead of nothing.
+          # At most one-run-stale UI, but html/ is present and the bundle gate
+          # stays green; the next run exact-hits with fresh UI.
+          restore-keys: |
+            webapp-dist-
 
       - name: Test (zig build test only — no nalar-desktop install)
         timeout-minutes: 30 # fail fast: Windows self-hosted has wedged here (2026-09-08: idle 55+ min, zero CPU, all artifacts built) and the default 6h cap burns the single runner
