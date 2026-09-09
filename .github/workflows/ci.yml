@@ -1060,9 +1060,9 @@ jobs:
         # hence -Dno-webapp-rebuild) so it restores dist/ from this cache
         # and build.zig installs it to zig-out/bin/html for the zip.
         # Keyed ONLY by webapp sources (no runner.os) so all three cells
-        # share it. First run after a frontend change is a miss on every
-        # cell: Linux/macOS rebuild + save at job end, Windows ships
-        # old-style that run (bundle step warns) and picks it up next run.
+        # share it. On a miss the Windows cell builds dist/ itself via the
+        # "Build webapp dist fallback (Windows, cache-miss only)" step below,
+        # so every run ships html/ -- no "picks it up next run" gap.
         # Parallel Linux+macOS saves race last-write-wins; both are valid
         # vite emits from identical sources (byte-drift in sourcemaps is
         # harmless here -- the desktop serves whatever is installed).
@@ -1147,6 +1147,47 @@ jobs:
         shell: bash
         run: zig build nalar-desktop --summary all
 
+      - name: Build webapp dist fallback (Windows, cache-miss only)
+        timeout-minutes: 20 # fail fast: pnpm install + vite on the small runner; must never wedge the only Windows runner (see the install step's timeout note)
+        # Cache-miss self-sufficiency: when the shared webapp-dist cache did
+        # NOT restore src/apps/desktop/dist (first run after a frontend
+        # change, eviction, or a new runner), build it right here so the
+        # Verify/bundle steps below still get html/. Cache hit → skip in ~1s.
+        #
+        # Why this fits in RAM when the full rebuild doesn't: the documented
+        # ~2.5 GB peak was vite + vue-tsc + zig LLVM link running CONCURRENTLY
+        # inside `zig build nalar-desktop`. Here vite runs ALONE (no zig link
+        # in flight) and via `build-only` (vite without the vue-tsc
+        # type-check; Linux already gates types), with the node heap capped.
+        # Must run BEFORE `zig build nalar-desktop`: build.zig checks
+        # fileExists(dist/index.html) at CONFIGURE time to decide whether to
+        # install zig-out/bin/html.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "src/apps/desktop/dist/index.html" ]]; then
+            echo "ok dist/ from cache, skipping fallback build"
+            exit 0
+          fi
+          echo "→ dist/ cache miss -- building webapp directly (vite only)"
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
+            fi
+          fi
+          command -v pnpm >/dev/null || { echo "✗ pnpm not on PATH" >&2; exit 1; }
+          command -v node >/dev/null || { echo "✗ node not on PATH" >&2; exit 1; }
+          pushd src/apps/desktop >/dev/null
+          pnpm install --frozen-lockfile
+          NODE_OPTIONS="--max-old-space-size=1536" pnpm run build-only
+          popd >/dev/null
+          [[ -f "src/apps/desktop/dist/index.html" ]]             || { echo "✗ fallback build produced no dist/index.html" >&2; exit 1; }
+          echo "✓ fallback dist/ built"
+
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
         timeout-minutes: 30 # fail fast: this step wedged for 1h+ on 2026-09-08 (build finished in ~1 min, then zig/build.exe sat idle with no children) and twice before (4.5h/6.5h cancelled runs); default 6h cap blocks the only Windows runner
         # Windows-only twin of the previous step. Same goal — produce
@@ -1190,11 +1231,11 @@ jobs:
         #   2. Missing but src/apps/desktop/dist/index.html exists → self-heal
         #      (configure-time race: cache restored after configure, or the
         #      install step was skipped) by copying dist/ → zig-out/bin/html.
-        #   3. Both missing → fail loud (dist cache miss: first run after a
-        #      frontend change -- re-run once the Linux/macOS cell has saved
-        #      the cache). Never ship a UI-less zip silently: with
-        #      -Dno-webapp-rebuild the embedded assets are a stub, so a
-        #      missing html/ means the desktop serves NOTHING.
+        #   3. Both missing → fail loud (cache miss AND the fallback build
+        #      above failed or was skipped -- inspect its log). Never ship a
+        #      UI-less zip silently: with -Dno-webapp-rebuild the embedded
+        #      assets are a stub, so a missing html/ means the desktop
+        #      serves NOTHING.
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -1217,7 +1258,7 @@ jobs:
             Write-Host "ok html/ self-healed from dist/"
             exit 0
           }
-          Write-Error "html/index.html missing AND dist/index.html missing (webapp-dist cache miss -- first run after a frontend change?). Re-run after the Linux/macOS cell saves the cache; refusing to ship a UI-less zip"
+          Write-Error "html/index.html missing AND dist/index.html missing (cache miss + fallback build failed -- see its log); refusing to ship a UI-less zip"
           exit 1
 
       - name: Verify desktop + service binaries (Linux)
