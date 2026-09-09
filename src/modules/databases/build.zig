@@ -266,7 +266,7 @@ pub fn build(b: *std.Build) void {
     ) orelse false;
 
     // Backend selector — PASSTHROUGH ONLY. The decision lives in the
-    // app's root build.zig (`-Ddb=sqlite|postgres`), which passes
+    // app's root build.zig (`-Ddb_used`), which passes
     // `.@"enable-postgres" = ...` via `b.dependency("databases", ...)`.
     // Default false = sqlite-only: Postgres.zig is never @imported,
     // libpq is never linked, pg tests are skipped. Standalone
@@ -274,7 +274,7 @@ pub fn build(b: *std.Build) void {
     const enable_postgres = b.option(
         bool,
         "enable-postgres",
-        "Opt in to the PostgreSQL backend (needs libpq). App sets this via -Ddb=postgres; do not set directly",
+        "Opt in to the PostgreSQL backend (needs libpq). App sets this via -Ddb_used; do not set directly",
     ) orelse false;
 
     const mod = b.addModule("databases", .{
@@ -363,7 +363,7 @@ pub fn build(b: *std.Build) void {
                 // consumer (Zig caches the resulting object file).
                 mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
             }
-            // libpq — only when the app opted in via -Ddb=postgres AND
+            // libpq — only when the app opted in via -Ddb_used AND
             // the probe found it. Sqlite-only builds (the default) skip
             // this entirely: no -lpq link, no postgresql include path,
             // even though Postgres.zig stays on disk.

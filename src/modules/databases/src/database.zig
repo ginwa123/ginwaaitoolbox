@@ -5,12 +5,12 @@
 //!   try database.open(&db, io, .{ .sqlite_path = db_path });
 //!
 //! The concrete type behind `Db` is chosen at COMPILE time by the app's
-//! root `build.zig` (`-Ddb=sqlite|postgres`, default `sqlite`). The
+//! root `build.zig` (`-Ddb_used`, default `"sqlite"`). The
 //! unchosen backend is never `@import`ed, so its `@cImport` headers and
 //! link libs are never needed even though the source stays on disk:
 //!
-//!   - `-Ddb=sqlite` (default): `Db == SqliteBackend`, no libpq.
-//!   - `-Ddb=postgres`:         `Db == PostgresBackend`, needs libpq.
+//!   - `-Ddb_used=sqlite` (default): `Db == SqliteBackend`, no libpq.
+//!   - `-Ddb_used=sqlite,postgres`:  `Db == PostgresBackend`, needs libpq.
 //!
 //! Both backends share the same method set (`exec` / `query` / `queryRow`
 //! / `changes` / `begin` / `savepoint` / `deinit`) and the same `Error`
@@ -30,7 +30,7 @@ const postgres_mod = if (build_options.enable_postgres)
 else
     struct {};
 
-/// True when the app opted in via `-Ddb=postgres`.
+/// True when the app listed postgres in `-Ddb_used`.
 pub const backend_is_postgres: bool = build_options.enable_postgres;
 
 /// The unified backend type. Import this, not `SqliteBackend` /

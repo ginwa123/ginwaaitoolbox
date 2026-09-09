@@ -960,16 +960,31 @@ pub fn build(b: *std.Build) void {
     //
     // === Database backend selector (APP-CONTROLLED) ===
     // The app decides here; the `databases` package only declares the
-    // passthrough `enable-postgres` bool. Default `sqlite` = sqlite-only:
+    // passthrough `enable-postgres` bool. `db_used` is the list of
+    // backends this project compiles in — comma-separated because the
+    // build runner only passes strings on the CLI (no array-of-string
+    // option kind exists). Default `"sqlite"` = sqlite-only:
     // Postgres.zig stays on disk but is never @imported, libpq is never
-    // linked, pg tests are skipped. Pass `-Ddb=postgres` to opt in to
-    // sqlite+postgres (needs libpq-fe.h + libpq.so).
-    const db_backend = b.option(
+    // linked, pg tests are skipped. Pass `-Ddb_used=sqlite,postgres` to
+    // opt in to postgres as well (needs libpq-fe.h + libpq.so).
+    // This project only uses sqlite today, so postgres is ignored
+    // unless explicitly listed here.
+    const db_used_str = b.option(
         []const u8,
-        "db",
-        "Database backend: 'sqlite' (default, no libpq) or 'postgres' (sqlite+postgres, needs libpq)",
+        "db_used",
+        "Comma-separated database backends to compile: 'sqlite' (default, no libpq), add 'postgres' to also compile postgres (needs libpq)",
     ) orelse "sqlite";
-    const enable_postgres = std.mem.eql(u8, db_backend, "postgres");
+    var enable_postgres = false;
+    var db_used_it = std.mem.splitScalar(u8, db_used_str, ',');
+    while (db_used_it.next()) |entry_raw| {
+        const entry = std.mem.trim(u8, entry_raw, " \t");
+        if (entry.len == 0 or std.mem.eql(u8, entry, "sqlite")) continue;
+        if (std.mem.eql(u8, entry, "postgres")) {
+            enable_postgres = true;
+        } else {
+            std.debug.panic("unknown database backend in -Ddb_used='{s}': '{s}' (known: sqlite, postgres)", .{ db_used_str, entry });
+        }
+    }
     const databases_dep = b.dependency("databases", .{
         .target = target,
         .optimize = optimize,

@@ -612,7 +612,7 @@ pub const prompt = @import("modules/agent/prompts.zig");
 pub const sqlite = @import("databases").sqlite;
 // Unified interface — prefer this over `sqlite` in new code:
 //   const database = nalarcore.database; var db: database.Db = .{};
-// App-controlled via root `-Ddb=sqlite|postgres` (default sqlite).
+// App-controlled via root `-Ddb_used` (default sqlite).
 // `Db` IS `SqliteBackend` when sqlite-only, so existing
 // `*sqlite.SqliteBackend` signatures keep compiling during migration.
 pub const database = @import("databases").database;
