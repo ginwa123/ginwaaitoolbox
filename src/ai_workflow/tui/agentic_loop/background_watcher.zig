@@ -2,9 +2,11 @@
 //!
 //! A `command background=true` completion is otherwise only noticed by the
 //! per-minute `cleanup_stale_background_process` cron (notify-then-delete +
-//! wake). This module spawns a detached watcher thread at exec time that
-//! polls `isProcessRunning(pid)` every 2s and inserts the queue message the
-//! moment the command exits — no cron wait.
+//! wake). This module schedules a fire-and-forget Io-task watcher at exec
+//! time on `di.group_bg_watchers` that polls `isProcessRunning(pid)` every
+//! 2s and inserts the queue message the moment the command exits — no cron
+//! wait. The group is process-lifetime and never awaited or cancelled
+//! (same as `group_emit_session_create`).
 //!
 //! True event-driven wait is impossible: the bg PID is a grandchild
 //! (`nohup cmd &` inside a shell that exits — not our child, no waitpid).
@@ -12,13 +14,13 @@
 //! auth surface). Polling is the only option; the cron remains as fallback
 //! (cap expiry, spawn failure, crash between save and spawn).
 //!
-//! Thread-safety: the cron thread already uses `di.db` + `emit_run_agent`
-//! concurrently with request handlers, so watcher-thread DB/emit use is the
-//! same class. The thread never panics — every failure is caught and logged.
+//! Concurrency: the cron already uses `di.db` + `emit_run_agent`
+//! concurrently with request handlers, so watcher-task DB/emit use is the
+//! same class. The task never panics — every failure is caught and logged.
 //!
 //! Ownership (per-request arena rule): the spawn call dupes
 //! session_id/command/log_path/pid_str with `di.allocator` (process
-//! lifetime — NEVER the request ctx allocator). The thread frees them on
+//! lifetime — NEVER the request ctx allocator). The Io task frees them on
 //! exit. Notify buffers live in a per-watch arena.
 
 const std = @import("std");
@@ -40,7 +42,7 @@ const testing = std.testing;
 /// Poll interval between `isProcessRunning` checks (production).
 pub const watcher_poll_interval_ns: u64 = 2 * std.time.ns_per_s;
 /// Cap on poll iterations (~24h at the default 2s interval). On expiry the
-/// thread exits silently — the cron is the fallback.
+/// task exits silently — the cron is the fallback.
 pub const watcher_max_iters: usize = 43200;
 
 /// Testable core args — explicit handles (no singleton) so unit tests stay
@@ -108,9 +110,9 @@ pub fn watchAndNotify(args: WatchCoreArgs) bool {
     return true;
 }
 
-/// Thread-owned args — every slice is heap-duped with `di.allocator` at
-/// spawn time and freed by the thread on exit.
-const WatchThreadArgs = struct {
+/// Io-task-owned args — every slice is heap-duped with `di.allocator` at
+/// schedule time and freed by the task on exit.
+const WatchArgs = struct {
     di: *nalarcore.ContextIPCTui,
     session_id: []u8,
     pid: u32,
@@ -121,8 +123,10 @@ const WatchThreadArgs = struct {
     max_iters: usize,
 };
 
-/// Thread entry — owns the dupes, frees them on exit. Never panics.
-fn watchFn(args: WatchThreadArgs) void {
+/// Io-task entry — owns the dupes, frees them on exit. Never panics.
+/// Top-level `fn(args: WatchArgs) void` so `group.concurrent` can schedule
+/// it (single-struct tuple is passed through as the one param).
+fn watchFn(args: WatchArgs) void {
     const di = args.di;
     const gpa = di.allocator;
     defer gpa.free(args.session_id);
@@ -154,9 +158,10 @@ fn watchFn(args: WatchThreadArgs) void {
     cleanup.wakeSessionForCompletion(di, a, args.session_id);
 }
 
-/// Spawn the detached watcher thread. Returns void — every failure
-/// (dupe OOM, spawn failure) is silent (cron fallback covers production;
-/// unit tests cover the watcher core directly via `watchAndNotify`).
+/// Schedule the fire-and-forget watcher task. Returns void — every failure
+/// (dupe OOM, concurrent() error such as error.ConcurrencyUnavailable on a
+/// bare blocking Io) is silent (cron fallback covers production; unit tests
+/// cover the watcher core directly via `watchAndNotify`).
 /// Must be called AFTER `background_process.save` succeeds, with the
 /// borrowed slices still alive (they are duped synchronously here).
 pub fn spawnCompletionWatcher(
@@ -169,7 +174,7 @@ pub fn spawnCompletionWatcher(
     spawnCompletionWatcherWithPoll(di, session_id, pid, command, log_path, watcher_poll_interval_ns, watcher_max_iters);
 }
 
-/// Spawn with an explicit poll interval / cap (test hook; production passes
+/// Schedule with an explicit poll interval / cap (test hook; production passes
 /// the defaults via `spawnCompletionWatcher`).
 pub fn spawnCompletionWatcherWithPoll(
     di: *nalarcore.ContextIPCTui,
@@ -190,7 +195,7 @@ pub fn spawnCompletionWatcherWithPoll(
     const pid_str = std.fmt.allocPrint(gpa, "{d}", .{pid}) catch return;
     errdefer gpa.free(pid_str);
 
-    const args = WatchThreadArgs{
+    const args = WatchArgs{
         .di = di,
         .session_id = sid,
         .pid = pid,
@@ -200,18 +205,19 @@ pub fn spawnCompletionWatcherWithPoll(
         .poll_interval_ns = poll_interval_ns,
         .max_iters = max_iters,
     };
-    // Precedent: notifications.zig `std.Thread.spawn(.{}, reapChild, ...)`
-    // + `thread.detach()`. On spawn failure free the dupes here (the
-    // thread never started, so it cannot free them); on success the
-    // thread owns them.
-    const thread = std.Thread.spawn(.{}, watchFn, .{args}) catch {
+    // Fire-and-forget on the process-lifetime group (same as
+    // `group_emit_session_create` — never awaited or cancelled). On
+    // concurrent() error (notably error.ConcurrencyUnavailable on a bare
+    // blocking Io, same as tools_exec_spawn_sub_agent.zig) free the dupes
+    // here (the task never started, so it cannot free them); on success
+    // the task owns them.
+    di.group_bg_watchers.concurrent(di.io, watchFn, .{args}) catch {
         gpa.free(sid);
         gpa.free(cmd);
         gpa.free(lp);
         gpa.free(pid_str);
         return;
     };
-    thread.detach();
 }
 
 // ─── Tests (inline, project convention) ──────────────────────────────────────
@@ -296,4 +302,43 @@ test "watchAndNotify notifies a dead PID immediately then deletes the row" {
     var r = try ctx.db.query(testing.allocator, "SELECT 1 FROM session_background_process WHERE session_id = ?", &.{"s_watch"});
     defer r.deinit();
     try testing.expect((try r.next()) == null);
+}
+
+test "background_watcher schedules via Io group, never std.Thread.spawn (static-contract grep)" {
+    // The watcher must stay on the repo's fire-and-forget async pattern
+    // (`di.group_bg_watchers.concurrent`, same as `group_emit_session_create`
+    // — never awaited or cancelled). If a future refactor reintroduces
+    // `std.Thread.spawn` here, this test fails closed with an actionable
+    // error. Precedent: command.zig cmd-fallback static-contract test.
+    const src = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/ai_workflow/tui/agentic_loop/background_watcher.zig",
+        testing.allocator,
+        std.Io.Limit.unlimited,
+    );
+    defer testing.allocator.free(src);
+
+    // Window the scan to the implementation above this test: this test's
+    // own source contains the forbidden literals (in the indexOf calls +
+    // error strings below), so an unwindowed scan would self-match and
+    // fail forever. Cut at this test's opening line.
+    const marker = "test \"background_watcher schedules via Io group";
+    const cut = std.mem.indexOf(u8, src, marker) orelse src.len;
+    const impl = src[0..cut];
+
+    if (std.mem.indexOf(u8, impl, "std.Thread.spawn") != null) {
+        std.debug.print(
+            "\n!! background_watcher.zig reintroduced std.Thread.spawn — use di.group_bg_watchers.concurrent instead !!\n",
+            .{},
+        );
+        return error.RawThreadReintroduced;
+    }
+    if (std.mem.indexOf(u8, impl, "WatchThreadArgs") != null) {
+        std.debug.print(
+            "\n!! background_watcher.zig still has WatchThreadArgs — renamed to WatchArgs !!\n",
+            .{},
+        );
+        return error.StaleThreadArgsName;
+    }
+    try testing.expect(std.mem.indexOf(u8, impl, "group_bg_watchers.concurrent") != null);
 }
