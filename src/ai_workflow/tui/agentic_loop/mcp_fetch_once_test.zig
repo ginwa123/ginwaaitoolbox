@@ -45,3 +45,25 @@ test "static contract: fetch failure stays retryable (mark_init=false)" {
     // NEXT run retries instead of caching the failure forever.
     try testing.expect(std.mem.indexOf(u8, workflow_src, "storeMcpToolsCache(null, false)") != null);
 }
+
+test "static contract: in-loop refresh re-checks the cache after while(true)" {
+    // A mid-run MCP toggle (PUT /api/config/nalar → clearMcpToolsCache)
+    // must apply on the next loop iteration, not next run. The loop body
+    // therefore re-checks `isMcpToolsInit()` and refetches via the single
+    // `fetchMcpToolsFresh` helper (NOT a second `buildMCPToolsRun` call
+    // site — the exactly-once test above still holds).
+    const loop_start = std.mem.indexOf(u8, workflow_src, "while (true) {") orelse return error.LoopNotFound;
+    const tail = workflow_src[loop_start..];
+    try testing.expect(std.mem.indexOf(u8, tail, "Live MCP tools refresh") != null);
+    try testing.expect(std.mem.indexOf(u8, tail, "di.di.isMcpToolsInit()") != null);
+    try testing.expect(std.mem.indexOf(u8, tail, "fetchMcpToolsFresh(parent_allocator, db, copy_session_id, config, logger)") != null);
+}
+
+test "static contract: in-loop refetch uses the live config, not initial_config" {
+    // The toggle swaps the LlmConfig pointer via setLlmConfig; refetching
+    // from the stale `initial_config` snapshot would miss it. The in-loop
+    // call must pass the per-iteration live `config`.
+    const loop_start = std.mem.indexOf(u8, workflow_src, "while (true) {") orelse return error.LoopNotFound;
+    const tail = workflow_src[loop_start..];
+    try testing.expect(std.mem.indexOf(u8, tail, "fetchMcpToolsFresh(parent_allocator, db, copy_session_id, initial_config, logger)") == null);
+}
