@@ -127,12 +127,21 @@ jobs:
         # the key Linux saved -- restore misses, dist/ absent, no html/.
         # Force-rewrite every tracked file per current attributes (LF).
         # LF is strictly safer on Windows too: .sh NEEDS LF, .ps1/.zig accept it.
+        # pwsh (not bash): this step failed to spawn with `shell: bash`
+        # ("bash: command not found") on the self-hosted Windows runner,
+        # while pwsh steps run fine there. git.exe is on PATH via
+        # C:\Program Files\Git\cmd -- do NOT switch back to bash.
         if: runner.os == 'Windows'
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
+          $ErrorActionPreference = 'Stop'
+          if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+            Write-Error "git not on PATH -- cannot normalize worktree"
+            exit 1
+          }
           git checkout-index -f -a
-          echo "✓ worktree normalized to LF per .gitattributes"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Write-Host "ok worktree normalized to LF per .gitattributes"
 
       - name: Install Node.js 24
         # pnpm migration (2026-08-28): the UIHarness now spawns `pnpm run dev`
