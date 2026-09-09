@@ -582,7 +582,8 @@ pub fn handle(ctx: ?*anyopaque, now_unix: i64) void {
         var scwd: []const u8 = "";
         var sprofile: []const u8 = "";
         var sretry: []const u8 = "0";
-        if (di.db.query(a, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{sid})) |*q| {
+        if (di.db.query(a, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{sid})) |rows| {
+            var q = rows;
             defer q.deinit();
             if (q.next() catch null) |row| {
                 defer row.deinit(a);
