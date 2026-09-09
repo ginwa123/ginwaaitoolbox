@@ -1061,9 +1061,9 @@ jobs:
         # and build.zig installs it to zig-out/bin/html for the zip.
         # Keyed ONLY by webapp sources (no runner.os) so all three cells
         # share it. First run after a frontend change is a miss on every
-        # cell: Linux/macOS rebuild + save at job end, Windows ships
-        # without html/ that run (bundle step warns, desktop falls back to
-        # embedded extraction) and picks it up next run.
+        # cell: Linux/macOS rebuild + save at job end, Windows FAILS at the
+        # bundle gate below (no silent UI-less zip) -- re-run once the cache
+        # is saved and Windows ships html/ alongside the exes.
         # Parallel Linux+macOS saves race last-write-wins; both are valid
         # vite emits from identical sources (byte-drift in sourcemaps is
         # harmless here -- the desktop serves whatever is installed).
@@ -1676,12 +1676,19 @@ jobs:
           # receives dist/ via the shared webapp-dist cache -- on a cache
           # miss (first run after a frontend change) there is legitimately
           # no dist/ and the zip ships old-style; the next run picks it up.
+          # HARD GATE: Windows never ships without html/. build.zig installs
+          # src/apps/desktop/dist to zig-out/bin/html (alongside the exes) when
+          # dist/index.html exists at configure time (shared webapp-dist cache).
+          # Missing here = cache miss with no recovery on this cell (no vite
+          # fallback by design) -- fail instead of shipping a UI-less zip.
+          # Recovery: re-run after the Linux/macOS cell saves the cache.
           $webappSrc = "zig-out/bin/html"
           if (Test-Path (Join-Path $webappSrc "index.html")) {
             Copy-Item -Recurse -Force $webappSrc (Join-Path $tmp "html")
-            Write-Host "ok html/ bundled"
+            Write-Host "ok html/ bundled alongside exe"
           } else {
-            Write-Warning "html/index.html missing at $webappSrc (dist cache miss?) -- zip ships WITHOUT html/, desktop falls back to embedded extraction"
+            Write-Error "html/index.html missing at $webappSrc (webapp-dist cache miss?) -- Windows cannot ship without html/; re-run after the Linux/macOS cell saves the cache"
+            exit 1
           }
           # WebView2Loader.dll is NOT a vcpkg DLL -- it comes from the NuGet
           # staging dir via build.zig's addInstallBinFile. If the build took
