@@ -68,6 +68,18 @@ pub fn handle_mcp_tool_run(
         },
     };
 
+    // MCP server toggle: reject calls to explicitly-disabled servers AFTER
+    // config lookup but BEFORE any spawn/connect. Only `.bool false`
+    // rejects — a missing or non-bool `enabled` means enabled (backward
+    // compat). The caller wraps this exactly like the unknown-server error
+    // ("MCP tool <name> failed: MCPServerDisabled").
+    if (server_obj.get("enabled")) |enabled_val| {
+        if (enabled_val == .bool and !enabled_val.bool) {
+            logger.warnFmt("[MCP] Server '{s}' is disabled", .{server_name});
+            return error.MCPServerDisabled;
+        }
+    }
+
     // Transport dispatch: stdio (command) or HTTP (url). stdio takes
     // precedence when both are present (the parser already rejects that
     // combo, but the runtime is defensive).
@@ -239,7 +251,6 @@ fn callViaStdio(
             logger.errFmt("stdio MCP spawn failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
             last_err = err;
             if (attempt + 1 < 3) {
-                
                 continue;
             }
             return error.FailedToCallMCPServer;
@@ -255,7 +266,6 @@ fn callViaStdio(
             if (err == error.SendTimeout or err == error.BrokenPipe) reg.markStale(server_name);
             const is_retryable = err == error.BrokenPipe or err == error.SendTimeout;
             if (is_retryable and attempt + 1 < 3) {
-                
                 continue;
             }
             return error.FailedToCallMCPServer;
@@ -266,7 +276,6 @@ fn callViaStdio(
             if (err == error.RecvTimeout) reg.markStale(server_name);
             const is_retryable = err == error.RecvTimeout or err == error.UnexpectedEof or err == error.BrokenPipe;
             if (is_retryable and attempt + 1 < 3) {
-                
                 continue;
             }
             return error.MCPServerReturnedError;
@@ -276,7 +285,12 @@ fn callViaStdio(
         break;
     }
     if (!resp_owned) return last_err;
-    errdefer allocator.free(resp);
+    // NOTE: no errdefer free of `resp` here — it is owned by the registry
+    // arena (client.allocator), never transferred to the caller (every
+    // return below dupes into `allocator`), so the arena reclaims it.
+    // Freeing via `allocator` would be an invalid free under
+    // DebugAllocator (same bug class as fetchToolsFromServerStdio's
+    // `defer allocator.free(resp)`).
 
     // Same JSON extraction as the HTTP branch: pull `result.content[0].text`.
     var parse_arena = std.heap.ArenaAllocator.init(allocator);
@@ -338,7 +352,7 @@ pub fn buildToolCallRequestBody(
     return std.fmt.allocPrint(
         allocator,
         \\{{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{{"name":"{s}","arguments":{s}}}}}
-        ,
+    ,
         .{ tool_name, arguments_json },
     );
 }
@@ -366,4 +380,53 @@ test "buildToolCallRequestBody: empty arguments is a valid empty object" {
     const body = try buildToolCallRequestBody(testing.allocator, "ping", "{}");
     defer testing.allocator.free(body);
     try testing.expect(std.mem.indexOf(u8, body, "\"arguments\":{}") != null);
+}
+
+test "handle_mcp_tool_run: disabled server returns MCPServerDisabled (no spawn)" {
+    // MCP server toggle: an explicit `"enabled": false` entry must be
+    // rejected AFTER config lookup but BEFORE any spawn/connect — the
+    // same shape as the existing unknown-server error path (a Zig error
+    // the caller wraps as "MCP tool <name> failed: <err>").
+    //
+    // The bogus command proves no spawn is attempted: a spawn attempt
+    // would fail with FailedToCallMCPServer, not MCPServerDisabled.
+    const json_text =
+        \\{"off": {"command": "/no/such/binary/should/exist/xyzzy", "args": [], "enabled": false}}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_text, .{});
+    defer parsed.deinit();
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var logger = logger_mod.Logger.init(testing.allocator, io, .{
+        .min_level = .err,
+        .include_location = false,
+        .include_request_id = false,
+        .include_timestamp = false,
+    });
+    defer logger.deinit();
+    var cfg = config_mod.LlmConfig{
+        .allocator = testing.allocator,
+        .api_key = "",
+        .model = "",
+        .base_url = "",
+        .model_compaction_size_kb = 100,
+        .mcpServers_parsed = parsed,
+        .mcp_servers = config_mod.LlmConfig.McpServersMap.init(testing.allocator),
+        .profiles_models = config_mod.LlmConfig.ProfilesMap.init(testing.allocator),
+        .sub_agents = &.{},
+        .url_style = "openai",
+    };
+    // NOTE: no cfg.deinit — the string fields borrow static literals and
+    // both maps are empty (no allocations to release); parsed.deinit()
+    // above frees the JSON tree.
+    const tool_call = agent.ToolCall{
+        .id = "t1",
+        .function = .{ .name = "mcp_off_ping", .arguments = "{}" },
+    };
+    // No-op when the gate above holds (no spawn attempted); cleans up the
+    // global registry if a regression ever lets a spawn through.
+    defer mcp_stdio.StdioRegistry.deinitGlobal();
+    const err = handle_mcp_tool_run(testing.allocator, &logger, tool_call, &cfg);
+    try testing.expectError(error.MCPServerDisabled, err);
 }
