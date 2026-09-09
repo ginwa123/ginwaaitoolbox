@@ -165,6 +165,19 @@ pub const SystemFolder = struct {
         };
         defer std.Io.Dir.close(dir, io);
 
+        // First pass: collect non-hidden dir/file children. Names are
+        // duped (iterator buffers are reused on next()) so the git batch
+        // below can hold them all at once. Dotfiles + non-dir/file kinds
+        // (incl. symlinks — same as before) are dropped here, before git.
+        const RawChild = struct {
+            name: []u8,
+            is_dir: bool,
+        };
+        var children = std.ArrayList(RawChild).empty;
+        defer {
+            for (children.items) |c| allocator.free(c.name);
+            children.deinit(allocator);
+        }
         var iter = dir.iterate();
         while (iter.next(io) catch null) |entry| {
             const name = entry.name;
@@ -174,52 +187,52 @@ pub const SystemFolder = struct {
             if (name.len > 0 and name[0] == '.') continue;
 
             const is_dir = entry.kind == .directory;
-            const is_link = entry.kind == .sym_link;
             const is_file = entry.kind == .file;
 
-            if (is_dir or is_file) {
-                const entry_name = allocator.dupe(u8, name) catch continue;
-                const full_path = std.fs.path.join(allocator, &.{ dir_path, name }) catch {
-                    allocator.free(entry_name);
-                    continue;
-                };
+            if (!is_dir and !is_file) continue;
+            const dup = allocator.dupe(u8, name) catch continue;
+            children.append(allocator, .{ .name = dup, .is_dir = is_dir }) catch {
+                allocator.free(dup);
+                continue;
+            };
+        }
 
-                // Check if path is gitignored (use -C to set working
-                // directory). Spawn failures (e.g. `git` not on PATH
-                // on Windows / Wine) are FALL-THROUGH-OK: the entry
-                // is kept because we can't prove it's gitignored. The
-                // old `catch continue` silently dropped every entry
-                // when git was unavailable — which made listDirectory
-                // return `[]` for any Windows / sandboxed environment.
-                const git_result = std.process.run(allocator, io, .{
-                    .argv = &.{ "git", "-C", dir_path, "check-ignore", name },
-                }) catch blk: {
-                    // Spawn failed — treat as "not gitignored" so
-                    // callers see the entry rather than a confusing
-                    // empty list. The fake Term.exited=128 mirrors
-                    // git's "not a git repo" exit code.
-                    break :blk std.process.RunResult{
-                        .term = .{ .exited = 128 },
-                        .stdout = &[_]u8{},
-                        .stderr = &[_]u8{},
-                    };
-                };
-                defer allocator.free(git_result.stdout);
-                defer allocator.free(git_result.stderr);
-                if (git_result.term.exited == 0) {
-                    // Path is gitignored, skip it
-                    allocator.free(entry_name);
-                    allocator.free(full_path);
-                    continue;
-                }
+        // ONE `git check-ignore` for the whole directory (was: one spawn
+        // per entry — ~30ms each on macOS). Null = git unavailable or not
+        // a work tree -> treat all as not ignored. Spawn failures (e.g.
+        // `git` not on PATH on Windows / Wine) are FALL-THROUGH-OK: the
+        // entry is kept because we can't prove it's gitignored. The old
+        // `catch continue` silently dropped every entry when git was
+        // unavailable — which made listDirectory return `[]` for any
+        // Windows / sandboxed environment.
+        var batch_names = std.ArrayList([]const u8).empty;
+        defer batch_names.deinit(allocator);
+        for (children.items) |c| batch_names.append(allocator, c.name) catch break;
+        const ignored = batchIgnoredNames(allocator, io, dir_path, batch_names.items);
+        defer freeIgnored(allocator, ignored);
 
-                entries.append(allocator, FolderEntry{
-                    .name = entry_name,
-                    .path = full_path,
-                    .is_directory = is_dir,
-                    .is_symlink = is_link,
-                }) catch continue;
-            }
+        // Second pass: drop gitignored rows, keep the rest.
+        for (children.items) |c| {
+            if (isIgnored(ignored, c.name)) continue;
+            const entry_name = allocator.dupe(u8, c.name) catch continue;
+            const full_path = std.fs.path.join(allocator, &.{ dir_path, c.name }) catch {
+                allocator.free(entry_name);
+                continue;
+            };
+
+            entries.append(allocator, FolderEntry{
+                .name = entry_name,
+                .path = full_path,
+                .is_directory = c.is_dir,
+                // Symlinks never reach here (kind filter above drops
+                // them) — same as the old per-entry code where
+                // `is_symlink` was always false for kept rows.
+                .is_symlink = false,
+            }) catch {
+                allocator.free(entry_name);
+                allocator.free(full_path);
+                continue;
+            };
         }
 
         // Sort: directories first, then files, alphabetically
@@ -254,6 +267,90 @@ pub const SystemFolder = struct {
             if (std.mem.eql(u8, name, skip)) return true;
         }
         return false;
+    }
+
+    /// Batch `git check-ignore` for every entry name in ONE directory.
+    ///
+    /// Why batched: the old code spawned one `git -C <dir> check-ignore
+    /// <name>` per ENTRY. On macOS each spawn costs ~30ms (fork+exec +
+    /// security policy), so a 300-file directory cost ~9-12s and blew the
+    /// 5s functional perf budget (plus the 15s socket timeout on empty-q).
+    /// One spawn per DIRECTORY (chunked at 500 names) drops the search
+    /// fixture from ~312 spawns to ~5.
+    ///
+    /// Returns an owned slice of duped ignored basenames (caller frees via
+    /// `freeIgnored`), or null when there is nothing ignored OR git is
+    /// unavailable / the dir is not in a work tree / any error — the
+    /// caller treats null as "none ignored" (same fall-through as the old
+    /// per-entry spawn-failure path, so entries are kept, never dropped).
+    ///
+    /// Parsing note: stdout is split on `\n` (trailing `\r` trimmed for
+    /// Windows git). A filename containing a literal newline would not
+    /// round-trip — it then falls through to "not ignored" (entry kept),
+    /// which is the safe direction.
+    fn batchIgnoredNames(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        dir_path: []const u8,
+        names: []const []const u8,
+    ) ?[][]const u8 {
+        if (names.len == 0) return null;
+        var ignored = std.ArrayList([]const u8).empty;
+        var offset: usize = 0;
+        while (offset < names.len) {
+            const end = @min(offset + 500, names.len);
+            const chunk = names[offset..end];
+            offset = end;
+            var argv = std.ArrayList([]const u8).empty;
+            defer argv.deinit(allocator);
+            // `--` ends option parsing so names starting with `-` are
+            // treated as paths (the old per-entry form had no `--` and
+            // mis-checked such names as flags — this is strictly more
+            // correct, same fall-through direction on error).
+            argv.appendSlice(allocator, &.{ "git", "-C", dir_path, "check-ignore", "--" }) catch break;
+            argv.appendSlice(allocator, chunk) catch break;
+            const result = std.process.run(allocator, io, .{ .argv = argv.items }) catch continue;
+            defer allocator.free(result.stdout);
+            defer allocator.free(result.stderr);
+            // exit 0 = >=1 ignored (parse stdout); 1 = none ignored;
+            // 128/fatal = not a repo -> none ignored (fall-through).
+            if (result.term.exited != 0) continue;
+            var it = std.mem.splitScalar(u8, result.stdout, '\n');
+            while (it.next()) |line| {
+                const trimmed = std.mem.trim(u8, line, "\r");
+                if (trimmed.len == 0) continue;
+                // git echoes the input basename for each ignored path.
+                const dup = allocator.dupe(u8, trimmed) catch continue;
+                ignored.append(allocator, dup) catch {
+                    allocator.free(dup);
+                    continue;
+                };
+            }
+        }
+        if (ignored.items.len == 0) {
+            ignored.deinit(allocator);
+            return null;
+        }
+        const out = ignored.toOwnedSlice(allocator) catch {
+            for (ignored.items) |s| allocator.free(s);
+            ignored.deinit(allocator);
+            return null;
+        };
+        return out;
+    }
+
+    fn isIgnored(ignored: ?[][]const u8, name: []const u8) bool {
+        const list = ignored orelse return false;
+        for (list) |ig| {
+            if (std.mem.eql(u8, ig, name)) return true;
+        }
+        return false;
+    }
+
+    fn freeIgnored(allocator: std.mem.Allocator, ignored: ?[][]const u8) void {
+        const list = ignored orelse return;
+        for (list) |s| allocator.free(s);
+        allocator.free(list);
     }
 
     /// Case-insensitive ASCII substring check (mirrors the
@@ -349,7 +446,7 @@ pub const SystemFolder = struct {
     ///   symlinks are neither followed nor returned — same as
     ///   listDirectory.
     /// - `git check-ignore` semantics are identical to listDirectory
-    ///   (per-entry `-C <parent> check-ignore <name>`, spawn-failure
+    ///   (batched `-C <parent> check-ignore -- <names...>`, spawn-failure
     ///   falls through to "not ignored").
     /// - Ranking: substring hits before subsequence hits, then
     ///   dirs-first, then lessThanIgnoreCase. Results truncated to limit.
@@ -390,6 +487,21 @@ pub const SystemFolder = struct {
             var dir = std.Io.Dir.openDirAbsolute(io, frame.path, .{ .iterate = true }) catch continue;
             defer std.Io.Dir.close(dir, io);
 
+            // First pass: collect candidates passing skip-list / kind /
+            // depth (duped names — iterator buffers are reused on next()).
+            // Depth + kind filter BEFORE git so the batch only sees rows
+            // we would actually visit (same order as the old per-entry
+            // code: skip -> kind -> depth -> git).
+            const child_depth = frame.depth + 1;
+            const RawChild = struct {
+                name: []u8,
+                is_dir: bool,
+            };
+            var children = std.ArrayList(RawChild).empty;
+            defer {
+                for (children.items) |c| allocator.free(c.name);
+                children.deinit(allocator);
+            }
             var iter = dir.iterate();
             while (iter.next(io) catch null) |entry| {
                 const name = entry.name;
@@ -398,41 +510,48 @@ pub const SystemFolder = struct {
                 if (isSearchSkipped(name)) continue;
 
                 const is_dir = entry.kind == .directory;
-                const is_link = entry.kind == .sym_link;
                 const is_file = entry.kind == .file;
                 if (!is_dir and !is_file) continue;
 
-                const child_depth = frame.depth + 1;
                 if (child_depth > depth_cap) continue;
 
-                // git check-ignore — identical semantics to listDirectory
-                // (`-C` = immediate parent, spawn failure = not ignored).
-                const git_result = std.process.run(allocator, io, .{
-                    .argv = &.{ "git", "-C", frame.path, "check-ignore", name },
-                }) catch blk: {
-                    break :blk std.process.RunResult{
-                        .term = .{ .exited = 128 },
-                        .stdout = &[_]u8{},
-                        .stderr = &[_]u8{},
-                    };
+                const dup = allocator.dupe(u8, name) catch continue;
+                children.append(allocator, .{ .name = dup, .is_dir = is_dir }) catch {
+                    allocator.free(dup);
+                    continue;
                 };
-                defer allocator.free(git_result.stdout);
-                defer allocator.free(git_result.stderr);
-                if (git_result.term.exited == 0) continue;
+            }
+
+            // ONE `git check-ignore` for the whole directory (was: one
+            // spawn per entry — ~30ms each on macOS, ~312 spawns for the
+            // 300-file fixture). Null = git unavailable / not a work tree
+            // -> none ignored (same fall-through as the old per-entry
+            // spawn-failure path).
+            var batch_names = std.ArrayList([]const u8).empty;
+            defer batch_names.deinit(allocator);
+            for (children.items) |c| batch_names.append(allocator, c.name) catch break;
+            const ignored = batchIgnoredNames(allocator, io, frame.path, batch_names.items);
+            defer freeIgnored(allocator, ignored);
+
+            // Second pass: descend + match (identical semantics to the old
+            // loop — non-matching dirs are still descended into since
+            // their children may match).
+            for (children.items) |c| {
+                if (isIgnored(ignored, c.name)) continue;
 
                 // Non-matching dirs are still descended into (their
                 // children may match); non-matching files are dropped.
-                if (is_dir and child_depth < depth_cap) {
-                    const dir_path = std.fs.path.join(allocator, &.{ frame.path, name }) catch continue;
+                if (c.is_dir and child_depth < depth_cap) {
+                    const dir_path = std.fs.path.join(allocator, &.{ frame.path, c.name }) catch continue;
                     stack.append(allocator, .{ .path = dir_path, .depth = child_depth }) catch {
                         allocator.free(dir_path);
                         continue;
                     };
                 }
 
-                const rank = matchRank(name, query) orelse continue;
-                const entry_name = allocator.dupe(u8, name) catch continue;
-                const full_path = std.fs.path.join(allocator, &.{ frame.path, name }) catch {
+                const rank = matchRank(c.name, query) orelse continue;
+                const entry_name = allocator.dupe(u8, c.name) catch continue;
+                const full_path = std.fs.path.join(allocator, &.{ frame.path, c.name }) catch {
                     allocator.free(entry_name);
                     continue;
                 };
@@ -440,8 +559,11 @@ pub const SystemFolder = struct {
                     .entry = FolderEntry{
                         .name = entry_name,
                         .path = full_path,
-                        .is_directory = is_dir,
-                        .is_symlink = is_link,
+                        .is_directory = c.is_dir,
+                        // Symlinks never reach here (kind filter above
+                        // drops them) — same as the old per-entry code
+                        // where `is_symlink` was always false for hits.
+                        .is_symlink = false,
                     },
                     .rank = rank,
                 }) catch {
