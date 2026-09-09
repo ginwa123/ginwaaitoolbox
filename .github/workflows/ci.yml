@@ -117,32 +117,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Normalize worktree line endings (Windows)
-        # Self-hosted Windows workspaces persist between runs. Files checked
-        # out BEFORE the repo's .gitattributes (PR #62, LF enforcement) may
-        # still carry stale CRLF bytes: plain `git checkout` never rewrites
-        # files whose content git considers unchanged, and `git clean` only
-        # removes untracked files. CRLF bytes change hashFiles() digests, so
-        # the cross-OS webapp-dist cache key computed here would never match
-        # the key Linux saved -- restore misses, dist/ absent, no html/.
-        # Force-rewrite every tracked file per current attributes (LF).
-        # LF is strictly safer on Windows too: .sh NEEDS LF, .ps1/.zig accept it.
-        # pwsh (not bash): this step failed to spawn with `shell: bash`
-        # ("bash: command not found") on the self-hosted Windows runner,
-        # while pwsh steps run fine there. git.exe is on PATH via
-        # C:\Program Files\Git\cmd -- do NOT switch back to bash.
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            Write-Error "git not on PATH -- cannot normalize worktree"
-            exit 1
-          }
-          git checkout-index -f -a
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          Write-Host "ok worktree normalized to LF per .gitattributes"
-
       - name: Install Node.js 24
         # pnpm migration (2026-08-28): the UIHarness now spawns `pnpm run dev`
         # to start the Vite dev server during Playwright tests. The harness
@@ -291,6 +265,29 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value $gitBin
           & $gitBash --version | Write-Host
           $global:LASTEXITCODE = 0
+
+      - name: Normalize worktree line endings (Windows)
+        # Self-hosted Windows workspaces persist between runs. Files checked
+        # out BEFORE the repo's .gitattributes (PR #62, LF enforcement) may
+        # still carry stale CRLF bytes: plain `git checkout` never rewrites
+        # files whose content git considers unchanged, and `git clean` only
+        # removes untracked files. CRLF bytes change hashFiles() digests, so
+        # the cross-OS webapp-dist cache key computed here would never match
+        # the key Linux saved -- restore misses, dist/ absent, no html/.
+        # Force-rewrite every tracked file per current attributes (LF).
+        # LF is strictly safer on Windows too: .sh NEEDS LF, .ps1/.zig accept it.
+        # ORDERING (do not move): this step must run AFTER the
+        # "Install Git for Windows" step above (`shell: bash` resolves to
+        # Git\bin\bash.exe, which does not exist on a fresh runner -- the
+        # step fails with `bash: command not found` anywhere earlier) and
+        # BEFORE the "Cache webapp dist" step below (hashFiles() is computed
+        # at restore time, so normalization must already be done).
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout-index -f -a
+          echo "ok worktree normalized to LF per .gitattributes"
 
       - name: Install system dependencies (Arch)
         if: runner.os == 'Linux'
