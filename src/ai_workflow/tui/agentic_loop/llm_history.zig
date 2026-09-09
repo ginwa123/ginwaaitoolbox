@@ -2808,7 +2808,9 @@ pub fn isTaskRunning(
     const sql = "SELECT 1 FROM worker WHERE session_id = ? LIMIT 1";
     var rows = db.query(allocator, sql, &.{task_id}) catch return false;
     defer rows.deinit();
-    return (rows.next() catch return false) != null;
+    const row = (rows.next() catch return false) orelse return false;
+    row.deinit(allocator);
+    return true;
 }
 
 /// Cancel a session (set cancelled flag)

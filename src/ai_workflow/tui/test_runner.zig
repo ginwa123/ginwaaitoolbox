@@ -43,6 +43,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // the file (vs. the deleted start_agent_test.zig) ensures the
     // tests get discovered + run.
     _ = @import("http_handlers/start_agent.zig");
+    // Bulk run-all-agents (plan: 2026-09-09-run-all-agents-by-column,
+    // Option C): handler + useCase + inline tests live in a single file,
+    // mirroring start_agent.zig above (no separate _test.zig).
+    _ = @import("http_handlers/run_all_agents.zig");
     _ = @import("http_handlers/routines_list_test.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");

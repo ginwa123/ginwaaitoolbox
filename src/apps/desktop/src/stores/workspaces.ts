@@ -2861,6 +2861,29 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // Column "Run all agents" flow (plan:
+  // docs/superpowers/plans/2026-09-09-run-all-agents-by-column.md,
+  // Task 4, Option C). Thin wrapper around
+  // api.runAllAgentsInColumn (POST
+  // .../kanban/columns/:columnId/run_all_agents) so KanbanView doesn't
+  // import the wire shape directly. No client-side task iteration —
+  // the server owns the list, so pagination is irrelevant.
+  //
+  // On API throw returns an empty-lists summary (no unhandled
+  // rejection); the host surfaces the counts in its summary banner.
+  async function runAllAgentsInColumn(
+    workspaceId: string,
+    itemId: string,
+    columnId: string,
+  ): Promise<api.RunAllAgentsSummary> {
+    try {
+      return await api.runAllAgentsInColumn(workspaceId, itemId, columnId)
+    } catch (err) {
+      console.error('Failed to run all agents in column:', err)
+      return { success: false, started: [], skipped: [], failed: [] }
+    }
+  }
+
   // Kanban "create task & run agent" flow (plan:
   // docs/superpowers/plans/2026-08-06-kanban-create-task-run-agent.md).
   // Wraps api.sendChatMessage so KanbanView doesn't import the wire
@@ -4107,6 +4130,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // user message. Sibling of runAgentOnNewTask (create-time) and
     // runRoutine (routine-only).
     startAgentOnTask,
+    // NEW (plan: 2026-09-09-run-all-agents-by-column, Task 4, Option C).
+    // Bulk run for one column — server owns the task list.
+    runAllAgentsInColumn,
     addKanbanTask,
     updateRoutine,
     pinTask,

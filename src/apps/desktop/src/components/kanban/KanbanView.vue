@@ -779,6 +779,49 @@ const handleStartAgent = async (payload: { taskId: string }) => {
   }
 }
 
+// NEW (plan: 2026-09-09-run-all-agents-by-column, Tasks 3+4, Option C).
+// Column "Run all agents" host handler. Wired to KanbanColumn's
+// `@request-run-all-agents` emit. Shows a `confirm()` gate (each run
+// is LLM spend), delegates to
+// `workspacesStore.runAllAgentsInColumn` (which POSTs once to the
+// server-side bulk endpoint — pagination-irrelevant), and surfaces
+// the `{started, skipped, failed}` summary in `runAllSummary`.
+// Per-column re-entrancy guard mirrors `startAgentBusy` above.
+// Run-state visuals stay with the existing
+// `processingState`/SessionSlider SSE flow.
+const runAllBusyByColumn = ref<Record<string, boolean>>({})
+const runAllSummary = ref<string | null>(null)
+
+const handleRunAllAgents = async (columnId: string) => {
+  if (!columnId || runAllBusyByColumn.value[columnId]) return
+  const column = (props.item.kanban_columns ?? []).find((c) => c.id === columnId)
+  const columnName = column?.name ?? columnId
+  if (!confirm(`Run all agents in '${columnName}'?`)) return
+  runAllBusyByColumn.value[columnId] = true
+  runAllSummary.value = null
+  try {
+    const result = await workspacesStore.runAllAgentsInColumn(
+      props.workspaceId,
+      props.itemId || props.item.id,
+      columnId,
+    )
+    if (result?.success === false) {
+      runAllSummary.value = 'Failed to run all agents in column.'
+    } else {
+      const started = result?.started ?? []
+      const skipped = result?.skipped ?? []
+      const failed = result?.failed ?? []
+      runAllSummary.value =
+        `Started ${started.length}, skipped ${skipped.length} (already running), failed ${failed.length}.`
+    }
+  } catch (err) {
+    console.error('Failed to run all agents in column:', err)
+    runAllSummary.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    runAllBusyByColumn.value[columnId] = false
+  }
+}
+
 // Unattended-mode toggle handler (edit mode only). Persists
 // immediately via PUT /api/llm/session/<id> — the flag lives on
 // the sessions table (task.id == session.id for routine tasks per
@@ -1195,6 +1238,24 @@ const handleCreateTaskSave = async (payload: {
       No tasks match "{{ searchQuery }}"
     </div>
 
+    <!--
+      NEW (plan: 2026-09-09-run-all-agents-by-column, Task 4, Option C).
+      Bulk "Run all agents" summary banner. Rendered after
+      `handleRunAllAgents` resolves with the server's
+      `{started, skipped, failed}` counts. Run-state visuals stay
+      with the existing processingState/SessionSlider SSE flow.
+    -->
+    <div
+      v-if="runAllSummary"
+      class="px-3 py-2 text-xs shrink-0"
+      style="color: var(--semantic-text);"
+      :data-testid="`kanban-view-${item.id}-run-all-summary`"
+      role="status"
+      aria-live="polite"
+    >
+      {{ runAllSummary }}
+    </div>
+
     <!-- ─── Columns row (horizontal scroll) ──────────────────────────── -->
     <!--
       Horizontal scroll position is persisted to localStorage so the
@@ -1228,6 +1289,8 @@ const handleCreateTaskSave = async (payload: {
           @reorder-column="(payload) => emit('reorderColumn', payload)"
           @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
           @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
+          @request-run-all-agents="handleRunAllAgents"
+          :run-all-busy="!!runAllBusyByColumn[column.id]"
           @select-task="(id) => emit('selectTask', id)"
           @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
           @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"

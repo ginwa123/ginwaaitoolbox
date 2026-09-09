@@ -59,8 +59,15 @@ const props = withDefaults(defineProps<{
   // file-path resolution in descendant cards. Threaded from
   // <KanbanView> via `props.item.path`.
   cwd?: string
+  // NEW (plan: 2026-09-09-run-all-agents-by-column, Task 3, Option C).
+  // In-flight state for the column's bulk "Run all agents" action.
+  // The host (KanbanView) sets this while its per-column
+  // `handleRunAllAgents` POST is in flight; the menu item is disabled
+  // while true.
+  runAllBusy?: boolean
 }>(), {
   cwd: '',
+  runAllBusy: false,
 })
 
 const emit = defineEmits<{
@@ -75,6 +82,10 @@ const emit = defineEmits<{
   // The "⋮" menu's delete option opens KanbanColumnEditor in
   // 'delete' mode (confirmation modal). The host listens for this.
   requestDeleteColumn: [columnId: string]
+  // NEW (plan: 2026-09-09-run-all-agents-by-column, Task 3, Option C).
+  // The "⋮" menu's "Run all agents" option. The host (KanbanView)
+  // listens for this and runs the bulk endpoint for the column.
+  requestRunAllAgents: [columnId: string]
   // Fired when the user picks a sort mode in the column's "Sort
   // tasks…" modal. The host (KanbanView) listens for this and:
   //   1. fires `fetchKanbanTasks` for ONLY the changed column with
@@ -367,6 +378,16 @@ const handleMenuSort = () => {
 const handleMenuDelete = () => {
   menuOpen.value = false
   emit('requestDeleteColumn', props.column.id)
+}
+
+// NEW (plan: 2026-09-09-run-all-agents-by-column, Task 3, Option C).
+// The column "⋮" menu's "Run all agents" option. Closes the menu and
+// emits the column id; the host (KanbanView) owns the confirm gate +
+// bulk POST. No-op while `runAllBusy` (the button is also disabled).
+const handleMenuRunAll = () => {
+  if (props.runAllBusy) return
+  menuOpen.value = false
+  emit('requestRunAllAgents', props.column.id)
 }
 
 // ─── Per-column sort modal (kanban-sort-by, plan Task 4) ─────────────
@@ -694,6 +715,25 @@ const handleColumnDrop = (event: DragEvent) => {
               @click="handleMenuDelete"
             >
               Delete
+            </button>
+          </li>
+          <li>
+            <!--
+              NEW (plan: 2026-09-09-run-all-agents-by-column, Task 3,
+              Option C). Bulk "Run all agents" — starts agents on every
+              idle task in this column via the server-side bulk
+              endpoint (pagination-irrelevant). Disabled while the
+              host's per-column bulk run is in flight.
+            -->
+            <button
+              type="button"
+              class="w-full px-3 py-2 text-left text-sm hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+              style="color: var(--semantic-text);"
+              :data-testid="`kanban-column-${column.id}-menu-run-all`"
+              :disabled="runAllBusy"
+              @click="handleMenuRunAll"
+            >
+              {{ runAllBusy ? 'Running all agents…' : 'Run all agents' }}
             </button>
           </li>
         </ul>

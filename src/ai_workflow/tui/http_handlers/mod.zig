@@ -159,6 +159,7 @@ pub const startAgentHandler = @import("start_agent.zig").startAgentHandler;
 // `nalarcore.http_handlers.startAgentUseCase` (matches the
 // `task_delete.zig::deleteTaskUseCase` re-export convention).
 pub const startAgentUseCase = @import("start_agent.zig").startAgentUseCase;
+pub const runAllAgentsHandler = @import("run_all_agents.zig").runAllAgentsHandler;
 pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
 
 // Worker API handlers
