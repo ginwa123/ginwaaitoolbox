@@ -1185,7 +1185,7 @@ jobs:
           echo "ok dist/ built, html/ will install alongside the exes"
 
       - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
-        timeout-minutes: 30 # fail fast: this step wedged for 1h+ on 2026-09-08 (build finished in ~1 min, then zig/build.exe sat idle with no children) and twice before (4.5h/6.5h cancelled runs); default 6h cap blocks the only Windows runner
+        timeout-minutes: 65 # 3 attempts x 20m + margin: this step intermittently wedges AFTER doing the work (2026-09-08: build done in ~1 min, then zig sat idle, zero CPU, no children; twice before). Retry loop below kills wedged attempts; default 6h cap would block the only Windows runner
         # Windows-only twin of the previous step. Same goal — produce
         # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
         # test + artifact publish — but with the webapp-rebuild chain
@@ -1215,7 +1215,36 @@ jobs:
           # no-op stub (whose webview_create() always returns NULL ->
           # WebviewCreateFailed even with the evergreen runtime installed).
           # The stub fallback exists for dev boxes; CI must never ship it.
-          zig build nalar-desktop --summary all -Dno-webapp-rebuild -Drequire-real-webview
+          #
+          # RETRY (not fail-fast-only): the wedge above is transient -- a
+          # killed attempt's .zig-cache makes the next attempt resume warm,
+          # so retries usually pass in minutes. `timeout` (Git Bash
+          # coreutils, same as the smoke-test step) kills wedged attempts
+          # with exit 124; any other non-zero exit is a real compile error
+          # and fails immediately. sleep 10 lets the OS release file locks
+          # the killed process held on .zig-cache.
+          attempt=1
+          max_attempts=3
+          while true; do
+            echo "install attempt $attempt/$max_attempts"
+            rc=0
+            timeout 1200 zig build nalar-desktop --summary all -Dno-webapp-rebuild -Drequire-real-webview || rc=$?
+            if [[ $rc -eq 0 ]]; then
+              echo "ok install passed on attempt $attempt"
+              break
+            fi
+            if [[ $rc -ne 124 ]]; then
+              echo "attempt $attempt failed with exit $rc (not a timeout -- not retrying)" >&2
+              exit $rc
+            fi
+            echo "attempt $attempt timed out after 20m (known idle-hang flake), retrying..."
+            attempt=$((attempt + 1))
+            if [[ $attempt -gt $max_attempts ]]; then
+              echo "all $max_attempts attempts timed out" >&2
+              exit 1
+            fi
+            sleep 10
+          done
 
       - name: Verify desktop + service binaries (Linux)
         if: runner.os == 'Linux'
@@ -1707,11 +1736,6 @@ jobs:
           # as html/ and Install-Nalar.ps1 installs it to
           # %LOCALAPPDATA%\nalar\html. The desktop prefers that dir and
           # only falls back to embedded-asset temp extraction when missing.
-          # Warn (not fail) when absent: the Windows cell builds with
-          # -Dno-webapp-rebuild (vite OOMs on the small runner) and
-          # receives dist/ via the shared webapp-dist cache -- on a cache
-          # miss (first run after a frontend change) there is legitimately
-          # no dist/ and the zip ships old-style; the next run picks it up.
           # HARD GATE: Windows never ships without html/. build.zig installs
           # src/apps/desktop/dist to zig-out/bin/html (alongside the exes);
           # dist/ is built by the dedicated step above. Missing here = fail
