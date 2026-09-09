@@ -75,7 +75,36 @@ pub const CleanupResult = struct {
     kept_count: usize = 0,
     notified_count: usize = 0,
     deleted_count: usize = 0,
+    /// Deduped session_ids that were successfully notified this tick
+    /// (one entry per session, even if several of its PIDs completed).
+    /// Caller-owned: allocated with `input.allocator` (the per-tick arena
+    /// in `handle`, `testing.allocator` in tests). Free with
+    /// `freeNotifiedSessions` when done — or let the tick arena drop it.
+    /// Empty (`&.{}`) when nothing was notified; never free the empty case.
+    notified_sessions: [][]const u8 = &.{},
 };
+
+/// Pure seam for the Task 3 wake decision: wake the session iff no worker
+/// is currently running on it. A running worker will drain the queued
+/// completion message on its own loop iteration (`hasQueuedMessages ->
+/// continue` in workflow.zig); an idle session needs an explicit
+/// `emit_run_agent` kick or the queue row sits forever.
+///
+/// Kept as a named function (rather than inlining `!running` at the call
+/// site) so the decision is unit-testable without a DB/singleton — the
+/// live `emit_run_agent` path itself is covered by the Task 4 functional
+/// test, which boots a real binary + tmpdir HOME.
+pub fn shouldWake(is_running: bool) bool {
+    return !is_running;
+}
+
+/// Release `result.notified_sessions` (each sid + the outer slice).
+/// No-op when empty. Idempotent — resets the field to `&.{}`.
+pub fn freeNotifiedSessions(allocator: std.mem.Allocator, result: *CleanupResult) void {
+    for (result.notified_sessions) |sid| allocator.free(sid);
+    if (result.notified_sessions.len > 0) allocator.free(result.notified_sessions);
+    result.notified_sessions = &.{};
+}
 
 // ─── Production helper ────────────────────────────────────────────────────
 //
@@ -332,6 +361,71 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
         result.notified_count += 1;
     }
 
+    // Task 3: expose the deduped notified session_ids for the wake loop in
+    // `handle()`. Built from `dead` (not `doomed`) so a session is woken
+    // even if its DELETE chunk below fails — the queue message already
+    // exists, so the agent run must still drain it.
+    //
+    // Ownership: duped into `input.allocator` (NOT the per-call arena `a`,
+    // which is freed on return and would dangle the slices). In `handle()`
+    // that allocator IS the per-tick arena, so the list lives exactly as
+    // long as the wake loop needs it. In tests it is `testing.allocator`,
+    // so each test must `freeNotifiedSessions` (DebugAllocator leaks
+    // otherwise).
+    {
+        var uniq: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer uniq.deinit(allocator);
+        for (dead.items) |pair| {
+            if (!pair.notified) continue;
+            var seen = false;
+            for (uniq.items) |sid| {
+                if (std.mem.eql(u8, sid, pair.session_id)) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+            const sid_copy = allocator.dupe(u8, pair.session_id) catch |err| {
+                if (logger) |log| {
+                    log.errFmt(
+                        "[cleanup_stale_background_process] notified_sessions dupe failed: {s}\n",
+                        .{@errorName(err)},
+                    );
+                }
+                freeNotifiedSessions(allocator, &result);
+                // `uniq` holds caller-owned dupes not yet moved into the
+                // result — free them here (result was just reset to empty
+                // so the helper above did NOT touch them).
+                for (uniq.items) |sid| allocator.free(sid);
+                return result;
+            };
+            uniq.append(allocator, sid_copy) catch |err| {
+                allocator.free(sid_copy);
+                if (logger) |log| {
+                    log.errFmt(
+                        "[cleanup_stale_background_process] notified_sessions append failed: {s}\n",
+                        .{@errorName(err)},
+                    );
+                }
+                freeNotifiedSessions(allocator, &result);
+                for (uniq.items) |sid| allocator.free(sid);
+                return result;
+            };
+        }
+        if (uniq.items.len > 0) {
+            result.notified_sessions = uniq.toOwnedSlice(allocator) catch |err| {
+                if (logger) |log| {
+                    log.errFmt(
+                        "[cleanup_stale_background_process] notified_sessions seal failed: {s}\n",
+                        .{@errorName(err)},
+                    );
+                }
+                for (uniq.items) |sid| allocator.free(sid);
+                return result;
+            };
+        }
+    }
+
     // Collect only the notified pairs for the DELETE. Failed-notify
     // pairs stay in the table for the next tick to retry.
     var doomed: std.ArrayListUnmanaged(DeadPair) = .empty;
@@ -459,9 +553,75 @@ pub fn handle(ctx: ?*anyopaque, now_unix: i64) void {
         return;
     };
 
+    // Task 3: wake idle workers so the queued completion actually triggers
+    // an agent run. `workflow.zig` drains `session_queue_messages` only
+    // while a worker is running (`hasQueuedMessages -> continue`); when the
+    // background job outlived the agent run, the queue row would sit idle
+    // forever. For each notified session with NO running worker, kick one
+    // via `emit_run_agent` with `skip_initial_queue_message=true` (the
+    // kanban Start-agent pattern in `start_agent.zig`) so the run starts
+    // and drains the completion output without duplicating a user message.
+    // A session that already has a worker needs nothing — its loop will
+    // drain the queue on the next iteration.
+    //
+    // Never crashes the tick: every per-session failure (worker check is
+    // infallible by design; session lookup + emit are caught) is logged
+    // and the loop continues. `result.notified_sessions` is arena-owned
+    // (`a`) — no free needed (per-request arena rule).
+    var woken_count: usize = 0;
+    for (result.notified_sessions) |sid| {
+        const running = ai_workflow.isWorkerRunning(a, di.db, sid);
+        if (!shouldWake(running)) continue;
+
+        // Resolve the session row for the emit fields (same shape as
+        // `startAgentUseCase` step 3). Missing row → safe defaults;
+        // `emit_run_agent.insert_worker` upserts the session anyway.
+        // Slices are duped into `a` BEFORE the row is released so they
+        // outlive `row.deinit`.
+        var sname: []const u8 = "";
+        var scwd: []const u8 = "";
+        var sprofile: []const u8 = "";
+        var sretry: []const u8 = "0";
+        if (di.db.query(a, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{sid})) |*q| {
+            defer q.deinit();
+            if (q.next() catch null) |row| {
+                defer row.deinit(a);
+                if (row.values.len >= 4) {
+                    sname = a.dupe(u8, row.values[0]) catch "";
+                    scwd = a.dupe(u8, row.values[1]) catch "";
+                    sprofile = a.dupe(u8, row.values[2]) catch "";
+                    sretry = a.dupe(u8, row.values[3]) catch "0";
+                }
+            }
+        } else |_| {
+            // Query failed (e.g. transient DB blip) — fall through with
+            // defaults; the emit below still wakes the worker.
+        }
+
+        di.emit_run_agent(.{
+            .session_id = sid,
+            .session_name = sname,
+            .queue_message = "",
+            .cwd = scwd,
+            .body_message = "",
+            .allowed_tools = "",
+            .image_urls = "",
+            .selected_profile_model = sprofile,
+            .is_auto_retry_until_stop = sretry,
+            .skip_initial_queue_message = true,
+        }) catch |err| {
+            logger.errFmt(
+                "[cleanup_stale_background_process] wake emit failed for session {s}: {s}\n",
+                .{ sid, @errorName(err) },
+            );
+            continue;
+        };
+        woken_count += 1;
+    }
+
     logger.infoFmt(
-        "[cleanup_stale_background_process] tick summary: checked={d} kept={d} notified={d} deleted={d}",
-        .{ result.checked_count, result.kept_count, result.notified_count, result.deleted_count },
+        "[cleanup_stale_background_process] tick summary: checked={d} kept={d} notified={d} deleted={d} woken={d}",
+        .{ result.checked_count, result.kept_count, result.notified_count, result.deleted_count, woken_count },
     );
 }
 
@@ -591,13 +751,15 @@ test "cleanupStaleBackgroundProcesses deletes a row whose PID is no longer runni
     // 999_999_999 is virtually guaranteed to NOT exist on any sane system.
     try seedRow(&ctx.db, testing.allocator, "s_dead", 999_999_999, "running");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.checked_count);
     try testing.expectEqual(@as(usize, 1), result.notified_count);
@@ -621,13 +783,15 @@ test "cleanupStaleBackgroundProcesses notifies with log content then deletes the
     // 999_999_999 is virtually guaranteed to NOT exist on any sane system.
     try seedRowFull(&ctx.db, testing.allocator, "s_done", 999_999_999, "make all", log_path, "running");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .io = testing.io,
         .db = &ctx.db,
         .logger = null,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.checked_count);
     try testing.expectEqual(@as(usize, 1), result.notified_count);
@@ -649,13 +813,15 @@ test "cleanupStaleBackgroundProcesses notifies with a not-found marker and still
     const missing = "/tmp/nalar-bg-test-never-exists-xyz.log";
     try seedRowFull(&ctx.db, testing.allocator, "s_gone", 999_999_998, "sleep 30", missing, "running");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .io = testing.io,
         .db = &ctx.db,
         .logger = null,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.checked_count);
     try testing.expectEqual(@as(usize, 1), result.notified_count);
@@ -678,13 +844,15 @@ test "cleanupStaleBackgroundProcesses keeps a row whose PID is still running (se
     const self_pid = process_status.getCurrentProcessIdInt();
     try seedRow(&ctx.db, testing.allocator, "s_alive", @intCast(self_pid), "stopped"); // status column is irrelevant per user spec
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.checked_count);
     try testing.expectEqual(@as(usize, 0), result.deleted_count);
@@ -700,13 +868,15 @@ test "cleanupStaleBackgroundProcesses ignores the status column: keeps an alive 
     // Status 'failed' is stale — but the PID is alive, so we keep it.
     try seedRow(&ctx.db, testing.allocator, "s_alive_failed", @intCast(self_pid), "failed");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.kept_count);
     try testing.expectEqual(@as(usize, 0), result.deleted_count);
@@ -720,13 +890,15 @@ test "cleanupStaleBackgroundProcesses ignores the status column: deletes a dead 
     // Status 'running' is stale (e.g. kill -9 left the row) — but the PID is dead, so we delete it.
     try seedRow(&ctx.db, testing.allocator, "s_dead_running", 999_999_998, "running");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.deleted_count);
     try testing.expectEqual(@as(usize, 0), try rowCountForSession(&ctx.db, testing.allocator, "s_dead_running"));
@@ -744,13 +916,15 @@ test "cleanupStaleBackgroundProcesses processes a mixed batch and reports kept v
     try seedRow(&ctx.db, testing.allocator, "s_dead_b", 999_999_996, "stopped");
     try seedRow(&ctx.db, testing.allocator, "s_dead_c", 999_999_995, "failed");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 5), result.checked_count);
     try testing.expectEqual(@as(usize, 2), result.kept_count);
@@ -767,13 +941,15 @@ test "cleanupStaleBackgroundProcesses is a no-op when the table is empty" {
     var ctx = try setupCtx();
     defer ctx.deinit();
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 0), result.checked_count);
     try testing.expectEqual(@as(usize, 0), result.kept_count);
@@ -789,13 +965,15 @@ test "cleanupStaleBackgroundProcesses keeps a row whose PID is running even with
     // the row is kept as long as the PID is alive.
     try seedRow(&ctx.db, testing.allocator, "s_alive_garbage_status", @intCast(self_pid), "banana");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 1), result.kept_count);
     try testing.expectEqual(@as(usize, 1), try rowCountForSession(&ctx.db, testing.allocator, "s_alive_garbage_status"));
@@ -861,13 +1039,15 @@ test "cleanupStaleBackgroundProcesses batch-chunks deletes when more than max_pa
     try seedRow(&ctx.db, testing.allocator, "s_alive_a", @intCast(self_pid), "running");
     try seedRow(&ctx.db, testing.allocator, "s_alive_b", @intCast(self_pid), "running");
 
-    const result = try cleanupStaleBackgroundProcesses(.{
+    var result = try cleanupStaleBackgroundProcesses(.{
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
         .io = testing.io,
         .event_bus = null,
     });
+    // notified_sessions is caller-owned (testing.allocator) — free or leak.
+    defer freeNotifiedSessions(testing.allocator, &result);
 
     try testing.expectEqual(@as(usize, 602), result.checked_count);
     try testing.expectEqual(@as(usize, 2), result.kept_count);
@@ -891,4 +1071,100 @@ test "cleanupStaleBackgroundProcesses batch-chunks deletes when more than max_pa
     // Both alive rows still present
     try testing.expectEqual(@as(usize, 1), try rowCountForSession(&ctx.db, testing.allocator, "s_alive_a"));
     try testing.expectEqual(@as(usize, 1), try rowCountForSession(&ctx.db, testing.allocator, "s_alive_b"));
+}
+
+// ─── Task 3: notified_sessions + shouldWake ───────────────────────────────
+//
+// The wake loop in `handle()` needs the deduped session_ids that were
+// notified this tick. The live `emit_run_agent` kick itself is NOT
+// unit-tested here — it needs the process singleton (`getSingleton`) and
+// an Io group, which only exist in a running binary. That path is covered
+// by the Task 4 functional test (fresh binary + tmpdir HOME, real cron
+// tick, assert the agent run drains the queued completion).
+
+test "shouldWake wakes idle sessions and skips running ones" {
+    try testing.expect(shouldWake(false));
+    try testing.expect(!shouldWake(true));
+}
+
+test "cleanupStaleBackgroundProcesses exposes each notified session once (dedupe)" {
+    var ctx = try setupCtx();
+    defer ctx.deinit();
+
+    // Two dead PIDs under the SAME session + one dead PID under another.
+    // 999_999_99x PIDs are virtually guaranteed to NOT exist.
+    try seedRow(&ctx.db, testing.allocator, "s_dup", 999_999_991, "running");
+    try seedRow(&ctx.db, testing.allocator, "s_dup", 999_999_992, "running");
+    try seedRow(&ctx.db, testing.allocator, "s_other", 999_999_993, "running");
+
+    var result = try cleanupStaleBackgroundProcesses(.{
+        .allocator = testing.allocator,
+        .db = &ctx.db,
+        .logger = null,
+        .io = testing.io,
+        .event_bus = null,
+    });
+    defer freeNotifiedSessions(testing.allocator, &result);
+
+    try testing.expectEqual(@as(usize, 3), result.checked_count);
+    try testing.expectEqual(@as(usize, 3), result.notified_count);
+    try testing.expectEqual(@as(usize, 3), result.deleted_count);
+
+    // Deduped: 2 sessions, not 3 rows.
+    try testing.expectEqual(@as(usize, 2), result.notified_sessions.len);
+
+    var saw_dup = false;
+    var saw_other = false;
+    for (result.notified_sessions) |sid| {
+        if (std.mem.eql(u8, sid, "s_dup")) {
+            try testing.expect(!saw_dup); // exactly once
+            saw_dup = true;
+        } else if (std.mem.eql(u8, sid, "s_other")) {
+            try testing.expect(!saw_other); // exactly once
+            saw_other = true;
+        } else {
+            return error.TestUnexpectedSession;
+        }
+    }
+    try testing.expect(saw_dup);
+    try testing.expect(saw_other);
+}
+
+test "cleanupStaleBackgroundProcesses leaves notified_sessions empty when nothing is notified" {
+    var ctx = try setupCtx();
+    defer ctx.deinit();
+
+    // Only a live row (self PID) — nothing to notify.
+    const self_pid = process_status.getCurrentProcessIdInt();
+    try seedRow(&ctx.db, testing.allocator, "s_alive", @intCast(self_pid), "running");
+
+    var result = try cleanupStaleBackgroundProcesses(.{
+        .allocator = testing.allocator,
+        .db = &ctx.db,
+        .logger = null,
+        .io = testing.io,
+        .event_bus = null,
+    });
+    defer freeNotifiedSessions(testing.allocator, &result);
+
+    try testing.expectEqual(@as(usize, 0), result.notified_count);
+    try testing.expectEqual(@as(usize, 0), result.notified_sessions.len);
+}
+
+test "freeNotifiedSessions is idempotent and safe on empty results" {
+    var empty = CleanupResult{};
+    // No-op on the default empty slice (must NOT free static memory).
+    freeNotifiedSessions(testing.allocator, &empty);
+    try testing.expectEqual(@as(usize, 0), empty.notified_sessions.len);
+    // Second call still safe.
+    freeNotifiedSessions(testing.allocator, &empty);
+
+    // Caller-owned list frees cleanly and resets.
+    var owned = CleanupResult{};
+    const s = try testing.allocator.dupe(u8, "s_x");
+    const outer = try testing.allocator.alloc([]const u8, 1);
+    outer[0] = s;
+    owned.notified_sessions = outer;
+    freeNotifiedSessions(testing.allocator, &owned);
+    try testing.expectEqual(@as(usize, 0), owned.notified_sessions.len);
 }
