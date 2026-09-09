@@ -578,12 +578,16 @@ describe('FilePickerDialog — navigation', () => {
     expect(wrapper.emitted('cancel')).toBeTruthy()
   })
 
-  it('clicking the backdrop emits cancel', async () => {
+  it('clicking the backdrop does NOT close the dialog (no cancel emitted)', async () => {
     wrapper = mountDialog({ initialPath: '/home/user' })
     await wrapper.setProps({ modelValue: true })
     await flushPromises()
     clickInDom('[data-testid="file-picker-backdrop"]')
-    expect(wrapper.emitted('cancel')).toBeTruthy()
+    await flushPromises()
+    expect(wrapper.emitted('cancel')).toBeFalsy()
+    expect(wrapper.emitted('update:modelValue')).toBeFalsy()
+    // Dialog is still open.
+    expect(findInDom('[data-testid="file-picker-dialog"]')).not.toBeNull()
   })
 })
 
