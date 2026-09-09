@@ -22,6 +22,7 @@ test {
     _ = @import("update_worker.zig");
     _ = @import("delete_worker.zig");
     _ = @import("insert_queue_message.zig");
+    _ = @import("background_process.zig"); // bg-completion queue Task 1 — pure completion message helpers (no DB)
     _ = @import("delete_queue_worker.zig");
     _ = @import("insert_llm_histories.zig");
     _ = @import("get_llm_histories.zig");
