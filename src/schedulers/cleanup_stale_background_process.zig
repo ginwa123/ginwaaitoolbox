@@ -12,8 +12,9 @@
 //! Architecture: pure helper `cleanupStaleBackgroundProcesses(input) !CleanupResult`
 //! does the work; thin `handle(ctx, now_unix) void` wrapper pulls
 //! `*ContextIPCTui` from the singleton and calls the helper. Per row:
-//! parse (session_id, pid), call `isProcessRunning`, keep if alive,
-//! DELETE otherwise.
+//! parse (session_id, pid, command, log_path), call `isProcessRunning`,
+//! keep if alive, otherwise queue the completion message via
+//! `insertQueueMessage` (notify) and DELETE (only if notified).
 //!
 //! Cron registration is in `src/main.zig` right after the
 //! `cleanup_stale_worker` registration, fired every minute on the minute.
@@ -39,6 +40,18 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const process_status = @import("helpers").process_status;
 const logger_mod = nalarcore.loggermod;
+const event_bus_mod = nalarcore.event_bus;
+// Route the bg-completion helpers + queue insert through `nalarcore`
+// (the `root` module) instead of @import'ing the agentic_loop files
+// directly — same pattern as cleanup_stale_worker.zig's
+// `nalarcore.ai_mod.delete_worker`. The exe module compiles `main.zig`
+// which reaches this file via the `nalarcore` re-export; a direct
+// relative @import here would put those files in TWO modules and fire
+// Zig's "file exists in two modules" error. `insertQueueMessage` is
+// re-exported by workflow.zig so no mod.zig change is needed for it;
+// `background_process` has its own `pub const` in ai_workflow/tui/mod.zig.
+const bg_proc = nalarcore.ai_mod.background_process;
+const ai_workflow = nalarcore.ai_mod.ai_workflow;
 // `migration.zig` lives in `src/migrations/` — one `..` up from
 // `src/schedulers/`. Per project memory `project-test-use-migrations-module`:
 // test setupDb MUST use `MigrationManager.registerAllMigrations +
@@ -51,35 +64,50 @@ const testing = std.testing;
 
 pub const CleanupStaleBackgroundProcessInput = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     db: *sqlite.SqliteBackend,
     logger: ?*logger_mod.Logger,
+    event_bus: ?*event_bus_mod.EventBus,
 };
 
 pub const CleanupResult = struct {
     checked_count: usize = 0,
     kept_count: usize = 0,
+    notified_count: usize = 0,
     deleted_count: usize = 0,
 };
 
 // ─── Production helper ────────────────────────────────────────────────────
 //
-// Two-pass cleanup. Pass 1: SELECT every (session_id, pid) pair and
-// check the actual OS process via
-// `helpers.process_status.isProcessRunning`. Dead processes are
-// collected. Pass 2: batch DELETE all collected rows in one (or a few)
-// statements. The `status` column is deliberately IGNORED — it can
-// drift from reality (a `kill -9` leaves it at `'running'` because the
-// defer that updates it never ran; or a process can be alive while the
-// row says otherwise).
+// Three-phase notify-then-delete. Pass 1: SELECT every
+// (session_id, pid, command, log_path) row and check the actual OS
+// process via `helpers.process_status.isProcessRunning`. Dead processes
+// are collected. Pass 1.5 (notify): for each dead pair, read the log
+// (capped at `bg_proc.completion_log_cap_bytes`), build the completion
+// envelope via `bg_proc.buildCompletionMessage`, and queue it with
+// `insertQueueMessage` (SSE `queue_queued`, same as any queued user
+// message — no new event name). Pass 2: batch DELETE only the pairs
+// that were successfully notified. A pair whose notify fails (log
+// unreadable for a reason OTHER than FileNotFound, or queue INSERT
+// error) is left in the table for the next tick to retry. A missing
+// log file is NOT a failure — the queue message carries a
+// `(log file not found: {path})` marker and the row is still deleted.
+//
+// The `status` column is deliberately IGNORED — it can drift from
+// reality (a `kill -9` leaves it at `'running'` because the defer that
+// updates it never ran; or a process can be alive while the row says
+// otherwise).
 //
 // Batching is chunked at `max_pairs_per_stmt` pairs per DELETE
 // statement because SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` is
 // 999 and each pair binds 2 params — 499 pairs max per statement.
 // Anything more becomes a second DELETE.
 //
-// Per-chunk isolation: if one batch DELETE fails, log via
-// `logger.?errFmt` and continue to the next chunk. The cron tick
-// must NOT abort the whole cleanup on a single bad chunk.
+// Per-row isolation: if one row's log read / queue insert fails, log
+// via `logger.?errFmt` and continue to the next row — the cron tick
+// must NOT abort the whole cleanup on a single bad row. Per-chunk
+// isolation for the DELETEs likewise: one bad batch logs and the tick
+// continues to the next chunk.
 
 /// Max (session_id, pid) pairs per single DELETE statement.
 /// `SQLITE_MAX_VARIABLE_NUMBER` defaults to 999; each pair = 2 params.
@@ -87,8 +115,10 @@ const max_pairs_per_stmt: usize = 499;
 
 pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput) anyerror!CleanupResult {
     const allocator = input.allocator;
+    const io = input.io;
     const db = input.db;
     const logger = input.logger;
+    const event_bus = input.event_bus;
 
     var result = CleanupResult{};
 
@@ -103,18 +133,22 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
     defer arena.deinit();
     const a = arena.allocator();
 
-    // Pass 1: SELECT every (session_id, pid) pair. For each row, ask
-    // the OS whether the process is alive. Dead rows get collected
-    // for the batch DELETE in pass 2.
+    // Pass 1: SELECT every (session_id, pid, command, log_path) row.
+    // For each row, ask the OS whether the process is alive. Dead rows
+    // get collected for the notify + batch DELETE in passes 1.5 / 2.
     const DeadPair = struct {
         session_id: []const u8,
         pid: []const u8,
+        pid_num: u32,
+        command: []const u8,
+        log_path: []const u8,
+        notified: bool = false,
     };
     var dead: std.ArrayListUnmanaged(DeadPair) = .empty;
     defer dead.deinit(a);
 
     const select_sql =
-        \\SELECT session_id, pid
+        \\SELECT session_id, pid, command, log_path
         \\FROM session_background_process
     ;
 
@@ -124,9 +158,11 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
     while (try rows.next()) |row| {
         defer row.deinit(a);
 
-        if (row.values.len < 2) continue;
+        if (row.values.len < 4) continue;
         const session_id = row.values[0];
         const pid_str = row.values[1];
+        const command = row.values[2];
+        const log_path = row.values[3];
 
         result.checked_count += 1;
 
@@ -142,15 +178,15 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
             continue;
         }
 
-        // Process is dead — collect (session_id, pid) for the batch
-        // DELETE in pass 2.
+        // Process is dead — collect the row for the notify (pass 1.5)
+        // + batch DELETE (pass 2).
         //
         // CRITICAL: row.values[i] is freed by `row.deinit(a)` (which
         // fires at the end of this iteration block). Without duping,
-        // the slices stored in `dead` would dangle by the time pass 2
-        // runs. Duping into the arena gives us stable copies that
-        // outlive every row.deinit() and live until arena.deinit() at
-        // the end of this function.
+        // the slices stored in `dead` would dangle by the time passes
+        // 1.5 / 2 run. Duping into the arena gives us stable copies
+        // that outlive every row.deinit() and live until arena.deinit()
+        // at the end of this function.
         const sid_copy = a.dupe(u8, session_id) catch |err| {
             if (logger) |log| {
                 log.errFmt(
@@ -169,7 +205,31 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
             }
             return result;
         };
-        dead.append(a, .{ .session_id = sid_copy, .pid = pid_copy }) catch |err| {
+        const cmd_copy = a.dupe(u8, command) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] arena dupe(command) failed: {s}\n",
+                    .{@errorName(err)},
+                );
+            }
+            return result;
+        };
+        const log_copy = a.dupe(u8, log_path) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] arena dupe(log_path) failed: {s}\n",
+                    .{@errorName(err)},
+                );
+            }
+            return result;
+        };
+        dead.append(a, .{
+            .session_id = sid_copy,
+            .pid = pid_copy,
+            .pid_num = @intCast(pid),
+            .command = cmd_copy,
+            .log_path = log_copy,
+        }) catch |err| {
             if (logger) |log| {
                 log.errFmt(
                     "[cleanup_stale_background_process] dead-list append failed: {s}\n",
@@ -182,8 +242,117 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
 
     if (dead.items.len == 0) return result;
 
-    // Pass 2: batch DELETE all collected rows in chunks. Each chunk
-    // builds ONE statement of the form
+    // Pass 1.5 (notify): for each dead pair, read the log + queue the
+    // completion message. Per-row isolation — one bad log or failed
+    // INSERT logs and leaves that pair un-notified (it stays in the
+    // table for the next tick); the loop always continues.
+    //
+    // All message buffers are arena-allocated (`a`): `insertQueueMessage`
+    // binds/copies them into SQLite synchronously, so they only need to
+    // live for the duration of the call. No defer-free of arena memory
+    // here per the per-request arena rule.
+    for (dead.items) |*pair| {
+        // Read the log head. FileNotFound → not-found marker (still
+        // notify + delete). Any OTHER read error → skip notify for
+        // this pair; it stays for the next tick to retry.
+        var log_content: []const u8 = "";
+        var was_truncated: bool = false;
+        var total_bytes: usize = 0;
+        if (bg_proc.readLogTruncated(a, io, pair.log_path, bg_proc.completion_log_cap_bytes)) |tlog| {
+            // `tlog.content` is arena-owned — no free (arena rule).
+            log_content = tlog.content;
+            was_truncated = tlog.truncated;
+            total_bytes = tlog.total_bytes;
+        } else |err| {
+            if (err == error.FileNotFound) {
+                log_content = std.fmt.allocPrint(
+                    a,
+                    "(log file not found: {s})",
+                    .{pair.log_path},
+                ) catch {
+                    if (logger) |log| {
+                        log.errFmt(
+                            "[cleanup_stale_background_process] not-found marker alloc failed for session {s} pid {s}\n",
+                            .{ pair.session_id, pair.pid },
+                        );
+                    }
+                    continue;
+                };
+                was_truncated = false;
+                total_bytes = 0;
+            } else {
+                if (logger) |log| {
+                    log.errFmt(
+                        "[cleanup_stale_background_process] log read failed for session {s} pid {s} ({s}): {s} — retry next tick\n",
+                        .{ pair.session_id, pair.pid, pair.log_path, @errorName(err) },
+                    );
+                }
+                continue;
+            }
+        }
+
+        const message = bg_proc.buildCompletionMessage(
+            a,
+            pair.command,
+            pair.pid_num,
+            log_content,
+            was_truncated,
+            total_bytes,
+            pair.log_path,
+        ) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] completion message build failed for session {s} pid {s}: {s} — retry next tick\n",
+                    .{ pair.session_id, pair.pid, @errorName(err) },
+                );
+            }
+            continue;
+        };
+
+        ai_workflow.insertQueueMessage(.{
+            .allocator = a,
+            .db = db,
+            .logger = logger,
+            .session_id = pair.session_id,
+            .message = message,
+            .image_url = "",
+            .event_bus = event_bus,
+            .is_emit_sse = true,
+        }) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] queue insert failed for session {s} pid {s}: {s} — retry next tick\n",
+                    .{ pair.session_id, pair.pid, @errorName(err) },
+                );
+            }
+            continue;
+        };
+
+        pair.notified = true;
+        result.notified_count += 1;
+    }
+
+    // Collect only the notified pairs for the DELETE. Failed-notify
+    // pairs stay in the table for the next tick to retry.
+    var doomed: std.ArrayListUnmanaged(DeadPair) = .empty;
+    defer doomed.deinit(a);
+    for (dead.items) |pair| {
+        if (!pair.notified) continue;
+        doomed.append(a, pair) catch |err| {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] delete-list append failed: {s}\n",
+                    .{@errorName(err)},
+                );
+            }
+            return result;
+        };
+    }
+
+    if (doomed.items.len == 0) return result;
+
+    // Pass 2: batch DELETE all successfully-notified rows in chunks.
+    // Each chunk builds ONE statement of the form
     //   DELETE FROM session_background_process
     //   WHERE (session_id = ? AND pid = ?)
     //      OR (session_id = ? AND pid = ?)
@@ -195,9 +364,9 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
     // multiple sessions and deleting only by pid would clobber
     // unrelated rows.
     var chunk_start: usize = 0;
-    while (chunk_start < dead.items.len) {
-        const chunk_end = @min(chunk_start + max_pairs_per_stmt, dead.items.len);
-        const chunk = dead.items[chunk_start..chunk_end];
+    while (chunk_start < doomed.items.len) {
+        const chunk_end = @min(chunk_start + max_pairs_per_stmt, doomed.items.len);
+        const chunk = doomed.items[chunk_start..chunk_end];
 
         // Build SQL + params in the arena — both are scoped to this
         // chunk iteration so the arena frees them when chunk_start
@@ -281,16 +450,18 @@ pub fn handle(ctx: ?*anyopaque, now_unix: i64) void {
 
     const result = cleanupStaleBackgroundProcesses(.{
         .allocator = a,
+        .io = di.io,
         .db = di.db,
         .logger = logger,
+        .event_bus = di.event_bus,
     }) catch |err| {
         logger.errFmt("[cleanup_stale_background_process] tick failed: {s}\n", .{@errorName(err)});
         return;
     };
 
     logger.infoFmt(
-        "[cleanup_stale_background_process] tick summary: checked={d} kept={d} deleted={d}",
-        .{ result.checked_count, result.kept_count, result.deleted_count },
+        "[cleanup_stale_background_process] tick summary: checked={d} kept={d} notified={d} deleted={d}",
+        .{ result.checked_count, result.kept_count, result.notified_count, result.deleted_count },
     );
 }
 
@@ -360,6 +531,43 @@ fn seedRow(
     try db.exec(alloc, sql, &.{ session_id, pid_str, status });
 }
 
+/// Insert a background-process row with an explicit command + log_path
+/// (for the notify-then-delete tests, which need a real temp log file
+/// or a deliberately missing path). `seedRow` delegates with the
+/// historical `'echo hi'` / `'/tmp/log'` defaults.
+fn seedRowFull(
+    db: *sqlite.SqliteBackend,
+    alloc: std.mem.Allocator,
+    session_id: []const u8,
+    pid: i64,
+    command: []const u8,
+    log_path: []const u8,
+    status: []const u8,
+) !void {
+    const sql =
+        \\INSERT INTO session_background_process
+        \\    (session_id, pid, command, log_path, started_at, status)
+        \\VALUES (?, ?, ?, ?, 1, ?)
+    ;
+    var pid_buf: [32]u8 = undefined;
+    const pid_str = try std.fmt.bufPrint(&pid_buf, "{d}", .{pid});
+    try db.exec(alloc, sql, &.{ session_id, pid_str, command, log_path, status });
+}
+
+/// Fetch the single queue message for a session. Errors with
+/// `error.RowMissing` when the notify step never queued one.
+fn queueMessageForSession(
+    db: *sqlite.SqliteBackend,
+    alloc: std.mem.Allocator,
+    session_id: []const u8,
+) ![]u8 {
+    var q = try db.query(alloc, "SELECT message FROM session_queue_messages WHERE session_id = ?", &.{session_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    return try alloc.dupe(u8, row.values[0]);
+}
+
 /// Count rows for a given session_id. Returns 0 when none.
 fn rowCountForSession(
     db: *sqlite.SqliteBackend,
@@ -387,11 +595,79 @@ test "cleanupStaleBackgroundProcesses deletes a row whose PID is no longer runni
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 1), result.checked_count);
+    try testing.expectEqual(@as(usize, 1), result.notified_count);
     try testing.expectEqual(@as(usize, 1), result.deleted_count);
     try testing.expectEqual(@as(usize, 0), try rowCountForSession(&ctx.db, testing.allocator, "s_dead"));
+}
+
+test "cleanupStaleBackgroundProcesses notifies with log content then deletes the dead row" {
+    var ctx = try setupCtx();
+    defer ctx.deinit();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "bg.log", .data = "build finished ok" });
+
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const log_path = try std.fs.path.join(testing.allocator, &.{ dir_buf[0..dir_len], "bg.log" });
+    defer testing.allocator.free(log_path);
+
+    // 999_999_999 is virtually guaranteed to NOT exist on any sane system.
+    try seedRowFull(&ctx.db, testing.allocator, "s_done", 999_999_999, "make all", log_path, "running");
+
+    const result = try cleanupStaleBackgroundProcesses(.{
+        .allocator = testing.allocator,
+        .io = testing.io,
+        .db = &ctx.db,
+        .logger = null,
+        .event_bus = null,
+    });
+
+    try testing.expectEqual(@as(usize, 1), result.checked_count);
+    try testing.expectEqual(@as(usize, 1), result.notified_count);
+    try testing.expectEqual(@as(usize, 1), result.deleted_count);
+    try testing.expectEqual(@as(usize, 0), try rowCountForSession(&ctx.db, testing.allocator, "s_done"));
+
+    const msg = try queueMessageForSession(&ctx.db, testing.allocator, "s_done");
+    defer testing.allocator.free(msg);
+    try testing.expect(std.mem.indexOf(u8, msg, "\"\"\"\"\"") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "999999999") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "make all") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "build finished ok") != null);
+}
+
+test "cleanupStaleBackgroundProcesses notifies with a not-found marker and still deletes when the log is missing" {
+    var ctx = try setupCtx();
+    defer ctx.deinit();
+
+    const missing = "/tmp/nalar-bg-test-never-exists-xyz.log";
+    try seedRowFull(&ctx.db, testing.allocator, "s_gone", 999_999_998, "sleep 30", missing, "running");
+
+    const result = try cleanupStaleBackgroundProcesses(.{
+        .allocator = testing.allocator,
+        .io = testing.io,
+        .db = &ctx.db,
+        .logger = null,
+        .event_bus = null,
+    });
+
+    try testing.expectEqual(@as(usize, 1), result.checked_count);
+    try testing.expectEqual(@as(usize, 1), result.notified_count);
+    try testing.expectEqual(@as(usize, 1), result.deleted_count);
+    try testing.expectEqual(@as(usize, 0), try rowCountForSession(&ctx.db, testing.allocator, "s_gone"));
+
+    const msg = try queueMessageForSession(&ctx.db, testing.allocator, "s_gone");
+    defer testing.allocator.free(msg);
+    try testing.expect(std.mem.indexOf(u8, msg, "log file not found") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, missing) != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "999999998") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "sleep 30") != null);
 }
 
 test "cleanupStaleBackgroundProcesses keeps a row whose PID is still running (self)" {
@@ -406,6 +682,8 @@ test "cleanupStaleBackgroundProcesses keeps a row whose PID is still running (se
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 1), result.checked_count);
@@ -426,6 +704,8 @@ test "cleanupStaleBackgroundProcesses ignores the status column: keeps an alive 
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 1), result.kept_count);
@@ -444,6 +724,8 @@ test "cleanupStaleBackgroundProcesses ignores the status column: deletes a dead 
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 1), result.deleted_count);
@@ -466,6 +748,8 @@ test "cleanupStaleBackgroundProcesses processes a mixed batch and reports kept v
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 5), result.checked_count);
@@ -487,6 +771,8 @@ test "cleanupStaleBackgroundProcesses is a no-op when the table is empty" {
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 0), result.checked_count);
@@ -507,6 +793,8 @@ test "cleanupStaleBackgroundProcesses keeps a row whose PID is running even with
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 1), result.kept_count);
@@ -531,6 +819,8 @@ test "cleanupStaleBackgroundProcesses returns the DB error when the session_back
         .allocator = alloc,
         .db = &db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     // We don't pin the exact error variant — SqliteBackend maps
@@ -575,10 +865,13 @@ test "cleanupStaleBackgroundProcesses batch-chunks deletes when more than max_pa
         .allocator = testing.allocator,
         .db = &ctx.db,
         .logger = null,
+        .io = testing.io,
+        .event_bus = null,
     });
 
     try testing.expectEqual(@as(usize, 602), result.checked_count);
     try testing.expectEqual(@as(usize, 2), result.kept_count);
+    try testing.expectEqual(@as(usize, 600), result.notified_count);
     try testing.expectEqual(@as(usize, 600), result.deleted_count);
 
     // All 600 dead rows gone
