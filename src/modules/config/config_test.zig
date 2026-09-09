@@ -2431,3 +2431,60 @@ test "mcp_servers: non-bool enabled is ignored (defaults true)" {
     const server = cfg.mcpServerConfig("hello").?;
     try std.testing.expect(server.enabled);
 }
+
+test "rebuildMcpServersParsed: disabled server round-trips enabled:false" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": { "command": "mcp-hello-world", "enabled": false },
+        \\    "world": { "command": "other-cmd" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    // Sanity: typed map parsed the flag.
+    try std.testing.expect(!cfg.mcpServerConfig("hello").?.enabled);
+    try std.testing.expect(cfg.mcpServerConfig("world").?.enabled);
+
+    // Trigger rebuild via a public mutator.
+    try cfg.addMcpServerStdio(.{ .name = "newbie", .command = "cmd-new" });
+
+    const mcp_val = cfg.mcpServers().?;
+    const hello_obj = mcp_val.object.get("hello").?.object;
+    const enabled_val = hello_obj.get("enabled") orelse return error.TestExpectedEqual;
+    try std.testing.expect(enabled_val == .bool);
+    try std.testing.expect(!enabled_val.bool);
+
+    // New servers default enabled → omit-when-true.
+    const newbie_obj = mcp_val.object.get("newbie").?.object;
+    try std.testing.expect(newbie_obj.get("enabled") == null);
+    try std.testing.expect(cfg.mcpServerConfig("newbie").?.enabled);
+}
+
+test "rebuildMcpServersParsed: enabled server omits enabled key" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "mcp_servers": {
+        \\    "hello": { "command": "mcp-hello-world" }
+        \\  }
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try cfg.addMcpServerStdio(.{ .name = "second", .command = "cmd-2" });
+
+    const mcp_val = cfg.mcpServers().?;
+    try std.testing.expect(mcp_val.object.get("hello").?.object.get("enabled") == null);
+    try std.testing.expect(mcp_val.object.get("second").?.object.get("enabled") == null);
+}
