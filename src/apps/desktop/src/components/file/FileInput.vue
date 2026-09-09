@@ -67,6 +67,22 @@ const nativeFileInput = ref<HTMLInputElement | null>(null)
 // inputs (other chat tabs, search fields, etc.).
 const chatTextareaRef = ref<HTMLTextAreaElement | null>(null)
 
+// ── Autofocus on session switch ───────────────────────────────────────
+// Clicking a chat session remounts ChatView (AppLayout `:key="activeChatId"`)
+// which remounts this input. Auto-focus the textarea so the user can type
+// immediately with no second mouse click. Guards: never steal focus from
+// an open modal dialog or a background tab.
+const focusInput = () => {
+  const el = chatTextareaRef.value
+  if (!el || el.disabled) return
+  if (typeof document !== 'undefined') {
+    if (document.hidden) return
+    if (document.querySelector('[role="dialog"], .modal-open')) return
+  }
+  el.focus({ preventScroll: true })
+}
+defineExpose({ focusInput })
+
 // Pre-fill input when initialMessage is provided (after inputText is declared)
 if (props.initialMessage) {
   inputText.value = props.initialMessage
@@ -291,6 +307,8 @@ const handlePaste = async (e: ClipboardEvent) => {
 // images were attached.
 onMounted(() => {
   document.addEventListener('paste', handlePaste, true)
+  // Session switch remounts this component — land the cursor in the box.
+  nextTick(() => focusInput())
 })
 
 onBeforeUnmount(() => {

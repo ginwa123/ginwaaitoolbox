@@ -392,6 +392,12 @@ interface VirtualScrollerExposed {
 }
 const virtualScrollerRef = ref<VirtualScrollerExposed | null>(null)
 
+// Composer input ref — re-focus after the async mount chain (history +
+// stream snapshot + queued messages) so the cursor lands in the box on
+// every session switch, even if the child's own mount-focus raced the
+// history render.
+const fileInputRef = ref<{ focusInput?: () => void } | null>(null)
+
 // Persist chat scroll position per-task across mount/unmount. The
 // composable attaches its own scroll/scrollend listeners to the
 // VirtualScroller's container ref (via the computed `scrollerContainerRef`
@@ -2643,6 +2649,16 @@ onMounted(async () => {
     } catch (err) {
       console.error('Failed to get queued messages:', err)
     }
+    // Session switch remounts this view — land the cursor in the
+    // message box so the user types immediately (no second click).
+    // Best-effort: focus must never reject the mount (e.g. peek-embed
+    // hides the input, so fileInputRef stays null).
+    try {
+      await nextTick()
+      fileInputRef.value?.focusInput?.()
+    } catch {
+      // ignore — input focus is a convenience, not load-critical
+    }
   }
 })
 
@@ -3548,6 +3564,7 @@ const compactSession = async () => {
       >
         <div class="max-w-4xl mx-auto">
           <FileInput
+            ref="fileInputRef"
             :cwd="sessionCwd"
             :queuedMessages="queuedMessages"
             :isLoading="isLoading"
