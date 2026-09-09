@@ -1435,6 +1435,32 @@ jobs:
             || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
           echo "✓ nalar-desktop --smoke-test passed"
 
+      - name: Verify desktop uses bundled html/ (Windows)
+        # WINDOWS-ONLY. Guarantees nalar-desktop.exe actually selects the
+        # shipped html/ sitting beside it as its webview dir -- not the
+        # embedded stub (which is empty under -Dno-webapp-rebuild).
+        # --smoke-test resolves through the same findInstalledWebapp() the
+        # real startup uses, so "installed webapp" in its log IS the exe
+        # proving the selection. Headless CI cannot open the WebView2
+        # window; this asserts the exact dir the webview backend serves.
+        # zig-out/bin layout == zip layout (exe + DLLs + html/ side by
+        # side), so passing here means the shipped zip behaves the same.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -u
+          DESKTOP_BIN="./zig-out/bin/nalar-desktop"
+          [[ -x "$DESKTOP_BIN.exe" ]] && DESKTOP_BIN="$DESKTOP_BIN.exe"
+          timeout 30 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-html-check.log 2>&1
+          rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
+            cat /tmp/desktop-html-check.log
+            exit 1
+          fi
+          grep -q "smoke: using installed webapp at .*html" /tmp/desktop-html-check.log             || { echo "✗ desktop did NOT select the bundled html/ (embedded stub?)"; cat /tmp/desktop-html-check.log; exit 1; }
+          echo "✓ desktop uses bundled html/ as its webview dir"
+
       - name: Cache python venv + playwright chromium
         # PERF (2026-08-25): the pytest venv + Playwright Chromium
         # (~150 MB browser download) used to be recreated on EVERY run

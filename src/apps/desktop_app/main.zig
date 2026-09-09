@@ -88,9 +88,23 @@ pub fn main(init: std.process.Init) !void {
     // Headless smoke test (Chunk 2.1): bypass both spawn and webview paths
     // entirely. WebKitGTK cannot initialise without a display server, so the
     // best we can do on a CI runner is verify the binary loads, parses CLI,
-    // extracts webapp assets to a temp dir, and exits 0 cleanly. CI invokes
-    // this via `./zig-out/bin/nalar-desktop --smoke-test` after build.
+    // resolves its webapp dir, and exits 0 cleanly. CI invokes this via
+    // `./zig-out/bin/nalar-desktop --smoke-test` after build.
+    //
+    // The resolution below mirrors real startup (see ATTACH MODE): installed
+    // html/ first via findInstalledWebapp, embedded-asset temp extraction as
+    // fallback. On Windows CI this proves the exe actually selects the
+    // shipped html/ sitting beside it (the dir the webview backend is served
+    // from) instead of the embedded stub. Off-Windows the lookup is null and
+    // the embedded path runs unchanged.
     if (cfg.smoke_test) {
+        const self_exe_smoke = path_resolve.selfExePath(allocator) catch ".";
+        defer if (!std.mem.eql(u8, self_exe_smoke, ".")) allocator.free(self_exe_smoke);
+        if (path_resolve.findInstalledWebapp(allocator, self_exe_smoke)) |installed| {
+            defer allocator.free(installed);
+            std.log.info("smoke: using installed webapp at {s} (no extraction)", .{installed});
+            return;
+        }
         const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
             std.log.err("smoke: asset extraction failed: {s}", .{@errorName(err)});
             return err;
