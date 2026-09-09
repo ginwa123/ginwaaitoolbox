@@ -72,6 +72,7 @@ import CompactionCard from '../preview/CompactionCard.vue'
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import SkillsPopup from '../preview/SkillsPopup.vue'
+import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
 import WorktreeMenu from '../workspace/WorktreeMenu.vue'
 import CreatePrDialog from '../dialogs/CreatePrDialog.vue'
@@ -3745,6 +3746,10 @@ const compactSession = async () => {
                 >skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span
               >
             </button>
+            <!-- Background commands pill — self-contained: polls the
+                 session's background_processes every 5s + refreshes on
+                 queue SSE events; hidden when nothing is running. -->
+            <BackgroundCommandsPopup v-if="sessionId" :session-id="sessionId" />
           </div>
         </div>
       </div>
