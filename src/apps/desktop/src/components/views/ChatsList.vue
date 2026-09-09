@@ -536,7 +536,7 @@ defineExpose({
             <button
               v-if="item.id !== 'chat'"
               @click.stop="confirmDeleteChat(item.id)"
-              class="w-5 h-5 rounded text-sm leading-none flex items-center justify-center opacity-0 group-hover/chat:opacity-100 transition-opacity hover:text-red-400 shrink-0"
+              class="w-5 h-5 rounded text-sm leading-none flex items-center justify-center opacity-100 transition-opacity hover:text-red-400 shrink-0"
               style="color: var(--semantic-text-dim)"
               title="Delete chat"
             >

@@ -588,13 +588,13 @@ const handleItemDragEnd = () => {
             color: 'var(--semantic-text-muted)',
           }"
         >
-          <!-- Grip handle — visible on hover, gives the user a "you can
+          <!-- Grip handle — always visible, gives the user a "you can
                drag this" hint. The whole row is draggable (the parent
                <div> has draggable="true"); the handle is purely
                cosmetic. aria-hidden because the actual drag target is
                the parent row, not this span. -->
           <span
-            class="w-3 h-4 flex items-center justify-center text-xs opacity-0 group-hover/workspace:opacity-60 transition-opacity duration-200 shrink-0"
+            class="w-3 h-4 flex items-center justify-center text-xs opacity-60 transition-opacity duration-200 shrink-0"
             :style="{ color: 'var(--semantic-text-dim)' }"
             aria-hidden="true"
           >≡</span>
@@ -632,10 +632,10 @@ const handleItemDragEnd = () => {
           />
         </button>
         <!-- Rename Workspace Button. Unicode pencil glyph (✎) instead
-             of an SVG path. Still a tiny hover-only control. -->
+             of an SVG path. Always visible (no hover gate). -->
         <button
           @click.stop="handleRenameWorkspace(workspace.id, workspace.name)"
-          class="w-5 h-5 text-xs leading-none flex items-center justify-center rounded opacity-0 group-hover/workspace:opacity-100 transition-opacity duration-150 hover:text-[--semantic-text] mr-1"
+          class="w-5 h-5 text-xs leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-[--semantic-text] mr-1"
           style="color: var(--semantic-text-dim);"
           title="Rename Workspace"
           aria-label="Rename Workspace"
@@ -645,7 +645,7 @@ const handleItemDragEnd = () => {
         <!-- Delete Workspace Button -->
         <button
           @click="handleDeleteWorkspace(workspace.id)"
-          class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-0 group-hover/workspace:opacity-100 transition-opacity duration-150 hover:text-red-400 mr-1"
+          class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-red-400 mr-1"
           style="color: var(--semantic-text-dim);"
           title="Delete Workspace"
           aria-label="Delete Workspace"
