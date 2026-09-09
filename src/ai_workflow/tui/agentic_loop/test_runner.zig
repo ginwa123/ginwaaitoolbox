@@ -83,6 +83,7 @@ test {
     _ = @import("tools_exec_bash.zig");
     _ = @import("tools_exec_pwsh.zig");
     _ = @import("tools_exec_command.zig");
+    _ = @import("background_watcher.zig"); // immediate bg-completion watcher — poll PID, notify on exit (no cron wait)
 
     // 2026-08-23 spawn-subagent-live-progress — `subagent_progress.zig`
     // builds the wire payload that rides the EXISTING `llm_full` SSE

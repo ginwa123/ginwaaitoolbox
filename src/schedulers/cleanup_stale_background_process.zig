@@ -138,6 +138,181 @@ pub fn freeNotifiedSessions(allocator: std.mem.Allocator, result: *CleanupResult
 // isolation for the DELETEs likewise: one bad batch logs and the tick
 // continues to the next chunk.
 
+/// Args for `notifySingleBackgroundCompletion` — one dead
+/// (session_id, pid) pair plus the shared request-scoped handles.
+/// All slices are borrowed (caller-owned); all message buffers are
+/// allocated with `allocator` and only need to live for the call
+/// (`insertQueueMessage` binds/copies synchronously — per-request
+/// arena rule, no defer-free here).
+pub const NotifySingleBackgroundCompletionArgs = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    logger: ?*logger_mod.Logger,
+    event_bus: ?*event_bus_mod.EventBus,
+    session_id: []const u8,
+    pid_num: u32,
+    pid_str: []const u8,
+    command: []const u8,
+    log_path: []const u8,
+};
+
+/// Notify one dead background pair: read the log (capped), build the
+/// completion envelope, queue it with `is_emit_sse=true`.
+///
+/// Moved verbatim out of the `cleanupStaleBackgroundProcesses` pass-1.5
+/// loop so the immediate watcher thread (`background_watcher.zig`) can
+/// reuse the exact same path. Returns true iff notified (caller deletes).
+/// FileNotFound on the log → not-found marker (still notify). Any OTHER
+/// log-read error, message-build error, or queue-INSERT error → false
+/// (caller leaves the row for the next tick to retry). Never panics —
+/// every failure is caught and logged via `logger.?errFmt`.
+pub fn notifySingleBackgroundCompletion(args: NotifySingleBackgroundCompletionArgs) bool {
+    const allocator = args.allocator;
+    const io = args.io;
+    const db = args.db;
+    const logger = args.logger;
+    const event_bus = args.event_bus;
+
+    // Read the log head. FileNotFound → not-found marker (still
+    // notify + delete). Any OTHER read error → skip notify for
+    // this pair; it stays for the next tick to retry.
+    var log_content: []const u8 = "";
+    var was_truncated: bool = false;
+    var total_bytes: usize = 0;
+    if (bg_proc.readLogTruncated(allocator, io, args.log_path, bg_proc.completion_log_cap_bytes)) |tlog| {
+        // `tlog.content` is allocator-owned — no free (arena rule).
+        log_content = tlog.content;
+        was_truncated = tlog.truncated;
+        total_bytes = tlog.total_bytes;
+    } else |err| {
+        if (err == error.FileNotFound) {
+            log_content = std.fmt.allocPrint(
+                allocator,
+                "(log file not found: {s})",
+                .{args.log_path},
+            ) catch {
+                if (logger) |log| {
+                    log.errFmt(
+                        "[cleanup_stale_background_process] not-found marker alloc failed for session {s} pid {s}\n",
+                        .{ args.session_id, args.pid_str },
+                    );
+                }
+                return false;
+            };
+            was_truncated = false;
+            total_bytes = 0;
+        } else {
+            if (logger) |log| {
+                log.errFmt(
+                    "[cleanup_stale_background_process] log read failed for session {s} pid {s} ({s}): {s} — retry next tick\n",
+                    .{ args.session_id, args.pid_str, args.log_path, @errorName(err) },
+                );
+            }
+            return false;
+        }
+    }
+
+    const message = bg_proc.buildCompletionMessage(
+        allocator,
+        args.command,
+        args.pid_num,
+        log_content,
+        was_truncated,
+        total_bytes,
+        args.log_path,
+    ) catch |err| {
+        if (logger) |log| {
+            log.errFmt(
+                "[cleanup_stale_background_process] completion message build failed for session {s} pid {s}: {s} — retry next tick\n",
+                .{ args.session_id, args.pid_str, @errorName(err) },
+            );
+        }
+        return false;
+    };
+
+    ai_workflow.insertQueueMessage(.{
+        .allocator = allocator,
+        .db = db,
+        .logger = logger,
+        .session_id = args.session_id,
+        .message = message,
+        .image_url = "",
+        .event_bus = event_bus,
+        .is_emit_sse = true,
+    }) catch |err| {
+        if (logger) |log| {
+            log.errFmt(
+                "[cleanup_stale_background_process] queue insert failed for session {s} pid {s}: {s} — retry next tick\n",
+                .{ args.session_id, args.pid_str, @errorName(err) },
+            );
+        }
+        return false;
+    };
+
+    return true;
+}
+
+/// Wake one notified session: if no worker is running on it, resolve the
+/// session row (safe defaults on miss) and kick an agent run via
+/// `emit_run_agent` with `skip_initial_queue_message=true` so the run
+/// drains the queued completion without duplicating a user message.
+///
+/// Moved verbatim out of the `handle()` wake loop so the immediate
+/// watcher thread can reuse the exact same path. All errors are caught
+/// and logged — never panics, never propagates.
+pub fn wakeSessionForCompletion(di: *nalarcore.ContextIPCTui, allocator: std.mem.Allocator, sid: []const u8) void {
+    const logger = di.logger;
+
+    const running = ai_workflow.isWorkerRunning(allocator, di.db, sid);
+    if (!shouldWake(running)) return;
+
+    // Resolve the session row for the emit fields (same shape as
+    // `startAgentUseCase` step 3). Missing row → safe defaults;
+    // `emit_run_agent.insert_worker` upserts the session anyway.
+    // Slices are duped into `allocator` BEFORE the row is released so they
+    // outlive `row.deinit`.
+    var sname: []const u8 = "";
+    var scwd: []const u8 = "";
+    var sprofile: []const u8 = "";
+    var sretry: []const u8 = "0";
+    if (di.db.query(allocator, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{sid})) |rows| {
+        var q = rows;
+        defer q.deinit();
+        if (q.next() catch null) |row| {
+            defer row.deinit(allocator);
+            if (row.values.len >= 4) {
+                sname = allocator.dupe(u8, row.values[0]) catch "";
+                scwd = allocator.dupe(u8, row.values[1]) catch "";
+                sprofile = allocator.dupe(u8, row.values[2]) catch "";
+                sretry = allocator.dupe(u8, row.values[3]) catch "0";
+            }
+        }
+    } else |_| {
+        // Query failed (e.g. transient DB blip) — fall through with
+        // defaults; the emit below still wakes the worker.
+    }
+
+    di.emit_run_agent(.{
+        .session_id = sid,
+        .session_name = sname,
+        .queue_message = "",
+        .cwd = scwd,
+        .body_message = "",
+        .allowed_tools = "",
+        .image_urls = "",
+        .selected_profile_model = sprofile,
+        .is_auto_retry_until_stop = sretry,
+        .skip_initial_queue_message = true,
+    }) catch |err| {
+        logger.errFmt(
+            "[cleanup_stale_background_process] wake emit failed for session {s}: {s}\n",
+            .{ sid, @errorName(err) },
+        );
+        return;
+    };
+}
+
 /// Max (session_id, pid) pairs per single DELETE statement.
 /// `SQLITE_MAX_VARIABLE_NUMBER` defaults to 999; each pair = 2 params.
 const max_pairs_per_stmt: usize = 499;
@@ -280,85 +455,25 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
     // binds/copies them into SQLite synchronously, so they only need to
     // live for the duration of the call. No defer-free of arena memory
     // here per the per-request arena rule.
+    //
+    // Body lives in `notifySingleBackgroundCompletion` (shared with the
+    // immediate watcher thread) — this loop is just the per-pair call.
     for (dead.items) |*pair| {
-        // Read the log head. FileNotFound → not-found marker (still
-        // notify + delete). Any OTHER read error → skip notify for
-        // this pair; it stays for the next tick to retry.
-        var log_content: []const u8 = "";
-        var was_truncated: bool = false;
-        var total_bytes: usize = 0;
-        if (bg_proc.readLogTruncated(a, io, pair.log_path, bg_proc.completion_log_cap_bytes)) |tlog| {
-            // `tlog.content` is arena-owned — no free (arena rule).
-            log_content = tlog.content;
-            was_truncated = tlog.truncated;
-            total_bytes = tlog.total_bytes;
-        } else |err| {
-            if (err == error.FileNotFound) {
-                log_content = std.fmt.allocPrint(
-                    a,
-                    "(log file not found: {s})",
-                    .{pair.log_path},
-                ) catch {
-                    if (logger) |log| {
-                        log.errFmt(
-                            "[cleanup_stale_background_process] not-found marker alloc failed for session {s} pid {s}\n",
-                            .{ pair.session_id, pair.pid },
-                        );
-                    }
-                    continue;
-                };
-                was_truncated = false;
-                total_bytes = 0;
-            } else {
-                if (logger) |log| {
-                    log.errFmt(
-                        "[cleanup_stale_background_process] log read failed for session {s} pid {s} ({s}): {s} — retry next tick\n",
-                        .{ pair.session_id, pair.pid, pair.log_path, @errorName(err) },
-                    );
-                }
-                continue;
-            }
-        }
-
-        const message = bg_proc.buildCompletionMessage(
-            a,
-            pair.command,
-            pair.pid_num,
-            log_content,
-            was_truncated,
-            total_bytes,
-            pair.log_path,
-        ) catch |err| {
-            if (logger) |log| {
-                log.errFmt(
-                    "[cleanup_stale_background_process] completion message build failed for session {s} pid {s}: {s} — retry next tick\n",
-                    .{ pair.session_id, pair.pid, @errorName(err) },
-                );
-            }
-            continue;
-        };
-
-        ai_workflow.insertQueueMessage(.{
+        if (notifySingleBackgroundCompletion(.{
             .allocator = a,
+            .io = io,
             .db = db,
             .logger = logger,
-            .session_id = pair.session_id,
-            .message = message,
-            .image_url = "",
             .event_bus = event_bus,
-            .is_emit_sse = true,
-        }) catch |err| {
-            if (logger) |log| {
-                log.errFmt(
-                    "[cleanup_stale_background_process] queue insert failed for session {s} pid {s}: {s} — retry next tick\n",
-                    .{ pair.session_id, pair.pid, @errorName(err) },
-                );
-            }
-            continue;
-        };
-
-        pair.notified = true;
-        result.notified_count += 1;
+            .session_id = pair.session_id,
+            .pid_num = pair.pid_num,
+            .pid_str = pair.pid,
+            .command = pair.command,
+            .log_path = pair.log_path,
+        })) {
+            pair.notified = true;
+            result.notified_count += 1;
+        }
     }
 
     // Task 3: expose the deduped notified session_ids for the wake loop in
@@ -568,55 +683,16 @@ pub fn handle(ctx: ?*anyopaque, now_unix: i64) void {
     // infallible by design; session lookup + emit are caught) is logged
     // and the loop continues. `result.notified_sessions` is arena-owned
     // (`a`) — no free needed (per-request arena rule).
+    //
+    // Body lives in `wakeSessionForCompletion` (shared with the immediate
+    // watcher thread) — this loop is just the per-session call. `woken`
+    // counts attempted wakes (emit failures are logged inside and still
+    // count — they are rare and the next tick retries via cron fallback).
     var woken_count: usize = 0;
     for (result.notified_sessions) |sid| {
         const running = ai_workflow.isWorkerRunning(a, di.db, sid);
         if (!shouldWake(running)) continue;
-
-        // Resolve the session row for the emit fields (same shape as
-        // `startAgentUseCase` step 3). Missing row → safe defaults;
-        // `emit_run_agent.insert_worker` upserts the session anyway.
-        // Slices are duped into `a` BEFORE the row is released so they
-        // outlive `row.deinit`.
-        var sname: []const u8 = "";
-        var scwd: []const u8 = "";
-        var sprofile: []const u8 = "";
-        var sretry: []const u8 = "0";
-        if (di.db.query(a, "SELECT name, COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?", &.{sid})) |rows| {
-            var q = rows;
-            defer q.deinit();
-            if (q.next() catch null) |row| {
-                defer row.deinit(a);
-                if (row.values.len >= 4) {
-                    sname = a.dupe(u8, row.values[0]) catch "";
-                    scwd = a.dupe(u8, row.values[1]) catch "";
-                    sprofile = a.dupe(u8, row.values[2]) catch "";
-                    sretry = a.dupe(u8, row.values[3]) catch "0";
-                }
-            }
-        } else |_| {
-            // Query failed (e.g. transient DB blip) — fall through with
-            // defaults; the emit below still wakes the worker.
-        }
-
-        di.emit_run_agent(.{
-            .session_id = sid,
-            .session_name = sname,
-            .queue_message = "",
-            .cwd = scwd,
-            .body_message = "",
-            .allowed_tools = "",
-            .image_urls = "",
-            .selected_profile_model = sprofile,
-            .is_auto_retry_until_stop = sretry,
-            .skip_initial_queue_message = true,
-        }) catch |err| {
-            logger.errFmt(
-                "[cleanup_stale_background_process] wake emit failed for session {s}: {s}\n",
-                .{ sid, @errorName(err) },
-            );
-            continue;
-        };
+        wakeSessionForCompletion(di, a, sid);
         woken_count += 1;
     }
 
