@@ -226,15 +226,19 @@ fn macosSelfExePath(allocator: std.mem.Allocator) SelfExeError![]u8 {
 
 /// Windows-only shipped webapp lookup (persistent static dir).
 ///
-/// Returns the duped absolute path of the installed `webapp/` dir when its
+/// Returns the duped absolute path of the installed `html/` dir when its
 /// `index.html` exists, else null. Caller owns the slice and must
 /// `allocator.free` it (but must NOT delete the dir -- it is the user's
 /// installed copy, not a per-run temp extraction).
 ///
 /// Order (first hit wins):
-///   1. %LOCALAPPDATA%\nalar\webapp\index.html (Install-Nalar.ps1 layout)
-///   2. <dir_of_self_exe>\webapp\index.html (portable / repo-checkout layout:
-///      webapp/ sitting next to nalar-desktop.exe, e.g. zig-out/bin/webapp)
+///   1. %LOCALAPPDATA%\nalar\html\index.html (Install-Nalar.ps1 layout)
+///   2. <dir_of_self_exe>\html\index.html (portable / repo-checkout layout:
+///      html/ sitting next to nalar-desktop.exe, e.g. zig-out/bin/html)
+///   3. Legacy `webapp/` fallbacks (pre-rename installs): same two probes
+///      with `webapp` instead of `html`, so existing
+///      %LOCALAPPDATA%\nalar\webapp installs keep working until the user
+///      re-runs Install-Nalar.ps1 (which migrates webapp/ -> html/).
 ///
 /// Non-Windows returns null immediately -- Linux/macOS keep the embedded
 /// + temp-extraction flow unchanged (Windows-only feature per request).
@@ -244,7 +248,31 @@ pub fn findInstalledWebapp(
 ) ?[]u8 {
     if (builtin.os.tag != .windows) return null;
 
-    // 1. %LOCALAPPDATA%\nalar\webapp\index.html
+    // 1. %LOCALAPPDATA%\nalar\html\index.html
+    if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
+        const appdata = std.mem.sliceTo(appdata_z, 0);
+        const probe = std.fs.path.join(allocator, &.{ appdata, "nalar", "html", "index.html" }) catch null;
+        if (probe) |p| {
+            defer allocator.free(p);
+            if (fileExists(p)) {
+                return std.fs.path.join(allocator, &.{ appdata, "nalar", "html" }) catch null;
+            }
+        }
+    }
+
+    // 2. <exe_dir>\html\index.html (only when we know our own dir).
+    if (std.fs.path.isAbsolute(self_exe_path)) {
+        const self_dir = std.fs.path.dirname(self_exe_path) orelse ".";
+        const probe = std.fs.path.join(allocator, &.{ self_dir, "html", "index.html" }) catch null;
+        if (probe) |p| {
+            defer allocator.free(p);
+            if (fileExists(p)) {
+                return std.fs.path.join(allocator, &.{ self_dir, "html" }) catch null;
+            }
+        }
+    }
+
+    // 3. Legacy webapp/ fallbacks (pre-rename). Removed once all installs migrate.
     if (std.c.getenv("LOCALAPPDATA")) |appdata_z| {
         const appdata = std.mem.sliceTo(appdata_z, 0);
         const probe = std.fs.path.join(allocator, &.{ appdata, "nalar", "webapp", "index.html" }) catch null;
@@ -255,8 +283,6 @@ pub fn findInstalledWebapp(
             }
         }
     }
-
-    // 2. <exe_dir>\webapp\index.html (only when we know our own dir).
     if (std.fs.path.isAbsolute(self_exe_path)) {
         const self_dir = std.fs.path.dirname(self_exe_path) orelse ".";
         const probe = std.fs.path.join(allocator, &.{ self_dir, "webapp", "index.html" }) catch null;

@@ -66,7 +66,7 @@ test "findInstalledWebapp: returns null for nonexistent exe dir without crashing
         "/nonexistent/dir/nalar-desktop",
     );
     // On non-Windows this is unconditionally null; on Windows CI neither
-    // %LOCALAPPDATA%\nalar\webapp\index.html nor the nonexistent exe-dir
+    // %LOCALAPPDATA%\nalar\html\index.html nor the nonexistent exe-dir
     // candidate exists, so null as well. Either way: no panic, no leak.
     if (result) |r| allocator.free(r);
 }

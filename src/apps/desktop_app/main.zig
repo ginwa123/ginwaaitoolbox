@@ -127,12 +127,12 @@ pub fn main(init: std.process.Init) !void {
 
     // 1. Choose the webapp dir to serve via `--static-dir` on auto-spawn.
     //    Windows-only shipped layout: prefer the persistent installed copy
-    //    (%LOCALAPPDATA%\nalar\webapp, then webapp/ next to the exe -- see
+    //    (%LOCALAPPDATA%\nalar\html, then html/ next to the exe -- see
     //    path_resolve.findInstalledWebapp) so close/reopen and reboot keep
     //    working with no per-run temp extraction. Falls back to
     //    embedded-asset temp extraction when no installed copy exists
     //    (dev runs from zig-out/bin without install, old zips without
-    //    webapp/). Linux/macOS always extract (helper returns null there).
+    //    html/). Linux/macOS always extract (helper returns null there).
     //
     //    Ownership: extracted dirs are deleted at exit via
     //    extraction.cleanup; an installed dir is only freed (never

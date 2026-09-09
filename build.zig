@@ -2311,9 +2311,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     installVcpkgDlls(b, &desktop_install.step);
     installVcpkgDlls(b, b.getInstallStep());
     // Windows-only shipped webapp (persistent, no temp extraction):
-    // copy src/apps/desktop/dist → zig-out/bin/webapp so the Windows
+    // copy src/apps/desktop/dist → zig-out/bin/html so the Windows
     // release zip can bundle it and Install-Nalar.ps1 can install it to
-    // %LOCALAPPDATA%\nalar\webapp. The desktop (Windows-only, see
+    // %LOCALAPPDATA%\nalar\html. The desktop (Windows-only, see
     // path_resolve.findInstalledWebapp) prefers that persistent dir and
     // only falls back to embedded-asset temp extraction when it is
     // missing (dev runs, broken installs). Linux/macOS ignore this dir
@@ -2333,14 +2333,14 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         const webapp_dir_install = b.addInstallDirectory(.{
             .source_dir = b.path("src/apps/desktop/dist"),
             .install_dir = .bin,
-            .install_subdir = "webapp",
+            .install_subdir = "html",
         });
         if (!no_webapp_rebuild) {
             webapp_dir_install.step.dependOn(&webapp_rebuild_codegen.step);
         }
         desktop_install.step.dependOn(&webapp_dir_install.step);
     } else {
-        std.log.warn("webapp dist/index.html missing -- skipping zig-out/bin/webapp (desktop falls back to embedded extraction)", .{});
+        std.log.warn("webapp dist/index.html missing -- skipping zig-out/bin/html (desktop falls back to embedded extraction)", .{});
     }
     // Late alias kept for comment continuity — actual flag is defined
     // early (near target/optimize) so mcp/webapp sections could be gated.
