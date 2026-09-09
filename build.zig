@@ -957,9 +957,23 @@ pub fn build(b: *std.Build) void {
     // location. Default `../../vendor/sqlite3` resolves to the project
     // root's vendor/sqlite3/ — works for the default layout. Override
     // with `-Dvendor-dir=...` if you move either side.
+    //
+    // === Database backend selector (APP-CONTROLLED) ===
+    // The app decides here; the `databases` package only declares the
+    // passthrough `enable-postgres` bool. Default `sqlite` = sqlite-only:
+    // Postgres.zig stays on disk but is never @imported, libpq is never
+    // linked, pg tests are skipped. Pass `-Ddb=postgres` to opt in to
+    // sqlite+postgres (needs libpq-fe.h + libpq.so).
+    const db_backend = b.option(
+        []const u8,
+        "db",
+        "Database backend: 'sqlite' (default, no libpq) or 'postgres' (sqlite+postgres, needs libpq)",
+    ) orelse "sqlite";
+    const enable_postgres = std.mem.eql(u8, db_backend, "postgres");
     const databases_dep = b.dependency("databases", .{
         .target = target,
         .optimize = optimize,
+        .@"enable-postgres" = enable_postgres,
     });
     const databases_mod = databases_dep.module("databases");
     mod.addImport("databases", databases_mod);

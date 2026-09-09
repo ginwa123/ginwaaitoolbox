@@ -3,6 +3,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
+const database = nalarcore.database;
 // `helpers` is now its own Zig module (see `src/helpers/build.zig`);
 // promoted out of `nalarcore` so multiple sub-packages can share a
 // single module instance. The root build.zig wires it via
@@ -81,9 +82,9 @@ pub fn main(init: std.process.Init) !void {
     const db_path = try helpers.db_path.getDbPath(allocator, io, environment);
     defer allocator.free(db_path);
 
-    var dbSqlite: sqlite.SqliteBackend = .{};
+    var dbSqlite: database.Db = .{};
     defer dbSqlite.deinit();
-    try dbSqlite.init(io, db_path);
+    try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
 
     var migrationManager = migration.MigrationManager.init(allocator, &dbSqlite);
     defer migrationManager.deinit();
