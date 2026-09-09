@@ -101,6 +101,20 @@ pub const ContextIPCTui = struct {
     mcp_stdio_registry: ?*mcp_stdio.StdioRegistry = null,
     mcp_http_registry: ?*mcp_http.HttpRegistry = null,
 
+    /// Fetch-once MCP tools cache (plan: mcp-fetch-once-cache).
+    /// First workflow run fetches via `buildMCPToolsRun` and publishes
+    /// here; every later run (new session, queued message, retry) reads
+    /// the snapshot instead of doing `tools/list` I/O again.
+    /// `mcp_tools_init=false` means never-fetched-or-cleared → the next
+    /// workflow run must fetch. Mutation sites (PUT /api/config/nalar,
+    /// add_mcp_server) only `clearMcpToolsCache()` — the next workflow
+    /// run pays the one fetch. Guarded by a spinlock (Zig 0.16 has no
+    /// `std.Thread.Mutex`); helpers are io-free so workflow + HTTP
+    /// handlers can call them without threading `io` through.
+    mcp_tools_cache: ?[]tool_models.AgentTool = null,
+    mcp_tools_init: bool = false,
+    mcp_tools_lock: std.atomic.Mutex = .unlocked,
+
     /// Schedule an async session-create task on the Io group.
     ///
     /// Lifetime contract: the string fields of `obj` are duped into
@@ -266,6 +280,59 @@ pub const ContextIPCTui = struct {
             .is_auto_retry_until_stop = effective_auto_retry,
             .last_finish_reason = "",
         });
+    }
+
+    /// Fetch-once cache readers/writers (plan: mcp-fetch-once-cache).
+    /// All three are io-free (spinlock) so workflow + HTTP handlers share them.
+
+    pub fn isMcpToolsInit(self: *ContextIPCTui) bool {
+        mcpToolsLock(&self.mcp_tools_lock);
+        defer mcpToolsUnlock(&self.mcp_tools_lock);
+        return self.mcp_tools_init;
+    }
+
+    /// Snapshot the cache onto `run_allocator`. Returns `null` when the
+    /// cache is uninitialized OR when it was initialized with `null`
+    /// (no `mcp_servers` object). The caller owns the returned slice.
+    pub fn getMcpToolsCached(self: *ContextIPCTui, run_allocator: std.mem.Allocator) ?[]tool_models.AgentTool {
+        mcpToolsLock(&self.mcp_tools_lock);
+        defer mcpToolsUnlock(&self.mcp_tools_lock);
+        if (!self.mcp_tools_init) return null;
+        const cached = self.mcp_tools_cache orelse return null;
+        return dupeAgentTools(run_allocator, cached) catch null;
+    }
+
+    /// Publish a fresh fetch. Deep-dupes `tools` onto `self.allocator`
+    /// (process lifetime), frees the previous cache, marks initialized.
+    /// `tools=null` (no servers / fetch failed) is a valid publish and
+    /// marks initialized ONLY when `mark_init=true` — workflow passes
+    /// `false` on error so the next run retries instead of poisoning.
+    pub fn storeMcpToolsCache(self: *ContextIPCTui, tools_in: ?[]tool_models.AgentTool, mark_init: bool) void {
+        mcpToolsLock(&self.mcp_tools_lock);
+        defer mcpToolsUnlock(&self.mcp_tools_lock);
+        if (self.mcp_tools_cache) |old| {
+            freeAgentTools(self.allocator, old);
+            self.mcp_tools_cache = null;
+        }
+        if (tools_in) |t| {
+            self.mcp_tools_cache = dupeAgentTools(self.allocator, t) catch null;
+        } else {
+            self.mcp_tools_cache = null;
+        }
+        if (mark_init) self.mcp_tools_init = true;
+    }
+
+    /// Lazy-invalidate: free + mark uninitialized. The next workflow run
+    /// does the one refetch. Called from PUT /api/config/nalar and
+    /// add_mcp_server after their `setLlmConfig` swap.
+    pub fn clearMcpToolsCache(self: *ContextIPCTui) void {
+        mcpToolsLock(&self.mcp_tools_lock);
+        defer mcpToolsUnlock(&self.mcp_tools_lock);
+        if (self.mcp_tools_cache) |old| {
+            freeAgentTools(self.allocator, old);
+            self.mcp_tools_cache = null;
+        }
+        self.mcp_tools_init = false;
     }
 };
 
@@ -613,6 +680,93 @@ pub fn mcpHttpRegistry(fallback: std.mem.Allocator) *mcp_http.HttpRegistry {
     } else |_| {}
     return mcp_http.HttpRegistry.global(fallback);
 }
+
+/// Spinlock helper for the fetch-once tools cache (same pattern as
+/// `mcp_stdio.StdioRegistry` / `mcp_http.HttpRegistry` — Zig 0.16 has
+/// no `std.Thread.Mutex` in the public surface).
+fn mcpToolsLock(m: *std.atomic.Mutex) void {
+    while (!m.tryLock()) std.atomic.spinLoopHint();
+}
+
+fn mcpToolsUnlock(m: *std.atomic.Mutex) void {
+    m.unlock();
+}
+
+/// Deep-dupe one `AgentTool` (all strings + nested slices) onto
+/// `allocator`. Mirrors the ownership contract of
+/// `buildMCPToolsRun` (caller owns everything).
+fn dupeAgentTool(allocator: std.mem.Allocator, src: tool_models.AgentTool) !tool_models.AgentTool {
+    const props = try allocator.alloc(tool_models.ToolProperty, src.function.parameters.properties.len);
+    errdefer allocator.free(props);
+    for (src.function.parameters.properties, 0..) |p, i| {
+        props[i] = .{
+            .name = try allocator.dupe(u8, p.name),
+            .type = try allocator.dupe(u8, p.type),
+            .description = try allocator.dupe(u8, p.description),
+        };
+    }
+    errdefer {
+        for (props) |p| {
+            allocator.free(p.name);
+            allocator.free(p.type);
+            allocator.free(p.description);
+        }
+        allocator.free(props);
+    }
+    const required = try allocator.alloc([]const u8, src.function.parameters.required.len);
+    errdefer allocator.free(required);
+    for (src.function.parameters.required, 0..) |r, i| {
+        required[i] = try allocator.dupe(u8, r);
+    }
+    errdefer for (required) |r| allocator.free(r);
+    return .{
+        .type = try allocator.dupe(u8, src.type),
+        .function = .{
+            .name = try allocator.dupe(u8, src.function.name),
+            .description = try allocator.dupe(u8, src.function.description),
+            .parameters = .{
+                .type = try allocator.dupe(u8, src.function.parameters.type),
+                .properties = props,
+                .required = required,
+            },
+            .system_prompt = try allocator.dupe(u8, src.function.system_prompt),
+        },
+    };
+}
+
+/// Free one `AgentTool` previously duped with `dupeAgentTool`.
+fn freeAgentTool(allocator: std.mem.Allocator, tool: tool_models.AgentTool) void {
+    allocator.free(tool.type);
+    allocator.free(tool.function.name);
+    allocator.free(tool.function.description);
+    allocator.free(tool.function.parameters.type);
+    for (tool.function.parameters.properties) |p| {
+        allocator.free(p.name);
+        allocator.free(p.type);
+        allocator.free(p.description);
+    }
+    allocator.free(tool.function.parameters.properties);
+    for (tool.function.parameters.required) |r| allocator.free(r);
+    allocator.free(tool.function.parameters.required);
+    allocator.free(tool.function.system_prompt);
+}
+
+/// Free a whole cached slice.
+fn freeAgentTools(allocator: std.mem.Allocator, list: []tool_models.AgentTool) void {
+    for (list) |t| freeAgentTool(allocator, t);
+    allocator.free(list);
+}
+
+/// Dupe a whole slice (used for both store + snapshot paths).
+fn dupeAgentTools(allocator: std.mem.Allocator, src: []tool_models.AgentTool) ![]tool_models.AgentTool {
+    const out = try allocator.alloc(tool_models.AgentTool, src.len);
+    errdefer allocator.free(out);
+    for (src, 0..) |t, i| {
+        out[i] = try dupeAgentTool(allocator, t);
+    }
+    return out;
+}
+
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
 pub const add_skill = @import("modules/agent/tools/add_skill.zig");
 pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
@@ -765,4 +919,94 @@ test {
     // 2026-08-28-mcp-streamable-http.md (Task 2).
     _ = @import("modules/agent/mcp/mcp/mcp_http.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
+}
+
+// ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───
+
+fn mcpCacheTestTool(allocator: std.mem.Allocator) !tool_models.AgentTool {
+    const props = try allocator.alloc(tool_models.ToolProperty, 1);
+    props[0] = .{
+        .name = try allocator.dupe(u8, "q"),
+        .type = try allocator.dupe(u8, "string"),
+        .description = try allocator.dupe(u8, "query"),
+    };
+    const required = try allocator.alloc([]const u8, 1);
+    required[0] = try allocator.dupe(u8, "q");
+    return .{
+        .type = try allocator.dupe(u8, "function"),
+        .function = .{
+            .name = try allocator.dupe(u8, "mcp_srv_do"),
+            .description = try allocator.dupe(u8, "does things"),
+            .parameters = .{
+                .type = try allocator.dupe(u8, "object"),
+                .properties = props,
+                .required = required,
+            },
+            .system_prompt = try allocator.dupe(u8, ""),
+        },
+    };
+}
+
+fn mcpCacheFreeTestTool(allocator: std.mem.Allocator, tool: tool_models.AgentTool) void {
+    freeAgentTool(allocator, tool);
+}
+
+fn mcpCacheTestCtx() ContextIPCTui {
+    var ctx: ContextIPCTui = undefined;
+    ctx.allocator = std.testing.allocator;
+    ctx.mcp_tools_cache = null;
+    ctx.mcp_tools_init = false;
+    ctx.mcp_tools_lock = .unlocked;
+    return ctx;
+}
+
+test "mcp fetch-once: uninitialized cache returns null snapshot" {
+    var ctx = mcpCacheTestCtx();
+    try std.testing.expect(!ctx.isMcpToolsInit());
+    try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
+}
+
+test "mcp fetch-once: store + snapshot roundtrip with deep-dupe isolation" {
+    var ctx = mcpCacheTestCtx();
+    const src = try std.testing.allocator.alloc(tool_models.AgentTool, 1);
+    defer std.testing.allocator.free(src);
+    src[0] = try mcpCacheTestTool(std.testing.allocator);
+    defer mcpCacheFreeTestTool(std.testing.allocator, src[0]);
+    ctx.storeMcpToolsCache(src, true);
+    defer ctx.clearMcpToolsCache();
+    try std.testing.expect(ctx.isMcpToolsInit());
+    const snap = ctx.getMcpToolsCached(std.testing.allocator) orelse return error.SnapshotMiss;
+    defer {
+        for (snap) |s| freeAgentTool(std.testing.allocator, s);
+        std.testing.allocator.free(snap);
+    }
+    try std.testing.expectEqual(@as(usize, 1), snap.len);
+    try std.testing.expectEqualStrings("mcp_srv_do", snap[0].function.name);
+    // Snapshots must be independently duped (not aliased to the cache):
+    // different backing pointers prove the deep dupe.
+    try std.testing.expect(snap[0].function.name.ptr != ctx.mcp_tools_cache.?[0].function.name.ptr);
+    try std.testing.expect(snap[0].function.parameters.properties.ptr != ctx.mcp_tools_cache.?[0].function.parameters.properties.ptr);
+}
+
+test "mcp fetch-once: clear resets to uninitialized" {
+    var ctx = mcpCacheTestCtx();
+    const src = try std.testing.allocator.alloc(tool_models.AgentTool, 1);
+    defer std.testing.allocator.free(src);
+    src[0] = try mcpCacheTestTool(std.testing.allocator);
+    defer mcpCacheFreeTestTool(std.testing.allocator, src[0]);
+    ctx.storeMcpToolsCache(src, true);
+    try std.testing.expect(ctx.isMcpToolsInit());
+    ctx.clearMcpToolsCache();
+    try std.testing.expect(!ctx.isMcpToolsInit());
+    try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
+}
+
+test "mcp fetch-once: error publish (mark_init=false) leaves retry open" {
+    var ctx = mcpCacheTestCtx();
+    ctx.storeMcpToolsCache(null, false);
+    try std.testing.expect(!ctx.isMcpToolsInit());
+    // A null publish WITH init (no servers configured) is a valid cached state.
+    ctx.storeMcpToolsCache(null, true);
+    try std.testing.expect(ctx.isMcpToolsInit());
+    try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
 }

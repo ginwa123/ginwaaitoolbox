@@ -466,6 +466,21 @@ pub const HttpRegistry = struct {
         return client;
     }
 
+    /// Evict one cached client by server name (plan: mcp-fetch-once-cache).
+    /// HTTP equivalent of `StdioRegistry.markStale`: the next
+    /// `getOrConnect` rebuilds the client with the new URL/headers.
+    /// No-op when the name isn't cached. Threadsafe.
+    pub fn evict(self: *HttpRegistry, name: []const u8) void {
+        mutexLock(&self.mutex);
+        defer self.mutex.unlock();
+        if (self.entries.fetchRemove(name)) |kv| {
+            kv.value.deinit();
+            // NOTE: key + client backing memory lives in the registry
+            // arena and is reclaimed at `deinit` — same as before, no
+            // per-evict free. Entries map removal is the correctness fix.
+        }
+    }
+
     // Process-global singleton. Mirrors `mcp_stdio.StdioRegistry.global`.
     // Lives for the whole nalar process; cleaned up via the shutdown
     // hook in main.zig (deinitGlobal).
