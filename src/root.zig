@@ -371,6 +371,39 @@ pub fn unregisterSessionClient(session_id: []const u8, is_use_lock: bool) void {
     }
 }
 
+/// Remove ONE client_id from a routing key's list (disconnect path).
+/// Drops the map entry only when its list becomes empty. Unlike
+/// `unregisterSessionClient` (which removes ALL clients under the key),
+/// surviving connections sharing the key keep receiving broadcasts --
+/// a single flaky connection must never black out every other client.
+/// Callers must NOT unsubscribe the shared event_bus callback here: it is
+/// one static fn per key shared by all connections, and resubscribe on
+/// (re)connect is idempotent (first-wins), so leaving it registered is
+/// always safe -- forwardToClients early-returns on an empty list.
+pub fn unregisterSessionClientId(routing_key: []const u8, client_id: [16]u8, is_use_lock: bool) void {
+    _ = is_use_lock;
+    const di = getSingleton() catch return;
+    const allocator = di.allocator;
+    const io = di.io;
+    di.session_map_lock.lock(io) catch {};
+    defer di.session_map_lock.unlock(io);
+    const list = di.session_to_client_ids.getPtr(routing_key) orelse return;
+    var idx: ?usize = null;
+    for (list.items, 0..) |existing_id, i| {
+        if (std.mem.eql(u8, &existing_id, &client_id)) {
+            idx = i;
+            break;
+        }
+    }
+    _ = list.orderedRemove(idx orelse return);
+    if (list.items.len == 0) {
+        list.deinit(allocator);
+        if (di.session_to_client_ids.fetchRemove(routing_key)) |kv| {
+            allocator.free(kv.key);
+        }
+    }
+}
+
 /// Get client_id for a session, if registered (returns first client if multiple)
 pub fn getClientIdForSession(session_id: []const u8, is_use_lock: bool) ?[16]u8 {
     _ = is_use_lock;
@@ -445,7 +478,6 @@ pub fn getSessionIdForClient(client_id: [16]u8, is_use_lock: bool) ?[]const u8 {
 pub fn handleClientDisconnect(client_id: [16]u8) void {
     const di = getSingleton() catch return;
     const io = di.io;
-    const ev_bus = di.event_bus;
 
     di.on_disconnect_lock.lock(io) catch {};
     defer di.on_disconnect_lock.unlock(io);
@@ -497,8 +529,8 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
 
     for (routing_keys_to_drop.items) |rk| {
         defer di.allocator.free(rk);
-        unregisterSessionClient(rk, false);
-        ev_bus.unsubscribe(rk);
+        unregisterSessionClientId(rk, client_id, false);
+        std.log.info("sse disconnect: client {x} dropped from routing key '{s}'", .{ client_id, rk });
     }
 }
 
