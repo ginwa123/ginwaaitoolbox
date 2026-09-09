@@ -131,15 +131,17 @@ const firstProcessingTaskId = computed<string | null>(() => {
 })
 
 const handleClick = () => {
+  // ALL item types (including kanban) toggle expand/collapse here.
   // Kanban items render the board in the main content area (see
-  // AppLayout.vue's KanbanView branch) — there's no inline list to
-  // expand, so skip the toggle. Folders and other non-kanban types
-  // keep the existing expand/collapse behavior. The selectItem event
+  // AppLayout.vue's KanbanView branch) AND show their tasks inline
+  // when expanded — same as folders. Only `design` skips the toggle
+  // (its chevron is a separate click target via handleChevronToggle
+  // so expanding doesn't activate the item). The selectItem event
   // still fires for ALL types (handled in WorkspaceList → Sidebar →
   // workspacesStore.setActiveWorkspaceItem), so clicking a kanban
   // still activates it; AppLayout just routes the active item to the
   // kanban board instead of a list.
-  if (props.item.item_type !== 'kanban' && props.item.item_type !== 'design') {
+  if (props.item.item_type !== 'design') {
     workspacesStore.toggleExpandedItem(props.item.id)
   }
   // Always emit click for external handling (e.g., navigation to
@@ -544,8 +546,10 @@ const handlePinnedDrop = (event: DragEvent) => {
                The slider reads processingState via the same Vue inject
                the spinner used; visible iff firstProcessingTaskId is
                truthy AND processingState[that id] === true. -->
-          <!-- Chevron glyph (expand/collapse). Unicode right-pointing
-               caret rotated -90° when expanded, matching the
+          <!-- Chevron glyph (expand/collapse) — ALWAYS rendered for
+               ALL item types (including kanban) so every row shows
+               the same ▶/▼ affordance. Unicode right-pointing
+               caret rotated 90° when expanded, matching the
                WorkspaceList chevron style for visual consistency.
                data-testid="item-row-chevron" so tests can verify
                DOM-order position relative to the spinner (was an
@@ -554,11 +558,10 @@ const handlePinnedDrop = (event: DragEvent) => {
                for `design` items the chevron is its own click target
                (calls handleChevronToggle) — toggles expand WITHOUT
                activating the item. Row body click is still activation.
-               Other item types use the click-handler toggle
-               (handleClick above) since they don't have nested
+               Other item types (including kanban) use the click-handler
+               toggle (handleClick above) since they don't have nested
                content to navigate to. -->
           <span
-            v-if="item.item_type !== 'kanban'"
             class="text-xs shrink-0 transition-transform duration-200 cursor-pointer"
             :class="item.item_type === 'design' ? 'hover:opacity-100 opacity-80' : ''"
             data-testid="item-row-chevron"

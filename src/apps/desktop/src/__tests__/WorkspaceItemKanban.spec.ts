@@ -178,17 +178,17 @@ describe('WorkspaceItem — kanban click behavior', () => {
     vi.restoreAllMocks()
   })
 
-  it("clicking a kanban item does NOT toggle expansion (board is in main content)", async () => {
-    // Folder items expand inline; kanban items don't (the board
-    // is elsewhere). The selectItem event still fires for both
-    // types — Sidebar uses it to set activeWorkspaceItemId.
+  it("clicking a kanban item DOES toggle expansion (show-all-arrows: same as folder)", async () => {
+    // Show-all-arrows change: kanban items expand inline to show
+    // their tasks AND navigate to the board. The selectItem event
+    // still fires — Sidebar uses it to set activeWorkspaceItemId.
     wrapper = mountItem(makeKanbanItem())
     // Find the main item row button (the one with @click="handleClick").
     const button = wrapper.find('button.flex-1')
     expect(button.exists()).toBe(true)
     await button.trigger('click')
     const ws = useWorkspacesStore()
-    expect(ws.expandedItemIds[ITEM_ID]).toBeUndefined()
+    expect(ws.expandedItemIds[ITEM_ID]).toBe(true)
     // The selectItem event MUST still fire (AppLayout relies on it
     // to set activeWorkspaceItemId and route to the kanban view).
     expect(wrapper.emitted('click')).toBeTruthy()
@@ -227,5 +227,43 @@ describe('WorkspaceItem — kanban click behavior', () => {
     expect(wrapper.emitted('addKanbanColumn')).toBeUndefined()
     expect(wrapper.emitted('renameKanbanColumn')).toBeUndefined()
     expect(wrapper.emitted('deleteKanbanColumn')).toBeUndefined()
+  })
+})
+
+describe('WorkspaceItem — show-all-arrows (kanban chevron)', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    vi.restoreAllMocks()
+  })
+
+  it('renders chevron for kanban items (same as folder)', async () => {
+    wrapper = mountItem(makeKanbanItem())
+    await nextTick()
+    expect(wrapper.find('[data-testid="item-row-chevron"]').exists()).toBe(true)
+  })
+
+  it('renders chevron for folder items (regression)', async () => {
+    wrapper = mountItem(makeFolderItem())
+    await nextTick()
+    expect(wrapper.find('[data-testid="item-row-chevron"]').exists()).toBe(true)
+  })
+
+  it('expanded kanban shows its tasks inline', async () => {
+    wrapper = mountItem(makeKanbanItem({ tasks: [makeTask()] }))
+    expandItem()
+    await nextTick()
+    expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(true)
   })
 })
