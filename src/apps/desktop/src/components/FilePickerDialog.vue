@@ -469,7 +469,18 @@ function handleItemClick(item: T) {
   }
 }
 
-async function handleItemDoubleClick(item: T) {
+function handleItemDoubleClick(item: T) {
+  // Double-click on a folder navigates INTO it — it must never
+  // select + close the dialog. Single click already selects the
+  // folder (folder/both mode); the Select button / Enter confirms.
+  // This mirrors Finder / Explorer / zenity --directory.
+  if (props.isExpandable(item)) {
+    void navigateTo(props.pathFor(item))
+    return
+  }
+  // Double-click on a file confirms it (file/both mode only —
+  // handleItemClick is a no-op for files in folder mode, so
+  // selectedPath stays empty and we don't close).
   handleItemClick(item)
   if (selectedPath.value) {
     handleSelect()
@@ -875,13 +886,15 @@ onBeforeUnmount(() => {
         v-if="modelValue"
         ref="dialogRef"
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
-        @click.self="handleCancel"
         @keydown="handleKeydown"
         role="dialog"
         aria-modal="true"
         aria-labelledby="file-picker-title"
       >
-        <!-- Backdrop with subtle radial atmosphere -->
+        <!-- Backdrop with subtle radial atmosphere.
+          NOTE: no @click handler here — clicking outside the dialog
+          must NOT close it (accidental backdrop clicks used to lose
+          the user's navigation state). Close only via X / Cancel / Esc. -->
         <div
           class="absolute inset-0 backdrop-blur-md"
           style="
@@ -889,7 +902,6 @@ onBeforeUnmount(() => {
               radial-gradient(at top, rgba(137, 146, 167, 0.08), rgba(0, 0, 0, 0.6) 60%);
           "
           data-testid="file-picker-backdrop"
-          @click="handleCancel"
         />
 
         <!-- Dialog Card -->
