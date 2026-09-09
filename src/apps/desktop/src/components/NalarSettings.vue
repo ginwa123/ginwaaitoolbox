@@ -346,6 +346,7 @@ function startAddMcpServer() {
       args: [],
       env: [],
       cwd: '',
+      enabled: true,
     },
   }
 }
@@ -361,6 +362,7 @@ function startEditMcpServer(server: McpServer) {
       args: (server.args ?? []).slice(),
       env: (server.env ?? []).slice(),
       cwd: server.cwd ?? '',
+      enabled: server.enabled ?? true,
     },
   }
 }
@@ -384,6 +386,7 @@ function saveMcpServer() {
       env: v.env,
       cwd: v.cwd.trim(),
       headers: [],
+      enabled: v.enabled,
     }
     if (mcpServerModal.value.mode === 'add') {
       mcpServersList.value = [...mcpServersList.value, next]
@@ -398,6 +401,7 @@ function saveMcpServer() {
       transport: 'http',
       url,
       headers: v.headers.filter(h => h.key.length > 0),
+      enabled: v.enabled,
     }
     if (mcpServerModal.value.mode === 'add') {
       mcpServersList.value = [...mcpServersList.value, next]
@@ -409,6 +413,11 @@ function saveMcpServer() {
 }
 function deleteMcpServer(name: string) {
   mcpServersList.value = mcpServersList.value.filter(s => s.name !== name)
+}
+function toggleMcpServer(name: string) {
+  mcpServersList.value = mcpServersList.value.map(s =>
+    s.name === name ? { ...s, enabled: (s.enabled ?? true) ? false : true } : s,
+  )
 }
 
 // ─── Set active (instant — no dirty pill, immediate save) ───────────────
@@ -531,6 +540,7 @@ const isLoading = computed(() => !loaded.value)
           v-model="mcpServersList"
           @edit="startEditMcpServer"
           @delete="deleteMcpServer"
+          @toggle="toggleMcpServer"
           @add="startAddMcpServer"
         />
         <!-- Plan 2026-07-07-compaction-inline: the dedicated Compaction

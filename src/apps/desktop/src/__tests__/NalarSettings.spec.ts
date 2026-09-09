@@ -367,8 +367,7 @@ describe('NalarSettings (orchestrator)', () => {
     expect(msReadout.text()).toContain('0')
   })
 
-  it('the PUT body always includes all three operational settings, even when the user only edits one', async () => {
-    // The General tab MUST write all three operational settings
+  it('the PUT body always includes all three operational settings, even when the user only edits one', async () => {    // The General tab MUST write all three operational settings
     // through (syncToConfig does this unconditionally). This is a
     // regression guard so a future refactor doesn't accidentally
     // drop one of them and silently re-introduce the hidden-field
@@ -394,5 +393,60 @@ describe('NalarSettings (orchestrator)', () => {
     expect(savedConfig.notify_on_complete).toBe(true)
     expect(savedConfig.notify_on_error).toBe(true)
     expect(savedConfig.retry_delay_ms).toBe(10000)
+  })
+
+  // ─── MCP server enabled toggle (orchestrator) ──
+  it('toggling a server off writes enabled:false for that server in the PUT body', async () => {
+    mockGet.mockResolvedValueOnce({
+      mcp_servers: {
+        ctx7: { url: 'https://mcp.context7.com/mcp' },
+        hello: { command: 'mcp-hello-world' },
+      },
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    await wrapper.find('[data-tab-id="mcp"]').trigger('click')
+    await flushPromises()
+
+    const toggles = wrapper.findAll('[data-testid="toggle-btn"]')
+    expect(toggles).toHaveLength(2)
+    // Rows sort by name: ctx7 first, hello second. Disable hello.
+    await toggles[1]!.trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, Record<string, unknown>>
+    const servers = savedConfig.mcp_servers as Record<string, Record<string, unknown>>
+    expect(servers.hello).toMatchObject({ enabled: false })
+    // The untouched server stays omit-when-true (no enabled key).
+    expect(servers.ctx7).not.toHaveProperty('enabled')
+  })
+
+  it('toggling a disabled server back on drops the enabled key (omit-when-true)', async () => {
+    mockGet.mockResolvedValueOnce({
+      mcp_servers: {
+        hello: { command: 'mcp-hello-world', enabled: false },
+      },
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    await wrapper.find('[data-tab-id="mcp"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="toggle-btn"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, Record<string, unknown>>
+    const servers = savedConfig.mcp_servers as Record<string, Record<string, unknown>>
+    expect(servers.hello).not.toHaveProperty('enabled')
   })
 })

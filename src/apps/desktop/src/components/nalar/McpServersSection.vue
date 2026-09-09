@@ -94,7 +94,7 @@ function maskValue(v: string): string {
               type="button"
               data-testid="toggle-btn"
               @click="emit('toggle', server.name)"
-              :aria-pressed="String(server.enabled ?? true)"
+              :aria-pressed="server.enabled ?? true"
               title="Enable/Disable server"
               :aria-label="(server.enabled ?? true) ? 'Disable server' : 'Enable server'"
               class="w-9 h-5 rounded-full border transition-colors duration-150 flex items-center px-0.5"

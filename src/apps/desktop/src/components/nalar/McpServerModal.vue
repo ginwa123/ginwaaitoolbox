@@ -29,6 +29,9 @@ export interface McpServerModalValue {
   args: string[]
   env: string[]
   cwd: string
+  /** When false the agent skips this server. Missing renders as
+   *  enabled (checkbox checked). */
+  enabled?: boolean
 }
 
 const props = withDefaults(defineProps<{
@@ -188,6 +191,11 @@ function updateUrl(e: Event) {
   emit('update:modelValue', { ...props.modelValue, url: value })
 }
 
+function updateEnabled(e: Event) {
+  const checked = (e.target as HTMLInputElement).checked
+  emit('update:modelValue', { ...props.modelValue, enabled: checked })
+}
+
 function onSave() {
   if (transport.value === 'stdio') {
     // Parse stdio textareas into arrays (drop empty lines).
@@ -300,6 +308,16 @@ defineExpose({ onSave })
               @input="(e) => emit('update:modelValue', { ...modelValue, name: (e.target as HTMLInputElement).value })"
             />
           </div>
+
+          <label class="flex items-center gap-2 text-xs cursor-pointer" style="color: var(--semantic-text);">
+            <input
+              type="checkbox"
+              data-testid="enabled-checkbox"
+              :checked="modelValue.enabled ?? true"
+              @change="updateEnabled"
+            />
+            Enabled (agent can call this server)
+          </label>
 
           <div>
             <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">
@@ -484,6 +502,16 @@ defineExpose({ onSave })
               @input="(e) => emit('update:modelValue', { ...modelValue, name: (e.target as HTMLInputElement).value })"
             />
           </div>
+
+          <label class="flex items-center gap-2 text-xs cursor-pointer" style="color: var(--semantic-text);">
+            <input
+              type="checkbox"
+              data-testid="enabled-checkbox"
+              :checked="modelValue.enabled ?? true"
+              @change="updateEnabled"
+            />
+            Enabled (agent can call this server)
+          </label>
 
           <div>
             <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">

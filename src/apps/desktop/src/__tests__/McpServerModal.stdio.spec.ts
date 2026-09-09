@@ -583,4 +583,33 @@ describe('McpServerModal — stdio transport', () => {
     expect(resultEl).not.toBeNull()
     expect(resultEl!.textContent).toContain('Connected')
   })
+
+  // ── Enabled checkbox (both branches) ───────────────────────────────
+  it('stdio branch renders the Enabled checkbox, checked by default', async () => {
+    wrapper = mountModal(baseStdioServer)
+    await wrapper.vm.$nextTick()
+    const box = document.body.querySelector<HTMLInputElement>('[data-testid="enabled-checkbox"]')
+    expect(box).not.toBeNull()
+    expect(box!.checked).toBe(true)
+    expect(document.body.textContent).toContain('Enabled (agent can call this server)')
+  })
+
+  it('http branch renders the Enabled checkbox, checked by default', async () => {
+    wrapper = mountModal(baseHttpServer)
+    await wrapper.vm.$nextTick()
+    const box = document.body.querySelector<HTMLInputElement>('[data-testid="enabled-checkbox"]')
+    expect(box).not.toBeNull()
+    expect(box!.checked).toBe(true)
+  })
+
+  it('unchecking Enabled emits update:modelValue with enabled:false', async () => {
+    wrapper = mountModal({ ...baseStdioServer, enabled: true })
+    await wrapper.vm.$nextTick()
+    const box = document.body.querySelector<HTMLInputElement>('[data-testid="enabled-checkbox"]')!
+    box.checked = false
+    box.dispatchEvent(new Event('change'))
+    await wrapper.vm.$nextTick()
+    const emitted = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as { enabled?: boolean } | undefined
+    expect(emitted).toMatchObject({ enabled: false })
+  })
 })
