@@ -43,6 +43,7 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // the file (vs. the deleted start_agent_test.zig) ensures the
     // tests get discovered + run.
     _ = @import("http_handlers/start_agent.zig");
+    _ = @import("http_handlers/run_all_agents_test.zig");
     _ = @import("http_handlers/routines_list_test.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");
