@@ -3727,6 +3727,10 @@ export interface McpServer {
   env?: string[]
   /** stdio transport — optional child working directory (absolute path). */
   cwd?: string
+  /** When false the agent skips this server (no tools listed, no calls).
+   *  Missing/undefined renders as enabled. Omitted on the wire when
+   *  enabled so legacy configs stay clean. */
+  enabled?: boolean
 }
 
 export interface NalarConfig {
@@ -3754,8 +3758,8 @@ export interface NalarConfig {
    */
   mcp_servers?: Record<
     string,
-    | { url: string; headers?: Record<string, string> }
-    | { command: string; args?: string[]; env?: string[]; cwd?: string }
+    | { url: string; headers?: Record<string, string>; enabled?: boolean }
+    | { command: string; args?: string[]; env?: string[]; cwd?: string; enabled?: boolean }
   >
   /**
    * @deprecated Per-profile only (plan 2026-09-04-subagents-per-profile).
