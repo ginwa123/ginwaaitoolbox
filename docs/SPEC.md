@@ -37,7 +37,7 @@ src/
 ├── ai_workflow/tui/               # LLM workflow + tool dispatch
 │   ├── agentic_loop/              # 33+ execX tools moved here (was tool_registry.zig)
 │   ├── http_handlers/             # REST endpoints (thin wrappers)
-│   ├── routines/                  # Scheduled task fire pipeline
+│   ├── routines/                  # Workspace-routine fire pipeline (Migration 084)
 │   ├── llm_history.zig, models.zig, ...
 │   └── prompts.zig                # System prompt assembly
 ├── modules/
@@ -160,6 +160,7 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-06-13-add-task-routines-chunks-6.md` | ✅ | `AddTaskPickerDialog` + `AddRoutineDialog` + `EditRoutineDialog` |
 | `2026-06-13-add-task-routines-chunks-6-tests.md` | ✅ | Spec files for the three dialogs |
 | `2026-06-13-add-task-routines-chunks-7.md` | ✅ | Routine-task row + Sidebar picker |
+| `2026-09-10-workspace-items-routines.md` | ✅ | **BREAKING — per-task routines deleted, replaced by workspace-level routines.** Migration 084: `UPDATE task_type='routine'→'standard'` + `DROP TABLE routines` + `CREATE TABLE workspace_routines` (`id == workspace_item_id`, instruction + schedule + enabled + fire state). Deleted: `GET /api/routines`, `POST .../tasks/:tid/run`, task `routine` branches, `RoutineMeta` wire, Add/EditRoutineDialogs. New: `POST .../items/routine`, bundle `GET/PATCH .../items/:item/routine`, `POST .../routines/:rid/run`, `routines/{model,fire,Scheduler}.zig` retargeted, `AddRoutineItemDialog` + `RoutineView` + `?tab` n/a (dedicated view). No data carry-over. |
 | `2026-06-15-spawn-sub-agent-config.md` | ✅ | `agent_name` config-driven sub-agent selection |
 | `2026-06-09-spawn-sub-agent-inherited-context.md` | ✅ | `inherited_context` on `SubAgentInput` + helper |
 | `2026-05-14-spawn-sub-agent-inherited-context-ui.md` | ✅ | `subAgentArgs` prop + per-agent badge |
@@ -271,7 +272,7 @@ Chat skills badge: live source = SSE `llm_full.session_skills`; initial load = R
 
 #### 3.7.1 Kanban task "AI finished — awaiting review" notification icon (2026-07-26)
 
-A small affordance on each **standard** kanban task card (routine and memory cards use their own status affordances) that tells the user at a glance which cards the AI is done with and which the user has already engaged with.
+A small affordance on each **standard** kanban task card that tells the user at a glance which cards the AI is done with and which the user has already engaged with.
 
 **Three terminal states** (mutually exclusive, computed by the SQL `CASE` below):
 
@@ -333,7 +334,7 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 
 **Frontend wiring** — `workspacesStore.setActiveTask` (canonical entry point for every "user opens a task" call) fires-and-forgets `api.markTaskHumanTouched(workspaceId, itemId, taskId)` so opening a card to "just read" the AI's output also counts as a review.
 
-**Out of scope** — Routine/memory cards (existing routine status dot / memory accent stripe already cover AI state). Per-column "X awaiting review" aggregate badge. Sidebar notification badge. Explicit "Mark as reviewed" button.
+**Out of scope** — Memory cards (existing memory accent stripe already covers AI state). Per-column "X awaiting review" aggregate badge. Sidebar notification badge. Explicit "Mark as reviewed" button.
 
 #### 3.7.3 Kanban task tags — free-form string list (2026-07-28)
 
@@ -381,7 +382,7 @@ The New Task dialog (`KanbanTaskDetailDialog`, `mode: 'create'`) gets a secondar
 
 **Queued message composition.** `title + '\n\n' + description` when description is non-empty, else just `title`. The title is the first line the LLM sees; the description is the body. Empty description is allowed (the message is just the title).
 
-**Unattended toggle.** The dialog's existing `is_auto_retry_until_stop` toggle flows through as `is_auto_retry_until_stop` to `api.sendChatMessage`. Same as the routine task fire path.
+**Unattended toggle.** The dialog's existing `is_auto_retry_until_stop` toggle flows through as `is_auto_retry_until_stop` to `api.sendChatMessage`.
 
 **Files.** 5 (3 NEW tests, 2 EDIT impl). Frontend-only — no backend changes, no migration, no Zig changes. The two endpoints (`POST /api/workspaces/:ws/items/:item/tasks` and `POST /api/llm/session`) already exist and compose cleanly.
 
@@ -469,7 +470,7 @@ The kanban chat is no longer a side-by-side pane. It opens as a centered modal d
 
 **Size.** 80vw × 80vh, max 1100×800px, min 480×320px. Centered with `flex items-center justify-center p-4`.
 
-**Wiring.** `<KanbanChatDialog>` is mounted at the `<AppLayout>` level (NOT inside `<KanbanView>`). Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id` so the dialog only opens for kanban items — design + routine + standalone chat use their own mounts. URL routing (`?view=task&task=<id>`) is unchanged — `AppLayout.handleCloseTaskView` is reused for the close path.
+**Wiring.** `<KanbanChatDialog>` is mounted at the `<AppLayout>` level (NOT inside `<KanbanView>`). Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id` so the dialog only opens for kanban items — design + standalone chat use their own mounts. URL routing (`?view=task&task=<id>`) is unchanged — `AppLayout.handleCloseTaskView` is reused for the close path.
 
 **Click-different-task-while-open.** The dialog stays open and the content swaps via `:key="'task-' + task.id"` on `<ChatView>`. This is the same key contract that the side-by-side layout used, so chat scroll position (via `useChatScrollRestore`'s `chat-scroll-<task_id>` localStorage key) is preserved across task switches.
 

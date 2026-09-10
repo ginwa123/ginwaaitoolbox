@@ -304,6 +304,46 @@ def test_run_routine_under_wrong_item_returns_404(harness: FunctionalHarness) ->
     )
 
 
+# ─── CASCADE ─────────────────────────────────────────────────────────────────
+
+
+def test_delete_item_cascades_routine(harness: FunctionalHarness) -> None:
+    ws_id = _create_workspace(harness)
+    created = _create_routine(harness, ws_id)
+    item_id = created["item"]["id"]
+
+    harness.http(
+        "DELETE", f"/api/workspaces/{ws_id}/items/{item_id}", expect=200
+    )
+    # Item gone → routine bundle 404s (FK cascade wiped the row).
+    harness.http(
+        "GET", f"/api/workspaces/{ws_id}/items/{item_id}/routine", expect=404
+    )
+
+
+def test_manual_only_routine_never_auto_fires(harness: FunctionalHarness) -> None:
+    """A schedule-less routine has NULL next_run_at so the scheduler's
+    due-scan (`next_run_at <= now`) can never match it — only the
+    manual run endpoint fires it."""
+    ws_id = _create_workspace(harness)
+    created = _create_routine(harness, ws_id, "manual")
+    item_id = created["item"]["id"]
+
+    r = harness.http(
+        "GET", f"/api/workspaces/{ws_id}/items/{item_id}/routine", expect=200
+    )
+    assert r.json()["routine"]["next_run_at"] == ""
+
+    # ...but manual run still works.
+    r = harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{item_id}/routines/{item_id}/run",
+        json_body={},
+        expect=200,
+    ).json()
+    assert r.get("success") is True
+
+
 # ─── DELETION PROOFS ───────────────────────────────────────────────────────
 
 
