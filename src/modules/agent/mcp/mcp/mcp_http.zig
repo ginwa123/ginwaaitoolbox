@@ -383,7 +383,12 @@ pub const HttpClient = struct {
 /// that has at least one `data:` line. Multi-`data:` lines are joined
 /// with `\n` per the SSE spec.
 fn parseLastSseData(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
-    var last_data: ?[]const u8 = null;
+    // NOTE: `data_lines` is per-event scratch freed at the end of each
+    // iteration, so `last_data` must NOT point into it (use-after-free:
+    // the final `dupe` can reuse the freed address and trip
+    // `@memcpy arguments alias`). Keep an owned copy instead.
+    var last_owned: ?[]u8 = null;
+    defer if (last_owned) |b| allocator.free(b);
     var blocks = std.mem.splitSequence(u8, body, "\n\n");
     while (blocks.next()) |raw_event| {
         const event = std.mem.trim(u8, raw_event, " \r\n");
@@ -401,10 +406,17 @@ fn parseLastSseData(allocator: std.mem.Allocator, body: []const u8) ![]u8 {
             }
         }
         if (data_lines.items.len > 0) {
-            last_data = data_lines.items;
+            if (last_owned) |b| allocator.free(b);
+            last_owned = try allocator.dupe(u8, data_lines.items);
         }
     }
-    return if (last_data) |d| allocator.dupe(u8, d) else error.InvalidSseEvent;
+    if (last_owned) |owned| {
+        // Transfer ownership to the caller; null out so the defer
+        // above does not free it.
+        last_owned = null;
+        return owned;
+    }
+    return error.InvalidSseEvent;
 }
 
 /// Process-global cache of `HttpClient` instances, one per server
@@ -1014,4 +1026,32 @@ test "listTools: returns an empty slice for a stubbed client (signature test)" {
     const tools = try listTools(testing.allocator, &client);
     defer testing.allocator.free(tools);
     try testing.expectEqual(@as(usize, 0), tools.len);
+}
+
+test "parseLastSseData: single event returns its data (no alias panic)" {
+    // Regression: the old impl stored `last_data = data_lines.items`
+    // (freed at end of iteration) then `dupe`d it — the allocator
+    // reuses the freed address so src == dst and Debug panics with
+    // `@memcpy arguments alias`.
+    const body = "event: message\ndata: {\"hello\":1}\n\n";
+    const out = try parseLastSseData(testing.allocator, body);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{\"hello\":1}", out);
+}
+
+test "parseLastSseData: last event wins across progress + result events" {
+    // Real servers (e.g. context7) stream progress notifications then
+    // the final JSON-RPC result. The parser must return the LAST
+    // data payload, not the first, and must not alias freed memory.
+    const body =
+        "event: message\ndata: {\"progress\":50}\n\n" ++
+        "event: message\ndata: {\"result\":{\"tools\":[]}}\n\n";
+    const out = try parseLastSseData(testing.allocator, body);
+    defer testing.allocator.free(out);
+    try testing.expectEqualStrings("{\"result\":{\"tools\":[]}}", out);
+}
+
+test "parseLastSseData: no data lines returns InvalidSseEvent" {
+    const body = "event: ping\n:heartbeat\n\n";
+    try testing.expectError(error.InvalidSseEvent, parseLastSseData(testing.allocator, body));
 }
