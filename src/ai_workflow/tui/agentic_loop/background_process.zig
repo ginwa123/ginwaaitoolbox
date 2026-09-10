@@ -308,31 +308,24 @@ pub fn readLogTruncated(
     };
 }
 
-/// Suffix appended to the completion envelope when the log was truncated:
-/// `\n... [truncated {d} bytes, full log at {s}]`.
-pub fn formatTruncationSuffix(
-    allocator: std.mem.Allocator,
-    total_bytes: usize,
-    log_path: []const u8,
-) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "\n... [truncated {d} bytes, full log at {s}]",
-        .{ total_bytes, log_path },
-    );
-}
-
-/// Build the queue message envelope for a finished background command:
-/// ```text
-/// This is an output from background command (pid {d}, command `{s}`):
-/// """""
-/// {s}
-/// """""
+/// Build the queue message envelope for a finished background command.
+///
+/// The envelope is XML (role stays `user` — the frontend renders
+/// `<background_command>` rows with the shell tool card instead of the
+/// user bubble):
+/// ```xml
+/// <background_command>
+/// <pid>{d}</pid>
+/// <command>{escaped}</command>
+/// <stdout>{escaped log tail, or (empty output)}</stdout>
+/// <truncated>false</truncated>
+/// </background_command>
 /// ```
-/// Empty `log_content_truncated` renders as `(empty output)` for the inner
-/// content. When `was_truncated` is true, the `formatTruncationSuffix`
-/// line (with `total_bytes` + `log_path`) is appended after the closing
-/// quotes so the agent knows where the full log lives.
+/// When the log was truncated, `<truncated>` is `true` and the envelope
+/// also carries `<total_bytes>` + `<log_path>` so the agent knows where
+/// the full log lives. `command`, log content, and `log_path` go through
+/// `xml_escape` so the envelope always closes (same contract as
+/// `shell.result_to_xml`).
 pub fn buildCompletionMessage(
     allocator: std.mem.Allocator,
     command: []const u8,
@@ -342,32 +335,59 @@ pub fn buildCompletionMessage(
     total_bytes: usize,
     log_path: []const u8,
 ) ![]u8 {
+    const xml_escape = @import("helpers").xml_escape;
     const inner: []const u8 = if (log_content_truncated.len == 0) "(empty output)" else log_content_truncated;
+
+    const esc_command = try xml_escape(allocator, command);
+    defer allocator.free(esc_command);
+    const esc_stdout = try xml_escape(allocator, inner);
+    defer allocator.free(esc_stdout);
 
     if (!was_truncated) {
         return std.fmt.allocPrint(
             allocator,
-            "This is an output from background command (pid {d}, command `{s}`):\n\"\"\"\"\"\n{s}\n\"\"\"\"\"",
-            .{ pid, command, inner },
+            \\<background_command>
+            \\<pid>{d}</pid>
+            \\<command>{s}</command>
+            \\<stdout>{s}</stdout>
+            \\<truncated>false</truncated>
+            \\</background_command>
+            ,
+            .{ pid, esc_command, esc_stdout },
         );
     }
 
-    const suffix = try formatTruncationSuffix(allocator, total_bytes, log_path);
-    defer allocator.free(suffix);
+    const esc_log_path = try xml_escape(allocator, log_path);
+    defer allocator.free(esc_log_path);
     return std.fmt.allocPrint(
         allocator,
-        "This is an output from background command (pid {d}, command `{s}`):\n\"\"\"\"\"\n{s}\n\"\"\"\"\"{s}",
-        .{ pid, command, inner, suffix },
+        \\<background_command>
+        \\<pid>{d}</pid>
+        \\<command>{s}</command>
+        \\<stdout>{s}</stdout>
+        \\<truncated>true</truncated>
+        \\<total_bytes>{d}</total_bytes>
+        \\<log_path>{s}</log_path>
+        \\</background_command>
+        ,
+        .{ pid, esc_command, esc_stdout, total_bytes, esc_log_path },
     );
 }
 
 // ─── Tests (inline, project convention — no DB, pure helpers only) ──────────
 
-test "buildCompletionMessage renders the exact envelope" {
+test "buildCompletionMessage renders the XML envelope" {
     const msg = try buildCompletionMessage(testing.allocator, "sleep 10", 1234, "hello\nworld", false, 11, "/tmp/x.log");
     defer testing.allocator.free(msg);
     try testing.expectEqualStrings(
-        "This is an output from background command (pid 1234, command `sleep 10`):\n\"\"\"\"\"\nhello\nworld\n\"\"\"\"\"",
+        \\<background_command>
+        \\<pid>1234</pid>
+        \\<command>sleep 10</command>
+        \\<stdout>hello
+        \\world</stdout>
+        \\<truncated>false</truncated>
+        \\</background_command>
+        ,
         msg,
     );
 }
@@ -376,24 +396,47 @@ test "buildCompletionMessage maps empty log content to (empty output)" {
     const msg = try buildCompletionMessage(testing.allocator, "true", 42, "", false, 0, "/tmp/x.log");
     defer testing.allocator.free(msg);
     try testing.expectEqualStrings(
-        "This is an output from background command (pid 42, command `true`):\n\"\"\"\"\"\n(empty output)\n\"\"\"\"\"",
+        \\<background_command>
+        \\<pid>42</pid>
+        \\<command>true</command>
+        \\<stdout>(empty output)</stdout>
+        \\<truncated>false</truncated>
+        \\</background_command>
+        ,
         msg,
     );
 }
 
-test "buildCompletionMessage appends the truncation suffix when truncated" {
+test "buildCompletionMessage carries truncation fields when truncated" {
     const msg = try buildCompletionMessage(testing.allocator, "make", 7, "partial", true, 99999, "/tmp/full.log");
     defer testing.allocator.free(msg);
     try testing.expectEqualStrings(
-        "This is an output from background command (pid 7, command `make`):\n\"\"\"\"\"\npartial\n\"\"\"\"\"\n... [truncated 99999 bytes, full log at /tmp/full.log]",
+        \\<background_command>
+        \\<pid>7</pid>
+        \\<command>make</command>
+        \\<stdout>partial</stdout>
+        \\<truncated>true</truncated>
+        \\<total_bytes>99999</total_bytes>
+        \\<log_path>/tmp/full.log</log_path>
+        \\</background_command>
+        ,
         msg,
     );
 }
 
-test "formatTruncationSuffix renders the exact shape" {
-    const suffix = try formatTruncationSuffix(testing.allocator, 20481, "/tmp/bg-123.log");
-    defer testing.allocator.free(suffix);
-    try testing.expectEqualStrings("\n... [truncated 20481 bytes, full log at /tmp/bg-123.log]", suffix);
+test "buildCompletionMessage escapes XML metacharacters" {
+    const msg = try buildCompletionMessage(testing.allocator, "echo <a>&", 9, "it's \"done\"", false, 12, "/tmp/x.log");
+    defer testing.allocator.free(msg);
+    try testing.expectEqualStrings(
+        \\<background_command>
+        \\<pid>9</pid>
+        \\<command>echo &lt;a&gt;&amp;</command>
+        \\<stdout>it&apos;s &quot;done&quot;</stdout>
+        \\<truncated>false</truncated>
+        \\</background_command>
+        ,
+        msg,
+    );
 }
 
 test "readLogTruncated returns FileNotFound for a missing file" {

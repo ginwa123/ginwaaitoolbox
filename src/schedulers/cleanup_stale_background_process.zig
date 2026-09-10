@@ -877,10 +877,11 @@ test "cleanupStaleBackgroundProcesses notifies with log content then deletes the
 
     const msg = try queueMessageForSession(&ctx.db, testing.allocator, "s_done");
     defer testing.allocator.free(msg);
-    try testing.expect(std.mem.indexOf(u8, msg, "\"\"\"\"\"") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "999999999") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "make all") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "<background_command>") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "<pid>999999999</pid>") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "<command>make all</command>") != null);
     try testing.expect(std.mem.indexOf(u8, msg, "build finished ok") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "\"\"\"\"\"") == null);
 }
 
 test "cleanupStaleBackgroundProcesses notifies with a not-found marker and still deletes when the log is missing" {

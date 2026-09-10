@@ -293,10 +293,11 @@ test "watchAndNotify notifies a dead PID immediately then deletes the row" {
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(testing.allocator);
     const msg = row.values[0];
-    try testing.expect(std.mem.indexOf(u8, msg, "\"\"\"\"\"") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "999999999") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "sleep 30") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "<background_command>") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "<pid>999999999</pid>") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "<command>sleep 30</command>") != null);
     try testing.expect(std.mem.indexOf(u8, msg, "watcher saw exit") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "\"\"\"\"\"") == null);
 
     // Bg row deleted.
     var r = try ctx.db.query(testing.allocator, "SELECT 1 FROM session_background_process WHERE session_id = ?", &.{"s_watch"});

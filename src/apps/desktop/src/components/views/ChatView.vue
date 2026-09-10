@@ -18,6 +18,7 @@ import FileInput from '../file/FileInput.vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
+import { isBackgroundCommandOutput, parseBackgroundCommandOutput, backgroundToShellXml } from '@/helpers/isBackgroundCommandOutput'
 import {
   applyProgressEvent,
   applySnapshotRows,
@@ -1236,6 +1237,9 @@ const innerToolData = (m: Message): string => {
 const getParametersForMessage = (m: Message): string => {
   return unwrappedByMessageId.value.get(m.id)?.parameters ?? '{}'
 }
+
+const isBgUserMsg = (m: { content?: string }): boolean => !!m.content && isBackgroundCommandOutput(m.content);
+const bgShellContent = (m: { content?: string }): string => { const pr = m.content ? parseBackgroundCommandOutput(m.content) : null; return pr ? backgroundToShellXml(pr) : (m.content ?? ''); };
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
 // For each group index, returns the tool names string if the group is an
@@ -3202,7 +3206,7 @@ const compactSession = async () => {
                               </div>
                             </div>
                           </div>
-                          <span v-if="userMsg.content">{{ userMsg.content }}</span>
+                          <template v-if="isBgUserMsg(userMsg)"><ShellTool tool-name="command" :content="bgShellContent(userMsg)" :parameters="'{}'" /></template><template v-else><span v-if="userMsg.content">{{ userMsg.content }}</span></template>
                         </template>
                       </template>
                     </template>
