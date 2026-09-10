@@ -5,11 +5,12 @@ Exercises the cron `cleanup_stale_background_process`
 30ab8253) against a REAL nalar binary + REAL SQLite:
 
   * A `session_background_process` row whose PID is dead gets notified
-    into `session_queue_messages` with the exact Task 1 envelope from
+    into `session_queue_messages` with the XML envelope from
     `background_process.buildCompletionMessage`:
-      "This is an output from background command (pid {d}, command `{s}`):"
-      '"""""' + log content + '"""""'
-    (5 double-quotes each side) and the row is DELETEd (notify-then-delete).
+      <background_command><pid>..<command>..<stdout>..<truncated>..
+    (role stays `user` — the frontend renders `<background_command>`
+    rows with the shell tool card) and the row is DELETEd
+    (notify-then-delete).
   * The cron fires every minute on the minute (main.zig:620-623), so the
     core test POLLs GET /api/llm/session/:id/queue_messages for up to ~90s.
 
@@ -186,14 +187,19 @@ def test_dead_background_process_notifies_completion_queue(
         f"bg rows left: {_count_bg_rows(harness, session_id)}"
     )
 
-    # Exact Task 1 envelope shape (background_process.zig:
-    # buildCompletionMessage): header with pid + backticked command,
-    # 5-quote fences, verbatim log content.
-    assert envelope.startswith(
-        f"This is an output from background command (pid {DEAD_PID}, command `{command}`):"
-    ), f"envelope header mismatch: {envelope!r}"
-    assert '"""""' in envelope, f"envelope missing 5-quote fence: {envelope!r}"
+    # XML envelope shape (background_process.zig: buildCompletionMessage):
+    # <background_command> with pid/command/stdout/truncated children.
+    # Role stays user — no tool_call_id, no prose header, no quote fence.
+    assert "<background_command>" in envelope, f"envelope missing root tag: {envelope!r}"
+    assert f"<pid>{DEAD_PID}</pid>" in envelope, f"envelope pid mismatch: {envelope!r}"
+    assert f"<command>{command}</command>" in envelope, (
+        f"envelope command mismatch: {envelope!r}"
+    )
     assert marker in envelope, f"envelope missing log content: {envelope!r}"
+    assert "<truncated>false</truncated>" in envelope, (
+        f"envelope truncated flag mismatch: {envelope!r}"
+    )
+    assert '"""""' not in envelope, f"envelope still uses quote fence: {envelope!r}"
 
     # Notify-then-delete: the row must be gone once notified (allow one
     # extra poll for the DELETE to land if the test raced the tick
