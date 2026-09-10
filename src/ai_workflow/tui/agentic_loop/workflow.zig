@@ -26,7 +26,6 @@ const event_bus_mod = nalarcore.event_bus;
 const SqliteBackend = nalarcore.sqlite.SqliteBackend;
 
 const compact_message_mod = @import("workflow_compact_message.zig");
-const commpact_message_mod = @import("workflow_commpact_message.zig");
 const delete_queue_worker_mod = @import("delete_queue_worker.zig");
 const delete_worker_mod = @import("delete_worker.zig");
 const get_llm_histories_mod = @import("get_llm_histories.zig");
@@ -75,8 +74,8 @@ pub const hasQueuedMessages = has_queue_message_mod.hasQueuedMessages;
 pub const DeleteQueueMessagesInput = delete_queue_worker_mod.DeleteQueueMessagesInput;
 pub const deleteQueuedMessage = delete_queue_worker_mod.deleteQueuedMessage;
 pub const isWorkerRunning = is_worker_running_mod.isWorkerRunning;
-pub const CallCompactAgentInput = commpact_message_mod.CallCompactAgentInput;
-pub const callCompactAgent = commpact_message_mod.callCompactAgent;
+pub const CallCompactAgentInput = compact_message_mod.CallCompactAgentInput;
+pub const callCompactAgent = compact_message_mod.callCompactAgent;
 pub const buildCompactMessagePrompt = compact_message_mod.buildCompactMessagePrompt;
 pub const fetchUserChatHistory = compact_message_mod.fetchUserChatHistory;
 pub const fetchReadFilePaths = compact_message_mod.fetchReadFilePaths;
@@ -98,9 +97,9 @@ pub const makeWorkingDirectoryContext = prompts_mod.makeWorkingDirectoryContext;
 pub const retryDelayMs = retry_delay_ms_mod.retryDelayMs;
 pub const RetryDelayMsInput = retry_delay_ms_mod.RetryDelayMsInput;
 
-pub const maybeCompactMessagesNew = @import("workflow_commpact_message.zig").maybeCompactMessagesNew;
-const defaultCompactDeps = @import("workflow_commpact_message.zig").defaultCompactDeps;
-pub const compactMessageInMemoryNew = @import("workflow_commpact_message.zig").compactMessageInMemoryNew;
+pub const maybeCompactMessagesNew = compact_message_mod.maybeCompactMessagesNew;
+const defaultCompactDeps = compact_message_mod.defaultCompactDeps;
+pub const compactMessageInMemoryNew = compact_message_mod.compactMessageInMemoryNew;
 
 // Thread-safe set of active session loop IDs
 pub const StreamingContext = struct {

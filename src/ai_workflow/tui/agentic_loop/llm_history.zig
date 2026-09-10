@@ -2635,7 +2635,7 @@ pub fn updateWorkerActivityWithDescription(
 ///   - `tools_exec_update_activity.zig::execUpdateActivity` after the
 ///     existing `updateWorkerActivityWithDescription` UPDATE — every
 ///     `update_activity` tool call appends one row.
-///   - `workflow_commpact_message.zig::buildCompactionEnvelope` after
+///   - `workflow_compact_message.zig::buildCompactionEnvelope` after
 ///     the envelope is built — every compaction event appends one row.
 ///
 /// Failure mode: on INSERT error, propagate to the caller — the

@@ -46,13 +46,12 @@ test {
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
-    _ = @import("workflow_commpact_message.zig"); // inlined url_style regression + envelope tests (was workflow_compact_call_agent_test.zig + workflow_compaction_envelope_test.zig)
+    _ = @import("workflow_compact_message.zig"); // merged 2026-09-10 (ex-workflow_commpact_message.zig typo): url_style regression + envelope + prompt/envelope helpers
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tool_calls_json_wire_shape_test.zig"); // task_1787590621966_10 — SSE tool_calls_json must be a JSON STRING (frontend .trim() crash regression lock)
     _ = @import("mcp_fetch_once_test.zig"); // mcp-fetch-once-cache — tools/list fetched once, cached on singleton, run reads snapshot
     _ = @import("tools_wrap_output.zig");
-    _ = @import("workflow_commpact_message.zig");
-    _ = @import("workflow_compact_message.zig"); // 2026-08-14-consolidate-compaction-message — buildCompactMessagePrompt (8) + compaction_context helpers (22) = 30 inline tests
+    _ = @import("workflow_compact_message.zig"); // merged single file — helpers + orchestration + all inline tests
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
     _ = @import("prompts_make_kanban_context.zig"); // kanban prompt — renders all columns at tail (no cap) so kanban_move_task is 1-call; in-memory DB tests
     // impl + tests are in the same .zig file for Agent Mode helpers.

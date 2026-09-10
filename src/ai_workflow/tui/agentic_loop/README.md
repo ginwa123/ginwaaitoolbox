@@ -103,8 +103,7 @@ and no separate `<file>_test.zig` files. The 3 exceptions that stay at
 | `update_task_name.zig` | — | (placeholder) |
 | `update_worker.zig` | impl + inline tests | |
 | `workflow.zig` | impl + inline tests | The agentic loop orchestrator. |
-| `workflow_commpact_message.zig` | impl + inline tests | |
-| `workflow_compact_message.zig` | impl + inline tests | |
+| `workflow_compact_message.zig` | impl + inline tests | Helpers + orchestration merged 2026-09-10 (ex-`workflow_commpact_message.zig` typo). |
 
 ## Running the tests
 
