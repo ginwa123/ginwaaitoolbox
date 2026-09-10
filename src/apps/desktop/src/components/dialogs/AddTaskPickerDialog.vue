@@ -1,8 +1,11 @@
 <script setup lang="ts">
 // AddTaskPickerDialog — shown when the user clicks the green `+`
-// button on a workspace item. Three large cards: "Standard Chat",
-// "Routine", and "Memory". The parent (Sidebar.vue) decides which
-// creation flow to open based on the emitted `pick` value.
+// button on a workspace item. Two large cards: "Standard Chat"
+// and "Memory". (The "Routine" card was deleted in Migration 084 —
+// routines are now first-class workspace items via the sidebar's
+// "+ Add Item → Add Routine" flow.) The parent (Sidebar.vue)
+// decides which creation flow to open based on the emitted `pick`
+// value.
 //
 // Style match: backdrop + card wrapper copied verbatim from
 // AddTaskDialog.vue:44-143 so the visual language is consistent
@@ -15,14 +18,14 @@ defineProps<{
 
 const emit = defineEmits<{
   close: []
-  pick: [taskType: 'standard' | 'routine' | 'memory']
+  pick: [taskType: 'standard' | 'memory']
 }>()
 
 const handleClose = () => emit('close')
 
 // The picker is a chooser, not a holder: once the user has picked
 // a path, the picker has done its job and must close so the picked
-// dialog isn't stacked on top of it (only routine + memory open a
+// dialog isn't stacked on top of it (only memory opens a
 // follow-up dialog — the standard-chat flow auto-creates the task
 // and navigates straight to ChatView, so there's nothing to stack).
 // Emit `pick` first (parent decides which create flow to run) and
@@ -30,11 +33,6 @@ const handleClose = () => emit('close')
 // pattern in AddTaskDialog.vue:26-31.
 const handleStandard = () => {
   emit('pick', 'standard')
-  handleClose()
-}
-
-const handleRoutine = () => {
-  emit('pick', 'routine')
   handleClose()
 }
 
@@ -84,8 +82,8 @@ const handleKeydown = (event: KeyboardEvent) => {
             </p>
           </div>
 
-          <!-- Three cards side-by-side -->
-          <div class="px-5 pb-5 grid grid-cols-3 gap-3">
+          <!-- Two cards side-by-side -->
+          <div class="px-5 pb-5 grid grid-cols-2 gap-3">
             <!-- Standard Chat card -->
             <button
               type="button"
@@ -98,21 +96,6 @@ const handleKeydown = (event: KeyboardEvent) => {
               <span class="text-sm font-semibold" style="color: var(--semantic-text);">Standard Chat</span>
               <span class="text-xs" style="color: var(--semantic-text-dim);">
                 An interactive chat with the AI. You send messages, the AI responds.
-              </span>
-            </button>
-
-            <!-- Routine card -->
-            <button
-              type="button"
-              @click="handleRoutine"
-              data-testid="picker-routine"
-              class="flex flex-col items-start gap-2 p-4 rounded-lg text-left transition-all duration-200 hover:scale-[1.02]"
-              style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);"
-            >
-              <span class="text-2xl" aria-hidden="true">🕒</span>
-              <span class="text-sm font-semibold" style="color: var(--semantic-text);">Routine</span>
-              <span class="text-xs" style="color: var(--semantic-text-dim);">
-                A scheduled task. The AI runs your prompt on a schedule; you see the runs in the chat.
               </span>
             </button>
 

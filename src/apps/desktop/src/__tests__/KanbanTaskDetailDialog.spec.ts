@@ -284,14 +284,13 @@ describe('KanbanTaskDetailDialog — metadata strip', () => {
     expect(colEl?.textContent).toContain('In progress')
   })
 
-  it('renders the routine type label when task_type is routine', async () => {
-    mountDialog({ ...TASK, task_type: 'routine' })
+  it('does NOT render a routine type label for legacy task_type routine (deleted Migration 084)', async () => {
+    mountDialog({ ...TASK, task_type: 'routine' as never })
     await flushPromises()
     const typeEl = findInDom<HTMLElement>(
       '[data-testid="kanban-task-detail-type"]',
     )
-    expect(typeEl).not.toBeNull()
-    expect(typeEl?.textContent).toContain('Routine')
+    expect(typeEl).toBeNull()
   })
 
   it('renders the pinned indicator when is_pinned is true', async () => {

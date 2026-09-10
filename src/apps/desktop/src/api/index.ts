@@ -366,25 +366,14 @@ export interface WorkspaceItem {
   kanban_columns?: KanbanColumn[]
 }
 
-export interface RoutineMeta {
-  schedule: string
-  initial_prompt: string
-  enabled: boolean
-  last_run_at: string | null
-  next_run_at: string
-  last_status: 'success' | 'failed' | 'running' | null
-  last_error: string | null
-}
-
 export interface Task {
   id: string
   name: string
   description?: string
-  // NEW (Chunk 5 of task-routines plan). Optional for backwards
-  // compat with legacy task literals.
-  task_type?: 'standard' | 'routine'
-  // NEW: present iff task_type === 'routine'.
-  routine?: RoutineMeta
+  // Task type. Optional for backwards compat with legacy task
+  // literals. ('routine' was deleted in Migration 084 — routines are
+  // now first-class workspace items, see WorkspaceRoutine below.)
+  task_type?: 'standard' | 'memory'
   completed?: boolean
   createdAt?: Date
   // ISO datetime string from the backend; present for tasks returned by
@@ -734,16 +723,15 @@ export async function markTaskHumanTouched(
  *
  * The third arg is a single params object. For a standard task
  * (the default), pass `{ name, description?, taskType: 'standard' }`.
- * For a routine, pass `{ name, taskType: 'routine', routine: { schedule, initial_prompt, enabled? } }`.
  * For a memory, pass `{ name, taskType: 'memory', memory: { name, content } }`.
  *
- * The backend stores `task_type` on `workspace_item_tasks` and
- * (for routines) creates a row in the `routines` table inside the
- * same transaction. For memories, the backend creates the .md file
+ * NOTE: `taskType: 'routine'` was deleted (Migration 084) — routines
+ * are now first-class workspace items, see `createRoutineItem`.
+ *
+ * The backend stores `task_type` on `workspace_item_tasks`.
+ * For memories, the backend creates the .md file
  * at `<workspace_item.path>/.nalar/memories/<name>.md` AND inserts
- * the task row pointing at it. On a bad cron expression, the
- * backend returns 400 and the error surfaces as a thrown
- * `Error('HTTP 400')`.
+ * the task row pointing at it.
  */
 export async function createTask(
   workspaceId: string,
@@ -751,12 +739,7 @@ export async function createTask(
   params: {
     name: string
     description?: string
-    taskType?: 'standard' | 'routine' | 'memory'
-    routine?: {
-      schedule: string
-      initial_prompt: string
-      enabled?: boolean
-    }
+    taskType?: 'standard' | 'memory'
     memory?: {
       name: string
       content: string
@@ -765,8 +748,8 @@ export async function createTask(
     // caller passes `'1'`, the backend ALSO inserts a `sessions`
     // row (task.id == session.id per the project convention) so the
     // unattended-mode flag has somewhere to land at create time.
-    // Only meaningful for `taskType: 'standard'` — routine and
-    // memory tasks manage their own session lifecycle elsewhere.
+    // Only meaningful for `taskType: 'standard'` — memory tasks
+    // manage their own session lifecycle elsewhere.
     // `'0'` and undefined/empty are treated equivalently (no
     // session INSERT).
     isAutoRetryUntilStop?: string
@@ -803,13 +786,6 @@ export async function createTask(
     name: params.name,
     description: params.description,
     task_type: taskType,
-  }
-  if (taskType === 'routine' && params.routine) {
-    body.schedule = params.routine.schedule
-    body.initial_prompt = params.routine.initial_prompt
-    if (params.routine.enabled !== undefined) {
-      body.enabled = params.routine.enabled
-    }
   }
   if (taskType === 'memory' && params.memory) {
     body.memory_name = params.memory.name
@@ -995,10 +971,8 @@ export async function updateTask(
 // Task API - Simple version (just task_id + optional fields)
 //
 // The backend's PUT /api/workspaces/tasks/:task_id accepts a
-// subset of fields. Routine fields (`schedule`, `initial_prompt`,
-// `enabled`) are accepted alongside the standard name/session_id.
-// The server cascades any name change to the linked session and
-// re-broadcasts via SSE.
+// subset of fields. The server cascades any name change to the
+// linked session and re-broadcasts via SSE.
 export async function updateTaskSimple(
   taskId: string,
   data: {
@@ -1008,12 +982,6 @@ export async function updateTaskSimple(
     // shown in the detail dialog. Empty string = clear (the
     // dialog's "Clear description" path sends `''`).
     description?: string
-    // NEW (Chunk 5 of task-routines plan): routine-edit fields,
-    // forwarded verbatim to the backend's PUT handler. The server
-    // applies them to the routines row in the same transaction.
-    schedule?: string
-    initial_prompt?: string
-    enabled?: boolean
     // NEW (kanban task tags, Migration 067): array of tag strings.
     // Forwarded as JSON-encoded string. Empty array = clear tags.
     tags?: string[]
@@ -1112,23 +1080,22 @@ export async function reorderPinnedTasks(
 }
 
 /**
- * Manually fire a routine. Returns the session_id (which equals
- * the task_id per the codebase invariant task.id == session_id)
- * the routine will run in. The backend responds 200 + body as
- * soon as the sub-process is spawned — the actual LLM call
- * happens asynchronously.
+ * Manually fire a workspace routine. Returns the session_id (which
+ * equals the routine id — every fire appends to the same session
+ * chat). The backend responds 200 + body as soon as the fire is
+ * submitted — the actual LLM call happens asynchronously.
  *
- * 404: task is not a routine (or doesn't exist)
+ * 404: routine does not exist (or doesn't belong to this item)
  * 409: routine is disabled or another fire is in progress
- * 500: spawn failed
+ * 500: fire failed
  */
-export async function runRoutine(
+export async function runWorkspaceRoutine(
   workspaceId: string,
   itemId: string,
-  taskId: string,
+  routineId: string,
 ): Promise<{ session_id: string }> {
   return await apiFetch<{ session_id: string }>(
-    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/run`,
+    `/workspaces/${workspaceId}/items/${itemId}/routines/${routineId}/run`,
     { method: 'POST' },
   )
 }
@@ -1149,8 +1116,8 @@ export async function runRoutine(
  * is in the `Response` object (use `fetch` directly for status-aware
  * dispatch; this helper returns the parsed body).
  *
- * Distinct from `runRoutine` (routine-only, 404 for non-routines) and
- * `sendChatMessage` (POST /api/llm/session, which always queues a new
+ * Distinct from `runWorkspaceRoutine` (workspace-routine manual fire)
+ * and `sendChatMessage` (POST /api/llm/session, which always queues a new
  * user message). Plan: docs/superpowers/specs/
  * 2026-08-18-kanban-task-detail-start-agent.md
  */
@@ -4115,6 +4082,98 @@ export async function updateAgent(
   return await apiFetch<{ agent: Agent }>(
     `/workspaces/${workspaceId}/items/${itemId}/agent`,
     { method: 'PATCH', body: { description } },
+  )
+}
+
+// =====================================================================
+// Workspace routines (Migration 084) — first-class `item_type='routine'`
+// items beside `agent`. Replaces the deleted per-task routines.
+// Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md
+// =====================================================================
+
+export interface WorkspaceRoutine {
+  id: string
+  workspace_item_id: string
+  description: string
+  /** The agent prompt fired on each tick. */
+  instruction: string
+  /** 5-field cron. '' = manual-run only (no auto-fire). */
+  schedule: string
+  enabled: boolean
+  last_run_at: string
+  /** '' when manual-only or disabled. */
+  next_run_at: string
+  last_status: string
+  last_error: string
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Create a new routine workspace item.
+ *
+ * POST /api/workspaces/:workspaceId/items/routine
+ */
+export async function createRoutineItem(
+  workspaceId: string,
+  name: string,
+  path: string,
+  opts?: {
+    description?: string
+    instruction?: string
+    schedule?: string
+    enabled?: boolean
+  },
+): Promise<{ item: WorkspaceItem; routine: WorkspaceRoutine }> {
+  return await apiFetch<{ item: WorkspaceItem; routine: WorkspaceRoutine }>(
+    `/workspaces/${workspaceId}/items/routine`,
+    {
+      method: 'POST',
+      body: {
+        name,
+        path,
+        description: opts?.description ?? '',
+        instruction: opts?.instruction ?? '',
+        schedule: opts?.schedule ?? '',
+        enabled: opts?.enabled ?? true,
+      },
+    },
+  )
+}
+
+/**
+ * Get the routine bound to a workspace_item.
+ *
+ * GET /api/workspaces/:workspaceId/items/:itemId/routine
+ */
+export async function getRoutineItem(
+  workspaceId: string,
+  itemId: string,
+): Promise<{ routine: WorkspaceRoutine }> {
+  return await apiFetch<{ routine: WorkspaceRoutine }>(
+    `/workspaces/${workspaceId}/items/${itemId}/routine`,
+  )
+}
+
+/**
+ * Update a routine's description / instruction / schedule / enabled.
+ * Schedule/enabled changes recompute next_run_at server-side.
+ *
+ * PATCH /api/workspaces/:workspaceId/items/:itemId/routine
+ */
+export async function updateRoutineItem(
+  workspaceId: string,
+  itemId: string,
+  data: {
+    description?: string
+    instruction?: string
+    schedule?: string
+    enabled?: boolean
+  },
+): Promise<{ routine: WorkspaceRoutine }> {
+  return await apiFetch<{ routine: WorkspaceRoutine }>(
+    `/workspaces/${workspaceId}/items/${itemId}/routine`,
+    { method: 'PATCH', body: data },
   )
 }
 

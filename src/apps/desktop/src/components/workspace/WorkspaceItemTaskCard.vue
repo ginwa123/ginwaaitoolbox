@@ -6,23 +6,25 @@
   to <WorkspaceItemTaskRow> (sidebar list). This file owns the modern-
   minimalist kanban-card layout: a visible 1px gray border + card
   background + optional description preview, last-updated meta row,
-  and a Jira-style left-edge type accent (violet for routine, blue
-  for memory). Hover swaps the gray border for a violet ring.
+  and a Jira-style left-edge type accent (blue for memory).
+  Hover swaps the gray border for a violet ring.
 
-  Behavior (event payload, routine branch, drop indicator, active
-  styling, pin toggle, edit/run/delete hover buttons) is shared with
+  Behavior (event payload, drop indicator, active
+  styling, pin toggle, hover buttons) is shared with
   the row via the `useTaskActions` composable. See that file for the
   contract.
 
   Public API:
     props:  task (Task), workspaceId (string), itemId (string),
             dropIndicator? ('above' | 'below' | null)
-    emits:  selectTask, deleteTask, renameTask, editRoutine,
-            runRoutine, pinTask  (same shapes as before)
+    emits:  selectTask, deleteTask, renameTask,
+            pinTask  (same shapes as before)
+    NOTE: editRoutine/runRoutine emits deleted with per-task routines
+    (Migration 084).
 -->
 <script setup lang="ts">
 // Extracted from WorkspaceItemTask.vue on 2026-07-02. The shared
-// logic (event handlers + routine computeds) now lives in
+// logic (event handlers + drop indicator) now lives in
 // composables/useTaskActions.ts; this file owns ONLY the card
 // layout and the card-specific computeds (description preview, meta
 // row, Jira-style type accent).
@@ -93,8 +95,6 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
-  editRoutine: [workspaceId: string, itemId: string, taskId: string]
-  runRoutine: [workspaceId: string, itemId: string, taskId: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   // Open the full task-detail dialog (kanban-task-detail-dialog
   // feature). The host (KanbanView) opens the dialog locally with
@@ -102,18 +102,12 @@ const emit = defineEmits<{
   viewTaskDetail: [taskId: string]
 }>()
 
-// Shared logic — event handlers, routine computeds, drop indicator.
+// Shared logic — event handlers, drop indicator.
 const {
-  isRoutine,
-  statusColor,
-  statusClass,
-  nextRunTooltip,
   dropIndicatorBoxShadow,
   handleSelectTask,
   handleDeleteTask,
   handleRenameTask,
-  handleEditRoutine,
-  handleRunRoutine,
   handlePinToggle,
 } = useTaskActions(props, emit)
 
@@ -131,8 +125,9 @@ const handleViewTaskDetail = (event: MouseEvent) => {
 
 // (card-ux-v3 — Jira-style priority-bar pattern). A thin 3px colored
 // stripe down the left edge of the card that reflects the task's
-// type. Standard tasks get NO stripe (cleanest default); routine
-// tasks get a violet stripe; memory tasks get a blue stripe.
+// type. Standard tasks get NO stripe (cleanest default); memory
+// tasks get a blue stripe. (The old violet routine stripe was
+// deleted with per-task routines, Migration 084.)
 // Implemented as an inset box-shadow so it doesn't affect the card's
 // layout (no width change) and stacks naturally with the
 // dropIndicator box-shadow and the v6 3D base shadow.
@@ -142,7 +137,6 @@ const handleViewTaskDetail = (event: MouseEvent) => {
 // the dropIndicator in place when the type stripe is absent).
 function typeAccentShadow(): string {
   const t = props.task.task_type
-  if (t === 'routine') return 'inset 3px 0 0 0 rgb(167, 139, 250)' // violet-400
   if (t === 'memory') return 'inset 3px 0 0 0 rgb(96, 165, 250)'   // blue-400
   return ''
 }
@@ -291,12 +285,10 @@ const extraImagesCount = computed<number>(() => {
 })
 
 // The user-facing task-type label shown in the meta row. Returns
-// 'routine' for routine tasks, 'memory' for memory tasks, or null
-// for plain standard tasks (no badge — the type is implied by the
-// absence of a badge).
+// 'memory' for memory tasks, or null for plain standard tasks
+// (no badge — the type is implied by the absence of a badge).
 const typeBadge = computed<string | null>(() => {
   const t = props.task.task_type
-  if (t === 'routine') return 'routine'
   if (t === 'memory') return 'memory'
   return null
 })
@@ -340,121 +332,8 @@ const gitBranchBadge = computed<string | null>(() => {
          The action icons (pin toggle, edit, run, delete) are all
          hover-revealed with a small subtle background pill on hover. -->
     <div class="flex items-center gap-2 min-w-0">
-      <!-- ───── ROUTINE branch ───── -->
-      <template v-if="isRoutine">
-        <span
-          v-if="processingState[task.id]"
-          class="w-4 h-4 flex items-center justify-center shrink-0"
-          data-testid="task-spinner"
-        >
-          <div
-            class="w-3 h-3 border-2 rounded-full animate-spin"
-            style="border-color: var(--color-yellow); border-top-color: transparent"
-          ></div>
-        </span>
-        <span
-          v-else
-          class="shrink-0 text-[--color-violet]"
-          :title="nextRunTooltip"
-          data-testid="routine-clock"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </span>
-        <!-- Status dot (routine only). Tiny 6x6 dot reflects the
-             routine's last_status. card-ux-v2 keeps it visible in
-             card variant too (a status indicator that adds
-             information without taking much space). -->
-        <span
-          class="w-1.5 h-1.5 rounded-full shrink-0"
-          :class="statusClass"
-          :style="{ backgroundColor: statusColor }"
-          data-testid="routine-status-dot"
-        />
-        <!-- Task name (THE HERO in card variant). Bigger, bolder,
-             with a tighter line-height. -->
-        <span
-          class="flex-1 min-w-0 text-sm font-medium leading-snug truncate"
-        >{{ task.name }}</span>
-        <!-- Pin indicator (always visible when pinned). Moved to
-             the right side of the name in card variant for a
-             cleaner reading order: title first, status icons after. -->
-        <span
-          v-if="task.is_pinned"
-          class="w-3 h-3 flex items-center justify-center shrink-0 text-yellow-400"
-          title="Pinned"
-          data-testid="task-pin-indicator"
-        >
-          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
-          </svg>
-        </span>
-        <!-- Pin/unpin toggle (hover-revealed, more subtle). -->
-        <button
-          @click="handlePinToggle($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg]"
-          :class="task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'"
-          :title="task.is_pinned ? 'Unpin task' : 'Pin task'"
-          data-testid="task-pin-toggle"
-        >
-          <svg v-if="task.is_pinned" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
-          </svg>
-          <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
-          </svg>
-        </button>
-        <!-- Pencil — for routine tasks this opens EditRoutineDialog -->
-        <button
-          @click="handleEditRoutine($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-blue-400"
-          style="color: var(--semantic-text-dim);"
-          title="Edit Routine"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-        </button>
-        <!-- Info / view detail button (hover-revealed). Opens the
-             KanbanTaskDetailDialog via the host (KanbanView). -->
-        <button
-          @click="handleViewTaskDetail($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
-          style="color: var(--semantic-text-dim);"
-          title="View task details"
-          data-testid="view-task-detail-btn"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </button>
-        <!-- Run Now play-icon button (between edit and delete) -->
-        <button
-          @click="handleRunRoutine($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-green-400"
-          style="color: var(--semantic-text-dim);"
-          title="Run now"
-          data-testid="run-routine-btn"
-        >
-          <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M8 5v14l11-7z" />
-          </svg>
-        </button>
-        <!-- Delete task button (hover-revealed) -->
-        <button
-          @click="handleDeleteTask($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
-          style="color: var(--semantic-text-dim);"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </template>
-
-      <!-- ───── STANDARD branch ───── -->
-      <template v-else>
+      <!-- single branch — per-task routines deleted (Migration 084). -->
+<!-- (standard content unwrapped) -->
         <span
           v-if="processingState[task.id]"
           class="w-4 h-4 flex items-center justify-center shrink-0"
@@ -617,7 +496,6 @@ const gitBranchBadge = computed<string | null>(() => {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
-      </template>
     </div>
     <!-- Description preview. Renders the markdown via <MarkdownDescription>
          (which handles bold/italic/headings/images/@path chips). The
@@ -718,15 +596,12 @@ const gitBranchBadge = computed<string | null>(() => {
         <span>{{ lastUpdatedLabel }}</span>
       </span>
       <!-- Task-type subtle label. Rendered as plain dim text (no
-           colored pill background) for a more minimalist feel. The
-           routine clock icon is already shown in the top row for
-           routine tasks; the meta label is just a secondary text
-           marker. -->
+           colored pill background) for a more minimalist feel. -->
       <span
         v-if="typeBadge"
         class="inline-flex items-center gap-1"
         :data-testid="`task-meta-type-${typeBadge}`"
-        :title="typeBadge === 'routine' ? 'Scheduled task' : 'Memory note'"
+        title="Memory note"
       >
         <span aria-hidden="true">·</span>
         <span>{{ typeBadge }}</span>

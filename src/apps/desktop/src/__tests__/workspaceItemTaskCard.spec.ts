@@ -249,24 +249,17 @@ describe('WorkspaceItemTaskCard card-ux-v2 (richer card layout)', () => {
     expect(wrapper.find('[data-testid="task-pin-indicator"]').exists()).toBe(false)
   })
 
-  it('routine type badge renders in meta row for task_type="routine"', () => {
+  it('no routine type badge renders for legacy task_type="routine" (deleted Migration 084)', () => {
     wrapper = mountCard({
       id: 't1',
       name: 'Daily sync',
-      task_type: 'routine',
-      routine: {
-        schedule: '0 9 * * *',
-        initial_prompt: 'prompt',
-        enabled: true,
-        last_run_at: null,
-        next_run_at: '2026-07-02T09:00:00Z',
-        last_status: null,
-        last_error: null,
-      },
+      // Legacy wire value — the backend normalizes these to
+      // 'standard' (Migration 084), but an old cached payload could
+      // still carry it. `as never` keeps tsc honest about the
+      // narrowed Task union while testing the runtime behavior.
+      task_type: 'routine' as never,
     })
-    const badge = wrapper.find('[data-testid="task-meta-type-routine"]')
-    expect(badge.exists()).toBe(true)
-    expect(badge.text()).toContain('routine')
+    expect(wrapper.find('[data-testid="task-meta-type-routine"]').exists()).toBe(false)
   })
 
   it('memory type badge renders in meta row for task_type="memory"', () => {
@@ -297,19 +290,10 @@ describe('WorkspaceItemTaskCard card-ux-v2 (richer card layout)', () => {
       name: 'All-meta',
       updatedAt: past,
       is_pinned: true,
-      task_type: 'routine',
-      routine: {
-        schedule: '0 9 * * *',
-        initial_prompt: 'p',
-        enabled: true,
-        last_run_at: null,
-        next_run_at: '2026-07-02T09:00:00Z',
-        last_status: null,
-        last_error: null,
-      },
+      task_type: 'memory',
     })
     expect(wrapper.find('[data-testid="task-meta-updated"]').text()).toBe('30m ago')
-    expect(wrapper.find('[data-testid="task-meta-type-routine"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="task-meta-type-memory"]').exists()).toBe(true)
     // Pin indicator is in the TOP row now, not the meta row.
     expect(wrapper.find('[data-testid="task-meta-pinned"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="task-pin-indicator"]').exists()).toBe(true)
@@ -321,9 +305,9 @@ describe('WorkspaceItemTaskCard card-ux-v2 (richer card layout)', () => {
  * card-ux-v3 tests: the Jira-style left-edge accent for task
  * type. A thin (3px) colored stripe down the left edge of the
  * card reflects the task's type:
- *   - routine → violet (rgb(167, 139, 250))
  *   - memory  → blue   (rgb(96, 165, 250))
  *   - standard → no stripe
+ * (The violet routine stripe was deleted in Migration 084.)
  *
  * Implemented as an inset box-shadow on the card root so the
  * layout doesn't shift. The accent is COMBINED with the
@@ -355,26 +339,14 @@ describe('WorkspaceItemTaskCard card-ux-v3 (Jira-style type accent)', () => {
       .attributes('style') ?? ''
   }
 
-  it('routine card has a violet left accent', () => {
+  it('legacy routine card has NO violet accent (deleted Migration 084)', () => {
     const style = rootStyleFor({
       id: 't1',
       name: 'Daily sync',
-      task_type: 'routine',
-      routine: {
-        schedule: '0 9 * * *',
-        initial_prompt: 'p',
-        enabled: true,
-        last_run_at: null,
-        next_run_at: '2026-07-02T09:00:00Z',
-        last_status: null,
-        last_error: null,
-      },
+      task_type: 'routine' as never,
     })
-    // card-ux-v4: container now uses border-transparent at idle;
-    // the only visible border is the type-accent (left stripe) for
-    // routine/memory tasks, plus the hover violet ring.
-    expect(style).toContain('inset 3px 0 0 0')
-    expect(style).toContain('rgb(167, 139, 250)') // violet-400
+    // No violet stripe — routine tasks render as standard cards now.
+    expect(style).not.toContain('rgb(167, 139, 250)') // violet-400
   })
 
   it('memory card has a blue left accent', () => {
@@ -400,24 +372,15 @@ describe('WorkspaceItemTaskCard card-ux-v3 (Jira-style type accent)', () => {
     const style = rootStyleFor(
       {
         id: 't1',
-        name: 'Daily sync',
-        task_type: 'routine',
-        routine: {
-          schedule: '0 9 * * *',
-          initial_prompt: 'p',
-          enabled: true,
-          last_run_at: null,
-          next_run_at: '2026-07-02T09:00:00Z',
-          last_status: null,
-          last_error: null,
-        },
+        name: 'project-notes',
+        task_type: 'memory',
       },
       'above',
     )
     // Both layered inset values should be present in the style.
     expect(style).toContain('inset 0 2px 0 0') // dropIndicator (above)
     expect(style).toContain('inset 3px 0 0 0') // type accent
-    expect(style).toContain('rgb(167, 139, 250)') // violet-400 accent
+    expect(style).toContain('rgb(96, 165, 250)') // blue-400 accent
   })
 })
 
@@ -561,30 +524,21 @@ describe('WorkspaceItemTaskCard card-ux-v6 (3D shadow + constant width)', () => 
     expect(card.attributes('style') ?? '').toContain('0 1px 3px 0 rgba(0, 0, 0, 0.5)')
   })
 
-  it('3D shadow coexists with the Jira-style type accent (routine card)', () => {
+  it('3D shadow coexists with the Jira-style type accent (memory card)', () => {
     // The v6 base shadow must layer cleanly with the v3 type
     // accent — they're both box-shadows on the same element, so
-    // they stack via the multi-value comma syntax. Routine cards
-    // should show BOTH the outer drop shadow AND the violet left
+    // they stack via the multi-value comma syntax. Memory cards
+    // should show BOTH the outer drop shadow AND the blue left
     // stripe.
     wrapper = mountCard({
       id: 't1',
-      name: 'Daily sync',
-      task_type: 'routine',
-      routine: {
-        schedule: '0 9 * * *',
-        initial_prompt: 'p',
-        enabled: true,
-        last_run_at: null,
-        next_run_at: '2026-07-02T09:00:00Z',
-        last_status: null,
-        last_error: null,
-      },
+      name: 'project-notes',
+      task_type: 'memory',
     })
     const style = wrapper.find('[data-task-card]').attributes('style') ?? ''
     // 3D base shadow.
     expect(style).toContain('0 1px 3px 0 rgba(0, 0, 0, 0.5)')
-    // Jira-style violet left stripe (type accent).
-    expect(style).toContain('inset 3px 0 0 0 rgb(167, 139, 250)')
+    // Jira-style blue left stripe (type accent).
+    expect(style).toContain('inset 3px 0 0 0 rgb(96, 165, 250)')
   })
 })

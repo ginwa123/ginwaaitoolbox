@@ -16,6 +16,7 @@ import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
+import RoutineView from './views/RoutineView.vue'
 import AgentChatView from './views/AgentChatView.vue'
 import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
 import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
@@ -1788,9 +1789,9 @@ const handleKanbanReorderColumn = (payload: { columnId: string; targetColumnId: 
 }
 
 // Task-level events (select-task, delete-task, rename-task,
-// edit-routine, run-routine, pin-task) re-emitted by <KanbanColumn>.
+// pin-task) re-emitted by <KanbanColumn>.
 // These all live in Sidebar (because they need access to
-// chatsListRef and the modal state for rename / edit-routine), so
+// chatsListRef and the modal state for rename), so
 // we forward them via the exposed methods. The sidebar ref is
 // non-null at runtime (AppLayout always renders a Sidebar); the
 // optional-chaining + noop-on-miss is defensive for the
@@ -1812,14 +1813,6 @@ const handleKanbanRenameTask = (
   currentName: string,
 ) => {
   sidebarRef.value?.renameTask(workspaceId, itemId, taskId, currentName)
-}
-
-const handleKanbanEditRoutine = (workspaceId: string, itemId: string, taskId: string) => {
-  sidebarRef.value?.editRoutine(workspaceId, itemId, taskId)
-}
-
-const handleKanbanRunRoutine = (workspaceId: string, itemId: string, taskId: string) => {
-  void sidebarRef.value?.runRoutine(workspaceId, itemId, taskId)
 }
 
 const handleKanbanPinTask = (
@@ -2400,8 +2393,6 @@ defineExpose({
         @select-task="handleKanbanSelectTask"
         @delete-task="handleKanbanDeleteTask"
         @rename-task="handleKanbanRenameTask"
-        @edit-routine="handleKanbanEditRoutine"
-        @run-routine="handleKanbanRunRoutine"
         @pin-task="handleKanbanPinTask"
         @open-settings="handleOpenKanbanSettings"
         @rename-item="handleKanbanRenameItem"
@@ -2579,6 +2570,19 @@ defineExpose({
         @add-system-prompt="handleAgentAddSystemPrompt"
         @edit-system-prompt="handleAgentEditSystemPrompt"
         @remove-system-prompt="handleAgentRemoveSystemPrompt"
+      />
+      <!-- Workspace routines (Migration 084, plan
+           2026-09-10-workspace-items-routines): mounted when
+           item_type='routine'. The view fetches its own data via
+           GET /api/workspaces/:ws/items/:item/routine. Placed after
+           AgentView — same v-else-if chain position semantics (only
+           one branch renders). -->
+      <RoutineView
+        v-else-if="activeWorkspaceItem && activeWorkspaceItem.item_type === 'routine'"
+        :key="'routine-' + activeWorkspaceItem.id"
+        :item="activeWorkspaceItem"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
       />
       <!--
         AgentKnowledgeDialog — mounted at the AppLayout level so the

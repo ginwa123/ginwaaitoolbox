@@ -5,8 +5,8 @@
  *
  * Plan: docs/plans/2026-07-26-kanban-task-notification-icon.md (Chunk 6)
  *
- * Card states (standard branch only — routine/memory cards already
- * have their own status affordances):
+ * Card states (single branch — per-task routine branches were
+ * deleted in Migration 084, so all task types share these):
  *   1. AI running → yellow spinner (existing, higher priority).
  *   2. needs_human_review=true, not running → ORANGE PULSING DOT.
  *   3. needs_human_review=false AND last_finish_reason='stop',
@@ -183,32 +183,20 @@ describe('WorkspaceItemTaskCard — kanban task notification icon (Chunk 6)', ()
   })
 
   // ─────────────────────────────────────────────────────────────────
-  // Static-contract: the icon only renders in the standard branch
-  // (not the routine / memory branches). Routine cards already have
-  // their own status dot; adding another would be visual noise.
+  // Static-contract: the icon renders in the single branch for all
+  // task types (per-task routine branches were deleted in
+  // Migration 084 — there is no separate routine branch anymore).
   // ─────────────────────────────────────────────────────────────────
 
-  it('does NOT render the orange dot on routine cards (routine has its own status dot)', () => {
+  it('renders the orange dot on legacy routine-typed cards (single branch now)', () => {
     wrapper = mountCard({
       id: 't1',
       name: 'Daily sync',
-      task_type: 'routine',
-      routine: {
-        schedule: '0 9 * * *',
-        initial_prompt: 'p',
-        enabled: true,
-        last_run_at: null,
-        next_run_at: '2026-07-02T09:00:00Z',
-        last_status: 'success',
-        last_error: null,
-      },
+      task_type: 'routine' as never,
       last_finish_reason: 'stop',
       needs_human_review: true,
     })
-    expect(wrapper.find('[data-testid="task-needs-review"]').exists()).toBe(false)
-    // Routine status dot is the canonical surface — it still
-    // renders the green/idle/etc state.
-    expect(wrapper.find('[data-testid="routine-status-dot"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="task-needs-review"]').exists()).toBe(true)
   })
 
   it('DOES render the green checkmark on memory cards (memory shares the standard branch)', () => {

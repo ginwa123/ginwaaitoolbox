@@ -953,7 +953,6 @@ const selectProfile = (name: string) => {
 
 const taskTypeLabel = computed<string | null>(() => {
   const t = props.task?.task_type
-  if (t === 'routine') return 'Routine'
   if (t === 'memory') return 'Memory'
   return null  // 'standard' and undefined both show no badge
 })
