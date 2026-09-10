@@ -134,9 +134,6 @@ pub const CallbackAiWorkerFlow = struct {
             .logger = logger,
             .event_bus = event_bus,
             .active_loops = active_loops,
-            // Live DI handle: re-read inside the workflow loop so
-            // NalarSettings changes take effect per iteration
-            // (plan 2026-08-06-live-config-reload).
             .di = di,
             .environment = environment,
         }, data) catch |err| {
@@ -276,93 +273,6 @@ fn re_read_setupDb() !ReReadTestCtx {
 fn re_read_teardown(ctx: *ReReadTestCtx) void {
     ctx.db.deinit();
     ctx.threaded.deinit();
-}
-
-/// Insert a minimal session row (matching the production schema: the
-/// `sessions` table's NOT NULL columns are id, name, status, cwd, created_at,
-/// updated_at, selected_profile_model, is_auto_retry_until_stop).
-fn re_read_insertSession(
-    alloc: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-    selected_profile_model: []const u8,
-) !void {
-    try db.exec(
-        alloc,
-        \\INSERT INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop)
-        \\VALUES (?, 'test', 'active', '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, '0')
-    ,
-        &.{ session_id, selected_profile_model },
-    );
-}
-
-test "re_read_selected_profile_model: returns live DB value when row exists" {
-    // Wrap in a per-test arena so the dupe'd slice is freed at the
-    // end of the test (matches production usage in runAgenticMultiStepnew
-    // where the caller passes the per-iteration arena allocator).
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var ctx = try re_read_setupDb();
-    defer re_read_teardown(&ctx);
-
-    try re_read_insertSession(alloc, &ctx.db, "s_alpha", "beta");
-    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_alpha", "fallback-snapshot");
-    try testing.expectEqualStrings("beta", got);
-}
-
-test "re_read_selected_profile_model: returns empty string when DB has empty (mirrors COALESCE)" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var ctx = try re_read_setupDb();
-    defer re_read_teardown(&ctx);
-
-    try re_read_insertSession(alloc, &ctx.db, "s_empty", "");
-    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_empty", "fallback-snapshot");
-    try testing.expectEqualStrings("", got);
-}
-
-test "re_read_selected_profile_model: returns fallback when no session row exists" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var ctx = try re_read_setupDb();
-    defer re_read_teardown(&ctx);
-
-    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_missing", "fallback-snapshot");
-    try testing.expectEqualStrings("fallback-snapshot", got);
-}
-
-test "re_read_selected_profile_model: subsequent reads see UPDATEd value (live re-read)" {
-    // The whole point of this helper: a second call after a session
-    // row UPDATE picks up the new value, NOT the snapshot. If this
-    // test ever fails, the workflow loop is back to using a snapshot
-    // — the original bug returns.
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    var ctx = try re_read_setupDb();
-    defer re_read_teardown(&ctx);
-
-    try re_read_insertSession(alloc, &ctx.db, "s_live", "alpha");
-    const first = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
-    try testing.expectEqualStrings("alpha", first);
-
-    // Simulate the user picking a different profile in the chatview
-    // dropdown (PUT /api/llm/session/:id → sessions.selected_profile_model).
-    try ctx.db.exec(
-        alloc,
-        "UPDATE sessions SET selected_profile_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        &.{ "gamma", "s_live" },
-    );
-
-    const second = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
-    try testing.expectEqualStrings("gamma", second);
 }
 
 /// Touch the checkpoint worker rows for one loop iteration.
@@ -844,21 +754,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                         .agent = initial_agent,
                         .loop_index = 0,
                         .temperature = initial_agent_state.temperature,
-                        // === Model-thinking (plan 2026-08-23-model-thinking) ===
-                        // Override the prior session state's `is_thinking` with
-                        // the profile-resolved value. The previous behavior of
-                        // carrying the last assistant turn's value forward
-                        // meant a user who toggled Thinking Off mid-session
-                        // would still see the next turn forced on (because the
-                        // `COALESCE(is_thinking, 1)` in
-                        // `get_current_agent_by_session_id` defaults to 1 for
-                        // a brand-new session, and that value would echo
-                        // forward forever). The profile is now the source of
-                        // truth — sub-agent overrides (when present, see the
-                        // `if (ov.is_thinking) |t| isThinking = t;` block
-                        // below) win over the profile, and the session's own
-                        // mid-conversation `set_agent_properties` tool call
-                        // wins over both via its own `ov.is_thinking` path.
                         .is_thinking = eff.is_thinking orelse initial_agent_state.is_thinking,
                         .prompt_tokens = 0,
                         .completion_tokens = 0,
@@ -2560,4 +2455,91 @@ test "filterAndMergeTools: MCP tools appear in agent tool list (agent sees MCP)"
         }
     }
     try testing.expect(!found_mcp);
+}
+
+/// Insert a minimal session row (matching the production schema: the
+/// `sessions` table's NOT NULL columns are id, name, status, cwd, created_at,
+/// updated_at, selected_profile_model, is_auto_retry_until_stop).
+fn re_read_insertSession(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    selected_profile_model: []const u8,
+) !void {
+    try db.exec(
+        alloc,
+        \\INSERT INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop)
+        \\VALUES (?, 'test', 'active', '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, '0')
+    ,
+        &.{ session_id, selected_profile_model },
+    );
+}
+
+test "re_read_selected_profile_model: returns live DB value when row exists" {
+    // Wrap in a per-test arena so the dupe'd slice is freed at the
+    // end of the test (matches production usage in runAgenticMultiStepnew
+    // where the caller passes the per-iteration arena allocator).
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    try re_read_insertSession(alloc, &ctx.db, "s_alpha", "beta");
+    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_alpha", "fallback-snapshot");
+    try testing.expectEqualStrings("beta", got);
+}
+
+test "re_read_selected_profile_model: returns empty string when DB has empty (mirrors COALESCE)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    try re_read_insertSession(alloc, &ctx.db, "s_empty", "");
+    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_empty", "fallback-snapshot");
+    try testing.expectEqualStrings("", got);
+}
+
+test "re_read_selected_profile_model: returns fallback when no session row exists" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    const got = re_read_selected_profile_model(alloc, &ctx.db, "s_missing", "fallback-snapshot");
+    try testing.expectEqualStrings("fallback-snapshot", got);
+}
+
+test "re_read_selected_profile_model: subsequent reads see UPDATEd value (live re-read)" {
+    // The whole point of this helper: a second call after a session
+    // row UPDATE picks up the new value, NOT the snapshot. If this
+    // test ever fails, the workflow loop is back to using a snapshot
+    // — the original bug returns.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var ctx = try re_read_setupDb();
+    defer re_read_teardown(&ctx);
+
+    try re_read_insertSession(alloc, &ctx.db, "s_live", "alpha");
+    const first = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
+    try testing.expectEqualStrings("alpha", first);
+
+    // Simulate the user picking a different profile in the chatview
+    // dropdown (PUT /api/llm/session/:id → sessions.selected_profile_model).
+    try ctx.db.exec(
+        alloc,
+        "UPDATE sessions SET selected_profile_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        &.{ "gamma", "s_live" },
+    );
+
+    const second = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
+    try testing.expectEqualStrings("gamma", second);
 }
