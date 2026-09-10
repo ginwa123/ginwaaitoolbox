@@ -117,6 +117,11 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     if (input.notify_on_error) |n| {
         config_json.notify_on_error = n;
     }
+    // web_launch_enabled: parallel to notify_on_complete. Absent =
+    // preserve existing on-disk value.
+    if (input.web_launch_enabled) |n| {
+        config_json.web_launch_enabled = n;
+    }
     if (input.model_compaction_size_kb) |kb| {
         config_json.model_compaction_size_kb = kb;
     }
@@ -544,6 +549,10 @@ pub const ConfigInput = struct {
     /// `LlmConfigJson` default (`false`) so a brand-new config has
     /// error notifications off.
     notify_on_error: ?bool = null,
+    /// When true, the agent may launch URLs in the user's web browser.
+    /// Absent = preserve existing on-disk value. Mirrors the
+    /// `LlmConfigJson` default (`false`).
+    web_launch_enabled: ?bool = null,
     /// Threshold (in KB) above which the session compactor is invoked
     /// to shrink the LLM context. Absent = preserve existing on-disk
     /// value. Mirrors the `LlmConfigJson` default (`100`).
@@ -635,6 +644,9 @@ const ConfigJson = struct {
     /// matches `LlmConfigJson` (Config.zig); a brand-new config has
     /// error notifications off.
     notify_on_error: bool = false,
+    /// Opt-in web-launch flag. Default `false` matches `LlmConfigJson`
+    /// (Config.zig); a brand-new config has web launch off.
+    web_launch_enabled: bool = false,
     /// Compaction threshold in KB. Default `100` matches
     /// `LlmConfigJson` (Config.zig:92).
     model_compaction_size_kb: usize = 100,

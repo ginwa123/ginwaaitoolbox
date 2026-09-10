@@ -3831,6 +3831,14 @@ export interface NalarConfig {
    * `LlmConfig.retry_delay_ms` in `Config.zig`.
    */
   retry_delay_ms?: number
+  /**
+   * Plan 2026-09-10-web-launch-toggle — browser-mode flag. When true,
+   * the settings General tab advertises the same UI in the system
+   * browser (URL pill + auto-open) and the server defaults to a random
+   * local port at startup. Defaults to `false` when absent (matches
+   * `LlmConfigJson`). Lifecycle A: the server keeps running when false.
+   */
+  web_launch_enabled?: boolean
   // Per-profile compaction overrides (`max_capacity_tokens` /
   // `compaction_threshold_percent`) live on `NalarProfile` (Chunk
   // 7.6) and remain there. Both layers coexist.
@@ -3849,6 +3857,29 @@ export async function saveNalarConfig(config: NalarConfig): Promise<{ success: b
     method: 'PUT',
     body: config,
   })
+}
+
+/**
+ * Plan 2026-09-10-web-launch-toggle — browser-mode status.
+ *
+ * `GET /api/web/status` is read-only (lifecycle A: no server-side
+ * start/stop). `url` is always the live bound port
+ * (`http://127.0.0.1:<port>/`, loopback-only). `null` on network/API
+ * failure so the pill can render a waiting hint.
+ */
+export interface WebStatus {
+  enabled: boolean
+  running: boolean
+  url: string
+  port: number
+}
+
+export async function getWebStatus(): Promise<WebStatus | null> {
+  try {
+    return await apiFetch<WebStatus>('/web/status')
+  } catch {
+    return null
+  }
 }
 
 /**

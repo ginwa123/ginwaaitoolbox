@@ -604,6 +604,61 @@ test "notify_on_error: round-trips independently of notify_on_complete" {
 }
 
 // ---------------------------------------------------------------------------
+// web_launch_enabled: opt-in browser-launch flag. Mirrors
+// `notify_on_complete` pattern (default false, reads true when present,
+// round-trips independently).
+// ---------------------------------------------------------------------------
+
+test "web_launch_enabled: defaults to false when missing from JSON" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(false, cfg.web_launch_enabled);
+}
+
+test "web_launch_enabled: reads true from JSON when present" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "web_launch_enabled": true
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.web_launch_enabled);
+}
+
+test "web_launch_enabled: round-trips independently of notify_on_complete" {
+    // The two flags are independent toggles — enabling one MUST NOT
+    // flip the other.
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{
+        \\  "api_key": "k", "model": "m", "base_url": "b",
+        \\  "notify_on_complete": true,
+        \\  "web_launch_enabled": false
+        \\}
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expectEqual(true, cfg.notify_on_complete);
+    try std.testing.expectEqual(false, cfg.web_launch_enabled);
+}
+
+// ---------------------------------------------------------------------------
 // url_style: top-level OpenAI vs Anthropic selector (regression for
 // `NalarSettings.vue` URL Style dropdown — see plan
 // `2026-06-11-nalar-config-url-style.md`).

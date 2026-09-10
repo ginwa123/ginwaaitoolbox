@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   deleteProfile as apiDeleteProfile,
   getNalarConfig,
+  getWebStatus,
   saveNalarConfig,
   type McpServer,
   type NalarConfig,
@@ -86,6 +87,8 @@ const generalSettings = ref<NalarGeneralSettings>({
   notify_on_complete: false,
   notify_on_error: false,
   retry_delay_ms: 0,
+  // Plan 2026-09-10-web-launch-toggle: browser-mode flag (4th key).
+  web_launch_enabled: false,
 })
 
 function syncFromConfig() {
@@ -128,7 +131,13 @@ function syncFromConfig() {
     // the dirty pill doesn't flash on first load when the field is
     // absent from config.json.
     retry_delay_ms: c.retry_delay_ms ?? 0,
+    // Plan 2026-09-10-web-launch-toggle: browser-mode flag, same
+    // `?? false` hydration as the notify toggles.
+    web_launch_enabled: c.web_launch_enabled ?? false,
   }
+  // Remember the persisted flag so handleSave can detect the OFF→ON
+  // transition for the one-time browser auto-open.
+  prevWebLaunch.value = generalSettings.value.web_launch_enabled
 }
 
 function syncToConfig() {
@@ -154,6 +163,9 @@ function syncToConfig() {
     notify_on_complete: generalSettings.value.notify_on_complete,
     notify_on_error: generalSettings.value.notify_on_error,
     retry_delay_ms: generalSettings.value.retry_delay_ms,
+    // Plan 2026-09-10-web-launch-toggle: 4th operational setting,
+    // always written through like its siblings.
+    web_launch_enabled: generalSettings.value.web_launch_enabled,
     // Top-level compaction defaults — plan 2026-07-07-compaction-inline.
     // Unconditional spread so `null` is preserved (cascade wildcard).
     max_capacity_token_model: c.max_capacity_token_model,
@@ -469,9 +481,19 @@ async function clearActiveProfile() {
 
 // ─── Save / Reset ────────────────────────────────────────────────────────
 async function handleSave() {
+  // Capture the OFF→ON transition BEFORE save (prevWebLaunch tracks the
+  // last persisted flag; generalSettings holds the pending edit).
+  const autoOpen = generalSettings.value.web_launch_enabled && !prevWebLaunch.value
   try {
     await save()
+    prevWebLaunch.value = generalSettings.value.web_launch_enabled
+    await refreshWebStatus()
     emit('notification', 'Settings saved', 'success')
+    // Plan 2026-09-10-web-launch-toggle: auto-open the browser once on
+    // the OFF→ON transition. Fired from the Save click (a user gesture)
+    // so popup-blockers let it through; the pill's Open button remains
+    // the reliable path if it is ever blocked.
+    if (autoOpen && webUrl.value) openWeb()
   } catch (err) {
     emit('notification', `Save failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
   }
@@ -481,6 +503,43 @@ function handleReset() {
   reset()
   syncFromConfig()
 }
+
+// ─── Web launch (browser mode) ──────────────────────────────────────────
+// Plan 2026-09-10-web-launch-toggle: the General tab pill shows the live
+// browser URL from `GET /api/web/status`. `webUrl` is null while unknown
+// (pill renders a waiting hint, Open/Copy disabled).
+const webUrl = ref<string | null>(null)
+const prevWebLaunch = ref(false)
+
+async function refreshWebStatus() {
+  try {
+    const status = await getWebStatus()
+    webUrl.value = status?.url ?? null
+  } catch {
+    webUrl.value = null
+  }
+}
+
+function openWeb() {
+  if (!webUrl.value) return
+  window.open(webUrl.value, '_blank', 'noopener')
+}
+
+async function copyWeb() {
+  if (!webUrl.value) return
+  try {
+    await navigator.clipboard.writeText(webUrl.value)
+    emit('notification', 'Web URL copied', 'success')
+  } catch (err) {
+    emit('notification', `Copy failed: ${err instanceof Error ? err.message : String(err)}`, 'error')
+  }
+}
+
+// Fetch the live URL once settings load (best-effort — a null just
+// renders the waiting hint until the next save refreshes it).
+onMounted(async () => {
+  await refreshWebStatus()
+})
 
 // ─── Confirm dialog for profile delete ───────────────────────────────────
 const confirmingDeleteProfile = ref<string | null>(null)
@@ -515,6 +574,9 @@ const isLoading = computed(() => !loaded.value)
         <NalarGeneralSection
           v-if="activeTab === 'general'"
           v-model="generalSettings"
+          :web-url="webUrl"
+          @open-web="openWeb"
+          @copy-web="copyWeb"
         />
 
         <ProfilesSection

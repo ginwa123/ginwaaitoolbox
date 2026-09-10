@@ -795,6 +795,12 @@ pub const preview_design_page = @import("modules/agent/tools/preview_design_page
 
 pub const config = @import("modules/config/Config.zig");
 pub const parse_thinking = @import("modules/config/parse_thinking.zig");
+// Plan 2026-09-10-web-launch-toggle: random loopback port picker for
+// browser mode (`--port 0` resolution). Re-exported here so the exe
+// module (src/main.zig) reaches it via `nalarcore.web_port` instead of
+// a direct cross-module @import (which would duplicate the file across
+// modules — see the cleanup_stale_worker precedent in main.zig).
+pub const web_port = @import("modules/config/web_port.zig");
 pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
@@ -925,6 +931,16 @@ test {
     // cleanup_stale_worker above — see plan
     // 2026-08-28-mcp-streamable-http.md (Task 2).
     _ = @import("modules/agent/mcp/mcp/mcp_http.zig");
+    // Browser-mode (web launch) random port picker (plan
+    // 2026-09-10-web-launch-toggle): impl + unit tests in one file.
+    // Same discovery workaround as mcp_http above.
+    _ = @import("modules/config/web_port.zig");
+    // Config struct + config_test.zig (the `test { ... }` block at the
+    // bottom of Config.zig pulls in config_test.zig +
+    // parse_thinking_test.zig). Registered here so `zig build test`
+    // discovers them — the `pub const config` re-export above alone
+    // doesn't trigger discovery.
+    _ = @import("modules/config/Config.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
 }
 

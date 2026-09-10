@@ -292,6 +292,12 @@ pub const parseConfigInput = @import("nalar_config_put.zig").parseConfigInput;
 // full LLM stream. See /docs/superpowers/plans/2026-01-15-llm-completion-notification.md
 pub const notifyTestHandler = @import("notify_test.zig").notifyTestHandler;
 
+// Browser-mode (web launch) status — read-only report of the
+// `web_launch_enabled` flag + live bound port/URL. Plan
+// 2026-09-10-web-launch-toggle (lifecycle A: no server-side
+// start/stop, the flag only drives the settings UI).
+pub const webStatusHandler = @import("web_status.zig").webStatusHandler;
+
 // Frontend error log handlers — persist and query the
 // window.error / unhandledrejection / console.error / console.warn
 // events in the `logs` table. See

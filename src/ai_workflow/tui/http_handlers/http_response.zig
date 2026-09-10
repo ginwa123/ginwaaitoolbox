@@ -372,6 +372,10 @@ pub const NalarConfigResponse = struct {
     /// is silent on errors. Consumed by `workflow.zig` at the same
     /// sites as `notify_on_complete`.
     notify_on_error: bool = false,
+    /// Opt-in web-launch flag. When true, the agent may launch URLs in
+    /// the user's web browser. Default `false` so a brand-new install
+    /// has web launch off.
+    web_launch_enabled: bool = false,
     /// Compaction threshold in KB. Sessions whose DB-stored token
     /// estimate exceeds this value trigger context compaction.
     /// Consumed by `session_compact.zig:57`.

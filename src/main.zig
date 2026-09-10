@@ -187,13 +187,17 @@ pub fn main(init: std.process.Init) !void {
     // };
     // defer cron.stop();
 
-    var port: u16 = 8081;
+    // Plan 2026-09-10-web-launch-toggle: `--port 0` = auto-pick a random
+    // free loopback port (browser mode). `port_opt` stays null unless the
+    // user passes --port explicitly, so the default can honor the
+    // `web_launch_enabled` flag (random when on, 8081 when off).
+    var port_opt: ?u16 = null;
 
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     while (args_iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "--port")) {
             if (args_iter.next()) |port_arg| {
-                port = std.fmt.parseInt(u16, port_arg, 10) catch {
+                port_opt = std.fmt.parseInt(u16, port_arg, 10) catch {
                     std.log.err("Error: invalid port number", .{});
                     return error.InvalidArgs;
                 };
@@ -210,10 +214,27 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR]\n", .{});
-            std.debug.print("  --port PORT          Port to run the HTTP server on (default: 8081)\n", .{});
+            std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
             std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
             return;
         }
+    }
+
+    // Resolve the listen port: explicit --port wins; otherwise the
+    // `web_launch_enabled` flag decides (random when on so the
+    // browser-mode URL never clashes, 8081 when off — historical
+    // default, unchanged).
+    var port: u16 = port_opt orelse (if (llm_config.web_launch_enabled) 0 else 8081);
+    if (port == 0) {
+        port = nalarcore.web_port.pickFreePort(io) catch |err| {
+            std.log.err("web launch: no free port in [{d},{d}]: {s}", .{
+                nalarcore.web_port.web_port_range_start,
+                nalarcore.web_port.web_port_range_end,
+                @errorName(err),
+            });
+            return err;
+        };
+        std.log.info("web launch: browser mode on http://127.0.0.1:{d}/", .{port});
     }
 
     // var server = http_server.HttpServer.init(parent_allocator, io, ctxParent, port, environment);
@@ -406,6 +427,13 @@ pub fn main(init: std.process.Init) !void {
     // OS notification test endpoint — fires a real OS notification so
     // the user can verify their system can display them.
     try gs.router.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);
+
+    // Browser-mode (web launch) status — read-only: reports the
+    // `web_launch_enabled` flag + live bound port/URL for the settings
+    // General tab pill. Literal path, no `:param` siblings — no
+    // matchRoute shadowing risk (router.zig walks registration order).
+    // Plan 2026-09-10-web-launch-toggle.
+    try gs.router.get("/api/web/status", ai_mod.http_handlers.webStatusHandler);
 
     // MCP server "Test" probe — fires a tools/list request against a
     // candidate config without persisting anything. Used by the
@@ -716,7 +744,7 @@ fn dispatchServiceSubcommand(
         error.UnknownSubcommand => {
             std.log.err("unknown subcommand: {s}", .{if (rest.items.len > 0) rest.items[0] else "(none)"});
             std.log.err("usage: nalar service {{start|stop|status|restart}} [flags]", .{});
-            std.log.err("  start    [--port PORT] [--static-dir DIR] [--no-static-dir]", .{});
+            std.log.err("  start    [--port PORT] [--static-dir DIR] [--no-static-dir]  (PORT 0 = random free port)", .{});
             std.log.err("  stop     [--graceful-timeout-ms MS]", .{});
             std.log.err("  status", .{});
             std.log.err("  restart  [--port PORT] [--graceful-timeout-ms MS] [--static-dir DIR]", .{});

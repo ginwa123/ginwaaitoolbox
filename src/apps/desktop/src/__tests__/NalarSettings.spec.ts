@@ -9,15 +9,21 @@ vi.mock('../api', () => ({
   getNalarConfig: vi.fn(),
   saveNalarConfig: vi.fn(),
   deleteProfile: vi.fn(),
+  // Plan 2026-09-10-web-launch-toggle: browser-mode status for the
+  // General tab URL pill. Resolves null by default (pill waiting hint).
+  getWebStatus: vi.fn(),
 }))
 
 const mockGet = api.getNalarConfig as unknown as ReturnType<typeof vi.fn>
 const mockSave = api.saveNalarConfig as unknown as ReturnType<typeof vi.fn>
+const mockWebStatus = api.getWebStatus as unknown as ReturnType<typeof vi.fn>
 
 describe('NalarSettings (orchestrator)', () => {
   beforeEach(() => {
     mockGet.mockReset()
     mockSave.mockReset()
+    mockWebStatus.mockReset()
+    mockWebStatus.mockResolvedValue(null)
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
       writable: true,
@@ -261,6 +267,13 @@ describe('NalarSettings (orchestrator)', () => {
       notify_on_complete: true,
       notify_on_error: true,
       retry_delay_ms: 15000,
+      web_launch_enabled: true,
+    })
+    mockWebStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: true,
+      url: 'http://127.0.0.1:51234/',
+      port: 51234,
     })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
@@ -278,6 +291,12 @@ describe('NalarSettings (orchestrator)', () => {
     expect(
       Number((wrapper.find('[data-testid="input-retry-delay-seconds"]').element as HTMLInputElement).value),
     ).toBe(15)
+    // Plan 2026-09-10-web-launch-toggle: the web-launch toggle reflects
+    // the loaded flag and the pill shows the live status URL.
+    expect(
+      (wrapper.find('[data-testid="toggle-web-launch"]').element as HTMLInputElement).checked,
+    ).toBe(true)
+    expect(wrapper.find('[data-testid="pill-web-url"]').text()).toContain('http://127.0.0.1:51234/')
   })
 
   it('toggling notify_on_error in the General tab flips dirty=true and round-trips through save', async () => {
@@ -285,6 +304,7 @@ describe('NalarSettings (orchestrator)', () => {
       notify_on_complete: false,
       notify_on_error: false,
       retry_delay_ms: 0,
+      web_launch_enabled: false,
     })
     mockSave.mockResolvedValueOnce({ success: true })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
@@ -307,10 +327,11 @@ describe('NalarSettings (orchestrator)', () => {
     expect(mockSave).toHaveBeenCalledTimes(1)
     const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
     expect(savedConfig.notify_on_error).toBe(true)
-    // The other two operational settings should also be in the body
-    // (syncToConfig writes them through unconditionally).
+    // The other operational settings should also be in the body
+    // (syncToConfig writes them through unconditionally — now four).
     expect(savedConfig.notify_on_complete).toBe(false)
     expect(savedConfig.retry_delay_ms).toBe(0)
+    expect(savedConfig.web_launch_enabled).toBe(false)
   })
 
   it('typing into the retry-delay input round-trips to retry_delay_ms in the PUT body', async () => {
@@ -318,6 +339,7 @@ describe('NalarSettings (orchestrator)', () => {
       notify_on_complete: false,
       notify_on_error: false,
       retry_delay_ms: 0,
+      web_launch_enabled: false,
     })
     mockSave.mockResolvedValueOnce({ success: true })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
@@ -344,6 +366,7 @@ describe('NalarSettings (orchestrator)', () => {
       notify_on_complete: false,
       notify_on_error: false,
       retry_delay_ms: 0,
+      web_launch_enabled: false,
     })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
     await flushPromises()
@@ -367,16 +390,17 @@ describe('NalarSettings (orchestrator)', () => {
     expect(msReadout.text()).toContain('0')
   })
 
-  it('the PUT body always includes all three operational settings, even when the user only edits one', async () => {    // The General tab MUST write all three operational settings
+  it('the PUT body always includes all four operational settings, even when the user only edits one', async () => {    // The General tab MUST write all four operational settings
     // through (syncToConfig does this unconditionally). This is a
     // regression guard so a future refactor doesn't accidentally
     // drop one of them and silently re-introduce the hidden-field
     // bug. Toggling ONLY `notify_on_error` must still surface the
-    // other two unchanged fields in the PUT body.
+    // other unchanged fields in the PUT body.
     mockGet.mockResolvedValueOnce({
       notify_on_complete: true,
       notify_on_error: false,
       retry_delay_ms: 10000,
+      web_launch_enabled: false,
     })
     mockSave.mockResolvedValueOnce({ success: true })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
@@ -393,6 +417,54 @@ describe('NalarSettings (orchestrator)', () => {
     expect(savedConfig.notify_on_complete).toBe(true)
     expect(savedConfig.notify_on_error).toBe(true)
     expect(savedConfig.retry_delay_ms).toBe(10000)
+    expect(savedConfig.web_launch_enabled).toBe(false)
+  })
+
+  // ─── Web launch toggle (plan 2026-09-10-web-launch-toggle) ──
+  it('toggling web-launch ON and saving PUTs web_launch_enabled:true and auto-opens the status URL', async () => {
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: false,
+      notify_on_error: false,
+      retry_delay_ms: 0,
+      web_launch_enabled: false,
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    // Two status fetches happen: one on mount (pill), one after save
+    // (auto-open). Queue the URL for both.
+    mockWebStatus.mockResolvedValueOnce({
+      enabled: false,
+      running: true,
+      url: 'http://127.0.0.1:51234/',
+      port: 51234,
+    })
+    mockWebStatus.mockResolvedValueOnce({
+      enabled: true,
+      running: true,
+      url: 'http://127.0.0.1:51234/',
+      port: 51234,
+    })
+    const openSpy = vi.fn()
+    const prevOpen = window.open
+    window.open = openSpy as unknown as typeof window.open
+    try {
+      const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+      await flushPromises()
+
+      await wrapper.find('[data-testid="toggle-web-launch"]').setValue(true)
+      await flushPromises()
+      await wrapper.find('[data-testid="save-btn"]').trigger('click')
+      await flushPromises()
+
+      expect(mockSave).toHaveBeenCalledTimes(1)
+      const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+      expect(savedConfig.web_launch_enabled).toBe(true)
+      // OFF→ON transition + known URL → one auto-open from the Save
+      // gesture (popup-blocker safe).
+      expect(openSpy).toHaveBeenCalledTimes(1)
+      expect(openSpy).toHaveBeenCalledWith('http://127.0.0.1:51234/', '_blank', 'noopener')
+    } finally {
+      window.open = prevOpen
+    }
   })
 
   // ─── MCP server enabled toggle (orchestrator) ──
