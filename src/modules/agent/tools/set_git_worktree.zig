@@ -37,12 +37,15 @@ pub const set_git_worktree_tool_system_prompt =
     \\## Set Git Worktree Tool — Behavior (MANDATORY when applicable)
     \\If you are creating a worktree, or the human requests a git worktree,
     \\you MUST call `set_git_worktree` before any `bash`/`read_file`/`write_file`
-    \\op touches repo files — never operate on a repo path directly.
-    \\- `path` MUST be absolute, contain no `..`, and its parent MUST exist.
-    \\- Once set, all subsequent `bash`/`read_file`/`write_file` ops run inside
-    \\  that worktree.
-    \\- Pass `clear=true` to remove the worktree and clear the binding before
-    \\  switching or finishing.
+    \\operation touches repo files. Never operate on the original repo path.
+    \\
+    \\- `path` MUST be an absolute native path under Nalar's config directory:
+    \\  `.worktree/worktrees_agent_<randomname>`.
+    \\- `path` MUST NOT contain `..`.
+    \\- The parent directory MUST exist.
+    \\- Once set, all subsequent `bash`/`read_file`/`write_file` operations run
+    \\  inside that worktree.
+    \\- Pass `clear=true` to remove the binding before switching or finishing.
     \\
 ;
 pub const set_git_worktree_tool = AgentTool{
