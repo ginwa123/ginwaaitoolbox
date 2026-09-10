@@ -71,6 +71,7 @@ import CompactionCard from '../preview/CompactionCard.vue'
 // 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
+import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -315,7 +316,11 @@ const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 
 // Pagination state
 const messageCursor = ref<string | null>(null)
-const PAGE_SIZE = 1000
+// 2026-09-09 user-pill pagination fix: 1000 rows per page defeated
+// pagination (slow TTFB with base64 image_urls + tool JSON, memory
+// spike, VirtualScroller height-estimate blowup). 100 keeps the
+// initial paint fast and lets the load-more threshold drive the rest.
+const PAGE_SIZE = 100
 
 // ── Sub-agent peek ────────────────────────────────────────────────
 // Owns the slide-over panel for watching a single sub-agent's
@@ -1140,6 +1145,64 @@ const groupKeyForMessageId = (messageId: string): string | null => {
   return g ? groupKey(g) : null
 }
 
+// ── User-pill rail (2026-09-09 chatview user pill) ──────────────────────
+// One pill per user group; click jumps the scroller to that group.
+// Per-group (not per-message) because VirtualScroller items ARE groups —
+// scrollToItem(groupIndex) is exact. Compaction envelopes are skipped
+// (system artifacts, not user turns). Uniform stack order (not
+// proportional to height) so the rail stays predictable under
+// virtualization estimates.
+const userPills = computed((): UserPill[] => {
+  const pills: UserPill[] = []
+  messageGroups.value.forEach((g, i) => {
+    if (g.role !== 'user') return
+    const first = g.messages[0]
+    if (first && isCompactionMessage(first)) return
+    const text = g.messages
+      .map((m) => m.content || '')
+      .join('\n')
+      .trim()
+    const preview = text.slice(0, 60) || '📷 Image'
+    pills.push({ groupIndex: i, key: groupKey(g), preview, title: `${preview}` })
+  })
+  return pills
+})
+
+// Last pill the user jumped to (highlight). Ref — not scroll-derived —
+// so no extra scroll listener fights the auto-stick logic. Upgrade path:
+// derive from the scroller's exposed effectiveRange when needed.
+const activePillGroupIndex = ref<number | null>(null)
+
+const jumpToUserGroup = (groupIndex: number, key: string) => {
+  // Resolve the index by stable groupKey at click time: SSE appends
+  // between render and click can shift positional indices.
+  const current = messageGroups.value.findIndex((g) => groupKey(g) === key)
+  const target = current !== -1 ? current : groupIndex
+  activePillGroupIndex.value = target
+  // Mark programmatic BEFORE the write so handleVirtualScroll doesn't
+  // misread the jump as a user scroll-up (same pattern as scrollToBottom).
+  scrollLogger.markProgrammatic()
+  virtualScrollerRef.value?.scrollToItem(target, 'smooth')
+  // Flash-highlight the bubble so the eye finds it after the scroll.
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      const container = scrollerContainerRef.value
+      if (!container) return
+      const nodes = container.querySelectorAll('[data-group-key]')
+      for (const node of nodes) {
+        if (node.getAttribute('data-group-key') === key) {
+          node.classList.remove('pill-jump-flash')
+          // Force reflow so repeated jumps to the same pill re-trigger.
+          void (node as HTMLElement).offsetWidth
+          node.classList.add('pill-jump-flash')
+          window.setTimeout(() => node.classList.remove('pill-jump-flash'), 1300)
+          break
+        }
+      }
+    })
+  })
+}
+
 // Per-message envelope unwrap lookup. Keyed by message id; value is the
 // parsed envelope or null if the content is not a <tool> envelope (legacy
 // or non-tool content). Computed once when messages change so the
@@ -1484,7 +1547,21 @@ const loadChatHistory = async (loadMore = false) => {
         extra: { prepending: newCount },
       })
       virtualScrollerRef.value?.beginPreserve(newCount)
-      messages.value = [...newMessages.slice().reverse(), ...messages.value]
+      // 2026-09-09 user-pill pagination fix — dedupe: drop pages already
+      // present (retry after a failed endPreserve, overlapping cursor
+      // pages, or an SSE `full` echo that landed mid-preserve). Without
+      // this the same id prepended twice renders double bubbles and
+      // corrupts group indices the pill rail jumps to.
+      const seenIds = new Set(messages.value.map((m) => m.id))
+      const freshMessages = newMessages.filter((m) => !seenIds.has(m.id))
+      messages.value = [...freshMessages.slice().reverse(), ...messages.value]
+      // 2026-09-09 user-pill pagination fix — cursor advance: the NEXT
+      // loadMore must continue from THIS page's cursor, not the initial
+      // one. These assignments previously lived only in the initial-load
+      // branch, so every 2nd+ loadMore re-sent the same cursor and
+      // re-prepended the same page forever.
+      messageCursor.value = data.next_cursor
+      hasMoreMessages.value = data.has_more
       await nextTick()
       // The VirtualScroller's internal scrollTop restoration may fire
       // a scroll event. Mark it programmatic so the next
@@ -3027,7 +3104,11 @@ const compactSession = async () => {
           @content-shift="onContentShift"
         >
           <template #default="{ item: group, index: groupIndex }">
-            <div class="px-4 max-w-4xl mx-auto" :class="groupIndex === 0 ? 'pt-6' : ''">
+            <div
+              class="px-4 max-w-4xl mx-auto"
+              :class="groupIndex === 0 ? 'pt-6' : ''"
+              :data-group-key="groupKey(group)"
+            >
               <div
                 class="flex"
                 :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
@@ -3510,6 +3591,18 @@ const compactSession = async () => {
             </div>
           </template>
         </VirtualScroller>
+
+        <!-- User-pill rail (2026-09-09 chatview user pill): one pill per
+             user group on the right edge; click jumps to that message.
+             Sibling of VirtualScroller inside the relative
+             messagesWrapperRef so it never virtualizes. Hidden when
+             fewer than 2 user groups (nothing to navigate). -->
+        <UserPillRail
+          v-if="userPills.length >= 2"
+          :pills="userPills"
+          :active-group-index="activePillGroupIndex"
+          @jump="jumpToUserGroup"
+        />
 
         <!-- 2026-08-25 agent-error-card (task_1787663566535_2):
              Agentic-loop error/retry diagnostics. Rendered OUTSIDE the
@@ -4174,5 +4267,33 @@ const compactSession = async () => {
 
 .chat-attached-image-thumb:hover .chat-attached-image-img {
   opacity: 0.9;
+}
+
+/* Pill-jump flash (2026-09-09 chatview user pill): brief outline pulse
+   on the user bubble after a rail-pill jump so the eye finds it. */
+.pill-jump-flash {
+  animation: pill-jump-flash 1.2s ease-out;
+  border-radius: 12px;
+}
+
+@keyframes pill-jump-flash {
+  0%,
+  100% {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+  25%,
+  60% {
+    outline: 2px solid var(--color-violet, #8b5cf6);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pill-jump-flash {
+    animation: none;
+    outline: 2px solid var(--color-violet, #8b5cf6);
+    outline-offset: 2px;
+  }
 }
 </style>
