@@ -1970,6 +1970,12 @@ pub const allMigrations: []const Migration = &.{
     // reasoning replay when store:false. Plan:
     // docs/superpowers/plans/2026-09-01-fix-openai-response-reasoning-leak-and-persist.md.
     .{ .version = Migration083AddReasoningIdAndEncryptedContent.version, .name = Migration083AddReasoningIdAndEncryptedContent.name, .up = Migration083AddReasoningIdAndEncryptedContent.up },
+    // Migration 084 — drop per-task `routines`, replace with workspace-level
+    // `workspace_routines` (first-class `item_type='routine'` beside `agent`).
+    // Breaking: old per-task schedules are dropped, no carry-over.
+    // Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md.
+    // Task: task_1789032258828_0.
+    .{ .version = Migration084ReplaceRoutinesWithWorkspaceRoutines.version, .name = Migration084ReplaceRoutinesWithWorkspaceRoutines.name, .up = Migration084ReplaceRoutinesWithWorkspaceRoutines.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4594,6 +4600,79 @@ pub const Migration083AddReasoningIdAndEncryptedContent = struct {
     }
 };
 
+/// Migration 084 — drop per-task routines, replace with workspace-level
+/// routines (`workspace_routines`, 1:1 with routine `workspace_items`).
+///
+/// ## Why this migration exists
+///
+/// Per-task routines (`routines` table from Migration 044, keyed
+/// `task_id UNIQUE FK → workspace_item_tasks`) are deleted by design
+/// decision: routines are a first-class workspace-item mode beside
+/// `agent` (`item_type='routine'`), not a flag on a chat task. There is
+/// no data carry-over — old per-task schedules are dropped (breaking
+/// change, announced in the plan + release notes).
+///
+/// ## What this does (order matters — FK)
+///
+/// 1. Normalizes leftover `task_type='routine'` rows to `'standard'`
+///    (the `task_type` column itself stays — `standard`/`memory` still
+///    use it).
+/// 2. Drops the old `routines` table + its indexes.
+/// 3. Creates `workspace_routines` (`id == workspace_item_id`, D3 copy
+///    from the `agents` table) holding `instruction` + `schedule` +
+///    `enabled` + fire state.
+///
+/// Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md
+/// Task: task_1789032258828_0.
+pub const Migration084ReplaceRoutinesWithWorkspaceRoutines = struct {
+    pub const version: u32 = 84;
+    pub const name = "replace_routines_with_workspace_routines";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // 1. Normalize leftovers so no task claims a deleted mode.
+        try db.exec(allocator,
+            "UPDATE workspace_item_tasks SET task_type = 'standard' WHERE task_type = 'routine'",
+            &[_][]const u8{},
+        );
+
+        // 2. Drop the old per-task table + its indexes.
+        try db.exec(allocator, "DROP TABLE IF EXISTS routines", &[_][]const u8{});
+        try db.exec(allocator, "DROP INDEX IF EXISTS idx_routines_enabled_next_run", &[_][]const u8{});
+        try db.exec(allocator, "DROP INDEX IF EXISTS idx_routines_last_status", &[_][]const u8{});
+
+        // 3. Create the workspace-level replacement.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS workspace_routines (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    instruction TEXT NOT NULL DEFAULT '',
+            \\    schedule TEXT NOT NULL DEFAULT '',
+            \\    enabled INTEGER NOT NULL DEFAULT 1,
+            \\    last_run_at DATETIME,
+            \\    next_run_at DATETIME,
+            \\    last_status TEXT NOT NULL DEFAULT 'idle',
+            \\    last_error TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_workspace_routines_workspace_item_id ON workspace_routines(workspace_item_id)",
+            &[_][]const u8{},
+        );
+        // Hot-path index for the Scheduler's due-scan
+        // (SELECT id FROM workspace_routines WHERE enabled=1 AND next_run_at<=now).
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_workspace_routines_enabled_next_run ON workspace_routines(enabled, next_run_at)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator, "ANALYZE", &[_][]const u8{});
+    }
+};
+
 // ============================================================================
 // Migration 083 — llm_history reasoning metadata — inline tests
 // ============================================================================
@@ -4875,4 +4954,200 @@ test "Migration081 ON DELETE CASCADE removes all children when workspace_item de
         defer r.deinit(alloc);
         try testing.expectEqualStrings("0", r.values[0]);
     }
+}
+
+// ============================================================================
+// Migration 084 — replace per-task routines with workspace_routines — tests
+// ============================================================================
+
+const Migration084 = Migration084ReplaceRoutinesWithWorkspaceRoutines;
+
+test "Migration084 creates workspace_routines with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+
+    try Migration084.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "workspace_routines");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id",                 "workspace_item_id",
+        "description",        "instruction",
+        "schedule",           "enabled",
+        "last_run_at",        "next_run_at",
+        "last_status",        "last_error",
+        "created_at",         "updated_at",
+    });
+}
+
+test "Migration084 drops routines table and normalizes task_type routine rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Pre-084 state: a routine task + its routines row (Migration 044 shape).
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, task_type) VALUES ('t_rout', 'routine'), ('t_std', 'standard')",
+        &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE routines (
+        \\    id TEXT PRIMARY KEY,
+        \\    task_id TEXT NOT NULL UNIQUE,
+        \\    schedule TEXT NOT NULL,
+        \\    initial_prompt TEXT NOT NULL,
+        \\    enabled INTEGER NOT NULL DEFAULT 1,
+        \\    last_run_at DATETIME,
+        \\    next_run_at DATETIME NOT NULL,
+        \\    last_status TEXT,
+        \\    last_error TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO routines (id, task_id, schedule, initial_prompt, next_run_at) VALUES ('r1', 't_rout', '* * * * *', 'hi', '2026-01-01 00:00:00')",
+        &.{});
+
+    try Migration084.up(&ctx.db, alloc);
+
+    // Old table is gone.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'routines'",
+            &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+    // Old indexes are gone.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_routines_%'",
+            &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+    // Routine task normalized to standard; standard row untouched.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT task_type FROM workspace_item_tasks WHERE id = 't_rout'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("standard", row.values[0]);
+    }
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT task_type FROM workspace_item_tasks WHERE id = 't_std'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("standard", row.values[0]);
+    }
+    // Replacement table exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_routines'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("workspace_routines", row.values[0]);
+    }
+}
+
+test "Migration084 UNIQUE workspace_item_id rejects second workspace_routines row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+
+    try Migration084.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_routines (id, workspace_item_id) VALUES ('wr_1', 'item_1')",
+        &.{});
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO workspace_routines (id, workspace_item_id) VALUES ('wr_2', 'item_1')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+}
+
+test "Migration084 ON DELETE CASCADE removes routine when workspace_item deleted" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+    try Migration084.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('ws_item_1', 'ws_1', 'routine', 'Nightly', '/tmp/x', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_routines (id, workspace_item_id, instruction, schedule) VALUES ('wr_1', 'ws_item_1', 'do things', '0 9 * * *')",
+        &.{});
+
+    try ctx.db.exec(alloc, "DELETE FROM workspace_items WHERE id = 'ws_item_1'", &.{});
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM workspace_routines", &.{});
+    defer q.deinit();
+    const r = (try q.next()) orelse return error.RowMissing;
+    defer r.deinit(alloc);
+    try testing.expectEqualStrings("0", r.values[0]);
+}
+
+test "Migration084 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+
+    try Migration084.up(&ctx.db, alloc);
+    try Migration084.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workspace_routines'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration084 is registered in allMigrations" {
+    const all = @import("migration.zig").allMigrations;
+    for (all) |m| {
+        if (m.version == Migration084.version) return;
+    }
+    return error.Migration084NotRegistered;
 }
