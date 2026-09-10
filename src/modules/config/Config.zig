@@ -388,6 +388,9 @@ pub const LlmConfig = struct {
         args: ?[]const []const u8,
         /// stdio transport: working directory. Null = inherit from parent.
         cwd: ?[]const u8,
+        /// Whether the server is enabled. Defaults to true — absent or
+        /// non-bool `enabled` values parse as true (ignored, not fatal).
+        enabled: bool = true,
 
         pub const Transport = enum { http, stdio };
 
@@ -1053,6 +1056,7 @@ pub const LlmConfig = struct {
             .command = null,
             .args = null,
             .cwd = null,
+            .enabled = true,
         };
         errdefer freeMcpServerConfig(&config, allocator);
 
@@ -1121,6 +1125,14 @@ pub const LlmConfig = struct {
                 if (cwd_field == .string) {
                     config.cwd = try allocator.dupe(u8, cwd_field.string);
                 }
+            }
+        }
+
+        // enabled (optional, both transports). Accept only .bool —
+        // absent or non-bool values keep the default true (ignored, not fatal).
+        if (obj.get("enabled")) |enabled_field| {
+            if (enabled_field == .bool) {
+                config.enabled = enabled_field.bool;
             }
         }
 
@@ -1265,6 +1277,7 @@ pub const LlmConfig = struct {
                 .command = null,
                 .args = null,
                 .cwd = null,
+                .enabled = src.enabled,
             };
             errdefer freeMcpServerConfig(&cloned, self.allocator);
 
@@ -1486,6 +1499,7 @@ pub const LlmConfig = struct {
             .command = try self.allocator.dupe(u8, input.command),
             .args = null,
             .cwd = if (input.cwd) |c| try self.allocator.dupe(u8, c) else null,
+            .enabled = true,
         };
         errdefer freeMcpServerConfig(&entry, self.allocator);
 
@@ -1530,6 +1544,7 @@ pub const LlmConfig = struct {
                 .command = null,
                 .args = null,
                 .cwd = null,
+                .enabled = true,
             };
             break :blk k;
         };
@@ -1601,6 +1616,13 @@ pub const LlmConfig = struct {
             if (cfg.cwd) |c| {
                 try server_obj.put(allocator, "cwd", .{ .string = try allocator.dupe(u8, c) });
             }
+            // Omit-when-true: only disabled servers serialize `enabled`.
+            // Matches parseMcpServerConfig's "absent = true" convention, so
+            // a rebuild round-trip preserves the flag without bloating
+            // enabled servers' JSON.
+            if (!cfg.enabled) {
+                try server_obj.put(allocator, "enabled", .{ .bool = false });
+            }
 
             const name_dup = try allocator.dupe(u8, server_name);
             errdefer allocator.free(name_dup);
@@ -1636,10 +1658,10 @@ pub const LlmConfig = struct {
 
     /// Free a `new_obj` tree built by `rebuildMcpServersParsed`. The OUTER
     /// keys are duped server names (owned); the INNER keys ("command",
-    /// "args", "url", "cwd", "headers") are STRING LITERALS and MUST NOT
-    /// be freed. The values inside server_obj own memory (duped strings,
-    /// headers sub-map). We exploit that with a dedicated helper rather
-    /// than a generic recursive free.
+    /// "args", "url", "cwd", "headers", "enabled") are STRING LITERALS and
+    /// MUST NOT be freed. The values inside server_obj own memory (duped
+    /// strings, headers sub-map). We exploit that with a dedicated helper
+    /// rather than a generic recursive free.
     fn freeNewObjDeep(allocator: std.mem.Allocator, new_obj: *json.ObjectMap) void {
         var it = new_obj.iterator();
         while (it.next()) |kv| {
@@ -1650,8 +1672,8 @@ pub const LlmConfig = struct {
     }
 
     /// Free a single server's ObjectMap. The KEYS are string literals
-    /// ("command", "args", "url", "cwd", "headers") — DO NOT free them.
-    /// The VALUES own memory (duped strings, headers sub-map).
+    /// ("command", "args", "url", "cwd", "headers", "enabled") — DO NOT
+    /// free them. The VALUES own memory (duped strings, headers sub-map).
     fn freeServerObjDeep(allocator: std.mem.Allocator, server_obj: *json.ObjectMap) void {
         var it = server_obj.iterator();
         while (it.next()) |kv| {
@@ -2248,14 +2270,14 @@ pub const LlmConfig = struct {
     ///      2026-07-07-compaction-inline so the Defaults tab's value
     ///      flows through to chats that don't set a per-profile override.
     ///   4. `LLMModels.getModelTokenCount(model_name)` (built-in default)
-///
-/// `defaults` should be `*const LlmConfig` — typically the orchestrator's
-/// own config (the same `self` that's calling this function). Pass `null`
-/// to skip step 3 and fall straight through to the built-in default.
-///
-/// Use this everywhere a "what's the effective context window for
-/// THIS chat?" answer is needed instead of calling
-/// `LLMModels.getModelTokenCount` directly.
+    ///
+    /// `defaults` should be `*const LlmConfig` — typically the orchestrator's
+    /// own config (the same `self` that's calling this function). Pass `null`
+    /// to skip step 3 and fall straight through to the built-in default.
+    ///
+    /// Use this everywhere a "what's the effective context window for
+    /// THIS chat?" answer is needed instead of calling
+    /// `LLMModels.getModelTokenCount` directly.
     pub fn maxCapacityForModel(
         self: *const LlmConfig,
         profile: ?*const LlmProfile,

@@ -6,6 +6,7 @@ defineProps<{ modelValue: McpServer[] }>()
 const emit = defineEmits<{
   edit: [server: McpServer]
   delete: [name: string]
+  toggle: [name: string]
   add: []
 }>()
 
@@ -55,6 +56,7 @@ function maskValue(v: string): string {
         v-for="server in modelValue"
         :key="server.name"
         class="px-4 py-3 rounded-md"
+        :class="{ 'opacity-60': server.enabled === false }"
         style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
       >
         <div class="flex items-center justify-between gap-3">
@@ -69,6 +71,12 @@ function maskValue(v: string): string {
                   border: '1px solid',
                 }"
               >{{ server.transport ?? 'http' }}</span>
+              <span
+                v-if="server.enabled === false"
+                data-testid="disabled-pill"
+                class="text-[10px] px-1.5 h-4 inline-flex items-center rounded font-medium uppercase tracking-wide"
+                style="color: var(--color-red); border: 1px solid var(--color-red);"
+              >Disabled</span>
             </div>
             <div
               v-if="(server.transport ?? 'http') === 'stdio'"
@@ -82,6 +90,25 @@ function maskValue(v: string): string {
             >{{ server.url }}</div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-testid="toggle-btn"
+              @click="emit('toggle', server.name)"
+              :aria-pressed="server.enabled ?? true"
+              title="Enable/Disable server"
+              :aria-label="(server.enabled ?? true) ? 'Disable server' : 'Enable server'"
+              class="w-9 h-5 rounded-full border transition-colors duration-150 flex items-center px-0.5"
+              :style="(server.enabled ?? true)
+                ? { borderColor: 'var(--color-violet)', backgroundColor: 'var(--color-violet)', justifyContent: 'flex-end' }
+                : { borderColor: 'var(--color-border)', backgroundColor: 'transparent', justifyContent: 'flex-start' }"
+            >
+              <span
+                class="w-3.5 h-3.5 rounded-full"
+                :style="(server.enabled ?? true)
+                  ? { backgroundColor: 'var(--semantic-bg)' }
+                  : { backgroundColor: 'var(--semantic-text-dim)' }"
+              ></span>
+            </button>
             <button
               type="button"
               data-testid="edit-btn"

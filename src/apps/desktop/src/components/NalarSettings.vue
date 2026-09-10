@@ -19,6 +19,7 @@ import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 // Plan 2026-09-04-subagents-per-profile: SubAgentsSection.vue is no longer
 // mounted here (no global list). The file is kept for now — see note below.
 import McpServersSection from './nalar/McpServersSection.vue'
+import { parseMcpServers, serializeMcpServers } from './nalar/mcpServers'
 // plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
 // (compaction settings live in the Defaults tab + Edit-profile modal now).
 // No import here.
@@ -173,88 +174,6 @@ function profilesToRecord(list: ProfileRow[]): Record<string, NalarProfile> {
     out[name] = rest
   }
   return out
-}
-
-/**
- * Raw wire shape of a single MCP server entry as it appears in
- * config.json's `mcp_servers` map. Discriminated union matching the
- * type on `NalarConfig.mcp_servers` (api/index.ts):
- * - presence of `command` ⇒ stdio
- * - presence of `url` ⇒ http
- * We use the union form (not a struct with all-optional fields) so
- * TypeScript can discriminate `command: string` from `command: undefined`
- * when we type-narrow on `typeof server.command === 'string'`.
- */
-type RawMcpServerEntry =
-  | { url: string; headers?: Record<string, string> }
-  | { command: string; args?: string[]; env?: string[]; cwd?: string }
-
-function parseMcpServers(
-  raw: Record<string, RawMcpServerEntry> | undefined,
-): McpServer[] {
-  if (!raw) return []
-  const out: McpServer[] = []
-  for (const [name, server] of Object.entries(raw)) {
-    if (!server) continue
-    // Transport discriminator: presence of `command` ⇒ stdio,
-    // presence of `url` ⇒ http. Legacy entries (url-only) hydrate as
-    // http. Entries with neither are silently dropped.
-    if ('command' in server && typeof server.command === 'string' && server.command.length > 0) {
-      out.push({
-        name,
-        transport: 'stdio',
-        command: server.command,
-        args: Array.isArray(server.args) ? server.args.map((a: string) => a) : [],
-        env: Array.isArray(server.env) ? server.env.map((e: string) => e) : [],
-        cwd: typeof server.cwd === 'string' ? server.cwd : '',
-        url: '',
-        headers: [],
-      })
-    } else if ('url' in server && typeof server.url === 'string' && server.url.length > 0) {
-      const headers = server.headers
-        ? Object.entries(server.headers).map(([key, value]) => ({ key, value: String(value ?? '') }))
-        : []
-      out.push({
-        name,
-        transport: 'http',
-        url: server.url,
-        headers,
-        command: '',
-        args: [],
-        env: [],
-        cwd: '',
-      })
-    }
-  }
-  out.sort((a, b) => a.name.localeCompare(b.name))
-  return out
-}
-
-function serializeMcpServers(
-  list: McpServer[],
-): Record<string, RawMcpServerEntry> | undefined {
-  if (list.length === 0) return undefined
-  const out: Record<string, RawMcpServerEntry> = {}
-  for (const server of list) {
-    if (!server.name) continue
-    if (server.transport === 'stdio') {
-      if (!server.command) continue
-      const entry: RawMcpServerEntry = { command: server.command }
-      if (server.args && server.args.length) entry.args = server.args
-      if (server.env && server.env.length) entry.env = server.env
-      if (server.cwd && server.cwd.length) entry.cwd = server.cwd
-      out[server.name] = entry
-    } else {
-      // Default to http for legacy entries that lack an explicit
-      // transport field.
-      const url = server.url ?? ''
-      if (!url) continue
-      const headers: Record<string, string> = {}
-      for (const h of (server.headers ?? [])) if (h.key) headers[h.key] = h.value
-      out[server.name] = { url, ...(Object.keys(headers).length ? { headers } : {}) }
-    }
-  }
-  return Object.keys(out).length ? out : undefined
 }
 
 // Populate section refs when the central config first loads.
@@ -427,6 +346,7 @@ function startAddMcpServer() {
       args: [],
       env: [],
       cwd: '',
+      enabled: true,
     },
   }
 }
@@ -442,6 +362,7 @@ function startEditMcpServer(server: McpServer) {
       args: (server.args ?? []).slice(),
       env: (server.env ?? []).slice(),
       cwd: server.cwd ?? '',
+      enabled: server.enabled ?? true,
     },
   }
 }
@@ -465,6 +386,7 @@ function saveMcpServer() {
       env: v.env,
       cwd: v.cwd.trim(),
       headers: [],
+      enabled: v.enabled,
     }
     if (mcpServerModal.value.mode === 'add') {
       mcpServersList.value = [...mcpServersList.value, next]
@@ -479,6 +401,7 @@ function saveMcpServer() {
       transport: 'http',
       url,
       headers: v.headers.filter(h => h.key.length > 0),
+      enabled: v.enabled,
     }
     if (mcpServerModal.value.mode === 'add') {
       mcpServersList.value = [...mcpServersList.value, next]
@@ -490,6 +413,11 @@ function saveMcpServer() {
 }
 function deleteMcpServer(name: string) {
   mcpServersList.value = mcpServersList.value.filter(s => s.name !== name)
+}
+function toggleMcpServer(name: string) {
+  mcpServersList.value = mcpServersList.value.map(s =>
+    s.name === name ? { ...s, enabled: (s.enabled ?? true) ? false : true } : s,
+  )
 }
 
 // ─── Set active (instant — no dirty pill, immediate save) ───────────────
@@ -612,6 +540,7 @@ const isLoading = computed(() => !loaded.value)
           v-model="mcpServersList"
           @edit="startEditMcpServer"
           @delete="deleteMcpServer"
+          @toggle="toggleMcpServer"
           @add="startAddMcpServer"
         />
         <!-- Plan 2026-07-07-compaction-inline: the dedicated Compaction

@@ -655,7 +655,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     // cache hit (2nd session, queued message, retry) = zero `tools/list`
     // I/O. Slow path: exactly one fetch per boot / per config mutation,
     // published to the singleton for all future runs.
-    const mcp_tools_fetched: ?[]nalarcore.tool_models.AgentTool = if (di.di.isMcpToolsInit())
+    //
+    // `var` (not `const`): the in-loop "Live MCP tools refresh" block
+    // below re-points this after a mid-run config mutation (e.g. MCP
+    // server toggle via NalarSettings). The abandoned slice stays owned
+    // by the parent arena (freed at run end) — toggles are rare, so the
+    // transient waste is negligible and there is no leak.
+    var mcp_tools: ?[]nalarcore.tool_models.AgentTool = if (di.di.isMcpToolsInit())
         di.di.getMcpToolsCached(parent_allocator)
     else blk: {
         const fresh = fetchMcpToolsFresh(parent_allocator, db, copy_session_id, initial_config, logger);
@@ -707,6 +713,29 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // memory safety is preserved by `LlmConfigHolder.previous`
         // keeping the swapped-out config alive until this run finishes.
         config = nalarcore.getLlmConfig(di.di);
+
+        // ─── Live MCP tools refresh on config invalidation ───
+        // PUT /api/config/nalar and add_mcp_server call
+        // `clearMcpToolsCache()` after their `setLlmConfig` swap. If the
+        // user toggled an MCP server mid-run, the cache is uninitialized
+        // here → refetch once from the LIVE `config` above and
+        // re-publish, so the toggle applies on the next iteration
+        // without waiting for the run to end. Steady-state cost is one
+        // spinlock bool check per iteration (zero `tools/list` I/O) —
+        // deliberately NOT an unconditional per-iteration fetch, which
+        // would roundtrip every server on every loop step. Uses the live
+        // config (not `initial_config`): the toggle swapped the pointer.
+        // On error publishes mark_init=false so the next iteration
+        // retries (same fail-soft contract as the pre-loop fetch).
+        if (!di.di.isMcpToolsInit()) {
+            const fresh = fetchMcpToolsFresh(parent_allocator, db, copy_session_id, config, logger);
+            if (fresh) |f| {
+                di.di.storeMcpToolsCache(f, true);
+            } else {
+                di.di.storeMcpToolsCache(null, false);
+            }
+            mcp_tools = di.di.getMcpToolsCached(parent_allocator);
+        }
 
         // ─── Live per-session profile re-read (plan 2026-08-06-workflow-re-read-profile) ───
         // The previous snapshot pattern (params.selected_profile_model) silently
@@ -1096,10 +1125,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, logger, io, db, event_bus);
         }
 
-        const merged_tools = try filterAndMergeTools(allocator, mcp_tools_fetched, copy_allowed_tools, copy_is_sub_agent);
+        const merged_tools = try filterAndMergeTools(allocator, mcp_tools, copy_allowed_tools, copy_is_sub_agent);
         logger.infoFmt(
             "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
-            .{ if (mcp_tools_fetched) |t| t.len else 0, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent, mcp_tools_fetched == null },
+            .{ if (mcp_tools) |t| t.len else 0, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent, mcp_tools == null },
         );
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
