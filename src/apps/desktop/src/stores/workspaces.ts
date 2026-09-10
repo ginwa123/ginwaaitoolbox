@@ -1072,9 +1072,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     saveExpandedItemIds(expandedItemIds.value)
   }
 
-  async function addWorkspace(name: string, icon: string = '📂') {
+  async function addWorkspace(name: string) {
+    const defaultIcon = '📂'
     try {
-      const newWorkspace = await api.createWorkspace(name, icon)
+      const newWorkspace = await api.createWorkspace(name)
       const expandedWorkspaces = loadExpandedWorkspaces()
       workspaces.value.unshift({
         ...newWorkspace,
@@ -1089,7 +1090,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       workspaces.value.unshift({
         id,
         name,
-        icon,
+        icon: defaultIcon,
         expanded: expandedWorkspaces.has(id),
         items: [],
       })

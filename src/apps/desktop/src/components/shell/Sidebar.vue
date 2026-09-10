@@ -632,7 +632,7 @@ const handleCreateMemory = async (name: string, _content: string, path: string) 
 }
 
 const handleAddWorkspace = () => showAddWorkspaceModal.value = true
-const handleCreateWorkspace = (name: string, icon: string) => workspacesStore.addWorkspace(name, icon)
+const handleCreateWorkspace = (name: string) => workspacesStore.addWorkspace(name)
 const handleCloseModal = () => showAddWorkspaceModal.value = false
 const handleCloseAddItemDialog = () => { showAddItemDialog.value = false; addItemTargetWorkspaceId.value = null }
 

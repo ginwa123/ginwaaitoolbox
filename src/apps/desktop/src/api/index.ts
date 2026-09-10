@@ -502,7 +502,7 @@ export async function getWorkspacesItems(
   )
 }
 
-export async function createWorkspace(name: string, _icon: string = '📁'): Promise<Workspace> {
+export async function createWorkspace(name: string): Promise<Workspace> {
   return await apiFetch<Workspace>('/workspaces', {
     method: 'POST',
     body: { name },
