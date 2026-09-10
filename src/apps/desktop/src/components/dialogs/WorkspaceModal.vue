@@ -7,20 +7,16 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  create: [name: string, icon: string]
+  create: [name: string]
 }>()
 
 const name = ref('')
-const icon = ref('📂')
 const nameInput = ref<HTMLInputElement | null>(null)
-
-const icons = ['📂', '📁', '📋', '💼', '🎯', '🚀', '⚡', '🔧', '🎨', '📦', '🌟', '🎪']
 
 // Focus input when modal opens
 watch(() => props.show, async (show) => {
   if (show) {
     name.value = ''
-    icon.value = '📂'
     await nextTick()
     nameInput.value?.focus()
   }
@@ -32,7 +28,7 @@ const handleClose = () => {
 
 const handleCreate = () => {
   if (name.value.trim()) {
-    emit('create', name.value.trim(), icon.value)
+    emit('create', name.value.trim())
     handleClose()
   }
 }
@@ -73,30 +69,6 @@ const handleKeydown = (event: KeyboardEvent) => {
           >
             Create Workspace
           </h3>
-
-          <!-- Icon Selector -->
-          <div class="mb-4">
-            <label
-              class="block text-xs font-medium mb-2"
-              style="color: var(--semantic-text-dim);"
-            >
-              Choose Icon
-            </label>
-            <div class="flex flex-wrap gap-2">
-              <button
-                v-for="i in icons"
-                :key="i"
-                @click="icon = i"
-                class="w-10 h-10 rounded-lg flex items-center justify-center text-xl transition-all duration-200"
-                :style="{
-                  backgroundColor: icon === i ? 'var(--semantic-active-bg)' : 'transparent',
-                  border: `1px solid ${icon === i ? 'var(--color-aqua)' : 'var(--color-border)'}`,
-                }"
-              >
-                {{ i }}
-              </button>
-            </div>
-          </div>
 
           <!-- Name Input -->
           <div class="mb-6">
