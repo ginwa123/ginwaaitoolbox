@@ -99,6 +99,14 @@ pub const agentKanbanToolsListHandler = @import("agent_kanban_tools_list.zig").a
 pub const agentKanbanToolsCreateHandler = @import("agent_kanban_tools_create.zig").agentKanbanToolsCreateHandler;
 pub const agentKanbanToolsDeleteHandler = @import("agent_kanban_tools_delete.zig").agentKanbanToolsDeleteHandler;
 
+// Workspace-level routines (Migration 084, plan
+// 2026-09-10-workspace-items-routines) — first-class
+// `item_type='routine'` beside `agent`. Replaces the deleted
+// per-task `routines` table (Migration 044).
+pub const workspaceItemsCreateRoutineHandler = @import("workspace_items_create_routine.zig").workspaceItemsCreateRoutineHandler;
+pub const workspaceRoutinesGetHandler = @import("workspace_routines_get.zig").workspaceRoutinesGetHandler;
+pub const workspaceRoutinesUpdateHandler = @import("workspace_routines_update.zig").workspaceRoutinesUpdateHandler;
+
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
 pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;
@@ -147,7 +155,8 @@ pub const tasksReorderPinnedHandler = @import("tasks_reorder_pinned.zig").tasksR
 // and validation. No filesystem path lookup, no broken `*` GET
 // wildcard route. The handler files task_attachment_post.zig and
 // task_attachment_get.zig have been deleted.
-pub const routinesRunHandler = @import("routines_run.zig").routinesRunHandler;
+// NOTE: routinesRunHandler deleted with the per-task `routines` table
+// (Migration 084, plan 2026-09-10-workspace-items-routines).
 // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Dedicated
 // endpoint for triggering an LLM worker on an existing task's
 // session WITHOUT queueing a new user message. Distinct from
@@ -160,7 +169,8 @@ pub const startAgentHandler = @import("start_agent.zig").startAgentHandler;
 // `task_delete.zig::deleteTaskUseCase` re-export convention).
 pub const startAgentUseCase = @import("start_agent.zig").startAgentUseCase;
 pub const runAllAgentsHandler = @import("run_all_agents.zig").runAllAgentsHandler;
-pub const routinesListHandler = @import("routines_list.zig").routinesListHandler;
+// NOTE: routinesListHandler deleted with the per-task `routines` table
+// (Migration 084, plan 2026-09-10-workspace-items-routines).
 
 // Worker API handlers
 pub const workerGetHandler = @import("worker_get.zig").workerGetHandler;

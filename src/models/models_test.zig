@@ -17,7 +17,7 @@ const kanban_assignment = @import("kanban_assignment.zig");
 const design_page = @import("design_page.zig");
 const design_page_element = @import("design_page_element.zig");
 const llm_history = @import("llm_history.zig");
-const routine = @import("routine.zig");
+const workspace_routine = @import("workspace_routine.zig");
 const worker = @import("worker.zig");
 const log = @import("log.zig");
 const session_activity = @import("session_activity.zig");
@@ -213,22 +213,23 @@ test "llm_history: init + deinit with cache tokens" {
     try testing.expectApproxEqAbs(@as(f64, 0.7), h.temperature, 0.0001);
 }
 
-test "routine: init + deinit" {
-    var r = try routine.init(testing.allocator, .{
-        .id = "r_1",
-        .task_id = "task_1",
+test "workspace_routine: init + deinit" {
+    var r = try workspace_routine.init(testing.allocator, .{
+        .id = "wr_1",
+        .workspace_item_id = "item_1",
+        .instruction = "Check the build status",
         .schedule = "*/5 * * * *",
-        .initial_prompt = "Check the build status",
         .next_run_at = "2026-08-15 12:00:00",
         .enabled = true,
     });
-    defer routine.deinit(&r, testing.allocator);
+    defer workspace_routine.deinit(&r, testing.allocator);
 
-    try testing.expectEqualStrings("r_1", r.id);
+    try testing.expectEqualStrings("wr_1", r.id);
+    try testing.expectEqualStrings("item_1", r.workspace_item_id);
     try testing.expectEqualStrings("*/5 * * * *", r.schedule);
     try testing.expect(r.enabled);
-    try testing.expectEqualStrings("", r.last_status);
-    try testing.expectEqual(@as(usize, 0), r.last_status.len);
+    try testing.expectEqualStrings("idle", r.last_status);
+    try testing.expect(r.next_run_at != null);
 }
 
 test "worker: init + deinit" {

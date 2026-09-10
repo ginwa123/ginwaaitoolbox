@@ -9,7 +9,8 @@ const config_mod = nalarcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
 const on_event_sent = @import("on_event_sent.zig");
-const routines_model = @import("../routines/model.zig");
+// NOTE: routines_model import deleted with the per-task `routines`
+// table (Migration 084, plan 2026-09-10-workspace-items-routines).
 
 /// Session info for list view
 pub const SessionInfo = struct {
@@ -4282,29 +4283,20 @@ pub fn getWorkspaceContext(
 // Workspace Item Tasks Functions (migrated from workspace_item_tasks_table.zig)
 // =============================================================================
 
-/// Inline routine metadata embedded in `WorkspaceItemTaskInfo`.
-/// Mirrors the API response shape. Populated by the LEFT JOIN in
-/// the listers; null for standard tasks.
-pub const RoutineMeta = struct {
-    schedule: []const u8,
-    initial_prompt: []const u8,
-    enabled: bool,
-    last_run_at: ?[]const u8 = null,
-    next_run_at: []const u8,
-    last_status: routines_model.RoutineRunStatus = .idle,
-    last_error: ?[]const u8 = null,
-};
+// NOTE: RoutineMeta deleted with the per-task `routines` table
+// (Migration 084, plan 2026-09-10-workspace-items-routines).
+// Routines are now first-class workspace items (`workspace_routines`).
 
 /// WorkspaceItemTask info for CRUD operations
 pub const WorkspaceItemTaskInfo = struct {
     id: []u8,
     name: []u8,
     workspace_item_id: []u8,
-    /// Task type. 'standard' for legacy rows; 'routine' for routine tasks.
-    /// Every constructor explicitly allocates this so deinit can free it.
+    /// Task type. 'standard' for legacy rows; 'memory' for memory files.
+    /// (The 'routine' value is legacy — Migration 084 normalizes those
+    /// rows to 'standard'.) Every constructor explicitly allocates this
+    /// so deinit can free it.
     task_type: []u8 = &.{},
-    /// Inline routine metadata. Populated for routine tasks only.
-    routine: ?RoutineMeta = null,
     /// Free-form description (Migration 062). Empty string is the
     /// canonical "no description" sentinel — the column is NOT NULL
     /// DEFAULT ''. Owned by the lister; freed by `deinit`.
@@ -4409,13 +4401,6 @@ pub const WorkspaceItemTaskInfo = struct {
         allocator.free(self.name);
         allocator.free(self.workspace_item_id);
         if (self.task_type.len > 0) allocator.free(self.task_type);
-        if (self.routine) |r| {
-            allocator.free(r.schedule);
-            allocator.free(r.initial_prompt);
-            if (r.last_run_at) |lr| allocator.free(lr);
-            allocator.free(r.next_run_at);
-            if (r.last_error) |le| allocator.free(le);
-        }
         if (self.description.len > 0) allocator.free(self.description);
         if (self.created_at) |ca| allocator.free(ca);
         if (self.updated_at) |ua| allocator.free(ua);
@@ -4628,7 +4613,6 @@ pub fn createWorkspaceItemTask(
         .name = try allocator.dupe(u8, name),
         .workspace_item_id = try allocator.dupe(u8, workspace_item_id),
         .task_type = try allocator.dupe(u8, task_type),
-        .routine = null,
         // Persist the description we just INSERTed (so the caller's
         // view of the new task matches what's in the DB without a
         // round-trip SELECT).
@@ -4688,7 +4672,6 @@ pub fn getWorkspaceItemTask(
             // decodes via JSON.parse. Stored value is a JSON-encode
             // array string ('' when no tags).
             .tags = try allocator.dupe(u8, row.values[7]),
-            .routine = null, // single-row fetch path; routine loaded on demand
         };
         row.deinit(allocator);
         return task;
@@ -4842,11 +4825,9 @@ pub fn listWorkspaceItemTasks(
     const sql =
         \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type,
         \\       COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0),
-        \\       k.kanban_column_id, COALESCE(k.kanban_position, 0),
-        \\       r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error
+        \\       k.kanban_column_id, COALESCE(k.kanban_position, 0)
         \\FROM workspace_item_tasks t
         \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
-        \\LEFT JOIN routines r ON r.task_id = t.id
         \\WHERE t.workspace_item_id = ?
         \\ORDER BY t.is_pinned DESC, t.pinned_position DESC, t.updated_at DESC, t.id DESC
     ;
@@ -4861,34 +4842,18 @@ pub fn listWorkspaceItemTasks(
     }
 
     while (try rows.next()) |row| {
-        // Row indices (post-Migration-061):
+        // Row indices (post-Migration-061, post-Migration-084 which
+        // dropped the routines JOIN):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
-        //   10: kanban_position, 11-17: routine fields. routine.schedule
-        //   is NOT NULL, so its presence discriminates joined routine
-        //   rows from standard tasks.
+        //   10: kanban_position.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
             try allocator.dupe(u8, "standard");
         const is_pinned_int = row.values[7];
         const pinned_position_str = row.values[8];
-        const has_routine = row.values[11].len > 0;
-        const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[16];
-            const last_status: routines_model.RoutineRunStatus =
-                if (v.len == 0) .idle else if (std.mem.eql(u8, v, "success")) .success else if (std.mem.eql(u8, v, "failed")) .failed else if (std.mem.eql(u8, v, "running")) .running else .idle;
-            break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[11]),
-                .initial_prompt = try allocator.dupe(u8, row.values[12]),
-                .enabled = std.mem.eql(u8, row.values[13], "1"),
-                .last_run_at = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[15]),
-                .last_status = last_status,
-                .last_error = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
-            };
-        } else null;
 
         const task = WorkspaceItemTaskInfo{
             .id = try allocator.dupe(u8, row.values[0]),
@@ -4901,7 +4866,6 @@ pub fn listWorkspaceItemTasks(
             .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
             .kanban_column_id = if (row.values[8].len > 0) try allocator.dupe(u8, row.values[8]) else null,
             .kanban_position = std.fmt.parseInt(i64, row.values[9], 10) catch 0,
-            .routine = routine_meta,
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -4956,12 +4920,12 @@ pub fn getWorkspaceItemTaskById(
     task_id: []const u8,
 ) !?WorkspaceItemTaskInfo {
     // SQL + row mapping mirror listWorkspaceItemTasksWithCursor (same
-    // 25-column contract, indices 0-24) minus cursor/sort/pagination —
+    // 18-column contract, indices 0-17) minus cursor/sort/pagination —
     // replaced by `WHERE t.id = ? ... LIMIT 1`. Scoped by BOTH the
     // parent item id and the task id so a task under a different item
     // is never readable through this endpoint (404 at the handler).
     const sql =
-        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
+        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
     ;
 
     var rows = try db.query(allocator, sql, &.{ workspace_item_id, task_id });
@@ -4969,30 +4933,16 @@ pub fn getWorkspaceItemTaskById(
 
     if (try rows.next()) |row| {
         // Row indices are identical to the lister (see its mapping
-        // block): 0-10 task/kanban fields, 11-17 routine fields,
-        // 18-20 session-joined fields, 21 tags, 22 worktree cwd,
-        // 23 per-task cwd, 24 image_urls.
+        // block): 0-10 task/kanban fields, 11-12 session-joined
+        // fields, 13 needs_human_review, 14 tags, 15 worktree cwd,
+        // 16 per-task cwd, 17 image_urls. (Migration 084 dropped the
+        // routines JOIN — old indices 11-17 routine, 18-24 rest.)
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
             try allocator.dupe(u8, "standard");
         const is_pinned_int = row.values[7];
         const pinned_position_str = row.values[8];
-        const has_routine = row.values[11].len > 0;
-        const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[16];
-            const last_status: routines_model.RoutineRunStatus =
-                if (v.len == 0) .idle else if (std.mem.eql(u8, v, "success")) .success else if (std.mem.eql(u8, v, "failed")) .failed else if (std.mem.eql(u8, v, "running")) .running else .idle;
-            break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[11]),
-                .initial_prompt = try allocator.dupe(u8, row.values[12]),
-                .enabled = std.mem.eql(u8, row.values[13], "1"),
-                .last_run_at = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[15]),
-                .last_status = last_status,
-                .last_error = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
-            };
-        } else null;
 
         const task = WorkspaceItemTaskInfo{
             .id = try allocator.dupe(u8, row.values[0]),
@@ -5006,14 +4956,13 @@ pub fn getWorkspaceItemTaskById(
             .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
             .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
             .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
-            .routine = routine_meta,
-            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[18]),
-            .last_finish_reason = try allocator.dupe(u8, row.values[19]),
-            .needs_human_review = std.mem.eql(u8, row.values[20], "1"),
-            .tags = try allocator.dupe(u8, row.values[21]),
-            .git_worktree_cwd = try allocator.dupe(u8, row.values[22]),
-            .cwd = try allocator.dupe(u8, row.values[23]),
-            .image_urls = try allocator.dupe(u8, row.values[24]),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[11]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[12]),
+            .needs_human_review = std.mem.eql(u8, row.values[13], "1"),
+            .tags = try allocator.dupe(u8, row.values[14]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[15]),
+            .cwd = try allocator.dupe(u8, row.values[16]),
+            .image_urls = try allocator.dupe(u8, row.values[17]),
         };
         row.deinit(allocator);
         return task;
@@ -5050,12 +4999,10 @@ pub fn listWorkspaceItemTasksWithCursor(
     // hardcode the column name (not the value) into the SQL string
     // — only the values are parameterized, so this is safe.
     //
-    // Qualify with `t.` because the LEFT JOIN on `routines` exposes
-    // `id`, `created_at`, and `updated_at` from BOTH tables (the
-    // routines table also has all three per Migration 044), and
+    // Qualify with `t.` because the LEFT JOINs expose `id`,
+    // `created_at`, and `updated_at` from multiple tables, and
     // SQLite rejects unqualified references as "ambiguous column
-    // name" — see the runtime error from `nalar --port 8081 ...`
-    // after the JOIN was added.
+    // name".
     const sort_col = switch (sort_field) {
         .created_at => "t.created_at",
         .updated_at => "t.updated_at",
@@ -5150,15 +5097,15 @@ pub fn listWorkspaceItemTasksWithCursor(
         allocator,
         // Auto-retry-until-stop: LEFT JOIN sessions on t.id =
         // sessions.id (per the project convention task.id ==
-        // session.id for routine tasks; standard tasks that have
+        // session.id; standard tasks that have
         // no matching session row get NULL → COALESCE to '0').
         // COALESCE(k.kanban_position, 0) ensures tasks not on any kanban
         // column (no kanban row from the LEFT JOIN) still get '0'.
         // The `k.kanban_position` column itself is NOT NULL DEFAULT 0
         // in the new schema, but the LEFT JOIN can produce NULL when
         // the task has no kanban row at all. s.is_auto_retry_until_stop
-        // appends as column 18, shifting nothing because routines
-        // fields are already past it (still 11-17).
+        // appends as column 11 (Migration 084 dropped the routines
+        // JOIN — old routine columns 11-17 are gone).
         //
         // Kanban notification icon (Migration 065, plan:
         // docs/plans/2026-07-26-kanban-task-notification-icon.md
@@ -5180,13 +5127,13 @@ pub fn listWorkspaceItemTasksWithCursor(
         //
         // Migration 069 read-path fix (plan:
         // docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md):
-        // appends a single passthrough column at index 24:
-        //   24: t.image_urls — ||-delimited base64 data URL string
+        // appends a single passthrough column at index 17:
+        //   17: t.image_urls — ||-delimited base64 data URL string
         //       ('' when no images). NOT NULL DEFAULT '' so always
         //       present. The frontend splits on '|' via
         //       normalizeTaskImageUrlsInPlace to render the detail
         //       dialog gallery + board card thumbnails.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), r.schedule, r.initial_prompt, r.enabled, r.last_run_at, r.next_run_at, r.last_status, r.last_error, COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN routines r ON r.task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5226,21 +5173,22 @@ pub fn listWorkspaceItemTasksWithCursor(
         // post-Migration-067-tags,
         // post-kanban-task-git-branch plan 2026-08-06,
         // post-Migration-070-cwd,
-        // post-2026-08-24-kanban-task-image-urls-read-path):
+        // post-2026-08-24-kanban-task-image-urls-read-path,
+        // post-Migration-084-routines-JOIN-dropped):
         //   0: id, 1: name, 2: workspace_item_id, 3: description,
         //   4: created_at, 5: updated_at, 6: task_type,
         //   7: is_pinned, 8: pinned_position, 9: kanban_column_id,
-        //   10: kanban_position, 11-17: routine fields,
-        //   18: is_auto_retry_until_stop (joined from sessions),
-        //   19: last_finish_reason (joined from sessions),
-        //   20: needs_human_review (CASE derived),
-        //   21: tags (Migration 067 — JSON-encode array string),
-        //   22: git_worktree_cwd (Migration 046 — joined from sessions).
+        //   10: kanban_position,
+        //   11: is_auto_retry_until_stop (joined from sessions),
+        //   12: last_finish_reason (joined from sessions),
+        //   13: needs_human_review (CASE derived),
+        //   14: tags (Migration 067 — JSON-encode array string),
+        //   15: git_worktree_cwd (Migration 046 — joined from sessions).
         //       COALESCE'd to '' when no session row exists.
-        //   23: cwd (Migration 070 — per-task cwd override). NOT NULL
+        //   16: cwd (Migration 070 — per-task cwd override). NOT NULL
         //       DEFAULT '' so always present; empty string is the
         //       "no per-task cwd" sentinel.
-        //   24: image_urls (Migration 069 — ||-delimited base64 data
+        //   17: image_urls (Migration 069 — ||-delimited base64 data
         //       URLs). NOT NULL DEFAULT '' so always present; empty
         //       string is the "no images" sentinel.
         const task_type = if (row.values[6].len > 0)
@@ -5249,21 +5197,6 @@ pub fn listWorkspaceItemTasksWithCursor(
             try allocator.dupe(u8, "standard");
         const is_pinned_int = row.values[7];
         const pinned_position_str = row.values[8];
-        const has_routine = row.values[11].len > 0;
-        const routine_meta: ?RoutineMeta = if (has_routine) blk: {
-            const v = row.values[16];
-            const last_status: routines_model.RoutineRunStatus =
-                if (v.len == 0) .idle else if (std.mem.eql(u8, v, "success")) .success else if (std.mem.eql(u8, v, "failed")) .failed else if (std.mem.eql(u8, v, "running")) .running else .idle;
-            break :blk RoutineMeta{
-                .schedule = try allocator.dupe(u8, row.values[11]),
-                .initial_prompt = try allocator.dupe(u8, row.values[12]),
-                .enabled = std.mem.eql(u8, row.values[13], "1"),
-                .last_run_at = if (row.values[14].len > 0) try allocator.dupe(u8, row.values[14]) else null,
-                .next_run_at = try allocator.dupe(u8, row.values[15]),
-                .last_status = last_status,
-                .last_error = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
-            };
-        } else null;
 
         const task = WorkspaceItemTaskInfo{
             .id = try allocator.dupe(u8, row.values[0]),
@@ -5278,36 +5211,35 @@ pub fn listWorkspaceItemTasksWithCursor(
             .pinned_position = std.fmt.parseInt(i64, pinned_position_str, 10) catch 0,
             .kanban_column_id = if (row.values[9].len > 0) try allocator.dupe(u8, row.values[9]) else null,
             .kanban_position = std.fmt.parseInt(i64, row.values[10], 10) catch 0,
-            .routine = routine_meta,
-            // Auto-retry-until-stop: index 18 (joined from sessions).
+            // Auto-retry-until-stop: index 11 (joined from sessions).
             // COALESCE'd to '0' in the SQL so this is always non-empty.
-            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[18]),
-            // Kanban notification icon (Migration 065): index 19.
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[11]),
+            // Kanban notification icon (Migration 065): index 12.
             // COALESCE'd to '' in the SQL so this is always non-empty.
-            .last_finish_reason = try allocator.dupe(u8, row.values[19]),
-            // Kanban notification icon (Migration 065): index 20.
+            .last_finish_reason = try allocator.dupe(u8, row.values[12]),
+            // Kanban notification icon (Migration 065): index 13.
             // SQL CASE produces '1' or '0'; parse to bool.
-            .needs_human_review = std.mem.eql(u8, row.values[20], "1"),
-            // Kanban task tags (Migration 067): index 21. NOT NULL
+            .needs_human_review = std.mem.eql(u8, row.values[13], "1"),
+            // Kanban task tags (Migration 067): index 14. NOT NULL
             // DEFAULT '' so always present.
-            .tags = try allocator.dupe(u8, row.values[21]),
-            // Session worktree cwd (Migration 046): index 22. COALESCE'd
+            .tags = try allocator.dupe(u8, row.values[14]),
+            // Session worktree cwd (Migration 046): index 15. COALESCE'd
             // to '' in the SQL when no session row exists. Empty string
             // is the canonical "no worktree" sentinel.
-            .git_worktree_cwd = try allocator.dupe(u8, row.values[22]),
-            // Per-task cwd (Migration 070): index 23. NOT NULL
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[15]),
+            // Per-task cwd (Migration 070): index 16. NOT NULL
             // DEFAULT '' so always present; empty string is the
             // "no per-task cwd" sentinel that the session_create
             // handler reads as "fall back to kanban-level path".
-            .cwd = try allocator.dupe(u8, row.values[23]),
-            // Image urls (Migration 069 read-path fix): index 24.
+            .cwd = try allocator.dupe(u8, row.values[16]),
+            // Image urls (Migration 069 read-path fix): index 17.
             // NOT NULL DEFAULT '' so always present; empty string is
             // the "no images" sentinel. The frontend splits the
             // ||-joined string into string[] via
             // normalizeTaskImageUrlsInPlace (workspaces.ts) to render
             // the detail dialog gallery + board card thumbnails.
             // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-            .image_urls = try allocator.dupe(u8, row.values[24]),
+            .image_urls = try allocator.dupe(u8, row.values[17]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -5711,8 +5643,9 @@ const TestCtx = struct {
 
 /// Set up an in-memory SQLite DB with the minimum schema needed for
 /// `listWorkspaceItemTasksWithCursor` to run. The function LEFT JOINs
-/// `routines` and `sessions` onto `workspace_item_tasks`; we need to
-/// create all three (SQLite rejects JOINs onto missing tables).
+/// `sessions` onto `workspace_item_tasks`; we need to
+/// create both (SQLite rejects JOINs onto missing tables).
+/// (Migration 084 dropped the `routines` JOIN — no routines table needed.)
 fn setupDb() !TestCtx {
     const alloc = testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
@@ -5747,18 +5680,6 @@ fn setupDb() !TestCtx {
         \\    workspace_item_task_id TEXT PRIMARY KEY,
         \\    kanban_column_id TEXT NOT NULL,
         \\    kanban_position INTEGER NOT NULL DEFAULT 0
-        \\)
-    , &.{});
-    try db.exec(alloc,
-        \\CREATE TABLE routines (
-        \\    task_id TEXT PRIMARY KEY,
-        \\    schedule TEXT,
-        \\    initial_prompt TEXT,
-        \\    enabled INTEGER,
-        \\    last_run_at TEXT,
-        \\    next_run_at TEXT,
-        \\    last_status TEXT,
-        \\    last_error TEXT
         \\)
     , &.{});
     try db.exec(alloc,

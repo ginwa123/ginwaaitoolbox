@@ -361,74 +361,17 @@ def test_put_task_by_id_path_also_works(
     assert found["name"] == "name-2"
 
 
-# ─── Test 8: PUT task with routine fields creates routines row ─────────────
+# ─── Test 8: DELETED (Migration 084) ─────────────────────────────────────
+# PUT task with routine fields no longer creates a routines row — the
+# per-task `routines` table is gone. Covered by
+# tests/functional/workspace_routines_test.py::
+# test_put_task_with_routine_fields_is_plain_update.
 
 
-def test_put_task_with_routine_fields_creates_routines_row(
-    harness: FunctionalHarness,
-) -> None:
-    """PUT task with {schedule, initial_prompt, enabled} persists to
-    the routines table (Migration 062 plan). The task becomes a
-    fireable routine.
-
-    After the PUT, GET tasks/:task_id should show the same id; the
-    test cannot directly inspect routines table via the HTTP API
-    (no GET endpoint exists for routines today), so it verifies the
-    PUT response is 200 + success=true (the routines INSERT OR REPLACE
-    succeeded silently).
-    """
-    ws_id = _create_workspace(harness)
-    chat = _create_chat_item(harness, ws_id, "routine-host")
-    task = _create_task(harness, ws_id, chat["id"], "promote-to-routine")
-
-    put_resp = harness.http(
-        "PUT",
-        f"/api/workspaces/{ws_id}/items/{chat['id']}/tasks/{task['id']}",
-        json_body={
-            "schedule": "* * * * *",  # every minute
-            "initial_prompt": "do the routine thing",
-            "enabled": True,
-        },
-        expect=200,
-    ).json()
-    assert put_resp.get("success") is True
-
-    # The task itself is still visible + queryable.
-    listed = _list_tasks(harness, ws_id, chat["id"])
-    assert any(t["id"] == task["id"] for t in listed)
-
-
-# ─── Test 9: PUT task rejects invalid cron schedule ───────────────────────
-
-
-def test_put_task_rejects_invalid_cron(
-    harness: FunctionalHarness,
-) -> None:
-    """PUT task with schedule='not a cron' returns 400.
-
-    The cron expression validator runs as part of the useCase and
-    returns `error.InvalidCronExpression` → handler maps to 400.
-    """
-    ws_id = _create_workspace(harness)
-    chat = _create_chat_item(harness, ws_id, "cron-host")
-    task = _create_task(harness, ws_id, chat["id"], "needs-cron")
-
-    r = harness.http(
-        "PUT",
-        f"/api/workspaces/{ws_id}/items/{chat['id']}/tasks/{task['id']}",
-        json_body={
-            "schedule": "not a cron",
-            "initial_prompt": "x",
-            "enabled": True,
-        },
-        expect=400,
-    )
-    body = r.json()
-    assert "error" in body
-    assert (
-        "cron" in body["error"].lower()
-        or "InvalidCron" in body["error"]
-    ), f"400 should mention cron, got: {body['error']!r}"
+# ─── Test 9: DELETED (Migration 084) ─────────────────────────────────────
+# PUT task no longer validates cron — routine fields are ignored.
+# Covered by tests/functional/workspace_routines_test.py::
+# test_patch_bad_cron_returns_400 (workspace-level validation).
 
 
 # ─── Test 10: DELETE task removes it from the list ───────────────────────
@@ -567,67 +510,16 @@ def test_reorder_pinned_reorders_only_pinned_subset(
     assert r.get("count") == 2
 
 
-# ─── Test 14: /run returns 404 for non-routine task ───────────────────────
+# ─── Test 14: DELETED (Migration 084) ─────────────────────────────────────
+# POST /tasks/:id/run is gone (404 route, not a handler 404).
+# Covered by tests/functional/workspace_routines_test.py::
+# test_old_per_task_run_endpoint_is_gone.
 
 
-def test_run_endpoint_404_for_non_routine(
-    harness: FunctionalHarness,
-) -> None:
-    """POST /tasks/:task_id/run on a plain (non-routine) task → 404.
-
-    fireRoutine returns `FireError.NotARoutine` → handler maps to 404
-    with `{"error": "task is not a routine"}`.
-    """
-    ws_id = _create_workspace(harness)
-    chat = _create_chat_item(harness, ws_id, "non-routine-host")
-    task = _create_task(harness, ws_id, chat["id"], "plain")
-
-    r = harness.http(
-        "POST",
-        f"/api/workspaces/{ws_id}/items/{chat['id']}/tasks/{task['id']}/run",
-        json_body={},
-        expect=404,
-    )
-    body = r.json()
-    assert "error" in body
-    assert "not a routine" in body["error"].lower()
-
-
-# ─── Test 15: /run fires a routine once → 200 ───────────────────────────
-
-
-def test_run_endpoint_fires_routine_once(
-    harness: FunctionalHarness,
-) -> None:
-    """Create routine task → POST /run → 200 with {success, session_id,
-    status: 'firing'}. Without a real LLM, the worker is fire-and-
-    forget; the response is the source of truth.
-    """
-    ws_id = _create_workspace(harness)
-    chat = _create_chat_item(harness, ws_id, "routine-run-host")
-    # Create as a routine task directly via the generic endpoint.
-    routine_task = _create_task(
-        harness,
-        ws_id,
-        chat["id"],
-        "fire-me",
-        task_type="routine",
-        schedule="0 0 * * *",  # daily
-        initial_prompt="daily check",
-    )
-
-    r = harness.http(
-        "POST",
-        f"/api/workspaces/{ws_id}/items/{chat['id']}/tasks/{routine_task['id']}/run",
-        json_body={},
-        expect=200,
-    ).json()
-    assert r.get("success") is True
-    assert r.get("session_id") == routine_task["id"], (
-        f"session_id should be task_id (task.id == session.id), "
-        f"got session_id={r.get('session_id')!r}"
-    )
-    assert r.get("status") == "firing"
+# ─── Test 15: DELETED (Migration 084) ─────────────────────────────────────
+# Per-task routine creation is rejected with 400 RoutineTasksRemoved.
+# Covered by tests/functional/workspace_routines_test.py::
+# test_create_task_with_routine_type_is_rejected.
 
 
 # ─── Test 16: /start_agent succeeds on existing task (no worker running) ─

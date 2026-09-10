@@ -7,7 +7,7 @@
 //! ────────────────────
 //! Opening the kanban Task details dialog used to refetch the WHOLE
 //! task list (`GET .../tasks?limit=100`) and pluck one task — wasteful
-//! on a 270+ task board (base64 image_urls, routine JOINs, a git
+//! on a 270+ task board (base64 image_urls, session JOINs, a git
 //! subprocess per row). The fix adds `GET .../tasks/:task_id` backed
 //! by `llm_history.getWorkspaceItemTaskById`, and the frontend
 //! `refreshTask` switches to it.
