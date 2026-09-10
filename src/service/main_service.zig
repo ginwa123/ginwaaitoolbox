@@ -24,6 +24,10 @@ const helpers = @import("helpers");
 
 pub const Subcommand = union(enum) {
     start: struct {
+        /// 0 = auto-pick a random free loopback port (browser mode,
+        /// plan 2026-09-10-web-launch-toggle). Recorded in state.json by
+        /// the caller after resolution — the daemon skeleton below only
+        /// persists the value, the real bind happens in runNalarServer.
         port: u16 = 8081,
         no_static_dir: bool = false,
         /// Absolute path to a static file directory to serve at `/`. When

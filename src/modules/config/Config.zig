@@ -39,6 +39,14 @@ pub const LlmConfig = struct {
     /// (3) the outer `runAgenticMultiStepnew` catch. Body is the
     /// captured `reason_error` + server detail, truncated to 200 chars.
     notify_on_error: bool = false,
+    /// When true, browser mode is on: the same UI served to the desktop
+    /// webview is advertised for the user's system browser on a random
+    /// local port (settings General tab shows the URL + auto-opens it).
+    /// Off by default — the user opts in. Lifecycle A (plan
+    /// 2026-09-10-web-launch-toggle): the flag only drives the UI + the
+    /// startup port default (random when on); the server keeps running
+    /// when the flag is off. Mirrors `notify_on_complete` pattern.
+    web_launch_enabled: bool = false,
     /// Delay in milliseconds that the workflow sleeps before retrying a
     /// failed `callDynamicAgentNew` call. 0 = no delay (current behavior,
     /// the retry fires immediately on the next loop iteration). Upper
@@ -295,6 +303,9 @@ pub const LlmConfig = struct {
         /// false. Mirrors `notify_on_complete`; default off so a brand-new
         /// install is silent on errors too.
         notify_on_error: bool = false,
+        /// Opt-in: allow the agent to launch URLs in the user's web
+        /// browser. Default false. Mirrors `notify_on_complete`.
+        web_launch_enabled: bool = false,
         /// Delay in milliseconds before retrying a failed workflow call.
         /// See `LlmConfig.retry_delay_ms` for semantics. Plan
         /// 2026-07-15-retry-delay.
@@ -502,6 +513,7 @@ pub const LlmConfig = struct {
             .model_compaction_size_kb = config_json.model_compaction_size_kb,
             .notify_on_complete = config_json.notify_on_complete,
             .notify_on_error = config_json.notify_on_error,
+            .web_launch_enabled = config_json.web_launch_enabled,
             .retry_delay_ms = config_json.retry_delay_ms,
             // Top-level compaction defaults — restored in plan
             // 2026-07-07-compaction-inline. Persisted as raw optional
@@ -1223,6 +1235,7 @@ pub const LlmConfig = struct {
             .model_compaction_size_kb = self.model_compaction_size_kb,
             .notify_on_complete = self.notify_on_complete,
             .notify_on_error = self.notify_on_error,
+            .web_launch_enabled = self.web_launch_enabled,
             // Top-level compaction defaults — primitive copies, no
             // allocation needed (they're plain optionals).
             .max_capacity_token_model = self.max_capacity_token_model,
@@ -2330,6 +2343,7 @@ pub const LlmConfig = struct {
         \\  "active_profile": null,
         \\  "model_compaction_size_kb": 100,
         \\  "notify_on_complete": false,
+        \\  "web_launch_enabled": false,
         \\  "retry_delay_ms": 0,
         \\  "max_capacity_token_model": null,
         \\  "compaction_threshold_percent": null

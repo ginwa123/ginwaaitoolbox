@@ -33,9 +33,21 @@ export interface NalarGeneralSettings {
   /** Workflow retry backoff in milliseconds (0–60 000). Mirrors
    * `NalarConfig.retry_delay_ms`. Default 0 = no delay. */
   retry_delay_ms: number
+  /** Serve this same UI in the system browser on a random local port.
+   * Mirrors `NalarConfig.web_launch_enabled`. Default false. */
+  web_launch_enabled: boolean
 }
 
 const model = defineModel<NalarGeneralSettings>({ required: true })
+
+/** Live browser URL for the web-launch pill. Null = not running /
+ * unknown (pill shows a waiting hint instead of Open/Copy targets). */
+withDefaults(defineProps<{ webUrl?: string | null }>(), { webUrl: null })
+
+const emit = defineEmits<{
+  'open-web': []
+  'copy-web': []
+}>()
 
 // Hard cap mirrors the backend's PUT clamp
 // (nalar_config_put.zig:133-135). The user typing past this would
@@ -152,6 +164,58 @@ function onRetryDelayChange(event: Event) {
           </div>
         </div>
       </label>
+
+      <!-- Toggle: launch web (browser mode) -->
+      <label
+        class="flex items-start gap-3 cursor-pointer"
+        data-testid="row-web-launch"
+      >
+        <input
+          type="checkbox"
+          data-testid="toggle-web-launch"
+          :checked="model.web_launch_enabled"
+          @change="model = { ...model, web_launch_enabled: ($event.target as HTMLInputElement).checked }"
+          class="mt-1 w-4 h-4 cursor-pointer"
+          style="accent-color: var(--color-violet);"
+        />
+        <div class="flex-1 min-w-0">
+          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+            Launch web (browser mode)
+          </div>
+          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+            Serve this same UI in your system browser on a random local port.
+          </div>
+        </div>
+      </label>
+
+      <!-- URL pill sub-row — visible only when the toggle is ON -->
+      <div
+        v-if="model.web_launch_enabled"
+        class="flex items-center gap-2 pl-7"
+        data-testid="pill-web-url-row"
+      >
+        <span
+          class="flex-1 min-w-0 truncate text-xs font-mono px-2 py-1 rounded-md"
+          style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+          data-testid="pill-web-url"
+        >{{ webUrl ?? 'Starting local web server…' }}</span>
+        <button
+          type="button"
+          data-testid="btn-open-web"
+          :disabled="!webUrl"
+          class="shrink-0 text-xs font-medium px-2 py-1 rounded-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          style="background-color: var(--color-violet); color: white;"
+          @click="emit('open-web')"
+        >Open</button>
+        <button
+          type="button"
+          data-testid="btn-copy-web"
+          :disabled="!webUrl"
+          class="shrink-0 text-xs font-medium px-2 py-1 rounded-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
+          @click="emit('copy-web')"
+        >Copy</button>
+      </div>
     </div>
 
     <!-- Retry card -->

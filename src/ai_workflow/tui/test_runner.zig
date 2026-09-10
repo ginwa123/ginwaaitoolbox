@@ -57,6 +57,10 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // sanitizer. Importing the file surfaces the `test "..."` blocks
     // here to zig build test — mirrors start_agent.zig / session_create.zig.
     _ = @import("http_handlers/mcp_test.zig");
+    // Browser-mode (web launch) status endpoint (plan
+    // 2026-09-10-web-launch-toggle): handler + buildWebUrl unit tests +
+    // static contracts live in the single file, mirroring mcp_test.zig.
+    _ = @import("http_handlers/web_status.zig");
     _ = @import("http_handlers/frontend_log_post_test.zig"); // Chunk 2 of frontend-error-logs
     _ = @import("http_handlers/frontend_log_get_test.zig");  // Chunk 3 of frontend-error-logs
     _ = @import("http_handlers/system_folder_search_test.zig"); // action=search static contracts (plan 2026-09-08-chatview-search-files-perf Task 1)

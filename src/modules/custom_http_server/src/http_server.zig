@@ -102,7 +102,12 @@ fn ensureWinsockInitialized() void {
     wsa_initialized = true;
 }
 
-fn closeFd(fd: SocketFd) void {
+/// Close a listener socket fd (cross-platform: closesocket on Windows,
+/// close(2) elsewhere). Public so the web-launch port picker
+/// (`modules/config/web_port.zig`) can release its probe bind — the
+/// probe uses `Address.init` (same bind path as the real server) and
+/// must not leak the fd per attempt.
+pub fn closeFd(fd: SocketFd) void {
     if (builtin.os.tag == .windows) {
         _ = winsock.closesocket(fd);
     } else {
