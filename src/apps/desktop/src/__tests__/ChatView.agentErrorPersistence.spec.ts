@@ -291,6 +291,51 @@ describe('ChatView agent-error card — persistence across remounts', () => {
   })
 
   // ─────────────────────────────────────────────────────────────────────────
+  // D — auto-clear on chunk_final run-end marker (2026-09-10 option 1)
+  // ─────────────────────────────────────────────────────────────────────────
+  it('D: a non-error chunk_final event clears the card, and the clear survives a remount', async () => {
+    installChatViewMocks()
+
+    wrapper = await mountChatView('chat-s1', processingState!)
+
+    // Error fires → card appears.
+    __dispatchSseBus('llm', {
+      session_id: 's1',
+      type: 'full',
+      is_error: true,
+      content: '[Retry 4/10] StreamInterrupted (callDynamicAgentNew). Retrying in 5000ms.',
+      id: 'evt-err-chunk-final',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.find('[data-testid="agent-error-card"]').exists()).toBe(true)
+
+    // Run-end marker fires (non-error chunk_final, no finish_reason,
+    // no renderable payload required) → card disappears. This covers
+    // the stuck-card case where the terminal `full` lacks
+    // finish_reason / renderable fields and skips the `full` clear
+    // gate — the token stream completing is itself proof of recovery.
+    __dispatchSseBus('llm', {
+      session_id: 's1',
+      type: 'chunk_final',
+      total_tokens: 42,
+      id: 'evt-chunk-final-1',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.find('[data-testid="agent-error-card"]').exists()).toBe(false)
+
+    // Remount — the chunk_final clear must persist too.
+    wrapper.unmount()
+    wrapper = await mountChatView('chat-s1', processingState!)
+    await flushPromises()
+    await nextTick()
+    expect(wrapper.find('[data-testid="agent-error-card"]').exists()).toBe(false)
+  })
+
+  // ─────────────────────────────────────────────────────────────────────────
   // C — key isolation (two ChatViews simultaneously)
   // ─────────────────────────────────────────────────────────────────────────
   it('C: errors are isolated per session_id across simultaneous ChatViews', async () => {
