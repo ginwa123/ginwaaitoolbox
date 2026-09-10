@@ -408,3 +408,89 @@ def test_mcp_test_stdio_empty_args_silent_child_returns_timeout() -> None:
             )
     finally:
         harness.teardown()
+
+
+# ─── Test 8: http SSE `event:`-prefixed body parses (context7 shape) ──
+
+# The user's exact report (2026-09-10, screenshot): editing an MCP server
+# to `https://mcp.context7.com/mcp` and clicking Test returned
+# "Connection failed / failed to parse MCP server response as JSON".
+#
+# Bisected via curl: context7 answers `200 text/event-stream` with
+# `event: message\ndata: {"result":{"tools":[...]}}`. The old
+# `parseToolsList` only stripped a leading `data:` prefix, so
+# `event:`-prefixed bodies went to the JSON parser verbatim →
+# `JsonParseFailed`. The same bisect showed the `_meta` body envelope
+# triggers `400 Invalid _meta envelope for protocol revision 2026-07-28`
+# while a bare body + `MCP-Protocol-Version`/`Mcp-Method` headers gets
+# the lenient 200 — so the probe must send headers but NOT the envelope.
+#
+# This test replays the exact SSE wire shape against a local stub (no
+# external network) and asserts:
+#   1. the probe returns {ok:true} with both tools parsed,
+#   2. the request carried the spec headers,
+#   3. the request body had NO `_meta` envelope.
+def test_mcp_test_http_sse_event_prefix_parses_tools() -> None:
+    """SSE `event: message` + `data: {...}` body → {ok:true} + tools.
+    Pre-fix this returns {ok:false} JsonParseFailed.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    captured: dict = {}
+
+    TOOLS_JSON = {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {"tools": [
+            {"name": "resolve-library-id", "description": "Resolves a lib id"},
+            {"name": "query-docs", "description": "Queries docs"},
+        ]},
+    }
+    # Byte-for-byte the context7 shape: event line first, then data.
+    SSE_BODY = "event: message\n" + "data: " + json.dumps(TOOLS_JSON) + "\n\n"
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            captured["body"] = self.rfile.read(length).decode("utf-8", "replace")
+            captured["protocol_version"] = self.headers.get("MCP-Protocol-Version")
+            captured["mcp_method"] = self.headers.get("Mcp-Method")
+            raw = SSE_BODY.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    harness = FunctionalHarness.boot(stub_llm_profile=True)
+    try:
+        result = _post_test(harness, {
+            "transport": "http",
+            "url": f"http://127.0.0.1:{port}/mcp",
+        })
+        assert result.get("ok") is True, f"unexpected response: {result}"
+        names = {t["name"] for t in result["tools"]}
+        assert names == {"resolve-library-id", "query-docs"}, (
+            f"expected 2 SSE tools, got: {names}"
+        )
+        assert captured.get("protocol_version") == "2025-11-25", (
+            f"probe should send MCP-Protocol-Version header, got: {captured!r}"
+        )
+        assert captured.get("mcp_method") == "tools/list", (
+            f"probe should send Mcp-Method header, got: {captured!r}"
+        )
+        assert "_meta" not in captured.get("body", ""), (
+            f"probe body must NOT contain the _meta envelope (400 on 2026-07-28 servers), got: {captured.get('body')!r}"
+        )
+    finally:
+        harness.teardown()
+        server.shutdown()
+        thread.join(timeout=5.0)

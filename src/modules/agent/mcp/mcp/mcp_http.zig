@@ -326,12 +326,15 @@ pub const HttpClient = struct {
     ///   - 404 → ServerMethodNotFound
     ///   - other 4xx/5xx → ServerReturnedError
     pub fn callTool(self: *Self, tool_name: []const u8, arguments_json: []const u8) ![]u8 {
-        // Build the JSON-RPC body. The `_meta.io.modelcontextprotocol/protocolVersion`
-        // field mirrors the MCP-Protocol-Version header per spec §"Protocol
-        // Version Header".
+        // Minimal JSON-RPC body (NO `_meta` envelope): servers on protocol
+        // revision 2026-07-28 (e.g. context7) return `400 Invalid _meta
+        // envelope ... clientCapabilities: missing` for a 2025-11-25-shaped
+        // `_meta.protocolVersion` envelope, but answer the lenient path
+        // with 200 when the body is bare (bisected 2026-09-10). The
+        // `MCP-Protocol-Version` header below still carries the version.
         const body = try std.fmt.allocPrint(self.allocator,
-            \\{{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{{"name":"{s}","arguments":{s},"_meta":{{"io.modelcontextprotocol/protocolVersion":"{s}"}}}}}}
-        , .{ tool_name, arguments_json, PROTOCOL_VERSION });
+            \\{{"jsonrpc":"2.0","id":"1","method":"tools/call","params":{{"name":"{s}","arguments":{s}}}}}
+        , .{ tool_name, arguments_json });
         defer self.allocator.free(body);
 
         // Build the spec-mandated headers + per-method Mcp-Name, merged
@@ -541,11 +544,11 @@ fn mutexLock(m: *std.atomic.Mutex) void {
 /// `prompts_build_messages_for_agent_prompt.zig`) is responsible
 /// for converting `mcp_types.McpTool` to `AgentTool`.
 pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types.McpTool {
-    // Build the tools/list body. Same _meta.io.modelcontextprotocol/protocolVersion
-    // mirror as callTool.
+    // Minimal body (NO `_meta` envelope — same 2026-07-28 strictness
+    // reason as `callTool` above: a bare body gets the lenient 200).
     const body = try std.fmt.allocPrint(allocator,
-        \\{{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{{"_meta":{{"io.modelcontextprotocol/protocolVersion":"{s}"}}}}}}
-    , .{PROTOCOL_VERSION});
+        \\{{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{{}}}}
+    , .{});
     defer allocator.free(body);
 
     // Headers: same spec-mandated set as callTool, minus the
@@ -569,11 +572,21 @@ pub fn listTools(allocator: std.mem.Allocator, client: *HttpClient) ![]mcp_types
         return &[_]mcp_types.McpTool{};
     }
 
-    // Parse the response: extract `result.tools[]` and convert each
-    // JSON object to an McpTool. Errors are swallowed (return empty
-    // slice) — the caller logs a warning and the agent just doesn't
-    // see the server's tools.
-    return parseToolsList(allocator, result.body) catch &[_]mcp_types.McpTool{};
+    // Parse the response: unwrap SSE framing first (real servers like
+    // context7 answer `200 text/event-stream` with
+    // `event: message\ndata: {...}`), then extract `result.tools[]`.
+    // Errors are swallowed (return empty slice) — the caller logs a
+    // warning and the agent just doesn't see the server's tools.
+    // (Same heuristic as `HttpClient.parseResponseBody`: SSE bodies
+    // start with `event:`/`data:`, JSON bodies with `{`. Duplicated
+    // here because `parseResponseBody` is a struct-private method.)
+    const trimmed_body = std.mem.trim(u8, result.body, " \r\n");
+    const json_text: []u8 = if (std.mem.startsWith(u8, trimmed_body, "event:") or std.mem.startsWith(u8, trimmed_body, "data:"))
+        parseLastSseData(allocator, result.body) catch return &[_]mcp_types.McpTool{}
+    else
+        allocator.dupe(u8, result.body) catch return &[_]mcp_types.McpTool{};
+    defer allocator.free(json_text);
+    return parseToolsList(allocator, json_text) catch &[_]mcp_types.McpTool{};
 }
 
 /// Internal: parse a tools/list response body into a McpTool slice.
@@ -588,24 +601,47 @@ fn parseToolsList(allocator: std.mem.Allocator, body: []const u8) ![]mcp_types.M
         return try allocator.alloc(mcp_types.McpTool, 0);
     };
 
-    const root = parsed.value.object;
+    // Switch-based (never direct `.object` / `.array` access): an error
+    // envelope like `{"error":{...}}` or a bare array must yield an
+    // empty slice, not a panic.
+    const root = switch (parsed.value) {
+        .object => |obj| obj,
+        else => return try allocator.alloc(mcp_types.McpTool, 0),
+    };
     const result_val = root.get("result") orelse return try allocator.alloc(mcp_types.McpTool, 0);
-    const result_obj = result_val.object;
+    const result_obj = switch (result_val) {
+        .object => |obj| obj,
+        else => return try allocator.alloc(mcp_types.McpTool, 0),
+    };
     const tools_value = result_obj.get("tools") orelse return try allocator.alloc(mcp_types.McpTool, 0);
-    const tools_arr = tools_value.array;
+    const tools_arr = switch (tools_value) {
+        .array => |a| a,
+        else => return try allocator.alloc(mcp_types.McpTool, 0),
+    };
 
     const out = try allocator.alloc(mcp_types.McpTool, tools_arr.items.len);
     errdefer allocator.free(out);
 
     var i: usize = 0;
     while (i < tools_arr.items.len) : (i += 1) {
-        const tool_obj = tools_arr.items[i].object;
+        const tool_obj = switch (tools_arr.items[i]) {
+            .object => |obj| obj,
+            else => continue,
+        };
         const name_v = tool_obj.get("name") orelse continue;
+        const name = switch (name_v) {
+            .string => |s| s,
+            else => continue,
+        };
         const desc_v = tool_obj.get("description") orelse continue;
+        const description = switch (desc_v) {
+            .string => |s| s,
+            else => continue,
+        };
         const schema_v = tool_obj.get("inputSchema") orelse continue;
         out[i] = .{
-            .name = try allocator.dupe(u8, name_v.string),
-            .description = try allocator.dupe(u8, desc_v.string),
+            .name = try allocator.dupe(u8, name),
+            .description = try allocator.dupe(u8, description),
             .inputSchema = .{
                 .type = "object",
                 .properties = schema_v,

@@ -153,7 +153,7 @@ fn useCase(
     if (std.mem.eql(u8, req.transport, "stdio")) {
         return testStdio(allocator, io, logger, req, out_err_detail);
     } else if (std.mem.eql(u8, req.transport, "http")) {
-        return testHttp(allocator, io, logger, req);
+        return testHttp(allocator, io, logger, req, out_err_detail);
     } else if (req.transport.len == 0) {
         return TestError.MissingTransport;
     } else {
@@ -606,11 +606,22 @@ fn formatAttemptsDetail(
 /// Try an HTTP candidate: POST `tools/list` to the URL with the
 /// headers, parse `result.tools[]`. Uses libcurl's built-in 10s
 /// timeout via `timeout_ms`.
+///
+/// Body is intentionally MINIMAL (`{"params":{}}`, no `_meta` envelope):
+/// real servers on protocol revision 2026-07-28 (e.g. context7) answer
+/// the lenient path with `200 text/event-stream` for a bare body but
+/// return `400 Invalid _meta envelope ... clientCapabilities: missing`
+/// as soon as a 2025-11-25-shaped `_meta.protocolVersion` envelope is
+/// present (bisected 2026-09-10 via curl). The `MCP-Protocol-Version`
+/// + `Mcp-Method` headers below are tolerated (200) by those servers
+/// and required by strict ones, so we send headers but not the body
+/// envelope.
 fn testHttp(
     allocator: std.mem.Allocator,
     io: std.Io,
     logger: *logger_mod.Logger,
     req: TestRequest,
+    out_err_detail: *?[]const u8,
 ) TestError!TestOutcome {
     _ = io;
     if (req.url.len == 0) return TestError.MissingUrl;
@@ -628,6 +639,13 @@ fn testHttp(
     header_buf[header_count] = .{ .name = "Accept", .value = "application/json, text/event-stream" };
     header_count += 1;
     header_buf[header_count] = .{ .name = "Content-Type", .value = "application/json" };
+    header_count += 1;
+    // Spec headers (tolerated 200 on context7 per 2026-09-10 bisect;
+    // required by strict Streamable HTTP servers). Sent BEFORE user
+    // headers so libcurl's first-match-wins prefers the spec value.
+    header_buf[header_count] = .{ .name = "MCP-Protocol-Version", .value = "2025-11-25" };
+    header_count += 1;
+    header_buf[header_count] = .{ .name = "Mcp-Method", .value = "tools/list" };
     header_count += 1;
 
     if (req.headers) |hdrs_value| {
@@ -663,6 +681,15 @@ fn testHttp(
 
     if (result.status_code != 200) {
         logger.warnFmt("[mcp_test] http server returned status {d}", .{result.status_code});
+        // Surface the server's error body (e.g. a 400 JSON-RPC envelope
+        // error) so the modal shows WHY instead of a generic message.
+        // Truncated to 200 bytes to keep the wire small.
+        const snippet_len: usize = @min(result.body.len, 200);
+        out_err_detail.* = std.fmt.allocPrint(
+            allocator,
+            "http {d}: {s}",
+            .{ result.status_code, result.body[0..snippet_len] },
+        ) catch null;
         return TestError.InvalidResponse;
     }
 
@@ -674,20 +701,80 @@ fn testHttp(
     return .{ .transport = "http", .tools = tools };
 }
 
+/// Unwrap a Streamable HTTP response body to its JSON-RPC payload.
+///
+/// Handles BOTH shapes per the spec:
+///   - `application/json` (single object, starts with `{`) → dup verbatim
+///   - `text/event-stream` (SSE: `event:` / `data:` / `:` comment lines
+///     grouped by blank-line boundaries) → last event's `data:` lines
+///     joined with `\n` (per the SSE spec's multi-data rule)
+///
+/// Real servers (e.g. context7) answer `tools/list` as
+/// `event: message\ndata: {"result":...}` — the old code only stripped
+/// a leading `data:` prefix, so `event:`-prefixed bodies went to the
+/// JSON parser verbatim → `JsonParseFailed` ("failed to parse MCP
+/// server response as JSON"). Caller owns the returned slice.
+fn unwrapSsePayload(allocator: std.mem.Allocator, body: []const u8) TestError![]const u8 {
+    const trimmed = std.mem.trim(u8, body, " \t\r\n");
+    if (trimmed.len == 0) return allocator.dupe(u8, body) catch return TestError.OutOfMemory;
+    // Fast path: plain JSON object — no SSE framing to strip.
+    if (trimmed[0] == '{') return allocator.dupe(u8, trimmed) catch return TestError.OutOfMemory;
+
+    // SSE path: walk `\n\n`-separated events, keep the LAST event that
+    // carries at least one `data:` line. Field names are
+    // case-insensitive; `:` comment lines are skipped.
+    var last: ?[]const u8 = null;
+    var owned_last: ?[]u8 = null;
+    defer if (owned_last) |o| allocator.free(o);
+    var blocks = std.mem.splitSequence(u8, body, "\n\n");
+    while (blocks.next()) |raw_event| {
+        const event = std.mem.trim(u8, raw_event, " \r\n");
+        if (event.len == 0) continue;
+        var data_buf: std.ArrayList(u8) = .empty;
+        defer data_buf.deinit(allocator);
+        var line_it = std.mem.splitScalar(u8, event, '\n');
+        while (line_it.next()) |raw_line| {
+            const line = std.mem.trim(u8, raw_line, " \r");
+            if (line.len == 0) continue;
+            if (std.mem.startsWith(u8, line, ":")) continue; // comment
+            if (std.ascii.startsWithIgnoreCase(line, "data:")) {
+                var value = line["data:".len..];
+                if (value.len > 0 and value[0] == ' ') value = value[1..];
+                if (data_buf.items.len > 0) data_buf.append(allocator, '\n') catch return TestError.OutOfMemory;
+                data_buf.appendSlice(allocator, value) catch return TestError.OutOfMemory;
+            }
+            // `event:` / `id:` / `retry:` lines are intentionally ignored.
+        }
+        if (data_buf.items.len > 0) {
+            if (owned_last) |o| allocator.free(o);
+            owned_last = data_buf.toOwnedSlice(allocator) catch return TestError.OutOfMemory;
+            last = owned_last.?;
+        }
+    }
+    if (last) |d| {
+        const out = allocator.dupe(u8, d) catch return TestError.OutOfMemory;
+        return out;
+    }
+    // No `data:` line found (e.g. legacy single-line `data: {...}`
+    // without event framing is already covered above, but keep the
+    // old prefix-strip as a last resort) — fall back to the trimmed
+    // body so the JSON parser produces the authoritative error.
+    if (std.mem.startsWith(u8, trimmed, "data:"))
+        return allocator.dupe(u8, std.mem.trim(u8, trimmed["data:".len..], " \t")) catch return TestError.OutOfMemory;
+    return allocator.dupe(u8, trimmed) catch return TestError.OutOfMemory;
+}
+
 /// Parse an MCP `tools/list` response into a preview list.
 fn parseToolsList(allocator: std.mem.Allocator, body: []const u8) TestError![]const ToolPreview {
-    const trimmed = std.mem.trim(u8, body, " \t\r\n");
-    const json_start: []const u8 = if (std.mem.startsWith(u8, trimmed, "data:"))
-        std.mem.trim(u8, trimmed["data:".len..], " \t")
-    else
-        body;
+    const json_text = try unwrapSsePayload(allocator, body);
+    defer allocator.free(json_text);
 
     var parse_arena = std.heap.ArenaAllocator.init(allocator);
     defer parse_arena.deinit();
     const parsed = std.json.parseFromSlice(
         std.json.Value,
         parse_arena.allocator(),
-        json_start,
+        json_text,
         .{ .ignore_unknown_fields = true },
     ) catch return TestError.JsonParseFailed;
 
