@@ -239,6 +239,71 @@ def test_patch_bad_cron_returns_400(harness: FunctionalHarness) -> None:
     assert "cron" in r.json().get("error", "").lower(), r.json()
 
 
+# ─── RUN ───────────────────────────────────────────────────────────────────
+
+
+def test_run_fires_routine(harness: FunctionalHarness) -> None:
+    ws_id = _create_workspace(harness)
+    created = _create_routine(harness, ws_id, instruction="go", schedule="0 0 * * *")
+    item_id = created["item"]["id"]
+
+    r = harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{item_id}/routines/{item_id}/run",
+        json_body={},
+        expect=200,
+    ).json()
+    assert r.get("success") is True, r
+    assert r.get("session_id") == item_id, r
+    assert r.get("status") == "firing", r
+
+
+def test_run_disabled_routine_returns_409(harness: FunctionalHarness) -> None:
+    ws_id = _create_workspace(harness)
+    created = _create_routine(harness, ws_id, schedule="0 0 * * *")
+    item_id = created["item"]["id"]
+
+    harness.http(
+        "PATCH",
+        f"/api/workspaces/{ws_id}/items/{item_id}/routine",
+        json_body={"enabled": False},
+        expect=200,
+    )
+    r = harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{item_id}/routines/{item_id}/run",
+        json_body={},
+        expect=409,
+    )
+    assert "disabled" in r.json().get("error", "").lower(), r.json()
+
+
+def test_run_unknown_routine_returns_404(harness: FunctionalHarness) -> None:
+    ws_id = _create_workspace(harness)
+    created = _create_routine(harness, ws_id)
+    item_id = created["item"]["id"]
+
+    harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{item_id}/routines/does-not-exist/run",
+        json_body={},
+        expect=404,
+    )
+
+
+def test_run_routine_under_wrong_item_returns_404(harness: FunctionalHarness) -> None:
+    ws_id = _create_workspace(harness)
+    first = _create_routine(harness, ws_id, "first")
+    second = _create_routine(harness, ws_id, "second")
+
+    harness.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/{second['item']['id']}/routines/{first['item']['id']}/run",
+        json_body={},
+        expect=404,
+    )
+
+
 # ─── DELETION PROOFS ───────────────────────────────────────────────────────
 
 

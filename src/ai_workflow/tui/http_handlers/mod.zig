@@ -106,6 +106,7 @@ pub const agentKanbanToolsDeleteHandler = @import("agent_kanban_tools_delete.zig
 pub const workspaceItemsCreateRoutineHandler = @import("workspace_items_create_routine.zig").workspaceItemsCreateRoutineHandler;
 pub const workspaceRoutinesGetHandler = @import("workspace_routines_get.zig").workspaceRoutinesGetHandler;
 pub const workspaceRoutinesUpdateHandler = @import("workspace_routines_update.zig").workspaceRoutinesUpdateHandler;
+pub const workspaceRoutinesRunHandler = @import("workspace_routines_run.zig").workspaceRoutinesRunHandler;
 
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).

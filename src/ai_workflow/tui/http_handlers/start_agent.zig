@@ -94,7 +94,7 @@ pub const StartAgentOutcome = union(enum) {
 ///      `is_auto_retry_until_stop` to the worker pool. If no row
 ///      exists yet (brand-new task that has never been started),
 ///      `emit_run_agent.insert_worker` will upsert one — same
-///      pattern as `fire.fireRoutine` for routines.
+///      pattern as `fire.fireWorkspaceRoutine` for workspace routines.
 ///   4. Submit the LLM work via `di.emit_run_agent` with empty
 ///      `queue_message` and `skip_initial_queue_message: true`. The
 ///      empty `queue_message` is defensive belt-and-braces — the
@@ -126,7 +126,7 @@ pub fn startAgentUseCase(
     // 3. Read the session row so we can forward selected_profile_model
     //    + is_auto_retry_until_stop to the worker pool. The session
     //    row is created by the prior `/api/llm/session` POST or by
-    //    `fireRoutine`; if neither has run for this task, the
+    //    `fireWorkspaceRoutine`; if neither has run for this task, the
     //    `insert_worker` step in `emit_run_agent` will upsert one
     //    using the task's name + cwd (matches the routine-fire
     //    pre-insert pattern).
@@ -149,7 +149,8 @@ pub fn startAgentUseCase(
 
     // 4. Submit the LLM work to the Io group. The use-case is a thin
     //    wrapper around `di.emit_run_agent` — same pattern as
-    //    `routines_run.zig` (which wraps `fire.fireRoutine`). The
+    //    `workspace_routines_run.zig` (which wraps
+    //    `fire.fireWorkspaceRoutine`). The
     //    new `skip_initial_queue_message: true` flag tells
     //    `runAgenticMultiStepnew` to skip its initial
     //    `insertQueueMessage` call, so the agent loop runs on the

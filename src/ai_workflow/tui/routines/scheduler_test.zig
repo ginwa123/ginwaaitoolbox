@@ -1,12 +1,11 @@
-//! Behavioral tests for `Scheduler.zig` (Task 3.1 of the Add Task
-//! Routines plan, refactored per PR #8 review).
+//! Behavioral tests for `Scheduler.zig` (Task 3 of the
+//! workspace-items-routines plan).
 //!
-//! `Scheduler` is the polling loop that drives routines to fire. It
-//! has two public helpers (tested here) and one public `start`
-//! function (the infinite polling loop, no longer covered by an
-//! integration test after the PR #8 refactor — the new architecture
-//! uses `di.group_emit_session_create.concurrent` which is too heavy
-//! to mock in a unit test):
+//! `Scheduler` is the polling loop that drives workspace routines to
+//! fire. It has two public helpers (tested here) and one public
+//! `start` function (the infinite polling loop — the new
+//! architecture uses `di.group_emit_session_create.concurrent`
+//! which is too heavy to mock in a unit test):
 //!
 //!   - `resetStuckRunning`     — flip every `last_status='running'` row
 //!                               to `'failed'` with a "process killed"
@@ -20,11 +19,11 @@
 //!                               runtime smoke test (manual UI flow).
 //!
 //! Both unit tests use the in-memory sqlite pattern from
-//! `migration_routines_test.zig` / `model_test.zig` / `fire_test.zig`.
-//! The actual SqliteBackend API is `db.query(alloc, sql, args) → Rows →
-//! next() → ?Row{ values: [][]u8 }`. Column reads go through
-//! `row.values[i]` (a `[]u8` text slice, empty string for NULLs); there
-//! is no `.scalar` accessor in this codebase.
+//! `model_test.zig` / `fire_test.zig`. The actual SqliteBackend API is
+//! `db.query(alloc, sql, args) → Rows → next() → ?Row{
+//! values: [][]u8 }`. Column reads go through `row.values[i]` (a
+//! `[]u8` text slice, empty string for NULLs); there is no `.scalar`
+//! accessor in this codebase.
 //!
 //! The integration test that previously exercised `Scheduler.start`
 //! end-to-end via the `nalar-routine-fire` sub-process is gone. The
@@ -32,12 +31,11 @@
 //! `di.group_emit_session_create.concurrent` which requires a real
 //! `nalarcore.ContextIPCTui` singleton with a wired event bus and a
 //! live `CallbackAiWorkerFlow` subscription. That machinery is not
-//! constructible inside a unit test. The runtime smoke test (creating
-//! a routine via the desktop UI and watching it fire) is the
+//! constructible inside a unit test. The runtime smoke test (firing
+//! a routine via the desktop UI and watching it run) is the
 //! integration coverage.
 //!
-//! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
-//! Design: docs/plans/2026-06-13-add-task-routines-design.md
+//! Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md (Task 3)
 
 const std = @import("std");
 const testing = std.testing;
@@ -45,17 +43,15 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
 const migration = nalarcore.migrations_mod.migration;
-const Migration044AddRoutines = migration.Migration044AddRoutines;
+const Migration084ReplaceRoutinesWithWorkspaceRoutines = migration.Migration084ReplaceRoutinesWithWorkspaceRoutines;
 
 const model = @import("model.zig");
 const Scheduler = @import("Scheduler.zig");
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
 
-/// Open a fresh in-memory sqlite DB with the pre-Migration-044 state
-/// (`workspace_item_tasks` from Migration 034) and run Migration 044
-/// to bring it to the post-migration state. Mirrors the helper in
-/// `model_test.zig`.
+/// Open a fresh in-memory sqlite DB with the minimal parent tables
+/// and run Migration 084. Mirrors the helper in `model_test.zig`.
 fn setupDb() !struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -69,18 +65,23 @@ fn setupDb() !struct {
     errdefer db.deinit();
     try db.init(io, ":memory:");
 
-    // Minimal schema — the model tests use a slightly richer one with
-    // `session_id`/`created_at`/`updated_at`, but `Scheduler` never
-    // reads those, so a 3-column parent table is enough.
     try db.exec(alloc,
         \\CREATE TABLE workspace_item_tasks (
         \\    id TEXT PRIMARY KEY,
         \\    name TEXT NOT NULL,
-        \\    workspace_item_id TEXT NOT NULL
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard'
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_id TEXT,
+        \\    item_type TEXT NOT NULL
         \\)
     , &.{});
 
-    try Migration044AddRoutines.up(&db, alloc);
+    try Migration084ReplaceRoutinesWithWorkspaceRoutines.up(&db, alloc);
 
     return .{ .db = db, .threaded = threaded };
 }
@@ -98,6 +99,12 @@ fn scalarText(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const 
     return null;
 }
 
+fn insertParentItem(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, id: []const u8) !void {
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES (?, 'ws1', 'routine')",
+        &.{id});
+}
+
 // ─── Test 1: resetStuckRunning ────────────────────────────────────────────
 
 test "Scheduler.resetStuckRunning marks running rows as failed" {
@@ -106,29 +113,27 @@ test "Scheduler.resetStuckRunning marks running rows as failed" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'wi1')",
-        &.{});
-    try model.insertRoutine(alloc, &ctx.db, .{
-        .id = "r1",
-        .task_id = "t1",
+    try insertParentItem(&ctx.db, alloc, "item_1");
+    try model.insertWorkspaceRoutine(alloc, &ctx.db, .{
+        .id = "item_1",
+        .workspace_item_id = "item_1",
+        .instruction = "x",
         .schedule = "*/5 * * * *",
-        .initial_prompt = "x",
         .enabled = true,
         .next_run_at = "2099-01-01 00:00:00",
     });
     // Simulate a crashed previous process: routine is stuck in 'running'.
     try ctx.db.exec(alloc,
-        "UPDATE routines SET last_status = 'running' WHERE id = 'r1'",
+        "UPDATE workspace_routines SET last_status = 'running' WHERE id = 'item_1'",
         &.{});
 
     try Scheduler.resetStuckRunning(alloc, &ctx.db);
 
     const status = try scalarText(alloc, &ctx.db,
-        "SELECT last_status FROM routines WHERE id = 'r1'", &.{});
+        "SELECT last_status FROM workspace_routines WHERE id = 'item_1'", &.{});
     defer if (status) |s| alloc.free(s);
     const err_msg = try scalarText(alloc, &ctx.db,
-        "SELECT last_error FROM routines WHERE id = 'r1'", &.{});
+        "SELECT last_error FROM workspace_routines WHERE id = 'item_1'", &.{});
     defer if (err_msg) |s| alloc.free(s);
 
     try testing.expect(status != null);
@@ -145,14 +150,12 @@ test "Scheduler.recomputeDueNextRunAt advances rows in the past" {
     defer ctx.db.deinit();
     defer ctx.threaded.deinit();
 
-    try ctx.db.exec(alloc,
-        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'A', 'wi1')",
-        &.{});
-    try model.insertRoutine(alloc, &ctx.db, .{
-        .id = "r1",
-        .task_id = "t1",
+    try insertParentItem(&ctx.db, alloc, "item_1");
+    try model.insertWorkspaceRoutine(alloc, &ctx.db, .{
+        .id = "item_1",
+        .workspace_item_id = "item_1",
+        .instruction = "x",
         .schedule = "0 9 * * *",
-        .initial_prompt = "x",
         .enabled = true,
         .next_run_at = "2000-01-01 00:00:00",
     });
@@ -160,7 +163,7 @@ test "Scheduler.recomputeDueNextRunAt advances rows in the past" {
     try Scheduler.recomputeDueNextRunAt(alloc, &ctx.db, ctx.threaded.io());
 
     const next = try scalarText(alloc, &ctx.db,
-        "SELECT next_run_at FROM routines WHERE id = 'r1'", &.{});
+        "SELECT next_run_at FROM workspace_routines WHERE id = 'item_1'", &.{});
     defer if (next) |s| alloc.free(s);
 
     try testing.expect(next != null);

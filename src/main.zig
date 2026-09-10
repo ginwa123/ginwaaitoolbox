@@ -505,6 +505,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/workspaces/:workspace_id/items/routine", ai_mod.http_handlers.workspaceItemsCreateRoutineHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesGetHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesUpdateHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/routines/:routine_id/run", ai_mod.http_handlers.workspaceRoutinesRunHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
@@ -545,7 +546,8 @@ pub fn main(init: std.process.Init) !void {
     // NOTE: the per-task routine fire route (`POST .../tasks/:task_id/run`)
     // was deleted with the per-task `routines` table (Migration 084, plan
     // 2026-09-10-workspace-items-routines). Workspace-level routines fire
-    // via `POST .../items/:item_id/routines/:routine_id/run` (Task 3).
+    // via `POST .../items/:item_id/routines/:routine_id/run` (registered
+    // with the routine block above).
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Trigger
     // an LLM worker on an existing task's session WITHOUT queueing a
     // new user message. Distinct from POST /api/llm/session (always
