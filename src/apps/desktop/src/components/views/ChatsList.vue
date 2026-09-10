@@ -454,14 +454,14 @@ defineExpose({
           :title="chatsSortDirection === 'desc' ? 'Newest first (click to flip)' : 'Oldest first (click to flip)'"
           :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
           data-testid="chats-sort-toggle"
-          class="text-xs font-medium transition-opacity duration-150 hover:opacity-100"
+          class="w-7 h-7 text-base font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
           style="color: var(--semantic-text-dim); opacity: 0.7;"
         >
           {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
         </button>
         <button
           @click.stop="createChat"
-          class="text-xs font-medium transition-opacity duration-150 hover:opacity-100"
+          class="w-7 h-7 text-xl font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
           style="color: var(--semantic-text-dim); opacity: 0.7;"
           title="New Chat"
           aria-label="New Chat"
@@ -536,7 +536,7 @@ defineExpose({
             <button
               v-if="item.id !== 'chat'"
               @click.stop="confirmDeleteChat(item.id)"
-              class="w-5 h-5 rounded text-sm leading-none flex items-center justify-center opacity-100 transition-opacity hover:text-red-400 shrink-0"
+              class="w-7 h-7 rounded text-xl leading-none flex items-center justify-center opacity-100 transition-opacity hover:text-red-400 shrink-0"
               style="color: var(--semantic-text-dim)"
               title="Delete chat"
             >
@@ -585,7 +585,7 @@ defineExpose({
       data-testid="collapsed-new-chat-button"
       title="New Chat"
       aria-label="New Chat"
-      class="w-9 h-9 rounded-md flex items-center justify-center text-sm transition-colors duration-150 hover:text-[--semantic-text]"
+      class="w-9 h-9 rounded-md flex items-center justify-center text-xl transition-colors duration-150 hover:text-[--semantic-text]"
       style="color: var(--semantic-text-dim);"
     >
       +

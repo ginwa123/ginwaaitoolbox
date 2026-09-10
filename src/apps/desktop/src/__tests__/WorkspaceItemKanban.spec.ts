@@ -178,17 +178,17 @@ describe('WorkspaceItem — kanban click behavior', () => {
     vi.restoreAllMocks()
   })
 
-  it("clicking a kanban item DOES toggle expansion (show-all-arrows: same as folder)", async () => {
-    // Show-all-arrows change: kanban items expand inline to show
-    // their tasks AND navigate to the board. The selectItem event
-    // still fires — Sidebar uses it to set activeWorkspaceItemId.
+  it("clicking a kanban item does NOT toggle expansion (2026-09-10: no expand on kanban mode)", async () => {
+    // Kanban items navigate to the board only — no sidebar expand.
+    // The selectItem event still fires — Sidebar uses it to set
+    // activeWorkspaceItemId. Agent/folder items still toggle.
     wrapper = mountItem(makeKanbanItem())
     // Find the main item row button (the one with @click="handleClick").
     const button = wrapper.find('button.flex-1')
     expect(button.exists()).toBe(true)
     await button.trigger('click')
     const ws = useWorkspacesStore()
-    expect(ws.expandedItemIds[ITEM_ID]).toBe(true)
+    expect(ws.expandedItemIds[ITEM_ID]).toBeUndefined()
     // The selectItem event MUST still fire (AppLayout relies on it
     // to set activeWorkspaceItemId and route to the kanban view).
     expect(wrapper.emitted('click')).toBeTruthy()
@@ -248,7 +248,7 @@ describe('WorkspaceItem — show-all-arrows (kanban chevron)', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders chevron for kanban items (same as folder)', async () => {
+  it('renders chevron for kanban items (visual-only, no expand — 2026-09-10)', async () => {
     wrapper = mountItem(makeKanbanItem())
     await nextTick()
     expect(wrapper.find('[data-testid="item-row-chevron"]').exists()).toBe(true)
@@ -260,10 +260,10 @@ describe('WorkspaceItem — show-all-arrows (kanban chevron)', () => {
     expect(wrapper.find('[data-testid="item-row-chevron"]').exists()).toBe(true)
   })
 
-  it('expanded kanban shows its tasks inline', async () => {
+  it('expanded kanban does NOT show its tasks inline (2026-09-10: no expand on kanban mode)', async () => {
     wrapper = mountItem(makeKanbanItem({ tasks: [makeTask()] }))
     expandItem()
     await nextTick()
-    expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(true)
+    expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(false)
   })
 })

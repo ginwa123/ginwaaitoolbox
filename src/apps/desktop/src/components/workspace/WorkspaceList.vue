@@ -535,7 +535,7 @@ const handleItemDragEnd = () => {
       <button
         v-if="sidebarStore.workspacesExpanded"
         @click.stop="$emit('addWorkspace')"
-        class="ml-auto text-xs font-medium transition-opacity duration-150 hover:opacity-100"
+        class="ml-auto w-7 h-7 text-xl font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
         style="color: var(--semantic-text-dim); opacity: 0.7;"
         title="Add Workspace"
         aria-label="Add Workspace"
@@ -635,7 +635,7 @@ const handleItemDragEnd = () => {
              of an SVG path. Always visible (no hover gate). -->
         <button
           @click.stop="handleRenameWorkspace(workspace.id, workspace.name)"
-          class="w-5 h-5 text-xs leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-[--semantic-text] mr-1"
+          class="w-7 h-7 text-base leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-[--semantic-text] mr-1"
           style="color: var(--semantic-text-dim);"
           title="Rename Workspace"
           aria-label="Rename Workspace"
@@ -645,7 +645,7 @@ const handleItemDragEnd = () => {
         <!-- Delete Workspace Button -->
         <button
           @click="handleDeleteWorkspace(workspace.id)"
-          class="w-5 h-5 text-sm leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-red-400 mr-1"
+          class="w-7 h-7 text-xl leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-red-400 mr-1"
           style="color: var(--semantic-text-dim);"
           title="Delete Workspace"
           aria-label="Delete Workspace"
