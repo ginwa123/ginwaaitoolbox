@@ -2303,8 +2303,9 @@ const connectSse = () => {
     // the transcript). Each new error overwrites the previous one
     // (so 1/10 → 2/10 → ... → 10/10 all show on the same card).
     // The card also auto-clears as soon as ANY non-error `full` event
-    // arrives below in this handler — i.e. the moment the agent
-    // recovers from the retry chain, the error disappears.
+    // arrives below in this handler, or on a non-error `chunk_final`
+    // run-end marker — i.e. the moment the agent recovers from the
+    // retry chain, the error disappears.
     if (event.type === 'full' && event.is_error) {
       agentErrorStore.setError(sid, event.content || '', event.id || undefined)
       nextTick(() => scrollToBottom(false, 'agent-error-card'))
@@ -2326,9 +2327,18 @@ const connectSse = () => {
     // usage + signals "token stream over" so the typing indicator can
     // stop early. Do NOT push a message here — the full event that
     // follows replaces the streaming-* row with the canonical DB row.
+    // 2026-09-10 agent-error-chunk_final-clear: a non-error chunk_final
+    // means the token stream completed, i.e. the agent recovered from
+    // any prior retry chain — clear the error card here too, so a
+    // terminal `full` that lacks finish_reason / renderable payload
+    // can't leave a stale card behind.
     if (event.type === 'chunk_final') {
       if (event.total_tokens) {
         maxTotalTokens.value = event.total_tokens
+      }
+      if (!event.is_error && agentErrorStore.bySession[sid]) {
+        console.log('[SSE ChatView] clearing agent error card on chunk_final (run-end)')
+        agentErrorStore.clearForSession(sid)
       }
       return
     }
