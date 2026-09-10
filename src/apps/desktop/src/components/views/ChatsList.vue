@@ -161,6 +161,21 @@ watch(
 )
 
 // Public methods for parent to call
+// Amber stale-dot clear (yellow-dot-fix): optimistic patch + best-effort
+// backend touch. isStale() predicate is unchanged — clearing the dot
+// is done by aligning last_human_touched_at to updated_at.
+const optimisticClearStaleDot = (id: string) => {
+  const item = navItems.value.find((i) => i.id === id)
+  if (item && item.updated_at) {
+    item.last_human_touched_at = item.updated_at
+    item.relativeTime = formatRelativeTime(item.last_human_touched_at)
+  }
+}
+
+const fireSessionTouched = (id: string) => {
+  api.markSessionTouched(id).catch((e) => console.error('Failed to mark session touched:', e))
+}
+
 const loadChats = async () => {
   chatsLoading.value = true
   chatsNextCursor.value = null
@@ -202,6 +217,15 @@ const loadChats = async () => {
     if (activeItem) {
       navigationStore.setActiveChatName(activeItem.name)
       emit('navigate', `chat-${activeItem.id}`, activeItem.name)
+    }
+
+    // Deep-link / refresh cover: if the URL already shows a chat,
+    // optimistic-clear its dot + fire the touch so the dot clears
+    // without waiting for the next SSE refresh.
+    const current = currentMainView.value
+    if (current.kind === 'chat' && current.sessionId) {
+      optimisticClearStaleDot(current.sessionId)
+      fireSessionTouched(current.sessionId)
     }
   } catch (err) {
     console.error('Failed to load chats:', err)
@@ -272,7 +296,8 @@ const createChat = () => {
   emit('navigate', `chat-${newChatId}`, name)
 }
 
-const setActive = (id: string) => {
+const setActive = async (id: string) => {
+  // 1) Existing navigation first, synchronously, so the UI never blocks.
   const chat = navItems.value.find((item) => item.id === id)
   const chatName = chat?.name || ''
   navigationStore.setActiveChatName(chatName)
@@ -284,6 +309,11 @@ const setActive = (id: string) => {
   navigationStore.setActiveChat(id, chatName)
   // Update URL with session ID
   router.replace({ path: '/app', query: { view: 'chat', session: id } })
+  // 2) Optimistic clear: align human time to updated_at so isStale()
+  // flips false immediately (no wait for the next list refresh).
+  optimisticClearStaleDot(id)
+  // 3) Best-effort backend stamp (don't await navigation).
+  fireSessionTouched(id)
 }
 
 const confirmDeleteChat = (chatId: string) => {

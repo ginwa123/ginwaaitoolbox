@@ -38,18 +38,24 @@ import {
 } from '../helpers/sseBus'
 import type { SseClient } from '../helpers/sseClient'
 
-const { useRouteMock, getChatsMock } = vi.hoisted(() => ({
+const { useRouteMock, getChatsMock, markSessionTouchedMock, routerReplaceMock } = vi.hoisted(() => ({
   useRouteMock: vi.fn(() => ({
     query: {} as Record<string, string>,
     path: '/app',
     fullPath: '/app',
   })),
   getChatsMock: vi.fn(),
+  markSessionTouchedMock: vi.fn(),
+  routerReplaceMock: vi.fn(),
 }))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
-  return { ...actual, useRoute: useRouteMock }
+  return {
+    ...actual,
+    useRoute: useRouteMock,
+    useRouter: () => ({ replace: routerReplaceMock }),
+  }
 })
 
 // Mock the api module: keep everything from the real api module, only
@@ -62,6 +68,7 @@ vi.mock('../api/index', async () => {
   return {
     ...actual,
     getChats: getChatsMock,
+    markSessionTouched: markSessionTouchedMock,
   }
 })
 
@@ -125,6 +132,9 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
     installSseBus(app)
     __setSseBusGlobalClient(makeStubClient({ next: 'open', attempt: 0 }))
     getChatsMock.mockReset()
+    markSessionTouchedMock.mockReset()
+    routerReplaceMock.mockReset()
+    markSessionTouchedMock.mockResolvedValue({ success: true, session_id: 'sess_stale' })
   })
 
   afterEach(() => {
@@ -274,6 +284,80 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
     await flushLoadChats()
 
     expect(wrapper.find('[data-testid="chat-stale-dot"]').exists()).toBe(false)
+  })
+
+  it('setActive clears the stale dot optimistically and fires markSessionTouched (yellow-dot-fix)', async () => {
+    const TWO_HOURS_AGO = dateToSqliteUtc(2 * 60 * 60 * 1000)
+    const THIRTY_SEC_AGO = dateToSqliteUtc(30 * 1000)
+    getChatsMock.mockResolvedValueOnce({
+      sessions: [
+        makeSession({
+          session_id: 'sess_stale',
+          session_name: 'Stale chat',
+          last_human_touched_at: TWO_HOURS_AGO,
+          updated_at: THIRTY_SEC_AGO,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+      total: 1,
+    })
+    markSessionTouchedMock.mockResolvedValue({ success: true, session_id: 'sess_stale' })
+
+    const wrapper = mountChatsList()
+    await flushLoadChats()
+
+    // Precondition: stale dot is visible before the click.
+    expect(wrapper.find('[data-testid="chat-stale-dot"]').exists()).toBe(true)
+
+    // Click the chat row (template wires @click="setActive(item.id)").
+    const row = wrapper.findAll('button').find((b) => b.text().includes('Stale chat'))
+    expect(row).toBeTruthy()
+    await row!.trigger('click')
+    await nextTick()
+    await nextTick()
+
+    // Optimistic patch aligns human time to updated_at so isStale()
+    // flips false immediately — the dot disappears without a refetch.
+    expect(wrapper.find('[data-testid="chat-stale-dot"]').exists()).toBe(false)
+    // Best-effort backend stamp fired (not awaited by navigation).
+    expect(markSessionTouchedMock).toHaveBeenCalledTimes(1)
+    expect(markSessionTouchedMock).toHaveBeenCalledWith('sess_stale')
+    // Navigation still happened synchronously (UI never blocks).
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      path: '/app',
+      query: { view: 'chat', session: 'sess_stale' },
+    })
+  })
+
+  it('deep-link loadChats clears the dot for the visible chat (yellow-dot-fix)', async () => {
+    const TWO_HOURS_AGO = dateToSqliteUtc(2 * 60 * 60 * 1000)
+    const THIRTY_SEC_AGO = dateToSqliteUtc(30 * 1000)
+    useRouteMock.mockReturnValueOnce({
+      query: { view: 'chat', session: 'sess_deep' },
+      path: '/app',
+      fullPath: '/app?view=chat&session=sess_deep',
+    })
+    getChatsMock.mockResolvedValueOnce({
+      sessions: [
+        makeSession({
+          session_id: 'sess_deep',
+          session_name: 'Deep link chat',
+          last_human_touched_at: TWO_HOURS_AGO,
+          updated_at: THIRTY_SEC_AGO,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+      total: 1,
+    })
+    markSessionTouchedMock.mockResolvedValue({ success: true, session_id: 'sess_deep' })
+
+    const wrapper = mountChatsList()
+    await flushLoadChats()
+
+    expect(wrapper.find('[data-testid="chat-stale-dot"]').exists()).toBe(false)
+    expect(markSessionTouchedMock).toHaveBeenCalledWith('sess_deep')
   })
 
   it('renders "now" with no stale dot when both fields are empty (case 6)', async () => {

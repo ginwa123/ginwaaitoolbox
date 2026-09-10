@@ -21,6 +21,7 @@ pub const http_response = nalarcore.http_response;
 pub const corsPreflightHandler = @import("cors.zig").corsPreflightHandler;
 pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHandler;
 pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHandler;
+pub const sessionMarkTouchedHandler = @import("session_mark_touched.zig").sessionMarkTouchedHandler;
 pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
 pub const sessionExistHandler = @import("session_exist.zig").sessionExistHandler;

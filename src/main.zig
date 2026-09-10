@@ -307,6 +307,12 @@ pub fn main(init: std.process.Init) !void {
     // // try gs.router.options("/api/session", http_handlers.corsPreflightHandler, .{});
     try gs.router.post("/api/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.put("/api/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
+    // Mark-as-seen (yellow stale-dot fix): stamping
+    // `sessions.last_human_touched_at_nano` when the user opens a chat.
+    // POST differs in method from the sibling PUT/GET on the overlapping
+    // prefix, and the literal `touched` tail differs from `messages` —
+    // no shadowing risk.
+    try gs.router.post("/api/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
     try gs.router.get("/api/session", ai_mod.http_handlers.sessionListHandler);
     //
     // // try gs.router.get("/api/session/stream", http_handlers.sessionStreamHandler, ctxParent);
@@ -325,6 +331,9 @@ pub fn main(init: std.process.Init) !void {
     // // LLM API aliases (desktop app uses /api/llm/*)
     try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
     try gs.router.put("/api/llm/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
+    // LLM-alias prefix of the mark-as-seen endpoint above (desktop app
+    // uses /api/llm/*). Same no-shadowing argument as above.
+    try gs.router.post("/api/llm/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
     try gs.router.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
 
     // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
