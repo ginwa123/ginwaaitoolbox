@@ -172,8 +172,29 @@ const optimisticClearStaleDot = (id: string) => {
   }
 }
 
+// Loop-guard (touched-echo fix): fireSessionTouched fires at most ONCE
+// per sessionId per component lifetime. Without this, loadChats() →
+// POST touched → backend SSE session.updated → onSessionEvent →
+// loadChats() → POST touched … loops forever (alternating
+// GET /llm/session + POST /touched in the Network tab).
+const touchedFiredFor = new Set<string>()
+const touchedAtMs = new Map<string, number>()
+// Echo window: a session.updated arriving within this long after our
+// own touched POST is assumed to be the backend echo of that POST,
+// not an independent rename — skip the refetch for it.
+const TOUCH_ECHO_SUPPRESS_MS = 5000
+
 const fireSessionTouched = (id: string) => {
-  api.markSessionTouched(id).catch((e) => console.error('Failed to mark session touched:', e))
+  if (!id || touchedFiredFor.has(id)) return
+  touchedFiredFor.add(id)
+  touchedAtMs.set(id, Date.now())
+  api.markSessionTouched(id).catch((e) => {
+    // Allow retry on failure: a failed stamp never reached the DB,
+    // so no SSE echo is coming — drop the guards.
+    touchedFiredFor.delete(id)
+    touchedAtMs.delete(id)
+    console.error('Failed to mark session touched:', e)
+  })
 }
 
 const loadChats = async () => {
@@ -376,13 +397,41 @@ const removeChat = async (chatId: string) => {
 // Subscribe to session events at setup time (synchronously) so the
 // `onUnmounted` cleanup hook can also be registered synchronously
 // (Vue 3 lifecycle injection APIs must run during setup, not after
-// the first `await` inside `onMounted`). The callback just re-runs
+// the first `await` inside `onMounted`). The callback re-runs
 // loadChats() — works whether it fires before or after mount.
-const unsubSession = workspacesStore.onSessionEvent(() => {
-  loadChats()
+//
+// Touched-echo fix: our own POST touched emits a session.updated SSE
+// that echoes back within milliseconds. Reloading on that echo would
+// re-enter loadChats() → fireSessionTouched → … forever. So:
+//  - `updated` events inside the echo window after our own touch are
+//    swallowed (no refetch — the optimistic patch already cleared
+//    the dot locally);
+//  - all other events (created/deleted, renames from elsewhere) go
+//    through a short trailing debounce so an SSE burst coalesces
+//    into a single GET instead of one per event.
+let sseReloadTimer: ReturnType<typeof setTimeout> | undefined
+const scheduleSseReload = () => {
+  if (sseReloadTimer !== undefined) return // burst already coalesced
+  sseReloadTimer = setTimeout(() => {
+    sseReloadTimer = undefined
+    loadChats()
+  }, 400)
+}
+const unsubSession = workspacesStore.onSessionEvent((event) => {
+  if (event.action === 'updated') {
+    const firedAt = touchedAtMs.get(event.id)
+    if (firedAt !== undefined && Date.now() - firedAt < TOUCH_ECHO_SUPPRESS_MS) {
+      return
+    }
+  }
+  scheduleSseReload()
 })
 onUnmounted(() => {
   unsubSession()
+  if (sseReloadTimer !== undefined) {
+    clearTimeout(sseReloadTimer)
+    sseReloadTimer = undefined
+  }
 })
 
 onMounted(async () => {

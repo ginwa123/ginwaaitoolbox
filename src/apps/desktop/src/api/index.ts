@@ -3079,6 +3079,11 @@ export interface SessionEvent {
   // task.is_auto_retry_until_stop in sync so the
   // KanbanTaskDetailDialog toggle shows the live value.
   is_auto_retry_until_stop?: string
+  // Migration 082 — the touched POST's SSE echo carries the fresh
+  // stamp (unix-ms integer string, raw column shape — NOT the SQLite
+  // datetime the REST list returns). Optional: older backends omit
+  // it. ChatsList uses it only for echo detection, never for display.
+  last_human_touched_at?: string
 }
 
 // Queue messages SSE event types
