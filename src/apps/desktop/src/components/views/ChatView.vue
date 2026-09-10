@@ -1240,6 +1240,12 @@ const getParametersForMessage = (m: Message): string => {
 
 const isBgUserMsg = (m: { content?: string }): boolean => !!m.content && isBackgroundCommandOutput(m.content);
 const bgShellContent = (m: { content?: string }): string => { const pr = m.content ? parseBackgroundCommandOutput(m.content) : null; return pr ? backgroundToShellXml(pr) : (m.content ?? ''); };
+// A user group made ONLY of background completions renders as a
+// transparent left-aligned tool card, not the blue right bubble
+// (background completions are role=user on the wire, tool-styled
+// in pixels — see helpers/isBackgroundCommandOutput).
+const isBgOnlyGroup = (group: { role: string; messages: { content?: string }[] }): boolean =>
+  group.role === 'user' && group.messages.length > 0 && group.messages.every(isBgUserMsg);
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
 // For each group index, returns the tool names string if the group is an
@@ -3115,7 +3121,7 @@ const compactSession = async () => {
             >
               <div
                 class="flex"
-                :class="group.role === 'user' ? 'flex-row-reverse' : 'flex-row'"
+                :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'flex-row-reverse' : 'flex-row'"
               >
                 <!-- Bubble / paragraph container.
                      2026-08-23 paragraph-mode: the AI (assistant) side no
@@ -3134,7 +3140,7 @@ const compactSession = async () => {
                      the whole chat on scrollToBottom. -->
                 <div
                   class="min-w-0"
-                  :class="group.role === 'user' ? 'max-w-[90%]' : 'max-w-full'"
+                  :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'max-w-[90%]' : 'max-w-full'"
                 >
                   <div
                     v-if="hasBubbleContent(group, groupIndex)"
@@ -3142,12 +3148,12 @@ const compactSession = async () => {
                     role="button"
                     tabindex="0"
                     :class="
-                      group.role === 'user'
+                      group.role === 'user' && !isBgOnlyGroup(group)
                         ? 'px-4 py-2.5 rounded-2xl whitespace-pre-wrap break-words'
                         : 'markdown-content'
                     "
                     :style="
-                      group.role === 'user'
+                      group.role === 'user' && !isBgOnlyGroup(group)
                         ? 'background-color: var(--color-blue-1); color: var(--semantic-text); border-bottom-right-radius: 6px;'
                         : 'color: var(--semantic-text);'
                     "
@@ -3160,6 +3166,21 @@ const compactSession = async () => {
                         v-if="isCompactionMessage(group.messages[0])"
                         :content="group.messages[0]!.content"
                       />
+                      <!-- Background completions: role=user on the wire,
+                           tool card in pixels — transparent left-aligned
+                           tool-sequence, never the blue bubble. -->
+                      <template v-else-if="isBgOnlyGroup(group)">
+                        <div class="tool-sequence">
+                          <div
+                            v-for="(bgMsg, bgIdx) in group.messages"
+                            :key="bgMsg.id || `bg-${bgIdx}`"
+                            class="tool-item"
+                            :class="bgIdx < group.messages.length - 1 ? 'tool-item-border' : ''"
+                          >
+                            <ShellTool tool-name="command" :content="bgShellContent(bgMsg)" :parameters="'{}'" />
+                          </div>
+                        </div>
+                      </template>
                       <!-- 2026-08-23 hidden-messages fix — v-for over ALL
                            messages in the group. The old template rendered
                            only group.messages[0], so consecutive user
