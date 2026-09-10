@@ -2,6 +2,7 @@
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../../api'
 import FilePreview from './FilePreview.vue'
+import { parseBackgroundCommandOutput } from '@/helpers/isBackgroundCommandOutput'
 
 export interface QueuedMessage {
   id: string
@@ -335,6 +336,9 @@ const useQueuedMessage = (msg: QueuedMessage) => {
   inputText.value = msg.message
   showQueuePanel.value = false
 }
+
+const isCompletionMsg = (msg: { message: string }): boolean => parseBackgroundCommandOutput(msg.message) !== null
+const completionPid = (msg: { message: string }): string | null => parseBackgroundCommandOutput(msg.message)?.pid ?? null
 
 // ── @ picker server search (Task 2: plan
 // docs/superpowers/plans/2026-09-08-chatview-search-files-perf.md) ──────
@@ -675,6 +679,7 @@ const sendMessage = () => {
               @mouseenter="(e) => (e.target as HTMLElement).style.backgroundColor = 'var(--hover-bg, #1D1C19)'"
               @mouseleave="(e) => (e.target as HTMLElement).style.backgroundColor = ''"
               @click="useQueuedMessage(msg)">
+              <span v-if="isCompletionMsg(msg)" class="text-xs font-medium">Background pid {{ completionPid(msg) }}</span>
               <p class="text-sm truncate" style="color: var(--semantic-text);">{{ msg.message }}</p>
               <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">Click to use</p>
             </div>
