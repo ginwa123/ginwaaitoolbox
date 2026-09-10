@@ -95,7 +95,7 @@ describe('PreviewSidePanel', () => {
   // a clear (the panel doesn't read localStorage today).
   //
   // localStorage is undefined in some Vitest environments — guard
-  // with `vi.stubGlobal` (matches NalarBrowserInlinePreview.spec.ts:13-22)
+  // with `vi.stubGlobal` (same pattern used by other inline-preview specs)
   // so this works under jsdom AND any environment that lacks the global.
   beforeEach(() => {
     if (typeof localStorage === 'undefined' || typeof localStorage.getItem !== 'function') {

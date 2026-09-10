@@ -625,11 +625,10 @@ pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const pwsh_tool = @import("modules/agent/tools/pwsh.zig");
 pub const command_tool = @import("modules/agent/tools/command.zig");
 pub const tool_models = @import("modules/agent/tools/schemas.zig");
-pub const lsp_types = @import("modules/agent/tools/lsp_types.zig");
 pub const tools = @import("modules/agent/tools/tools.zig");
 pub const change_agent = @import("modules/agent/tools/change_agent.zig");
 
-pub const get_skill_tool = @import("modules/agent/tools/get_skill.zig");
+pub const use_skill_tool = @import("modules/agent/tools/use_skill.zig");
 pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
 pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
 // 2026-08-14 — first-level directory listing tool (Task 5 of the same plan).
@@ -641,11 +640,9 @@ pub const load_memory = @import("modules/agent/tools/load_memory.zig");
 pub const delete_memory = @import("modules/agent/tools/delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const search_history_tool = @import("modules/agent/tools/search_history.zig");
-pub const view_skill_tool = @import("modules/agent/tools/view_skill.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
-pub const set_agent_properties = @import("modules/agent/tools/set_agent_properties.zig");
 
 // `modules/http/HttpClient.zig` was removed — the project uses the
 // libcurl-backed `custom_http_client` module (imported directly via
@@ -811,7 +808,6 @@ pub const update_plan = @import("modules/agent/tools/update_plan.zig");
 pub const get_plan = @import("modules/agent/tools/get_plan.zig");
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
-pub const nalar_browser = @import("modules/agent/tools/nalar_browser.zig");
 pub const generate_image = @import("modules/agent/tools/generate_image.zig");
 pub const glob_tool = @import("modules/agent/tools/glob.zig");
 pub const search_tool = @import("modules/agent/tools/search.zig");

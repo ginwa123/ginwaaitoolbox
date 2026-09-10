@@ -237,36 +237,6 @@ export function parseRemoveSkill(content: string): ParsedRemoveSkill {
   }
 }
 
-export interface ParsedViewSkill {
-  skillName: string
-  description: string
-  found: boolean
-  availableSkills: string[]
-  success: boolean
-  error: string | null
-}
-
-export function parseViewSkill(content: string): ParsedViewSkill {
-  const found = extractBool(content, 'found', false)
-  const availableRaw = extractTag(content, 'available_skills') ?? ''
-  const availableSkills: string[] = []
-  if (availableRaw) {
-    const skillRegex = /<skill>([\s\S]*?)<\/skill>/g
-    let m
-    while ((m = skillRegex.exec(availableRaw)) !== null) {
-      if (m[1]) availableSkills.push(m[1])
-    }
-  }
-  return {
-    skillName: extractTag(content, 'skill_name') ?? '',
-    description: extractTag(content, 'description') ?? '',
-    found,
-    availableSkills,
-    success: found,
-    error: found ? null : extractTag(content, 'error'),
-  }
-}
-
 export interface ParsedSetGitWorktree {
   path: string | null
   branch: string | null
@@ -471,23 +441,6 @@ export function parseListSkills(content: string): ParsedListSkills {
     globalSkills,
     localSkills,
     totalCount: globalSkills.length + localSkills.length,
-  }
-}
-
-export interface ParsedNalarBrowser {
-  url: string | null
-  title: string | null
-  error: string | null
-  success: boolean
-}
-
-export function parseNalarBrowser(content: string): ParsedNalarBrowser {
-  const success = extractBool(content, 'success', true)
-  return {
-    url: extractTag(content, 'url'),
-    title: extractTag(content, 'title'),
-    success,
-    error: success ? null : extractTag(content, 'error'),
   }
 }
 

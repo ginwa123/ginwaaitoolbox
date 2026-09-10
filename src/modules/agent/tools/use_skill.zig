@@ -6,8 +6,8 @@ const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 const skills = @import("skills.zig");
 
-/// Input structure for get_skill tool
-pub const GetSkillInput = struct {
+/// Input structure for use_skill tool
+pub const UseSkillInput = struct {
     /// Load skill from file path. Accepts both absolute paths and relative
     /// paths (resolved against the session's current working directory).
     path: ?[]const u8 = null,
@@ -16,8 +16,8 @@ pub const GetSkillInput = struct {
     is_global: bool = false,
 };
 
-/// Result structure for get_skill tool
-pub const GetSkillResult = struct {
+/// Result structure for use_skill tool
+pub const UseSkillResult = struct {
     skill_name: []const u8,
     content: []const u8,
     loaded: bool,
@@ -26,18 +26,18 @@ pub const GetSkillResult = struct {
     available_skills: ?[]const []const u8 = null,
 };
 
-/// Tool definition for get_skill
-pub const get_skill_tool_system_prompt =
-    \\## Get Skill Tool — Behavior
-    \\Use `get_skill` to load a skill's full instructions by exact file path (from `list_skills`).
+/// Tool definition for use_skill
+pub const use_skill_tool_system_prompt =
+    \\## Use Skill Tool — Behavior
+    \\Use `use_skill` to load a skill's full instructions by exact file path (from `list_skills`).
     \\- The path is case-sensitive and ends in `SKILL.MD` — don't construct it from the name. Pass it verbatim.
     \\
 ;
 
-pub const get_skill_tool = AgentTool{
+pub const use_skill_tool = AgentTool{
     .type = "function",
     .function = .{
-        .name = "get_skill",
+        .name = "use_skill",
         .description = "Load a skill's full content from a file path. Use this when you need detailed guidance for a specific capability. Pass the file path (absolute or relative to the session's current working directory) via the `path` argument.",
         .parameters = .{
             .type = "object",
@@ -55,14 +55,14 @@ pub const get_skill_tool = AgentTool{
             },
             .required = &.{ "path", "is_global" },
         },
-        .system_prompt = get_skill_tool_system_prompt,
+        .system_prompt = use_skill_tool_system_prompt,
     },
 };
 
-/// Execute the get_skill tool
+/// Execute the use_skill tool
 /// Returns an XML string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_get_skill_to_string(allocator: std.mem.Allocator, io: std.Io, input: GetSkillInput, environment: ?*const std.process.Environ.Map) ![]const u8 {
+pub fn execute_use_skill_to_string(allocator: std.mem.Allocator, io: std.Io, input: UseSkillInput, environment: ?*const std.process.Environ.Map) ![]const u8 {
     _ = environment; // kept for signature compatibility; not used by the path-only code path
     const path = input.path orelse return error.InvalidInput;
     return loadSkillFromPath(allocator, io, path);
@@ -130,26 +130,26 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
     return result;
 }
 
-const get_skill = @import("get_skill.zig");
+const use_skill = @import("use_skill.zig");
 
 // Helper to check if string contains substring
 fn contains(haystack: []const u8, needle: []const u8) bool {
     return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
-test "get_skill_tool - has correct tool definition" {
-    try std.testing.expectEqualStrings("get_skill", get_skill.get_skill_tool.function.name);
-    try std.testing.expect(get_skill.get_skill_tool.function.parameters.properties.len == 2);
+test "use_skill_tool - has correct tool definition" {
+    try std.testing.expectEqualStrings("use_skill", use_skill.use_skill_tool.function.name);
+    try std.testing.expect(use_skill.use_skill_tool.function.parameters.properties.len == 2);
 }
 
-test "GetSkillInput - has correct defaults" {
-    const input = get_skill.GetSkillInput{};
+test "UseSkillInput - has correct defaults" {
+    const input = use_skill.UseSkillInput{};
     try std.testing.expect(input.path == null);
     try std.testing.expect(input.is_global == false);
 }
 
-test "GetSkillResult - has correct struct fields" {
-    const result = get_skill.GetSkillResult{
+test "UseSkillResult - has correct struct fields" {
+    const result = use_skill.UseSkillResult{
         .skill_name = "test",
         .content = "Test content",
         .loaded = true,
@@ -162,30 +162,30 @@ test "GetSkillResult - has correct struct fields" {
     try std.testing.expect(result.available_skills == null);
 }
 
-test "execute_get_skill_to_string - missing path returns InvalidInput" {
+test "execute_use_skill_to_string - missing path returns InvalidInput" {
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const input = get_skill.GetSkillInput{};
-    const result = get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    const input = use_skill.UseSkillInput{};
+    const result = use_skill.execute_use_skill_to_string(alloc, io, input, null);
     try std.testing.expectError(error.InvalidInput, result);
 }
 
-test "get_skill_tool - description is descriptive" {
+test "use_skill_tool - description is descriptive" {
     // The tool description should explain what the tool does
-    try std.testing.expect(get_skill.get_skill_tool.function.description.len > 10);
-    try std.testing.expect(contains(get_skill.get_skill_tool.function.description, "skill"));
-    try std.testing.expect(contains(get_skill.get_skill_tool.function.description, "content"));
+    try std.testing.expect(use_skill.use_skill_tool.function.description.len > 10);
+    try std.testing.expect(contains(use_skill.use_skill_tool.function.description, "skill"));
+    try std.testing.expect(contains(use_skill.use_skill_tool.function.description, "content"));
 }
 
-test "execute_get_skill_to_string - loaded skill output preserves skill name" {
+test "execute_use_skill_to_string - loaded skill output preserves skill name" {
     // Sanity test: when the skill is found, the output contains the skill
     // name and content (not a use-after-free case, but worth verifying the
     // happy path still works after the refactor).
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const unique_skill_name = "_regression_uaf_get_skill_loaded_test";
+    const unique_skill_name = "_regression_uaf_use_skill_loaded_test";
     const unique_marker = "REGRESSION_MARKER_12345";
     const tmp_home = "/tmp/nalar-uaf-test-home-loaded";
     const global_skills_dir = "/tmp/nalar-uaf-test-home-loaded/.config/nalar/skills";
@@ -202,7 +202,7 @@ test "execute_get_skill_to_string - loaded skill output preserves skill name" {
 
     const skill_content =
         \\---
-        \\name: _regression_uaf_get_skill_loaded_test
+        \\name: _regression_uaf_use_skill_loaded_test
         \\description: "Loaded-path regression test"
         \\---
         \\
@@ -219,7 +219,7 @@ test "execute_get_skill_to_string - loaded skill output preserves skill name" {
     defer env.deinit();
     try env.put("HOME", tmp_home);
 
-    const output = try get_skill.execute_get_skill_to_string(
+    const output = try use_skill.execute_use_skill_to_string(
         alloc,
         io,
         .{ .path = skill_file_path },
@@ -233,10 +233,10 @@ test "execute_get_skill_to_string - loaded skill output preserves skill name" {
     try std.testing.expect(std.mem.indexOfScalar(u8, output, 0xAA) == null);
 }
 
-test "get_skill_tool - schema declares is_global property" {
+test "use_skill_tool - schema declares is_global property" {
     // Find the is_global property in the tool definition. This guards against
     // the field being accidentally removed from the schema.
-    const props = get_skill.get_skill_tool.function.parameters.properties;
+    const props = use_skill.use_skill_tool.function.parameters.properties;
     var found_is_global = false;
     for (props) |prop| {
         if (std.mem.eql(u8, prop.name, "is_global")) {
@@ -248,7 +248,7 @@ test "get_skill_tool - schema declares is_global property" {
     try std.testing.expect(found_is_global);
 }
 
-test "execute_get_skill_to_string - absolute path loads skill file (loadSkillFromPath baseline)" {
+test "execute_use_skill_to_string - absolute path loads skill file (loadSkillFromPath baseline)" {
     // Baseline: loadSkillFromPath with an absolute path must still work
     // after the openFileAbsolute → cwd().openFile swap. This guards against
     // a regression where the new code accidentally breaks the existing
@@ -276,8 +276,8 @@ test "execute_get_skill_to_string - absolute path loads skill file (loadSkillFro
         );
     }
 
-    const input = get_skill.GetSkillInput{ .path = skill_file };
-    const output = try get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    const input = use_skill.UseSkillInput{ .path = skill_file };
+    const output = try use_skill.execute_use_skill_to_string(alloc, io, input, null);
     defer alloc.free(output);
 
     try std.testing.expect(contains(output, "<loaded>true</loaded>"));
@@ -285,20 +285,20 @@ test "execute_get_skill_to_string - absolute path loads skill file (loadSkillFro
     try std.testing.expect(contains(output, "Absolute path body"));
 }
 
-test "execute_get_skill_to_string - relative path resolves against cwd (panic regression)" {
+test "execute_use_skill_to_string - relative path resolves against cwd (panic regression)" {
     // REGRESSION: previously, passing a relative path caused
     // std.Io.Dir.openFileAbsolute to `unreachable`-panic, killing the
     // entire worker process and bypassing every catch/try in the call
     // chain. See docs/plans/2025-01-15-get-skill-relative-path-panic.md
     //
     // We create a skill file at a relative path under cwd, then call
-    // execute_get_skill_to_string with that relative path. Before the fix
+    // execute_use_skill_to_string with that relative path. Before the fix
     // this would SIGABRT; after the fix it loads successfully.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
 
-    const tmp_dir = "tmp_get_skill_relative_test";
-    const skill_file = "tmp_get_skill_relative_test/SKILL.MD";
+    const tmp_dir = "tmp_use_skill_relative_test";
+    const skill_file = "tmp_use_skill_relative_test/SKILL.MD";
     std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
@@ -317,8 +317,8 @@ test "execute_get_skill_to_string - relative path resolves against cwd (panic re
         );
     }
 
-    const input = get_skill.GetSkillInput{ .path = skill_file };
-    const output = try get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    const input = use_skill.UseSkillInput{ .path = skill_file };
+    const output = try use_skill.execute_use_skill_to_string(alloc, io, input, null);
     defer alloc.free(output);
 
     try std.testing.expect(contains(output, "<loaded>true</loaded>"));
@@ -326,7 +326,7 @@ test "execute_get_skill_to_string - relative path resolves against cwd (panic re
     try std.testing.expect(contains(output, "Relative path body"));
 }
 
-test "execute_get_skill_to_string - non-existent path returns XML error (no panic, includes path)" {
+test "execute_use_skill_to_string - non-existent path returns XML error (no panic, includes path)" {
     // REGRESSION: previously, a non-existent relative path would return a
     // generic "Failed to open file" with no path or OS error info — and if
     // a future caller ever wrapped openFileAbsolute without the same
@@ -337,8 +337,8 @@ test "execute_get_skill_to_string - non-existent path returns XML error (no pani
     const io = std.testing.io;
 
     const missing_path = "this/path/does/not/exist/SKILL.MD";
-    const input = get_skill.GetSkillInput{ .path = missing_path };
-    const output = try get_skill.execute_get_skill_to_string(alloc, io, input, null);
+    const input = use_skill.UseSkillInput{ .path = missing_path };
+    const output = try use_skill.execute_use_skill_to_string(alloc, io, input, null);
     defer alloc.free(output);
 
     try std.testing.expect(contains(output, "<loaded>false</loaded>"));

@@ -88,11 +88,11 @@ const copySkillName = async (e: Event) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">get_skill</span>
+      <span class="text-[var(--color-violet)] font-semibold text-xs">use_skill</span>
       <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="displaySkillName || ''">
         {{ displaySkillName || 'unknown' }}
       </span>
-      <span v-if="isRunning" data-testid="get-skill-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
+      <span v-if="isRunning" data-testid="use-skill-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
       
       <!-- Status indicator -->
       <span class="text-xs font-semibold" :class="isLoaded ? 'text-green-500' : 'text-red-500'">

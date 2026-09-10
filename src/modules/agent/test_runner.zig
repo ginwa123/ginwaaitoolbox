@@ -64,7 +64,7 @@ test {
     _ = @import("tools/load_memory.zig");
     _ = @import("tools/list_skills.zig");
     _ = @import("tools/kanban_list.zig");
-    _ = @import("tools/get_skill.zig");
+    _ = @import("tools/use_skill.zig");
     _ = @import("tools/update_activity.zig");
     _ = @import("tools/remove_skill.zig");
     _ = @import("tools/show_preview.zig");
@@ -75,7 +75,6 @@ test {
     _ = @import("tools/move_element_to_page.zig");
     _ = @import("tools/group_design_elements.zig");
     _ = @import("tools/change_agent.zig");
-    _ = @import("tools/nalar_browser.zig");
     _ = @import("tools/kanban_move_task.zig");
     _ = @import("tools/list_directory.zig");
     _ = @import("tools/generate_image.zig");
@@ -90,7 +89,6 @@ test {
     _ = @import("tools/delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool
     _ = @import("tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool (Step 2)
     _ = @import("tools/spawn_sub_agent.zig");
-    _ = @import("tools/view_skill.zig");
     _ = @import("tools/update_design_element.zig");
     _ = @import("tools/set_element_parent.zig");
     _ = @import("tools/search.zig");

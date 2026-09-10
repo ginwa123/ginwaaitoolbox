@@ -281,47 +281,6 @@ pub fn getToolNames() []const []const u8 {
 }
 
 // ============================================================================
-// SPECIAL TOOL DISPATCHERS - Tools that need extended context
-// ============================================================================
-
-/// set_agent_properties returns temperature/is_thinking changes.
-/// The exec function lives in `agentic_loop/tools_exec_set_agent_properties.zig`
-/// (re-exported as `agentic_loop_mod.tools.execSetAgentProperties`).
-fn dispatchSetAgentProperties(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const ctx_exec = agentic_loop_mod.tools.ToolExecContext{
-        .allocator = ctx.allocator,
-        .io = ctx.io,
-        .db = ctx.db,
-        .logger = ctx.logger,
-        .session_id = ctx.session_id,
-        .model = ctx.model,
-        .cwd = ctx.cwd,
-        .api_key = ctx.api_key,
-        .base_url = ctx.base_url,
-        .config = ctx.config,
-        .agent_temperature = ctx.agent_temperature,
-        .is_thinking = ctx.is_thinking,
-        .environment = ctx.environment,
-        .active_loops = ctx.active_loops,
-        .selected_profile_model = ctx.selected_profile_model,
-        // 2026-08-23 spawn-subagent-live-progress: see comment at
-        // dispatchFromRegistry. set_agent_properties doesn't spawn
-        // sub-agents itself, but for consistency / future-proofing
-        // every ToolExecContext construction site must thread the
-        // same id so any tool can read it without a struct-version
-        // check.
-        .tool_call_id = tool_call.id,
-    };
-    const result = try agentic_loop_mod.tools.execSetAgentProperties(ctx_exec, tool_call);
-
-    return ToolResult{
-        .output = result.output,
-        .temperature = result.temperature,
-        .is_thinking = result.is_thinking,
-    };
-}
-
-// ============================================================================
 // HELPER FUNCTIONS - XML Parsing
 // ============================================================================
 

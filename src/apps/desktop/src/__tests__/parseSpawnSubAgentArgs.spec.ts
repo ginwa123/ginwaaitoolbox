@@ -37,7 +37,7 @@ describe('parseSpawnSubAgentArgs', () => {
   it('returns null when the matching tool call is not spawn_sub_agent', () => {
     const json = JSON.stringify([{
       id: 'call_xxx', type: 'function',
-      function: { name: 'get_skill', arguments: '{}' }
+      function: { name: 'use_skill', arguments: '{}' }
     }])
     expect(parseSpawnSubAgentArgs(json, 'call_xxx')).toBeNull()
   })
