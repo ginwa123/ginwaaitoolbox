@@ -4,9 +4,9 @@ Plan: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
 
 Covers:
   * AGENT — POST /api/workspaces/:ws/items/agent → GET /api/agents/:id/tools
-    returns the 22-tool DEFAULT_AGENT_TOOLS (sorted ASC).
+    returns the 21-tool DEFAULT_AGENT_TOOLS (sorted ASC).
   * KANBAN — POST /api/workspaces/:ws/items/kanban →
-    GET /api/agent-kanbans/:id/tools returns the 22 agent defaults +
+    GET /api/agent-kanbans/:id/tools returns the 21 agent defaults +
     2 kanban tools (kanban_list, kanban_move_task), and the
     bundle GET /api/workspaces/:ws/items/:id/agent_kanban is 200 (configured,
     not 404 NotConfigured).
@@ -24,7 +24,6 @@ EXPECTED_DEFAULTS = [
     "delete_memory",
     "edit_skill",
     "get_plan",
-    "get_skill",
     "glob",
     "list_directory",
     "list_skills",
@@ -39,7 +38,7 @@ EXPECTED_DEFAULTS = [
     "text_replace",
     "update_activity",
     "update_plan",
-    "view_skill",
+    "use_skill",
     "write_file",
 ]
 
@@ -50,7 +49,6 @@ EXPECTED_KANBAN_DEFAULTS = [
     "delete_memory",
     "edit_skill",
     "get_plan",
-    "get_skill",
     "glob",
     "kanban_list",
     "kanban_move_task",
@@ -67,7 +65,7 @@ EXPECTED_KANBAN_DEFAULTS = [
     "text_replace",
     "update_activity",
     "update_plan",
-    "view_skill",
+    "use_skill",
     "write_file",
 ]
 
