@@ -957,9 +957,26 @@ pub fn build(b: *std.Build) void {
     // location. Default `../../vendor/sqlite3` resolves to the project
     // root's vendor/sqlite3/ — works for the default layout. Override
     // with `-Dvendor-dir=...` if you move either side.
+    //
+    // === Database backend list (APP-CONTROLLED) ===
+    // The app decides here and forwards the list verbatim to the
+    // `databases` package, which parses it (single place). `db_used`
+    // is comma-separated because the build runner only passes strings
+    // on the CLI (no array-of-string option kind exists).
+    // Default `"sqlite"` = sqlite-only: Postgres.zig stays on disk but
+    // is never @imported, libpq is never linked, pg tests are skipped.
+    // Pass `-Ddb_used=sqlite,postgres` to opt in to postgres as well
+    // (needs libpq-fe.h + libpq.so). This project only uses sqlite
+    // today, so postgres is ignored unless explicitly listed here.
+    const db_used = b.option(
+        []const u8,
+        "db_used",
+        "Comma-separated database backends to compile: 'sqlite' (default, no libpq), add 'postgres' to also compile postgres (needs libpq)",
+    ) orelse "sqlite";
     const databases_dep = b.dependency("databases", .{
         .target = target,
         .optimize = optimize,
+        .@"db_used" = db_used,
     });
     const databases_mod = databases_dep.module("databases");
     mod.addImport("databases", databases_mod);

@@ -75,7 +75,7 @@ pub const EmitRunAgentInput = struct {
 pub const ContextIPCTui = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
-    db: *sqlite.SqliteBackend,
+    db: *database.Db,
     llm_config_holder: LlmConfigHolder,
     logger: *loggermod.Logger,
     environment: ?*const std.process.Environ.Map,
@@ -615,6 +615,12 @@ pub const prompt = @import("modules/agent/prompts.zig");
 // src/modules/databases/build.zig. Imported via the build-graph
 // dependency declared in build.zig (mod.addImport("databases", databases_mod)).
 pub const sqlite = @import("databases").sqlite;
+// Unified interface — prefer this over `sqlite` in new code:
+//   const database = nalarcore.database; var db: database.Db = .{};
+// App-controlled via root `-Ddb_used` (default sqlite).
+// `Db` IS `SqliteBackend` when sqlite-only, so existing
+// `*sqlite.SqliteBackend` signatures keep compiling during migration.
+pub const database = @import("databases").database;
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const pwsh_tool = @import("modules/agent/tools/pwsh.zig");
 pub const command_tool = @import("modules/agent/tools/command.zig");

@@ -265,6 +265,30 @@ pub fn build(b: *std.Build) void {
         "Skip the system probe and always compile the vendored sqlite3 amalgamation",
     ) orelse false;
 
+    // Backend list — set by the app's root build.zig (`-Ddb_used`),
+    // forwarded verbatim via `b.dependency("databases", ...)`.
+    // Comma-separated (the build runner only passes strings on the
+    // CLI — no array-of-string option kind exists). Default `"sqlite"`
+    // = sqlite-only: Postgres.zig is never @imported, libpq is never
+    // linked, pg tests are skipped. Standalone `zig build test` inside
+    // this package also defaults to sqlite-only.
+    const db_used_str = b.option(
+        []const u8,
+        "db_used",
+        "Comma-separated database backends to compile: 'sqlite' (default, no libpq), add 'postgres' to also compile postgres (needs libpq)",
+    ) orelse "sqlite";
+    var enable_postgres = false;
+    var db_used_it = std.mem.splitScalar(u8, db_used_str, ',');
+    while (db_used_it.next()) |entry_raw| {
+        const entry = std.mem.trim(u8, entry_raw, " \t");
+        if (entry.len == 0 or std.mem.eql(u8, entry, "sqlite")) continue;
+        if (std.mem.eql(u8, entry, "postgres")) {
+            enable_postgres = true;
+        } else {
+            std.debug.panic("unknown database backend in -Ddb_used='{s}': '{s}' (known: sqlite, postgres)", .{ db_used_str, entry });
+        }
+    }
+
     const mod = b.addModule("databases", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -274,6 +298,15 @@ pub fn build(b: *std.Build) void {
     // Universal: libc is required by every sqlite3 binding + cimport.
     mod.linkSystemLibrary("c", .{});
     mod.link_libc = true;
+
+    // Expose the backend choice to source as `@import("build_options")`.
+    // `database.zig` / `root.zig` / `test_runner.zig` read
+    // `build_options.enable_postgres` at comptime: the unchosen branch
+    // is discarded before `@cImport` runs, so sqlite-only builds never
+    // need libpq headers or libs even though Postgres.zig is on disk.
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "enable_postgres", enable_postgres);
+    mod.addOptions("build_options", build_options);
 
     // Probe host system for sqlite3 + libpq + openssl. When the probe
     // finds usable system libs (typical Arch / Debian / Fedora dev
@@ -342,11 +375,11 @@ pub fn build(b: *std.Build) void {
                 // consumer (Zig caches the resulting object file).
                 mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
             }
-            // libpq — link from system when probe finds it, otherwise
-            // try system headers anyway (link will fail with a clear
-            // error if libpq isn't installed; that's the correct
-            // outcome).
-            if (sys.use_system_pq) {
+            // libpq — only when the app opted in via -Ddb_used AND
+            // the probe found it. Sqlite-only builds (the default) skip
+            // this entirely: no -lpq link, no postgresql include path,
+            // even though Postgres.zig stays on disk.
+            if (enable_postgres and sys.use_system_pq) {
                 mod.linkSystemLibrary("pq", .{});
                 // Add both /usr/include and /usr/include/postgresql
                 // because Debian/Ubuntu put libpq-fe.h in
@@ -402,7 +435,8 @@ pub fn build(b: *std.Build) void {
             if (sys.use_system_sqlite3) {
                 mod.addIncludePath(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/include" });
                 mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/sqlite3.lib" });
-                if (sys.use_system_pq) {
+                // libpq on Windows — same app gate as Linux above.
+                if (enable_postgres and sys.use_system_pq) {
                     mod.addObjectFile(.{ .cwd_relative = "C:/vcpkg/installed/x64-windows/lib/libpq.lib" });
                 }
                 if (sys.use_system_ssl) {
