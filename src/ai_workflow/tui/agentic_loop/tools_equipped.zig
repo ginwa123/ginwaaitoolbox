@@ -16,8 +16,7 @@ const save_memory_mod = nalarcore.save_memory;
 const load_memory_mod = nalarcore.load_memory;
 const delete_memory_mod = nalarcore.delete_memory; // 2026-08-24-delete-memory-agent-tool
 const search_history_mod = nalarcore.search_history_tool;
-const get_skill_mod = nalarcore.get_skill_tool;
-const view_skill_mod = nalarcore.view_skill_tool;
+const use_skill_mod = nalarcore.use_skill_tool;
 const remove_skill_mod = nalarcore.remove_skill_tool;
 const list_agents_mod = nalarcore.list_agents;
 const add_skill_mod = nalarcore.add_skill;
@@ -38,14 +37,7 @@ const preview_design_page_mod = nalarcore.preview_design_page;
 const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
 const change_agent_mod = nalarcore.change_agent;
-const lsp_definition_mod = nalarcore.tools.lsp_definition;
-const lsp_references_mod = nalarcore.tools.lsp_references;
-const lsp_workspace_symbol_mod = nalarcore.tools.lsp_workspace_symbol;
-const lsp_document_symbol_mod = nalarcore.tools.lsp_document_symbol;
-const lsp_hover_mod = nalarcore.tools.lsp_hover;
-const set_agent_properties_mod = nalarcore.set_agent_properties;
 const web_search_mod = nalarcore.web_search;
-const nalar_browser_mod = nalarcore.nalar_browser;
 const generate_image_mod = nalarcore.generate_image;
 const update_activity_mod = nalarcore.update_activity;
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
@@ -89,8 +81,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         load_memory_mod.load_memory_tool,
         delete_memory_mod.delete_memory_tool, // 2026-08-24-delete-memory-agent-tool
         search_history_mod.search_history_tool,
-        view_skill_mod.view_skill_tool,
-        get_skill_mod.get_skill_tool,
+        use_skill_mod.use_skill_tool,
         remove_skill_mod.remove_skill_tool,
         add_skill_mod.add_skill_tool,
         edit_skill_mod.edit_skill_tool,
@@ -103,7 +94,6 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         search_tool_mod.search_tool,
         // 2026-08-14 — first-level ls-like tool (Task 5).
         list_directory_mod.list_directory_tool,
-        nalar_browser_mod.nalar_browser_tool,
         generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
         show_preview_mod.show_preview_tool,
@@ -141,7 +131,6 @@ pub const ToolInfo = struct {
 pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
     return &.{
         // === AGENT CONTROL (main agent only) ===
-        .{ .name = "set_agent_properties", .exec = tools.execSetAgentProperties, .tool_def = set_agent_properties_mod.set_agent_properties_tool },
         .{ .name = "spawn_sub_agent", .exec = tools.execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool },
         .{ .name = "update_activity", .exec = tools.execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
 
@@ -167,8 +156,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 
         // === SKILL MANAGEMENT ===
         .{ .name = "list_skills", .exec = tools.execListSkills, .tool_def = list_skills_mod.list_skills_tool },
-        .{ .name = "view_skill", .exec = tools.execViewSkill, .tool_def = view_skill_mod.view_skill_tool },
-        .{ .name = "get_skill", .exec = tools.execGetSkill, .tool_def = get_skill_mod.get_skill_tool, .auto_save_skill = true },
+        .{ .name = "use_skill", .exec = tools.execUseSkill, .tool_def = use_skill_mod.use_skill_tool, .auto_save_skill = true },
         .{ .name = "remove_skill", .exec = tools.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
         .{ .name = "add_skill", .exec = tools.execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
@@ -237,15 +225,9 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "generate_image", .exec = tools.execGenerateImage, .tool_def = generate_image_mod.generate_image_tool },
 
         // === LSP TOOLS ===
-        .{ .name = "lsp_definition", .exec = tools.execLspDefinition, .tool_def = lsp_definition_mod.lsp_definition_tool },
-        .{ .name = "lsp_references", .exec = tools.execLspReferences, .tool_def = lsp_references_mod.lsp_references_tool },
-        .{ .name = "lsp_workspace_symbol", .exec = tools.execLspWorkspaceSymbol, .tool_def = lsp_workspace_symbol_mod.lsp_workspace_symbol_tool },
-        .{ .name = "lsp_document_symbol", .exec = tools.execLspDocumentSymbol, .tool_def = lsp_document_symbol_mod.lsp_document_symbol_tool },
-        .{ .name = "lsp_hover", .exec = tools.execLspHover, .tool_def = lsp_hover_mod.lsp_hover_tool },
 
         // === WEB SEARCH TOOLS ===
         // .{ .name = "web_search", .exec = tools.execWebSearch, .tool_def = web_search_mod.web_search_tool },
-        .{ .name = "nalar_browser", .exec = tools.execNalarBrowser, .tool_def = nalar_browser_mod.nalar_browser_tool },
 
         // === FILE SEARCH TOOLS ===
         .{ .name = "glob", .exec = tools.execGlob, .tool_def = glob_tool_mod.glob_tool },
@@ -294,8 +276,7 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
 
 
     // skill tools
-    get_skill_mod.get_skill_tool.function.name,
-    view_skill_mod.view_skill_tool.function.name,
+    use_skill_mod.use_skill_tool.function.name,
     remove_skill_mod.remove_skill_tool.function.name,
     add_skill_mod.add_skill_tool.function.name,
     edit_skill_mod.edit_skill_tool.function.name,

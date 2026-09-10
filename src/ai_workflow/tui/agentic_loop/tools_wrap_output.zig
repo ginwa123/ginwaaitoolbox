@@ -76,7 +76,7 @@ pub fn wrapToolOutput(
 //   </tool>
 //
 // The inner `<data>` field holds the existing tool-specific XML unchanged
-// (e.g. read_file's `<path>`, text_replace's `<diff_view>`, get_skill's
+// (e.g. read_file's `<path>`, text_replace's `<diff_view>`, use_skill's
 // `<loaded>`, etc.) so the 12 tool modules' `toXmlSuccess`/`toXmlError`
 // functions and the 13 frontend `tool_outputs/*.vue` components keep
 // working unchanged.

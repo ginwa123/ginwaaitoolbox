@@ -6,24 +6,24 @@ const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const SkillSaveInfo = tools.SkillSaveInfo;
 const agent = nalarcore.agent;
-const get_skill_mod = nalarcore.get_skill_tool;
+const use_skill_mod = nalarcore.use_skill_tool;
 const wrapToolOutput = tools.wrapToolOutput;
 
-pub fn execGetSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+pub fn execUseSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = try std.json.parseFromSlice(
-        get_skill_mod.GetSkillInput,
+        use_skill_mod.UseSkillInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
     );
     defer parsed.deinit();
 
-    const inner = get_skill_mod.execute_get_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "get_skill failed: {s}", .{@errorName(err)});
-        const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, false, err_msg, "");
+    const inner = use_skill_mod.execute_use_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "use_skill failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "use_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    const output = try wrapToolOutput(ctx.allocator, "get_skill", tc.function.arguments, true, null, inner);
+    const output = try wrapToolOutput(ctx.allocator, "use_skill", tc.function.arguments, true, null, inner);
 
     // Check if skill was successfully loaded and extract skill info for auto-save.
     // The skill_save detection now looks for <success>true</success> in the WRAPPED

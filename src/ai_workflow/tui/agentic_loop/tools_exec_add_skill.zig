@@ -41,7 +41,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // handle_tool.zig reads `output` to extract <skill_name>...</skill_name>
     // and <content>...</content>, then saves to session_skills. We return
     // skill_save (not used directly here, but kept for symmetry with
-    // execGetSkill's auto-save contract — both rely on the dispatcher's
+    // execUseSkill's auto-save contract — both rely on the dispatcher's
     // parsing pass over the wrapped output).
     _ = SkillSaveInfo;
     return ToolExecResult{ .output = output, .output_allocated = true };

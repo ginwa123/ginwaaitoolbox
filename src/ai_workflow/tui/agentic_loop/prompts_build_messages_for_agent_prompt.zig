@@ -47,8 +47,7 @@ const list_skills_mod = nalarcore.list_skills_tool;
 const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
 const search_history_mod = nalarcore.search_history_tool;
-const get_skill_mod = nalarcore.get_skill_tool;
-const view_skill_mod = nalarcore.view_skill_tool;
+const use_skill_mod = nalarcore.use_skill_tool;
 const remove_skill_mod = nalarcore.remove_skill_tool;
 const list_agents_mod = nalarcore.list_agents;
 const add_skill_mod = nalarcore.add_skill;
@@ -68,14 +67,7 @@ const show_preview_mod = nalarcore.ai_mod.show_preview;
 const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
 const change_agent_mod = nalarcore.change_agent;
-const lsp_definition_mod = nalarcore.tools.lsp_definition;
-const lsp_references_mod = nalarcore.tools.lsp_references;
-const lsp_workspace_symbol_mod = nalarcore.tools.lsp_workspace_symbol;
-const lsp_document_symbol_mod = nalarcore.tools.lsp_document_symbol;
-const lsp_hover_mod = nalarcore.tools.lsp_hover;
-const set_agent_properties_mod = nalarcore.set_agent_properties;
 const web_search_mod = nalarcore.web_search;
-const nalar_browser_mod = nalarcore.nalar_browser;
 const update_activity_mod = nalarcore.update_activity;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
@@ -1406,7 +1398,7 @@ pub fn loadGlobalKnowledge(
 
     for (list) |mem| {
         // Read the full file — no per-file cap. Pattern matches read_file.zig
-        // and get_skill.zig which also use maxInt(usize) to mean "read all".
+        // and use_skill.zig which also use maxInt(usize) to mean "read all".
         const content = std.Io.Dir.cwd().readFileAlloc(
             io,
             mem.path,
@@ -1735,9 +1727,9 @@ fn appendSkillsListing(
     try result.appendSlice(allocator, "\n\n## Available Skills\n\n");
     try result.appendSlice(allocator,
         \\The following skills are installed and available for this session.
-        \\Use `list_skills` to refresh this view, or `get_skill` / `view_skill`
+        \\Use `list_skills` to refresh this view, or `use_skill`
         \\to load a skill's full instructions. Each entry includes the
-        \\**exact file path** — pass it to `get_skill` verbatim as the `path`
+        \\**exact file path** — pass it to `use_skill` verbatim as the `path`
         \\argument. Do NOT construct the path from the skill name: Linux is
         \\case-sensitive and the file lives at `<name>/SKILL.MD`, not
         \\`<name>.md`, and `~` is not expanded by the tool.

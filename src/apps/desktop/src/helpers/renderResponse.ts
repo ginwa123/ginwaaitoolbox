@@ -213,10 +213,9 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
 
   if (
     tool_name === 'list_skills' ||
-    tool_name === 'get_skill' ||
+    tool_name === 'use_skill' ||
     tool_name === 'add_skill' ||
-    tool_name === 'edit_skill' ||
-    tool_name === 'view_skill'
+    tool_name === 'edit_skill'
   ) {
     return `<span class="tool-inline">${tool_name}</span>`
   }
@@ -302,67 +301,6 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
     const itemCount = itemMatches?.length ?? 0
     const itemLabel = itemCount === 1 ? 'item' : 'items'
     return `<span class="tool-inline">${tool_name} → fetched current plan${itemCount > 0 ? ` · ${itemCount} ${itemLabel}` : ''}</span>`
-  }
-
-  if (tool_name === 'nalar_browser') {
-    // Use the same action-aware summariser the standalone component uses,
-    // so the collapsed preview ("nalar_browser · open_page · Example Domain")
-    // matches what the user will see in the expanded body.
-    const nalarUnwrapped = tryUnwrapToolOutput(content)
-    if (nalarUnwrapped === null) {
-      return `<span class="tool-inline">${tool_name} → ${escapeHtml(content)}</span>`
-    }
-    const a = nalarUnwrapped.parameters
-    let action = 'unknown'
-    try {
-      const parsed = JSON.parse(a)
-      if (parsed && typeof parsed === 'object' && typeof parsed.action === 'string') {
-        action = parsed.action
-      }
-    } catch {
-      /* fall through */
-    }
-    // The `<tag>...</tag>` patterns below use new RegExp() with a
-    // string source instead of regex literals. The Vite OXC parser
-    // auto-detects JSX in .ts files when it sees a literal
-    // `</tagname>` pattern in source — even inside a regex literal
-    // — and bails with "Unterminated regular expression". Building
-    // the regex from a string sidesteps the JSX detector entirely
-    // (the parser only inspects literal `</` tokens, not runtime
-    // string contents). Functionally equivalent for matching.
-    const label = (() => {
-      if (nalarUnwrapped.error) return nalarUnwrapped.error
-      const data = nalarUnwrapped.data ?? ''
-      const tagMatch = (tag: string): string | undefined =>
-        new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(data)?.[1]
-      switch (action) {
-        case 'launch':
-          return tagMatch('browser_id') ?? action
-        case 'open_page':
-          return tagMatch('title') ?? tagMatch('url') ?? action
-        case 'snapshot': {
-          const tree = tagMatch('tree')
-          if (!tree) return action
-          try {
-            const arr = JSON.parse(tree)
-            return Array.isArray(arr)
-              ? `snapshot · ${arr.length} element${arr.length !== 1 ? 's' : ''}`
-              : action
-          } catch {
-            return action
-          }
-        }
-        case 'click':
-        case 'fill':
-        case 'press':
-        case 'close_page':
-        case 'close_browser':
-          return action
-        default:
-          return action
-      }
-    })()
-    return `<span class="tool-inline">${tool_name} · ${escapeHtml(action)} · ${escapeHtml(label)}</span>`
   }
 
   if (tool_name === 'spawn_sub_agent') {

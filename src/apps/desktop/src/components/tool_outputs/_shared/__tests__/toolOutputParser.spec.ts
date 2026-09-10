@@ -19,14 +19,12 @@ import {
   parseShell,
   parseListSkills,
   parseMetadata,
-  parseNalarBrowser,
   parseReadFile,
   parseRemoveFile,
   parseRemoveSkill,
   parseSearch,
   parseSetGitWorktree,
   parseTextReplace,
-  parseViewSkill,
   parseKanbanList,
   parseKanbanMove,
   parseGenerateImage,
@@ -237,22 +235,6 @@ describe('parseRemoveSkill', () => {
   })
 })
 
-describe('parseViewSkill', () => {
-  it('parses found=true with description', () => {
-    const r = parseViewSkill(
-      '<skill_name>foo</skill_name><description>does things</description><found>true</found>',
-    )
-    expect(r.found).toBe(true)
-    expect(r.description).toBe('does things')
-  })
-  it('parses available_skills when not found', () => {
-    const r = parseViewSkill(
-      '<skill_name>foo</skill_name><found>false</found><available_skills><skill>a</skill><skill>b</skill></available_skills>',
-    )
-    expect(r.availableSkills).toEqual(['a', 'b'])
-  })
-})
-
 describe('parseSetGitWorktree', () => {
   it('parses created=true with path and branch', () => {
     const r = parseSetGitWorktree(
@@ -339,14 +321,6 @@ describe('parseListSkills', () => {
   })
   it('returns totalCount=0 for empty content', () => {
     expect(parseListSkills('').totalCount).toBe(0)
-  })
-})
-
-describe('parseNalarBrowser', () => {
-  it('parses url and title', () => {
-    const r = parseNalarBrowser('<success>true</success><url>https://x</url><title>X</title>')
-    expect(r.url).toBe('https://x')
-    expect(r.title).toBe('X')
   })
 })
 

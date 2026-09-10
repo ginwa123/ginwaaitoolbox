@@ -37,15 +37,13 @@ import TextReplace from '../tool_outputs/TextReplace.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- used in <template> as <Bash> (~line 2507); typescript-eslint doesn't always see template usages via the Vue parser
 import Bash from '../preview/Bash.vue'
 import ShellTool from '../preview/ShellTool.vue'
-import GetSkill from '../preview/GetSkill.vue'
-import ViewSkill from '../tool_outputs/ViewSkill.vue'
+import UseSkill from '../preview/UseSkill.vue'
 import ListSkills from '../tool_outputs/ListSkills.vue'
 import AddSkill from '../tool_outputs/AddSkill.vue'
 import EditSkill from '../tool_outputs/EditSkill.vue'
 import RemoveSkill from '../tool_outputs/RemoveSkill.vue'
 import RemoveFile from '../tool_outputs/RemoveFile.vue'
 import SpawnSubAgent from '../tool_outputs/SpawnSubAgent.vue'
-import NalarBrowser from '../tool_outputs/NalarBrowser.vue'
 import GenerateImage from '../tool_outputs/GenerateImage.vue'
 import SetGitWorktree from '../tool_outputs/SetGitWorktree.vue'
 import ReadCompactedMessages from '../tool_outputs/ReadCompactedMessages.vue'
@@ -3296,14 +3294,8 @@ const compactSession = async () => {
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"
                           />
-                          <GetSkill
-                            v-else-if="msg.tool_name === 'get_skill'"
-                            :content="innerToolData(msg)"
-                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
-                            :parameters="getParametersForMessage(msg)"
-                          />
-                          <ViewSkill
-                            v-else-if="msg.tool_name === 'view_skill'"
+                          <UseSkill
+                            v-else-if="msg.tool_name === 'use_skill'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"
@@ -3347,12 +3339,6 @@ const compactSession = async () => {
                             :progress="msg.tool_call_id ? subAgentProgressMap[msg.tool_call_id] : null"
                             :parameters="getParametersForMessage(msg)"
                             @peek="nav.openPeek($event)"
-                          />
-                          <NalarBrowser
-                            v-else-if="msg.tool_name === 'nalar_browser'"
-                            :content="innerToolData(msg)"
-                            :parameters="getParametersForMessage(msg)"
-                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <SetGitWorktree
                             v-else-if="msg.tool_name === 'set_git_worktree'"

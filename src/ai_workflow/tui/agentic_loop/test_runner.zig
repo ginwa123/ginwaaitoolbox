@@ -71,7 +71,7 @@ test {
     _ = @import("tools_exec_remove_file.zig");
     _ = @import("tools_exec_glob.zig");
     _ = @import("tools_exec_search.zig");
-    _ = @import("tools_exec_get_skill.zig");
+    _ = @import("tools_exec_use_skill.zig");
     _ = @import("tools_exec_list_directory.zig");
 
     // task_1787855066467_8 — bash/pwsh lenient JSON argument parser.

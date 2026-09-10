@@ -209,7 +209,7 @@ pub fn listAllMemories(
         // Read the full file to scan for the first H1. No size cap — every
         // memory is loaded in full. The de facto limit is the LLM context
         // window for downstream callers; we trust the user to keep memories
-        // reasonable. Pattern matches read_file.zig / get_skill.zig which
+        // reasonable. Pattern matches read_file.zig / use_skill.zig which
         // also use maxInt(usize) to read the entire file.
         const content = std.Io.Dir.cwd().readFileAlloc(
             io,
