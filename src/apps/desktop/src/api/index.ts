@@ -1456,6 +1456,21 @@ export async function updateSession(
   )
 }
 
+// POST /api/llm/session/:session_id/touched — stamp the human-touch
+// column when the user opens a chat (clears the amber stale-dot).
+// Contract: body {}, response { success, session_id }.
+export async function markSessionTouched(
+  sessionId: string,
+): Promise<{ success: boolean; session_id: string }> {
+  return await apiFetch<{ success: boolean; session_id: string }>(
+    `/llm/session/${sessionId}/touched`,
+    {
+      method: 'POST',
+      body: {},
+    },
+  )
+}
+
 // SSE event types matching the backend
 // Note: Backend sends events without explicit 'type' field in data.
 // The 'finish_reason' field indicates message completion.
