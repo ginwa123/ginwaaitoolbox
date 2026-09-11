@@ -1,0 +1,130 @@
+/**
+ * Tests for the "Use git worktree" toggle in KanbanTaskDetailDialog
+ * (create mode) — plan:
+ * docs/superpowers/plans/2026-09-11-kanban-create-task-message-format-worktree-toggle.md
+ *   Task 2
+ *
+ * Mount pattern: same as KanbanTaskDetailDialog.runAgent.spec.ts.
+ * <Teleport to="body">, so use `attachTo: document.body` +
+ * `document.querySelector` (NOT `wrapper.find`).
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
+
+import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
+import type { Task } from '@/stores/workspaces'
+
+function findInDom<T extends Element = Element>(selector: string): T | null {
+  return document.querySelector<T>(selector)
+}
+
+function findAllInDom<T extends Element = Element>(selector: string): T[] {
+  return Array.from(document.querySelectorAll<T>(selector))
+}
+
+describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
+  let wrapper: VueWrapper | null = null
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = null
+    findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) => el.remove())
+  })
+
+  function mountDialog(propsOverride: Record<string, unknown> = {}) {
+    document.body.innerHTML = ''
+    wrapper = mount(KanbanTaskDetailDialog, {
+      attachTo: document.body,
+      props: { show: true, task: null, mode: 'create', ...propsOverride },
+    })
+    return wrapper
+  }
+
+  function setName(value: string) {
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    if (!input) throw new Error('name input missing')
+    input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  function setWorktreeToggle(checked: boolean) {
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-use-git-worktree-toggle"]',
+    )
+    if (!toggle) throw new Error('worktree toggle missing')
+    toggle.checked = checked
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  it('renders the worktree toggle in create mode, default OFF', async () => {
+    mountDialog()
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-use-git-worktree-toggle"]',
+    )
+    expect(toggle).not.toBeNull()
+    expect(toggle!.checked).toBe(false)
+  })
+
+  it('does NOT render the worktree toggle in edit mode', async () => {
+    mountDialog({
+      mode: 'edit',
+      task: { id: 'task_1', name: 'Existing', task_type: 'standard' } as Task,
+    })
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-use-git-worktree-toggle"]'),
+    ).toBeNull()
+  })
+
+  it('create-and-run emit carries useGitWorktree: false by default', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect((emitted![0]![0] as { useGitWorktree: boolean }).useGitWorktree).toBe(false)
+  })
+
+  it('flipping the toggle on flows into the create-and-run emit', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect((emitted![0]![0] as { useGitWorktree: boolean }).useGitWorktree).toBe(true)
+  })
+
+  it('flipping the toggle on flows into the plain create emit', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    findInDom<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create')
+    expect(emitted).toBeTruthy()
+    expect((emitted![0]![0] as { useGitWorktree: boolean }).useGitWorktree).toBe(true)
+  })
+})

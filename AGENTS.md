@@ -223,6 +223,26 @@ so queries hit the right `graphify-out/graph.json`.
   the worktree root so you query the worktree's `graphify-out/`, not main's.
 
 
+## Code Comments — No `// NEW (plan: ...)` Tags
+
+Do NOT annotate new code with `// NEW (plan: YYYY-MM-DD-<slug>)` (or
+`<!-- NEW (plan: ...) -->` in templates). The repo's history already
+carries a few of these from older work — do not add more, and strip
+any you just introduced before committing.
+
+Why: the tag states *when* code landed, never *why* it exists. `git
+blame` + the plan doc already answer "when"; the comment should
+answer "why" in one plain sentence, or not exist at all.
+
+- ❌ `// NEW (plan: 2026-09-11-foo). Mirror of handleSave's X — see ...`
+- ✅ `// Mirror of handleSave's X (baked into queue_message).`
+- ✅ No comment at all when the code is self-evident (`useGitWorktree:
+  useGitWorktree.value` needs no annotation).
+
+Plan-doc references belong in the plan file and the PR description —
+not inline in source.
+
+
 ## Recent changes
 
 - **All 9 custom_http_server runtime test failures fixed on Windows** (2026-08-29): Root cause was that `sse_manager.sendAll`'s Windows branch used `std.c.write`, which dispatches to MSVCRT's `_write` → `WriteFile`, but WriteFile doesn't work on winsock sockets (you need `winsock.send`). The production SSE write path was silently broken on Windows — every SSE event write returned -1, every client got `self.alive=false`, and was cleaned up on the next heartbeat. Same root cause also broke the test fixture: `createSocketPair`'s CreatePipe-based HANDLEs aren't indexed by UCRT's fd table, so even with `_open_osfhandle` registration `std.c.write` still fails (UCRT's `_write` calls WriteFile, not `send`). Fixes (all Windows-only; Linux/macOS paths bit-identical): (1) `sse_manager.sendAll` Windows branch now uses `winsock.send` via a new minimal `winsock` extern struct (single `send()` decl, `if (is_windows)` gated). Linux path (std.os.linux.sendto+MSG_NOSIGNAL) + macOS/BSD path (posix.system.write) untouched. (2) `test_helpers.createSocketPair` Windows branch replaced CreatePipe with TCP loopback (winsock.socket + bind to 127.0.0.1:0 + listen + connect + accept); returns raw winsock SOCKETs wrapped as fd_t via @ptrFromInt (no UCRT registration — abandoned because the underlying issue is that `_write` uses WriteFile, not `send`); `closeSocketPair`/`closeI32Fd` route to `closesocket` on Windows. (3) `sse_chunked_test.zig`'s `readFd`/`closeFd` now use `winsock.recv`/`winsock.closesocket` on Windows (replacing the prior `if (is_windows) return 0` short-circuit and `std.c.close`); also bumped `readFileAlloc` from `.limited(64*1024)` to `.unlimited` because `http_server.zig` grew to 65.8 KiB over the old cap (surfaced as `error.StreamTooLong` on every source-check test). Result: `zig build test --summary all` 2895/2902 pass / 6 skip / 1 crashed (the crash is `modules.agent.mcp.mcp.mcp_http.test.listTools`, pre-existing, outside this branch's scope). Was: 534/543 custom_http_server tests passing + 8 runtime failures. Now: all 9 failures resolved, zero custom_http_server failures. Branch: `worktree/fix-ci-windows-webview2`.

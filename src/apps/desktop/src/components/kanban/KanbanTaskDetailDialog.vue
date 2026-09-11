@@ -182,6 +182,10 @@ const emit = defineEmits<{
       // api.createTask; the helper filters out `'0'` so the backend
       // only inserts a sessions row when the user actually opted in.
       is_auto_retry_until_stop: '0' | '1'
+      // Create-mode only. `true` = isolate the agent in a fresh git
+      // worktree (host bakes `#Notes UseGitWorktree` into the
+      // create_and_run queue_message; plain create ignores it).
+      useGitWorktree: boolean
       // NEW (kanban task tags, Migration 067): array of free-form
       // tag strings. Empty array = no tags. Host forwards via
       // api.createTask's `tags` param; backend validates + persists.
@@ -229,6 +233,8 @@ const emit = defineEmits<{
       name: string
       description: string
       is_auto_retry_until_stop: '0' | '1'
+      // Mirror of `useGitWorktree` on the `create` emit (baked into queue_message).
+      useGitWorktree: boolean
       tags: string[]
       // NEW (plan: 2026-08-06-kanban-task-profile-selector). See
       // note on the `create` emit above. Threaded through to
@@ -279,6 +285,10 @@ const emit = defineEmits<{
 const name = ref('')
 const description = ref('')
 const unattended = ref<'0' | '1'>('1')
+// "Use git worktree" toggle (create mode only, default OFF). When ON,
+// the host bakes `#Notes UseGitWorktree` into the create_and_run
+// queue_message. Plain create ignores it (no queue_message there).
+const useGitWorktree = ref(false)
 const tags = ref<string[]>([])
 // Template ref for the chip input — handleSave calls commitDraft()
 // imperatively before reading `tags.value` so a draft tag typed but
@@ -798,6 +808,8 @@ const handleSave = () => {
         // through to api.createTask -> backend POST /tasks which
         // inserts a sessions row when the value is '1'.
         is_auto_retry_until_stop: unattended.value,
+        // Forwarded for the create-and-run path (baked into queue_message).
+        useGitWorktree: useGitWorktree.value,
         // NEW (Migration 067 — kanban task tags): forward the
         // current tags array. The KanbanTagsInput already
         // validates + dedupes, so the array is ready to persist.
@@ -869,6 +881,7 @@ const handleRunAgent = () => {
     name: name.value.trim(),
     description: description.value,
     is_auto_retry_until_stop: unattended.value,
+    useGitWorktree: useGitWorktree.value,
     tags: tags.value,
     // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
     // string = backend default. Host threads through to
@@ -923,6 +936,13 @@ const handleUnattendedToggle = (event: Event) => {
   // rollback in the host) will correct it on the next paint.
   unattended.value = newValue
   emit('update-unattended', { value: newValue, previous })
+}
+
+// Create-mode only: no immediate-save emit (unlike
+// handleUnattendedToggle) — read at Create / Create-&-run click time.
+const handleUseGitWorktreeToggle = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  useGitWorktree.value = target.checked
 }
 
 // NEW (plan: 2026-08-06-kanban-task-profile-selector). Load profiles
@@ -1592,6 +1612,46 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                     class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200"
                     style="background-color: white;"
                     :class="unattended === '1' ? 'translate-x-5' : ''"
+                  />
+                </label>
+              </div>
+
+              <!-- Use-git-worktree toggle (create mode only). Same switch
+                   styling as the unattended row above. -->
+              <div
+                v-if="isCreateMode"
+                class="pt-3 flex items-center justify-between gap-3"
+                data-testid="kanban-task-detail-use-git-worktree"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="text-xs font-medium" style="color: var(--semantic-text-dim);">
+                    Use git worktree
+                  </div>
+                  <div class="text-[11px] mt-0.5" style="color: var(--semantic-text-dim);">
+                    Run the agent in a fresh git worktree so its changes
+                    stay isolated from your working tree.
+                  </div>
+                </div>
+                <label
+                  class="relative inline-flex items-center cursor-pointer shrink-0"
+                  style="color: var(--semantic-text);"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="useGitWorktree"
+                    @change="handleUseGitWorktreeToggle"
+                    class="sr-only peer"
+                    data-testid="kanban-task-detail-use-git-worktree-toggle"
+                  />
+                  <div
+                    class="w-11 h-6 rounded-full transition-colors duration-200"
+                    style="background-color: var(--semantic-text-dim);"
+                    :style="useGitWorktree ? { backgroundColor: '#f59e0b' } : {}"
+                  />
+                  <div
+                    class="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform duration-200"
+                    style="background-color: white;"
+                    :class="useGitWorktree ? 'translate-x-5' : ''"
                   />
                 </label>
               </div>
