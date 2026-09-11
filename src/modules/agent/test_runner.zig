@@ -89,6 +89,7 @@ test {
     _ = @import("tools/delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool
     _ = @import("tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool (Step 2)
     _ = @import("tools/spawn_sub_agent.zig");
+    _ = @import("tools/list_sub_agent.zig");
     _ = @import("tools/update_design_element.zig");
     _ = @import("tools/set_element_parent.zig");
     _ = @import("tools/search.zig");
