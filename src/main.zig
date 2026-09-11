@@ -195,6 +195,25 @@ pub fn main(init: std.process.Init) !void {
     // HTTP/2 cleartext (h2c). OFF by default; `--http2=h2c` turns it on. There is
     // deliberately no TLS here, so browsers keep using HTTP/1.1 (see docs/http2.md).
     var enable_h2c = false;
+    // TLS (opt-in). `--tls <cert.pem> <key.pem>` uses existing PEM files;
+    // `--tls-selfsigned` generates (first run) or reuses one in the app data dir.
+    // Browsers only speak HTTP/2 over TLS+ALPN, so this is what unlocks browser
+    // multiplexing — see docs/http2-tls.md.
+    var tls_cert_path: ?[]const u8 = null;
+    var tls_key_path: ?[]const u8 = null;
+    var tls_selfsigned = false;
+
+    // A peer that vanishes mid-write must not kill the process: OpenSSL writes
+    // through plain write(2) (no MSG_NOSIGNAL available), so EPIPE becomes
+    // SIGPIPE. Every server ignores it and handles the write error instead.
+    if (comptime @import("builtin").os.tag != .windows) {
+        var sa = std.posix.Sigaction{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.PIPE, &sa, null);
+    }
 
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     while (args_iter.next()) |arg| {
@@ -230,8 +249,23 @@ pub fn main(init: std.process.Init) !void {
             } else {
                 enable_h2c = true;
             }
+        } else if (std.mem.eql(u8, arg, "--tls")) {
+            if (args_iter.next()) |cert_arg| {
+                if (args_iter.next()) |key_arg| {
+                    tls_cert_path = try allocator.dupe(u8, cert_arg);
+                    tls_key_path = try allocator.dupe(u8, key_arg);
+                } else {
+                    std.log.err("Error: --tls <cert.pem> <key.pem>: no key path given (cert={s})", .{cert_arg});
+                    return error.InvalidArgs;
+                }
+            } else {
+                std.log.err("Error: --tls requires <cert.pem> <key.pem> (no cert path given)", .{});
+                return error.InvalidArgs;
+            }
+        } else if (std.mem.eql(u8, arg, "--tls-selfsigned")) {
+            tls_selfsigned = true;
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off]\n", .{});
+            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned]\n", .{});
             std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
             std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
             std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
@@ -273,6 +307,26 @@ pub fn main(init: std.process.Init) !void {
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
     gs.enable_h2c = enable_h2c;
+
+    // ─── TLS ────────────────────────────────────────────────────────────────
+    if (tls_selfsigned) {
+        const dir = try tlsDataDir(allocator, init.environ_map);
+        const paths = try gserverz.tls_cert.ensureSelfSigned(allocator, dir, "localhost", 365);
+        tls_cert_path = paths.cert_pem;
+        tls_key_path = paths.key_pem;
+    }
+    if (tls_cert_path) |cert| {
+        const key = tls_key_path orelse unreachable;
+        gs.enableTls(cert, key) catch |err| {
+            // Fail loudly. Silently falling back to plaintext after the user
+            // asked for TLS would be a security bug, not a convenience.
+            std.log.err("Error: --tls could not start TLS with cert={s} key={s}: {s}", .{ cert, key, @errorName(err) });
+            return err;
+        };
+        // The functional tests parse this line for the certificate path.
+        std.debug.print("TLS enabled (ALPN: h2, http/1.1) cert={s}\n", .{cert});
+    }
+
     if (enable_h2c) std.debug.print("HTTP/2 (h2c) enabled on this port (HTTP/1.1 clients unaffected)\n", .{});
 
     // === Static file serving (--static-dir) ===
@@ -870,13 +924,28 @@ fn dispatchServiceSubcommand(
 /// (one-character change: `Writer` → `*Writer`), this duplication can
 /// be removed and the call can be replaced with a single
 /// `static_files.serve(...)` call.
+/// Where a generated certificate lives: `$XDG_DATA_HOME/nalar/tls`, falling back
+/// to `~/.local/share/nalar/tls` (POSIX) or `%LOCALAPPDATA%\nalar\tls` (Windows).
+/// Deliberately NOT the config dir: it is state, not configuration.
+fn tlsDataDir(allocator: std.mem.Allocator, env: *const std.process.Environ.Map) ![]const u8 {
+    if (comptime @import("builtin").os.tag == .windows) {
+        const base = env.get("LOCALAPPDATA") orelse return error.NoDataDir;
+        return std.fs.path.join(allocator, &.{ base, "nalar", "tls" });
+    }
+    if (env.get("XDG_DATA_HOME")) |xdg| {
+        return std.fs.path.join(allocator, &.{ xdg, "nalar", "tls" });
+    }
+    const home = env.get("HOME") orelse return error.NoDataDir;
+    return std.fs.path.join(allocator, &.{ home, ".local", "share", "nalar", "tls" });
+}
+
 fn staticDirHandler(
     cfg: *const anyopaque,
     handler_allocator: std.mem.Allocator,
     handler_io: std.Io,
     request_path: []const u8,
     range_header: ?[]const u8,
-    fd: i32,
+    stream: gserverz.Stream,
 ) anyerror!void {
     const typed_cfg: *const static_files.StaticDirConfig = @ptrCast(@alignCast(cfg));
 
@@ -897,7 +966,7 @@ fn staticDirHandler(
 
     const out = aw.writer.buffered();
     if (out.len > 0) {
-        _ = gserverz.GinwaServer.sendToClient(undefined, fd, out) catch {};
+        stream.writeAll(out) catch {};
     }
 }
 

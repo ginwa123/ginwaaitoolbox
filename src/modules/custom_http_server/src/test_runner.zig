@@ -78,4 +78,10 @@ test {
     // Peekable connection buffer — the piece that lets the server sniff the h2
     // preface BEFORE the HTTP/1.1 request reader consumes it.
     _ = @import("connection_reader.zig");
+    // Transport abstraction (plain socket | TLS). Its own tests cover short
+    // writes, EOF and the TLS op-table dispatch.
+    _ = @import("stream.zig");
+    // TLS + ALPN (OpenSSL) and the self-signed certificate generator. Importing
+    // `tls.zig` pulls `tls_cert.zig`'s tests through `tls_test.zig`.
+    _ = @import("http2/tls.zig");
 }

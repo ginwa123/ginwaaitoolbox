@@ -146,7 +146,7 @@ const Fixture = struct {
 
         // Close the client's write side so the server loop sees EOF and returns.
         shutdownWrite(self.client);
-        try server_h2.serveConnection(self.server, self.server_fd, self.arena.allocator(), "", .{});
+        try server_h2.serveConnection(self.server, .{ .plain = self.server_fd }, self.arena.allocator(), "", .{});
         // ...then shut OUR write side down so the client's read sees EOF instead
         // of blocking until the fixture is destroyed.
         shutdownWrite(self.server_fd);

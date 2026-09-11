@@ -14,6 +14,13 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.root_module.linkSystemLibrary("c", .{});
+    // TLS (`http2/tls.zig`, `http2/tls_cert.zig`) uses OpenSSL directly: Zig 0.16
+    // ships no TLS *server* (std.crypto.tls is client-only, and its client has no
+    // ALPN support), so a browser-facing HTTP/2 needs a real TLS stack. This adds
+    // no new product dependency — the app already links ssl/crypto for libpq and
+    // libcurl — it only makes this module's standalone build self-contained.
+    exe.root_module.linkSystemLibrary("ssl", .{});
+    exe.root_module.linkSystemLibrary("crypto", .{});
     b.installArtifact(exe);
 
     // Importable module for sibling packages (e.g. custom_http_client's
@@ -27,6 +34,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     server_mod.linkSystemLibrary("c", .{});
+    server_mod.linkSystemLibrary("ssl", .{});
+    server_mod.linkSystemLibrary("crypto", .{});
     server_mod.link_libc = true;
 
     // Run step
@@ -46,6 +55,14 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_mod.root_module.linkSystemLibrary("c", .{});
+    test_mod.root_module.linkSystemLibrary("ssl", .{});
+    test_mod.root_module.linkSystemLibrary("crypto", .{});
+    // `linkSystemLibrary` resolves against the linker search path; on Linux the
+    // system libssl/libcrypto live in /usr/lib, which Zig does not add by default
+    // for a glibc target (the root build.zig does the same for its test module).
+    if (target.result.os.tag == .linux) {
+        test_mod.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    }
     const run_test_mod = b.addRunArtifact(test_mod);
 
     // Test step runs test module

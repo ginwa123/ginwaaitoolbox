@@ -11,8 +11,20 @@
 //! decide which codec owns the socket. The buffered bytes are never discarded —
 //! either the h2 driver receives them (`buffered`), or the h1 path seeds its
 //! `RequestBuffer` with them (`takeBuffered`).
+//!
+//! The reader is transport-agnostic: it reads through a `Stream` (a plain
+//! socket today, a TLS connection once the TLS layer registers its hooks), so
+//! the same one-read sniff and handoff serves both the h2c and the TLS path,
+//! and the server writes its response back on the very same stream
+//! (`stream()`).
 
 const std = @import("std");
+
+/// The transport the reader buffers from (`stream.zig`). Imported privately so
+/// this module's public surface stays exactly `init` / `initFd` / `stream` plus
+/// the pre-existing members; consumers that need to name the type import
+/// `stream.zig` directly.
+const Stream = @import("stream.zig").Stream;
 
 /// The h2 preface lives in the protocol constants module; importing it here keeps
 /// the sniff and the connection driver reading the same 24 bytes.
@@ -22,12 +34,31 @@ pub const Error = error{ RecvFailed, OutOfMemory };
 
 pub const ConnectionReader = struct {
     alloc: std.mem.Allocator,
-    fd: i32,
+    conn: Stream,
     buf: std.ArrayList(u8) = .empty,
     scratch: [4096]u8 = undefined,
 
-    pub fn init(alloc: std.mem.Allocator, fd: i32) ConnectionReader {
-        return .{ .alloc = alloc, .fd = fd };
+    /// New primary constructor: wrap any transport (`.{ .plain = fd }` for a
+    /// raw socket, `.{ .tls = conn }` for a TLS connection).
+    ///
+    /// NB: the parameter is named `conn`, not `stream` — Zig rejects a
+    /// parameter that shadows the sibling `stream()` method (declared below),
+    /// and the method name is the frozen part of this API. Positionally this
+    /// is `init(alloc, stream)` as documented.
+    pub fn init(alloc: std.mem.Allocator, conn: Stream) ConnectionReader {
+        return .{ .alloc = alloc, .conn = conn };
+    }
+
+    /// Convenience for today's call sites and tests (plain socket).
+    pub fn initFd(alloc: std.mem.Allocator, fd: i32) ConnectionReader {
+        return .{ .alloc = alloc, .conn = .{ .plain = fd } };
+    }
+
+    /// The stream this reader wraps — the server needs it to write the
+    /// response (keeping reads and writes on the same transport, which TLS
+    /// requires).
+    pub fn stream(self: *const ConnectionReader) Stream {
+        return self.conn;
     }
 
     pub fn deinit(self: *ConnectionReader) void {
@@ -43,10 +74,9 @@ pub const ConnectionReader = struct {
     /// empty slice at EOF, so callers can tell "closed" from "more to come" via
     /// `buffered().len` on the previous call.
     pub fn fillOnce(self: *ConnectionReader) Error![]const u8 {
-        const n = recvFromSock(self.fd, &self.scratch, self.scratch.len);
-        if (n < 0) return error.RecvFailed;
+        const n = self.conn.read(&self.scratch) catch return error.RecvFailed;
         if (n == 0) return self.buf.items;
-        try self.buf.appendSlice(self.alloc, self.scratch[0..@intCast(n)]);
+        try self.buf.appendSlice(self.alloc, self.scratch[0..n]);
         return self.buf.items;
     }
 
@@ -67,20 +97,6 @@ pub const ConnectionReader = struct {
         return self.buf.toOwnedSlice(self.alloc);
     }
 };
-
-fn recvFromSock(fd: i32, buf: []u8, len: usize) isize {
-    const builtin = @import("builtin");
-    if (builtin.os.tag == .windows) {
-        const winsock = struct {
-            extern "ws2_32" fn recv(s: usize, buf_ptr: [*]u8, len: c_int, flags: c_int) c_int;
-        };
-        return winsock.recv(@intCast(fd), buf.ptr, @intCast(len), 0);
-    }
-    const posix_socket = struct {
-        extern "c" fn read(fd: c_int, buf_ptr: [*]u8, nbyte: usize) isize;
-    };
-    return posix_socket.read(fd, buf.ptr, len);
-}
 
 /// What the first bytes of a connection look like.
 pub const Kind = enum {

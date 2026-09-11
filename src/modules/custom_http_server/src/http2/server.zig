@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 const constants = @import("constants.zig");
 const connection = @import("connection.zig");
 const hpack = @import("hpack.zig");
+const stream_mod = @import("../stream.zig");
 
 const http_server = @import("../http_server.zig");
 const http_parser = @import("../http_parser.zig");
@@ -32,37 +33,40 @@ pub const Options = connection.Options;
 /// size, so a full DATA frame usually arrives in one read.
 const read_chunk = 16 * 1024;
 
+/// Serve one HTTP/2 connection over `conn` — a plaintext socket (h2c, chosen by
+/// the connection-preface sniff) or a TLS connection whose ALPN negotiated `h2`
+/// (chosen after the handshake, which is how browsers get HTTP/2 at all).
 pub fn serveConnection(
     server: *http_server.GinwaServer,
-    fd: i32,
+    conn: stream_mod.Stream,
     alloc: std.mem.Allocator,
     initial: []const u8,
     opts: Options,
 ) !void {
-    var conn = connection.Connection.init(alloc, opts);
-    defer conn.deinit();
+    var h2_conn = connection.Connection.init(alloc, opts);
+    defer h2_conn.deinit();
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
     var scratch: [read_chunk]u8 = undefined;
 
-    try conn.feed(initial);
+    try h2_conn.feed(initial);
 
     while (true) {
-        try serveReady(server, alloc, &conn);
-        try conn.flush();
-        try conn.drain(&out);
+        try serveReady(server, alloc, &h2_conn);
+        try h2_conn.flush();
+        try h2_conn.drain(&out);
         if (out.items.len > 0) {
-            writeAll(fd, out.items) catch break;
+            conn.writeAll(out.items) catch break;
             out.clearRetainingCapacity();
         }
-        if (conn.isClosed()) break;
+        if (h2_conn.isClosed()) break;
         // The peer asked to shut down: finish what is queued, then close.
-        if (conn.isClosing() and !conn.hasPendingOutput()) break;
+        if (h2_conn.isClosing() and !h2_conn.hasPendingOutput()) break;
 
-        const n = recvFromSock(fd, &scratch, scratch.len);
-        if (n <= 0) break;
-        conn.feed(scratch[0..@intCast(n)]) catch break;
+        const n = conn.read(&scratch) catch break;
+        if (n == 0) break; // clean EOF
+        h2_conn.feed(scratch[0..n]) catch break;
     }
 }
 

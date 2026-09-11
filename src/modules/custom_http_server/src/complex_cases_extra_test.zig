@@ -710,8 +710,16 @@ test "stress: hash map with 1000 query params parses correctly" {
 test "stress: 500 sequential Address.init/destroy cycles" {
     var i: usize = 0;
     while (i < 500) : (i += 1) {
-        const port: u16 = 46000 + @as(u16, @intCast(i % 500));
-        const addr = try http_server.Address.init("127.0.0.1", port);
+        // Port 0 = "let the OS pick a free one". The original fixed range
+        // (46000 + i) sits INSIDE the kernel's ephemeral range
+        // (`/proc/sys/net/ipv4/ip_local_port_range` = 32768-60999), so any
+        // concurrent OUTBOUND connection using one of those ports as its source
+        // port makes `bind()` fail with EADDRINUSE — a flaky failure that hit
+        // this suite whenever the machine had a few dozen live connections.
+        // The point of the test is 500 create/bind/close cycles (fd + socket
+        // leak detection), and port 0 exercises exactly that without ever
+        // colliding.
+        const addr = try http_server.Address.init("127.0.0.1", 0);
         _ = std.c.close(if (comptime builtin.os.tag == .windows) @ptrFromInt(@as(usize, @bitCast(@as(isize, addr.sock_fd)))) else @intCast(addr.sock_fd));
     }
 }

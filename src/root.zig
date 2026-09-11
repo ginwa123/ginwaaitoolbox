@@ -956,6 +956,11 @@ test {
     // own `test_runner.zig` — the CI gate runs this file's test block, and a
     // `pub const` re-export alone does NOT make a test discoverable.
     _ = @import("modules/custom_http_server/src/connection_reader.zig");
+    // Transport abstraction + TLS/ALPN (OpenSSL). The root test module already
+    // links ssl/crypto transitively via the `databases`/`custom_http_client`
+    // modules, so these tests run under the CI gate too.
+    _ = @import("modules/custom_http_server/src/stream.zig");
+    _ = @import("modules/custom_http_server/src/http2/tls.zig");
     _ = @import("modules/custom_http_server/src/http2/test_runner.zig");
 }
 
