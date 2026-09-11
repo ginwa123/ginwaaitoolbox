@@ -162,6 +162,7 @@ EXPECTED_DEFAULTS = [
     "glob",
     "list_directory",
     "list_skills",
+    "list_sub_agent",
     "load_memory",
     "read_file",
     "remove_file",

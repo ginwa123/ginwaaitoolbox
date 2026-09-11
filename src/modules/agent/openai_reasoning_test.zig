@@ -122,3 +122,79 @@ test "buildJsonOpenAIRequest: each reasoning_effort value passes through verbati
         try testing.expect(std.mem.indexOf(u8, body, formatted) != null);
     }
 }
+
+// Reasoning-echo backfill (task_1789091513563_0): DeepSeek-style
+// providers in thinking mode reject replays where an assistant message
+// lacks `reasoning_content`. Turns with no reasoning deltas persist
+// NULL — the builder must emit "" instead of omitting the field.
+
+fn assistantMsgNoReasoning(text: ?[]const u8) agent.AgentMessage {
+    return .{ .role = .assistant, .content = text };
+}
+
+test "buildJsonOpenAIRequest: thinking on + assistant null reasoning emits empty reasoning_content" {
+    var a = makeAgent(.{ .thinkingEnabled = true });
+    const msgs = [_]agent.AgentMessage{
+        .{ .role = .user, .content = "hello" },
+        assistantMsgNoReasoning("final answer"),
+    };
+    const params = agent.AgentCall{ .tools = emptyTools(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"\"") != null);
+}
+
+test "buildJsonOpenAIRequest: thinking off + all-null history omits reasoning_content" {
+    // Plain sessions keep their exact wire shape — no new field.
+    var a = makeAgent(.{ .thinkingEnabled = false });
+    const msgs = [_]agent.AgentMessage{
+        .{ .role = .user, .content = "hello" },
+        assistantMsgNoReasoning("final answer"),
+    };
+    const params = agent.AgentCall{ .tools = emptyTools(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "reasoning_content") == null);
+}
+
+test "buildJsonOpenAIRequest: thinking off but history has reasoning backfills null assistant" {
+    // Mid-session thinking toggle-off: older turns carry reasoning, a
+    // newer turn has none. The null one gets "" (echo validator sees
+    // the field on every assistant message); the real one is verbatim.
+    var a = makeAgent(.{ .thinkingEnabled = false });
+    const msgs = [_]agent.AgentMessage{
+        .{ .role = .assistant, .content = "first", .reasoning_content = "real-thinking" },
+        assistantMsgNoReasoning(null),
+    };
+    const params = agent.AgentCall{ .tools = emptyTools(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"real-thinking\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"\"") != null);
+}
+
+test "buildJsonOpenAIRequest: backfill is assistant-only, user messages stay clean" {
+    var a = makeAgent(.{ .thinkingEnabled = true });
+    const params = agent.AgentCall{ .tools = emptyTools(), .messages = emptyMessages() };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "reasoning_content") == null);
+}
+
+test "buildJsonOpenAIRequest: assistant with reasoning keeps verbatim value" {
+    var a = makeAgent(.{ .thinkingEnabled = true });
+    const msgs = [_]agent.AgentMessage{
+        .{ .role = .user, .content = "hello" },
+        .{ .role = .assistant, .content = "final answer", .reasoning_content = "model's reasoning..." },
+        .{ .role = .user, .content = "follow up" },
+    };
+    const params = agent.AgentCall{ .tools = emptyTools(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"model's reasoning...\"") != null);
+}

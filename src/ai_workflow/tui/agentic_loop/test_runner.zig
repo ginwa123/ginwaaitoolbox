@@ -40,6 +40,7 @@ test {
     _ = @import("retry_delay_ms.zig"); // inlined 1 stress test from retry_delay_ms_race_test.zig
     _ = @import("prompts_make_plan_context.zig"); // inlined 3 live-DB tests from prompts_make_plan_context_test.zig
     _ = @import("tools_exec_get_plan.zig"); // inlined 2 tests from tools_exec_get_plan_test.zig
+    _ = @import("tools_exec_list_sub_agent.zig"); // list_sub_agent exec adapter + registry static contracts
     _ = @import("tools_exec_update_plan.zig"); // inlined 3 tests from tools_exec_update_plan_test.zig
     _ = @import("tools_exec_delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool — inlined 2 tests
     _ = @import("tools_exec_add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool — Step 3 (exec wrapper)

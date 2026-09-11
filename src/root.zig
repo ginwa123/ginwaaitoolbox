@@ -812,6 +812,7 @@ pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 // update_plan (UPSERT) + get_plan (fetch) — the agent's persistent markdown task plan.
 pub const update_plan = @import("modules/agent/tools/update_plan.zig");
 pub const get_plan = @import("modules/agent/tools/get_plan.zig");
+pub const list_sub_agent = @import("modules/agent/tools/list_sub_agent.zig");
 
 pub const web_search = @import("modules/agent/tools/web_search.zig");
 pub const generate_image = @import("modules/agent/tools/generate_image.zig");

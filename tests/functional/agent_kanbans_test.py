@@ -78,7 +78,7 @@ def test_bundle_get_fresh_returns_defaults(harness: FunctionalHarness) -> None:
         expect=200,
     )
     body = r.json()
-    assert body.get("tools") == ["add_skill", "command", "delete_memory", "edit_skill", "get_plan", "glob", "kanban_list", "kanban_move_task", "list_directory", "list_skills", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "spawn_sub_agent", "text_replace", "update_activity", "update_plan", "use_skill", "write_file"], (
+    assert body.get("tools") == ["add_skill", "command", "delete_memory", "edit_skill", "get_plan", "glob", "kanban_list", "kanban_move_task", "list_directory", "list_skills", "list_sub_agent", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "spawn_sub_agent", "text_replace", "update_activity", "update_plan", "use_skill", "write_file"], (
         f"fresh kanban should seed defaults, got: {body!r}"
     )
 

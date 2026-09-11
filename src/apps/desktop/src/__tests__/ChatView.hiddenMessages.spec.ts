@@ -144,7 +144,7 @@ describe('B4(frontend) — reasoning_content rendering (source contract)', () =>
   it('renders a collapsible reasoning section in the assistant bubble', async () => {
     const source = await readChatViewSource()
     expect(source).toMatch(/class="assistant-reasoning"/)
-    expect(source).toMatch(/💭 Reasoning/)
+    expect(source).toMatch(/Thought/)
   })
 
   it('accumulates reasoning chunks onto the streaming message', async () => {

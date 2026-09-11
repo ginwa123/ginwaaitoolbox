@@ -1798,6 +1798,11 @@ pub const SubAgentListingRow = struct {
 ///
 /// You can use `spawn_sub_agent` with one of these `agent_name` values:
 ///
+/// If you are unsure which agent_name values exist or which fits
+/// the job, call list_sub_agent first — it shows full specs
+/// (model, tuning, system prompt); absent optional tags mean
+/// 'inherits the profile default'.
+///
 /// - **code-reviewer** — model: `gpt-4o` — "You are a strict code reviewer..."
 /// - **frontend-helper** — model: `claude-3.5-sonnet` — "You are a frontend..."
 ///
@@ -1821,6 +1826,11 @@ pub fn appendSubAgentsListing(
         \\You can use the `spawn_sub_agent` tool with one of these
         \\`agent_name` values to delegate the task to a pre-configured
         \\specialized sub-agent:
+        \\
+        \\If you are unsure which agent_name values exist or which fits
+        \\the job, call list_sub_agent first — it shows full specs
+        \\(model, tuning, system prompt); absent optional tags mean
+        \\'inherits the profile default'.
         \\
     );
 

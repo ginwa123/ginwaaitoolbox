@@ -55,6 +55,7 @@ import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import DeleteMemory from '../tool_outputs/DeleteMemory.vue'
 import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
+import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
@@ -3407,6 +3408,10 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'get_plan'"
                             :message="msg"
                           />
+                          <ListSubAgent
+                            v-else-if="msg.tool_name === 'list_sub_agent'"
+                            :message="msg"
+                          />
                           <!--
                             `show_preview` is intentionally NOT
                             expandable like the other tool outputs.
@@ -3580,7 +3585,7 @@ const compactSession = async () => {
                             class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
                             :style="{ color: 'var(--semantic-text-dim)' }"
                           >
-                            💭 Reasoning
+                            Thought
                           </summary>
                           <div
                             class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"
