@@ -5,13 +5,13 @@
 #
 # Mirrors `.github/workflows/ci.yml` lines 1485-1491:
 #   working-directory: src/apps/desktop
-#   run: npm run lint:check
+#   run: pnpm run lint:check
 #
 # The `cd src/apps/desktop` here matches that working-directory because
-# npm lint scripts resolve relative to CWD. Husky runs this script from
+# pnpm lint scripts resolve relative to CWD. Husky runs this script from
 # the worktree root (per core.hooksPath), so we MUST cd first.
 #
 # Bypass for emergencies: `git commit --no-verify`.
 
 cd src/apps/desktop || exit 1
-npm run lint:check
+pnpm run lint:check

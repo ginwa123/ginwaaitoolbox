@@ -21,11 +21,11 @@
     table. Downscales images larger than MAX_IMAGE_BYTES via <canvas>.
 
   Cap strategy:
-    Text length is bounded by props.maxLength (default 5000). Image
-    size is bounded per-image by MAX_IMAGE_BYTES (4 MB). Total
-    description (text + data URLs) is NOT capped here — the DB TEXT
-    column accepts multi-MB; the text cap protects the form's UX
-    (char counter is text-only).
+    Text length is UNLIMITED by default (no maxlength enforcement —
+    the DB TEXT column accepts multi-MB). An optional `maxLength`
+    prop remains for callers that want a cap (counter renders
+    `<len> / <max>` when set, `<len> chars` when unset). Image
+    size is bounded per-image by MAX_IMAGE_BYTES (4 MB).
 
   Create mode (taskId=''):
     The dialog opens this editor with taskId='' before the task
@@ -33,8 +33,8 @@
     `previewFiles` (visual) and `pendingFiles` (data, exposed via
     defineExpose). The textarea is NOT modified — we never write
     `data:image/png;base64,…` into the description, which would
-    blow past the 5000-char cap and store multi-MB base64 in the
-    DB TEXT column. After the task is created, the dialog's host
+    store multi-MB base64 in the DB TEXT column. After the task
+    is created, the dialog's host
     reads `pendingFiles`, uploads each via `api.uploadTaskAttachment`,
     and patches the description with `![name](<url>)` markdown.
     See docs/superpowers/plans/2026-08-06-kanban-no-base64-in-desc.md.
@@ -60,13 +60,16 @@ const props = withDefaults(
     // Empty string disables image upload (the editor still works for
     // text + @path references).
     taskId?: string
+    // Optional cap. `undefined` (default) = unlimited, no maxlength
+    // enforcement. When set, the textarea enforces it via `maxlength`
+    // and the counter renders `<len> / <max>`.
     maxLength?: number
     placeholder?: string
     testId?: string
   }>(),
   {
     taskId: '',
-    maxLength: 5000,
+    maxLength: undefined,
     placeholder: 'Add a description…',
     testId: 'kanban-description-editor',
   },
@@ -112,7 +115,7 @@ watch(text, (v) => {
   emit('update:modelValue', v)
 })
 
-const counterText = computed<string>(() => `${text.value.length} / ${props.maxLength}`)
+const counterText = computed<string>(() => props.maxLength != null ? `${text.value.length} / ${props.maxLength}` : `${text.value.length} chars`)
 
 // ─── @-trigger file picker ──────────────────────────────────────────────
 // Ported 1:1 from FileInput.vue Task 2 (plan:
@@ -411,8 +414,7 @@ const addImageFile = async (file: File) => {
     // CREATE MODE — the task doesn't exist on the server yet, so
     // there's no taskId to upload to. We MUST NOT inject the base64
     // payload into the description text:
-    //   - It would blow past the 5000-char text cap (a 4 MB image
-    //     base64-encodes to ~5.5 MB).
+    //   - A 4 MB image base64-encodes to ~5.5 MB of text.
     //   - It would store multi-MB raw base64 in the DB TEXT column,
     //     which then propagates into the chat view's render of the
     //     task description (see the bug screenshot — 487 052/5000).
@@ -722,7 +724,7 @@ defineExpose({ pendingFiles })
         ref="textareaRef"
         :value="text"
         :placeholder="placeholder"
-        :maxlength="maxLength"
+        :maxlength="maxLength ?? undefined"
         :data-testid="testId"
         rows="6"
         class="flex-1 px-3 py-2.5 rounded-lg text-sm outline-none transition-all duration-200 resize-y"

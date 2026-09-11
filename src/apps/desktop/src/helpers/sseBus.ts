@@ -178,6 +178,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
   const resyncListeners = new Set<(reason: string) => void>()
 
   function notifyResync(reason: string): void {
+    // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot copy: a listener may unsubscribe itself during notify.
     for (const cb of [...resyncListeners]) {
       try {
         cb(reason)
@@ -310,7 +311,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
   // how many tabs are open.
   if (sharing) {
     _tabChannel = createTabChannel({
-      ...(options?.tabChannelOptions ?? {}),
+      ...(options?.tabChannelOptions),
       channelFactory: options?.channelFactory,
       onBecomeLeader: () => openClient(),
       onLoseLeadership: () => closeClient('lost cross-tab leadership'),
