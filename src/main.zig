@@ -192,6 +192,9 @@ pub fn main(init: std.process.Init) !void {
     // user passes --port explicitly, so the default can honor the
     // `web_launch_enabled` flag (random when on, 8081 when off).
     var port_opt: ?u16 = null;
+    // HTTP/2 cleartext (h2c). OFF by default; `--http2=h2c` turns it on. There is
+    // deliberately no TLS here, so browsers keep using HTTP/1.1 (see docs/http2.md).
+    var enable_h2c = false;
 
     var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
     while (args_iter.next()) |arg| {
@@ -212,10 +215,26 @@ pub fn main(init: std.process.Init) !void {
                 std.log.err("Error: --static-dir requires a value", .{});
                 return error.InvalidArgs;
             }
+        } else if (std.mem.eql(u8, arg, "--http2")) {
+            // `--http2` on its own means h2c; an explicit value keeps room for
+            // future modes (e.g. `--http2=off`).
+            if (args_iter.next()) |h2_arg| {
+                if (std.mem.eql(u8, h2_arg, "h2c")) {
+                    enable_h2c = true;
+                } else if (std.mem.eql(u8, h2_arg, "off")) {
+                    enable_h2c = false;
+                } else {
+                    std.log.err("Error: --http2 expects h2c or off (got {s})", .{h2_arg});
+                    return error.InvalidArgs;
+                }
+            } else {
+                enable_h2c = true;
+            }
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR]\n", .{});
+            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off]\n", .{});
             std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
             std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
+            std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
             return;
         }
     }
@@ -253,6 +272,8 @@ pub fn main(init: std.process.Init) !void {
     const address = try gserverz.Address.init("127.0.0.1", port);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
+    gs.enable_h2c = enable_h2c;
+    if (enable_h2c) std.debug.print("HTTP/2 (h2c) enabled on this port (HTTP/1.1 clients unaffected)\n", .{});
 
     // === Static file serving (--static-dir) ===
     // If the user passed `--static-dir DIR`, set up the static-files config

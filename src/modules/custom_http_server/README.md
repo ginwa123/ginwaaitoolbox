@@ -5,6 +5,11 @@ A lightweight, pure Zig HTTP server implementation with routing, SSE support, We
 ## Features
 
 - **HTTP Server**: Pure Zig implementation using low-level POSIX sockets
+- **HTTP/2 (h2c, opt-in)**: cleartext HTTP/2 on the same port, negotiated per
+  connection by sniffing the 24-byte preface. Off by default (`--http2 h2c`).
+  Frames, HPACK, multiplexing and flow control are implemented natively in Zig —
+  no new dependencies. Browsers are unaffected (they need TLS + ALPN, which this
+  server does not provide). See `docs/http2.md`.
 - **Routing**: RESTful routing with path parameters (e.g., `/hello/:name`)
 - **SSE (Server-Sent Events)**: Built-in SSE manager with heartbeat and broadcasting
 - **WebSocket**: RFC 6455 WebSocket transport with frame parsing/encoding, handshake, and a client manager (broadcast + targeted send)

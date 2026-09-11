@@ -69,4 +69,13 @@ test {
     // ordering, header augmentation, and short-circuiting. Doubles
     // as living documentation for the Router.group / Group.use API.
     _ = @import("example_group.zig");
+
+    // HTTP/2 (h2c) subsystem — frame/settings/HPACK/stream/flow-control unit
+    // tests. The aggregator imports each implementation file, which in turn
+    // pulls its own sibling `*_test.zig`. This MUST also be registered in
+    // `src/root.zig`'s test block, otherwise the CI gate skips these tests.
+    _ = @import("http2/test_runner.zig");
+    // Peekable connection buffer — the piece that lets the server sniff the h2
+    // preface BEFORE the HTTP/1.1 request reader consumes it.
+    _ = @import("connection_reader.zig");
 }

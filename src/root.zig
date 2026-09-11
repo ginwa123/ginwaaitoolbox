@@ -950,6 +950,13 @@ test {
     // doesn't trigger discovery.
     _ = @import("modules/config/Config.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
+
+    // HTTP/2 (h2c): frames/HPACK/streams/flow-control + the socket-level server
+    // tests and the peekable reader. Registered HERE as well as in the module's
+    // own `test_runner.zig` — the CI gate runs this file's test block, and a
+    // `pub const` re-export alone does NOT make a test discoverable.
+    _ = @import("modules/custom_http_server/src/connection_reader.zig");
+    _ = @import("modules/custom_http_server/src/http2/test_runner.zig");
 }
 
 // ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───

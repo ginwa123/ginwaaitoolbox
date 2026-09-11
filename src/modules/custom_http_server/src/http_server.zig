@@ -4,6 +4,11 @@ const builtin = @import("builtin");
 
 pub const http_parser = @import("http_parser.zig");
 pub const router = @import("router.zig");
+// HTTP/2 (h2c). `connection_reader` peeks the socket so the h2 preface can be
+// detected BEFORE the HTTP/1.1 reader eats it (the preface contains CRLFCRLF at
+// byte 14); `http2_server` owns the h2 connection loop.
+const connection_reader = @import("connection_reader.zig");
+const http2_server = @import("http2/server.zig");
 pub const security = @import("security.zig");
 pub const sse_manager = @import("sse_manager.zig");
 pub const ws_manager = @import("websocket_manager.zig");
@@ -278,6 +283,8 @@ pub const Address = struct {
     }
 };
 
+const constants_preface = @import("http2/constants.zig");
+
 pub const GinwaServer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -291,6 +298,13 @@ pub const GinwaServer = struct {
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
     is_running: bool = false,
+
+    /// HTTP/2 cleartext (h2c) — OFF by default. When enabled, a connection whose
+    /// first bytes are the h2 connection preface is handed to the HTTP/2 driver;
+    /// every other connection takes the HTTP/1.1 path unchanged. Enable with
+    /// `--http2=h2c` (see src/main.zig). There is no TLS/ALPN here, so browsers
+    /// keep using HTTP/1.1 — see docs/http2.md.
+    enable_h2c: bool = false,
 
     /// Server-side ContextStore passed to handlers via `HttpContext`.
     /// Always non-null after a successful `init()` — the server heap-
@@ -477,8 +491,64 @@ pub const GinwaServer = struct {
 
                         const allocator = arena_allocator.allocator();
 
+                        // ─── HTTP/2 (h2c) sniff ───────────────────────
+                        // Must run BEFORE the HTTP/1.1 reader: the 24-byte h2
+                        // preface contains the CRLFCRLF the h1 reader stops at
+                        // (byte 14), so parsing h1 first would consume the
+                        // preface AND the frames that arrived with it.
+                        var cr = connection_reader.ConnectionReader.init(allocator, fd);
+                        defer cr.deinit();
+                        if (server.enable_h2c) {
+                            _ = cr.fillOnce() catch |err| {
+                                std.debug.print("HTTP_SERVER: h2 sniff read failed: {s}\n", .{@errorName(err)});
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            switch (connection_reader.sniff(cr.buffered())) {
+                                .h2 => {
+                                    const initial = cr.takeBuffered() catch |err| {
+                                        std.debug.print("HTTP_SERVER: h2 preface handoff failed: {s}\n", .{@errorName(err)});
+                                        _ = closeFd(fd);
+                                        return;
+                                    };
+                                    http2_server.serveConnection(server, fd, allocator, initial, .{}) catch |err| {
+                                        std.debug.print("HTTP_SERVER: h2 connection ended: {s}\n", .{@errorName(err)});
+                                    };
+                                    _ = closeFd(fd);
+                                    return;
+                                },
+                                .maybe_h2 => {
+                                    cr.fillAtLeast(constants_preface.preface_len, 8) catch {};
+                                    if (connection_reader.sniff(cr.buffered()) == .h2) {
+                                        const initial = cr.takeBuffered() catch |err| {
+                                            std.debug.print("HTTP_SERVER: h2 preface handoff failed: {s}\n", .{@errorName(err)});
+                                            _ = closeFd(fd);
+                                            return;
+                                        };
+                                        http2_server.serveConnection(server, fd, allocator, initial, .{}) catch |err| {
+                                            std.debug.print("HTTP_SERVER: h2 connection ended: {s}\n", .{@errorName(err)});
+                                        };
+                                        _ = closeFd(fd);
+                                        return;
+                                    }
+                                },
+                                .h1 => {},
+                            }
+                        }
+
                         var rb = RequestBuffer.init(allocator);
                         defer rb.deinit();
+
+                        // Hand the sniffed bytes to the HTTP/1.1 reader so the
+                        // pre-read is not lost (it is a no-op when the sniff is
+                        // disabled: `cr` then holds nothing).
+                        if (cr.buffered().len > 0) {
+                            rb.buf.appendSlice(allocator, cr.buffered()) catch {
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            _ = cr.takeBuffered() catch {};
+                        }
 
                         const request_data = rb.readFullRequest(fd) catch |err| {
                             std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});

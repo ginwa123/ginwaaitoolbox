@@ -60,7 +60,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 # ============================================================================
 # Safety constants
@@ -242,6 +242,7 @@ class FunctionalHarness:
         port: int | None = None,
         ready_timeout_s: float = 30.0,
         stub_llm_profile: bool = False,
+        extra_args: Sequence[str] = (),
     ) -> "FunctionalHarness":
         """Boot a fresh nalar binary against an isolated tmpdir HOME.
 
@@ -259,6 +260,9 @@ class FunctionalHarness:
             ready_timeout_s: Seconds to wait for nalar to become ready.
             stub_llm_profile: Pre-create a stub LLM profile so the
                 backend boots without a real API key.
+            extra_args: Extra CLI flags appended after `--port` (e.g.
+                `("--http2", "h2c")`). Defaults to none, so existing
+                callers keep the exact same command line.
 
         Raises:
             FunctionalHarnessError: if HOME is unset, the tmpdir fails
@@ -393,7 +397,7 @@ class FunctionalHarness:
         # Python 3.2+ for both POSIX (setsid) and Windows
         # (CREATE_NEW_PROCESS_GROUP). Pass it unconditionally.
         proc = subprocess.Popen(
-            [str(bin_path), "--port", str(chosen_port)],
+            [str(bin_path), "--port", str(chosen_port), *extra_args],
             stdout=log_file,
             stderr=subprocess.STDOUT,
             env=env,

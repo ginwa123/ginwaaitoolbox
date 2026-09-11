@@ -402,3 +402,102 @@ Rule: **port 8081 is never used**; the harness picks a random free port in 40 00
 ## 11. Rollback
 
 The feature is behind `--http2=h2c` (default off, T23) and the h1 path is unchanged (constraints 2/4). If h2 misbehaves in production: drop the flag (no code change) and the server behaves exactly as today. `T16`/`T17`/`T18` are the only refactors that touch the h1 path — each is independently revertable by commit.
+
+---
+
+## 12. Implementation status (what actually landed)
+
+Executed on branch `worktree/worktrees_agent_http2`. Deviations from the task list
+above are recorded here rather than silently dropped.
+
+### Delivered
+
+| Plan item | Status |
+|---|---|
+| T1 module test build fix | done — `websocket_frames.zig` optional-`isize` comparison |
+| T2 test-runner registration | done — `http2/test_runner.zig` registered in BOTH runners |
+| T3–T12 protocol core | done — constants, frame, Huffman, HPACK (decoder + encoder), SETTINGS, stream state machine, flow control |
+| T13–T15 connection driver | done — preface/SETTINGS/PING/GOAWAY, request assembly, window-aware response serialization |
+| T16 peekable reader | done — plus a `sniff()` classifier (added after a real bug, see below) |
+| T19 preface detection | done — before the h1 reader, sniffed bytes handed to `RequestBuffer` |
+| T20 h2 dispatch + socket loop | done — router, CORS/security gates, body caps, 501 for sse/ws, 404 |
+| T23 `--http2` flag | done — `--http2 h2c` / `--http2 off`, default off |
+| T24 docs | done — `docs/http2.md` + module README |
+| T25 functional suite | done — `tests/functional/http2_test.py`, 8 tests, curl + raw sockets |
+| T27 gates | done — root `zig build test`: 3342/3350 pass, 0 fail; module gate 672/672; functional 8/8; `install:linux` green; module cross-compiles for linux/windows/macos |
+
+### Deviations
+
+1. **T17/T18 (ResponseWriter seam + rewriting the h1 write sites) — NOT DONE, deliberately.**
+   The h2 dispatcher builds `(status, header pairs, body)` directly and the h1
+   path keeps calling `HttpResponse.toBytes()` + `sendToClient` untouched. That
+   is a *stronger* byte-compatibility guarantee for HTTP/1.1 than the planned
+   refactor (nothing in the hot path moved), at the cost of a parallel dispatch
+   function in `http2/server.zig`. Unifying them is the follow-up, not a
+   prerequisite.
+2. **T21 `Upgrade: h2c` — NOT DONE.** Prior-knowledge h2c is implemented and
+   tested; the HTTP/1.1 upgrade dance (101 + settings handoff) is a small,
+   self-contained follow-up. curls
+
+---
+
+## 12. Implementation status (what actually landed)
+
+Executed on branch `worktree/worktrees_agent_http2`. Deviations from the task list
+above are recorded here rather than silently dropped.
+
+### Delivered
+
+| Plan item | Status |
+|---|---|
+| T1 module test build fix | done — `websocket_frames.zig` optional-`isize` comparison |
+| T2 test-runner registration | done — `http2/test_runner.zig` registered in BOTH runners |
+| T3–T12 protocol core | done — constants, frame, Huffman, HPACK decoder + encoder, SETTINGS, stream state machine, flow control |
+| T13–T15 connection driver | done — preface/SETTINGS/PING/GOAWAY, request assembly, window-aware response serialization |
+| T16 peekable reader | done — plus a `sniff()` classifier (added after a real bug, below) |
+| T19 preface detection | done — runs before the h1 reader; sniffed bytes are handed to `RequestBuffer` |
+| T20 h2 dispatch + socket loop | done — router, CORS/security gates, body caps, 501 for sse/ws, 404 |
+| T23 `--http2` flag | done — `--http2 h2c` / `--http2 off`, default off |
+| T24 docs | done — `docs/http2.md` + module README |
+| T25 functional suite | done — `tests/functional/http2_test.py`, 8 tests, curl + raw sockets |
+| T27 gates | done — root `zig build test` 3342/3350 pass / 0 fail; module gate 672/672; functional 8/8; `install:linux` green; module cross-compiles for Linux, Windows and macOS (x86_64 + aarch64) |
+
+### Deviations
+
+1. **T17/T18 (ResponseWriter seam + rewriting the h1 write sites) — NOT DONE, deliberately.**
+   The h2 dispatcher builds `(status, header pairs, body)` directly, and the h1
+   path keeps calling `HttpResponse.toBytes()` + `sendToClient` untouched. That is
+   a *stronger* byte-compatibility guarantee for HTTP/1.1 than the planned
+   refactor (nothing in the hot path moved), at the cost of a parallel dispatch
+   function in `http2/server.zig`. Unifying the two dispatchers is a follow-up,
+   not a prerequisite.
+2. **T21 `Upgrade: h2c` — NOT DONE.** Prior-knowledge h2c is implemented and
+   tested; the HTTP/1.1 upgrade dance (101 + settings handoff) is a small,
+   self-contained follow-up. The plan's D6 test strategy (curl
+   `--http2-prior-knowledge`) does not depend on it.
+3. **T22 static files over h2 — NOT DONE.** The module cannot import
+   `src/static_files.zig` (outside its package path) and the app's static handler
+   writes raw HTTP/1.1 bytes to the fd, so h2 requests for unknown routes get the
+   normal 404. Documented in `docs/http2.md` under known gaps.
+4. **T26 python-`h2` multiplexing suite — NOT DONE.** Multiplexing IS covered:
+   socket-level unit tests answer two streams out of order, and the functional
+   suite proves connection reuse (`num_connects == [1, 0]` for two h2 requests on
+   one connection, versus `[1, 1]` over h1).
+5. **Demo `custom_http_server/src/main.zig` still does not compile** (two
+   pre-existing errors: an unused `noCacheMiddleware` local, and a
+   `wsEchoHandler` signature mismatch that surfaces in `router.zig`'s ws
+   registration). Unrelated to this work: the module's `zig build test` is green
+   and the demo exe is not in any build or CI step.
+
+### Bug found only by the end-to-end probe (not by the unit tests)
+
+The first functional run failed with curl error 55 on every h2 test. Cause: the
+sniff used `isPrefacePrefix(first_read_bytes)`, which returns false when the
+buffer is **longer** than 24 bytes — and a prior-knowledge client (curl included)
+sends the preface *and* its SETTINGS frame in one segment, so the first read is
+usually 33+ bytes. Every real h2 client was silently downgraded to HTTP/1.1.
+
+Fixed by extracting `connection_reader.sniff() -> .h2 / .maybe_h2 / .h1`, with
+regression tests for the `preface ++ SETTINGS` case. Lesson: a protocol
+negotiation path needs a test whose input carries MORE data than the
+discriminator, because that is what the wire actually delivers.

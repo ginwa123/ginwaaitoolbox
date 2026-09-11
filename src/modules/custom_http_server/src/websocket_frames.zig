@@ -243,11 +243,11 @@ pub fn generateMaskKey() [4]u8 {
     // masking key only protects against trivial proxy tampering, not
     // attackers with the wire). The LCG fallback seeds from time-of-
     // day and is unpredictable within a single process.
-    const got_random = blk: {
+    const got_random: ?isize = blk: {
         if (!@hasDecl(std.c, "getrandom")) break :blk null;
         const T = @TypeOf(std.c.getrandom);
         if (T == void or T == type) break :blk null;
-        break :blk std.c.getrandom(&key, key.len, 0);
+        break :blk @as(?isize, std.c.getrandom(&key, key.len, 0));
     };
 
     if (got_random == null or got_random.? < 0) {
