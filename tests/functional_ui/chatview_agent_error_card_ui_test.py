@@ -52,12 +52,21 @@ Run:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from db_seed import DbSeed
 from ui_harness import UIHarness
+
+try:
+    # Only used to distinguish a retryable wait_for timeout from a real
+    # error in _emit_and_wait_for. If Playwright isn't installed the
+    # conftest browser fixture skips these tests anyway.
+    from playwright.sync_api import TimeoutError as _PlaywrightTimeoutError
+except ImportError:  # pragma: no cover
+    _PlaywrightTimeoutError = None  # type: ignore[assignment,misc]
 
 
 # ─── Constants ──────────────────────────────────────────────────────────────
@@ -112,8 +121,102 @@ def _open_chat(page, h: UIHarness, session_id: str) -> None:
         timeout=30000,
     )
     # Wait for the seeded history to render before firing events.
+    # NOTE: no fixed sleep here — SSE readiness is handled by
+    # _emit_and_wait_for's emit-with-retry loop (see below). A fixed
+    # 500ms sleep used to race the cross-tab leader election (PR #450:
+    # ~1s heartbeat + 250ms jitter before the EventSource opens) and
+    # lose the race on slow macOS runners.
     page.locator("text=Working on it…").first.wait_for(timeout=15000, state="attached")
-    page.wait_for_timeout(500)
+
+
+# ─── Emit-with-retry ────────────────────────────────────────────────────
+#
+# WHY THIS EXISTS (macOS flake, PR #450):
+#
+#     The frontend now opens ONE EventSource per origin: a fresh tab
+#     starts as a BroadcastChannel follower and only becomes leader
+#     (and opens the stream) after ~1s heartbeat + 250ms election
+#     jitter. The test-only emit endpoint publishes on the backend bus
+#     and DROPS the event when no stream is connected yet — so an emit
+#     fired ~500ms after history render is silently lost on slow
+#     runners, and the test then burns a full 10s wait_for timeout.
+#
+# FIX (test-only, no product change): re-emit until the expected
+# locator surfaces. Re-emitting the same payload is idempotent for
+# these assertions (singleton error card / transcript message), so:
+# emit → 1s wait → re-emit → … until visible or the overall deadline.
+# The fast path resolves on the first iteration (faster than the old
+# fixed sleeps); slow runners self-heal instead of timing out.
+
+#: Per-attempt wait inside the retry loop. Short so a lost first emit
+#: is re-fired quickly; the overall deadline stays generous for slow
+#: macOS runners.
+_EMIT_RETRY_WAIT_MS = 1000
+
+
+def _emit_and_wait_for(
+    h: UIHarness,
+    session_id: str,
+    payload: dict,
+    locator,
+    *,
+    state: str = "visible",
+    timeout_ms: int = 15000,
+) -> None:
+    """Emit one SSE event, re-emitting until `locator` reaches `state`.
+
+    Raises the last Playwright timeout if the overall deadline expires
+    (keeps the useful call log). Non-timeout errors fail fast.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_err: Exception | None = None
+    while True:
+        _emit_llm_event(h, session_id, payload)
+        try:
+            locator.wait_for(timeout=_EMIT_RETRY_WAIT_MS, state=state)
+            return
+        except Exception as e:  # noqa: BLE001 — filtered below
+            if _PlaywrightTimeoutError is not None and not isinstance(
+                e, _PlaywrightTimeoutError
+            ):
+                raise
+            last_err = e
+            if time.monotonic() >= deadline:
+                assert last_err is not None
+                raise last_err
+
+
+def _emit_until_text(
+    h: UIHarness,
+    session_id: str,
+    payload: dict,
+    locator,
+    needle: str,
+    *,
+    timeout_ms: int = 15000,
+) -> str:
+    """Re-emit until `locator`'s text contains `needle`. Returns the text.
+
+    For the latest-wins test: the card is ALREADY visible from the
+    previous emission, so a plain wait_for(visible) would return
+    immediately on stale content. Poll the text instead, re-emitting
+    on each miss (covers the same election-race loss as above).
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        _emit_llm_event(h, session_id, payload)
+        end = min(deadline, time.monotonic() + _EMIT_RETRY_WAIT_MS)
+        while time.monotonic() < end:
+            text = locator.inner_text()
+            if needle in text:
+                return text
+            time.sleep(0.2)
+        if time.monotonic() >= deadline:
+            text = locator.inner_text()
+            assert needle in text, (
+                f"timed out waiting for {needle!r} in locator text, got {text!r}"
+            )
+            return text
 
 
 # ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -141,8 +244,11 @@ def test_is_error_event_renders_agent_error_card_not_user_bubble(
     # Pre-condition: no error cards yet.
     assert page.locator('[data-testid="agent-error-card"]').count() == 0
 
-    # Fire the diagnostic through the real wire path.
-    _emit_llm_event(
+    # Fire the diagnostic through the real wire path. Emit-with-retry:
+    # if the EventSource isn't up yet (leader election still running),
+    # the first emission is dropped and transparently re-fired.
+    card = page.locator('[data-testid="agent-error-card"]').first
+    _emit_and_wait_for(
         h,
         session_id,
         {
@@ -153,19 +259,20 @@ def test_is_error_event_renders_agent_error_card_not_user_bubble(
             "finish_reason": "null",
             "is_error": True,
         },
+        card,
+        state="visible",
     )
 
-    # 1. The dedicated card renders…
-    card = page.locator('[data-testid="agent-error-card"]').first
-    card.wait_for(timeout=10000, state="visible")
-
-    # …with the parsed retry chip and server detail.
+    # …with the parsed retry chip and server detail (single roundtrip
+    # per element — inner_text() is a browser roundtrip each call).
     chip = page.locator('[data-testid="agent-error-retry"]').first
-    assert "1/10" in chip.inner_text(), f"retry chip missing '1/10': {chip.inner_text()!r}"
+    chip_text = chip.inner_text()
+    assert "1/10" in chip_text, f"retry chip missing '1/10': {chip_text!r}"
 
     headline = page.locator('[data-testid="agent-error-headline"]').first
-    assert "StreamInterrupted" in headline.inner_text()
-    assert "callDynamicAgentNew" in headline.inner_text()
+    headline_text = headline.inner_text()
+    assert "StreamInterrupted" in headline_text
+    assert "callDynamicAgentNew" in headline_text
 
     # Detail section exists but is collapsed by default.
     detail = page.locator('[data-testid="agent-error-detail"]').first
@@ -193,7 +300,7 @@ def test_normal_full_event_still_renders_as_assistant_message(
     _seed_session(h, session_id)
     _open_chat(page, h, session_id)
 
-    _emit_llm_event(
+    _emit_and_wait_for(
         h,
         session_id,
         {
@@ -204,9 +311,9 @@ def test_normal_full_event_still_renders_as_assistant_message(
             "finish_reason": "stop",
             "is_error": False,
         },
+        page.locator(f"text={NORMAL_CONTENT}").first,
+        state="attached",
     )
-
-    page.locator(f"text={NORMAL_CONTENT}").first.wait_for(timeout=10000, state="attached")
     assert page.locator('[data-testid="agent-error-card"]').count() == 0
 
 
@@ -232,30 +339,54 @@ def test_multiple_error_events_latest_wins_overwrites_in_place(
     _seed_session(h, session_id)
     _open_chat(page, h, session_id)
 
-    for i, content in enumerate((RETRY_CONTENT, RETRY_CONTENT_2), start=1):
-        _emit_llm_event(
-            h,
-            session_id,
-            {
-                "type": "full",
-                "index": i,
-                "content": content,
-                "role": "user",
-                "finish_reason": "null",
-                "is_error": True,
-            },
-        )
-        page.wait_for_timeout(150)
-
-    # Wait for the (single) card to surface. The Vue key=agentError.id
-    # means the SECOND emission triggers a fresh mount, so we wait_for
-    # the 2/10 retry chip to confirm the latest content arrived (the
-    # first emission's 1/10 chip would race past this point in time).
+    # Sequential + retry: emit #1 until the card shows 1/10, THEN emit
+    # #2 until it flips to 2/10. The old code fired both blind with a
+    # fixed 150ms gap and waited only for 2/10 — if the stream wasn't
+    # up yet, BOTH emissions were dropped and the test burned a full
+    # 10s timeout. Waiting for 1/10 first also proves the stream is
+    # live, so the second emission is near-instant on fast runners.
+    card = page.locator('[data-testid="agent-error-card"]').first
+    _emit_and_wait_for(
+        h,
+        session_id,
+        {
+            "type": "full",
+            "index": 1,
+            "content": RETRY_CONTENT,
+            "role": "user",
+            "finish_reason": "null",
+            "is_error": True,
+        },
+        card,
+        state="visible",
+    )
     chip = page.locator('[data-testid="agent-error-retry"]').first
-    chip.wait_for(timeout=10000, state="visible")
-    assert "2/10" in chip.inner_text(), (
+    first_text = chip.inner_text()
+    assert "1/10" in first_text, (
+        f"first error event did not render 1/10 chip, got {first_text!r}"
+    )
+
+    # Wait for the (single) card to surface the LATEST content. The Vue
+    # key=agentError.id means the SECOND emission triggers a fresh
+    # mount — poll the chip text (not just visibility: the card is
+    # already visible with stale 1/10 content at this point).
+    chip_text = _emit_until_text(
+        h,
+        session_id,
+        {
+            "type": "full",
+            "index": 2,
+            "content": RETRY_CONTENT_2,
+            "role": "user",
+            "finish_reason": "null",
+            "is_error": True,
+        },
+        chip,
+        "2/10",
+    )
+    assert "2/10" in chip_text, (
         f"latest-wins: retry chip should reflect the SECOND error "
-        f"event's content, got {chip.inner_text()!r}"
+        f"event's content, got {chip_text!r}"
     )
 
     # SINGLE card on the page (no accumulation).
