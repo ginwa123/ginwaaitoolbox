@@ -48,6 +48,41 @@ sibling `HttpClient.zig` (MCP path) buffer today; the LLM streaming
 path uses `Agent.zig`'s `std.http.Client`, not this module. No need
 for v1.
 
+## Streaming backpressure — a full chunk queue must never abort the transfer
+
+`stream.zig`'s libcurl WRITEFUNCTION owns a fixed 64-slot ring buffer
+between the libcurl worker thread (producer) and the caller's
+`ResponseStream.next()` (consumer). Three rules keep that design honest;
+each is locked by a test:
+
+1. **A FULL queue is backpressure, not an error.** `writeCallback` blocks
+   (5 ms poll, 120 s budget) and retries the same slice until the
+   consumer drains. Returning 0 from a WRITEFUNCTION makes libcurl abort
+   the whole transfer with `CURLE_WRITE_ERROR` → `LocalError.WriteError`,
+   which the agent surfaces as
+   `scanner.next failed after N chunk(s): WriteError` (→
+   `StreamInterrupted` → the entire LLM response is discarded and
+   retried). That was the production symptom this rule fixes. The
+   callback returns 0 ONLY on: real OOM, `cancel()`, or the 120 s budget
+   elapsing.
+2. **The wake decision is atomic with the store.** `ChunkQueue.push`
+   returns `PushOutcome.pushed.wake` — "was the queue empty immediately
+   before this push?" — computed under the SAME lock acquisition as the
+   store. The previous `isEmpty()` + `push()` pair took the lock twice,
+   so a consumer that drained the queue in between parked on
+   `signal_gen` with a non-empty queue and slept its full 300 s budget
+   while the producer filled the buffer.
+3. **`cancelled` is sampled by the producer.** `ResponseStream.cancel()`
+   only works because `writeCallback` checks `state.cancelled` on every
+   backpressure poll. Without it `deinit()`'s `cancel()` + `join()`
+   blocks for up to `CURLOPT_TIMEOUT_MS` (300 s).
+
+Consumer-side note: the caller thread runs `stream_callback` → SSE emit
+between `next()` calls, and that emit is synchronous — see
+`custom_http_server/src/sse_manager.zig`'s `SSE_SEND_TIMEOUT_MS` for why
+a stuck SSE peer used to be able to stall this consumer in the first
+place.
+
 ## Quirks bit during implementation
 
 - **`CURLOPT_*` are exposed as `c_int`, not Zig enums.** Zig 0.16

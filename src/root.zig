@@ -910,6 +910,14 @@ test {
     //     `cd src/modules/custom_http_server && zig build test`.
     _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
     _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
+    // sse_manager_test.zig is std-only + the module's local
+    // test_helpers.zig, so it compiles in the parent's module tree
+    // without a `custom_http_server` module import. Registered here
+    // because the module's OWN `zig build test` currently fails to
+    // compile for unrelated reasons (websocket_frames.zig:253), which
+    // would otherwise leave the SSE send-timeout regression uncovered
+    // in CI.
+    _ = @import("modules/custom_http_server/src/sse_manager_test.zig");
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");

@@ -13,15 +13,15 @@ const is_bsd = switch (builtin.os.tag) {
     else => false,
 };
 
-/// Windows-only Winsock 2 externs. `send()` is the only function we
-/// actually call from sse_manager.zig on Windows (see `sendAll` below),
-/// but the surrounding struct mirrors the convention in
-/// `http_server.zig` so future Windows-specific call sites can extend
-/// it (recv, setsockopt, etc.) without re-declaring the DLL imports.
-/// `kernel32.dll` and `ws2_32.dll` import libraries are shipped with
-/// Zig's MinGW toolchain, so this just-works without a manual
-/// `linkSystemLibrary` call. The struct is empty on non-Windows so
-/// non-Windows builds don't link ws2_32.
+/// Windows-only Winsock 2 externs. `send()` and `setsockopt()` are the
+/// functions we actually call from sse_manager.zig on Windows (see
+/// `sendAll` / `setFdSendTimeout`), but the surrounding struct mirrors
+/// the convention in `http_server.zig` so future Windows-specific call
+/// sites can extend it (recv, etc.) without re-declaring the DLL
+/// imports. `kernel32.dll` and `ws2_32.dll` import libraries are
+/// shipped with Zig's MinGW toolchain, so this just-works without a
+/// manual `linkSystemLibrary` call. The struct is empty on non-Windows
+/// so non-Windows builds don't link ws2_32.
 const winsock = if (is_windows) struct {
     extern "ws2_32" fn send(
         sockfd: c_int,
@@ -30,6 +30,13 @@ const winsock = if (is_windows) struct {
         flags: c_int,
     ) callconv(.c) c_int;
     extern "ws2_32" fn closesocket(sockfd: c_int) callconv(.c) c_int;
+    extern "ws2_32" fn setsockopt(
+        sockfd: c_int,
+        level: c_int,
+        optname: c_int,
+        optval: ?*const anyopaque,
+        optlen: c_int,
+    ) callconv(.c) c_int;
 } else struct {};
 
 const LOOP_COUNT = 4;
@@ -220,6 +227,13 @@ pub const SseManager = struct {
 
         const client = try self.server_allocator.create(SseClient);
         client.* = SseClient.init(id, fd, self.allocator, self.io);
+
+        // Bound every subsequent write on this socket. Without this, a
+        // peer that stops reading parks whichever thread emits the next
+        // SSE event — while holding `self.lock` — which stalls every
+        // SSE emit in the process (see `SSE_SEND_TIMEOUT_MS` for the
+        // full agent-abort chain). Best-effort: failures are ignored.
+        setFdSendTimeout(fd, SSE_SEND_TIMEOUT_MS);
 
         try self.clients.put(self.server_allocator, id, client);
         try self.fd_to_id.put(self.server_allocator, fd, id);
@@ -951,6 +965,60 @@ fn sendAll(fd: i32, data: []const u8) isize {
         }
         return @intCast(sent);
     }
+}
+
+/// Upper bound on how long ONE SSE write may block on a single client's
+/// socket before that peer is treated as dead and dropped.
+///
+/// Why this exists — the agent-stall chain:
+///
+///   `SseManager.sendToClient` (below) writes while holding
+///   `self.lock`, and SSE emits are SYNCHRONOUS: `event_bus.emit` runs
+///   the forwarding callback on the CALLER's thread, which for
+///   `llm_chunk` is the agent workflow thread. With an unbounded
+///   blocking `send()` on a peer that has stopped reading (closed
+///   window, suspended machine, half-open TCP), ONE dead client parks
+///   that thread while holding the manager lock — so every other SSE
+///   emit in the process queues behind it. The agent's HTTP consumer
+///   then stops draining `custom_http_client`'s 64-slot chunk queue,
+///   the queue fills, and the LLM stream is aborted with
+///   `WriteError` ("scanner.next failed after N chunk(s): WriteError"),
+///   discarding the whole response and retrying it from scratch.
+///
+/// Bounding the send converts "one dead peer stalls the whole system"
+/// into "one dead peer is dropped". Dropping is the intended recovery:
+/// the frontend's SseClient has a stall detector plus auto-reconnect,
+/// and `sendToClient` already removes any client whose write fails.
+const SSE_SEND_TIMEOUT_MS: u32 = 5_000;
+
+/// Set `SO_SNDTIMEO` on an SSE client socket (or a test fd) so a single
+/// blocked write can't park the emitting thread indefinitely.
+///
+/// Best-effort by design: every failure is swallowed, because without
+/// the socket option the behaviour is exactly what it was before this
+/// helper existed — it can never make things worse.
+///
+/// Platform notes:
+///   - **POSIX**: `SO_SNDTIMEO` takes a `struct timeval`. The kernel
+///     REJECTS `tv_usec >= 1_000_000` with `EDOM` (surfaced by
+///     `std.posix.setsockopt` as `error.TimeoutTooBig`), so the whole
+///     seconds MUST go in `.sec` — `.sec = 0, .usec = 5_000_000` fails
+///     to apply. Also note `std.posix.setsockopt` carries a comptime
+///     `@compileError` on Windows, hence the explicit branch.
+///   - **Windows**: Winsock's `SO_SNDTIMEO` takes a `DWORD` of
+///     milliseconds (not a timeval), at optname `0x1005`,
+///     `SOL_SOCKET = 0xffff`.
+pub fn setFdSendTimeout(fd: i32, timeout_ms: u32) void {
+    if (is_windows) {
+        const ms: u32 = timeout_ms;
+        _ = winsock.setsockopt(fd, 0xffff, 0x1005, @ptrCast(&ms), @sizeOf(u32));
+        return;
+    }
+    var tv: posix.timeval = .{
+        .sec = @intCast(@divTrunc(timeout_ms, 1000)),
+        .usec = @intCast((timeout_ms % 1000) * 1000),
+    };
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.SNDTIMEO, std.mem.asBytes(&tv)) catch {};
 }
 
 /// Set O_NONBLOCK on `fd` so reads on an empty pipe return EAGAIN
