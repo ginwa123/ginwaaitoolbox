@@ -236,3 +236,129 @@ pub fn localMemoryCreateHandler(
         .data = try std.json.Stringify.valueAlloc(allocator, CreateLocalMemoryResponse{ .memory = outcome.memory }, .{}),
     });
 }
+
+// ===== Tests merged from local_memories_crud_test.zig (2026-09-11 flatten) =====
+const text_normalize = @import("helpers").text_normalize;
+const testing = std.testing;
+
+const CREATE_PATH = "src/http_handlers/local_memories_create.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
+}
+test "local_memories_create resolves cwd from body or io" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, CREATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "get_local_memories_path_for_dir") == null) {
+        std.debug.print("\n!! {s} does not call get_local_memories_path_for_dir !!\n", .{CREATE_PATH});
+        return error.BodyCwdResolverMissing;
+    }
+    if (std.mem.indexOf(u8, source, "get_local_memories_path_from_io") == null) {
+        std.debug.print("\n!! {s} does not call get_local_memories_path_from_io !!\n", .{CREATE_PATH});
+        return error.IoCwdFallbackMissing;
+    }
+    if (std.mem.indexOf(u8, source, "parsed.cwd") == null) {
+        std.debug.print(
+            "\n!! {s} does not read parsed.cwd from the body !!\n" ++
+                "   The create handler must accept a 'cwd' field in the JSON body.\n",
+            .{CREATE_PATH},
+        );
+        return error.BodyCwdParamMissing;
+    }
+}
+
+test "local_memories_create calls localMemoryExists and writeLocalMemoryFile" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, CREATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "localMemoryExists") == null) {
+        std.debug.print(
+            "\n!! {s} does not call memories.localMemoryExists !!\n" ++
+                "   The 409-on-duplicate contract requires the pre-write check.\n",
+            .{CREATE_PATH},
+        );
+        return error.LocalMemoryExistsCallMissing;
+    }
+    if (std.mem.indexOf(u8, source, "writeLocalMemoryFile") == null) {
+        std.debug.print("\n!! {s} does not call memories.writeLocalMemoryFile !!\n", .{CREATE_PATH});
+        return error.WriteLocalMemoryFileCallMissing;
+    }
+    if (std.mem.indexOf(u8, source, "409") == null) {
+        std.debug.print("\n!! {s} does not return 409 on duplicate !!\n", .{CREATE_PATH});
+        return error.ConflictStatusMissing;
+    }
+    if (std.mem.indexOf(u8, source, "201") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 201 on success !!\n" ++
+                "   POST that creates a resource must use 201 Created.\n",
+            .{CREATE_PATH},
+        );
+        return error.CreatedStatusMissing;
+    }
+}
+
+test "local_memories_create uses std.json.Stringify.valueAlloc" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, CREATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") == null) {
+        std.debug.print("\n!! {s} does not use std.json.Stringify.valueAlloc !!\n", .{CREATE_PATH});
+        return error.ValueAllocMissing;
+    }
+}
+
+test "local_memories_create validates the name from the body" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, CREATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "isValidMemoryName") == null) {
+        std.debug.print(
+            "\n!! {s} does not call isValidMemoryName !!\n" ++
+                "   The name from the POST body must be validated to prevent\n" ++
+                "   `../escape.md` style attacks.\n",
+            .{CREATE_PATH},
+        );
+        return error.NameValidationMissing;
+    }
+}
+
+// =============================================================================
+// Body-parsing contract: create/update must read the request body and
+// reject bad JSON with 400. parseFromSliceLeaky (not parseFromSlice) is
+// the right call for per-request arena allocators — see
+// src/http_handlers/task_create.zig for the precedent.
+// =============================================================================
+
+test "local_memories_create parses JSON body with parseFromSliceLeaky" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, CREATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "parseFromSliceLeaky") == null) {
+        std.debug.print(
+            "\n!! {s} does not use parseFromSliceLeaky !!\n" ++
+                "   The per-request allocator is an arena; parseFromSlice creates\n" ++
+                "   its own internal arena that needs explicit deinit. Use the Leaky\n" ++
+                "   variant — see task_create.zig:44 for the precedent.\n",
+            .{CREATE_PATH},
+        );
+        return error.ParseFromSliceLeakyMissing;
+    }
+    if (std.mem.indexOf(u8, source, "Invalid JSON body") == null) {
+        std.debug.print("\n!! {s} does not return 400 on bad JSON !!\n", .{CREATE_PATH});
+        return error.BadJsonStatusMissing;
+    }
+}

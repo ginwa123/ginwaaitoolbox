@@ -215,3 +215,143 @@ pub fn memoryUpdateHandler(
         .data = try std.json.Stringify.valueAlloc(allocator, UpdateMemoryResponse{ .memory = outcome.memory }, .{}),
     });
 }
+
+// ===== Tests merged from memories_crud_test.zig (2026-09-11 flatten) =====
+const text_normalize = @import("helpers").text_normalize;
+const testing = std.testing;
+
+const UPDATE_PATH = "src/http_handlers/memories_update.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
+}
+test "memories_update handler 500s on missing environment" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, UPDATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "getSingleton") == null) {
+        std.debug.print("\n!! {s} does not call getSingleton() !!\n", .{UPDATE_PATH});
+        return error.SingletonMissing;
+    }
+    if (std.mem.indexOf(u8, source, "500") == null) {
+        std.debug.print("\n!! {s} does not return 500 on missing env !!\n", .{UPDATE_PATH});
+        return error.MissingEnvStatusMissing;
+    }
+}
+
+test "memories_update handler 400s on missing :name" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, UPDATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "params.get(\"name\")") == null) {
+        std.debug.print(
+            "\n!! {s} does not read req.params.get(\"name\") !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.PathParamMissing;
+    }
+    if (std.mem.indexOf(u8, source, "400") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 400 on missing :name !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.PathParamStatusMissing;
+    }
+}
+
+test "memories_update handler calls memoryExists before write" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, UPDATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "memoryExists") == null) {
+        std.debug.print(
+            "\n!! {s} does not call memories.memoryExists !!\n" ++
+                "   PUT must 404 on a missing memory, not silently create it.\n",
+            .{UPDATE_PATH},
+        );
+        return error.MemoryExistsCallMissing;
+    }
+    if (std.mem.indexOf(u8, source, "404") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 404 on missing memory !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.NotFoundStatusMissing;
+    }
+    if (std.mem.indexOf(u8, source, "writeMemoryFile") == null) {
+        std.debug.print(
+            "\n!! {s} does not call memories.writeMemoryFile !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.WriteMemoryFileCallMissing;
+    }
+}
+
+test "memories_update handler uses std.json.Stringify.valueAlloc" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, UPDATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") == null) {
+        std.debug.print(
+            "\n!! {s} does not use std.json.Stringify.valueAlloc !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.ValueAllocMissing;
+    }
+}
+
+test "memories_update handler validates the :name" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, UPDATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "isValidMemoryName") == null) {
+        std.debug.print(
+            "\n!! {s} does not call isValidMemoryName !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.NameValidationMissing;
+    }
+}
+
+test "memories_update handler parses JSON body with parseFromSliceLeaky" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, UPDATE_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "parseFromSliceLeaky") == null) {
+        std.debug.print(
+            "\n!! {s} does not use parseFromSliceLeaky !!\n" ++
+                "   The per-request allocator is an arena; parseFromSlice creates\n" ++
+                "   its own internal arena that requires explicit deinit. Use the\n" ++
+                "   Leaky variant. See task_create.zig:44 for the precedent.\n",
+            .{UPDATE_PATH},
+        );
+        return error.ParseFromSliceLeakyMissing;
+    }
+    if (std.mem.indexOf(u8, source, "Invalid JSON body") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 400 on bad JSON !!\n",
+            .{UPDATE_PATH},
+        );
+        return error.BadJsonStatusMissing;
+    }
+}
+
+// =============================================================================
+// Re-export and route-registration contracts: the new handlers must be
+// exported from mod.zig AND registered in main.zig. If either side is
+// missing, the server compiles but the routes return 404.
+// =============================================================================
