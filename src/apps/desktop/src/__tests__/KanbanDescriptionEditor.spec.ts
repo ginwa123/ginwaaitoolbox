@@ -99,9 +99,15 @@ describe('KanbanDescriptionEditor', () => {
     expect(emitted?.[emitted.length - 1]?.[0]).toBe('a new description')
   })
 
-  it('shows the char counter as <textLength> / 5000', async () => {
+  it('shows the char counter as <textLength> chars (unlimited by default)', async () => {
     const wrapper = await mountEditor({ modelValue: 'hello world' })
-    expect(wrapper.text()).toContain('11 / 5000')
+    expect(wrapper.text()).toContain('11 chars')
+  })
+
+  it('does not set a maxlength on the textarea by default (unlimited)', async () => {
+    const wrapper = await mountEditor({ modelValue: 'hello world' })
+    const textarea = wrapper.find('textarea').element as HTMLTextAreaElement
+    expect(textarea.getAttribute('maxlength')).toBeNull()
   })
 
   it('applies the testId prop to the textarea, paperclip, and counter', async () => {
