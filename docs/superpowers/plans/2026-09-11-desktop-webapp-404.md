@@ -138,3 +138,41 @@ than deliberately failing the spawn — no stray error logs, no leaked process.
   reverted commit `e164f98e`). The wire-level guard lives in the functional test.
 - Not touched: `findInstalledWebapp`'s Windows precedence, the SPA fallback,
   and the choice to leave an unusable daemon running rather than stopping it.
+
+## Follow-up: the PR's Windows CI job went red (Windows-only compile error)
+
+The first CI run on this branch failed all three backend jobs. Only one of the
+three failures was this PR's:
+
+| Job | Failing step | Cause |
+|---|---|---|
+| Windows | `Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)` | **Ours**: `extraction.zig:478` — `win32_dir_apis.MoveFileW(...) != 0`. Win32 `BOOL` is a typed enum (`os.windows.Bool(c_int)`) in Zig 0.16, so comparing it to `0` is a Windows-only compile error (`incompatible types: 'os.windows.Bool(c_int)' and 'comptime_int'`). |
+| Linux | `Functional tests: real-data isolation suites` | **Not ours**: `agent_add_mcp_server_test` (ConnectionReset) + `background_command_completion_test` (ConnectionRefused). `pytest.ini` has no `-n`, so those files (collection order #1 and #8) run *before* this PR's file (#15); both pass locally on the same binary; the same suite passed on macOS in the same run. Flake. |
+| macOS | `UI tests: functional-test-ui` | **Not ours**: `chatview_sse_stick_ui_test.py::test_user_scroll_up_during_stream_is_respected`. The same test fails on `main`'s Linux job in the flatten-refactor run (no changes from this PR). Pre-existing flake. |
+
+### Why no local gate caught it
+
+`extraction.zig` (like the rest of `desktop_app/`) forks on `builtin.os.tag`,
+and Zig only analyses the branch matching the **target**. `zig build test:desktop-app`
+on Linux prunes the Windows branch entirely, so the type error is invisible —
+as is the macOS branch, and as is `subprocess.zig`'s winsock block. CI can only
+compile a given OS's branch on that OS's runner (a ~20 minute round trip).
+
+### Fix + permanent guard
+
+1. `!= 0` → `!= .FALSE` (matching the existing `FindNextFileW` comparison).
+2. NEW `src/apps/desktop_app/cross_compile_check.zig`: an `export fn` that calls
+   the public API of `extraction.zig` and `subprocess.zig`, which forces full
+   semantic analysis + codegen for whatever target it is compiled for.
+3. NEW `zig build check:desktop-cross` step: compiles that file as a plain
+   **object** for `x86_64-windows-gnu`, `aarch64-macos` and `x86_64-linux-gnu`
+   (no linking, no SDK, no webview/vcpkg deps — ~1.4 s total).
+4. CI: the shared `Test (zig build test only …)` step now runs
+   `zig build test check:desktop-cross --summary all -Dno-webapp-rebuild`, so
+   every backend job compiles all three branches.
+
+Verified by negative control: with `!= 0` restored, `zig build check:desktop-cross`
+exits 1 in ~1 s with the exact CI error (`extraction.zig:478: incompatible types:
+'os.windows.Bool(c_int)' and 'comptime_int'`) — while the macOS and Linux objects
+still succeed, which is precisely why the local desktop-test run was green.
+
