@@ -3580,7 +3580,7 @@ const compactSession = async () => {
                             class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
                             :style="{ color: 'var(--semantic-text-dim)' }"
                           >
-                            💭 Reasoning
+                            Thought
                           </summary>
                           <div
                             class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"

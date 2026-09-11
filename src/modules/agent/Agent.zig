@@ -1635,6 +1635,25 @@ pub const Agent = struct {
             params.tools.len, total_props, total_content_size,
         });
 
+        // Reasoning-echo backfill (task_1789091513563_0): DeepSeek-style
+        // providers in thinking mode REQUIRE every assistant message to
+        // carry `reasoning_content` ("must be passed back to the API").
+        // Turns where the model streamed no reasoning deltas (e.g. pure
+        // tool-call turns with empty content) persist NULL, and omitting
+        // the field on replay bricks the session — every subsequent
+        // request 400s with 0 chunks. Emit "" instead of omitting, but
+        // ONLY for thinking conversations (thinking on now, or reasoning
+        // present elsewhere in history) so plain OpenAI sessions keep
+        // their exact current wire shape. Assistant-only: reasoning
+        // belongs to assistant messages, never user/tool rows.
+        const history_has_reasoning = blk: {
+            for (params.messages) |m| {
+                if (m.reasoning_content != null) break :blk true;
+            }
+            break :blk false;
+        };
+        const backfill_empty_reasoning = self.thinkingEnabled or history_has_reasoning;
+
         const json_messages = try arena_alloc.alloc(JsonMessage, params.messages.len);
         for (params.messages, 0..) |msg, i| {
             var json_tool_calls: ?[]JsonToolCall = null;
@@ -1681,7 +1700,11 @@ pub const Agent = struct {
                 .content_parts = json_content_parts,
                 .tool_calls = json_tool_calls,
                 .tool_call_id = msg.tool_call_id,
-                .reasoning_content = msg.reasoning_content,
+                // See backfill comment above: null → "" for assistant
+                // messages in thinking conversations (satisfies the
+                // provider's echo validator); null stays null otherwise
+                // so the field is omitted entirely.
+                .reasoning_content = msg.reasoning_content orelse (if (backfill_empty_reasoning and msg.role == .assistant) "" else null),
             };
         }
 
