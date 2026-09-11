@@ -32,7 +32,7 @@
 //! chain): the storage primitive already lives in `Config.zig`. This
 //! file is the LLM-facing wrapper — JSON schema, input struct, success/
 //! error XML envelopes. The exec adapter in
-//! `src/ai_workflow/tui/agentic_loop/tools_exec_add_mcp_server.zig` calls
+//! `src/agentic_loop/tools_exec_add_mcp_server.zig` calls
 //! `executeAddMcpServerToString` (same shape as `save_memory.zig`'s
 //! `executeAddSkillToString`).
 //!

@@ -483,7 +483,7 @@ pub fn main(init: std.process.Init) !void {
     // (workers, sessions, kanban_column, kanban_task, per-session llm +
     // queue_messages). Replaces the 5 dedicated routes that previously
     // registered one EventSource per family. See
-    // src/ai_workflow/tui/http_handlers/unified_events_sse.zig.
+    // src/http_handlers/unified_events_sse.zig.
     try gs.router.sse("/api/events", ai_mod.http_handlers.unifiedEventsStreamHandler);
     // Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
     // 404 when off. Functional UI tests use it to drive the chatview's

@@ -1,0 +1,215 @@
+//! `GET /api/agent-kanbans/:kanban_id/tools`.
+//!
+//! Returns `{tools: [string]}` — the enabled tool_names for the
+//! agent-kanbans config. Mirrors `agent_tools_list.zig` with the
+//! `agent_kanban_tools` table + `kanban_id` column.
+//!
+//! Memory: the per-request arena reaps all allocations at request end,
+//! so neither layer needs explicit `free`s.
+//!
+//! Plan: docs/superpowers/plans/2026-08-25-agent-kanbans-mirror.md
+//! Task: task_1787597624259_2
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const http_response = @import("http_response.zig");
+
+/// Domain-level error set for `useCase`. The handler maps each variant
+/// to an HTTP status code + message via two exhaustive switches.
+pub const ToolListError = error{
+    /// `kanban_id` path param was missing or empty.
+    KanbanIdRequired,
+    /// `db.query` failed.
+    QueryFailed,
+    /// `allocator.dupe` / `toOwnedSlice` failed.
+    OutOfMemory,
+};
+
+/// Inputs to the list-tools use-case.
+pub const ToolListInput = struct {
+    kanban_id: []const u8,
+};
+
+/// Output of the list-tools use-case. `tool_names` is owned by the
+/// caller (lifetime = request arena).
+pub const ToolListOutput = struct {
+    tool_names: []const []const u8,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Resolve the enabled tool_names for the agent-kanbans config. Returns
+/// an owned slice ordered by tool_name ASC. Transport-agnostic.
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: ToolListInput,
+) ToolListError!ToolListOutput {
+    if (input.kanban_id.len == 0) return error.KanbanIdRequired;
+
+    var q = db.query(allocator,
+        "SELECT tool_name FROM agent_kanban_tools WHERE kanban_id = ? AND enabled = 1 ORDER BY tool_name ASC",
+        &[_][]const u8{input.kanban_id},
+    ) catch return error.QueryFailed;
+    defer q.deinit();
+
+    var list: std.ArrayList([]u8) = .empty;
+    while ((q.next() catch null)) |r| {
+        defer r.deinit(allocator);
+        try list.append(allocator, try allocator.dupe(u8, r.values[0]));
+    }
+    return .{ .tool_names = try list.toOwnedSlice(allocator) };
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+/// Thin orchestrator over `useCase`.
+pub fn agentKanbanToolsListHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const kanban_id = req.params.get("kanban_id") orelse "";
+
+    const output = useCase(allocator, sqlite_db, .{ .kanban_id = kanban_id }) catch |err| {
+        const status: u16 = switch (err) {
+            error.KanbanIdRequired => 400,
+            error.QueryFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.KanbanIdRequired => "kanban_id required",
+            error.QueryFailed => "DB error",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    const data = try std.json.Stringify.valueAlloc(allocator, .{ .tools = output.tool_names }, .{});
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+//
+// impl + tests in one file (project convention). Behavioural coverage:
+//
+//   1. Validation: empty kanban_id → KanbanIdRequired
+//   2. Empty result: board exists but has no tools → empty slice
+//   3. Filter by enabled + ordering ASC
+
+const sqlite = @import("nalarcore").sqlite;
+const testing = std.testing;
+const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(testing.allocator,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &[_][]const u8{},
+    );
+    try Migration081CreateAgentKanbans.up(&db, testing.allocator);
+
+    // Seed: configured kanban + 4 tools in mixed enabled states.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_1', 'ws_1', 'kanban', 'My Board')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_kanbans (id, workspace_item_id) VALUES ('ws_item_1', 'ws_item_1')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_kanban_tools (id, kanban_id, tool_name, enabled) VALUES ('kt_1', 'ws_item_1', 'write_file', 1)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_kanban_tools (id, kanban_id, tool_name, enabled) VALUES ('kt_2', 'ws_item_1', 'bash', 1)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_kanban_tools (id, kanban_id, tool_name, enabled) VALUES ('kt_3', 'ws_item_1', 'read_file', 0)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_kanban_tools (id, kanban_id, tool_name, enabled) VALUES ('kt_4', 'ws_item_1', 'glob', 1)",
+        &[_][]const u8{},
+    );
+
+    // A second configured kanban with no tools.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_empty', 'ws_1', 'kanban', 'Empty')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_kanbans (id, workspace_item_id) VALUES ('ws_item_empty', 'ws_item_empty')",
+        &[_][]const u8{},
+    );
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "useCase: empty kanban_id returns KanbanIdRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.KanbanIdRequired,
+        useCase(alloc, &ctx.db, .{ .kanban_id = "" }),
+    );
+}
+
+test "useCase: board with no tools returns empty slice" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_empty" });
+    defer alloc.free(output.tool_names);
+    try testing.expectEqual(@as(usize, 0), output.tool_names.len);
+}
+
+test "useCase: returns only enabled=1 tools, ordered by tool_name ASC" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{ .kanban_id = "ws_item_1" });
+    defer {
+        for (output.tool_names) |n| alloc.free(n);
+        alloc.free(output.tool_names);
+    }
+    // Seeded: write_file (1), bash (1), read_file (0), glob (1).
+    // Expect: bash, glob, write_file (read_file excluded).
+    try testing.expectEqual(@as(usize, 3), output.tool_names.len);
+    try testing.expectEqualStrings("bash", output.tool_names[0]);
+    try testing.expectEqualStrings("glob", output.tool_names[1]);
+    try testing.expectEqualStrings("write_file", output.tool_names[2]);
+}

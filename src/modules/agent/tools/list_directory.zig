@@ -216,7 +216,7 @@ pub const list_directory_tool = AgentTool{
 // (Zig 0.16 stdlib helper). They do NOT touch ctx.cwd — they call
 // `execute_list_directory` directly with an absolute path resolved by
 // the test. The exec wrapper is tested in
-// src/ai_workflow/tui/agentic_loop/tools_exec_list_directory_test.zig.
+// src/agentic_loop/tools_exec_list_directory_test.zig.
 
 const builtin = @import("builtin");
 const testing = std.testing;

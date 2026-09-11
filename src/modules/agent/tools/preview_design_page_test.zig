@@ -18,13 +18,13 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const preview_design_page = @import("preview_design_page.zig");
 const text_normalize = @import("helpers").text_normalize;
-const design_model = @import("../../../ai_workflow/tui/agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 
 const TOOL_PATH = "src/modules/agent/tools/preview_design_page.zig";
 const ROOT_PATH = "src/root.zig";
-const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
-const TOOLS_PATH = "src/ai_workflow/tui/agentic_loop/tools.zig";
-const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_preview_design_page.zig";
+const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
+const TOOLS_PATH = "src/agentic_loop/tools.zig";
+const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_preview_design_page.zig";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 //! Parse the `<tool>...</tool>` envelope produced by
-//! `src/ai_workflow/tui/agentic_loop/tools_wrap_output.zig`.
+//! `src/agentic_loop/tools_wrap_output.zig`.
 //!
 //! Mirrors the Vue frontend's `tryUnwrapToolOutput` helper (used by
 //! the desktop chatview) — extracts the fields the TUI needs to

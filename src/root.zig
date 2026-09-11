@@ -839,17 +839,17 @@ pub const main_service = service.main_service;
 // `mod.addImport("helpers", helpers_mod)`. Source files inside
 // nalarcore use `@import("helpers")` (not a relative path) to
 // reach it.
-pub const kerjabot_get_session = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const kerjabot_create_session = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const kerjabot_get_list_session = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const tui_check_session_exists = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const session_helpers = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const session_db = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const llm_history = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const agent_memories = @import("ai_workflow/tui/agentic_loop/agent_memories.zig");
+pub const kerjabot_get_session = @import("agentic_loop/llm_history.zig");
+pub const kerjabot_create_session = @import("agentic_loop/llm_history.zig");
+pub const kerjabot_get_list_session = @import("agentic_loop/llm_history.zig");
+pub const tui_check_session_exists = @import("agentic_loop/llm_history.zig");
+pub const session_helpers = @import("agentic_loop/llm_history.zig");
+pub const session_db = @import("agentic_loop/llm_history.zig");
+pub const llm_history = @import("agentic_loop/llm_history.zig");
+pub const agent_memories = @import("agentic_loop/agent_memories.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).
-pub const session_plan = @import("ai_workflow/tui/agentic_loop/session_plan.zig");
+pub const session_plan = @import("agentic_loop/session_plan.zig");
 // Re-export so the exe module (main.zig) can access
 // cleanup_stale_worker.handle for the cron registration WITHOUT
 // directly @import'ing the file (which would put it in two modules
@@ -858,18 +858,18 @@ pub const cleanup_stale_worker = @import("schedulers/cleanup_stale_worker.zig");
 // Re-export cleanup_stale_background_process for the same reason as
 // above — see plan 2026-08-19-cleanup-stale-background-process.
 pub const cleanup_stale_background_process = @import("schedulers/cleanup_stale_background_process.zig");
-pub const workspace_items = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const workspace_item_tasks = @import("ai_workflow/tui/agentic_loop/llm_history.zig");
-pub const http_response = @import("ai_workflow/tui/http_handlers/http_response.zig");
+pub const workspace_items = @import("agentic_loop/llm_history.zig");
+pub const workspace_item_tasks = @import("agentic_loop/llm_history.zig");
+pub const http_response = @import("http_handlers/http_response.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
-pub const http_handlers = @import("ai_workflow/tui/http_handlers/mod.zig");
+pub const http_handlers = @import("http_handlers/mod.zig");
 pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
 pub const event_bus = @import("modules/event_bus/src/event.zig");
 pub const static_files = @import("modules/static_files.zig");
 
 pub const startup = @import("startup.zig");
-pub const agentic_loop_mod = @import("ai_workflow/tui/agentic_loop/workflow.zig");
+pub const agentic_loop_mod = @import("agentic_loop/workflow.zig");
 
 pub const notifications_mod = @import("modules/notification/notifications.zig");
 pub const migrations_mod = @import("migrations/mod.zig");
@@ -879,13 +879,13 @@ test {
     _ = @import("modules/agent/test_runner.zig");
     // Agent Mode helpers: impl + tests in one file. Importing these
     // makes their inline `test` blocks discoverable by `zig build test`.
-    _ = @import("ai_workflow/tui/agentic_loop/agent_tools_allowed.zig");
-    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_knowledge.zig");
-    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_system_prompt.zig");
+    _ = @import("agentic_loop/agent_tools_allowed.zig");
+    _ = @import("agentic_loop/prompts_make_agent_knowledge.zig");
+    _ = @import("agentic_loop/prompts_make_agent_system_prompt.zig");
     // Agent-Kanbans mirror (Migration 081): impl + tests in one file.
-    _ = @import("ai_workflow/tui/agentic_loop/agent_kanban_tools_allowed.zig");
-    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_kanban_knowledge.zig");
-    _ = @import("ai_workflow/tui/agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
+    _ = @import("agentic_loop/agent_kanban_tools_allowed.zig");
+    _ = @import("agentic_loop/prompts_make_agent_kanban_knowledge.zig");
+    _ = @import("agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
     // `databases` package tests run via its own `zig build test`
     // (cd src/modules/databases && zig build test) — see the
     // package's build.zig. The main test step doesn't import them

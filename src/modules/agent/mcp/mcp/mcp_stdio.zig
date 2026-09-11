@@ -547,7 +547,7 @@ pub const StdioClient = struct {
 // compare old vs new and drop stale entries. (Pitfall #5 in plan.)
 //
 // Concurrency: Zig 0.16 removed `std.Thread.Mutex`. We use `std.atomic.Mutex`
-// + spinlock — same pattern as `src/ai_workflow/tui/agentic_loop/stream_snapshot.zig`.
+// + spinlock — same pattern as `src/agentic_loop/stream_snapshot.zig`.
 
 const Entry = struct {
     client: *StdioClient,

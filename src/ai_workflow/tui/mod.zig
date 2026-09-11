@@ -1,46 +1,47 @@
 //! Thin re-export surface for the `tui` module (mounted as `nalarcore.ai_mod.*`).
 //!
-//! As of 2026-08-14, all implementation files live under
-//! `agentic_loop/` (see docs/superpowers/plans/2026-08-14-flatten-tui-into-agentic-loop.md).
-//! This `mod.zig` re-exports them so existing call sites keep working
-//! unchanged.
+//! As of 2026-09-11, the agent loop lives at `src/agentic_loop/` and the
+//! HTTP handlers at `src/http_handlers/` (both flattened from
+//! `src/ai_workflow/tui/`).
+//! This `mod.zig` re-exports it so existing call sites (`nalarcore.ai_mod.*`)
+//! keep working unchanged.
 
 pub const nalarcore = @import("nalarcore");
-pub const models = @import("agentic_loop/models.zig");
-pub const http_handlers = @import("http_handlers/mod.zig");
-pub const ai_workflow = @import("agentic_loop/workflow.zig");
-pub const llm_history = @import("agentic_loop/llm_history.zig");
-pub const on_event_sent = @import("agentic_loop/on_event_sent.zig");
-pub const on_event_sent_kanban = @import("agentic_loop/on_event_sent_kanban.zig");
-pub const on_event_design = @import("agentic_loop/on_event_design.zig");
-pub const on_event_sent_design = @import("agentic_loop/on_event_sent_design.zig");
+pub const models = @import("../../agentic_loop/models.zig");
+pub const http_handlers = @import("../../http_handlers/mod.zig");
+pub const ai_workflow = @import("../../agentic_loop/workflow.zig");
+pub const llm_history = @import("../../agentic_loop/llm_history.zig");
+pub const on_event_sent = @import("../../agentic_loop/on_event_sent.zig");
+pub const on_event_sent_kanban = @import("../../agentic_loop/on_event_sent_kanban.zig");
+pub const on_event_design = @import("../../agentic_loop/on_event_design.zig");
+pub const on_event_sent_design = @import("../../agentic_loop/on_event_sent_design.zig");
 pub const show_preview = @import("../../modules/agent/tools/show_preview.zig");
 pub const generate_image = @import("../../modules/agent/tools/generate_image.zig");
 pub const get_design_context = @import("../../modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("../../modules/agent/tools/preview_design_page.zig");
-pub const active_loops = @import("agentic_loop/ActiveLoops.zig").ActiveLoops;
-pub const delete_worker = @import("agentic_loop/delete_worker.zig");
+pub const active_loops = @import("../../agentic_loop/ActiveLoops.zig").ActiveLoops;
+pub const delete_worker = @import("../../agentic_loop/delete_worker.zig");
 // Background-command completion queue (bg-completion Task 1+2) — pure log
 // helpers + completion envelope, consumed by the
 // schedulers/cleanup_stale_background_process.zig cron via
 // `nalarcore.ai_mod.background_process` (same routing pattern as
 // delete_worker above: never @import the file directly from the
 // scheduler, or the exe module ends up owning it twice).
-pub const background_process = @import("agentic_loop/background_process.zig");
+pub const background_process = @import("../../agentic_loop/background_process.zig");
 pub const routines = @import("routines/mod.zig");
-pub const startup = @import("agentic_loop/startup.zig");
-pub const kanban_model = @import("agentic_loop/kanban_model.zig");
-pub const design_io = @import("agentic_loop/design_io.zig");
-pub const design_model = @import("agentic_loop/design_model.zig");
-pub const inherited_context = @import("agentic_loop/inherited_context.zig");
-pub const agent_memories = @import("agentic_loop/agent_memories.zig");
+pub const startup = @import("../../agentic_loop/startup.zig");
+pub const kanban_model = @import("../../agentic_loop/kanban_model.zig");
+pub const design_io = @import("../../agentic_loop/design_io.zig");
+pub const design_model = @import("../../agentic_loop/design_model.zig");
+pub const inherited_context = @import("../../agentic_loop/inherited_context.zig");
+pub const agent_memories = @import("../../agentic_loop/agent_memories.zig");
 // In-flight stream snapshot registry (task_1787673548905_0
 // stream-resume-on-reselect) — read by http_handlers/stream_get.zig.
-pub const stream_snapshot = @import("agentic_loop/stream_snapshot.zig");
+pub const stream_snapshot = @import("../../agentic_loop/stream_snapshot.zig");
 // Live spawn-batch snapshot registry (task_1788505292766_1
 // spawn-subagent-refresh-persist) — mirrored on every progress emit,
 // read by http_handlers/subagent_progress_get.zig.
-pub const subagent_progress = @import("agentic_loop/subagent_progress.zig");
+pub const subagent_progress = @import("../../agentic_loop/subagent_progress.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;

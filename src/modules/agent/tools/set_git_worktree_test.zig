@@ -193,21 +193,21 @@ test "deriveBranchFromPath returns worktree/<basename>" {
 
 // ─── Static wiring tests (Chunk 3) ───────────────────────────────────────
 
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
+const TOOL_REGISTRY_PATH = "src/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 /// The exec function was migrated from `tool_registry.zig` to
-/// `src/ai_workflow/tui/agentic_loop/tools_exec_set_git_worktree.zig`
+/// `src/agentic_loop/tools_exec_set_git_worktree.zig`
 /// (re-exported as `agentic_loop_mod.tools.execSetGitWorktree`).
-const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_set_git_worktree.zig";
+const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_set_git_worktree.zig";
 /// The cwd_override field moved with the rest of ToolExecContext to
-/// `src/ai_workflow/tui/agentic_loop/tools.zig`. This is the new
+/// `src/agentic_loop/tools.zig`. This is the new
 /// canonical home of the struct declaration.
-const TOOL_EXEC_CONTEXT_PATH = "src/ai_workflow/tui/agentic_loop/tools.zig";
+const TOOL_EXEC_CONTEXT_PATH = "src/agentic_loop/tools.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
-/// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
+/// `src/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
 /// Each entry in that comptime `tools_list` array uses the
 /// trailing-comma format (`.tool_name,`) that this test grep matches.
-const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
+const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
 
 test "tools_equipped.zig imports set_git_worktree module" {
     // After deduplication of `UNIFIED_TOOL_REGISTRY` (2026-08-06), the

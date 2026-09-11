@@ -1,0 +1,307 @@
+//! `PATCH /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move`.
+//!
+//! Move a task to a different kanban column (and/or reorder within
+//! its column).
+//!
+//! Body: `{column_id, position}` — both required. The frontend fires
+//! this from the drag-and-drop handler after a card is dropped on a
+//! different column (or a different slot within the same column).
+//!
+//! Response shape: `{"success": true, task_id, column_id, position}`.
+//!
+//! Layered as `useCase` (validate + move + emit SSE) and a thin
+//! handler that maps the outcome + errors to status codes / JSON.
+//!
+//! Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
+//!   (Chunk 3, Task 3.7)
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const http_response = @import("http_response.zig");
+const kanban_model = @import("../agentic_loop/kanban_model.zig");
+const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
+
+/// Request body for task-move.
+const MoveTaskBody = struct {
+    column_id: []const u8,
+    position: i64,
+};
+
+/// Response shape for task-move.
+const MoveTaskResponse = struct {
+    success: bool = true,
+    task_id: []const u8,
+    column_id: []const u8,
+    position: i64,
+};
+
+pub const TasksMoveError = error{
+    ItemIdRequired,
+    TaskIdRequired,
+    MissingBody,
+    InvalidJson,
+    ColumnIdRequired,
+    MoveFailed,
+    /// `std.json.Stringify.valueAlloc` can fail with `OutOfMemory`.
+    /// Unreachable on the per-request arena, but the type system
+    /// requires the variant.
+    OutOfMemory,
+};
+
+pub const TasksMoveInput = struct {
+    item_id: []const u8,
+    workspace_id: []const u8,
+    task_id: []const u8,
+    body: MoveTaskBody,
+};
+
+pub const TasksMoveResult = []const u8; // pre-serialized JSON
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: TasksMoveInput,
+) TasksMoveError!TasksMoveResult {
+    if (input.item_id.len == 0) return error.ItemIdRequired;
+    if (input.task_id.len == 0) return error.TaskIdRequired;
+    if (input.body.column_id.len == 0) return error.ColumnIdRequired;
+
+    kanban_model.moveTask(
+        allocator,
+        db,
+        input.item_id,
+        input.task_id,
+        input.body.column_id,
+        input.body.position,
+    ) catch return error.MoveFailed;
+
+    // Emit SSE event so other connected clients refresh their
+    // kanban view. action="moved" matches the frontend's
+    // `KanbanTaskEvent` union variant. `moveTask` renumbers
+    // sibling positions in both source and destination columns —
+    // the frontend re-fetches the full column+task layout on
+    // every move, so a simple re-fetch keeps all boards in sync
+    // without patching in-place. The emit is fire-and-forget;
+    // failures are logged but do NOT fail the request.
+    on_event_sent_kanban.onEventSendKanbanTask(allocator, .{
+        .action = "moved",
+        .workspace_id = input.workspace_id,
+        .item_id = input.item_id,
+        .task_id = input.task_id,
+        .new_column_id = input.body.column_id,
+        .new_position = input.body.position,
+    }) catch |err| {
+        std.log.warn(
+            "tasks_move: SSE emit failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
+    };
+
+    // Chunk 5 of kanban-task-notification-icon: dragging a card to
+    // another column is the most visible "human touch" — stamp
+    // last_human_touched_at so the kanban card flips from the
+    // orange "awaiting review" dot to the green "reviewed" checkmark
+    // the moment the drop fires. Fire-and-forget: a failed stamp
+    // doesn't fail the move (the move is already committed).
+    nalarcore.ai_mod.llm_history.updateTaskLastHumanTouchedAt(
+        allocator,
+        db,
+        input.task_id,
+        null,
+    ) catch |err| {
+        std.log.warn(
+            "tasks_move: stamp last_human_touched_at failed (non-fatal): {s}",
+            .{@errorName(err)},
+        );
+    };
+
+    return try std.json.Stringify.valueAlloc(allocator, MoveTaskResponse{
+        .task_id = input.task_id,
+        .column_id = input.body.column_id,
+        .position = input.body.position,
+    }, .{});
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+pub fn tasksMoveHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const item_id = req.params.get("item_id") orelse "";
+    if (item_id.len == 0) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "item_id required" }),
+        });
+    }
+    // workspace_id is required for the SSE payload (the frontend
+    // filters events for the active workspace). Empty is fine —
+    // the SSE event will still be emitted with workspace_id="".
+    const ws_id = req.params.get("workspace_id") orelse "";
+    const task_id = req.params.get("task_id") orelse "";
+    if (task_id.len == 0) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "task_id required" }),
+        });
+    }
+
+    if (req.body.len == 0) {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Request body required" }),
+        });
+    }
+
+    const parsed = std.json.parseFromSliceLeaky(MoveTaskBody, allocator, req.body, .{}) catch {
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }),
+        });
+    };
+
+    const data = useCase(allocator, sqlite_db, .{
+        .item_id = item_id,
+        .workspace_id = ws_id,
+        .task_id = task_id,
+        .body = parsed,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.ItemIdRequired => 400,
+            error.TaskIdRequired => 400,
+            error.MissingBody => 400,
+            error.InvalidJson => 400,
+            error.ColumnIdRequired => 400,
+            error.MoveFailed => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.ItemIdRequired => "item_id required",
+            error.TaskIdRequired => "task_id required",
+            error.MissingBody => "Request body required",
+            error.InvalidJson => "Invalid JSON body",
+            error.ColumnIdRequired => "column_id is required",
+            error.MoveFailed => "Failed to move task",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// ===== Tests merged from tasks_move_test.zig (2026-09-11 flatten) =====
+// Static regression checks for the `PATCH /tasks/:task_id/move` handler.
+// 
+// Why this file exists
+// ────────────────────
+// The task-move endpoint is the backend target of the kanban board's
+// drag-and-drop interaction. The handler must:
+//   1. Read `item_id` and `task_id` from the path params.
+//   2. Parse `{column_id, position}` from the JSON body via
+//      `parseFromSliceLeaky`.
+//   3. Call `kanban_model.moveTask(...)`.
+//   4. Return 200 with a `{success, task_id, column_id, position}` body.
+// 
+// Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
+//   (Chunk 3, Task 3.7)
+
+const testing = std.testing;
+const text_normalize = @import("helpers").text_normalize;
+
+const HANDLER_PATH = "src/http_handlers/tasks_move.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy
+    return normalized;
+}
+
+test "tasks_move handler calls kanban_model.moveTask" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "kanban_model.moveTask") == null) {
+        std.debug.print(
+            "\n!! {s} does not call kanban_model.moveTask !!\n" ++
+                "   The move-pipeline contract is broken. Restore:\n" ++
+                "     kanban_model.moveTask(allocator, sqlite_db, item_id, task_id, parsed.column_id, parsed.position) catch ...;\n",
+            .{HANDLER_PATH},
+        );
+        return error.MoveTaskCallMissing;
+    }
+}
+
+test "tasks_move handler extracts column_id and position from body" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, ".column_id") == null) {
+        std.debug.print(
+            "\n!! {s} does not extract .column_id from the parsed body !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.ColumnIdExtractionMissing;
+    }
+    if (std.mem.indexOf(u8, source, ".position") == null) {
+        std.debug.print(
+            "\n!! {s} does not extract .position from the parsed body !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.PositionExtractionMissing;
+    }
+}
+
+test "tasks_move handler uses parseFromSliceLeaky for the body" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "parseFromSliceLeaky") == null) {
+        std.debug.print(
+            "\n!! {s} does not use parseFromSliceLeaky !!\n" ++
+                "   The PATCH body must be parsed via `parseFromSliceLeaky`.\n",
+            .{HANDLER_PATH},
+        );
+        return error.ParseFromSliceLeakyMissing;
+    }
+}
+
+test "tasks_move handler returns 200 on success" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, ".status_code = 200") == null) {
+        std.debug.print(
+            "\n!! {s} does not return 200 on success !!\n",
+            .{HANDLER_PATH},
+        );
+        return error.Status200Missing;
+    }
+}

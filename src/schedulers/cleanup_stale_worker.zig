@@ -4,7 +4,7 @@ const sqlite = nalarcore.sqlite;
 // Route `delete_worker` and `ActiveLoops` through `nalarcore` (the
 // `root` module) instead of @import'ing them directly. The exe
 // module compiles `main.zig` which imports `cleanup_stale_worker.zig`;
-// if we reach into `src/ai_workflow/tui/agentic_loop/` directly, those
+// if we reach into `src/agentic_loop/` directly, those
 // files end up in TWO modules (root via root.zig → mod.zig AND main
 // via cleanup_stale_worker.zig) and Zig's "file exists in two modules"
 // error fires. The exe module already has `nalarcore` as an import

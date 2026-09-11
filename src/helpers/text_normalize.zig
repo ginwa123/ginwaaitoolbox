@@ -27,7 +27,7 @@
 //!     test.git_status.zig: not-a-git-repo branch returns 200, not 500'
 //!     failed:
 //!        !! could not find `is_git_repo = false` response literal
-//!        in src/ai_workflow/tui/http_handlers/git_status.zig !!
+//!        in src/http_handlers/git_status.zig !!
 //! ```
 //!
 //! The literal IS in the file — but only with CRLF endings, so the
@@ -75,9 +75,9 @@
 //! Every static-contract test that does multi-line literal matching.
 //! Examples that MUST use this helper:
 //!
-//!   - `src/ai_workflow/tui/http_handlers/git_status_test.zig`
+//!   - `src/http_handlers/git_status_test.zig`
 //!   - `src/modules/agent/tools/set_git_worktree_test.zig`
-//!   - `src/ai_workflow/tui/http_handlers/kanban_*_test.zig`
+//!   - `src/http_handlers/kanban_*_test.zig`
 //!   - any other `*_test.zig` that uses `indexOf` on a multi-line
 //!     literal against source bytes.
 //!

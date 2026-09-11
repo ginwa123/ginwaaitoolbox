@@ -124,7 +124,7 @@ test "command-only registry: tools_equipped wires command, not bash/pwsh (static
     // closed and prints an actionable error.
     const tools_equipped_src = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "src/ai_workflow/tui/agentic_loop/tools_equipped.zig",
+        "src/agentic_loop/tools_equipped.zig",
         testing.allocator,
         std.Io.Limit.unlimited,
     );

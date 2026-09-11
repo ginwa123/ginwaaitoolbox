@@ -342,8 +342,8 @@ test "save_memory_tool: UPSERTs on second call with same id (updated_at bumps)" 
 
     // Sleep 1 second so the UPDATE bumps the timestamp (DATETIME resolution).
     // Use a portable helper because std.c.timespec is broken on Windows
-    // (Zig 0.16 — see ../../ai_workflow/tui/agentic_loop/test_sleep.zig).
-    const test_sleep = @import("../../../ai_workflow/tui/agentic_loop/test_sleep.zig");
+    // (Zig 0.16 — see ../../../agentic_loop/test_sleep.zig).
+    const test_sleep = @import("../../../agentic_loop/test_sleep.zig");
     test_sleep.sleep(1, 0);
 
     const input2 = save_memory_mod.SaveMemoryInput{

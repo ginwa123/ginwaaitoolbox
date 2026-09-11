@@ -3006,9 +3006,9 @@ test "search.zig rejects negative line_number instead of @intCast panicking" {
 
 test "agentic_loop/tools_exec_search.zig maps new SearchErrors to LLM-friendly messages" {
     // After the migration, the search exec function lives in
-    // `src/ai_workflow/tui/agentic_loop/tools_exec_search.zig` (re-exported
+    // `src/agentic_loop/tools_exec_search.zig` (re-exported
     // via `agentic_loop_mod.tools.execSearch`).
-    const source = try readSource(testing.allocator, "src/ai_workflow/tui/agentic_loop/tools_exec_search.zig");
+    const source = try readSource(testing.allocator, "src/agentic_loop/tools_exec_search.zig");
     defer testing.allocator.free(source);
 
     // Each new error variant must be mentioned in the switch on err.
@@ -3025,9 +3025,9 @@ test "agentic_loop/tools_exec_search.zig maps new SearchErrors to LLM-friendly m
 
 test "agentic_loop/tools_exec_search.zig honors group_by_file flag (no longer dead code)" {
     // After the migration, the search exec function lives in
-    // `src/ai_workflow/tui/agentic_loop/tools_exec_search.zig` (re-exported
+    // `src/agentic_loop/tools_exec_search.zig` (re-exported
     // via `agentic_loop_mod.tools.execSearch`).
-    const source = try readSource(testing.allocator, "src/ai_workflow/tui/agentic_loop/tools_exec_search.zig");
+    const source = try readSource(testing.allocator, "src/agentic_loop/tools_exec_search.zig");
     defer testing.allocator.free(source);
 
     // The registry must branch on parsed.value.group_by_file and call

@@ -1,6 +1,6 @@
 const std = @import("std");
 const prompts = @import("prompts.zig");
-const prompts_mod = @import("../../ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+const prompts_mod = @import("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
 const tool_models = @import("nalarcore").tool_models;
 const AgentTool = tool_models.AgentTool;
 const AgentToolFunction = tool_models.AgentToolFunction;
@@ -1541,7 +1541,7 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
 // -------------------------------------------------------------------------
 // Regression: build_agent_prompt was moved from
 // src/modules/agent/prompts.zig into
-// src/ai_workflow/tui/agentic_loop/prompts_build_messages_for_agent_prompt.zig
+// src/agentic_loop/prompts_build_messages_for_agent_prompt.zig
 // on 2026-08-23 (plan:
 // docs/superpowers/plans/2026-08-23-move-build-agent-prompt-body.md).
 // This test pins the byte-level ordering of the rendered prompt so any
