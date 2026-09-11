@@ -95,11 +95,13 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\      "## Your Active Agent Configuration" block in the system prompt)
         \\- The agent_name is also used as the sub-agent's label in
         \\  the result XML (the <agent name="..."> attribute).
-        \\- Resolution: when the parent session has a profile selected
-        \\  (`selected_profile_model`), the name is looked up in that
-        \\  profile's `sub_agents` first, then in the top-level
-        \\  `sub_agents` array. With no profile selected, only the
-        \\  top-level list is consulted.
+        \\- Resolution: the name is looked up in the parent session's
+        \\  profile (`selected_profile_model`) and its `sub_agents` list
+        \\  only (per-profile-only — there is no top-level fallback).
+        \\- If you are unsure which agent_name values exist or which fits
+        \\  the job, call list_sub_agent first — it shows full specs
+        \\  (model, tuning, system prompt); absent optional tags mean
+        \\  'inherits the profile default'.
         \\- If the name is NOT found, a random name of the form
         \\  "agent-{16 hex chars}" is generated for tracking, and the
         \\  orchestrator's default model / api_key / base_url / url_style
@@ -131,7 +133,7 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\                                          //   include ALL context the agent needs.
                     \\      "agent_name": "code-reviewer"       // Required. Name of a pre-configured sub-agent
                     \\                                          //   (looked up in the active profile's sub_agents
-                    \\                                          //   first, then top-level). Also used as the
+                    \\                                          //   only). Also used as the
                     \\                                          //   sub-agent's label in the result XML.
                     \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
                     \\      "timeout_seconds": 300,             // Optional. Timeout in seconds (0 = no limit).
