@@ -2,28 +2,53 @@
 //
 // Tests for the desktop's "find nalar" logic.
 //
-// These tests use a raw-syscall mock HTTP server (kernel-picked port)
-// and a hand-rolled state.json so the resolve/probe plumbing can be
-// exercised without depending on whether a real nalar daemon happens
-// to be running on the host. See subprocess_test.zig for the same
-// pattern (kernel-picked port + accept-loop in a thread) — extracted
-// rather than shared to keep the modules independently testable.
+// These tests stand up a real loopback HTTP server on a kernel-picked port
+// whose responses are path-aware, plus a hand-rolled state.json, so the
+// resolve/probe plumbing is exercised over a real socket without depending
+// on whether a nalar binary happens to exist on the host. See
+// subprocess_test.zig for the same pattern (kernel-picked port + accept
+// loop in a background thread).
+//
+// The regression these lock in: a server that answers `GET /health` with
+// 200 but `GET /` with 404 must NEVER be handed to the webview. That shape
+// is exactly what a daemon whose `--static-dir` was deleted looks like —
+// the desktop attached to it and rendered a blank "404 Not Found" page.
 
 const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
 const attach = @import("attach.zig");
+const subprocess = @import("subprocess.zig");
 
-/// Bind a TCP socket on 127.0.0.1:0, listen, run a one-shot accept loop
-/// in a background thread that writes a single HTTP 200 response for
-/// any incoming request, and return the kernel-picked port + the
-/// thread handle (caller is responsible for joining it).
-///
-/// Returns `null` on any setup failure (the caller should treat this
-/// as a deferred error so test bodies can stay focused on the
-/// assertion shape).
-fn bindMockHealthServer() !struct { port: u16, thread: std.Thread } {
+/// What the mock server pretends to be.
+const MockKind = enum {
+    /// A working nalar: 200 + HTML at `/`, 200 at `/health`.
+    full_app,
+    /// The broken shape: 200 at `/health`, `404 Not Found` at `/`.
+    health_only,
+};
+
+const MockServer = struct {
+    fd: i32,
+    port: u16,
+    thread: std.Thread,
+    stop_flag: *std.atomic.Value(bool),
+
+    /// Stop the accept loop deterministically. The loop polls the listening
+    /// socket with a timeout and checks the flag, so this always returns
+    /// (no relying on shutdown()/close() to wake a blocked accept()).
+    fn stop(self: *MockServer) void {
+        self.stop_flag.store(true, .release);
+        self.thread.join();
+        _ = std.os.linux.close(self.fd);
+        testing.allocator.destroy(self.stop_flag);
+    }
+};
+
+/// Bind 127.0.0.1:0, listen, and serve requests in a background thread
+/// according to `kind`. Returns the kernel-picked port + the thread handle.
+fn bindMockServer(kind: MockKind) !MockServer {
     const fd_rc = std.os.linux.socket(
         std.os.linux.AF.INET,
         std.os.linux.SOCK.STREAM,
@@ -32,8 +57,8 @@ fn bindMockHealthServer() !struct { port: u16, thread: std.Thread } {
     if (fd_rc > std.math.maxInt(i32)) return error.TestSetupFailed;
     const fd: i32 = @intCast(fd_rc);
 
-    // SO_REUSEADDR so the kernel doesn't hold the port in TIME_WAIT
-    // after the test exits (lets consecutive test runs reuse the port).
+    // SO_REUSEADDR so the kernel doesn't hold the port in TIME_WAIT after
+    // the test exits (lets consecutive test runs reuse the port).
     const one: c_int = 1;
     _ = std.os.linux.setsockopt(
         fd,
@@ -59,84 +84,301 @@ fn bindMockHealthServer() !struct { port: u16, thread: std.Thread } {
     _ = std.os.linux.getsockname(fd, @ptrCast(&assigned), &addr_len);
     const port = std.mem.bigToNative(u16, assigned.port);
 
-    const listen_rc = std.os.linux.listen(fd, 4);
+    const listen_rc = std.os.linux.listen(fd, 8);
     if (listen_rc != 0) {
         _ = std.os.linux.close(fd);
         return error.TestSetupFailed;
     }
 
+    const stop_flag = try testing.allocator.create(std.atomic.Value(bool));
+    stop_flag.* = std.atomic.Value(bool).init(false);
+
     const thread = try std.Thread.spawn(.{}, struct {
-        fn run(server_fd: i32) void {
-            // Two accepts: one for the health probe, one extra in case
-            // resolveAttachTarget probes twice (state file + fallback
-            // port). Each accept → write 200 → close.
-            var accepts_left: u8 = 4;
-            while (accepts_left > 0) : (accepts_left -= 1) {
+        fn run(server_fd: i32, mock_kind: MockKind, flag: *std.atomic.Value(bool)) void {
+            while (!flag.load(.acquire)) {
+                // Poll first so the stop flag is observed even when no
+                // client ever connects again.
+                var pfd = [_]std.posix.pollfd{.{
+                    .fd = server_fd,
+                    .events = std.posix.POLL.IN,
+                    .revents = 0,
+                }};
+                const ready = std.posix.poll(&pfd, 50) catch continue;
+                if (ready == 0) continue;
+
                 const conn_rc = std.os.linux.accept(server_fd, null, null);
-                if (conn_rc > std.math.maxInt(i32)) continue;
+                switch (std.posix.errno(conn_rc)) {
+                    .SUCCESS => {},
+                    // Spurious wakeups: keep serving.
+                    .INTR, .AGAIN => continue,
+                    // Anything else (including the loop being torn down):
+                    // give up rather than spin.
+                    else => return,
+                }
                 const conn_fd: i32 = @intCast(conn_rc);
-                const resp = "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nOK";
-                _ = std.os.linux.write(conn_fd, resp.ptr, resp.len);
+                serveOne(conn_fd, mock_kind);
                 _ = std.os.linux.close(conn_fd);
             }
-            _ = std.os.linux.close(server_fd);
         }
-    }.run, .{fd});
+    }.run, .{ fd, kind, stop_flag });
 
-    // Give the server thread time to enter accept() before the client
+    // Give the thread time to enter poll()/accept() before the client
     // attempts to connect (without this, a fast client can win the race
     // against listen()).
     var ts: std.posix.timespec = .{ .sec = 0, .nsec = 50 * std.time.ns_per_ms };
     _ = std.c.nanosleep(&ts, null);
 
-    return .{ .port = port, .thread = thread };
+    return .{ .fd = fd, .port = port, .thread = thread, .stop_flag = stop_flag };
 }
 
-test "resolveAttachTarget returns state-file port when probe succeeds" {
-    if (builtin.os.tag == .windows) return; // mock server uses raw linux syscalls
-    const allocator = testing.allocator;
+/// Read the request line, then answer according to `kind`. `/health` is
+/// always 200 — the point of these fixtures is that health alone is not
+/// a sufficient signal.
+fn serveOne(conn_fd: i32, kind: MockKind) void {
+    var req: [512]u8 = undefined;
+    var req_len: usize = 0;
+    while (req_len < req.len) {
+        const n_rc = std.os.linux.read(conn_fd, req[req_len..].ptr, req.len - req_len);
+        if (n_rc <= 0) break;
+        req_len += @intCast(n_rc);
+        if (std.mem.indexOf(u8, req[0..req_len], "\r\n\r\n") != null) break;
+    }
+    const wants_health = std.mem.indexOf(u8, req[0..req_len], "/health") != null;
 
-    // 1. Stand up a mock /health server on a kernel-picked port. We'll
-    // point the state file at this port so probeHealth should succeed.
-    var srv = try bindMockHealthServer();
-    defer srv.thread.join();
+    const resp: []const u8 = if (wants_health)
+        "HTTP/1.0 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+    else if (kind == .full_app)
+        "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: 21\r\nConnection: close\r\n\r\n<!DOCTYPE html><html>"
+    else
+        "HTTP/1.0 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot Found";
+    _ = std.os.linux.write(conn_fd, resp.ptr, resp.len);
+}
 
-    // 2. Write a state.json pointing at the mock server. We use a
-    // different port in the JSON than the file's "host" implies —
-    // probeHealth ignores the host and uses port only, but we keep
-    // them consistent for realism.
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
+/// Write a state.json into `tmp`'s dir and return its owned absolute path.
+fn writeStateFile(
+    allocator: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    port: u16,
+) ![]u8 {
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
-    const tmp_dir_path = dir_buf[0..dir_len];
+    const path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "state.json" });
+    errdefer allocator.free(path);
 
-    const path = try allocator.alloc(u8, tmp_dir_path.len + 1 + "state.json".len);
-    defer allocator.free(path);
-    @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);
-    path[tmp_dir_path.len] = '/';
-    @memcpy(path[tmp_dir_path.len + 1..], "state.json");
-
-    const json = try std.fmt.allocPrint(allocator,
+    const json = try std.fmt.allocPrint(
+        allocator,
         \\{{"pid":{d},"port":{d},"host":"127.0.0.1","started_at":0,"version":"x","static_dir":null}}
-    , .{ std.c.getpid(), srv.port });
+    ,
+        .{ std.c.getpid(), port },
+    );
     defer allocator.free(json);
 
     try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = json });
+    return path;
+}
 
-    // 3. resolveAttachTarget should read the state file, probe the
-    // mock server, and return with the state file's port+host. The
-    // --no-auto-start flag short-circuits the auto-spawn fallback so
-    // we don't need a real nalar binary on disk.
+/// Fake `nalar` binary used by the auto-spawn test. It binds the port in
+/// `--port`, answers every request with 200 + HTML (so both the health poll
+/// and the webapp check pass), and exits on its own after a few seconds so
+/// the test cannot leak a process.
+///
+/// Exposed as a script rather than a stub executable so the test exercises
+/// the real spawn path: argv shape, readiness polling, and the post-spawn
+/// "does it actually serve the app?" verification.
+const fake_nalar_script =
+    \\#!/usr/bin/env python3
+    \\import socket, sys, time
+    \\
+    \\argv = sys.argv[1:]
+    \\port = int(argv[argv.index("--port") + 1])
+    \\
+    \\srv = socket.socket()
+    \\srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    \\srv.bind(("127.0.0.1", port))
+    \\srv.listen(8)
+    \\srv.settimeout(0.5)
+    \\
+    \\body = b"<!DOCTYPE html><html><body>fake nalar</body></html>"
+    \\headers = (
+    \\    b"HTTP/1.0 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
+    \\    + str(len(body)).encode()
+    \\    + b"\r\nConnection: close\r\n\r\n"
+    \\)
+    \\
+    \\deadline = time.time() + 5.0
+    \\while time.time() < deadline:
+    \\    try:
+    \\        conn, _addr = srv.accept()
+    \\    except socket.timeout:
+    \\        continue
+    \\    try:
+    \\        conn.recv(4096)
+    \\        conn.sendall(headers + body)
+    \\    except Exception:
+    \\        pass
+    \\    finally:
+    \\        conn.close()
+    \\srv.close()
+    \\
+;
+
+/// Materialise `fake_nalar_script` in `tmp`'s dir, mark it executable, and
+/// return its owned absolute path.
+fn writeFakeNalar(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) ![]u8 {
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "fake-nalar" });
+    errdefer allocator.free(path);
+
+    try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = fake_nalar_script });
+
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (path.len >= path_buf.len) return error.PathTooLong;
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    if (std.c.chmod(&path_buf, 0o755) != 0) return error.ChmodFailed;
+    return path;
+}
+
+fn fileExists(path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    if (path.len >= buf.len) return false;
+    @memcpy(buf[0..path.len], path);
+    buf[path.len] = 0;
+    return std.c.access(&buf, std.c.F_OK) == 0;
+}
+
+test "probeWebapp: 200 + HTML is servable, 200 /health + 404 at / is not" {
+    if (builtin.os.tag == .windows) return; // mock server uses raw linux syscalls
+    var app = try bindMockServer(.full_app);
+    defer app.stop();
+    var broken = try bindMockServer(.health_only);
+    defer broken.stop();
+
+    // Both look healthy to the old check...
+    try testing.expect(subprocess.probeHealth(app.port));
+    try testing.expect(subprocess.probeHealth(broken.port));
+
+    // ...but only the real one can serve the app.
+    try testing.expect(subprocess.probeWebapp(app.port));
+    try testing.expect(!subprocess.probeWebapp(broken.port));
+}
+
+test "resolveAttachTarget attaches to a daemon that serves the webapp" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = testing.allocator;
+
+    var srv = try bindMockServer(.full_app);
+    defer srv.stop();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state_path = try writeStateFile(allocator, &tmp, srv.port);
+    defer allocator.free(state_path);
+
+    // --no-auto-start short-circuits the spawn fallback so the test needs
+    // no nalar binary on disk; a successful attach is the only way to get
+    // a target back.
     const result = try attach.resolveAttachTarget(allocator, testing.io, .{
-        .state_path = path,
-        .default_port = srv.port, // a different fallback (not used)
+        .state_path = state_path,
+        .default_port = srv.port,
         .no_auto_start = true,
     });
     defer allocator.free(result.host);
     try testing.expectEqual(@as(u16, srv.port), result.port);
     try testing.expectEqualStrings("127.0.0.1", result.host);
     try testing.expect(!result.we_spawned);
+}
+
+test "resolveAttachTarget refuses a daemon whose static dir is gone (health 200, / 404)" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = testing.allocator;
+
+    // This is the exact shape of the reported bug: a detached nalar whose
+    // --static-dir was deleted. /health is 200, / is 404 Not Found.
+    var srv = try bindMockServer(.health_only);
+    defer srv.stop();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state_path = try writeStateFile(allocator, &tmp, srv.port);
+    defer allocator.free(state_path);
+
+    // With auto-start disabled the only acceptable outcomes are "error" —
+    // attaching would mean opening the webview onto a 404 page.
+    const result = attach.resolveAttachTarget(allocator, testing.io, .{
+        .state_path = state_path,
+        .default_port = srv.port,
+        .no_auto_start = true,
+    });
+    try testing.expectError(error.AutoStartDisabled, result);
+}
+
+test "resolveAttachTarget falls through to a fresh spawn when the only daemon 404s /" {
+    if (builtin.os.tag == .windows) return;
+    if (!fileExists("/usr/bin/env")) return error.SkipZigTest; // fake nalar needs python3
+    const allocator = testing.allocator;
+
+    var srv = try bindMockServer(.health_only);
+    defer srv.stop();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const state_path = try writeStateFile(allocator, &tmp, srv.port);
+    defer allocator.free(state_path);
+
+    // Stand-in for the real nalar binary: a script that binds the --port it
+    // is given and answers everything with 200 + HTML, then exits on its own
+    // so the test can't leak a process.
+    const fake_nalar = try writeFakeNalar(allocator, &tmp);
+    defer allocator.free(fake_nalar);
+
+    // Auto-start is ON and the only daemon around 404s `/`. The desktop must
+    // skip that daemon and spawn its own on a DIFFERENT port — the port the
+    // squatter holds can't be bound, and its /health would have masked the
+    // failure.
+    const result = try attach.resolveAttachTarget(allocator, testing.io, .{
+        .state_path = state_path,
+        .default_port = srv.port,
+        .no_auto_start = false,
+        .nalar_path = fake_nalar,
+    });
+    defer allocator.free(result.host);
+
+    try testing.expect(result.we_spawned);
+    try testing.expect(result.port != srv.port);
+
+    // The returned target must actually serve the app — that is the whole
+    // contract: the webview is only ever pointed at an app-serving URL.
+    try testing.expect(subprocess.probeWebapp(result.port));
+
+    // The unusable daemon must have been left alone, not killed.
+    try testing.expect(subprocess.probeHealth(srv.port));
+}
+
+test "resolveAttachTarget refuses a 404-ing daemon on the fallback port too" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = testing.allocator;
+
+    var srv = try bindMockServer(.health_only);
+    defer srv.stop();
+
+    // No state file at all: the code falls back to probing the well-known
+    // port, which is where the leftover daemon from the previous launch
+    // lives.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const state_path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "absent.json" });
+    defer allocator.free(state_path);
+
+    const result = attach.resolveAttachTarget(allocator, testing.io, .{
+        .state_path = state_path,
+        .default_port = srv.port,
+        .no_auto_start = true,
+    });
+    try testing.expectError(error.AutoStartDisabled, result);
 }
 
 test "resolveAttachTarget returns AutoStartDisabled when --no-auto-start and no nalar" {
@@ -151,13 +393,8 @@ test "resolveAttachTarget returns AutoStartDisabled when --no-auto-start and no 
     defer tmp.cleanup();
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
-    const tmp_dir_path = dir_buf[0..dir_len];
-
-    const path = try allocator.alloc(u8, tmp_dir_path.len + 1 + "state.json".len);
+    const path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "state.json" });
     defer allocator.free(path);
-    @memcpy(path[0..tmp_dir_path.len], tmp_dir_path);
-    path[tmp_dir_path.len] = '/';
-    @memcpy(path[tmp_dir_path.len + 1..], "state.json");
 
     const result = attach.resolveAttachTarget(allocator, testing.io, .{
         .state_path = path,

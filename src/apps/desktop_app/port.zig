@@ -39,3 +39,20 @@ pub fn findFree(allocator: std.mem.Allocator, io: std.Io) !FreePort {
     const port = server.socket.address.getPort();
     return .{ .port = port, .path = null };
 }
+
+/// Best-effort "nothing is listening on 127.0.0.1:`port`" check.
+///
+/// The probe socket is closed before returning, so this is a *hint* — a
+/// TOCTOU race with another process is possible. Callers use it to decide
+/// whether a spawned child can actually bind the port, which matters when
+/// the well-known desktop port is already held by a foreign (or broken)
+/// server: binding would fail, but that foreign server's `/health` would
+/// still answer our readiness probe, so the failure has to be predicted
+/// BEFORE spawning rather than diagnosed afterwards.
+pub fn isFree(allocator: std.mem.Allocator, io: std.Io, port: u16) bool {
+    _ = allocator;
+    const address = std.Io.net.IpAddress.parseIp4("127.0.0.1", port) catch return false;
+    var server = address.listen(io, .{}) catch return false;
+    server.deinit(io);
+    return true;
+}
