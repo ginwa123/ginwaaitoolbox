@@ -7,15 +7,14 @@
  * .vue for the kanban card). The components now share this composable
  * for:
  *
- *   - The six event handlers (select / delete / rename / edit-routine /
- *     run / pin). The handlers emit the same payload shape the parent
+ *   - The four event handlers (select / delete / rename /
+ *     pin). The handlers emit the same payload shape the parent
  *     (<WorkspaceItem> and <KanbanCard>) re-emits verbatim — see
  *     docs/plans/2026-07-01-change-task-to-card-kanban.md.
- *   - The routine-specific computeds (isRoutine, statusColor,
- *     statusClass, nextRunTooltip) that decorate both the sidebar row
- *     and the kanban card identically.
  *   - The drop-indicator box-shadow so pinned-region drag visuals work
  *     in both views.
+ *  (Per-task routine affordances were deleted in Migration 084 —
+ *  routines are now first-class workspace items.)
  *
  * The composable does NOT own:
  *   - Layout / template — that's the caller's job (row vs card).
@@ -26,7 +25,7 @@
  *     are private to WorkspaceItemTaskCard.vue.
  */
 import { computed, inject, ref, type Ref } from 'vue'
-import type { Task, RoutineMeta } from '../stores/workspaces'
+import type { Task } from '../stores/workspaces'
 
 /** Common props every per-task component accepts. */
 export interface TaskComponentProps {
@@ -75,10 +74,6 @@ export type EmitFn = (event: any, ...args: any[]) => void
 /** Surface returned by the composable. */
 export interface UseTaskActionsReturn {
   // Reactive state read by the template.
-  isRoutine: Ref<boolean>
-  statusColor: Ref<string>
-  statusClass: Ref<string>
-  nextRunTooltip: Ref<string>
   dropIndicatorBoxShadow: Ref<string>
 
   // Event handlers — call from `@click` etc. The handler stops the
@@ -87,8 +82,6 @@ export interface UseTaskActionsReturn {
   handleSelectTask: () => void
   handleDeleteTask: (event: Event) => void
   handleRenameTask: (event: Event) => void
-  handleEditRoutine: (event: Event) => void
-  handleRunRoutine: (event: Event) => void
   handlePinToggle: (event: Event) => void
 }
 
@@ -107,51 +100,6 @@ export function useTaskActions(
     ref<Record<string, boolean>>({}),
   )
   void processingState
-
-  // Convenience: is this task a routine? Defaults to false (the legacy
-  // behavior) for tasks with no `task_type` field.
-  const isRoutine = computed(
-    () => props.task.task_type === 'routine' && props.task.routine !== undefined,
-  )
-
-  const statusColor = computed<string>(() => {
-    if (!isRoutine.value) return 'transparent'
-    const s = props.task.routine!.last_status
-    if (s === 'success') return '#22c55e' // green-500
-    if (s === 'failed') return '#ef4444'  // red-500
-    if (s === 'running') return '#eab308' // yellow-500 (spinning via class)
-    return '#9ca3af' // gray-400 — never fired
-  })
-
-  const statusClass = computed<string>(() => {
-    if (!isRoutine.value) return ''
-    return props.task.routine!.last_status === 'running' ? 'animate-spin' : ''
-  })
-
-  // Format the next-fire tooltip. The backend stores
-  // `next_run_at` as "YYYY-MM-DD HH:MM:SS" (UTC). The label is
-  // "Next: in 23 min (15:00)" — we compute the relative delta
-  // from `Date.now()` and the absolute HH:MM in UTC.
-  const nextRunTooltip = computed<string>(() => {
-    if (!isRoutine.value) return ''
-    const r: RoutineMeta = props.task.routine!
-    // Parse "YYYY-MM-DD HH:MM:SS" as UTC. Use a single Date ctor.
-    const next = new Date(r.next_run_at.replace(' ', 'T') + 'Z')
-    if (Number.isNaN(next.getTime())) return `Next: ${r.next_run_at}`
-    const ms = next.getTime() - Date.now()
-    const hh = String(next.getUTCHours()).padStart(2, '0')
-    const mm = String(next.getUTCMinutes()).padStart(2, '0')
-    const time = `${hh}:${mm}`
-    if (ms <= 0) return `Next: any moment (${time})`
-    const mins = Math.round(ms / 60000)
-    if (mins < 60) return `Next: in ${mins} min (${time})`
-    const hours = Math.floor(mins / 60)
-    const remMins = mins % 60
-    if (hours < 24) return `Next: in ${hours} h ${remMins} min (${time})`
-    const days = Math.floor(hours / 24)
-    const remHours = hours % 24
-    return `Next: in ${days} d ${remHours} h (${time})`
-  })
 
   // Compute the box-shadow for the row/card's drop indicator. Uses
   // box-shadow (not border) so the visual cue doesn't shift the row's
@@ -182,16 +130,6 @@ export function useTaskActions(
     emit('renameTask', props.workspaceId, props.itemId, props.task.id, props.task.name)
   }
 
-  const handleEditRoutine = (event: Event) => {
-    event.stopPropagation()
-    emit('editRoutine', props.workspaceId, props.itemId, props.task.id)
-  }
-
-  const handleRunRoutine = (event: Event) => {
-    event.stopPropagation()
-    emit('runRoutine', props.workspaceId, props.itemId, props.task.id)
-  }
-
   const handlePinToggle = (event: Event) => {
     // Stop the click from bubbling up to the parent <button> (which
     // would call selectTask on the same task). Same rationale as the
@@ -205,16 +143,10 @@ export function useTaskActions(
   }
 
   return {
-    isRoutine,
-    statusColor,
-    statusClass,
-    nextRunTooltip,
     dropIndicatorBoxShadow,
     handleSelectTask,
     handleDeleteTask,
     handleRenameTask,
-    handleEditRoutine,
-    handleRunRoutine,
     handlePinToggle,
   }
 }

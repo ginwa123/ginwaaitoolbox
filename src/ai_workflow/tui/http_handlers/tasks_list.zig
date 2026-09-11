@@ -165,25 +165,6 @@ fn useCase(
     defer task_responses.deinit(allocator);
 
     for (result.tasks) |task| {
-        // Convert the DB-layer RoutineMeta (with a `routines_model.RoutineRunStatus`
-        // enum for `last_status`) into the response-layer RoutineMetaResponse
-        // (with a `?[]const u8` string for `last_status`). The slice fields
-        // borrow from `task.routine`; the bytes are owned by
-        // `WorkspaceItemTaskInfo.deinit` and stay valid for the duration of
-        // `makeWorkspaceItemTaskListResponse` (which deep-copies them into
-        // the response JSON), so the outer defer's `task.deinit` is safe.
-        const routine_meta: ?http_response.RoutineMetaResponse = if (task.routine) |r| .{
-            .schedule = r.schedule,
-            .initial_prompt = r.initial_prompt,
-            .enabled = r.enabled,
-            .last_run_at = r.last_run_at,
-            .next_run_at = r.next_run_at,
-            // .dbValue() returns null for .idle, "success"/"failed"/"running"
-            // for the rest — matches the response field's `?[]const u8`.
-            .last_status = r.last_status.dbValue(),
-            .last_error = r.last_error,
-        } else null;
-
         // Compute git_branch for this task's cwd.
         // Prefer the task's worktree cwd; fall back to the item path.
         // Empty string when neither is set → no badge on the frontend.
@@ -204,7 +185,6 @@ fn useCase(
             .workspace_item_id = task.workspace_item_id,
             .description = task.description,
             .task_type = task.task_type,
-            .routine = routine_meta,
             .created_at = task.created_at,
             .updated_at = task.updated_at,
             .is_pinned = task.is_pinned,

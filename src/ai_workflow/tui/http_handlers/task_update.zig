@@ -4,21 +4,20 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 const llm_history = nalarcore.llm_history;
-const cron = @import("../routines/cron.zig");
-const fire = @import("../routines/fire.zig");
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
 
 /// PUT /api/workspaces/tasks/:task_id - Update task by ID only (no workspace/item needed).
 ///
-/// Body: { name?, session_id?, schedule?, initial_prompt?, enabled? }.
-/// Standard fields (name, session_id) keep the existing cascade paths.
-/// Routine fields (schedule, initial_prompt, enabled) are validated and
-/// persisted to the `routines` table; on a schedule change, `next_run_at`
-/// is recomputed via `cron.nextFireTime`. Routine fields are optional —
-/// a plain task update that omits them is a no-op for the routines table.
+/// Body: { name?, session_id?, description?, tags?, image_urls?, cwd? }.
+/// Standard fields keep the existing cascade paths.
 ///
-/// Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunk-4.md
+/// NOTE: the routine fields (`schedule`, `initial_prompt`, `enabled`)
+/// were deleted with the per-task `routines` table (Migration 084,
+/// plan 2026-09-10-workspace-items-routines). Routines are now
+/// first-class workspace items — see `workspace_routines_update.zig`.
+/// Unknown body fields are ignored (`ignore_unknown_fields = true`),
+/// so old clients sending routine fields get a plain task update.
 pub fn tasksUpdateByIdHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     return updateTaskHandler(ctx, req, res);
 }
@@ -37,12 +36,6 @@ pub const TaskUpdateError = error{
     OutOfMemory,
     InvalidJson,
     MissingBody,
-    BadCron,
-    MissingRoutineSchedule,
-    MissingRoutineInitialPrompt,
-    InvalidCronExpression,
-    FailedToComputeNextFireTime,
-    FailedToUpdateRoutine,
     FailedToUpdateTask,
     /// Kanban task tags validation (Migration 067). Empty,
     /// too long, or contains forbidden characters (only
@@ -72,7 +65,6 @@ const TaskUpdateInput = struct {
     task_id: []const u8,
     body: http_response.TaskUpdateRequest,
     db: *nalarcore.sqlite.SqliteBackend,
-    io: std.Io,
 };
 
 /// Result of a successful task update. The handler serializes the
@@ -112,18 +104,11 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         .task_id = task_id,
         .body = json_body,
         .db = sqlite_db,
-        .io = ctx.io,
     }) catch |err| {
         // (unchanged error-mapping block — collapsed for the diff)
         const status: u16 = switch (err) {
-            error.InvalidCronExpression => 400,
-            error.MissingRoutineSchedule => 400,
-            error.MissingRoutineInitialPrompt => 400,
-            error.FailedToComputeNextFireTime => 400,
-            error.FailedToUpdateRoutine => 500,
             error.FailedToUpdateTask => 500,
             error.MissingBody => 400,
-            error.BadCron => 400,
             error.InvalidJson => 400,
             error.InvalidTags => 400,
             error.InvalidImageUrls => 400,
@@ -136,12 +121,6 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
         const message: []const u8 = switch (err) {
             error.InvalidJson => "Invalid JSON",
             error.MissingBody => "Request body required",
-            error.BadCron => "Invalid cron expression",
-            error.MissingRoutineSchedule => "schedule is required for routine updates",
-            error.MissingRoutineInitialPrompt => "initial_prompt is required for routine updates",
-            error.InvalidCronExpression => "Invalid cron expression",
-            error.FailedToComputeNextFireTime => "Failed to compute next fire time",
-            error.FailedToUpdateRoutine => "Failed to update routine",
             error.FailedToUpdateTask => "Failed to update task",
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
             error.InvalidImageUrls => "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs",
@@ -183,19 +162,6 @@ fn updateTaskHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: 
 
 fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError!TaskUpdateResult {
     const task_id = input.task_id;
-
-    // Routine-fields branch. If ANY routine field is present in the
-    // request body, validate the schedule (if changed), recompute
-    // `next_run_at`, and persist to the `routines` table.
-    //
-    // We use `INSERT OR REPLACE INTO routines` (rather than `UPDATE … WHERE
-    // task_id = ?`) so a standard task that gets promoted to a routine
-    // via this endpoint gets a fresh `routines` row. The `id` is the
-    // stable `routine_{task_id}` key (matching the create handler), so
-    // a re-INSERT just replaces the existing row in place.
-    if (input.body.schedule != null or input.body.initial_prompt != null or input.body.enabled != null) {
-        try updateRoutineFields(allocator, input.db, input.io, task_id, input.body);
-    }
 
     // Description branch. When `body.description` is present (non-null),
     // overwrite the column with the new value. Empty string is the
@@ -367,111 +333,4 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
     }
 
     return .{ .task_id = task_id };
-}
-
-/// Validate + recompute `next_run_at` + INSERT OR REPLACE the routines row
-/// for `task_id` (creates a fresh row if the task is being promoted from
-/// a standard task to a routine).
-fn updateRoutineFields(
-    allocator: std.mem.Allocator,
-    sqlite_db: *nalarcore.sqlite.SqliteBackend,
-    io: std.Io,
-    task_id: []const u8,
-    json_body: http_response.TaskUpdateRequest,
-) TaskUpdateError!void {
-    // Validate the cron (if a new schedule was provided). Bad cron
-    // → 400 with no DB write.
-    if (json_body.schedule) |schedule| {
-        cron.validate(schedule) catch return error.InvalidCronExpression;
-    }
-
-    // Pull the existing routines row (if any) so we can substitute
-    // missing fields. Use the public model helper.
-    var existing_schedule: ?[]u8 = null;
-    var existing_initial_prompt: ?[]u8 = null;
-    var existing_enabled_int: []const u8 = "1";
-    var existing_next_run_at: ?[]u8 = null;
-    defer if (existing_schedule) |s| allocator.free(s);
-    defer if (existing_initial_prompt) |p| allocator.free(p);
-    defer if (existing_next_run_at) |n| allocator.free(n);
-
-    if (loadExistingRoutine(allocator, sqlite_db, task_id)) |loaded| {
-        existing_schedule = loaded.schedule;
-        existing_initial_prompt = loaded.initial_prompt;
-        existing_enabled_int = loaded.enabled_int;
-        existing_next_run_at = loaded.next_run_at;
-    } else |_| {
-        // No existing routines row — this is a promote-to-routine
-        // case. All substituted values are the column defaults.
-        existing_next_run_at = null;
-    }
-
-    // Effective values (client value or existing default).
-    const effective_schedule = json_body.schedule orelse existing_schedule orelse
-        return error.MissingRoutineSchedule;
-    const effective_initial_prompt = json_body.initial_prompt orelse existing_initial_prompt orelse
-        return error.MissingRoutineInitialPrompt;
-    const effective_enabled_str: []const u8 = if (json_body.enabled) |e|
-        (if (e) "1" else "0")
-    else
-        existing_enabled_int;
-
-    // Recompute next_run_at if the schedule is new (or no prior
-    // row exists). The `fire.formatSqliteDatetime` helper produces
-    // a "YYYY-MM-DD HH:MM:SS" string compatible with the
-    // `routines.next_run_at` DATETIME column. Mirrors the create
-    // handler's pattern.
-    var next_run_at_owned: ?[]u8 = null;
-    defer if (next_run_at_owned) |n| allocator.free(n);
-    const next_run_at: []const u8 = if (json_body.schedule != null) blk: {
-        const now_ns: i128 = std.Io.Timestamp.now(io, .real).nanoseconds;
-        const next_ns = cron.nextFireTime(effective_schedule, now_ns) catch {
-            return error.FailedToComputeNextFireTime;
-        };
-        const formatted = try fire.formatSqliteDatetime(allocator, next_ns);
-        next_run_at_owned = formatted;
-        break :blk formatted;
-    } else existing_next_run_at orelse return error.MissingRoutineSchedule;
-
-    // INSERT OR REPLACE: idempotent for the existing-row case,
-    // creates a fresh row for the promote-from-standard case. The
-    // `routine_{task_id}` id is stable (matches the create handler),
-    // so subsequent calls just overwrite.
-    const routine_id = try std.fmt.allocPrint(allocator, "routine_{s}", .{task_id});
-    defer allocator.free(routine_id);
-    sqlite_db.exec(allocator,
-        "INSERT OR REPLACE INTO routines (id, task_id, schedule, initial_prompt, enabled, next_run_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
-        &[_][]const u8{ routine_id, task_id, effective_schedule, effective_initial_prompt, effective_enabled_str, next_run_at },
-    ) catch return error.FailedToUpdateRoutine;
-}
-
-/// Snapshot of an existing `routines` row, with the raw TEXT values
-/// the column stores (so we can re-INSERT them verbatim). Returns
-/// `error.RoutineNotFound` if no row exists for `task_id`.
-const ExistingRoutineSnapshot = struct {
-    schedule: []u8,
-    initial_prompt: []u8,
-    enabled_int: []u8,
-    next_run_at: []u8,
-};
-
-/// Load the columns of the `routines` row for `task_id` (if any) as
-/// raw TEXT slices — used by the update handler to substitute missing
-/// client fields before the INSERT OR REPLACE. Returns
-/// `error.RoutineNotFound` when the row is missing. The caller's arena
-/// (the per-request `ctx.allocator`) owns the returned strings.
-fn loadExistingRoutine(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, task_id: []const u8) !ExistingRoutineSnapshot {
-    var q = try db.query(allocator,
-        "SELECT schedule, initial_prompt, enabled, next_run_at FROM routines r WHERE task_id = ?",
-        &[_][]const u8{task_id},
-    );
-    defer q.deinit();
-    const row = (try q.next()) orelse return error.RoutineNotFound;
-    defer row.deinit(allocator);
-    return .{
-        .schedule = try allocator.dupe(u8, row.values[0]),
-        .initial_prompt = try allocator.dupe(u8, row.values[1]),
-        .enabled_int = try allocator.dupe(u8, row.values[2]),
-        .next_run_at = try allocator.dupe(u8, row.values[3]),
-    };
 }

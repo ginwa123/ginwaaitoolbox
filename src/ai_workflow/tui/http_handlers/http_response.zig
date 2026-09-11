@@ -120,7 +120,8 @@ pub const TaskCreateRequest = struct {
     session_id: ?[]const u8 = null,
     /// Task type. Defaults to 'standard' (preserves the existing flow).
     ///   - 'standard': interactive chat task (default; creates a session).
-    ///   - 'routine':  cron-scheduled task backed by a `routines` row.
+    ///   - 'routine':  DELETED (Migration 084) — rejected with 400
+    ///     `RoutineTasksRemoved`. Create a routine workspace item instead.
     ///   - 'memory':   a local memory file scoped to the parent
     ///                 workspace_item's directory. The .md file is
     ///                 created at <workspace_item.path>/.nalar/memories/
@@ -128,12 +129,6 @@ pub const TaskCreateRequest = struct {
     ///                 next chat. Requires `memory_name` and
     ///                 `memory_content` in the body.
     task_type: []const u8 = "standard",
-    /// 5-field cron expression. Required iff task_type='routine'.
-    schedule: ?[]const u8 = null,
-    /// What the LLM sees on every fire. Required iff task_type='routine'.
-    initial_prompt: ?[]const u8 = null,
-    /// Whether the routine is active. Defaults to true.
-    enabled: bool = true,
     /// Filename for the memory file. Must end in `.md` and contain
     /// no path separators or `..` (validated by `memories.isValidMemoryName`).
     /// Required iff task_type='memory'.
@@ -192,14 +187,6 @@ pub const TaskUpdateRequest = struct {
     /// empty values; the DB column has DEFAULT '' so legacy rows
     /// without a description look identical.
     description: ?[]const u8 = null,
-    /// Routine-only. New cron expression. Validated by the handler.
-    /// When changed, next_run_at is recomputed.
-    schedule: ?[]const u8 = null,
-    /// Routine-only. New prompt text.
-    initial_prompt: ?[]const u8 = null,
-    /// Routine-only. New active flag. When false, the routine stays
-    /// in the DB but is skipped by the scheduler.
-    enabled: ?bool = null,
     /// JSON-encoded array of tag strings (Migration 067).
     /// Semantics:
     ///   - null/undefined  → don't change existing tags (no-op).
@@ -473,17 +460,10 @@ pub fn makeWorkspaceItemListObjectResponse(allocator: std.mem.Allocator, items: 
 }
 
 // Workspace Item Task types
-/// Wire shape for the inline `routine` field on `WorkspaceItemTaskResponse`.
-/// Mirrors the API response in the design doc.
-pub const RoutineMetaResponse = struct {
-    schedule: []const u8,
-    initial_prompt: []const u8,
-    enabled: bool,
-    last_run_at: ?[]const u8 = null,
-    next_run_at: []const u8,
-    last_status: ?[]const u8 = null, // "success" | "failed" | "running" | null
-    last_error: ?[]const u8 = null,
-};
+// NOTE: RoutineMetaResponse deleted with the per-task `routines`
+// table (Migration 084, plan 2026-09-10-workspace-items-routines).
+// The `routine` inline field on WorkspaceItemTaskResponse is gone
+// with it.
 
 pub const WorkspaceItemTaskResponse = struct {
     id: []const u8,
@@ -494,9 +474,9 @@ pub const WorkspaceItemTaskResponse = struct {
     /// DEFAULT '' so this is never null.
     description: []const u8 = "",
     /// Task type. Always present; 'standard' for legacy rows.
+    /// (Legacy per-task cron rows were normalized to 'standard' by
+    /// Migration 084 — see the workspace-level replacement.)
     task_type: []const u8 = "standard",
-    /// Inline routine metadata. Present iff task_type === 'routine'.
-    routine: ?RoutineMetaResponse = null,
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null,
     /// Pin flag. `true` when the user has pinned this task. Default
@@ -514,8 +494,8 @@ pub const WorkspaceItemTaskResponse = struct {
     /// Position within the kanban column. `0` for non-kanban tasks.
     /// Mirrors `WorkspaceItemTaskInfo.kanban_position` (Migration 048).
     kanban_position: i64 = 0,
-    /// Unattended-mode flag, joined from `sessions` for routine
-    /// tasks (where `task.id == session.id` per the project
+    /// Unattended-mode flag, joined from `sessions` for tasks
+    /// (where `task.id == session.id` per the project
     /// convention). `'0'` for standard tasks that have no
     /// session row, and the literal session value otherwise.
     /// Empty string when the join didn't find a row — the
@@ -590,35 +570,12 @@ pub const WorkspaceItemTaskListResponse = struct {
     next_cursor: ?[]const u8 = null,
 };
 
-/// One entry in the `GET /api/routines` list response. Includes
-/// `workspace_id` + `workspace_item_id` + `task_name` so the caller
-/// can navigate from the listing to the routine's source without a
-/// second round-trip to `GET /api/workspaces` + grep.
-///
-/// `last_run_at` / `last_status` / `last_error` are nullable for
-/// routines that have never fired (the corresponding DB columns are
-/// NULL). `next_run_at` is `NOT NULL` per Migration 044.
-pub const RoutinesListEntry = struct {
-    id: []const u8,
-    task_id: []const u8,
-    workspace_id: []const u8,
-    workspace_item_id: []const u8,
-    task_name: []const u8,
-    schedule: []const u8,
-    initial_prompt: []const u8,
-    enabled: bool,
-    last_run_at: ?[]const u8 = null,
-    next_run_at: []const u8,
-    /// "success" | "failed" | "running" | null (null = never fired or
-    /// unknown string → matches `RoutineRunStatus.idle`).
-    last_status: ?[]const u8 = null,
-    last_error: ?[]const u8 = null,
-};
+// NOTE: RoutinesListEntry / RoutinesListResponse /
+// makeRoutinesListResponse deleted with the per-task `routines`
+// table + `GET /api/routines` (Migration 084, plan
+// 2026-09-10-workspace-items-routines).
 
-pub const RoutinesListResponse = struct {
-    routines: []const RoutinesListEntry,
-    count: u32,
-};
+/// One entry in the kanban tag suggestions dropdown. Returned by
 
 pub fn makeWorkspaceItemTaskResponse(allocator: std.mem.Allocator, response: WorkspaceItemTaskResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
@@ -635,17 +592,6 @@ pub fn makeWorkspaceItemTaskListResponse(
         .count = @intCast(tasks.len),
         .has_more = has_more,
         .next_cursor = next_cursor,
-    };
-    return std.json.Stringify.valueAlloc(allocator, response, .{});
-}
-
-pub fn makeRoutinesListResponse(
-    allocator: std.mem.Allocator,
-    routines: []const RoutinesListEntry,
-) ![]u8 {
-    const response = RoutinesListResponse{
-        .routines = routines,
-        .count = @intCast(routines.len),
     };
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

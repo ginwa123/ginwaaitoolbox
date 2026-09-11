@@ -134,7 +134,7 @@ pub const ContextIPCTui = struct {
     /// use-after-free because the source was already gone by then —
     /// SEGV in `local.dupe(u8, qmsg)` at root.zig:101.
     ///
-    /// Mirrors the `fireRoutine` pattern in `routines/fire.zig` which
+    /// Mirrors the `fireWorkspaceRoutine` pattern in `routines/fire.zig` which
     /// has been working correctly since the async rewrite.
     pub fn emit_run_agent(self: *ContextIPCTui, obj: EmitRunAgentInput) !void {
         // Heap-dupe each string synchronously into the long-lived

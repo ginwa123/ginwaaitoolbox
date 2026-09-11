@@ -60,8 +60,6 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
-  editRoutine: [workspaceId: string, itemId: string, taskId: string]
-  runRoutine: [workspaceId: string, itemId: string, taskId: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   // Open the per-task detail dialog (kanban-task-detail-dialog
   // feature). Re-emitted verbatim from <WorkspaceItemTaskCard>.
@@ -102,8 +100,6 @@ const handleDragEnd = () => {
       @select-task="(id) => emit('selectTask', id)"
       @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
-      @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
-      @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
       @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
       @view-task-detail="(id) => emit('viewTaskDetail', id)"
     />

@@ -59,18 +59,17 @@ describe('AddTaskPickerDialog', () => {
     expect(document.querySelector('[data-testid="add-task-picker"]')).toBeNull()
   })
 
-  it('renders all three cards when show=true', async () => {
+  it('renders both cards when show=true', async () => {
     mountPicker({ show: true })
     // Two ticks: first for the v-if to render, second for the
     // <Transition> wrapper to commit.
     await wrapper!.vm.$nextTick()
     expect(document.querySelector('[data-testid="add-task-picker"]')).not.toBeNull()
     expect(document.querySelector('[data-testid="picker-standard"]')).not.toBeNull()
-    expect(document.querySelector('[data-testid="picker-routine"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="picker-routine"]')).toBeNull()
     expect(document.querySelector('[data-testid="picker-memory"]')).not.toBeNull()
     // Human-readable labels present
     expect(document.body.textContent).toContain('Standard Chat')
-    expect(document.body.textContent).toContain('Routine')
     expect(document.body.textContent).toContain('Memory')
   })
 
@@ -88,20 +87,6 @@ describe('AddTaskPickerDialog', () => {
     // the regression where the picker stayed open after picking
     // and ended up covering the chat view after the create
     // callback completed.
-    expect(w.emitted('close')).toBeDefined()
-    expect(w.emitted('close')!.length).toBe(1)
-  })
-
-  it('emits pick="routine" when the Routine card is clicked', async () => {
-    const w = mountPicker({ show: true })
-    await w.vm.$nextTick()
-    const card = document.querySelector<HTMLElement>('[data-testid="picker-routine"]')!
-    expect(card).toBeTruthy()
-    card.click()
-    expect(w.emitted('pick')).toBeDefined()
-    expect(w.emitted('pick')![0]).toEqual(['routine'])
-    // Same self-close contract as the Standard Chat card — see
-    // the assertion in the standard-card test above.
     expect(w.emitted('close')).toBeDefined()
     expect(w.emitted('close')!.length).toBe(1)
   })

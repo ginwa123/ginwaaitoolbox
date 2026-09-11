@@ -1,39 +1,39 @@
-//! `fire.zig` — the per-fire work for a routine (Task 2.1 of the
-//! Add Task Routines plan, refactored per PR #8 review).
+//! `fire.zig` — the per-fire work for a workspace routine.
 //!
-//! `fireRoutine(allocator, db, di, io, task_id)` is called by the
-//! scheduler (Task 3.1's `Scheduler.fireDueRoutines`) for every fire.
-//! It:
+//! Retargeted from per-task routines (Migration 044) to
+//! `workspace_routines` (Migration 084). `fireWorkspaceRoutine(
+//! allocator, db, di, io, routine_id)` is called by the scheduler's
+//! `Scheduler.fireDueRoutines` for every due fire and by the manual
+//! `POST .../routines/:routine_id/run` endpoint. It:
 //!
-//!   1. Loads the routine by `task_id` and validates it's enabled.
+//!   1. Loads the routine by workspace-routine `id` and validates
+//!      it's enabled.
 //!   2. Atomically claims the row (`claimForRun`) so a second
 //!      concurrent fire is rejected.
 //!   3. Submits the LLM work to `di.group_emit_session_create.concurrent`
 //!      (mirrors `http_handlers/session_create.zig:161`). The callback
 //!      emits an `ai_workflow.RunParamsNew` event on the event bus —
 //!      the `CallbackAiWorkerFlow` subscription in `main.zig` picks it
-//!      up on a worker thread. The `queue_message` of the session
-//!      create is `formatRoutineMessage(schedule, initial_prompt,
-//!      next_run_at)` — the routine's `initial_prompt` wrapped with
-//!      scheduling context so the LLM knows this is an automated fire
-//!      (not a user-typed message) and when to expect the next one.
-//!   4. On success: `markSuccess` with a recomputed `next_run_at`.
-//!      The LLM result is NOT observed here — it's fire-and-forget.
-//!      If the LLM fails, it shows up as a chat-view error (the same
-//!      path as a normal user session).
+//!      up on a worker thread. The session id IS the routine id (the
+//!      workspace-level analogue of the old `task.id == session.id`
+//!      convention), so every fire appends to the same session chat.
+//!      The `queue_message` is `formatRoutineMessage(schedule,
+//!      instruction, next_run_at)` — the routine's `instruction`
+//!      wrapped with scheduling context so the LLM knows this is an
+//!      automated fire (not a user-typed message) and when to expect
+//!      the next one.
+//!   4. On success: `markSuccess` with a recomputed `next_run_at`
+//!      (NULL for manual-only routines). The LLM result is NOT
+//!      observed here — it's fire-and-forget. If the LLM fails, it
+//!      shows up as a chat-view error (the same path as a normal
+//!      user session).
 //!
 //! No new binary, no separate OS thread — all work happens on the
 //! main process's Io runtime via the existing
-//! `group_emit_session_create` group. The "fake-LLM" test short-circuit
-//! and the 🔁 user-style message insert are gone; the routine's
-//! `initial_prompt` is wrapped by `formatRoutineMessage` (with the
-//! cron `schedule` and the next `next_run_at`) and that wrapped string
-//! becomes the user-style message the LLM sees. The `session_create`
-//! event will accumulate user/assistant pairs over time, with the
-//! first user message of every fire being the formatted wrapper.
+//! `group_emit_session_create` group.
 //!
-//! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
-//! Design: docs/plans/2026-06-13-add-task-routines-design.md (§4)
+//! Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md (Task 3)
+//! Task: task_1789032258828_0.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -43,13 +43,13 @@ const ai_workflow = nalarcore.ai_mod.ai_workflow;
 const model = @import("model.zig");
 const cron = @import("cron.zig");
 
-/// Errors returned by `fireRoutine`. These are all SENTINELS — the
-/// fire pipeline does NOT propagate underlying errors (e.g.
+/// Errors returned by `fireWorkspaceRoutine`. These are all SENTINELS —
+/// the fire pipeline does NOT propagate underlying errors (e.g.
 /// `error.RoutineNotFound`) to the caller. The scheduler maps them
-/// to "skip this id, try the next one"; HTTP handlers (Chunk 4) map
-/// them to status codes.
+/// to "skip this id, try the next one"; HTTP handlers map them to
+/// status codes.
 pub const FireError = error{
-    /// The task has no `routines` row (it is a standard task).
+    /// No `workspace_routines` row for this id.
     NotARoutine,
     /// The routine exists but `enabled = false`.
     Disabled,
@@ -57,8 +57,8 @@ pub const FireError = error{
     AlreadyRunning,
 };
 
-/// Fire a single routine. Loads the routine, atomically claims the
-/// row, then submits the LLM work via
+/// Fire a single workspace routine. Loads the routine, atomically
+/// claims the row, then submits the LLM work via
 /// `di.group_emit_session_create.concurrent(io, runFire, .{...})` —
 /// the same pattern as `http_handlers/session_create.zig:161`. The
 /// callback emits `ai_workflow.RunParamsNew` to the event bus;
@@ -79,7 +79,7 @@ pub const FireError = error{
 ///
 /// The return type is `anyerror!void` rather than a narrow
 /// `FireError!void` set: the helpers this function calls
-/// (`loadRoutineByTaskId`, `claimForRun`, `markSuccess`,
+/// (`loadWorkspaceRoutineById`, `claimForRun`, `markSuccess`,
 /// `cron.nextFireTime`, the `dupe` family) each contribute their own
 /// error variants, and propagating them through a narrow set would
 /// expose internal implementation details. The three `FireError`
@@ -88,17 +88,16 @@ pub const FireError = error{
 /// declaration. The scheduler switches on those three explicitly
 /// and treats any other error as a generic fire failure (logged,
 /// skipped, polling continues).
-pub fn fireRoutine(
+pub fn fireWorkspaceRoutine(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     di: *nalarcore.ContextIPCTui,
     io: std.Io,
-    task_id: []const u8,
+    routine_id: []const u8,
 ) anyerror!void {
-    // 1) Load the routine row. The task_id → routine mapping is
-    //    1:1 (UNIQUE on `routines.task_id`); a missing row means this
-    //    task was created as a standard task, not a routine.
-    const routine = model.loadRoutineByTaskId(allocator, db, task_id) catch |err| switch (err) {
+    // 1) Load the routine row. A missing row means the id is not a
+    //    workspace routine.
+    const routine = model.loadWorkspaceRoutineById(allocator, db, routine_id) catch |err| switch (err) {
         error.RoutineNotFound => return FireError.NotARoutine,
         else => return err,
     };
@@ -106,35 +105,35 @@ pub fn fireRoutine(
 
     if (!routine.enabled) return FireError.Disabled;
 
-    // 2) Atomic claim. `claimForRun` is a single UPDATE…RETURNING;
-    //    a second concurrent fire on the same row sees zero rows in
-    //    the result set and `claimForRun` returns false.
+    // 2) Atomic claim. `claimForRun` is a single conditional UPDATE;
+    //    a second concurrent fire on the same row sees zero affected
+    //    rows and `claimForRun` returns false.
     if (!try model.claimForRun(allocator, db, routine.id)) return FireError.AlreadyRunning;
 
     // 3) Compute the new `next_run_at` ONCE and use it for both the
-    //    LLM message and the post-submit markSuccess. The LLM
-    //    message needs the *future* fire time (the time AFTER the
-    //    current one) so it can tell the user when to expect the
-    //    next one. Computing it here — rather than inside
-    //    markSuccess — also means we can pass the same string to
-    //    markSuccess without recomputing.
-    const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
-    const next_ns = try cron.nextFireTime(routine.schedule, now_ns);
-    const next_sqlite = try formatSqliteDatetime(allocator, next_ns);
-    defer allocator.free(next_sqlite);
+    //    LLM message and the post-submit markSuccess. Manual-only
+    //    routines (empty schedule) keep NULL — there is no next fire.
+    var next_sqlite: []const u8 = "";
+    var next_sqlite_owned: ?[]u8 = null;
+    defer if (next_sqlite_owned) |b| allocator.free(b);
+    if (routine.schedule.len > 0) {
+        const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
+        const next_ns = try cron.nextFireTime(routine.schedule, now_ns);
+        next_sqlite_owned = try formatSqliteDatetime(allocator, next_ns);
+        next_sqlite = next_sqlite_owned.?;
+    }
 
     // 4) Heap-allocate strings for the concurrent task. The callback
     //    owns these and frees them when done (mirrors
     //    `session_create.zig:141-159`). Use `errdefer` chains so a
     //    mid-allocation failure unwinds cleanly. The `qmsg` is
     //    `formatRoutineMessage(...)` — a structured "automated
-    //    routine fire" header + schedule/next-fire bullets, then a
-    //    blank line, then the routine's `initial_prompt` verbatim.
-    //    See `formatRoutineMessage` for the full format spec and
-    //    the LLM-friendly rationale.
-    const sid = try di.allocator.dupe(u8, task_id);
+    //    workspace-routine fire" header + schedule/next-fire bullets,
+    //    then a blank line, then the routine's `instruction` verbatim.
+    const sid = try di.allocator.dupe(u8, routine.id);
     errdefer di.allocator.free(sid);
-    const qmsg = try formatRoutineMessage(di.allocator, routine.schedule, routine.initial_prompt, next_sqlite);
+    const schedule_label = if (routine.schedule.len > 0) routine.schedule else "(manual)";
+    const qmsg = try formatRoutineMessage(di.allocator, schedule_label, routine.instruction, next_sqlite);
     errdefer di.allocator.free(qmsg);
     const cwd = try di.allocator.dupe(u8, "");
     errdefer di.allocator.free(cwd);
@@ -204,59 +203,53 @@ fn runFire(
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 /// Format the user-style message that gets sent to the LLM when a
-/// routine fires. Wraps the routine's `initial_prompt` with a
+/// routine fires. Wraps the routine's `instruction` with a
 /// structured metadata header so the LLM knows this is an automated
 /// fire (not a user-typed message) and when to expect the next one.
 ///
 /// The format is:
 ///
-///   This is an automated routine fire.
+///   This is an automated workspace-routine fire.
 ///   - Schedule: <schedule>
 ///   - Next fire: <next_run_at_sqlite>
 ///
-///   <initial_prompt>
+///   <instruction>
 ///
 /// where `<next_run_at_sqlite>` is an SQLite DATETIME literal
 /// (`YYYY-MM-DD HH:MM:SS`) — the FUTURE fire time (the time AFTER
-/// the current one).
+/// the current one). Empty for manual-only fires.
 ///
 /// The format is designed to be LLM-friendly:
-///   - "automated routine fire" makes it explicit that this is NOT
-///     a user-typed message, so the LLM doesn't expect a
-///     conversational back-and-forth.
+///   - "automated workspace-routine fire" makes it explicit that this
+///     is NOT a user-typed message, so the LLM doesn't expect a
+///     conversational back-and-forth — and distinguishes it from the
+///     old per-task routine fires.
 ///   - The metadata header is FIRST and the actual task is LAST, so
 ///     the LLM reads the context-setting sentence before the task.
 ///   - A blank line separates the metadata block from the task,
 ///     giving the LLM a clear instruction boundary.
 ///   - Bulleted key-value pairs (rather than a prose sentence) let
-///     the LLM extract schedule / next-fire without parsing. The
-///     LLM can quote "Schedule: */5 * * * *" verbatim if the user
-///     asks "how often do you run?".
+///     the LLM extract schedule / next-fire without parsing.
 ///   - No LLM-jargon words ("prompt", "instruction", "execute") that
-///     are ambiguous when used inside the prompt itself. The LLM
-///     reads the word "prompt" in a very specific way and gets
-///     confused when it appears as a synonym for "task" or
-///     "message".
+///     are ambiguous when used inside the prompt itself.
 ///   - Easy to extend: adding fields like "Last status: success" or
 ///     "Run #5" slots in as new bullets without breaking parsing.
 ///
 /// Public for unit testing in `fire_test.zig` — the happy-path of
-/// `fireRoutine` requires a real `nalarcore.ContextIPCTui` singleton
-/// and a live `CallbackAiWorkerFlow` subscription (i.e. a real
-/// `nalar` process), so the format is tested in isolation here.
+/// `fireWorkspaceRoutine` requires a real `nalarcore.ContextIPCTui`
+/// singleton and a live `CallbackAiWorkerFlow` subscription (i.e. a
+/// real `nalar` process), so the format is tested in isolation here.
 pub fn formatRoutineMessage(
     allocator: std.mem.Allocator,
     schedule: []const u8,
-    initial_prompt: []const u8,
+    instruction: []const u8,
     next_run_at_sqlite: []const u8,
 ) ![]u8 {
-    return std.fmt.allocPrint(allocator,
-        "This is an automated routine fire.\n" ++
+    return std.fmt.allocPrint(allocator, "This is an automated workspace-routine fire.\n" ++
         "- Schedule: {s}\n" ++
         "- Next fire: {s}\n" ++
         "\n" ++
-        "{s}",
-        .{ schedule, next_run_at_sqlite, initial_prompt });
+        "{s}", .{ schedule, next_run_at_sqlite, instruction });
 }
 
 /// Convert unix nanos (i128) to a SQLite DATETIME literal
@@ -271,14 +264,12 @@ pub fn formatSqliteDatetime(allocator: std.mem.Allocator, unix_nanos: i128) ![]u
     const day_seconds = epoch_seconds.getDaySeconds();
     const year_day = epoch_seconds.getEpochDay().calculateYearDay();
     const month_day = year_day.calculateMonthDay();
-    return std.fmt.allocPrint(allocator,
-        "{d:04}-{d:02}-{d:02} {d:02}:{d:02}:{d:02}",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            @as(u32, @intCast(day_seconds.getHoursIntoDay())),
-            @as(u32, @intCast(day_seconds.getMinutesIntoHour())),
-            @as(u32, @intCast(day_seconds.getSecondsIntoMinute())),
-        });
+    return std.fmt.allocPrint(allocator, "{d:04}-{d:02}-{d:02} {d:02}:{d:02}:{d:02}", .{
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
+        @as(u32, @intCast(day_seconds.getHoursIntoDay())),
+        @as(u32, @intCast(day_seconds.getMinutesIntoHour())),
+        @as(u32, @intCast(day_seconds.getSecondsIntoMinute())),
+    });
 }

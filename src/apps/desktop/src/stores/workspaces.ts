@@ -103,34 +103,21 @@ export interface FolderEntry {
 
 // Task interface for project tasks
 //
-// `task_type` distinguishes standard chat tasks from cron-scheduled
-// routines (Chunk 5 of the task-routines plan). Optional so legacy
-// task literals without it keep type-checking; runtime code defaults
-// to 'standard'.
-//
-// `routine` is present iff `task_type === 'routine'`. It mirrors the
-// API response shape from getTasks / createTask.
-export interface RoutineMeta {
-  schedule: string
-  initial_prompt: string
-  enabled: boolean
-  last_run_at: string | null
-  next_run_at: string
-  last_status: 'success' | 'failed' | 'running' | null
-  last_error: string | null
-}
-
+// `task_type` distinguishes standard chat tasks from markdown
+// memories. Optional so legacy task literals without it keep
+// type-checking; runtime code defaults to 'standard'.
+// ('routine' was deleted in Migration 084 — routines are now
+// first-class workspace items, see `WorkspaceRoutine` in api.)
 export interface Task {
   id: string
   name: string
   description?: string
-  // NEW (Chunk 5 of task-routines plan). Optional for backwards
-  // compat with legacy task literals (tests + offline fallbacks).
-  // 'memory' added in 2026-06-20 for the markdown-memory feature
+  // NEW (Chunk 5 of task-routines plan, deleted Migration 084).
+  // Optional for backwards compat with legacy task literals
+  // (tests + offline fallbacks). 'memory' added in 2026-06-20
+  // for the markdown-memory feature
   // (plan: docs/plans/2026-06-20-add-markdown-memory.md).
-  task_type?: 'standard' | 'routine' | 'memory'
-  // NEW: present iff task_type === 'routine'.
-  routine?: RoutineMeta
+  task_type?: 'standard' | 'memory'
   // NEW: present iff task_type === 'memory'. Captures the .md
   // file name (no extension in the path; just the basename like
   // 'project-notes.md') for the UI badge.
@@ -152,11 +139,11 @@ export interface Task {
   kanban_column_id?: string | null
   kanban_position?: number
   // NEW (Chunk 5 of auto-retry-until-stop plan). Mirrors the
-  // sessions.is_auto_retry_until_stop column (Migration 063). For
-  // routine tasks, task.id == session.id (project convention) so
-  // the flag can be persisted via PUT /api/llm/session/<id>.
-  // For non-routine tasks the field is shown as a UI affordance
-  // but won't affect runtime behavior. Optional + string ('0'/'1')
+  // sessions.is_auto_retry_until_stop column (Migration 063).
+  // task.id == session.id (project convention) so the flag can be
+  // persisted via PUT /api/llm/session/<id>. The field is shown as
+  // a UI affordance but won't affect runtime behavior for tasks
+  // without a session. Optional + string ('0'/'1')
   // to match the session API shape and to keep legacy task
   // literals type-checking (see nalar-frontend-task-literal-typing-rule).
   is_auto_retry_until_stop?: string
@@ -278,8 +265,8 @@ function normalizeTaskTags(task: Task): Task {
 // `createdAt` when `updatedAt` is missing).
 //
 // Why a separate helper instead of inlining into normalizeTaskDatesInPlace:
-//   - the same parsing logic is needed for `routine.next_run_at` in
-//     other parts of the codebase; keeping it as a pure function
+//   - the same parsing logic is needed for other datetime fields
+//     in other parts of the codebase; keeping it as a pure function
 //     makes future call sites trivial.
 //   - the per-line parse is the kind of thing you want a TypeScript
 //     unit test against directly, not buried inside an in-place
@@ -1142,28 +1129,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Add a task to a workspace item.
   //
   // The third arg is a single params object. For a standard task
-  // (the default), pass `{ name, description? }`. For a routine, pass
-  // `{ name, taskType: 'routine', routine: { schedule, initial_prompt, enabled? } }`.
+  // (the default), pass `{ name, description? }`.
   // For a memory, pass `{ name, taskType: 'memory', memory: { name, content } }`.
   //
   // taskType defaults to 'standard' so a caller that omits it gets
-  // the legacy behavior. For routines, `routine` must include
-  // `schedule` + `initial_prompt`; `enabled` defaults to true on the
-  // backend. For memories, `memory.name` is the .md filename (must
-  // end in .md, validated server-side) and `memory.content` is the
-  // initial body of the .md file.
+  // the legacy behavior. For memories, `memory.name` is the .md
+  // filename (must end in .md, validated server-side) and
+  // `memory.content` is the initial body of the .md file.
   async function addTask(
     workspaceId: string,
     itemId: string,
     params: {
       name: string
       description?: string
-      taskType?: 'standard' | 'routine' | 'memory'
-      routine?: {
-        schedule: string
-        initial_prompt: string
-        enabled?: boolean
-      }
+      taskType?: 'standard' | 'memory'
       memory?: {
         name: string
         content: string
@@ -1171,8 +1150,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Auto-retry-until-stop (Migration 063, Option A fix): when
       // `'1'`, the backend ALSO inserts a `sessions` row keyed by
       // the new task.id so the unattended-mode flag persists from
-      // creation. Forwarded only for standard tasks (routine and
-      // memory have their own session lifecycle). The api.createTask
+      // creation. Forwarded only for standard tasks (memory has its
+      // own session lifecycle). The api.createTask
       // helper filters out `'0'`/undefined so we don't trigger an
       // unnecessary session INSERT for the common case.
       isAutoRetryUntilStop?: string
@@ -1208,14 +1187,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       item.tasks = []
     }
 
-    const taskType: 'standard' | 'routine' | 'memory' = params.taskType ?? 'standard'
+    const taskType: 'standard' | 'memory' = params.taskType ?? 'standard'
 
     try {
       const newTask = await api.createTask(workspaceId, itemId, {
         name: params.name,
         description: params.description,
         taskType,
-        routine: params.routine,
         memory: params.memory,
         isAutoRetryUntilStop: params.isAutoRetryUntilStop,
         // Migration 067 — pass tags through.
@@ -1236,24 +1214,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Fallback to local creation if API fails. Match the
       // pre-existing fallback contract (returns a taskId, populates
       // the item's tasks list) and now also carry task_type +
-      // routine + memory so the offline UI still branches correctly.
+      // memory so the offline UI still branches correctly.
       const taskId = `task-${Date.now()}`
       item.tasks.unshift({
         id: taskId,
         name: params.name,
         description: params.description,
         task_type: taskType,
-        routine: params.routine
-          ? {
-              schedule: params.routine.schedule,
-              initial_prompt: params.routine.initial_prompt,
-              enabled: params.routine.enabled ?? true,
-              last_run_at: null,
-              next_run_at: '',
-              last_status: null,
-              last_error: null,
-            }
-          : undefined,
         memory_name: params.memory?.name,
         is_auto_retry_until_stop: params.isAutoRetryUntilStop,
         completed: false,
@@ -2816,22 +2783,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Manually fire a routine. Returns the backend's
+  // Manually fire a workspace routine. Returns the backend's
   // `{ session_id }` on success, or `undefined` on failure (the
   // caller's responsibility to navigate / show an error).
   //
   // We deliberately do NOT navigate here — that's a UI concern
-  // owned by Sidebar.vue. The store action is pure: it calls
-  // the API and returns the result. This matches the `addTask`
-  // pattern (store action returns a taskId; the component decides
-  // what to do with it).
-  async function runRoutine(
+  // owned by the RoutineView. The store action is pure: it calls
+  // the API and returns the result.
+  async function runRoutineItem(
     workspaceId: string,
     itemId: string,
-    taskId: string,
+    routineId: string,
   ): Promise<{ session_id: string } | undefined> {
     try {
-      return await api.runRoutine(workspaceId, itemId, taskId)
+      return await api.runWorkspaceRoutine(workspaceId, itemId, routineId)
     } catch (err) {
       console.error('Failed to run routine:', err)
       return undefined
@@ -2845,7 +2810,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // backend response so the host can decide whether to close the dialog.
   //
   // Distinct from runAgentOnNewTask (create-time, sends a queue_message)
-  // and runRoutine (routine-only, 404 for non-routine tasks). This
+  // and runRoutineItem (workspace-routine manual fire, 404 for
+  // unknown routines). This
   // action works for ANY task type on an existing session — the agent
   // runs on whatever chat history is already in the session without
   // queueing a new user message.
@@ -3050,44 +3016,41 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // PATCH-equivalent for routine tasks. The backend's
-  // updateTaskSimple accepts name + routine fields, so this is
-  // a thin wrapper that calls the API and updates the local
-  // task's name (optimistic) on success. Schedule + initial_prompt
-  // + enabled live on the routine row; their updates surface via
-  // the routines table's next refresh (or the SSE event the
-  // backend emits on update — see Chunk 4 for the broadcast).
-  async function updateRoutine(
+  // Workspace routine item (Migration 084, plan
+  // 2026-09-10-workspace-items-routines). Mirrors addAgentItem —
+  // POST /api/workspaces/:wsId/items/routine and push the new item
+  // into the local store. Routine metadata is fetched lazily by
+  // RoutineView via api.getRoutineItem on mount.
+  async function addRoutineItem(
     workspaceId: string,
-    itemId: string,
-    taskId: string,
-    fields: {
-      name?: string
-      description?: string
-      schedule?: string
-      initial_prompt?: string
-      enabled?: boolean
-    },
-  ): Promise<{ success: boolean }> {
-    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
-    if (!workspace) return { success: false }
-    const item = workspace.items.find((i) => i.id === itemId)
-    if (!item || !item.tasks) return { success: false }
-    const task = item.tasks.find((t) => t.id === taskId)
-    if (!task) return { success: false }
-
-    const previousName = task.name
-    if (fields.name !== undefined && fields.name.trim() !== task.name) {
-      task.name = fields.name.trim()
-    }
-
+    name: string,
+    path: string,
+  ): Promise<string | undefined> {
     try {
-      return await api.updateTaskSimple(taskId, fields)
+      const { item, routine } = await api.createRoutineItem(workspaceId, name, path)
+      const ws = workspaces.value.find((w) => w.id === workspaceId)
+      if (ws) {
+        ws.items.push({
+          ...item,
+          name: item.name ?? name,
+          item_type: item.item_type ?? 'routine',
+          path: item.path ?? path,
+          tasks: [],
+          design_elements: [],
+        })
+        if (!ws.expanded) {
+          ws.expanded = true
+          const expandedWorkspaces = loadExpandedWorkspaces()
+          expandedWorkspaces.add(ws.id)
+          saveExpandedWorkspaces(expandedWorkspaces)
+        }
+      }
+      activeWorkspaceItemId.value = item.id
+      void routine // silence unused-variable lint
+      return item.id
     } catch (err) {
-      console.error('Failed to update routine:', err)
-      // Rollback the optimistic name change on error.
-      task.name = previousName
-      return { success: false }
+      console.error('[workspacesStore.addRoutineItem] API call failed:', err)
+      return undefined
     }
   }
 
@@ -4124,18 +4087,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // on open so the unattended-mode toggle shows server truth
     // instead of the value cached at workspaces store init().
     refreshTask,
-    runRoutine,
+    runRoutineItem,
     runAgentOnNewTask,
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Triggers
     // a worker on an existing task's session without queueing a new
     // user message. Sibling of runAgentOnNewTask (create-time) and
-    // runRoutine (routine-only).
+    // runRoutineItem (workspace-routine manual fire).
     startAgentOnTask,
     // NEW (plan: 2026-09-09-run-all-agents-by-column, Task 4, Option C).
     // Bulk run for one column — server owns the task list.
     runAllAgentsInColumn,
     addKanbanTask,
-    updateRoutine,
     pinTask,
     reorderPinnedTasks,
     addKanbanItem,
@@ -4150,6 +4112,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // creates an agent-mode workspace item. POSTs to
     // /api/workspaces/:wsId/items/agent and pushes the new item.
     addAgentItem,
+    // Workspace routines (Migration 084, plan
+    // 2026-09-10-workspace-items-routines): creates a routine-mode
+    // workspace item. POSTs to /api/workspaces/:wsId/items/routine
+    // and pushes the new item.
+    addRoutineItem,
     addKanbanColumn,
     updateKanbanColumn,
     copyKanbanSpecFrom,

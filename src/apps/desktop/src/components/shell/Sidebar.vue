@@ -20,13 +20,11 @@ import AddKanbanDialog from '../dialogs/AddKanbanDialog.vue'
 // Plan: docs/superpowers/plans/2026-06-13-design-mode.md.
 import AddDesignDialog from '../design/AddDesignDialog.vue'
 import AddAgentDialog from '../dialogs/AddAgentDialog.vue'
+import AddRoutineItemDialog from '../dialogs/AddRoutineItemDialog.vue'
 import AddMemoryDialog from '../dialogs/AddMemoryDialog.vue'
 import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import AddTaskPickerDialog from '../dialogs/AddTaskPickerDialog.vue'
-import AddRoutineDialog from '../dialogs/AddRoutineDialog.vue'
-import EditRoutineDialog from '../dialogs/EditRoutineDialog.vue'
-import type { EditRoutineParams } from '../dialogs/EditRoutineDialog.vue'
-import type { RoutineMeta, WorkspaceItem } from '../../stores/workspaces'
+import type { WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 import { buildTaskUrlQuery } from '../../helpers/buildTaskUrlQuery'
 
@@ -187,47 +185,29 @@ const renameTargetDesignPageName = ref('')
 // ─── Add Task picker + per-type dialog state (Chunk 6) ──────────────────────
 //
 // When the user clicks the green `+` on a workspace item:
-//   1. AddTaskPickerDialog opens with three cards (Standard / Routine / Memory).
+//   1. AddTaskPickerDialog opens with two cards (Standard / Memory).
 //   2. On pick, the picker closes and the per-type flow runs:
 //      - Standard: auto-create a task named "New Chat" and navigate
 //        straight to its ChatView. No dialog (the "name + description"
 //        prompt was noise — chat name is editable later via the rename
 //        modal on the task row, and an empty description is fine).
-//      - Routine: open AddRoutineDialog (needs schedule + initial prompt).
 //      - Memory:  open AddMemoryDialog in `mode='task'` (needs content
 //        and the .md filename).
 //
 // We track workspaceId + itemId on each dialog's `Open` ref so the
-// create callback knows where to create the task. Routine and Memory
-// tasks do NOT auto-navigate — routines fire on a schedule (not user
-// input) and memories have no chat session to open. Standard tasks
-// always auto-navigate to their new ChatView (the user just clicked
-// "Standard Chat", they want to be IN the chat).
+// create callback knows where to create the task. Memory tasks do
+// NOT auto-navigate — memories have no chat session to open.
+// Standard tasks always auto-navigate to their new ChatView (the
+// user just clicked "Standard Chat", they want to be IN the chat).
 const showAddTaskPicker = ref(false)
 const pickerWorkspaceId = ref<string | null>(null)
 const pickerItemId = ref<string | null>(null)
-const showAddRoutineDialog = ref(false)
-const addRoutineDialogWorkspaceId = ref<string | null>(null)
-const addRoutineDialogItemId = ref<string | null>(null)
 // Memory task flow (2026-06-20): picked from the AddTaskPickerDialog
 // "Memory" card, opens AddMemoryDialog in `mode='task'`, then
 // the create callback calls addTask with taskType='memory'.
 const showAddMemoryTaskDialog = ref(false)
 const addMemoryTaskWorkspaceId = ref<string | null>(null)
 const addMemoryTaskItemId = ref<string | null>(null)
-
-// Edit routine (Chunk 7 of task-routines plan): opened by
-// handleEditRoutine (triggered by the routine-task row's pencil
-// via WorkspaceItemTask → WorkspaceItem → WorkspaceList → Sidebar).
-// The dialog is prefilled with the routine's current values via
-// `editRoutineTarget` (RoutineMeta | null) and the task's name via
-// `editRoutineTaskName`. We keep workspaceId + itemId + taskId on
-// separate refs (not a single object) so the submit callback can
-// resolve the right routine for the updateRoutine store action.
-const showEditRoutineDialog = ref(false)
-const editRoutineWorkspaceId = ref<string | null>(null)
-const editRoutineItemId = ref<string | null>(null)
-const editRoutineTaskId = ref<string | null>(null)
 
 // Resize handling
 const isResizing = ref(false)
@@ -486,6 +466,10 @@ const handleAddItem = (workspaceId: string, itemType: string) => {
   // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
   // routes the 'agent' itemType to the new AddAgentDialog.
   if (itemType === 'agent') showAddAgentDialog.value = true
+  // Workspace routines (Migration 084, plan
+  // 2026-09-10-workspace-items-routines): routes the 'routine'
+  // itemType to AddRoutineItemDialog.
+  if (itemType === 'routine') showAddRoutineItemDialog.value = true
   if (itemType === 'memory') {
     addMemoryTargetWorkspaceId.value = workspaceId
     showAddMemoryDialog.value = true
@@ -566,6 +550,24 @@ const handleCreateAgent = async (name: string, path: string) => {
 }
 const handleCloseAddAgentDialog = () => {
   showAddAgentDialog.value = false
+}
+
+// Workspace routines (Migration 084, plan
+// 2026-09-10-workspace-items-routines): routine item create +
+// dialog state — mirrors the agent flow above.
+const showAddRoutineItemDialog = ref(false)
+const handleCreateRoutineItem = async (name: string, path: string) => {
+  if (addItemTargetWorkspaceId.value) {
+    await workspacesStore.addRoutineItem(
+      addItemTargetWorkspaceId.value,
+      name,
+      path,
+    )
+  }
+  showAddRoutineItemDialog.value = false
+}
+const handleCloseAddRoutineItemDialog = () => {
+  showAddRoutineItemDialog.value = false
 }
 
 /**
@@ -833,7 +835,7 @@ const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
 // is editable later via the rename modal on the task row (and via
 // the auto-rename-on-first-message convention that already runs
 // in ChatView's stream lifecycle).
-const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') => {
+const handleAddTaskPick = async (taskType: 'standard' | 'memory') => {
   const workspaceId = pickerWorkspaceId.value
   const itemId = pickerItemId.value
   // Clear the picker targets FIRST so a re-entry from the auto-create
@@ -850,13 +852,6 @@ const handleAddTaskPick = async (taskType: 'standard' | 'routine' | 'memory') =>
     return
   }
 
-  if (taskType === 'routine') {
-    addRoutineDialogWorkspaceId.value = workspaceId
-    addRoutineDialogItemId.value = itemId
-    showAddRoutineDialog.value = true
-    return
-  }
-
   // 'memory' (2026-06-20): open AddMemoryDialog in `mode='task'`
   // (it won't call the API itself; the create callback here
   // calls addTask with taskType='memory' which triggers the
@@ -870,48 +865,6 @@ const handleCloseAddTaskPicker = () => {
   showAddTaskPicker.value = false
   pickerWorkspaceId.value = null
   pickerItemId.value = null
-}
-
-// Routine path: user filled in name, description (optional),
-// initial_prompt, schedule, enabled in AddRoutineDialog, hit
-// Create Routine. Persist via the store with taskType='routine'.
-// We do NOT navigate to the new routine — routines are not
-// user-driven chats; the user opens the routine from the
-// sidebar to inspect its runs.
-const handleAddRoutineCreated = async (params: {
-  name: string
-  description?: string
-  initial_prompt: string
-  schedule: string
-  enabled: boolean
-}) => {
-  const workspaceId = addRoutineDialogWorkspaceId.value
-  const itemId = addRoutineDialogItemId.value
-  if (!workspaceId || !itemId) return
-  await workspacesStore.addTask(workspaceId, itemId, {
-    name: params.name,
-    description: params.description,
-    taskType: 'routine',
-    routine: {
-      schedule: params.schedule,
-      initial_prompt: params.initial_prompt,
-      enabled: params.enabled,
-    },
-  })
-  showAddRoutineDialog.value = false
-  addRoutineDialogWorkspaceId.value = null
-  addRoutineDialogItemId.value = null
-  // Defensive: close the picker too. AddTaskPickerDialog already
-  // self-closes on pick, but the create callback is the last word
-  // on dialog state — see handleAddTaskCreated for the same
-  // rationale applied to the standard path.
-  handleCloseAddTaskPicker()
-}
-
-const handleCloseAddRoutineDialog = () => {
-  showAddRoutineDialog.value = false
-  addRoutineDialogWorkspaceId.value = null
-  addRoutineDialogItemId.value = null
 }
 
 // Memory task flow (2026-06-20). AddMemoryDialog in `mode='task'`
@@ -1258,141 +1211,13 @@ const handleReorderPinnedTasks = (
 // row in WorkspaceItemTask.vue (which emits `runRoutine` and
 // `editRoutine`) up through WorkspaceItem → WorkspaceList → here.
 // Sidebar is the only component that touches the store, so it
-// owns the user-visible side effects (route to chat, open the
-// edit dialog, call runRoutine / updateRoutine).
-
-// Run now: fire the routine via the store, then navigate to the
-// task's chat view. The backend returns the session_id (= task.id
-// by codebase invariant); we set the active task and route. The
-// chat view's existing SSE /chat-view connection picks up the new
-// user message when the worker writes it (see Task 7.5 E2E).
-const handleRunRoutine = async (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
-  const result = await workspacesStore.runRoutine(workspaceId, itemId, taskId)
-  // Per the `task.id == session_id` convention (Migration 052
-  // dropped the redundant `workspace_item_tasks.session_id`
-  // column), `taskId` IS the session id. We no longer need to
-  // read `result.session_id` — the routine fire returns the
-  // task_id as the session id, and the URL query is just for
-  // downstream cache hydration.
-  if (result) {
-    workspacesStore.setActiveTask(taskId)
-    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
-    // itemId in the URL — the routine-run path previously wrote only
-    // `view`/`task`/`session`, dropping the kanban / folder breadcrumb.
-    // The helper reads from the active store state (the user clicked
-    // the routine from a kanban column, so `activeWorkspace` is set).
-    router.replace({
-      path: '/app',
-      query: buildTaskUrlQuery({
-        taskId,
-        sessionId: taskId,
-        activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
-        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
-        activeDesignPageId: workspacesStore.activeDesignPageId,
-        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-      }),
-    })
-  }
-}
-
-// Edit routine: capture the workspace / item / task ids on the
-// three refs and open the dialog. The dialog's `routine` and
-// `taskName` props are bound to the two `computed`s below, which
-// look up the routine in the workspaces tree (and tolerate a
-// stale id by returning null / '' — the dialog renders only when
-// `routine` is non-null, so a missing target simply doesn't
-// open).
-const handleEditRoutine = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
-  editRoutineWorkspaceId.value = workspaceId
-  editRoutineItemId.value = itemId
-  editRoutineTaskId.value = taskId
-  showEditRoutineDialog.value = true
-}
-
-const handleEditRoutineClose = () => {
-  showEditRoutineDialog.value = false
-  editRoutineWorkspaceId.value = null
-  editRoutineItemId.value = null
-  editRoutineTaskId.value = null
-}
-
-// Submit: pass the form fields to the store's updateRoutine
-// action (added in Chunk 5). The store action does an optimistic
-// name update + API call + rollback on error. Routine schedule /
-// initial_prompt / enabled updates surface on the next SSE
-// refresh (the backend recomputes next_run_at on update).
-const handleEditRoutineSubmitted = async (params: EditRoutineParams) => {
-  if (
-    !editRoutineWorkspaceId.value ||
-    !editRoutineItemId.value ||
-    !editRoutineTaskId.value
-  ) {
-    return
-  }
-  await workspacesStore.updateRoutine(
-    editRoutineWorkspaceId.value,
-    editRoutineItemId.value,
-    editRoutineTaskId.value,
-    {
-      name: params.name,
-      schedule: params.schedule,
-      initial_prompt: params.initial_prompt,
-      enabled: params.enabled,
-    },
-  )
-  showEditRoutineDialog.value = false
-  editRoutineWorkspaceId.value = null
-  editRoutineItemId.value = null
-  editRoutineTaskId.value = null
-}
-
-// Look up the routine being edited in the workspaces tree. The
-// EditRoutineDialog's `routine` prop expects RoutineMeta | null;
-// returning null when the lookup misses keeps the dialog from
-// opening (the dialog's v-if="show && routine" gate handles it).
-const editRoutineTarget = computed<RoutineMeta | null>(() => {
-  if (
-    !editRoutineWorkspaceId.value ||
-    !editRoutineItemId.value ||
-    !editRoutineTaskId.value
-  ) {
-    return null
-  }
-  for (const ws of workspacesStore.workspaces) {
-    if (ws.id !== editRoutineWorkspaceId.value) continue
-    const item = ws.items.find((i) => i.id === editRoutineItemId.value)
-    const task = item?.tasks?.find((t) => t.id === editRoutineTaskId.value)
-    return task?.routine ?? null
-  }
-  return null
-})
-
-// The task's display name (for the dialog's subtitle). Mirrors
-// editRoutineTarget's lookup but returns the name.
-const editRoutineTaskName = computed<string>(() => {
-  if (
-    !editRoutineWorkspaceId.value ||
-    !editRoutineItemId.value ||
-    !editRoutineTaskId.value
-  ) {
-    return ''
-  }
-  for (const ws of workspacesStore.workspaces) {
-    if (ws.id !== editRoutineWorkspaceId.value) continue
-    const item = ws.items.find((i) => i.id === editRoutineItemId.value)
-    const task = item?.tasks?.find((t) => t.id === editRoutineTaskId.value)
-    if (task) return task.name
-  }
-  return ''
-})
+// owns the user-visible side effects (route to chat).
+//
+// NOTE: per-task routine handlers (handleRunRoutine,
+// handleEditRoutine + EditRoutineDialog plumbing) were deleted with
+// per-task routines (Migration 084, plan
+// 2026-09-10-workspace-items-routines). Workspace-level routines
+// fire via RoutineView → workspacesStore.runRoutineItem.
 
 // ─── Kanban handlers ────────────────────────────────────────────────────────
 //
@@ -1421,7 +1246,7 @@ const editRoutineTaskName = computed<string>(() => {
 // Expose the task event handlers for AppLayout to call when the
 // kanban board (now mounted in the main content area, not the
 // sidebar) emits select-task / delete-task / rename-task /
-// edit-routine / run-routine / pin-task. AppLayout holds the
+// pin-task. AppLayout holds the
 // kanban view; the handlers themselves still live here because
 // they need access to the modal state (rename, edit-routine) and
 // the chatsList ref (select-task resets the chat row's active
@@ -1447,10 +1272,6 @@ defineExpose({
     taskId: string,
     currentName: string,
   ) => handleRenameTask(workspaceId, itemId, taskId, currentName),
-  editRoutine: (workspaceId: string, itemId: string, taskId: string) =>
-    handleEditRoutine(workspaceId, itemId, taskId),
-  runRoutine: (workspaceId: string, itemId: string, taskId: string) =>
-    handleRunRoutine(workspaceId, itemId, taskId),
   pinTask: (
     workspaceId: string,
     itemId: string,
@@ -1564,8 +1385,6 @@ defineExpose({
           @select-task="handleSelectTask"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
-          @run-routine="handleRunRoutine"
-          @edit-routine="handleEditRoutine"
           @load-more-tasks="handleLoadMoreTasks"
           @reorder-workspaces="handleReorderWorkspaces"
           @reorder-workspace-items="handleReorderWorkspaceItems"
@@ -1633,6 +1452,10 @@ defineExpose({
          docs/superpowers/plans/2026-06-13-design-mode.md. -->
     <AddDesignDialog :show="showAddDesignDialog" @close="handleCloseAddDesignDialog" @create="handleCreateDesign" />
     <AddAgentDialog :show="showAddAgentDialog" @close="handleCloseAddAgentDialog" @create="handleCreateAgent" />
+    <!-- Workspace routines (Migration 084): modal for creating a
+         routine-mode workspace item. Wired to the 'routine' itemType
+         in handleAddItem (above). -->
+    <AddRoutineItemDialog :show="showAddRoutineItemDialog" @close="handleCloseAddRoutineItemDialog" @create="handleCreateRoutineItem" />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"
@@ -1642,8 +1465,9 @@ defineExpose({
     <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
     <!-- AddTaskDialog was removed in 2026-07-26 — the "Standard Chat"
          path now auto-creates the task + navigates straight to its
-         ChatView, no name/description prompt. See handleAddTaskPick. -->
-    <AddRoutineDialog :show="showAddRoutineDialog" @close="handleCloseAddRoutineDialog" @create="handleAddRoutineCreated" />
+         ChatView, no name/description prompt. See handleAddTaskPick.
+         (AddRoutineDialog was removed in Migration 084 — routines are
+         workspace items now, see AddRoutineItemDialog above.) -->
     <AddMemoryDialog
       v-if="addMemoryTaskItemId"
       :show="showAddMemoryTaskDialog"
@@ -1651,13 +1475,6 @@ defineExpose({
       mode="task"
       @close="handleCloseAddMemoryTaskDialog"
       @create="handleCreateMemoryTask"
-    />
-    <EditRoutineDialog
-      :show="showEditRoutineDialog"
-      :routine="editRoutineTarget"
-      :task-name="editRoutineTaskName"
-      @close="handleEditRoutineClose"
-      @submit="handleEditRoutineSubmitted"
     />
     <ConfirmDialog
       :show="showDeleteConfirm"

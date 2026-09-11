@@ -31,14 +31,16 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     _ = @import("http_handlers/subagent_progress_get_test.zig");    // live spawn-batch snapshot GET (task_1788505292766_1 spawn-subagent-refresh-persist)
     _ = @import("http_handlers/background_processes_list.zig");     // session bg-process list GET (bg-completion endpoints)
     _ = @import("http_handlers/background_process_log_get.zig");    // session bg-process log-tail GET (bg-completion endpoints)
-    _ = @import("http_handlers/task_create_routines_test.zig");
+    // NOTE: task_create_routines_test.zig deleted with the per-task
+    // `routines` table (Migration 084, plan 2026-09-10-workspace-items-routines).
     _ = @import("http_handlers/task_create_memory_test.zig");
     _ = @import("http_handlers/task_create_description_test.zig");  // Migration 062 description in create path
     _ = @import("http_handlers/task_create_test.zig");              // kanban task name = session name (plan 2026-08-13)
     _ = @import("http_handlers/task_create_unique_id_test.zig");    // Mac CI 500 regression (CI run 31863092055) — atomic counter on id generator
     _ = @import("http_handlers/tags_validation.zig");                  // Migration 067 tags validation helper (Task 7) — inline tests in the source file
-    _ = @import("http_handlers/task_update_routines_test.zig");
-    _ = @import("http_handlers/routines_run_test.zig");
+    // NOTE: task_update_routines_test.zig + routines_run_test.zig deleted
+    // with the per-task `routines` table (Migration 084, plan
+    // 2026-09-10-workspace-items-routines).
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). The
     // start_agent handler + useCase live in a single file; the
     // static-contract tests are inline at the bottom. Importing
@@ -49,7 +51,12 @@ _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup 
     // Option C): handler + useCase + inline tests live in a single file,
     // mirroring start_agent.zig above (no separate _test.zig).
     _ = @import("http_handlers/run_all_agents.zig");
-    _ = @import("http_handlers/routines_list_test.zig");
+    // NOTE: routines_list_test.zig deleted with the per-task `routines`
+    // table (Migration 084). New workspace-routine handlers carry
+    // inline tests (imported as impl files, like start_agent.zig).
+    _ = @import("http_handlers/workspace_items_create_routine.zig");
+    _ = @import("http_handlers/workspace_routines_get.zig");
+    _ = @import("http_handlers/workspace_routines_update.zig");
     _ = @import("http_handlers/memories_crud_test.zig");
     _ = @import("http_handlers/local_memories_crud_test.zig");
     // MCP test endpoint (PR #373): inline static-contract tests for route

@@ -50,13 +50,6 @@ const emit = defineEmits<{
   // item forwards the page from WorkspaceItem → WorkspaceList → Sidebar.
   // Sidebar opens RenameDesignPageModal + calls the store action.
   renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
-  // NEW (Chunk 7 of task-routines plan): emitted by
-  // <WorkspaceItem> when the routine-task branch in
-  // <WorkspaceItemTask> fires the routine's pencil or Run Now
-  // button. Sidebar handles these — calls the store action and
-  // opens EditRoutineDialog.
-  editRoutine: [workspaceId: string, itemId: string, taskId: string]
-  runRoutine: [workspaceId: string, itemId: string, taskId: string]
   loadMoreTasks: [workspaceId: string, itemId: string]
   // Drag-and-drop reordering. Emitted on a successful drop with the
   // new top-to-bottom array of workspace IDs. The Sidebar parent
@@ -233,25 +226,6 @@ const handleRenameTask = (
   currentName: string,
 ) => {
   emit('renameTask', workspaceId, itemId, taskId, currentName)
-}
-
-// NEW (Chunk 7 of task-routines plan): pass-through for the
-// routine-task events emitted by <WorkspaceItem>. Same
-// pure-forwarding pattern as the standard-task handlers above.
-const handleEditRoutine = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
-  emit('editRoutine', workspaceId, itemId, taskId)
-}
-
-const handleRunRoutine = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
-  emit('runRoutine', workspaceId, itemId, taskId)
 }
 
 const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
@@ -682,8 +656,6 @@ const handleItemDragEnd = () => {
             @select-task="handleSelectTask"
             @delete-task="handleDeleteTask"
             @rename-task="handleRenameTask"
-            @edit-routine="handleEditRoutine"
-            @run-routine="handleRunRoutine"
             @load-more-tasks="handleLoadMoreTasks"
             @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
             @reorder-pinned-tasks="(ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)"
@@ -762,6 +734,21 @@ const handleItemDragEnd = () => {
                   data-testid="workspace-add-agent-option"
                 >
                   Add Agent
+                </button>
+              </li>
+              <!-- Workspace routines (Migration 084, plan
+                   2026-09-10-workspace-items-routines): fifth dropdown
+                   option for creating a Routine workspace item.
+                   Sidebar.handleAddItem routes the 'routine' itemType
+                   to the new AddRoutineItemDialog. -->
+              <li>
+                <button
+                  @click="handleAddItem(workspace.id, 'routine')"
+                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+                  style="color: var(--semantic-text);"
+                  data-testid="workspace-add-routine-option"
+                >
+                  Add Routine
                 </button>
               </li>
             </ul>

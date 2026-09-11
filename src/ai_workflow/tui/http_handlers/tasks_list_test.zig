@@ -353,22 +353,35 @@ test "tasks_list handler passes sort_field and sort_direction to the DB fn" {
     }
 }
 
-// ─── Contracts 13-14: routine-aware response shape ────────────────────
+// ─── Contracts 13-14: routine field deleted (Migration 084) ─────────────
+// Per-task routines are gone — routines are first-class workspace
+// items now (plan 2026-09-10-workspace-items-routines). These are
+// deletion proofs: they fail if anyone resurrects the inline
+// `routine` field on the task response.
 
-test "WorkspaceItemTaskResponse has task_type + routine fields" {
+test "WorkspaceItemTaskResponse has task_type and no routine field" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HTTP_RESPONSE_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "task_type") == null) return error.TaskTypeFieldMissing;
-    if (std.mem.indexOf(u8, source, "routine") == null) return error.RoutineFieldMissing;
+    // Scope to the WorkspaceItemTaskResponse struct window — the
+    // deletion NOTE comments elsewhere in the file mention "routines"
+    // (plural) and must not satisfy this check.
+    const struct_start = std.mem.indexOf(u8, source, "pub const WorkspaceItemTaskResponse = struct") orelse {
+        return error.ResponseStructMissing;
+    };
+    const window = source[struct_start..];
+    const window_end = std.mem.indexOf(u8, window, "\npub const ") orelse window.len;
+    const struct_body = window[0..window_end];
+    if (std.mem.indexOf(u8, struct_body, "routine") != null) return error.RoutineFieldResurrected;
 }
 
-test "tasks_list handler threads task_type + routine into the response" {
+test "tasks_list handler threads task_type and no routine into the response" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
     if (std.mem.indexOf(u8, source, "task_type") == null) return error.TaskTypeNotThreaded;
-    if (std.mem.indexOf(u8, source, ".routine") == null) return error.RoutineNotThreaded;
+    if (std.mem.indexOf(u8, source, ".routine") != null) return error.RoutineResurrected;
 }
 
 // ─── Contract: pin fields propagate from DB to wire response ──────────
@@ -533,13 +546,14 @@ test "tasks_list llm_history struct literal sets image_urls from row" {
     const fn_body = body[0..body_end];
 
     // The struct literal must populate .image_urls from the new SELECT
-    // column (index 24). Without this the field stays the default
-    // empty slice even when the DB row has images.
-    if (std.mem.indexOf(u8, fn_body, ".image_urls = try allocator.dupe(u8, row.values[24])") == null) {
+    // column (index 17 post-Migration-084 — the routines JOIN dropped
+    // columns 11-17, shifting everything down by 7). Without this the
+    // field stays the default empty slice even when the DB row has images.
+    if (std.mem.indexOf(u8, fn_body, ".image_urls = try allocator.dupe(u8, row.values[17])") == null) {
         std.debug.print(
-            "\n!! {s} listWorkspaceItemTasksWithCursor does not set .image_urls from row.values[24] !!\n" ++
+            "\n!! {s} listWorkspaceItemTasksWithCursor does not set .image_urls from row.values[17] !!\n" ++
                 "   Add to the WorkspaceItemTaskInfo literal:\n" ++
-                "     .image_urls = try allocator.dupe(u8, row.values[24]),\n" ++
+                "     .image_urls = try allocator.dupe(u8, row.values[17]),\n" ++
                 "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
             .{LLM_HISTORY_PATH},
         );

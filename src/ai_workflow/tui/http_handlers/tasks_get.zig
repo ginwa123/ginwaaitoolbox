@@ -72,26 +72,12 @@ fn useCase(
         break :blk branch;
     };
 
-    // Routine metadata conversion — identical to tasks_list.zig (the
-    // DB-layer RoutineMeta carries a `routines_model.RoutineRunStatus`
-    // enum; the response layer wants a `?[]const u8` string).
-    const routine_meta: ?http_response.RoutineMetaResponse = if (task.routine) |r| .{
-        .schedule = r.schedule,
-        .initial_prompt = r.initial_prompt,
-        .enabled = r.enabled,
-        .last_run_at = r.last_run_at,
-        .next_run_at = r.next_run_at,
-        .last_status = r.last_status.dbValue(),
-        .last_error = r.last_error,
-    } else null;
-
     const resp = http_response.WorkspaceItemTaskResponse{
         .id = task.id,
         .name = task.name,
         .workspace_item_id = task.workspace_item_id,
         .description = task.description,
         .task_type = task.task_type,
-        .routine = routine_meta,
         .created_at = task.created_at,
         .updated_at = task.updated_at,
         .is_pinned = task.is_pinned,

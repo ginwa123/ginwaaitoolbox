@@ -630,6 +630,14 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsListHandler);
     try gs.router.post("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsCreateHandler);
     try gs.router.delete("/api/agent-kanbans/:kanban_id/tools/:tool_name", ai_mod.http_handlers.agentKanbanToolsDeleteHandler);
+    // Workspace-level routines (Migration 084, plan
+    // 2026-09-10-workspace-items-routines) — first-class
+    // `item_type='routine'`. Replaces the deleted per-task routes
+    // (`POST .../tasks/:task_id/run`, `GET /api/routines`).
+    try gs.router.post("/api/workspaces/:workspace_id/items/routine", ai_mod.http_handlers.workspaceItemsCreateRoutineHandler);
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesGetHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesUpdateHandler);
+    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/routines/:routine_id/run", ai_mod.http_handlers.workspaceRoutinesRunHandler);
     try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
@@ -667,11 +675,15 @@ pub fn main(init: std.process.Init) !void {
     // `<img :src="task.imageUrls[i]">`.
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
     try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/run", ai_mod.http_handlers.routinesRunHandler);
+    // NOTE: the per-task routine fire route (`POST .../tasks/:task_id/run`)
+    // was deleted with the per-task `routines` table (Migration 084, plan
+    // 2026-09-10-workspace-items-routines). Workspace-level routines fire
+    // via `POST .../items/:item_id/routines/:routine_id/run` (registered
+    // with the routine block above).
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Trigger
     // an LLM worker on an existing task's session WITHOUT queueing a
-    // new user message. Distinct from /run (routines only) and
-    // POST /api/llm/session (always queues a message). See
+    // new user message. Distinct from POST /api/llm/session (always
+    // queues a message). See
     // http_handlers/start_agent.zig for the full contract.
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/start_agent", ai_mod.http_handlers.startAgentHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/pin", ai_mod.http_handlers.taskPinHandler);
@@ -682,7 +694,9 @@ pub fn main(init: std.process.Init) !void {
     // re-stamp is harmless — see plan docs/plans/2026-07-26-kanban-task-notification-icon.md).
     try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/touched", ai_mod.http_handlers.taskMarkHumanTouchedHandler);
     try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/reorder_pinned", ai_mod.http_handlers.tasksReorderPinnedHandler);
-    try gs.router.get("/api/routines", ai_mod.http_handlers.routinesListHandler);
+    // NOTE: `GET /api/routines` (per-task global listing) was deleted with
+    // the per-task `routines` table (Migration 084, plan
+    // 2026-09-10-workspace-items-routines). It now 404s.
 
     // Design workspace-item endpoints (item_type='design') — v6
     //   GET    /design/pages                                — list pages

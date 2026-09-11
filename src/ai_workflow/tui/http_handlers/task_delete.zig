@@ -76,9 +76,6 @@ pub const TaskDeleteOutcome = union(enum) {
 ///   - For memory tasks: the underlying .md file in
 ///     `<workspace_item.path>/.nalar/memories/<name>.md` is removed
 ///     (idempotent — no-op if already missing).
-///   - For routine tasks: the matching row in `routines` is removed
-///     so the scheduler does not pick up a routine whose task no
-///     longer exists.
 ///   - The `workspace_item_tasks` row is removed last.
 ///
 /// On `.running`: NO side effects. The task row is left untouched so
@@ -98,7 +95,7 @@ pub fn deleteTaskUseCase(
 ) !TaskDeleteOutcome {
     // 1. Look up the task so we can:
     //    a) check the worker table for an in-flight session,
-    //    b) clean up associated resources (routines row, .md file).
+    //    b) clean up associated resources (.md file for memory tasks).
     const task_opt = ai_mod.workspace_item_tasks.getWorkspaceItemTask(allocator, db, task_id) catch null;
     if (task_opt) |task| {
         defer task.deinit(allocator);
@@ -110,7 +107,7 @@ pub fn deleteTaskUseCase(
         //    deleting now would orphan the worker's state.
         //
         //    We do this BEFORE any cleanup so a refused delete leaves
-        //    the task (and its routines / .md file) exactly as it was.
+        //    the task (and its .md file) exactly as it was.
         if (ai_mod.llm_history.isTaskRunning(allocator, db, task_id)) {
             // Look up the running worker's id so the 409 response
             // can include it (helpful for debugging — the frontend
@@ -142,21 +139,9 @@ pub fn deleteTaskUseCase(
             }
         }
 
-        // 3b. Routine-task cleanup: delete the routines row.
-        //     Standard tasks have no extra table.
-        if (std.mem.eql(u8, task.task_type, "routine")) {
-            db.exec(
-                allocator,
-                "DELETE FROM routines WHERE task_id = ?",
-                &[_][]const u8{task_id},
-            ) catch {
-                // Don't delete the task row if the routines row
-                // couldn't be removed — the scheduler would otherwise
-                // fire an orphan routine on the next tick. Return
-                // the error to the caller.
-                return error.RoutineCleanupFailed;
-            };
-        }
+        // 3b. (Deleted: routine-task cleanup removed with the per-task
+        //     `routines` table — Migration 084. Standard tasks have no
+        //     extra table.)
     } else {
         // Task doesn't exist — same as the pre-refactor behavior,
         // fall through and let the DELETE be idempotent (DELETE on a
@@ -234,7 +219,6 @@ pub fn tasksDeleteHandler(
     const outcome = deleteTaskUseCase(allocator, io, sqlite_db, task_id) catch |err| {
         return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{
             .@"error" = switch (err) {
-                error.RoutineCleanupFailed => "Failed to delete routine row",
                 error.TaskDeleteFailed => "Failed to delete task",
             },
         }) });

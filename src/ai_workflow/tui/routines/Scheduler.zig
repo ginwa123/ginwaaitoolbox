@@ -1,9 +1,12 @@
-//! `Scheduler.zig` — the polling loop that drives routines to fire
-//! (Task 3.1 of the Add Task Routines plan, refactored per PR #8 review).
+//! `Scheduler.zig` — the polling loop that drives workspace routines
+//! to fire.
+//!
+//! Retargeted from per-task routines (Migration 044) to
+//! `workspace_routines` (Migration 084).
 //!
 //! `start(allocator, db, di, io)` is the public entry point — call
 //! it via `di.group_emit_session_create.concurrent(io, ...)` from
-//! `startup.zig` (Task 3.2). The function does NOT return; it runs
+//! `startup.zig`. The function does NOT return; it runs
 //! the polling loop until the process exits. The polling interval is
 //! `TICK_INTERVAL_NS` (5 seconds).
 //!
@@ -21,16 +24,17 @@
 //!                               originally-scheduled `next_run_at`.
 //!
 //! Each tick calls `fireDueRoutines`, which lists every due routine
-//! via `model.listDueRoutineIds` and calls `fire.fireRoutine` for
-//! each. `fire.fireRoutine` submits the LLM work to the same Io
-//! group via `di.group_emit_session_create.concurrent(io, ...)` —
-//! the same pattern as `http_handlers/session_create.zig:161`. A
-//! slow LLM call in one routine cannot block polling of others: the
+//! via `model.listDueWorkspaceRoutineIds` and calls
+//! `fire.fireWorkspaceRoutine` for each. `fire.fireWorkspaceRoutine`
+//! submits the LLM work to the same Io group via
+//! `di.group_emit_session_create.concurrent(io, ...)` — the same
+//! pattern as `http_handlers/session_create.zig:161`. A slow LLM
+//! call in one routine cannot block polling of others: the
 //! fire-and-forget submit returns immediately, and the Io group
 //! runs the LLM in a worker thread.
 //!
-//! Plan: docs/superpowers/plans/2026-06-13-add-task-routines-chunks-2-3.md
-//! Design: docs/plans/2026-06-13-add-task-routines-design.md
+//! Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md (Task 3)
+//! Task: task_1789032258828_0.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
@@ -53,7 +57,7 @@ pub fn resetStuckRunning(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
     const copy = try allocator.dupe(u8, err_msg);
     defer allocator.free(copy);
     _ = try db.exec(allocator,
-        \\UPDATE routines
+        \\UPDATE workspace_routines
         \\   SET last_status = 'failed', last_error = ?, updated_at = datetime('now')
         \\ WHERE last_status = 'running'
     , &.{copy});
@@ -63,7 +67,7 @@ pub fn resetStuckRunning(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
 /// expression. Called once at startup so routines that were due
 /// during downtime fire within 5s of boot — without this pass, a
 /// routine with `next_run_at = 2000-01-01 00:00:00` would not be
-/// picked up by `listDueRoutineIds` (which compares against
+/// picked up by `listDueWorkspaceRoutineIds` (which compares against
 /// `now_sqlite`) until the clock naturally caught up. Wait — that
 /// would actually be fine since 2000-01-01 is in the past; the real
 /// use case is: a routine's `next_run_at` was advanced by a prior
@@ -72,6 +76,9 @@ pub fn resetStuckRunning(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend
 /// becomes "due" naturally. The bigger motivation is consistency:
 /// if the cron expression is edited while the routine is idle, the
 /// new `next_run_at` reflects the edit, not the old expression.
+///
+/// Manual-only routines (empty schedule) are skipped — there is no
+/// cron to compute from and their `next_run_at` stays NULL.
 pub fn recomputeDueNextRunAt(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -83,7 +90,7 @@ pub fn recomputeDueNextRunAt(
     // `db.exec` calls (which the SqliteBackend does not support — it
     // serializes statements per connection).
     var rows = try db.query(allocator,
-        "SELECT id, schedule FROM routines r WHERE enabled = 1", &.{});
+        "SELECT id, schedule FROM workspace_routines WHERE enabled = 1 AND schedule != ''", &.{});
     defer rows.deinit();
 
     const now_ns: i128 = @intCast(std.Io.Timestamp.now(io, .real).nanoseconds);
@@ -131,18 +138,18 @@ pub fn recomputeDueNextRunAt(
 
     for (to_update.items) |item| {
         _ = try db.exec(allocator,
-            "UPDATE routines SET next_run_at = ?, updated_at = datetime('now') WHERE id = ?",
+            "UPDATE workspace_routines SET next_run_at = ?, updated_at = datetime('now') WHERE id = ?",
             &.{ item.next_sqlite, item.id });
     }
 }
 
 /// Fire one routine per due id. Uses the main process's
-/// `di.group_emit_session_create` group via `fire.fireRoutine`
+/// `di.group_emit_session_create` group via `fire.fireWorkspaceRoutine`
 /// (no thread, no sub-process). Returns the count of routines that
-/// were successfully fired. Errors from `fireRoutine` other than the
-/// three controlled `FireError` variants are logged and the routine
-/// is skipped — a single broken routine must not block polling of
-/// others.
+/// were successfully fired. Errors from `fireWorkspaceRoutine` other
+/// than the three controlled `FireError` variants are logged and the
+/// routine is skipped — a single broken routine must not block
+/// polling of others.
 pub fn fireDueRoutines(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -153,18 +160,18 @@ pub fn fireDueRoutines(
     const now_sqlite = try fire.formatSqliteDatetime(allocator, now_ns);
     defer allocator.free(now_sqlite);
 
-    const due_ids = try model.listDueRoutineIds(allocator, db, now_sqlite);
+    const due_ids = try model.listDueWorkspaceRoutineIds(allocator, db, now_sqlite);
     defer {
         for (due_ids) |id| allocator.free(id);
         allocator.free(due_ids);
     }
 
     var fired: usize = 0;
-    for (due_ids) |task_id| {
-        fire.fireRoutine(allocator, db, di, io, task_id) catch |err| switch (err) {
+    for (due_ids) |routine_id| {
+        fire.fireWorkspaceRoutine(allocator, db, di, io, routine_id) catch |err| switch (err) {
             error.NotARoutine, error.Disabled, error.AlreadyRunning => continue,
             else => {
-                std.log.warn("scheduler: fireRoutine failed for {s}: {s}", .{ task_id, @errorName(err) });
+                std.log.warn("scheduler: fireWorkspaceRoutine failed for {s}: {s}", .{ routine_id, @errorName(err) });
                 continue;
             },
         };
@@ -175,7 +182,7 @@ pub fn fireDueRoutines(
 
 /// The polling loop. Runs forever (no cancel signal in v1). Call
 /// from `di.group_emit_session_create.concurrent(io, ...)` — see
-/// `startup.zig` (Task 3.2) for the wiring.
+/// `startup.zig` for the wiring.
 pub fn start(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,

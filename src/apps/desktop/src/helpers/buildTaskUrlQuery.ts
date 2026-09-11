@@ -64,8 +64,8 @@ export interface TaskUrlContext {
   /** The task id to put in the `/chat/<taskId>` suffix (required). */
   taskId: string
   /**
-   * Accepted for back-compat with old call sites (the routine-run
-   * path historically passed both `taskId` and `sessionId`).
+   * Accepted for back-compat with old call sites (some historically
+   * passed both `taskId` and `sessionId`).
    * Ignored under the new wire shape — the chat task id in the
    * suffix IS the session id per `task.id == session_id`.
    */

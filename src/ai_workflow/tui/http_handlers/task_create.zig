@@ -1,20 +1,21 @@
 //! `POST /api/workspaces/:workspace_id/items/:item_id/tasks`.
 //!
-//! Body: `{ name, session_id?, task_type? ('standard'|'routine'|'memory'),
-//!         schedule?, initial_prompt?, enabled?,
+//! Body: `{ name, session_id?, task_type? ('standard'|'memory'),
 //!         memory_name?, memory_content? }`.
 //!
-//! Three task types are supported:
+//! Two task types are supported:
 //!
 //!   - **standard** (default): existing `createWorkspaceItemTask` path;
 //!     the migration's `task_type` column default is 'standard'.
 //!     If the parent item is a kanban, the new task is auto-assigned
 //!     to the first column at MAX(kanban_position) + 1.
 //!
-//!   - **routine**: inlines both the workspace_item_tasks INSERT (so we
-//!     can set task_type='routine' explicitly) and the routines INSERT.
-//!     The scheduler polls `routines` so the routines row is what
-//!     makes the task fire.
+//! NOTE: the **routine** task type was deleted with the per-task
+//! `routines` table (Migration 084, plan
+//! 2026-09-10-workspace-items-routines). Routines are now
+//! first-class workspace items (`item_type='routine'`,
+//! `workspace_routines` table) — see
+//! `workspace_items_create_routine.zig`.
 //!
 //!   - **memory**: a local memory file scoped to the parent
 //!     workspace_item's directory. The .md file is created at
@@ -31,8 +32,9 @@
 //! status codes / JSON.
 //!
 //! Plans:
-//!   - docs/superpowers/plans/2026-06-13-add-task-routines-chunk-4.md (routine)
 //!   - docs/plans/2026-06-20-add-markdown-memory.md (memory)
+//!   - docs/superpowers/plans/2026-09-10-workspace-items-routines.md
+//!     (routine task_type deleted; workspace-level replacement)
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
@@ -40,8 +42,6 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 const memories_mod = nalarcore.memories;
-const cron = @import("../routines/cron.zig");
-const fire = @import("../routines/fire.zig");
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
 
@@ -66,14 +66,9 @@ pub const TaskCreateError = error{
     ItemIdRequired,
     MissingBody,
     InvalidJson,
-    // 400 — routine-task validation
-    RoutineScheduleRequired,
-    RoutineInitialPromptRequired,
-    InvalidCronExpression,
-    FailedToComputeNextFireTime,
-    // 500 — routine-task DB ops
-    TaskInsertFailed,
-    RoutineCreateFailed,
+    // 400 — the per-task 'routine' task_type was deleted (Migration
+    // 084). Routines are now first-class workspace items.
+    RoutineTasksRemoved,
     // 400 — memory-task validation
     MemoryNameRequired,
     InvalidMemoryName,
@@ -124,15 +119,8 @@ pub const TaskCreateInput = struct {
 /// Tagged outcome of the use-case. The fields are the data needed
 /// to build the response for each task type.
 pub const TaskCreateResult = union(enum) {
-    routine: RoutineResult,
     memory: MemoryResult,
     standard: StandardResult,
-};
-
-pub const RoutineResult = struct {
-    task_id: []const u8,
-    name: []const u8,
-    workspace_item_id: []const u8,
 };
 
 pub const MemoryResult = struct {
@@ -193,16 +181,8 @@ pub const StandardResult = struct {
 //    malformed JSON and break the frontend. valueAlloc delegates to
 //    std.json.Stringify which handles all escaping per RFC 8259.
 
-const RoutineResponse = struct {
-    id: []const u8,
-    name: []const u8,
-    workspace_item_id: []const u8,
-    task_type: []const u8 = "routine",
-    session_id: []const u8,
-    created_at: ?[]const u8 = null,
-    updated_at: ?[]const u8 = null,
-};
-
+// NOTE: RoutineResponse deleted with the per-task `routines` table
+// (Migration 084, plan 2026-09-10-workspace-items-routines).
 const MemoryResponse = struct {
     id: []const u8,
     name: []const u8,
@@ -268,82 +248,6 @@ fn generateTaskId(allocator: std.mem.Allocator, io: std.Io) TaskCreateError![]u8
     return std.fmt.allocPrint(allocator, "task_{d}_{d}", .{ ms, counter }) catch return error.OutOfMemory;
 }
 
-/// Routine branch. Inserts task row + routines row.
-fn createRoutineTask(
-    allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
-    input: TaskCreateInput,
-    task_id: []const u8,
-) TaskCreateError!RoutineResult {
-    const schedule = input.body.schedule orelse return error.RoutineScheduleRequired;
-    const initial_prompt = input.body.initial_prompt orelse return error.RoutineInitialPromptRequired;
-    cron.validate(schedule) catch return error.InvalidCronExpression;
-    const ts = std.Io.Timestamp.now(input.io, .real);
-    const next_ns = cron.nextFireTime(schedule, ts.nanoseconds) catch return error.FailedToComputeNextFireTime;
-    const next_run_at = fire.formatSqliteDatetime(allocator, next_ns) catch return error.OutOfMemory;
-    defer allocator.free(next_run_at);
-
-    // Routine task — task.id == session_id, so we never need to
-    // store a separate session_id column. The session_id field in
-    // the request body is accepted for backward compatibility but
-    // is intentionally ignored.
-    //
-    // Migration 062: persist description via dynamic SQL builder.
-    // Three cases for description (null / "" / value) all funnel
-    // into a single `db.exec(sql.items, bind_values.items)` call.
-    // The empty-string case uses a SQL '' literal (not a `?` bind)
-    // because `SqliteBackend.exec` binds empty `[]const u8` as
-    // SQL NULL, which would fail the column's NOT NULL DEFAULT ''
-    // constraint — see memory `sqlite-backend-empty-slice-binds-as-null`.
-    {
-        var cols_buf: std.ArrayList(u8) = .empty;
-        defer cols_buf.deinit(allocator);
-        var vals_buf: std.ArrayList(u8) = .empty;
-        defer vals_buf.deinit(allocator);
-        var bind_values: std.ArrayList([]const u8) = .empty;
-        defer bind_values.deinit(allocator);
-
-        try cols_buf.appendSlice(allocator, "id, name, workspace_item_id, task_type");
-        try vals_buf.appendSlice(allocator, "?, ?, ?, 'routine'");
-        try bind_values.appendSlice(allocator, &[_][]const u8{
-            task_id, input.body.name, input.item_id,
-        });
-
-        if (input.body.description) |d| {
-            if (d.len == 0) {
-                // Empty-string: SQL literal '' (NOT bound via `?`).
-                try cols_buf.appendSlice(allocator, ", description");
-                try vals_buf.appendSlice(allocator, ", ''");
-            } else {
-                // Value: bind it.
-                try cols_buf.appendSlice(allocator, ", description");
-                try vals_buf.appendSlice(allocator, ", ?");
-                try bind_values.append(allocator, d);
-            }
-        }
-
-        var sql_buf: std.ArrayList(u8) = .empty;
-        defer sql_buf.deinit(allocator);
-        try sql_buf.print(
-            allocator,
-            "INSERT INTO workspace_item_tasks ({s}) VALUES ({s})",
-            .{ cols_buf.items, vals_buf.items },
-        );
-
-        db.exec(allocator, sql_buf.items, bind_values.items) catch return error.TaskInsertFailed;
-    }
-
-    const routine_id = std.fmt.allocPrint(allocator, "routine_{s}", .{task_id}) catch return error.OutOfMemory;
-    defer allocator.free(routine_id);
-    const enabled_str = if (input.body.enabled) "1" else "0";
-    db.exec(allocator,
-        "INSERT INTO routines (id, task_id, schedule, initial_prompt, enabled, next_run_at) VALUES (?, ?, ?, ?, ?, ?)",
-        &[_][]const u8{ routine_id, task_id, schedule, initial_prompt, enabled_str, next_run_at },
-    ) catch return error.RoutineCreateFailed;
-
-    return .{ .task_id = task_id, .name = input.body.name, .workspace_item_id = input.item_id };
-}
-
 /// Memory branch. Writes the .md file + inserts the task row.
 fn createMemoryTask(
     allocator: std.mem.Allocator,
@@ -375,7 +279,8 @@ fn createMemoryTask(
     }
 
     // Migration 062: persist description. Same dynamic-SQL builder
-    // pattern as createRoutineTask above — null → omit column, "" →
+        // Migration 062: persist description. Same dynamic-SQL builder
+    // pattern as the standard branch below — null → omit column, "" →
     // SQL '' literal (avoids the empty-slice-as-NULL bind footgun),
     // "x…" → bind via `?`. On failure, roll back the .md file we
     // just wrote.
@@ -628,9 +533,9 @@ fn createStandardTask(
     // insert a `sessions` row keyed by the new task.id so the flag
     // has somewhere to land. The standard-task create path is the
     // primary consumer (frontend's KanbanTaskDetailDialog toggle
-    // sends this when the user opts in at create time). Routine and
-    // memory tasks handle their own session lifecycle separately
-    // and don't take this field.
+    // sends this when the user opts in at create time). Memory tasks
+    // handle their own session lifecycle separately and don't take
+    // this field.
     //
     // NEW (plan: docs/superpowers/plans/2026-08-13-kanban-task-
     // session-name-match.md): bind sessions.name = task.name (NOT
@@ -687,7 +592,7 @@ pub fn useCase(
 
     const task_id = try generateTaskId(allocator, input.io);
     // NOTE: do NOT `defer allocator.free(task_id)` here. `task_id` is
-    // passed to `createRoutineTask` / `createMemoryTask` /
+    // passed to `createMemoryTask` /
     // `createStandardTask`, which return it as `*.task_id` in their
     // `*Result` structs. The handler then reads it after this
     // function returns — freeing here is a use-after-free. The
@@ -695,8 +600,9 @@ pub fn useCase(
     // explicit cleanup is needed.
 
     if (std.mem.eql(u8, input.body.task_type, "routine")) {
-        const result = try createRoutineTask(allocator, db, input, task_id);
-        return .{ .routine = result };
+        // Deleted with the per-task `routines` table (Migration 084).
+        // Create a routine workspace item instead (`POST .../items/routine`).
+        return error.RoutineTasksRemoved;
     }
     if (std.mem.eql(u8, input.body.task_type, "memory")) {
         const result = try createMemoryTask(allocator, db, input, task_id);
@@ -754,8 +660,7 @@ pub fn tasksCreateHandler(
     }) catch |err| {
         const status: u16 = switch (err) {
             error.ItemIdRequired, error.MissingBody, error.InvalidJson => 400,
-            error.RoutineScheduleRequired, error.RoutineInitialPromptRequired,
-            error.InvalidCronExpression, error.FailedToComputeNextFireTime => 400,
+            error.RoutineTasksRemoved => 400,
             error.InvalidTags => 400,
             error.InvalidImageUrls => 400,
             error.ImageUrlsTooLarge => 413,
@@ -766,7 +671,6 @@ pub fn tasksCreateHandler(
             error.MemoryContentRequired => 400,
             error.WorkspaceItemNotFound => 404,
             error.NotAFolderItem, error.NoPathForMemory => 400,
-            error.TaskInsertFailed, error.RoutineCreateFailed,
             error.MemoryTaskInsertFailed, error.StandardTaskCreateFailed,
             error.FailedToBuildMemoriesPath, error.FailedToWriteMemoryFile => 500,
             error.OutOfMemory, error.Canceled => 500,
@@ -775,10 +679,7 @@ pub fn tasksCreateHandler(
             error.ItemIdRequired => "item_id required",
             error.MissingBody => "Request body required",
             error.InvalidJson => "Invalid JSON",
-            error.RoutineScheduleRequired => "schedule is required for routine tasks",
-            error.RoutineInitialPromptRequired => "initial_prompt is required for routine tasks",
-            error.InvalidCronExpression => "Invalid cron expression",
-            error.FailedToComputeNextFireTime => "Failed to compute next fire time",
+            error.RoutineTasksRemoved => "routine tasks are no longer supported; create a routine workspace item instead",
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
             error.InvalidImageUrls => "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs",
             error.ImageUrlsTooLarge => "image_urls payload too large (max 10 MB)",
@@ -791,8 +692,6 @@ pub fn tasksCreateHandler(
             error.WorkspaceItemNotFound => "Workspace item not found",
             error.NotAFolderItem => "Memory tasks can only be added to folder-type workspace items",
             error.NoPathForMemory => "Workspace item has no path; the folder must have been created with a real path",
-            error.TaskInsertFailed => "Failed to create task",
-            error.RoutineCreateFailed => "Failed to create routine row",
             error.MemoryTaskInsertFailed => "Failed to create task row",
             error.StandardTaskCreateFailed => "Failed to create task",
             error.FailedToBuildMemoriesPath => "Failed to build local memories path",
@@ -811,19 +710,6 @@ pub fn tasksCreateHandler(
     // rolled std.fmt.allocPrint) — see the doc comment above the
     // response struct definitions for the rationale.
     return switch (outcome) {
-        .routine => |r| res.jsonResponse(.{
-            .status_code = 201,
-            .data = try std.json.Stringify.valueAlloc(
-                allocator,
-                RoutineResponse{
-                    .id = r.task_id,
-                    .name = r.name,
-                    .workspace_item_id = r.workspace_item_id,
-                    .session_id = r.task_id, // task.id == session.id
-                },
-                .{},
-            ),
-        }),
         .memory => |r| res.jsonResponse(.{
             .status_code = 201,
             .data = try std.json.Stringify.valueAlloc(

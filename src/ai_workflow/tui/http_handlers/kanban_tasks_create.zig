@@ -160,8 +160,8 @@ pub fn kanbanTasksCreateHandler(
     // task_create.zig (tags validation, image_urls validation, cwd
     // validation, unattended-mode flag, kanban auto-assign, kanban_task
     // SSE). The kanban-scoped task always forces `task_type='standard'`
-    // — routines and memory-tasks have their own dedicated dialogs
-    // in the UI.
+    // — memory-tasks have their own dedicated dialog in the UI, and
+    // routines are workspace-level items now (Migration 084).
     const std_req = http_response.TaskCreateRequest{
         .name = parsed.name,
         .description = parsed.description,
@@ -196,9 +196,9 @@ pub fn kanbanTasksCreateHandler(
             error.InvalidImageUrls => 400,
             error.ImageUrlsTooLarge => 413,
             error.CwdTooLong, error.CwdNotAbsolute, error.CwdContainsControlChar => 400,
-            error.StandardTaskCreateFailed, error.TaskInsertFailed => 500,
+            error.StandardTaskCreateFailed => 500,
             error.OutOfMemory, error.Canceled => 500,
-            else => 500, // catch-all for the routine/memory variants that shouldn't fire here
+            else => 500, // catch-all for the memory variants that shouldn't fire here
         };
         const message: []const u8 = @errorName(err);
         return res.jsonResponse(.{
@@ -378,7 +378,7 @@ pub fn kanbanTasksCreateHandler(
 
     // 6. Build the success response. Use std.json.Stringify.valueAlloc
     // for JSON-safe escaping (matches task_create.zig's pattern — see
-    // the doc comment above RoutineResponse/MemoryResponse/StandardResponse
+    // the doc comment above MemoryResponse/StandardResponse
     // in that file for the rationale).
     const ResponseEnvelope = struct {
         task: http_response.TaskCreateResponse,

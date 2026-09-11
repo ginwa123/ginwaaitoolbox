@@ -130,12 +130,12 @@ describe('WorkspaceItemTaskCard — git branch badge', () => {
   })
 
   it('renders the branch badge alongside the type badge in the meta row', () => {
-    // Routine tasks have a "routine" type label AND now a branch badge.
+    // Memory tasks have a "memory" type label AND now a branch badge.
     // Both should be in the same data-testid="task-meta" row.
     const wrapper = mount(WorkspaceItemTaskCard, {
       props: {
         task: makeTask({
-          task_type: 'routine',
+          task_type: 'memory',
           git_branch: 'main',
           is_pinned: false,
         }),
@@ -145,7 +145,7 @@ describe('WorkspaceItemTaskCard — git branch badge', () => {
     })
     const metaRow = wrapper.find('[data-testid="task-meta"]')
     expect(metaRow.exists()).toBe(true)
-    expect(metaRow.find('[data-testid="task-meta-type-routine"]').exists()).toBe(
+    expect(metaRow.find('[data-testid="task-meta-type-memory"]').exists()).toBe(
       true,
     )
     expect(metaRow.find('[data-testid="task-git-branch"]').exists()).toBe(true)

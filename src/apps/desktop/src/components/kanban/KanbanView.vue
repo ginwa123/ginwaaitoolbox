@@ -29,8 +29,8 @@
       delete-column [columnId]
       reorder-column [{ columnId, targetColumnId }]
       // Pass-through from KanbanColumn:
-      select-task, delete-task, rename-task, edit-routine,
-      run-routine, pin-task
+      select-task, delete-task, rename-task,
+      pin-task
       request-rename-column, request-delete-column (host opens
       KanbanColumnEditor on these)
       view-task-detail (consumed internally — see comment below)
@@ -324,8 +324,6 @@ const emit = defineEmits<{
   selectTask: [taskId: string]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
-  editRoutine: [workspaceId: string, itemId: string, taskId: string]
-  runRoutine: [workspaceId: string, itemId: string, taskId: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   // Open the per-task detail dialog (kanban-task-detail-dialog
   // feature). Consumed INTERNALLY here — the dialog is mounted in
@@ -1294,8 +1292,6 @@ const handleCreateTaskSave = async (payload: {
           @select-task="(id) => emit('selectTask', id)"
           @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
           @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
-          @edit-routine="(ws, item, id) => emit('editRoutine', ws, item, id)"
-          @run-routine="(ws, item, id) => emit('runRoutine', ws, item, id)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
           @view-task-detail="handleViewTaskDetail"
           @sort-change="(payload) => handleColumnSortChange(column.id, payload)"

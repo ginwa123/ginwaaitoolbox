@@ -17,8 +17,9 @@ name: []u8,
 workspace_item_id: []u8,
 created_at: []u8,
 updated_at: []u8,
-/// One of `"standard"` | `"routine"` | `"unknown"` (or any string the
-/// caller wrote). The DB column has no CHECK constraint.
+/// One of `"standard"` | `"memory"` | `"unknown"` (or any string the
+/// caller wrote). The DB column has no CHECK constraint. ('routine'
+/// is legacy — Migration 084 normalizes those rows to 'standard'.)
 task_type: []u8,
 is_pinned: bool = false,
 pinned_position: i64 = 0,

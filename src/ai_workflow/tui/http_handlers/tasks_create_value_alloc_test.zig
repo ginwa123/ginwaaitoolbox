@@ -63,17 +63,18 @@ test "tasks_create 201 response uses std.json.Stringify.valueAlloc" {
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    // The handler must use std.json.Stringify.valueAlloc for all 3
-    // task_type branches (.routine, .memory, .standard). Count the
-    // occurrences: 3 branches × 1 valueAlloc each = 3 minimum. Allow
-    // ≥ 3 to give room for future cleanup of the doc-comment mention
-    // without breaking this test.
+    // The handler must use std.json.Stringify.valueAlloc for all
+    // task_type branches (.memory, .standard — the .routine branch
+    // was deleted with the per-task `routines` table, Migration 084).
+    // Count the occurrences: 2 branches × 1 valueAlloc each = 2
+    // minimum. Allow ≥ 2 to give room for future cleanup of the
+    // doc-comment mention without breaking this test.
     const value_alloc_count = countOccurrences(source, "std.json.Stringify.valueAlloc");
-    if (value_alloc_count < 3) {
+    if (value_alloc_count < 2) {
         std.debug.print(
             "\n!! {s} response does not use std.json.Stringify.valueAlloc !!\n" ++
-                "   Found {d} occurrences of `std.json.Stringify.valueAlloc`, need >= 3.\n" ++
-                "   The handler has 3 task_type branches (.routine, .memory, .standard)\n" ++
+                "   Found {d} occurrences of `std.json.Stringify.valueAlloc`, need >= 2.\n" ++
+                "   The handler has 2 task_type branches (.memory, .standard)\n" ++
                 "   and each must serialize via valueAlloc. The typed-struct + valueAlloc\n" ++
                 "   pattern is required to avoid the @memcpy aliasing crash and to\n" ++
                 "   escape JSON-special characters in user-provided fields.\n",
@@ -83,7 +84,7 @@ test "tasks_create 201 response uses std.json.Stringify.valueAlloc" {
     }
 }
 
-test "tasks_create 201 response has typed RoutineResponse / MemoryResponse / StandardResponse structs" {
+test "tasks_create 201 response has typed MemoryResponse / StandardResponse structs" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
@@ -92,7 +93,6 @@ test "tasks_create 201 response has typed RoutineResponse / MemoryResponse / Sta
     // serializes a typed struct to JSON (it cannot serialize ad-hoc
     // format-string output).
     const required_structs = [_][]const u8{
-        "RoutineResponse",
         "MemoryResponse",
         "StandardResponse",
     };
@@ -125,8 +125,8 @@ test "tasks_create does NOT nest std.fmt.allocPrint inside another allocPrint" {
     //
     // Detection heuristic: look for `try std.fmt.allocPrint` inside
     // the response switch block (the `switch (outcome)` in
-    // `tasksCreateHandler`). The use case layer (createRoutineTask /
-    // createStandardTask) also calls allocPrint, but those results
+    // `tasksCreateHandler`). The use case layer (createStandardTask)
+    // also calls allocPrint, but those results
     // are stored in a returned struct field, not fed back into another
     // allocPrint, so they don't have the aliasing risk.
     //
