@@ -1,0 +1,209 @@
+=== CRASH: received signal SEGV (signal number 11) ===
+Why: invalid memory reference (null deref, use-after-free, bad pointer, stack overflow)
+Fault address: 0x121 (near-NULL (null pointer + small offset — likely a null struct-field access))
+si_code: 1 (SEGV_MAPERR (address not mapped to any object))
+Build: Debug, x86_64-linux
+Symbolicated stack trace (18 frames — function + file:line):
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/service/crash_handler.zig:435:53: 0x20753ab in handleCrashSignalSiginfo (root.zig)
+    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
+                                                    ^
+???:?:?: 0x7f71a203e6ef in ??? (/usr/lib/libc.so.6)
+???:?:?: 0x7f71a2cebccd in ??? (/usr/lib/libsqlite3.so.0)
+???:?:?: 0x7f71a2d6dac3 in ??? (/usr/lib/libsqlite3.so.0)
+???:?:?: 0x7f71a2d6dc9d in ??? (/usr/lib/libsqlite3.so.0)
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/modules/databases/src/sqlite/Sqlite.zig:570:45: 0x14477e4 in executeQuery (root.zig)
+        const prep_rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
+                                            ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/modules/databases/src/sqlite/Sqlite.zig:593:28: 0x14472d0 in query (root.zig)
+        return executeQuery(self, allocator, sql, argv);
+                           ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/routines/model.zig:170:25: 0x206ad39 in listDueRoutineIds (root.zig)
+    var q = try db.query(allocator,
+                        ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/routines/Scheduler.zig:156:48: 0x206ba87 in fireDueRoutines (root.zig)
+    const due_ids = try model.listDueRoutineIds(allocator, db, now_sqlite);
+                                               ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/routines/Scheduler.zig:196:28: 0x206c28e in start (root.zig)
+        _ = fireDueRoutines(allocator, db, di, io) catch |err| {
+                           ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/agentic_loop/startup.zig:48:32: 0x206c4c0 in run (root.zig)
+                Scheduler.start(alloc, database, di_inner, io_inner) catch |err| {
+                               ^
+/usr/lib/zig/std/Io.zig:1266:17: 0x20684cd in start (std.zig)
+                _ = @as(Cancelable!void, @call(.auto, function, args_casted.*)) catch {};
+                ^
+/usr/lib/zig/std/Io/Threaded.zig:552:22: 0x13163e9 in start (std.zig)
+            task.func(task.contextPointer());
+                     ^
+/usr/lib/zig/std/Io/Threaded.zig:1797:29: 0x1314913 in worker (std.zig)
+            runnable.startFn(runnable, &thread, t);
+                            ^
+/usr/lib/zig/std/Thread.zig:422:13: 0x13144d5 in callFn__anon_26969 (std.zig)
+            @call(.auto, f, args);
+            ^
+/usr/lib/zig/std/Thread.zig:752:30: 0x13142c5 in entryFn (std.zig)
+                return callFn(f, args_ptr.*);
+                             ^
+???:?:?: 0x7f71a20980a1 in ??? (/usr/lib/libc.so.6)
+???:?:?: 0x7f71a212080b in ??? (/usr/lib/libc.so.6)
+Raw addresses (18 frames — post-mortem: addr2line -e <exe> <addr>):
+  0x00000000020753ac
+  0x00007f71a203e6f0
+  0x00007f71a2cebcce
+  0x00007f71a2d6dac4
+  0x00007f71a2d6dc9e
+  0x00000000014477e5
+  0x00000000014472d1
+  0x000000000206ad3a
+  0x000000000206ba88
+  0x000000000206c28f
+  0x000000000206c4c1
+  0x00000000020684ce
+  0x00000000013163ea
+  0x0000000001314914
+  0x00000000013144d6
+  0x00000000013142c6
+  0x00007f71a20980a2
+  0x00007f71a212080c
+
+=============
+=== CRASH: received signal SEGV (signal number 11) ===
+Why: invalid memory reference (null deref, use-after-free, bad pointer, stack overflow)
+Fault address: 0x121 (near-NULL (null pointer + small offset — likely a null struct-field access))
+si_code: 1 (SEGV_MAPERR (address not mapped to any object))
+Build: Debug, x86_64-linux
+Symbolicated stack trace (18 frames — function + file:line):
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/service/crash_handler.zig:435:53: 0x20753ab in handleCrashSignalSiginfo (root.zig)
+    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
+                                                    ^
+???:?:?: 0x7fea4b23e6ef in ??? (/usr/lib/libc.so.6)
+???:?:?: 0x7fea4bfb7ccd in ??? (/usr/lib/libsqlite3.so.0)
+???:?:?: 0x7fea4c039ac3 in ??? (/usr/lib/libsqlite3.so.0)
+???:?:?: 0x7fea4c039c9d in ??? (/usr/lib/libsqlite3.so.0)
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/modules/databases/src/sqlite/Sqlite.zig:570:45: 0x14477e4 in executeQuery (root.zig)
+        const prep_rc = c.sqlite3_prepare_v2(db, sql.ptr, @intCast(sql.len), &stmt, null);
+                                            ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/modules/databases/src/sqlite/Sqlite.zig:593:28: 0x14472d0 in query (root.zig)
+        return executeQuery(self, allocator, sql, argv);
+                           ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/routines/model.zig:170:25: 0x206ad39 in listDueRoutineIds (root.zig)
+    var q = try db.query(allocator,
+                        ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/routines/Scheduler.zig:156:48: 0x206ba87 in fireDueRoutines (root.zig)
+    const due_ids = try model.listDueRoutineIds(allocator, db, now_sqlite);
+                                               ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/routines/Scheduler.zig:196:28: 0x206c28e in start (root.zig)
+        _ = fireDueRoutines(allocator, db, di, io) catch |err| {
+                           ^
+/home/ginwa/ginwaaitoolbox/.worktree/worktrees_agent_http2/src/ai_workflow/tui/agentic_loop/startup.zig:48:32: 0x206c4c0 in run (root.zig)
+                Scheduler.start(alloc, database, di_inner, io_inner) catch |err| {
+                               ^
+/usr/lib/zig/std/Io.zig:1266:17: 0x20684cd in start (std.zig)
+                _ = @as(Cancelable!void, @call(.auto, function, args_casted.*)) catch {};
+                ^
+/usr/lib/zig/std/Io/Threaded.zig:552:22: 0x13163e9 in start (std.zig)
+            task.func(task.contextPointer());
+                     ^
+/usr/lib/zig/std/Io/Threaded.zig:1797:29: 0x1314913 in worker (std.zig)
+            runnable.startFn(runnable, &thread, t);
+                            ^
+/usr/lib/zig/std/Thread.zig:422:13: 0x13144d5 in callFn__anon_26969 (std.zig)
+            @call(.auto, f, args);
+            ^
+/usr/lib/zig/std/Thread.zig:752:30: 0x13142c5 in entryFn (std.zig)
+                return callFn(f, args_ptr.*);
+                             ^
+???:?:?: 0x7fea4b2980a1 in ??? (/usr/lib/libc.so.6)
+???:?:?: 0x7fea4b32080b in ??? (/usr/lib/libc.so.6)
+Raw addresses (18 frames — post-mortem: addr2line -e <exe> <addr>):
+  0x00000000020753ac
+  0x00007fea4b23e6f0
+  0x00007fea4bfb7cce
+  0x00007fea4c039ac4
+  0x00007fea4c039c9e
+  0x00000000014477e5
+  0x00000000014472d1
+  0x000000000206ad3a
+  0x000000000206ba88
+  0x000000000206c28f
+  0x000000000206c4c1
+  0x00000000020684ce
+  0x00000000013163ea
+  0x0000000001314914
+  0x00000000013144d6
+  0x00000000013142c6
+  0x00007fea4b2980a2
+  0x00007fea4b32080c
+
+=============
+=== CRASH: received signal SEGV (signal number 11) ===
+Why: invalid memory reference (null deref, use-after-free, bad pointer, stack overflow)
+Fault address: 0x110 (near-NULL (null pointer + small offset — likely a null struct-field access))
+si_code: 1 (SEGV_MAPERR (address not mapped to any object))
+Build: Debug, x86_64-linux
+Symbolicated stack trace (17 frames — function + file:line):
+/home/ginwa/ginwaaitoolbox/src/service/crash_handler.zig:435:53: 0x1fded8b in handleCrashSignalSiginfo (root.zig)
+    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
+                                                    ^
+???:?:?: 0x7fd69883e6ef in ??? (/usr/lib/libc.so.6)
+/usr/lib/zig/std/Io.zig:1563:31: 0x1263ffd in futexWaitTimeout__anon_23011 (std.zig)
+    return io.vtable.futexWait(io.userdata, @ptrCast(ptr), expected_int, timeout);
+                              ^
+/usr/lib/zig/std/Io.zig:1553:28: 0x1263e13 in futexWait__anon_23005 (std.zig)
+    return futexWaitTimeout(io, T, ptr, expected, .none);
+                           ^
+/usr/lib/zig/std/Io.zig:1616:29: 0x1263b75 in lock (std.zig)
+            try io.futexWait(State, &m.state.raw, .contended);
+                            ^
+/home/ginwa/ginwaaitoolbox/src/modules/databases/src/sqlite/Sqlite.zig:591:28: 0x13b4c2d in query (root.zig)
+        try self.mutex.lock(self.io);
+                           ^
+/home/ginwa/ginwaaitoolbox/src/ai_workflow/tui/routines/model.zig:170:25: 0x1fd4719 in listDueRoutineIds (root.zig)
+    var q = try db.query(allocator,
+                        ^
+/home/ginwa/ginwaaitoolbox/src/ai_workflow/tui/routines/Scheduler.zig:156:48: 0x1fd5467 in fireDueRoutines (root.zig)
+    const due_ids = try model.listDueRoutineIds(allocator, db, now_sqlite);
+                                               ^
+/home/ginwa/ginwaaitoolbox/src/ai_workflow/tui/routines/Scheduler.zig:196:28: 0x1fd5c6e in start (root.zig)
+        _ = fireDueRoutines(allocator, db, di, io) catch |err| {
+                           ^
+/home/ginwa/ginwaaitoolbox/src/ai_workflow/tui/agentic_loop/startup.zig:48:32: 0x1fd5ea0 in run (root.zig)
+                Scheduler.start(alloc, database, di_inner, io_inner) catch |err| {
+                               ^
+/usr/lib/zig/std/Io.zig:1266:17: 0x1fd1ead in start (std.zig)
+                _ = @as(Cancelable!void, @call(.auto, function, args_casted.*)) catch {};
+                ^
+/usr/lib/zig/std/Io/Threaded.zig:552:22: 0x12c00f9 in start (std.zig)
+            task.func(task.contextPointer());
+                     ^
+/usr/lib/zig/std/Io/Threaded.zig:1797:29: 0x12be623 in worker (std.zig)
+            runnable.startFn(runnable, &thread, t);
+                            ^
+/usr/lib/zig/std/Thread.zig:422:13: 0x12be1e5 in callFn__anon_26968 (std.zig)
+            @call(.auto, f, args);
+            ^
+/usr/lib/zig/std/Thread.zig:752:30: 0x12bdfd5 in entryFn (std.zig)
+                return callFn(f, args_ptr.*);
+                             ^
+???:?:?: 0x7fd6988980a1 in ??? (/usr/lib/libc.so.6)
+???:?:?: 0x7fd69892080b in ??? (/usr/lib/libc.so.6)
+Raw addresses (17 frames — post-mortem: addr2line -e <exe> <addr>):
+  0x0000000001fded8c
+  0x00007fd69883e6f0
+  0x0000000001263ffe
+  0x0000000001263e14
+  0x0000000001263b76
+  0x00000000013b4c2e
+  0x0000000001fd471a
+  0x0000000001fd5468
+  0x0000000001fd5c6f
+  0x0000000001fd5ea1
+  0x0000000001fd1eae
+  0x00000000012c00fa
+  0x00000000012be624
+  0x00000000012be1e6
+  0x00000000012bdfd6
+  0x00007fd6988980a2
+  0x00007fd69892080c
+
+=============

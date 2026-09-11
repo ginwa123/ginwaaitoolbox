@@ -308,6 +308,17 @@ fn tlsStreamWriteAll(conn: *anyopaque, bytes: []const u8) anyerror!void {
     const tc: *tls_mod.Conn = @ptrCast(@alignCast(conn));
     return tc.writeAll(bytes);
 }
+/// Register the TLS implementations with `Stream`. Idempotent, process-global;
+/// without it every read/write on a TLS stream fails with `TlsOpsNotInstalled`
+/// (which presents as a client that hangs up right after the handshake).
+fn installTlsStreamOps() void {
+    stream_mod.Stream.installTlsOps(.{
+        .read = tlsStreamRead,
+        .write_all = tlsStreamWriteAll,
+        .close = tlsStreamClose,
+    });
+}
+
 fn tlsStreamClose(conn: *anyopaque) void {
     const tc: *tls_mod.Conn = @ptrCast(@alignCast(conn));
     // shutdown frees the SSL object; the per-connection scope frees the Conn
@@ -471,20 +482,22 @@ pub const GinwaServer = struct {
     /// protocols and the client's offer decides.
     pub fn enableTls(self: *GinwaServer, cert_pem: []const u8, key_pem: []const u8) !void {
         if (self.tls_ctx) |old| old.deinit();
-        // Teach Stream how to drive a TLS connection. Idempotent and
-        // process-global; done here because this is the moment TLS becomes
-        // reachable from the accept loop.
-        stream_mod.Stream.installTlsOps(.{
-            .read = tlsStreamRead,
-            .write_all = tlsStreamWriteAll,
-            .close = tlsStreamClose,
-        });
+        installTlsStreamOps();
         self.tls_ctx = try tls_mod.Ctx.init(
             self.allocator,
             cert_pem,
             key_pem,
             &.{ tls_mod.alpn_h2, tls_mod.alpn_http1 },
         );
+    }
+
+    /// Adopt a TLS context built by the caller (e.g. so `--tls` can be validated
+    /// before any background subsystem starts). Takes ownership: `deinit()` frees
+    /// whatever context is installed.
+    pub fn setTlsCtx(self: *GinwaServer, ctx: *tls_mod.Ctx) void {
+        if (self.tls_ctx) |old_ctx| old_ctx.deinit();
+        installTlsStreamOps();
+        self.tls_ctx = ctx;
     }
 
     pub fn deinit(self: *GinwaServer) void {
