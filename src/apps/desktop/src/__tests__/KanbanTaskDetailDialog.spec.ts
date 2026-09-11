@@ -657,8 +657,8 @@ describe('KanbanTaskDetailDialog — unattended mode toggle', () => {
       '[data-testid="kanban-task-detail-unattended-toggle"]',
     )
     expect(toggle).not.toBeNull()
-    // Default value is '0' (off) — user can opt in by flipping.
-    expect(toggle?.checked).toBe(false)
+    // Default value is '1' (on) — user can opt out by flipping.
+    expect(toggle?.checked).toBe(true)
   })
 
   it('flipping the toggle emits update-unattended with new value and previous', async () => {
@@ -809,8 +809,7 @@ describe('KanbanTaskDetailDialog — create mode', () => {
   it('emits create (not save) with { mode: "create", name, description, is_auto_retry_until_stop, pendingFiles }', async () => {
     // The create payload now carries is_auto_retry_until_stop
     // (Option A: backend atomically inserts a sessions row when
-    // this is '1'). Default value at dialog open is '0' — the
-    // toggle hasn't been flipped yet.
+    // this is '1'). Default value at dialog open is '1' (on).
     //
     // NEW (plan: 2026-08-06-kanban-no-base64-in-desc): the create
     // emit also carries `pendingFiles: PreviewFile[]` (always an
@@ -835,7 +834,7 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         mode: 'create',
         name: 'New task',
         description: 'Some description',
-        is_auto_retry_until_stop: '0',
+        is_auto_retry_until_stop: '1',
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',

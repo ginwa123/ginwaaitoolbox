@@ -113,7 +113,7 @@ describe('KanbanTaskDetailDialog — Create task & run agent', () => {
         mode: 'create_and_run',
         name: 'My task',
         description: 'Body of the task',
-        is_auto_retry_until_stop: '0',
+        is_auto_retry_until_stop: '1',
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
@@ -153,6 +153,53 @@ describe('KanbanTaskDetailDialog — Create task & run agent', () => {
     const emitted = wrapper!.emitted('create-and-run')
     const payload = emitted![0]![0] as { is_auto_retry_until_stop: '0' | '1' }
     expect(payload.is_auto_retry_until_stop).toBe('1')
+  })
+
+  it('defaults unattended mode to ON in create mode', async () => {
+    mountDialog()
+    await flushPromises()
+    const toggle = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-unattended-toggle"]',
+    )
+    expect(toggle?.checked).toBe(true)
+  })
+
+  it('emits create-and-run with unattended ON by default (no toggle interaction)', async () => {
+    mountDialog()
+    await flushPromises()
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    if (!input) throw new Error('name input missing')
+    input.value = 'My task'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    const btn = findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )
+    btn?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    const payload = emitted![0]![0] as { is_auto_retry_until_stop: '0' | '1' }
+    expect(payload.is_auto_retry_until_stop).toBe('1')
+  })
+
+  it('pressing Enter in the name input auto create-and-runs the agent', async () => {
+    mountDialog()
+    await flushPromises()
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-create-name"]',
+    )
+    if (!input) throw new Error('name input missing')
+    input.value = 'Enter task'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }))
+    // Vue Test Utils keyup.enter listener: trigger via keyup with key Enter
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect(wrapper!.emitted('create')).toBeUndefined()
   })
 
   it('does NOT emit create-and-run when name is empty (button disabled)', async () => {

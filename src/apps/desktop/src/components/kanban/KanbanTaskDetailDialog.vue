@@ -177,7 +177,7 @@ const emit = defineEmits<{
       name: string
       description: string
       // Auto-retry-until-stop (Option A): the toggle's live value
-      // at the moment of Create. `'0'` (default — feature off)
+      // at the moment of Create. `'1'` (default — feature on)
       // is forwarded too so the host can pass it through to
       // api.createTask; the helper filters out `'0'` so the backend
       // only inserts a sessions row when the user actually opted in.
@@ -278,7 +278,7 @@ const emit = defineEmits<{
 
 const name = ref('')
 const description = ref('')
-const unattended = ref<'0' | '1'>('0')
+const unattended = ref<'0' | '1'>('1')
 const tags = ref<string[]>([])
 // Template ref for the chip input — handleSave calls commitDraft()
 // imperatively before reading `tags.value` so a draft tag typed but
@@ -293,7 +293,7 @@ const tagsInputRef = ref<{ commitDraft: () => void } | null>(null)
 // KanbanDescriptionEditor.vue for the contract.
 const descriptionEditorRef = ref<{ pendingFiles: PreviewFile[] } | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
-const DESCRIPTION_MAX = 5000
+// Description is UNLIMITED (no maxlength) — the backend stores TEXT with no length check.
 // The description is ALWAYS shown as the editor (textarea + paperclip +
 // char counter). A "Preview" toggle used to flip to <MarkdownDescription>
 // for a rendered view, but the toggle was removed per user feedback —
@@ -563,7 +563,7 @@ watch(
     if (isCreateMode.value) {
       name.value = ''
       description.value = ''
-      unattended.value = '0'
+      unattended.value = '1'
       tags.value = []  // NEW: start with empty tags in create mode
       selectedProfile.value = ''  // NEW: profile selector defaults to backend default
       // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Sync
@@ -751,6 +751,17 @@ const handleStartAgent = () => {
   if (isWorkerRunning.value) return
   if (!props.task?.id) return
   emit('start-agent', { taskId: props.task.id })
+}
+
+// Enter key on the task-name input: in create mode it auto
+// create-tasks-AND-runs the agent (same as clicking
+// "▶ Create task & run agent"); in edit mode it saves.
+const handleEnterKey = () => {
+  if (isCreateMode.value) {
+    handleRunAgent()
+  } else {
+    handleSave()
+  }
 }
 
 const handleSave = () => {
@@ -1147,7 +1158,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   border: 1px solid var(--color-border);
                   color: var(--semantic-text);
                 "
-                @keyup.enter="handleSave"
+                @keyup.enter="handleEnterKey"
               />
             </div>
 
@@ -1292,7 +1303,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   style="color: var(--semantic-text-dim);"
                   data-testid="kanban-task-detail-description-counter"
                 >
-                  {{ description.length }} / {{ DESCRIPTION_MAX }}
+                  {{ description.length }} chars
                 </span>
               </div>
               <p
@@ -1340,7 +1351,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 v-model="description"
                 :cwd="cwd"
                 :task-id="props.task?.id ?? ''"
-                :max-length="DESCRIPTION_MAX"
+                :max-length="undefined"
                 :test-id="isCreateMode ? 'kanban-task-detail-create-description' : 'kanban-task-detail-description'"
                 data-testid="kanban-task-detail-description-editor"
               />
