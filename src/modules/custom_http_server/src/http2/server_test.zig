@@ -88,22 +88,36 @@ const Fixture = struct {
 
     fn init(alloc: std.mem.Allocator) !*Fixture {
         const f = try alloc.create(Fixture);
-        var arena = std.heap.ArenaAllocator.init(alloc);
-        const salloc = arena.allocator();
+        errdefer alloc.destroy(f);
+        // The arena must live INSIDE the heap-allocated fixture BEFORE any
+        // `.allocator()` handle is taken from it. Taking `.allocator()` from a
+        // stack local and then copying the ArenaAllocator into the struct leaves
+        // every handle pointing at the dead stack slot (`Allocator.ptr` is the
+        // address of the arena itself), so later allocations/frees read garbage.
+        // That is exactly what crashed the macOS CI: `ws_manager.destroy()` freed
+        // through a stale arena and hit `ArenaAllocator.free`'s
+        // `loadFirstNode().?` with an empty node list. Linux only passed because
+        // the stale stack bytes happened to survive.
+        f.* = .{
+            .alloc = alloc,
+            .arena = std.heap.ArenaAllocator.init(alloc),
+            .server = undefined,
+            .pair = undefined,
+            .client = -1,
+            .server_fd = -1,
+            .last_out = &.{},
+        };
+        const salloc = f.arena.allocator();
         const address = try http_server.Address.init("127.0.0.1", 0);
         const gs = try http_server.GinwaServer.init(salloc, testing.io, address);
         try gs.router.get("/health", healthHandler);
         try gs.router.post("/echo", echoHandler);
         try gs.router.sse("/events", sseHandler);
         const pair = try test_helpers.createSocketPair();
-        f.* = .{
-            .alloc = alloc,
-            .arena = arena,
-            .server = gs,
-            .pair = pair,
-            .client = test_helpers.toI32(pair[0]),
-            .server_fd = test_helpers.toI32(pair[1]),
-        };
+        f.server = gs;
+        f.pair = pair;
+        f.client = test_helpers.toI32(pair[0]);
+        f.server_fd = test_helpers.toI32(pair[1]);
         return f;
     }
 
@@ -205,6 +219,26 @@ fn decodeHeaders(alloc: std.mem.Allocator, payload: []const u8, pairs: *std.Arra
     var dec = hpack.Decoder.init(alloc, 4096, 65536);
     defer dec.deinit();
     try dec.decode(payload, pairs);
+}
+
+test "fixture: stored allocators point at the fixture's OWN arena, not a stack copy" {
+    // Regression for the macOS CI crash (5 h2 server tests, signal ABRT in
+    // `ArenaAllocator.free`): taking `.allocator()` from a stack local and THEN
+    // copying the ArenaAllocator into the fixture left every allocator inside the
+    // server pointing at a dead stack frame. Later frees (`ws_manager.destroy()`)
+    // then read garbage and hit `loadFirstNode().?` with an empty node list.
+    //
+    // Asserting the POINTER IDENTITY makes this deterministic on every platform —
+    // the old code only worked by accident (stale stack bytes happening to
+    // survive), so the Linux run was green while macOS aborted.
+    const f = try Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const arena_addr = @intFromPtr(&f.arena);
+    try testing.expectEqual(arena_addr, @intFromPtr(f.arena.allocator().ptr));
+    try testing.expectEqual(arena_addr, @intFromPtr(f.server.allocator.ptr));
+    try testing.expectEqual(arena_addr, @intFromPtr(f.server.ws_manager.allocator.ptr));
+    try testing.expectEqual(arena_addr, @intFromPtr(f.server.sse_manager.allocator.ptr));
 }
 
 test "server: GET /health over h2 returns 200 with the handler body" {
