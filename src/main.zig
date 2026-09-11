@@ -39,6 +39,119 @@ pub fn main(init: std.process.Init) !void {
     // service module and exit before doing any other init.
     if (try dispatchServiceSubcommand(allocator, io, environment, init)) return;
 
+    // ─── CLI flags, parsed BEFORE anything with side effects ─────────────────
+    // `LlmConfig.init` (below) starts the routine scheduler on a background
+    // thread. Anything that returns an error AFTER that point exits the process
+    // while the thread is mid-query, which SEGFAULTS (reproduced with a plain
+    // `--port abc` on an unmodified build) and buries the real error message in a
+    // crash dump. So every flag is parsed — and `--tls` is fully validated — here,
+    // where failing is clean, fast and side-effect free.
+    var port_opt: ?u16 = null;
+    var static_dir_opt: ?[]const u8 = null;
+    // HTTP/2 cleartext (h2c). OFF by default; `--http2=h2c` turns it on. There is
+    // deliberately no TLS here, so browsers keep using HTTP/1.1 (see docs/http2.md).
+    var enable_h2c = false;
+    // TLS (opt-in). `--tls <cert.pem> <key.pem>` uses existing PEM files;
+    // `--tls-selfsigned` generates (first run) or reuses one in the app data dir.
+    // Browsers only speak HTTP/2 over TLS+ALPN, so this is what unlocks browser
+    // multiplexing — see docs/http2-tls.md.
+    var tls_cert_path: ?[]const u8 = null;
+    var tls_key_path: ?[]const u8 = null;
+    var tls_selfsigned = false;
+
+    // A peer that vanishes mid-write must not kill the process: OpenSSL writes
+    // through plain write(2) (no MSG_NOSIGNAL available), so EPIPE becomes
+    // SIGPIPE. Every server ignores it and handles the write error instead.
+    if (comptime @import("builtin").os.tag != .windows) {
+        var sa = std.posix.Sigaction{
+            .handler = .{ .handler = std.posix.SIG.IGN },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(std.posix.SIG.PIPE, &sa, null);
+    }
+
+    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--port")) {
+            if (args_iter.next()) |port_arg| {
+                port_opt = std.fmt.parseInt(u16, port_arg, 10) catch {
+                    std.log.err("Error: invalid port number", .{});
+                    return error.InvalidArgs;
+                };
+            } else {
+                std.log.err("Error: --port requires a value", .{});
+                return error.InvalidArgs;
+            }
+        } else if (std.mem.eql(u8, arg, "--static-dir")) {
+            if (args_iter.next()) |static_dir_arg| {
+                // Applied once `ctxParent` exists — the flags are parsed before
+                // any subsystem is initialised.
+                static_dir_opt = try allocator.dupe(u8, static_dir_arg);
+            } else {
+                std.log.err("Error: --static-dir requires a value", .{});
+                return error.InvalidArgs;
+            }
+        } else if (std.mem.eql(u8, arg, "--http2")) {
+            // `--http2` on its own means h2c; an explicit value keeps room for
+            // future modes (e.g. `--http2=off`).
+            if (args_iter.next()) |h2_arg| {
+                if (std.mem.eql(u8, h2_arg, "h2c")) {
+                    enable_h2c = true;
+                } else if (std.mem.eql(u8, h2_arg, "off")) {
+                    enable_h2c = false;
+                } else {
+                    std.log.err("Error: --http2 expects h2c or off (got {s})", .{h2_arg});
+                    return error.InvalidArgs;
+                }
+            } else {
+                enable_h2c = true;
+            }
+        } else if (std.mem.eql(u8, arg, "--tls")) {
+            if (args_iter.next()) |cert_arg| {
+                if (args_iter.next()) |key_arg| {
+                    tls_cert_path = try allocator.dupe(u8, cert_arg);
+                    tls_key_path = try allocator.dupe(u8, key_arg);
+                } else {
+                    std.log.err("Error: --tls <cert.pem> <key.pem>: no key path given (cert={s})", .{cert_arg});
+                    return error.InvalidArgs;
+                }
+            } else {
+                std.log.err("Error: --tls requires <cert.pem> <key.pem> (no cert path given)", .{});
+                return error.InvalidArgs;
+            }
+        } else if (std.mem.eql(u8, arg, "--tls-selfsigned")) {
+            tls_selfsigned = true;
+        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
+            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned]\n", .{});
+            std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
+            std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
+            std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
+            return;
+        }
+    }
+
+    // TLS: generate/reuse the self-signed pair if asked, then load it into a
+    // context. Doing it here means a typo in a path fails immediately with a
+    // message naming the flag and the path — and never silently falls back to
+    // plaintext after the user asked for TLS.
+    var tls_ctx: ?*gserverz.tls.Ctx = null;
+    if (tls_selfsigned) {
+        const dir = try tlsDataDir(allocator, init.environ_map);
+        const paths = try gserverz.tls_cert.ensureSelfSigned(allocator, dir, "localhost", 365);
+        tls_cert_path = paths.cert_pem;
+        tls_key_path = paths.key_pem;
+    }
+    if (tls_cert_path) |cert| {
+        const key = tls_key_path orelse unreachable;
+        tls_ctx = gserverz.tls.Ctx.init(allocator, cert, key, &.{ gserverz.tls.alpn_h2, gserverz.tls.alpn_http1 }) catch |err| {
+            std.log.err("Error: --tls cannot load cert={s} key={s}: {s}", .{ cert, key, @errorName(err) });
+            return error.InvalidArgs;
+        };
+        // The functional tests parse this line for the certificate path.
+        std.debug.print("TLS enabled (ALPN: h2, http/1.1) cert={s}\n", .{cert});
+    }
+
     if (init.environ_map.get("HOME")) |home| {
         std.log.info("HOME={s}", .{home});
     }
@@ -135,6 +248,10 @@ pub fn main(init: std.process.Init) !void {
         .group_bg_watchers = .init,
     };
 
+    // Applied AFTER the struct literal above — assigning before it would be
+    // clobbered by the whole-struct initialisation (the field defaults to null).
+    if (static_dir_opt) |dir_arg| ctxParent.static_dir_path = dir_arg;
+
     _ = try nalarcore.setSingleton(ctxParent);
 
     // Eagerly init the process-global MCP registries on the process-lifetime
@@ -191,34 +308,6 @@ pub fn main(init: std.process.Init) !void {
     // free loopback port (browser mode). `port_opt` stays null unless the
     // user passes --port explicitly, so the default can honor the
     // `web_launch_enabled` flag (random when on, 8081 when off).
-    var port_opt: ?u16 = null;
-
-    var args_iter = try std.process.Args.Iterator.initAllocator(init.minimal.args, allocator);
-    while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--port")) {
-            if (args_iter.next()) |port_arg| {
-                port_opt = std.fmt.parseInt(u16, port_arg, 10) catch {
-                    std.log.err("Error: invalid port number", .{});
-                    return error.InvalidArgs;
-                };
-            } else {
-                std.log.err("Error: --port requires a value", .{});
-                return error.InvalidArgs;
-            }
-        } else if (std.mem.eql(u8, arg, "--static-dir")) {
-            if (args_iter.next()) |static_dir_arg| {
-                ctxParent.static_dir_path = try allocator.dupe(u8, static_dir_arg);
-            } else {
-                std.log.err("Error: --static-dir requires a value", .{});
-                return error.InvalidArgs;
-            }
-        } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR]\n", .{});
-            std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
-            std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
-            return;
-        }
-    }
 
     // Resolve the listen port: explicit --port wins; otherwise the
     // `web_launch_enabled` flag decides (random when on so the
@@ -253,6 +342,12 @@ pub fn main(init: std.process.Init) !void {
     const address = try gserverz.Address.init("127.0.0.1", port);
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
+    gs.enable_h2c = enable_h2c;
+
+    // TLS context built during flag parsing (validated there, adopted here).
+    if (tls_ctx) |ctx| gs.setTlsCtx(ctx);
+
+    if (enable_h2c) std.debug.print("HTTP/2 (h2c) enabled on this port (HTTP/1.1 clients unaffected)\n", .{});
 
     // === Static file serving (--static-dir) ===
     // If the user passed `--static-dir DIR`, set up the static-files config
@@ -849,13 +944,28 @@ fn dispatchServiceSubcommand(
 /// (one-character change: `Writer` → `*Writer`), this duplication can
 /// be removed and the call can be replaced with a single
 /// `static_files.serve(...)` call.
+/// Where a generated certificate lives: `$XDG_DATA_HOME/nalar/tls`, falling back
+/// to `~/.local/share/nalar/tls` (POSIX) or `%LOCALAPPDATA%\nalar\tls` (Windows).
+/// Deliberately NOT the config dir: it is state, not configuration.
+fn tlsDataDir(allocator: std.mem.Allocator, env: *const std.process.Environ.Map) ![]const u8 {
+    if (comptime @import("builtin").os.tag == .windows) {
+        const base = env.get("LOCALAPPDATA") orelse return error.NoDataDir;
+        return std.fs.path.join(allocator, &.{ base, "nalar", "tls" });
+    }
+    if (env.get("XDG_DATA_HOME")) |xdg| {
+        return std.fs.path.join(allocator, &.{ xdg, "nalar", "tls" });
+    }
+    const home = env.get("HOME") orelse return error.NoDataDir;
+    return std.fs.path.join(allocator, &.{ home, ".local", "share", "nalar", "tls" });
+}
+
 fn staticDirHandler(
     cfg: *const anyopaque,
     handler_allocator: std.mem.Allocator,
     handler_io: std.Io,
     request_path: []const u8,
     range_header: ?[]const u8,
-    fd: i32,
+    stream: gserverz.Stream,
 ) anyerror!void {
     const typed_cfg: *const static_files.StaticDirConfig = @ptrCast(@alignCast(cfg));
 
@@ -876,7 +986,7 @@ fn staticDirHandler(
 
     const out = aw.writer.buffered();
     if (out.len > 0) {
-        _ = gserverz.GinwaServer.sendToClient(undefined, fd, out) catch {};
+        stream.writeAll(out) catch {};
     }
 }
 

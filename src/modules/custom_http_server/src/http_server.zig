@@ -4,6 +4,11 @@ const builtin = @import("builtin");
 
 pub const http_parser = @import("http_parser.zig");
 pub const router = @import("router.zig");
+// HTTP/2 (h2c). `connection_reader` peeks the socket so the h2 preface can be
+// detected BEFORE the HTTP/1.1 reader eats it (the preface contains CRLFCRLF at
+// byte 14); `http2_server` owns the h2 connection loop.
+const connection_reader = @import("connection_reader.zig");
+const http2_server = @import("http2/server.zig");
 pub const security = @import("security.zig");
 pub const sse_manager = @import("sse_manager.zig");
 pub const ws_manager = @import("websocket_manager.zig");
@@ -278,6 +283,49 @@ pub const Address = struct {
     }
 };
 
+const constants_preface = @import("http2/constants.zig");
+// Transport abstraction (plain socket | TLS) and the OpenSSL server-side TLS
+// wrapper. TLS is opt-in: with `tls_ctx == null` every path below is byte-for-byte
+// today's plaintext behaviour.
+const stream_mod = @import("stream.zig");
+/// Re-exported so the app can talk about transports and generate a certificate
+/// without importing the module's internals directly.
+pub const Stream = stream_mod.Stream;
+pub const tls = tls_mod;
+pub const tls_cert = @import("http2/tls_cert.zig");
+const tls_mod = @import("http2/tls.zig");
+
+//  reaches the TLS implementation through a function table (it cannot
+// import the TLS module without a cycle), so these adapters are registered by
+// . Without the registration every read/write on a TLS stream returns
+//  - which looks exactly like a client that hangs up:
+// the handshake succeeds, then the connection resets with no response.
+fn tlsStreamRead(conn: *anyopaque, buf: []u8) anyerror!usize {
+    const tc: *tls_mod.Conn = @ptrCast(@alignCast(conn));
+    return tc.read(buf);
+}
+fn tlsStreamWriteAll(conn: *anyopaque, bytes: []const u8) anyerror!void {
+    const tc: *tls_mod.Conn = @ptrCast(@alignCast(conn));
+    return tc.writeAll(bytes);
+}
+/// Register the TLS implementations with `Stream`. Idempotent, process-global;
+/// without it every read/write on a TLS stream fails with `TlsOpsNotInstalled`
+/// (which presents as a client that hangs up right after the handshake).
+fn installTlsStreamOps() void {
+    stream_mod.Stream.installTlsOps(.{
+        .read = tlsStreamRead,
+        .write_all = tlsStreamWriteAll,
+        .close = tlsStreamClose,
+    });
+}
+
+fn tlsStreamClose(conn: *anyopaque) void {
+    const tc: *tls_mod.Conn = @ptrCast(@alignCast(conn));
+    // shutdown frees the SSL object; the per-connection scope frees the Conn
+    // itself, so this must not free it here (double free).
+    tc.shutdown();
+}
+
 pub const GinwaServer = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -291,6 +339,23 @@ pub const GinwaServer = struct {
     ctx: ?*anyopaque = null,
     environment: ?*const std.process.Environ.Map = null,
     is_running: bool = false,
+
+    /// HTTP/2 cleartext (h2c) — OFF by default. When enabled, a connection whose
+    /// first bytes are the h2 connection preface is handed to the HTTP/2 driver;
+    /// every other connection takes the HTTP/1.1 path unchanged. Enable with
+    /// `--http2=h2c` (see src/main.zig). There is no TLS/ALPN here, so browsers
+    /// keep using HTTP/1.1 — see docs/http2.md.
+    enable_h2c: bool = false,
+
+    /// TLS listener state — NULL by default. When set, `listen()` performs a TLS
+    /// handshake on every accepted socket and the negotiated ALPN protocol picks
+    /// the codec: `h2` → the HTTP/2 driver (this is what makes BROWSERS use h2,
+    /// since they only ever speak it over TLS+ALPN), anything else → the
+    /// HTTP/1.1 path over the same encrypted stream.
+    ///
+    /// Built by `enableTls()`. A missing or mismatched PEM pair fails there
+    /// loudly — silently falling back to plaintext would be a security bug.
+    tls_ctx: ?*tls_mod.Ctx = null,
 
     /// Server-side ContextStore passed to handlers via `HttpContext`.
     /// Always non-null after a successful `init()` — the server heap-
@@ -355,7 +420,9 @@ pub const GinwaServer = struct {
         io: std.Io,
         request_path: []const u8,
         range_header: ?[]const u8,
-        fd: SocketFd,
+        // The TRANSPORT, not an fd: with TLS enabled the same handler must emit
+        // ciphertext, and only the stream knows how.
+        stream: Stream,
     ) anyerror!void = null,
     /// Opaque cfg pointer forwarded to `static_dir_handler`. Set together
     /// with the handler via `setStaticDirHandler`.
@@ -400,12 +467,37 @@ pub const GinwaServer = struct {
             io: std.Io,
             request_path: []const u8,
             range_header: ?[]const u8,
-            fd: SocketFd,
+            stream: Stream,
         ) anyerror!void,
         cfg: ?*const anyopaque,
     ) void {
         self.static_dir_handler = handler;
         self.static_dir_cfg = cfg;
+    }
+
+    /// Load a PEM certificate/key pair and serve TLS. Call before `listen()`.
+    ///
+    /// ALPN preference is `h2` first, then `http/1.1` — the same shape Go's
+    /// `http.Server` gets from `NextProtos`, so one listener serves both
+    /// protocols and the client's offer decides.
+    pub fn enableTls(self: *GinwaServer, cert_pem: []const u8, key_pem: []const u8) !void {
+        if (self.tls_ctx) |old| old.deinit();
+        installTlsStreamOps();
+        self.tls_ctx = try tls_mod.Ctx.init(
+            self.allocator,
+            cert_pem,
+            key_pem,
+            &.{ tls_mod.alpn_h2, tls_mod.alpn_http1 },
+        );
+    }
+
+    /// Adopt a TLS context built by the caller (e.g. so `--tls` can be validated
+    /// before any background subsystem starts). Takes ownership: `deinit()` frees
+    /// whatever context is installed.
+    pub fn setTlsCtx(self: *GinwaServer, ctx: *tls_mod.Ctx) void {
+        if (self.tls_ctx) |old_ctx| old_ctx.deinit();
+        installTlsStreamOps();
+        self.tls_ctx = ctx;
     }
 
     pub fn deinit(self: *GinwaServer) void {
@@ -417,6 +509,9 @@ pub const GinwaServer = struct {
         self.sse_manager.deinit();
         self.ws_manager.destroy();
         self.router.deinit();
+        // TLS context last: live TLS connections already ended (each handle task
+        // owns its own `Conn` and frees it before returning).
+        if (self.tls_ctx) |ctx| ctx.deinit();
         // Drop the auto-allocated ContextStore last — it owns no threads
         // and only references the server's allocator, so it can free
         // safely after every other subsystem has shut down.
@@ -477,10 +572,101 @@ pub const GinwaServer = struct {
 
                         const allocator = arena_allocator.allocator();
 
+                        // ─── TLS handshake (when configured) ───────────────
+                        // Done inside the per-connection task so a slow or
+                        // malicious handshake cannot stall the accept loop.
+                        // `alpn_is_h2` is authoritative for the codec choice on
+                        // an encrypted connection: the client already told us
+                        // which protocol it will speak.
+                        var tls_conn: ?*tls_mod.Conn = null;
+                        defer if (tls_conn) |tc| tc.deinit();
+                        var stream: stream_mod.Stream = .{ .plain = fd };
+                        var alpn_is_h2 = false;
+                        if (server.tls_ctx) |ctx| {
+                            tls_conn = tls_mod.Conn.accept(ctx, fd) catch |err| {
+                                std.debug.print("HTTP_SERVER: TLS handshake failed: {s}\n", .{@errorName(err)});
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            stream = .{ .tls = @ptrCast(tls_conn.?) };
+                            const negotiated = tls_conn.?.selectedAlpn();
+                            // Logged because ALPN is the whole dispatch decision on
+                            // an encrypted connection: an empty value here means the
+                            // client offered no ALPN and must be served HTTP/1.1.
+                            std.debug.print("HTTP_SERVER: TLS ok (alpn='{s}' len={d})\n", .{ negotiated, negotiated.len });
+                            alpn_is_h2 = std.mem.eql(u8, negotiated, tls_mod.alpn_h2);
+                        }
+                        // ─── TLS + ALPN "h2": go straight to the HTTP/2 driver ─
+                        if (alpn_is_h2) {
+                            // The preface is still on the wire; the driver consumes
+                            // it from the Stream itself (empty initial buffer).
+                            http2_server.serveConnection(server, stream, allocator, "", .{}) catch |err| {
+                                std.debug.print("HTTP_SERVER: h2 (TLS) connection ended: {s}\n", .{@errorName(err)});
+                            };
+                            _ = closeFd(fd);
+                            return;
+                        }
+
+                        // ─── HTTP/2 (h2c) sniff ───────────────────────
+                        // Must run BEFORE the HTTP/1.1 reader: the 24-byte h2
+                        // preface contains the CRLFCRLF the h1 reader stops at
+                        // (byte 14), so parsing h1 first would consume the
+                        // preface AND the frames that arrived with it.
+                        var cr = connection_reader.ConnectionReader.init(allocator, stream);
+                        defer cr.deinit();
+                        if (server.enable_h2c) {
+                            _ = cr.fillOnce() catch |err| {
+                                std.debug.print("HTTP_SERVER: h2 sniff read failed: {s}\n", .{@errorName(err)});
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            switch (connection_reader.sniff(cr.buffered())) {
+                                .h2 => {
+                                    const initial = cr.takeBuffered() catch |err| {
+                                        std.debug.print("HTTP_SERVER: h2 preface handoff failed: {s}\n", .{@errorName(err)});
+                                        _ = closeFd(fd);
+                                        return;
+                                    };
+                                    http2_server.serveConnection(server, stream, allocator, initial, .{}) catch |err| {
+                                        std.debug.print("HTTP_SERVER: h2 connection ended: {s}\n", .{@errorName(err)});
+                                    };
+                                    _ = closeFd(fd);
+                                    return;
+                                },
+                                .maybe_h2 => {
+                                    cr.fillAtLeast(constants_preface.preface_len, 8) catch {};
+                                    if (connection_reader.sniff(cr.buffered()) == .h2) {
+                                        const initial = cr.takeBuffered() catch |err| {
+                                            std.debug.print("HTTP_SERVER: h2 preface handoff failed: {s}\n", .{@errorName(err)});
+                                            _ = closeFd(fd);
+                                            return;
+                                        };
+                                        http2_server.serveConnection(server, stream, allocator, initial, .{}) catch |err| {
+                                            std.debug.print("HTTP_SERVER: h2 connection ended: {s}\n", .{@errorName(err)});
+                                        };
+                                        _ = closeFd(fd);
+                                        return;
+                                    }
+                                },
+                                .h1 => {},
+                            }
+                        }
+
                         var rb = RequestBuffer.init(allocator);
                         defer rb.deinit();
 
-                        const request_data = rb.readFullRequest(fd) catch |err| {
+                        // Hand the sniffed bytes to the HTTP/1.1 reader so the
+                        // pre-read is not lost (it is a no-op when the sniff is
+                        // disabled: `cr` then holds nothing).
+                        if (cr.buffered().len > 0) {
+                            rb.buf.appendSlice(allocator, cr.buffered()) catch {
+                                _ = closeFd(fd);
+                                return;
+                            };
+                            _ = cr.takeBuffered() catch {};
+                        }
+
+                        const request_data = rb.readFullRequestStream(stream) catch |err| {
                             std.debug.print("HTTP_SERVER: readFullRequest failed: {s}\n", .{@errorName(err)});
                             _ = closeFd(fd);
                             return;
@@ -571,7 +757,7 @@ pub const GinwaServer = struct {
                                     return;
                                 };
                                 defer allocator.free(page_bytes);
-                                _ = server.sendToClient(fd, page_bytes) catch {};
+                                _ = server.sendToStream(stream, page_bytes) catch {};
                                 _ = closeFd(fd);
                                 return;
                             }
@@ -596,13 +782,31 @@ pub const GinwaServer = struct {
                                 return;
                             };
                             defer preflight.allocator.free(preflight_bytes);
-                            _ = server.sendToClient(fd, preflight_bytes) catch {
+                            _ = server.sendToStream(stream, preflight_bytes) catch {
                                 std.debug.print("HTTP_SERVER: preflight send failed\n", .{});
                             };
                             return;
                         }
 
                         if (server.router.matchRoute(req.method, req.path, &req, http_ctx)) |result| {
+                            // SSE streams chunked frames and WebSocket hijacks the
+                            // fd: neither can run on an encrypted connection until
+                            // the streaming work lands (see docs/http2-tls.md and
+                            // plan D2 — a browser negotiates h2 for the WHOLE
+                            // origin, so this is exactly the case that must be
+                            // finished before the UI is served over https).
+                            if (stream.isTls() and (result == .sse or result == .websocket)) {
+                                var res = http_parser.HttpResponse
+                                    .init(501, "Not Implemented", allocator)
+                                    .withBody("SSE and WebSocket are not available over TLS yet; use the plaintext listener");
+                                server.applyCORSResponse(&req, &res) catch {};
+                                server.applySecurityHeadersTo(&res);
+                                if (res.toBytes()) |bytes| {
+                                    _ = server.sendToStream(stream, bytes) catch {};
+                                } else |_| {}
+                                _ = closeFd(fd);
+                                return;
+                            }
                             switch (result) {
                                 .handler => |h| {
                                     // ─── Route-level body cap (override) ───
@@ -628,7 +832,7 @@ pub const GinwaServer = struct {
                                                 return;
                                             };
                                             defer allocator.free(page_bytes);
-                                            _ = server.sendToClient(fd, page_bytes) catch {};
+                                            _ = server.sendToStream(stream, page_bytes) catch {};
                                             _ = closeFd(fd);
                                             return;
                                         }
@@ -663,7 +867,7 @@ pub const GinwaServer = struct {
                                                 return;
                                             };
                                             defer gated.allocator.free(fail_bytes);
-                                            _ = server.sendToClient(fd, fail_bytes) catch {
+                                            _ = server.sendToStream(stream, fail_bytes) catch {
                                                 std.debug.print("Failed to send pre-handler fail response\n", .{});
                                             };
                                             _ = closeFd(fd);
@@ -697,7 +901,7 @@ pub const GinwaServer = struct {
                                         return;
                                     };
                                     defer final_res.allocator.free(res_bytes);
-                                    _ = server.sendToClient(fd, res_bytes) catch {
+                                    _ = server.sendToStream(stream, res_bytes) catch {
                                         std.debug.print("Failed to send response\n", .{});
                                     };
                                 },
@@ -716,7 +920,7 @@ pub const GinwaServer = struct {
                                             return;
                                         };
                                         defer bad.allocator.free(bytes);
-                                        _ = server.sendToClient(fd, bytes) catch {};
+                                        _ = server.sendToStream(stream, bytes) catch {};
                                         _ = closeFd(fd);
                                         return;
                                     }
@@ -731,7 +935,7 @@ pub const GinwaServer = struct {
                                     };
                                     defer allocator.free(accept_resp);
 
-                                    _ = server.sendToClient(fd, accept_resp) catch {
+                                    _ = server.sendToStream(stream, accept_resp) catch {
                                         _ = closeFd(fd);
                                         return;
                                     };
@@ -764,7 +968,7 @@ pub const GinwaServer = struct {
                                     }) catch null;
                                     if (close_frame) |cf| {
                                         defer allocator.free(cf);
-                                        _ = server.sendToClient(fd, cf) catch {};
+                                        _ = server.sendToStream(stream, cf) catch {};
                                     }
                                     server.ws_manager.removeClient(&client_id, .explicit);
                                     return;
@@ -799,7 +1003,7 @@ pub const GinwaServer = struct {
                                         "X-Accel-Buffering: no\r\n" ++
                                         "Access-Control-Allow-Origin: *\r\n" ++
                                         "\r\n";
-                                    _ = server.sendToClient(fd, headers) catch {
+                                    _ = server.sendToStream(stream, headers) catch {
                                         _ = closeFd(fd);
                                         return;
                                     };
@@ -846,7 +1050,7 @@ pub const GinwaServer = struct {
                                             break;
                                         }
                                     }
-                                    handler(cfg, allocator, server.io, req.path, range_hdr, fd) catch {
+                                    handler(cfg, allocator, server.io, req.path, range_hdr, stream) catch {
                                         static_served = false;
                                     };
                                     // If the handler returned without error,
@@ -867,7 +1071,7 @@ pub const GinwaServer = struct {
                                     return;
                                 };
                                 defer not_found.allocator.free(res_bytes);
-                                _ = server.sendToClient(fd, res_bytes) catch {};
+                                _ = server.sendToStream(stream, res_bytes) catch {};
                             }
                         }
 
@@ -974,11 +1178,19 @@ pub const GinwaServer = struct {
             posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
             // `TCP.KEEPIDLE` is Linux-only; on macOS the equivalent is
             // the KEEPALIVE TCP option (which doubles as the idle
-            // timer on Darwin). Skip on macOS — the default ~2h idle
-            // combined with 5s probe + 3 probes still detects dead
+            // timer on Darwin). Skip where it does not exist — the default ~2h
+            // idle combined with 5s probe + 3 probes still detects dead
             // connections quickly via SO_KEEPALIVE alone.
-            if (builtin.os.tag == .linux) {
-                posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+            //
+            // The gate tests the DECL on `std.c.TCP` rather than
+            // `builtin.os.tag`: the cross-compile build graph compiles this file
+            // for several targets in one invocation (the app module for the
+            // requested target, sibling modules for the host), so a
+            // `builtin.os.tag` check can disagree with the `c.TCP` the
+            // expression actually resolves against and fail the macOS build with
+            // "struct 'c.darwin.TCP' has no member named 'KEEPIDLE'".
+            if (@hasDecl(std.c.TCP, "KEEPIDLE")) {
+                posix.setsockopt(fd, posix.IPPROTO.TCP, std.c.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
             }
             posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
             posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
@@ -997,6 +1209,14 @@ pub const GinwaServer = struct {
             if (rc < 0) return error.RecvFailed;
             return @as(usize, @intCast(rc));
         }
+    }
+
+    /// Write a whole buffer to a `Stream` (plain socket or TLS). Used by the
+    /// request path; `sendToClient` stays for the fd-only call sites (tests, the
+    /// WebSocket registry) so the plaintext bytes are unchanged.
+    pub fn sendToStream(_: *GinwaServer, stream: stream_mod.Stream, data: []const u8) !usize {
+        try stream.writeAll(data);
+        return data.len;
     }
 
     pub fn sendToClient(_: *GinwaServer, fd: SocketFd, data: []const u8) !usize {
@@ -1164,13 +1384,24 @@ pub const RequestBuffer = struct {
 
     /// Read the full HTTP request (headers + body) from a socket
     /// Returns the complete request data or an error
+    /// Read one complete request from a plain socket. Thin wrapper kept for
+    /// today's tests and fd-only callers.
     pub fn readFullRequest(self: *RequestBuffer, fd: SocketFd) ![]u8 {
+        return self.readFullRequestStream(.{ .plain = fd });
+    }
+
+    /// Read one complete request from a `Stream` (plain socket OR TLS).
+    ///
+    /// The HTTP/1.1 path MUST read through the transport: on an encrypted
+    /// connection the raw fd carries ciphertext, so reading the fd directly after
+    /// the TLS handshake hangs or truncates the request (it looked like
+    /// `IncompleteRequest` with curl timing out).
+    pub fn readFullRequestStream(self: *RequestBuffer, stream: stream_mod.Stream) ![]u8 {
         // Phase 1: read until we have complete headers
         while (std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") == null) {
-            const n = recvFromSock(fd, &self.tmp, self.tmp.len);
-            if (n < 0) return error.RecvFailed;
+            const n = stream.read(&self.tmp) catch return error.RecvFailed;
             if (n == 0) break;
-            try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
+            try self.buf.appendSlice(self.allocator, self.tmp[0..n]);
         }
 
         const header_end_idx = std.mem.indexOf(u8, self.buf.items, "\r\n\r\n") orelse {
@@ -1204,10 +1435,9 @@ pub const RequestBuffer = struct {
         while (self.buf.items.len < target_len) {
             const remaining_bytes = target_len - self.buf.items.len;
             const to_read = @min(remaining_bytes, self.tmp.len);
-            const n = recvFromSock(fd, &self.tmp, to_read);
-            if (n < 0) return error.RecvFailed;
+            const n = stream.read(self.tmp[0..to_read]) catch return error.RecvFailed;
             if (n == 0) break;
-            try self.buf.appendSlice(self.allocator, self.tmp[0..@as(usize, @intCast(n))]);
+            try self.buf.appendSlice(self.allocator, self.tmp[0..n]);
         }
 
         return self.buf.toOwnedSlice(self.allocator);
