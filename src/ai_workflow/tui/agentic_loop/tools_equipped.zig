@@ -44,6 +44,7 @@ const update_activity_mod = nalarcore.update_activity;
 // Markdown task plan with - [ ] / - [x] checklist, persisted across iterations.
 const update_plan_mod = nalarcore.update_plan;
 const get_plan_mod = nalarcore.get_plan;
+const list_sub_agent_mod = nalarcore.list_sub_agent;
 // 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
 // LLM-callable tool that registers a new MCP server in the live config +
 // persists to disk + hot-reloads `di.llm_config` so the new server's tools
@@ -73,6 +74,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // get_plan is the read-side.
         update_plan_mod.update_plan_tool,
         get_plan_mod.get_plan_tool,
+        list_sub_agent_mod.list_sub_agent_tool,
         // 2026-08-28 — add_mcp_server agent tool (Task 5).
         add_mcp_server_mod.add_mcp_server_tool,
         list_skills_mod.list_skills_tool,
@@ -143,6 +145,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // get_plan is mostly for explicit verification.
         .{ .name = "update_plan", .exec = tools.execUpdatePlan, .tool_def = update_plan_mod.update_plan_tool },
         .{ .name = "get_plan", .exec = tools.execGetPlan, .tool_def = get_plan_mod.get_plan_tool },
+        .{ .name = "list_sub_agent", .exec = tools.execListSubAgent, .tool_def = list_sub_agent_mod.list_sub_agent_tool },
 
         // === MCP MANAGEMENT ===
         // 2026-08-28 — add_mcp_server (Task 5 of 2026-08-28-add-mcp-server-agent-tool.md).

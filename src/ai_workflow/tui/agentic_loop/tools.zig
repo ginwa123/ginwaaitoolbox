@@ -59,6 +59,7 @@ pub const execSpawnSubAgent = @import("tools_exec_spawn_sub_agent.zig").execSpaw
 // persists across iterations and gets re-injected into the system prompt.
 pub const execUpdatePlan = @import("tools_exec_update_plan.zig").execUpdatePlan;
 pub const execGetPlan = @import("tools_exec_get_plan.zig").execGetPlan;
+pub const execListSubAgent = @import("tools_exec_list_sub_agent.zig").execListSubAgent;
 // 2026-08-28 — add_mcp_server agent tool (Step 3 of 2026-08-28-add-mcp-server-agent-tool.md).
 // Lets the LLM register a new MCP server (stdio in v1) in the live config +
 // persist to disk + hot-reload `di.llm_config` so the new server's tools
