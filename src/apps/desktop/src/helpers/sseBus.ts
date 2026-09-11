@@ -3,6 +3,8 @@ import type { App, ShallowRef } from 'vue'
 import { shallowRef } from 'vue'
 import type { SseClient, SseState, SseStateInfo } from './sseClient'
 import { createUnifiedSseConnection } from '../api'
+import type { TabChannel, TabChannelLike, TabChannelOptions } from './sseTabChannel'
+import { createTabChannel } from './sseTabChannel'
 import type {
   WorkerEvent,
   SessionEvent,
@@ -70,6 +72,58 @@ export interface SseBus {
    * rebuilds it). Safe to call multiple times.
    */
   close(): void
+  /**
+   * Which role THIS window plays when cross-tab sharing is active:
+   * `leader` owns the single EventSource, `follower` receives events
+   * over the BroadcastChannel. `off` = sharing disabled (every window
+   * opens its own connection, the pre-tab-sharing behaviour).
+   * Optional so existing test doubles typed as `SseBus` stay valid.
+   */
+  readonly tabRole?: ShallowRef<TabSharingRole>
+  /**
+   * Subscribe to "your view may be stale, refresh from the API" signals.
+   * Fires when this window takes over the shared connection (events emitted
+   * during the handover gap reached nobody) and when it returns from being
+   * hidden long enough to have been frozen/throttled. Coalesced.
+   * Returns an unsubscribe function. No-op when tab sharing is off, because
+   * a window that holds its own connection never misses a delivery.
+   */
+  readonly onResync?: (cb: (reason: string) => void) => () => void
+}
+
+export type TabSharingRole = 'off' | 'leader' | 'follower'
+
+/**
+ * Install options — all optional; the defaults are what production uses.
+ *
+ * `tabSharing` (default `'auto'`): open ONE EventSource for the whole
+ * browser profile and fan events out to the other tabs over a
+ * `BroadcastChannel`. Browsers cap HTTP/1.1 connections per origin at ~6, so
+ * before this every open tab consumed a slot and the 7th tab could not stream
+ * at all.
+ *
+ * `'auto'` resolves to OFF under vitest (`import.meta.env.MODE === 'test'`)
+ * because the jsdom environment leaks Node's `BroadcastChannel`, which would
+ * otherwise push every existing SSE suite onto the asynchronous election path.
+ * Tests that exercise sharing pass `'on'` explicitly.
+ */
+export interface SseBusInstallOptions {
+  tabSharing?: 'auto' | 'on' | 'off'
+  /** Test seam: how to open the cross-tab channel. */
+  channelFactory?: (name: string) => TabChannelLike
+  /** Test seams for the coordinator's timings/visibility. */
+  tabChannelOptions?: Pick<
+    TabChannelOptions,
+    'channelName' | 'tabId' | 'isVisible' | 'heartbeatMs' | 'leaderTimeoutMs' | 'electionJitterMs' | 'hiddenTakeoverDelayMs'
+  >
+}
+
+function resolveTabSharing(mode: 'auto' | 'on' | 'off'): boolean {
+  if (mode === 'on') return true
+  if (mode === 'off') return false
+  const env = (import.meta as unknown as { env?: { MODE?: string } }).env
+  if (env?.MODE === 'test') return false
+  return typeof (globalThis as unknown as { BroadcastChannel?: unknown }).BroadcastChannel === 'function'
 }
 
 let _instance: SseBus | null = null
@@ -97,7 +151,12 @@ let _globalClient: SseClient | null = null
 // (each `onStateChange` call adds to the array without bound).
 let _stateUnsub: (() => void) | null = null
 
-export function installSseBus(_app?: App): SseBus {
+// Module-level handle to the cross-tab coordinator when tab sharing is active
+// (null on the legacy solo path and in tests that do not opt in). `close()`
+// tears it down so a later `installSseBus` starts a fresh election.
+let _tabChannel: TabChannel | null = null
+
+export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBus {
   if (_instance) return _instance
 
   // Per-type listener Sets. Each channel's listeners live in their
@@ -113,50 +172,114 @@ export function installSseBus(_app?: App): SseBus {
   }
 
   const state = shallowRef<SseState>('closed')
+  const sharing = resolveTabSharing(options?.tabSharing ?? 'auto')
+  const tabRole = shallowRef<TabSharingRole>(sharing ? 'follower' : 'off')
+  // Listeners for "your view may be stale" signals (see `SseBus.onResync`).
+  const resyncListeners = new Set<(reason: string) => void>()
 
-  // Single global EventSource carrying ALL 6 channels. The bus does
-  // NOT open a second EventSource per chat (the v1 refcount design
-  // was reverted; see docs/plans/2026-06-30-single-sse-all-sessions-design.md).
-  // Listeners for 'llm' and 'queue' filter by event.session_id on the
-  // JS side — defense-in-depth against any backend routing regression.
-  // Design listeners filter by `event.workspace_id` in the
-  // `designSse.ts` store.
-  const globalClient: SseClient = createUnifiedSseConnection({
-    channels: {
-      workers: (e) => dispatch('worker', e),
-      sessions: (e) => dispatch('session', e),
-      kanban: (e) => dispatch('kanban', e),
-      // Design-mode element events. The `designSse` Pinia store
-      // subscribes via `bus.on('design', cb)` to receive all three
-      // action variants (created/updated/deleted) on the same
-      // callback and re-fetch the page's element list.
-      design: (e) => dispatch('design', e),
-      // Bare 'llm' and bare 'queue' — backend broadcasts all sessions'
-      // events on central keys. Frontend filter is `event.session_id ===
-      // mySessionId.value` inside each listener.
-      llm: { onEvent: (e) => dispatch('llm', e) },
-      queue: { onEvent: (e) => dispatch('queue', e) },
-    },
-    onError: (err) => {
-      console.error('[sseBus] global SSE failed permanently:', err)
-    },
-    onConnected: () => {
-      console.log('[sseBus] global SSE connected')
-    },
-  })
+  function notifyResync(reason: string): void {
+    for (const cb of [...resyncListeners]) {
+      try {
+        cb(reason)
+      } catch (e) {
+        // A buggy refresh callback must not break the coordinator.
+        console.error('[sseBus] resync listener threw:', e)
+      }
+    }
+  }
+  // The client THIS window created (the install-time one). Kept so `close()`
+  // can still tear it down after a test swapped `_globalClient`, preserving the
+  // defensive fallback the pre-tab-sharing code had.
+  let createdClient: SseClient | null = null
+  if (sharing) {
+    // We are joining a shared connection: its state is unknown until the leader
+    // reports in, and 'connecting' is the honest initial value.
+    state.value = 'connecting'
+  }
 
-  // Mirror SseClient state into our ShallowRef so the badge can
-  // read it. `getState()` returns the initial value
-  // ('connecting', set by createSseClient); subsequent transitions
-  // arrive via `onStateChange`. The unsub is stashed in a
-  // module-level handle so `__setSseBusGlobalClient` can detach
-  // it before swapping the client (otherwise the OLD client's
-  // listener would keep firing into the NEW client's ShallowRef).
-  state.value = globalClient.getState()
-  _stateUnsub = globalClient.onStateChange((s, _info: SseStateInfo) => {
-    state.value = s
-  })
-  _globalClient = globalClient
+  // Build the single global EventSource carrying ALL 6 channels. The bus does
+  // NOT open a second EventSource per chat (the v1 refcount design was
+  // reverted; see docs/plans/2026-06-30-single-sse-all-sessions-design.md).
+  // Listeners for 'llm' and 'queue' filter by event.session_id on the JS side —
+  // defense-in-depth against any backend routing regression. Design listeners
+  // filter by `event.workspace_id` in the `designSse.ts` store.
+  //
+  // With tab sharing on (see `sseTabChannel.ts`) this runs ONLY in the leader
+  // tab; followers get the same events forwarded over the BroadcastChannel.
+  function openClient(): void {
+    if (_globalClient) return
+    const client: SseClient = createUnifiedSseConnection({
+      channels: {
+        workers: (e) => forward('worker', e),
+        sessions: (e) => forward('session', e),
+        kanban: (e) => forward('kanban', e),
+        // Design-mode element events. The `designSse` Pinia store
+        // subscribes via `bus.on('design', cb)` to receive all three
+        // action variants (created/updated/deleted) on the same
+        // callback and re-fetch the page's element list.
+        design: (e) => forward('design', e),
+        // Bare 'llm' and bare 'queue' — backend broadcasts all sessions'
+        // events on central keys. Frontend filter is `event.session_id ===
+        // mySessionId.value` inside each listener.
+        llm: { onEvent: (e) => forward('llm', e) },
+        queue: { onEvent: (e) => forward('queue', e) },
+      },
+      onError: (err) => {
+        console.error('[sseBus] global SSE failed permanently:', err)
+      },
+      onConnected: () => {
+        console.log('[sseBus] global SSE connected')
+      },
+    })
+
+    // Mirror SseClient state into our ShallowRef so the badge can
+    // read it. `getState()` returns the initial value
+    // ('connecting', set by createSseClient); subsequent transitions
+    // arrive via `onStateChange`. The unsub is stashed in a
+    // module-level handle so `__setSseBusGlobalClient` can detach
+    // it before swapping the client (otherwise the OLD client's
+    // listener would keep firing into the NEW client's ShallowRef).
+    state.value = client.getState()
+    _stateUnsub = client.onStateChange((s, _info: SseStateInfo) => {
+      state.value = s
+      // Followers show the leader's state (the shared connection is theirs too).
+      _tabChannel?.broadcastState(s)
+    })
+    _globalClient = client
+    createdClient = client
+    tabRole.value = sharing ? 'leader' : 'off'
+  }
+
+  function closeClient(reason: string): void {
+    if (_stateUnsub) {
+      _stateUnsub()
+      _stateUnsub = null
+    }
+    const c = _globalClient
+    _globalClient = null
+    if (c) {
+      try {
+        c.close(reason)
+      } catch {
+        /* already terminal */
+      }
+    }
+    if (sharing) {
+      tabRole.value = 'follower'
+      // Until the next leader reports in, the shared connection's state is
+      // unknown — 'connecting' is the honest value (the badge shows "live").
+      state.value = 'connecting'
+    }
+  }
+
+  /**
+   * Deliver a locally-received event: to this window's listeners, and (from the
+   * leader) to every other tab so they behave as if they held the connection.
+   */
+  function forward<K extends keyof SseEventMap>(type: K, event: SseEventMap[K]): void {
+    dispatch(type, event)
+    _tabChannel?.broadcastEvent(type, event)
+  }
 
   function dispatch<K extends keyof SseEventMap>(
     type: K,
@@ -181,6 +304,35 @@ export function installSseBus(_app?: App): SseBus {
   // escape hatch works from the first `installSseBus` call.
   _dispatch = dispatch
 
+  // Start the connection. With tab sharing on, the coordinator decides whether
+  // THIS window owns it (leader) or receives events from the tab that does —
+  // so the BrowserProfile keeps exactly one SSE connection per origin no matter
+  // how many tabs are open.
+  if (sharing) {
+    _tabChannel = createTabChannel({
+      ...(options?.tabChannelOptions ?? {}),
+      channelFactory: options?.channelFactory,
+      onBecomeLeader: () => openClient(),
+      onLoseLeadership: () => closeClient('lost cross-tab leadership'),
+      onRemoteEvent: (channelName, payload) => {
+        // Deliver a leader-forwarded event exactly as if this tab had received
+        // it from its own EventSource.
+        dispatch(channelName as keyof SseEventMap, payload as never)
+      },
+      onRemoteState: (s) => {
+        state.value = s as SseState
+      },
+      onRemoteReconnect: () => _globalClient?.reconnect('user-clicked-retry-or-bus-reconnect'),
+      onResync: (reason) => notifyResync(reason),
+      onRoleChange: (role) => {
+        tabRole.value = role
+      },
+    })
+    _tabChannel.start()
+  } else {
+    openClient()
+  }
+
   _instance = {
     on<K extends keyof SseEventMap>(type: K, cb: Listener<K>): () => void {
       ;(listeners[type] as Set<Listener<K>>).add(cb)
@@ -192,9 +344,25 @@ export function installSseBus(_app?: App): SseBus {
       ;(listeners[type] as Set<Listener<K>>).delete(cb)
     },
     state,
+    tabRole,
+    onResync(cb: (reason: string) => void): () => void {
+      // With sharing off this window owns its connection and cannot miss
+      // deliveries, so the signal never fires — return a working no-op so
+      // callers can subscribe unconditionally.
+      resyncListeners.add(cb)
+      return () => {
+        resyncListeners.delete(cb)
+      }
+    },
     reconnectGlobal(): void {
+      // With cross-tab sharing, only the leader holds a connection — ask it to
+      // reconnect (a no-op round trip when we ARE the leader).
+      if (_tabChannel) {
+        _tabChannel.requestReconnect()
+        return
+      }
       // Read through the module-level `_globalClient` handle at call
-      // time (not the closure-scoped `globalClient` from install time)
+      // time (not the closure-scoped client from install time)
       // so a swap via `__setSseBusGlobalClient` takes effect here.
       // The optional chain is defensive — `_globalClient` could be
       // null after a `close()` followed by `reconnectGlobal()` on a
@@ -207,19 +375,25 @@ export function installSseBus(_app?: App): SseBus {
       _globalClient?.reconnect('user-clicked-retry-or-bus-reconnect')
     },
     close(): void {
+      // Leave the cross-tab election FIRST: a leader announces `down` while it
+      // tears down, so the remaining tabs take over without waiting for the
+      // heartbeat timeout.
+      const ch = _tabChannel
+      _tabChannel = null
+      if (ch) ch.close()
       // Read through the module-level `_globalClient` handle at call
-      // time (not the closure-scoped `globalClient` from install time)
+      // time (not the closure-scoped client from install time)
       // so a swap via `__setSseBusGlobalClient` takes effect here.
-      // The `_globalClient ?? globalClient` fallback is defensive —
+      // The `_globalClient ?? createdClient` fallback is defensive —
       // in production the two point to the same object, but a test
       // that nulled `_globalClient` via `__resetSseBus` between
       // install and close still gets the original closed.
-      const gc = _globalClient ?? globalClient
+      const gc = _globalClient ?? createdClient
       // NEW (sse-disconnect-diagnosis): pass a reason so the
       // subsequent state log knows "bus was torn down" — useful
       // when correlating SSE disconnects with App.vue unmount or
       // HMR re-mounts.
-      gc.close('bus-torn-down')
+      gc?.close('bus-torn-down')
       // Detach the state-mirror listener and clear the test-only
       // handles so a subsequent `installSseBus` starts clean (and
       // `__getSseBusGlobalClient()` returns null after close).
@@ -228,6 +402,7 @@ export function installSseBus(_app?: App): SseBus {
         _stateUnsub = null
       }
       _globalClient = null
+      createdClient = null
       _dispatch = null
       _instance = null
     },
@@ -251,10 +426,18 @@ export function __resetSseBus(): void {
     _instance.close()
   }
   // `close()` already nulls `_stateUnsub` + `_globalClient` +
-  // `_dispatch`, but be defensive in case `__resetSseBus` is called
-  // before `installSseBus` (when `_instance` is null) AND a previous
+  // `_dispatch` + `_tabChannel`, but be defensive in case `__resetSseBus` is
+  // called before `installSseBus` (when `_instance` is null) AND a previous
   // test leaked module-level state via a partial swap.
   _globalClient = null
+  if (_tabChannel) {
+    try {
+      _tabChannel.close()
+    } catch {
+      /* already closed */
+    }
+    _tabChannel = null
+  }
   if (_stateUnsub) {
     _stateUnsub()
     _stateUnsub = null

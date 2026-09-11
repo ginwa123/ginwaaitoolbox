@@ -2249,6 +2249,10 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
 // flag below.
 let offLlm: (() => void) | null = null
 let offQueue: (() => void) | null = null
+// Stale-on-wake (cross-tab sharing): fires when this window takes over the
+// shared SSE connection, or returns from a long hidden period, so the visible
+// chat never shows a stale history. See `helpers/sseTabChannel.ts`.
+let offResync: (() => void) | null = null
 
 const connectSse = () => {
   console.log('[connectSse] Connecting SSE via sseBus for session:', sessionId.value)
@@ -2609,6 +2613,13 @@ const connectSse = () => {
       queuedMessages.value = queuedMessages.value.filter((m) => m.id !== event.id)
     }
   })
+  // Stale-on-wake (cross-tab sharing): if this window just took over the shared
+  // connection, or slept through a long hidden period, llm/queue events may have
+  // been missed entirely — re-read the history so the visible chat is correct.
+  offResync = bus.onResync?.(() => {
+    if (sessionId.value !== sid) return
+    void loadChatHistory()
+  }) ?? null
   // Set isStreaming LAST so external observers (tests, UI) can poll
   // it as a "listeners are wired up" signal — flipping it before
   // would race with test assertions that fire events into the bus
@@ -2620,6 +2631,10 @@ const disconnectSse = () => {
   if (offLlm) {
     offLlm()
     offLlm = null
+  }
+  if (offResync) {
+    offResync()
+    offResync = null
   }
   if (offQueue) {
     offQueue()
