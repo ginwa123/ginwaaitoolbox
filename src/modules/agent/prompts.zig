@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const prompts = @import("prompts/prompts.zig");
 const memory_prompts = @import("prompts/memory.zig");
-const tool_list_skills_mod = @import("tools/list_skills.zig");
+const tool_list_skills_mod = @import("tools/skill_tools.zig");
 const tool_models = @import("Agent.zig");
 const tool_memories_mod = @import("tools/memories.zig");
 

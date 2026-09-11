@@ -628,9 +628,10 @@ pub const tool_models = @import("modules/agent/tools/schemas.zig");
 pub const tools = @import("modules/agent/tools/tools.zig");
 pub const change_agent = @import("modules/agent/tools/change_agent.zig");
 
-pub const use_skill_tool = @import("modules/agent/tools/use_skill.zig");
-pub const remove_skill_tool = @import("modules/agent/tools/remove_skill.zig");
-pub const list_skills_tool = @import("modules/agent/tools/list_skills.zig");
+pub const skill_tools = @import("modules/agent/tools/skill_tools.zig");
+pub const use_skill_tool = skill_tools;
+pub const remove_skill_tool = skill_tools;
+pub const list_skills_tool = skill_tools;
 // 2026-08-14 — first-level directory listing tool (Task 5 of the same plan).
 pub const list_directory = @import("modules/agent/tools/list_directory.zig");
 pub const memories = @import("modules/agent/tools/memories.zig");
@@ -776,8 +777,8 @@ fn dupeAgentTools(allocator: std.mem.Allocator, src: []tool_models.AgentTool) ![
 }
 
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
-pub const add_skill = @import("modules/agent/tools/add_skill.zig");
-pub const edit_skill = @import("modules/agent/tools/edit_skill.zig");
+pub const add_skill = skill_tools;
+pub const edit_skill = skill_tools;
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");
 pub const set_git_worktree = @import("modules/agent/tools/set_git_worktree.zig");
 pub const kanban_list = @import("modules/agent/tools/kanban_list.zig");

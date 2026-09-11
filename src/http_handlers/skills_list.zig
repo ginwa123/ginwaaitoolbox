@@ -9,7 +9,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
-const list_skills_mod = nalarcore.list_skills_tool;
+const list_skills_mod = nalarcore.skill_tools;
 
 /// Domain-level error set for `useCase`. The `listAllSkills` +
 /// `toJson` pipeline can fail with various Io / allocation errors
