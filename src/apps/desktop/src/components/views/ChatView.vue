@@ -55,6 +55,7 @@ import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import DeleteMemory from '../tool_outputs/DeleteMemory.vue'
 import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
+import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
@@ -3405,6 +3406,10 @@ const compactSession = async () => {
                           />
                           <GetPlan
                             v-else-if="msg.tool_name === 'get_plan'"
+                            :message="msg"
+                          />
+                          <ListSubAgent
+                            v-else-if="msg.tool_name === 'list_sub_agent'"
                             :message="msg"
                           />
                           <!--
