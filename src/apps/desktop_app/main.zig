@@ -92,11 +92,10 @@ pub fn main(init: std.process.Init) !void {
     // `./zig-out/bin/nalar-desktop --smoke-test` after build.
     //
     // The resolution below mirrors real startup (see ATTACH MODE): installed
-    // html/ first via findInstalledWebapp, embedded-asset temp extraction as
-    // fallback. On Windows CI this proves the exe actually selects the
-    // shipped html/ sitting beside it (the dir the webview backend is served
-    // from) instead of the embedded stub. Off-Windows the lookup is null and
-    // the embedded path runs unchanged.
+    // html/ first via findInstalledWebapp, persistent content-addressed
+    // materialisation as fallback. On Windows CI this proves the exe actually
+    // selects the shipped html/ sitting beside it (the dir the webview backend
+    // is served from) instead of the embedded stub.
     if (cfg.smoke_test) {
         const self_exe_smoke = path_resolve.selfExePath(allocator) catch ".";
         defer if (!std.mem.eql(u8, self_exe_smoke, ".")) allocator.free(self_exe_smoke);
@@ -105,12 +104,12 @@ pub fn main(init: std.process.Init) !void {
             std.log.info("smoke: using installed webapp at {s} (no extraction)", .{installed});
             return;
         }
-        const webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
-            std.log.err("smoke: asset extraction failed: {s}", .{@errorName(err)});
+        const webapp_dir = extraction.ensurePersistent(allocator, webapp_assets.assets) catch |err| {
+            std.log.err("smoke: webapp materialisation failed: {s}", .{@errorName(err)});
             return err;
         };
-        defer extraction.cleanup(allocator, webapp_dir);
-        std.log.info("smoke: extracted {d} assets to {s}", .{ webapp_assets.assets.len, webapp_dir });
+        defer allocator.free(webapp_dir);
+        std.log.info("smoke: {d} assets materialised at {s}", .{ webapp_assets.assets.len, webapp_dir });
         return;
     }
 
@@ -143,29 +142,34 @@ pub fn main(init: std.process.Init) !void {
     //    Windows-only shipped layout: prefer the persistent installed copy
     //    (%LOCALAPPDATA%\nalar\html, then html/ next to the exe -- see
     //    path_resolve.findInstalledWebapp) so close/reopen and reboot keep
-    //    working with no per-run temp extraction. Falls back to
-    //    embedded-asset temp extraction when no installed copy exists
-    //    (dev runs from zig-out/bin without install, old zips without
-    //    html/). Linux/macOS always extract (helper returns null there).
+    //    working with no per-run temp extraction.
     //
-    //    Ownership: extracted dirs are deleted at exit via
-    //    extraction.cleanup; an installed dir is only freed (never
-    //    deleted) -- hence the webapp_did_extract flag on the defer.
+    //    Otherwise materialise the embedded assets into a PERSISTENT,
+    //    content-addressed per-user dir (extraction.ensurePersistent).
+    //
+    //    That dir is NEVER deleted by the desktop, and that is load
+    //    bearing. The nalar daemon spawned below is deliberately detached
+    //    (closing the window does not signal it), so it keeps serving
+    //    `--static-dir <this dir>` long after the desktop exits. The old
+    //    per-pid temp dir was deleted at exit by extraction.cleanup, so
+    //    the next launch attached to a daemon whose static dir was gone:
+    //    /health still answered 200, GET / answered 404 Not Found, and
+    //    the webview opened on a blank page.
+    //
+    //    Ownership: both branches hand back a slice the caller frees;
+    //    neither dir is ever removed.
     var webapp_dir: []u8 = undefined;
-    var webapp_did_extract = false;
     if (path_resolve.findInstalledWebapp(allocator, self_exe_owned)) |installed| {
         webapp_dir = installed;
         std.log.info("Using installed webapp at {s}", .{webapp_dir});
     } else {
-        webapp_dir = extraction.extract(allocator, webapp_assets.assets) catch |err| {
-            std.log.err("Failed to extract webapp assets to temp dir: {s}", .{@errorName(err)});
+        webapp_dir = extraction.ensurePersistent(allocator, webapp_assets.assets) catch |err| {
+            std.log.err("Failed to materialise webapp assets: {s}", .{@errorName(err)});
             return err;
         };
-        webapp_did_extract = true;
+        std.log.info("Using persistent webapp at {s}", .{webapp_dir});
     }
-    defer {
-        if (webapp_did_extract) extraction.cleanup(allocator, webapp_dir) else allocator.free(webapp_dir);
-    }
+    defer allocator.free(webapp_dir);
 
 
 

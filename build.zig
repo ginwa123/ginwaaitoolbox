@@ -2430,6 +2430,16 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .root_module = desktop_exe.root_module,
     });
     desktop_tests.root_module.linkSystemLibrary("c", .{});
+    // The test compile shares `desktop_exe.root_module`, which imports the
+    // gitignored `embedded/webapp_assets.zig`. Without the same codegen edge
+    // `desktop_exe` has, a fresh checkout fails to even compile the tests
+    // ("unable to load 'webapp_assets.zig': FileNotFound") — which is why
+    // this step was unrunnable from a clean tree. With -Dno-webapp-rebuild
+    // the stub was already written at configure time by the desktop_exe
+    // block above, so the edge is skipped there (same as desktop_exe).
+    if (!no_webapp_rebuild) {
+        desktop_tests.step.dependOn(&webapp_rebuild_codegen.step);
+    }
     const run_desktop_tests = b.addRunArtifact(desktop_tests);
     // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, …) is on PATH
     // at test runtime — see `prependVcpkgBinToPath` doc comment.
