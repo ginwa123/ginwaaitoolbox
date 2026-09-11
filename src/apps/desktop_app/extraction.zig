@@ -475,7 +475,10 @@ fn renameAbsolute(from: []const u8, to: []const u8) !void {
             from_w[from_len] = 0;
             const to_len = std.unicode.wtf8ToWtf16Le(&to_w, to) catch return error.RenameFailed;
             to_w[to_len] = 0;
-            if (win32_dir_apis.MoveFileW(@ptrCast(&from_w), @ptrCast(&to_w)) != 0) return;
+            // Win32 `BOOL` is a typed enum in Zig 0.16 (not a raw integer),
+            // so compare against `.FALSE` — `!= 0` is a compile error for
+            // the Windows target. Same pattern as FindNextFileW below.
+            if (win32_dir_apis.MoveFileW(@ptrCast(&from_w), @ptrCast(&to_w)) != .FALSE) return;
             const last_err = win32_dir_apis.GetLastError();
             if (last_err == win32_dir_apis.ERROR_ALREADY_EXISTS or
                 last_err == win32_dir_apis.ERROR_FILE_EXISTS or
