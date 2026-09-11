@@ -52,6 +52,13 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
   // before `initKanbanSse` runs and after `closeKanbanSse` runs.
   let offKanban: (() => void) | null = null
 
+  // Unsubscribe for the bus's "you may have missed events" signal (see
+  // `helpers/sseTabChannel.ts`). The `bus.state` watcher below covers
+  // transitions the SseClient itself emits; this covers the two cases where the
+  // state never changes but deliveries were still lost: taking over the shared
+  // connection from another tab, and returning from a long hidden period.
+  let offResync: (() => void) | null = null
+
   // Disposer for the `bus.state → fetchInitialKanban` watcher.
   // See `initKanbanSse` below for why this is needed even though
   // we're no longer owning the EventSource.
@@ -228,6 +235,16 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
       },
       { immediate: true },
     )
+
+    // Stale-on-wake (cross-tab sharing): the watcher above only fires on state
+    // transitions the SseClient itself emits. A window that TOOK OVER the shared
+    // connection, or that returns from a long hidden period (browsers freeze and
+    // throttle hidden tabs, so deliveries and rendering were skipped), may have
+    // missed events with no state change at all. Re-fetch from the API — every
+    // tab can do that directly, whoever holds the SSE connection.
+    offResync = bus.onResync?.(() => {
+      if (activeWorkspaceId.value !== '') void fetchInitialKanban(activeWorkspaceId.value)
+    }) ?? null
   }
 
   /**
@@ -240,6 +257,10 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
     if (offKanban) {
       offKanban()
       offKanban = null
+    }
+    if (offResync) {
+      offResync()
+      offResync = null
     }
     if (stopStateWatch) {
       stopStateWatch()

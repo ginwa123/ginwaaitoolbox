@@ -54,6 +54,10 @@ export const useDesignSseStore = defineStore('designSse', () => {
   // before `initDesignSse` runs and after `closeDesignSse` runs.
   let offDesign: (() => void) | null = null
 
+  // Unsubscribe for the bus's "you may have missed events" signal — see
+  // `kanbanSse.ts` / `helpers/sseTabChannel.ts`.
+  let offResync: (() => void) | null = null
+
   // Disposer for the `bus.state → fetchInitialDesign` watcher.
   // See `initDesignSse` below for why this is needed even though
   // we're no longer owning the EventSource.
@@ -207,6 +211,13 @@ export const useDesignSseStore = defineStore('designSse', () => {
       },
       { immediate: true },
     )
+
+    // Stale-on-wake (cross-tab sharing) — same reasoning as `kanbanSse.ts`: a
+    // takeover or a return from a long hidden period can miss events without any
+    // `bus.state` transition to hang a refresh off.
+    offResync = bus.onResync?.(() => {
+      if (activeWorkspaceId.value !== '') void fetchInitialDesign(activeWorkspaceId.value)
+    }) ?? null
   }
 
   /**
@@ -219,6 +230,10 @@ export const useDesignSseStore = defineStore('designSse', () => {
     if (offDesign) {
       offDesign()
       offDesign = null
+    }
+    if (offResync) {
+      offResync()
+      offResync = null
     }
     if (stopStateWatch) {
       stopStateWatch()
