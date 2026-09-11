@@ -31,6 +31,24 @@ const LocalError = root.Error;
 /// a slow consumer can't grow memory without bound.
 const QUEUE_CAPACITY: usize = 64;
 
+/// Poll granularity used by `writeCallback` while it waits for the
+/// consumer to drain a full queue. Also bounds how quickly
+/// `ResponseStream.cancel()` is observed by a producer parked on
+/// backpressure.
+const BACKPRESSURE_POLL_NS: u64 = 5 * std.time.ns_per_ms;
+
+/// Upper bound on how long the WRITEFUNCTION blocks waiting for queue
+/// space before giving up and aborting the transfer.
+///
+/// This is a safety valve, not the expected path — the consumer drains
+/// within microseconds whenever it is healthy. It exists so a consumer
+/// that has genuinely wedged (or a `deinit()` racing the worker) can't
+/// park the libcurl worker thread forever. 120 s is comfortably above
+/// any real consumer stall and comfortably below `CURLOPT_TIMEOUT_MS`
+/// (300 s), so the backpressure path — not libcurl's own timeout — is
+/// what reports the failure.
+const BACKPRESSURE_MAX_WAIT_NS: u64 = 120 * std.time.ns_per_s;
+
 /// libcurl's CURLOPT_ERRORBUFFER expects a buffer of at least
 /// `CURL_ERROR_SIZE` bytes (256 per the curl.h header). We size it
 /// generously so a future curl bump can't silently truncate us.
@@ -96,6 +114,68 @@ fn queryPerformanceFrequencyCached() u64 {
     return f;
 }
 
+/// Win32 `VOID Sleep(DWORD dwMilliseconds);` (kernel32). Zig 0.16
+/// dropped `std.os.windows.kernel32.Sleep`, so we declare it here —
+/// same pattern as `src/helpers/mod.zig:91`. Only referenced from the
+/// comptime-gated Windows branch of `workerSleepNs`, so the linker
+/// never sees an unresolved `Sleep` symbol on POSIX.
+extern "kernel32" fn Sleep(dw_milliseconds: u32) callconv(.winapi) void;
+
+/// `struct timespec` for the worker-thread sleep. Same platform-correct
+/// `c_long`-equivalent trick as `monotonicNs` (i32 on Windows, where
+/// the type is unused; i64 on 64-bit Linux/macOS, matching
+/// `time_t`/`long`).
+const WorkerClong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
+
+const WorkerTimespec = extern struct {
+    sec: WorkerClong,
+    nsec: WorkerClong,
+};
+extern "c" fn nanosleep(req: *const WorkerTimespec, rem: ?*WorkerTimespec) c_int;
+
+/// Sleep on the libcurl worker thread WITHOUT going through the Io
+/// runtime.
+///
+/// `std.Io.sleep(state.io, …)` is NOT usable here: the worker thread
+/// doesn't own an Io runtime (see `monotonicNs`'s rationale), so
+/// parking it through `state.io` can deadlock against the runtime the
+/// caller thread is using. Raw libc `nanosleep` on POSIX / Win32
+/// `Sleep` on Windows — the same platform split as `monotonicNs`.
+fn workerSleepNs(ns: u64) void {
+    if (comptime builtin.os.tag == .windows) {
+        const ms: u32 = @intCast(@min(
+            @divTrunc(ns, std.time.ns_per_ms),
+            @as(u64, std.math.maxInt(u32)),
+        ));
+        Sleep(ms);
+        return;
+    }
+    const ts = WorkerTimespec{
+        .sec = @intCast(@divTrunc(ns, std.time.ns_per_s)),
+        .nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = nanosleep(&ts, null);
+}
+
+/// Result of `ChunkQueue.push`.
+///
+/// Three-way instead of a `bool` because the caller must be able to
+/// tell "transient backpressure" (queue momentarily full — retry, do
+/// NOT abort the transfer) apart from "genuine allocation failure"
+/// (abort). See `writeCallback`.
+const PushOutcome = union(enum) {
+    /// Stored. `wake` is true when the queue was EMPTY immediately
+    /// before this push (the empty → non-empty edge), i.e. a consumer
+    /// parked in `ResponseStream.next()` needs a `signal_gen` bump +
+    /// futex wake. Computed under the SAME lock acquisition as the
+    /// store, which is what makes the wake decision reliable.
+    pushed: struct { wake: bool },
+    /// Ring buffer full. Transient backpressure, not an error.
+    full,
+    /// Copying the chunk into heap memory failed (OOM).
+    out_of_memory,
+};
+
 const ChunkQueue = struct {
     mutex: *std.Io.Mutex,
     slots: [QUEUE_CAPACITY]?[]u8,
@@ -119,18 +199,39 @@ const ChunkQueue = struct {
         allocator.destroy(self.mutex);
     }
 
-    fn push(self: *ChunkQueue, allocator: std.mem.Allocator, chunk: []const u8) bool {
+    /// Store `chunk` (copied into heap memory) and report whether a
+    /// parked consumer needs waking.
+    ///
+    /// The emptiness check and the store happen under ONE lock
+    /// acquisition, and `wake` is derived from the emptiness observed
+    /// there. The previous shape — `isEmpty()` then `push()`, each
+    /// taking the lock independently — had a lost-wakeup race:
+    ///
+    ///   producer: isEmpty() -> false   (queue held 1 chunk)
+    ///   consumer: popOne()  -> drains it, returns it to the caller,
+    ///              which re-enters next() and parks on signal_gen
+    ///   producer: push()    -> succeeds, but `was_empty` is now
+    ///              stale-false, so no bump and no futex wake
+    ///
+    /// The consumer then sleeps out its full 300 s budget with a
+    /// non-empty queue while the producer keeps filling it — and once
+    /// the ring buffer hits QUEUE_CAPACITY the write callback used to
+    /// abort the whole transfer (`CURLE_WRITE_ERROR` → `WriteError` →
+    /// `StreamInterrupted` → full LLM-call retry). Fusing the two
+    /// steps removes the window entirely.
+    fn push(self: *ChunkQueue, allocator: std.mem.Allocator, chunk: []const u8) PushOutcome {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const next_tail = (self.tail + 1) % QUEUE_CAPACITY;
-        if (next_tail == self.head) return false;
+        if (next_tail == self.head) return .full;
         // dupe makes a heap-owned copy so the data outlives libcurl's
         // write-callback buffer (which can be invalidated as soon as
         // we return).
-        const owned = allocator.dupe(u8, chunk) catch return false;
+        const owned = allocator.dupe(u8, chunk) catch return .out_of_memory;
+        const was_empty = self.head == self.tail;
         self.slots[self.tail] = owned;
         self.tail = next_tail;
-        return true;
+        return .{ .pushed = .{ .wake = was_empty } };
     }
 
     fn popOne(self: *ChunkQueue) ?[]u8 {
@@ -141,15 +242,6 @@ const ChunkQueue = struct {
         self.slots[self.head] = null;
         self.head = (self.head + 1) % QUEUE_CAPACITY;
         return chunk;
-    }
-
-    /// Returns true if the queue was empty BEFORE this call. Used by
-    /// the write callback to decide whether to wake a sleeping
-    /// consumer (only wake on the empty -> non-empty transition).
-    fn isEmpty(self: *ChunkQueue) bool {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return self.head == self.tail;
     }
 };
 
@@ -442,30 +534,67 @@ pub const StreamScanner = struct {
     }
 };
 
+/// libcurl WRITEFUNCTION. Called on the worker thread for every body
+/// chunk. Returns the number of bytes it "took"; returning anything
+/// less than `size * nmemb` aborts the transfer with
+/// `CURLE_WRITE_ERROR`.
+///
+/// Because of that, this function must only return short when the
+/// transfer genuinely has to stop. A full chunk queue is NOT such a
+/// condition — it just means the consumer (the agent's
+/// `StreamScanner` loop) hasn't drained yet. The old code treated it
+/// as fatal and aborted, which surfaced to users as
+/// `scanner.next failed after N chunk(s): WriteError` and threw away
+/// the entire (healthy) LLM response, retrying it from scratch. Here
+/// we block the transfer instead — classic backpressure — until the
+/// consumer catches up.
+///
+/// Short-circuit conditions (return 0 → abort):
+///   - `state.cancelled` — `ResponseStream.cancel()` / `deinit()`
+///     asked us to stop. This is the check the comment in
+///     `openStream` always claimed existed but which was missing
+///     entirely, making `cancel()` a no-op that left `deinit()`
+///     blocked on the join for up to `CURLOPT_TIMEOUT_MS`.
+///   - `BACKPRESSURE_MAX_WAIT_NS` elapsed with the queue still full
+///     (consumer wedged).
+///   - `allocator.dupe` failed (real OOM).
 fn writeCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
     const state: *SharedState = @ptrCast(@alignCast(userdata));
     const slice = buf[0 .. size * nmemb];
-    // Capture empty-state BEFORE push so we can decide whether to
-    // wake a sleeping consumer. Only wake on the empty -> non-empty
-    // transition — waking on every push would be wasted work when
-    // the consumer is keeping up.
-    const was_empty = state.queue.isEmpty();
-    // dupe the body so we don't depend on libcurl's internal buffer
-    // remaining valid after this callback returns (it doesn't).
-    if (!state.queue.push(state.allocator, slice)) return 0;
-    if (was_empty) {
-        // Empty -> non-empty: bump the wakeup-generation counter
-        // (release semantics) and wake exactly one consumer. The
-        // bump must happen BEFORE the wake so the consumer, when it
-        // wakes and re-checks, is guaranteed to see a non-empty
-        // queue. The consumer's futexWaitTimeout captures the old
-        // value before sleeping; FUTEX_WAIT_BITSET returns EAGAIN if
-        // the value changes between capture and sleep, so no wakeup
-        // is ever lost.
-        _ = state.signal_gen.fetchAdd(1, .release);
-        state.io.futexWake(u32, &state.signal_gen.raw, 1);
+    const start_ns = monotonicNs();
+
+    while (true) {
+        switch (state.queue.push(state.allocator, slice)) {
+            .pushed => |p| {
+                if (p.wake) {
+                    // Empty -> non-empty edge: bump the wakeup-generation
+                    // counter (release semantics) and wake exactly one
+                    // consumer. The bump must happen BEFORE the wake so
+                    // the consumer, when it wakes and re-checks, is
+                    // guaranteed to see a non-empty queue. The consumer's
+                    // futexWaitTimeout captures the old value before
+                    // sleeping; FUTEX_WAIT_BITSET returns EAGAIN if the
+                    // value changes between capture and sleep, so no
+                    // wakeup is ever lost. Waking on every push (not just
+                    // this edge) would be wasted work while the consumer
+                    // is keeping up.
+                    _ = state.signal_gen.fetchAdd(1, .release);
+                    state.io.futexWake(u32, &state.signal_gen.raw, 1);
+                }
+                return size * nmemb;
+            },
+            .out_of_memory => return 0,
+            .full => {
+                if (state.cancelled.load(.acquire)) return 0;
+                if (monotonicNs() -% start_ns >= BACKPRESSURE_MAX_WAIT_NS) return 0;
+                // `slice` still points into libcurl's per-call buffer,
+                // which stays valid until this callback returns — so
+                // parking here (rather than returning) is safe, and
+                // re-trying with the same slice is safe too.
+                workerSleepNs(BACKPRESSURE_POLL_NS);
+            },
+        }
     }
-    return size * nmemb;
 }
 
 fn headerCallback(buf: [*]const u8, size: u64, nmemb: u64, userdata: *anyopaque) callconv(.c) u64 {
@@ -772,12 +901,15 @@ pub fn openStream(
     // + @ptrCast landed on freed memory in some teardown paths.
     //
     // Cancellation now flows through `state.cancelled` being checked
-    // inside writeCallback/headerCallback (which already touch
-    // state.* and are guarded by the same lifetime), plus a hard
-    // timeout via CURLOPT_TIMEOUT_MS / CURLOPT_CONNECTTIMEOUT_MS
-    // (already set above from Options). For cooperative abort we
-    // rely on the worker's poll loop reading `state.cancelled`
-    // between chunk arrivals and bailing out cleanly.
+    // inside writeCallback (which already touches state.* and is
+    // guarded by the same lifetime), plus a hard timeout via
+    // CURLOPT_TIMEOUT_MS / CURLOPT_CONNECTTIMEOUT_MS (already set above
+    // from Options). writeCallback samples it on every body chunk and
+    // on every backpressure poll iteration, so `ResponseStream.cancel()`
+    // is observed within BACKPRESSURE_POLL_NS (5 ms) even when the
+    // consumer has stopped draining the queue. NOTE: headerCallback
+    // does NOT sample it — header lines arrive ahead of the body and
+    // its only early-out is a genuine allocation failure.
     _ = setoptLong(handle, curl.OPT.NOPROGRESS, @as(c_long, 1));
 
     const thread = std.Thread.spawn(.{}, streamWorker, .{state}) catch |err| switch (err) {
@@ -793,4 +925,83 @@ pub fn openStream(
     };
 
     return .{ .state = state, .thread = thread };
+}
+
+// ============================================================================
+// Tests — ChunkQueue contract.
+//
+// `ChunkQueue` is private to this file, so these live here rather than in
+// `streaming_test.zig`. They lock the two properties `writeCallback`
+// relies on:
+//   1. `wake` is true ONLY on the empty -> non-empty edge, so a parked
+//      consumer is always woken and never woken needlessly. This is the
+//      lost-wakeup fix (previously `isEmpty()` + `push()` were two
+//      separate lock acquisitions, so the edge could be missed).
+//   2. A full ring buffer reports `.full` — distinct from OOM — so the
+//      callback can apply backpressure instead of aborting the transfer.
+// ============================================================================
+
+fn testQueue(allocator: std.mem.Allocator) !*ChunkQueue {
+    const q = try allocator.create(ChunkQueue);
+    q.* = ChunkQueue.init(allocator, std.testing.io);
+    return q;
+}
+
+fn destroyTestQueue(q: *ChunkQueue, allocator: std.mem.Allocator) void {
+    while (q.popOne()) |chunk| allocator.free(chunk);
+    q.deinit(allocator);
+    allocator.destroy(q);
+}
+
+test "stream: ChunkQueue.push wake flag is true only on the empty -> non-empty edge" {
+    const allocator = std.testing.allocator;
+    const q = try testQueue(allocator);
+    defer destroyTestQueue(q, allocator);
+
+    // Empty -> non-empty: a parked consumer must be woken.
+    switch (q.push(allocator, "one")) {
+        .pushed => |p| try std.testing.expect(p.wake),
+        else => return error.ExpectedPushed,
+    }
+    // Still non-empty: no wake needed (the consumer is already behind).
+    switch (q.push(allocator, "two")) {
+        .pushed => |p| try std.testing.expect(!p.wake),
+        else => return error.ExpectedPushed,
+    }
+
+    // Drain to empty, then push again — must be treated as a fresh
+    // empty -> non-empty edge.
+    allocator.free(q.popOne().?);
+    allocator.free(q.popOne().?);
+    switch (q.push(allocator, "three")) {
+        .pushed => |p| try std.testing.expect(p.wake),
+        else => return error.ExpectedPushed,
+    }
+}
+
+test "stream: ChunkQueue.push reports .full instead of dropping the chunk" {
+    const allocator = std.testing.allocator;
+    const q = try testQueue(allocator);
+    defer destroyTestQueue(q, allocator);
+
+    // QUEUE_CAPACITY slots, minus the one the ring buffer sacrifices to
+    // distinguish full from empty.
+    var i: usize = 0;
+    while (i < QUEUE_CAPACITY - 1) : (i += 1) {
+        switch (q.push(allocator, "x")) {
+            .pushed => {},
+            else => return error.ExpectedPushed,
+        }
+    }
+    switch (q.push(allocator, "x")) {
+        .full => {},
+        else => return error.ExpectedFullNotReported,
+    }
+
+    // Draining one slot restores capacity.
+    allocator.free(q.popOne().?);
+    switch (q.push(allocator, "x")) {
+        .pushed => {},
+        else => return error.ExpectedPushed,
+    }
 }

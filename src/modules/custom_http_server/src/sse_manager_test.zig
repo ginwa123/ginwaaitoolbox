@@ -426,3 +426,127 @@ test "SseManager: gracefulShutdown with ArenaAllocator - no crash" {
     // Final deinit should be clean
     mgr.deinit();
 }
+
+/// Worker for the send-timeout regression test. File scope (not a
+/// local) because a regression means the thread is STILL BLOCKED when
+/// the test finishes — a stack-local context would dangle.
+const SendTimeoutWorker = struct {
+    fd: i32 = -1,
+    payload: []const u8 = &.{},
+    done: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    err: ?anyerror = null,
+
+    fn run(self: *SendTimeoutWorker) void {
+        self.err = if (sse_manager.writeChunkedFrame(self.fd, self.payload)) |_| null else |e| e;
+        self.done.store(true, .release);
+    }
+};
+var send_timeout_worker: SendTimeoutWorker = .{};
+
+test "sse: setFdSendTimeout bounds a write to a peer that never reads" {
+    // POSIX-only: exercises the `struct timeval` SO_SNDTIMEO path.
+    if (comptime builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const pair = try createSocketPair();
+    defer closeSocketPair(pair);
+
+    // 500 ms so the test stays fast; production uses 5 s.
+    sse_manager.setFdSendTimeout(toI32(pair[0]), 500);
+
+    // Nobody ever reads pair[1]. Without the send timeout this call
+    // parks the emitting thread forever — the exact production hazard
+    // documented on SSE_SEND_TIMEOUT_MS (one dead SSE peer holding
+    // `SseManager.lock` and stalling the agent workflow thread, whose
+    // chunk queue then overflows and aborts the LLM stream with
+    // WriteError).
+    const payload = try std.testing.allocator.alloc(u8, 8 * 1024 * 1024);
+    defer std.testing.allocator.free(payload);
+    @memset(payload, 'x');
+
+    send_timeout_worker = .{ .fd = toI32(pair[0]), .payload = payload };
+    const worker = std.Thread.spawn(.{}, SendTimeoutWorker.run, .{&send_timeout_worker}) catch
+        return error.SkipZigTest;
+    // Deliberately detached: on a regression the thread is wedged in a
+    // blocking send, and joining would hang the test suite. Detaching is
+    // safe because the context is file-scope, and closing the socketpair
+    // (the `defer` above) unblocks the send so the thread exits.
+    worker.detach();
+
+    // Watchdog: fail cleanly instead of hanging the runner.
+    const deadline_ns = std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds + 10 * std.time.ns_per_s;
+    while (!send_timeout_worker.done.load(.acquire) and
+        std.Io.Timestamp.now(std.testing.io, .awake).nanoseconds < deadline_ns)
+    {
+        std.Io.sleep(std.testing.io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    if (!send_timeout_worker.done.load(.acquire)) {
+        std.debug.print(
+            \\
+            \\!! writeChunkedFrame is STILL BLOCKED after 10s on a peer that never reads !!
+            \\   setFdSendTimeout did not apply SO_SNDTIMEO. One dead SSE client can
+            \\   then park the emitting thread (and SseManager.lock) forever, which
+            \\   stalls the agent workflow thread mid-stream.
+            \\
+        , .{});
+        return error.SendNotBoundedByTimeout;
+    }
+
+    try std.testing.expectEqual(@as(?anyerror, error.WriteFailed), send_timeout_worker.err);
+}
+
+/// Resolve `sse_manager.zig` from whichever cwd the suite is running
+/// under. Two callers exist:
+///   - the parent suite (`zig build test` at the repo root, which is
+///     what CI runs) → repo-root-relative path first;
+///   - the module's own `zig build test` (`cd src/modules/custom_http_server`)
+///     → package-local path.
+/// `sse_chunked_test.zig` hardcodes the repo-root form; we tolerate both
+/// so the standalone module suite keeps working too.
+fn readSseManagerSource(allocator: std.mem.Allocator) ![]u8 {
+    const candidates = [_][]const u8{
+        "src/modules/custom_http_server/src/sse_manager.zig",
+        "src/sse_manager.zig",
+    };
+    var last_err: anyerror = error.FileNotFound;
+    for (candidates) |path| {
+        const result = std.Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            path,
+            allocator,
+            .limited(256 * 1024),
+        );
+        if (result) |source| {
+            return source;
+        } else |err| {
+            last_err = err;
+        }
+    }
+    return last_err;
+}
+
+test "sse: registerClient applies the send timeout to every SSE socket" {
+    // Static contract: the socket bound is only useful if it is actually
+    // applied when a client connects. `registerClient` is the single
+    // production registration path (registerClientForTest is test-only),
+    // so the call must live there.
+    const source = try readSseManagerSource(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+
+    const fn_start = std.mem.indexOf(u8, source, "pub fn registerClient(") orelse
+        return error.RegisterClientMissing;
+    const fn_end = std.mem.indexOfPos(u8, source, fn_start, "\n    }\n") orelse
+        return error.RegisterClientBodyMissing;
+    const body = source[fn_start..fn_end];
+
+    if (std.mem.indexOf(u8, body, "setFdSendTimeout(") == null) {
+        std.debug.print(
+            \\
+            \\!! sse_manager.zig: registerClient does not call setFdSendTimeout !!
+            \\   A stuck SSE peer would park the emitting thread forever while
+            \\   holding SseManager.lock, stalling every SSE emit in the process
+            \\   (including the agent's llm_chunk stream). See SSE_SEND_TIMEOUT_MS.
+            \\
+        , .{});
+        return error.RegisterClientMissingSendTimeout;
+    }
+}

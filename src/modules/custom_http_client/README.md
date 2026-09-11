@@ -62,7 +62,7 @@ See `Error` in `root.zig`. The most common:
 - `TlsError` (CURLE_PEER_FAILED_VERIFICATION, _SSL_*)
 - `TooManyRedirects` (only when `follow_redirects=true` and the cap is hit)
 - `HttpError` (CURLE_HTTP_RETURNED_ERROR / WEIRD_SERVER_REPLY / GOT_NOTHING / RANGE+POST errors / REMOTE_ACCESS_DENIED)
-- `WriteError` (CURLE_WRITE_ERROR — our own write callback aborted, usually allocation failure)
+- `WriteError` (CURLE_WRITE_ERROR — our own write callback aborted: out-of-memory copying a chunk, `cancel()`/`deinit()` asking the transfer to stop, or the consumer stalling past the 120s backpressure budget. A merely FULL chunk queue does NOT abort — the callback blocks and retries until the consumer drains)
 - `ReadError` (CURLE_READ_ERROR)
 - `SendError` (CURLE_SEND_ERROR / SEND_FAIL_REWIND)
 - `RecvError` (CURLE_RECV_ERROR — connection reset / server hung up mid-stream)

@@ -98,6 +98,11 @@ const TestServer = struct {
         try self.server.router.get("/echo-headers", echoHeadersHandler);
         // /big — 64 KiB body used for chunked-size assertions.
         try self.server.router.get("/big", bigBodyHandler);
+        // /flood — multi-MiB body. Sized so that a consumer which stops
+        // draining is guaranteed to fill the 64-slot chunk queue (64 ×
+        // CURL_MAX_WRITE_SIZE = 1 MiB) and exercise the backpressure
+        // path in `writeCallback`.
+        try self.server.router.get("/flood", floodHandler);
         // /delay/N — sleeps N seconds, used for cancellation/timeout tests.
         try self.server.router.get("/delay", delayHandler);
     }
@@ -180,6 +185,21 @@ fn bigBodyHandler(ctx: HttpContext, _: HttpRequest, res: HttpResponse) !HttpResp
         try body.append(ctx.allocator, 'A');
     }
     return res.withBody(body.items);
+}
+
+/// Body size for `/flood`. Sized well above `QUEUE_CAPACITY` slots'
+/// worth of libcurl write callbacks (64 × CURL_MAX_WRITE_SIZE 16 KiB =
+/// 1 MiB) so a consumer that stops draining is guaranteed to fill the
+/// ring buffer and exercise the backpressure path.
+const flood_bytes: usize = 8 * 1024 * 1024;
+
+fn floodHandler(ctx: HttpContext, _: HttpRequest, res: HttpResponse) !HttpResponse {
+    // Same arena-ownership rule as bigBodyHandler: the body lives in
+    // ctx.allocator and the per-request arena reaps it after the
+    // response has been serialized and sent. Do NOT free it here.
+    const body = try ctx.allocator.alloc(u8, flood_bytes);
+    @memset(body, 'F');
+    return res.withBody(body);
 }
 
 fn delayHandler(ctx: HttpContext, _: HttpRequest, _: HttpResponse) !HttpResponse {
@@ -427,6 +447,110 @@ test "stream: 4 concurrent openStream calls all complete cleanly" {
     try testing.expect(ok_total + fail_total == N_THREADS);
     // With a real local server, all 4 should succeed.
     try testing.expect(ok_total == N_THREADS);
+}
+
+// Regression: a consumer that stops draining the chunk queue must NOT
+// abort the transfer.
+//
+// This reproduces the production failure that surfaced as
+// `scanner.next failed after N chunk(s): WriteError` (which the
+// workflow then reported as `StreamInterrupted` and retried from
+// scratch, discarding the whole LLM response). The old `writeCallback`
+// returned 0 — aborting libcurl with CURLE_WRITE_ERROR — as soon as
+// the 64-slot ring buffer filled, which is exactly what happens when
+// the consumer is briefly stalled (e.g. blocked in a synchronous SSE
+// write to a slow peer).
+//
+// The consumer here sleeps long enough to fill the queue many times
+// over, then drains. The whole body must still arrive.
+test "stream: stalled consumer does not abort the transfer with WriteError" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const ts = try makeTestServer(allocator, io);
+    defer ts.deinit();
+
+    var url_buf: [256]u8 = undefined;
+    const url = try ts.urlBuf("/flood", &url_buf);
+
+    var client = custom_http_client.Client.init(allocator);
+    defer client.deinit();
+    var stream = client.openStream(io, .{ .method = .GET, .url = url }, .{
+        .timeout_ms = 60_000,
+    }) catch |err| switch (err) {
+        error.ConnectionRefused, error.ConnectionTimeout,
+        error.OperationTimedOut => return error.SkipZigTest,
+        else => return err,
+    };
+    defer stream.deinit();
+
+    // Simulate the stalled consumer: nothing drains the queue while
+    // libcurl keeps delivering body chunks into it.
+    std.Io.sleep(io, .{ .nanoseconds = 300 * std.time.ns_per_ms }, .real) catch {};
+
+    var total: usize = 0;
+    while (true) {
+        const chunk_opt = stream.next() catch |err| {
+            std.debug.print(
+                "stream.next aborted after {d} of {d} bytes: {s}\n",
+                .{ total, flood_bytes, @errorName(err) },
+            );
+            return err;
+        };
+        const chunk = chunk_opt orelse break;
+        total += chunk.len;
+        allocator.free(chunk);
+    }
+    try testing.expectEqual(flood_bytes, total);
+}
+
+// Regression: `ResponseStream.cancel()` must actually interrupt an
+// in-flight transfer.
+//
+// `cancelled` used to be written by `cancel()` and read by nobody, so
+// `deinit()`'s `cancel()` + `thread.join()` blocked until libcurl's
+// own `CURLOPT_TIMEOUT_MS` fired (300 s in production, 60 s here).
+// `writeCallback` now samples it on every backpressure poll, so the
+// worker unwinds in milliseconds even while parked on a full queue.
+test "stream: cancel() unblocks a worker parked on a full queue" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const io = std.testing.io;
+
+    const ts = try makeTestServer(allocator, io);
+    defer ts.deinit();
+
+    var url_buf: [256]u8 = undefined;
+    const url = try ts.urlBuf("/flood", &url_buf);
+
+    var client = custom_http_client.Client.init(allocator);
+    defer client.deinit();
+    var stream = client.openStream(io, .{ .method = .GET, .url = url }, .{
+        .timeout_ms = 60_000,
+    }) catch |err| switch (err) {
+        error.ConnectionRefused, error.ConnectionTimeout,
+        error.OperationTimedOut => return error.SkipZigTest,
+        else => return err,
+    };
+
+    // Never drain: let the queue fill so the worker parks in the
+    // backpressure wait. 300 ms is far more than the ~1 MiB of body
+    // needed to fill 64 slots over loopback.
+    std.Io.sleep(io, .{ .nanoseconds = 300 * std.time.ns_per_ms }, .real) catch {};
+
+    const started_ns = std.Io.Timestamp.now(io, .awake).nanoseconds;
+    stream.cancel();
+    stream.deinit(); // cancel() again + join()
+    const elapsed_ms = @divTrunc(
+        std.Io.Timestamp.now(io, .awake).nanoseconds - started_ns,
+        std.time.ns_per_ms,
+    );
+
+    // Without the cancelled check this would take the full 60 s curl
+    // timeout. 10 s is a generous ceiling that still catches a no-op
+    // cancel by an order of magnitude.
+    try testing.expect(elapsed_ms < 10_000);
 }
 
 fn countFdsViaShell() !usize {
