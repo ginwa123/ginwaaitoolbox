@@ -287,6 +287,7 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
 
     // spawn
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
+    list_sub_agent_mod.list_sub_agent_tool.function.name,
 };
 
 pub const DEFAULT_KANBAN_TOOLS: []const []const u8 = &.{
@@ -341,5 +342,15 @@ pub fn seedDefaultKanbanTools(
             &.{ id, kanban_id, tool_name },
         );
     }
+}
+
+test "DEFAULT_AGENT_TOOLS ships the spawn pair (spawn_sub_agent + list_sub_agent)" {
+    var found_spawn = false;
+    var found_list = false;
+    for (DEFAULT_AGENT_TOOLS) |name| {
+        if (std.mem.eql(u8, name, "spawn_sub_agent")) found_spawn = true;
+        if (std.mem.eql(u8, name, "list_sub_agent")) found_list = true;
+    }
+    try std.testing.expect(found_spawn and found_list);
 }
 
