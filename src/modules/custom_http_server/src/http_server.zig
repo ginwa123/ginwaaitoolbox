@@ -1044,11 +1044,19 @@ pub const GinwaServer = struct {
             posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.KEEPALIVE, std.mem.asBytes(&on)) catch {};
             // `TCP.KEEPIDLE` is Linux-only; on macOS the equivalent is
             // the KEEPALIVE TCP option (which doubles as the idle
-            // timer on Darwin). Skip on macOS — the default ~2h idle
-            // combined with 5s probe + 3 probes still detects dead
+            // timer on Darwin). Skip where it does not exist — the default ~2h
+            // idle combined with 5s probe + 3 probes still detects dead
             // connections quickly via SO_KEEPALIVE alone.
-            if (builtin.os.tag == .linux) {
-                posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
+            //
+            // The gate tests the DECL on `std.c.TCP` rather than
+            // `builtin.os.tag`: the cross-compile build graph compiles this file
+            // for several targets in one invocation (the app module for the
+            // requested target, sibling modules for the host), so a
+            // `builtin.os.tag` check can disagree with the `c.TCP` the
+            // expression actually resolves against and fail the macOS build with
+            // "struct 'c.darwin.TCP' has no member named 'KEEPIDLE'".
+            if (@hasDecl(std.c.TCP, "KEEPIDLE")) {
+                posix.setsockopt(fd, posix.IPPROTO.TCP, std.c.TCP.KEEPIDLE, std.mem.asBytes(&keepidle)) catch {};
             }
             posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, std.mem.asBytes(&keepintvl)) catch {};
             posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, std.mem.asBytes(&keepcnt)) catch {};
