@@ -2,7 +2,7 @@
   SaveMemory — tool output component for the `save_memory` agent tool.
 
   Renders the XML envelope produced by `executeSaveMemory` in
-  `src/modules/agent/tools/save_memory.zig`. The component is purely
+  `src/modules/agent/tools/memory.zig`. The component is purely
   presentational: no API calls, no store mutations, no navigation.
 
   Three response shapes are possible (inner data extracted by

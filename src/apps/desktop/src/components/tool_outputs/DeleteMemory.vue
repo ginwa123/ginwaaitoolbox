@@ -2,7 +2,7 @@
   DeleteMemory — tool output component for the `delete_memory` agent tool.
 
   Renders the XML envelope produced by `executeDeleteMemory` in
-  `src/modules/agent/tools/delete_memory.zig`. The component is purely
+  `src/modules/agent/tools/memory.zig`. The component is purely
   presentational: no API calls, no store mutations, no navigation.
 
   Three response shapes are possible (inner data extracted by
