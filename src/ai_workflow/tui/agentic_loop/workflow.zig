@@ -1094,6 +1094,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             }
             continue;
         };
+
+        for (messagesLists.items) |messageList| {
+            messageList.deinit(allocator);
+        }
+
+        messagesLists.deinit(allocator);
+
         // Lifecycle: `CallResponse` (and everything it points at —
         // `content`, `reasoning_content`, each
         // `tool_calls[i].{id, function.name, function.arguments}`, the

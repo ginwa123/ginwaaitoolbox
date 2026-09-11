@@ -51,6 +51,7 @@ export class FakeTabChannel implements TabChannelLike {
   /** Hub-side delivery. Kept separate from `postMessage` (which is the API). */
   receive(message: unknown): void {
     if (this.closed) return
+    // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot copy: a listener may remove itself during delivery.
     for (const l of [...this.listeners]) l({ data: message })
   }
 }
