@@ -1139,7 +1139,7 @@ jobs:
           # ONLY runs the test binary (which is ~10 MB with full
           # debug info), not nalar.exe — the OOM-prone path doesn't
           # apply here.
-          zig build test --summary all -Dno-webapp-rebuild
+          zig build test check:desktop-cross --summary all -Dno-webapp-rebuild
 
       - name: Install nalar + nalar-desktop (single zig invocation, non-Windows)
         # Linux + macOS can still run the merged `test nalar-desktop`

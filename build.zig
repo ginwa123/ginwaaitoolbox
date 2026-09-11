@@ -2446,6 +2446,43 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     prependVcpkgBinToPath(b, run_desktop_tests);
     test_desktop.dependOn(&run_desktop_tests.step);
 
+    // === Cross-target compile check (desktop app's per-OS branches) ===
+    // `extraction.zig` / `subprocess.zig` fork on `builtin.os.tag`, and Zig
+    // only analyses the branch matching the TARGET — so running
+    // `test:desktop-app` on Linux cannot see a type error in the Windows or
+    // macOS paths. That hole shipped a real Windows-only compile error
+    // (`MoveFileW` returns a typed BOOL enum; `!= 0` on it) which only CI's
+    // Windows runner caught, 20 minutes in.
+    //
+    // This step compiles `cross_compile_check.zig` (an `export fn` that calls
+    // those modules' public API) as an OBJECT for each target, forcing full
+    // semantic analysis + codegen. Objects only — no linking, no SDK, no
+    // webview/vcpkg deps — so it is cheap enough to run on every CI job.
+    const check_desktop_cross = b.step(
+        "check:desktop-cross",
+        "Compile-check the desktop app's per-OS branches for Windows/macOS/Linux",
+    );
+    const cross_targets = [_]std.Target.Query{
+        .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
+        .{ .cpu_arch = .aarch64, .os_tag = .macos },
+        .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+    };
+    for (cross_targets, 0..) |query, i| {
+        const obj = b.addObject(.{
+            .name = b.fmt("desktop-cross-check-{d}", .{i}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/apps/desktop_app/cross_compile_check.zig"),
+                .target = b.resolveTargetQuery(query),
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "helpers", .module = helpers_mod },
+                },
+            }),
+        });
+        check_desktop_cross.dependOn(&obj.step);
+    }
+
     // =====================================================================
     // CLI executable (`src/apps/cli/main.zig`) — wraps
     //   - POST  /api/llm/session
