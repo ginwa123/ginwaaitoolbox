@@ -5,32 +5,41 @@
 // alongside `zig build test`.
 //
 // WHY THIS EXISTS
-// `extraction.zig`, `subprocess.zig` and `port.zig` all fork on
-// `builtin.os.tag`, and Zig only analyses the branch matching the TARGET. So
-// `zig build test:desktop-app` running on Linux can never see a type error in
-// the Windows or macOS code paths, and CI only ever compiles a given OS's
-// branch on that OS's runner (a 20-minute round trip).
-//
-// That hole shipped a real bug: Win32 `BOOL` is a typed enum
+// `extraction.zig` and friends fork on `builtin.os.tag`, and Zig only analyses
+// the branch matching the TARGET. So `zig build test:desktop-app` running on
+// Linux can never see a type error in the Windows or macOS paths, and CI only
+// ever compiles a given OS's branch on that OS's runner (a ~20-minute round
+// trip). That hole shipped a real bug: Win32 `BOOL` is a typed enum
 // (`os.windows.Bool(c_int)`) in Zig 0.16, so `MoveFileW(...) != 0` in
 // extraction.zig's `renameAbsolute` was a Windows-only compile error that
 // turned the Windows CI job red. This file makes such an error fail on ANY
-// runner, in seconds.
+// runner, in about a second.
 //
 // HOW
-// Each function below is called from an `export`ed function, which forces
-// full semantic analysis + codegen for the target (a mere `_ = f;` reference
-// would not). The build step compiles this file as a plain OBJECT for
-// Windows / macOS / Linux — no linking, no SDK, no webview/vcpkg deps.
+// Call the module's public API from an `export`ed function — that forces full
+// semantic analysis + codegen for the target (a bare `_ = f;` reference would
+// not). The build step compiles this file as a plain OBJECT for
+// Windows / macOS / Linux: no linking, no SDK, no webview/vcpkg deps.
+//
+// DELIBERATELY STD-ONLY
+// This file imports nothing but `std` and `extraction.zig` (itself std-only).
+// That is load-bearing: the cross-check module must not pull in a module built
+// for the HOST target, because mixing a host-target module into a
+// foreign-target build makes Zig compile the host's `std.os.<host>` code
+// against the foreign target and die on the calling convention (observed on
+// the Windows runner: `aarch64_aapcs_win` not supported, from
+// helpers/mod.zig's `extern "kernel32" fn Sleep`).
+// `subprocess.zig` is therefore NOT covered here — it needs `helpers`, which
+// comes from a host-target package module. Covering it would mean building a
+// per-target `helpers` module in the build step.
 //
 // WHEN TO UPDATE
-// Add a call here whenever one of these modules gains a public entry point
-// that touches OS-specific code (a `builtin.os.tag` fork, a `std.c.*` or
-// Win32 extern).
+// Add a call here whenever `extraction.zig` (or another std-only module in
+// this directory) gains a public entry point that touches OS-specific code —
+// a `builtin.os.tag` fork, a `std.c.*` or Win32 extern.
 
 const std = @import("std");
 const extraction = @import("extraction.zig");
-const subprocess = @import("subprocess.zig");
 
 const assets = [_]extraction.AssetEntry{
     .{ .path = "/index.html", .content = "<html></html>", .mime = "text/html" },
@@ -38,9 +47,9 @@ const assets = [_]extraction.AssetEntry{
 };
 
 export fn nalar_desktop_cross_compile_check() callconv(.c) void {
-    // extraction.zig — persistent content-addressed dir (staging + marker +
-    // `renameAbsolute`'s POSIX/Win32 branches + `pathExistsAbs`) and the
-    // legacy per-pid temp-dir path.
+    // Persistent content-addressed dir: `persistentBaseDir` (env + per-OS
+    // path joining), the staging/marker publish, `renameAbsolute`'s
+    // POSIX-vs-Win32 branches and `pathExistsAbs`'s per-OS existence check.
     const persistent = extraction.ensurePersistent(std.heap.page_allocator, &assets) catch return;
     std.heap.page_allocator.free(persistent);
 
@@ -51,12 +60,7 @@ export fn nalar_desktop_cross_compile_check() callconv(.c) void {
     ) catch return;
     std.heap.page_allocator.free(in_base);
 
+    // The legacy per-pid temp-dir path (same write/cleanup helpers).
     const temp = extraction.extract(std.heap.page_allocator, &assets) catch return;
     extraction.cleanup(std.heap.page_allocator, temp);
-
-    // subprocess.zig — the raw-socket probes: winsock on Windows, libc on
-    // POSIX, plus the status/HTML parsing shared by both.
-    if (subprocess.probeHealth(1)) return;
-    if (subprocess.probeWebapp(1)) return;
-    if (subprocess.waitForHealth(1, 1, 1)) |_| {} else |_| {}
 }

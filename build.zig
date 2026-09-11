@@ -2475,9 +2475,13 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 .target = b.resolveTargetQuery(query),
                 .optimize = optimize,
                 .link_libc = true,
-                .imports = &.{
-                    .{ .name = "helpers", .module = helpers_mod },
-                },
+                // NOTE: no imports. Deliberately kept std-only — importing a
+                // host-target module (e.g. `helpers`, which comes from a
+                // package built for the host) into a foreign-target module
+                // makes Zig compile the HOST's std against the foreign target
+                // and fail on the calling convention (observed on the Windows
+                // runner: `aarch64_aapcs_win` not supported, reported from
+                // helpers/mod.zig's `extern "kernel32" fn Sleep`).
             }),
         });
         check_desktop_cross.dependOn(&obj.step);

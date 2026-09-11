@@ -162,17 +162,33 @@ compile a given OS's branch on that OS's runner (a ~20 minute round trip).
 
 1. `!= 0` → `!= .FALSE` (matching the existing `FindNextFileW` comparison).
 2. NEW `src/apps/desktop_app/cross_compile_check.zig`: an `export fn` that calls
-   the public API of `extraction.zig` and `subprocess.zig`, which forces full
-   semantic analysis + codegen for whatever target it is compiled for.
+   the public API of `extraction.zig`, which forces full semantic analysis +
+   codegen for whatever target it is compiled for.
 3. NEW `zig build check:desktop-cross` step: compiles that file as a plain
    **object** for `x86_64-windows-gnu`, `aarch64-macos` and `x86_64-linux-gnu`
    (no linking, no SDK, no webview/vcpkg deps — ~1.4 s total).
-4. CI: the shared `Test (zig build test only …)` step now runs
-   `zig build test check:desktop-cross --summary all -Dno-webapp-rebuild`, so
-   every backend job compiles all three branches.
+4. CI: a NEW **Linux-only** step `Cross-target compile check (desktop app per-OS
+   branches)` runs `zig build check:desktop-cross --summary all`.
+
+Two constraints learned the hard way, both encoded in comments:
+
+- **The driver must stay std-only** (it imports only `std` + `extraction.zig`).
+  The first version also called `subprocess.zig` and therefore needed the
+  `helpers` module — which comes from a package built for the HOST target.
+  Mixing a host-target module into a foreign-target build makes Zig compile the
+  host's `std.os.<host>` against the foreign target and die on the calling
+  convention: on the Windows runner that surfaced as
+  `calling convention 'aarch64_aapcs_win' not supported by compiler backend
+  'stage2_llvm'`, blamed on `helpers/mod.zig:91`'s `extern "kernel32" fn Sleep`.
+  Covering `subprocess.zig` would require building a per-target `helpers`
+  module in the build step.
+- **CI runs it on Linux only.** The check is driven by `-target`, not by the
+  host, so one Linux run covers all three branches; and a non-Linux host cannot
+  be assumed to have a working cross toolchain for the other targets (the same
+  observation as above, from the Windows runner).
 
 Verified by negative control: with `!= 0` restored, `zig build check:desktop-cross`
-exits 1 in ~1 s with the exact CI error (`extraction.zig:478: incompatible types:
+exits 1 in ~1 s with the exact CI error (`extraction.zig: incompatible types:
 'os.windows.Bool(c_int)' and 'comptime_int'`) — while the macOS and Linux objects
 still succeed, which is precisely why the local desktop-test run was green.
 

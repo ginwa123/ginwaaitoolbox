@@ -1139,7 +1139,27 @@ jobs:
           # ONLY runs the test binary (which is ~10 MB with full
           # debug info), not nalar.exe — the OOM-prone path doesn't
           # apply here.
-          zig build test check:desktop-cross --summary all -Dno-webapp-rebuild
+          zig build test --summary all -Dno-webapp-rebuild
+
+      - name: Cross-target compile check (desktop app per-OS branches)
+        # Compiles the desktop app's Windows + macOS branches FROM LINUX. A
+        # per-OS branch is otherwise only ever compiled on that OS's runner, so
+        # this is the only cheap place to catch e.g. a Windows-only type error
+        # — one shipped (`MoveFileW(...) != 0`: Win32 BOOL is a typed enum in
+        # Zig 0.16) and turned the Windows job red 20 minutes in.
+        #
+        # Linux-only on purpose: the check is driven by the -target, not by the
+        # host, so running it once on Linux covers all three branches. A
+        # non-Linux host also cannot be assumed to have a working cross
+        # toolchain for the other targets (observed on the Windows runner:
+        # mixing a host-target module into a foreign-target build dies on the
+        # calling convention).
+        #
+        # Objects only — no linking, no SDK, no webview/vcpkg deps, ~1.5s.
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          zig build check:desktop-cross --summary all
 
       - name: Install nalar + nalar-desktop (single zig invocation, non-Windows)
         # Linux + macOS can still run the merged `test nalar-desktop`
