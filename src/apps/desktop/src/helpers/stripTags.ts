@@ -1,10 +1,68 @@
 /**
  * Strip thinking tags and extract content from special wrappers.
  * This should be used at the display layer (Vue), NOT in API responses.
+ *
+ * Memoized (2026-09-11). Why: ChatView calls this 2-3x per message on EVERY
+ * `messages` mutation — `filteredMessages`, `hasBubbleContent` →
+ * `hasVisibleContent`, and (independently) `renderResponse` — and an SSE
+ * chunk mutates `messages` once per chunk. So the same strings are re-scanned
+ * on every chunk, over the WHOLE loaded transcript, even though only the
+ * streaming message changed. Measured on the real DB (newest-100 rows of a
+ * 2.21 MB session, 1.05 MB max row): 34 ms per recompute — 79% of the total
+ * per-chunk render cost — which saturates the main thread (43 ms × 20
+ * chunks/s) and is exactly the "webview freezes while a task streams" report.
+ * Cached hits are ~free, so the per-chunk cost drops to the parts that
+ * genuinely changed.
+ *
+ * The value is returned by reference, so callers must treat it as read-only.
  */
+const STRIP_CACHE_MAX_CHARS = 16 * 1024 * 1024
+// A single entry larger than this is not cached: keeping it would evict
+// everything else on arrival (cache thrash) for no benefit.
+const STRIP_CACHE_MAX_ENTRY_CHARS = 4 * 1024 * 1024
+
+const stripCache = new Map<string, string>()
+let stripCacheChars = 0
+
+/**
+ * Test-only cache reset (mirrors `_resetRenderResponseCache`). Not exported
+ * through the helpers barrel so production callers can't clobber the cache.
+ */
+export const _resetStripThinkingTagsCache = (): void => {
+  stripCache.clear()
+  stripCacheChars = 0
+}
+
+/**
+ * Test-only cache introspection. `hits` is not tracked — the observable
+ * contract tests assert on `entries` (a cache hit must not add an entry, so
+ * a repeated call leaves the count unchanged).
+ */
+export const _stripThinkingTagsCacheStats = (): { entries: number; chars: number } => ({
+  entries: stripCache.size,
+  chars: stripCacheChars,
+})
+
 export function stripThinkingTags(content: string | undefined): string {
   if (!content) return ''
 
+  const cached = stripCache.get(content)
+  if (cached !== undefined) return cached
+
+  const result = computeStripThinkingTags(content)
+  const entryChars = content.length + result.length
+  if (entryChars <= STRIP_CACHE_MAX_ENTRY_CHARS) {
+    if (stripCacheChars + entryChars > STRIP_CACHE_MAX_CHARS) {
+      stripCache.clear()
+      stripCacheChars = 0
+    }
+    stripCache.set(content, result)
+    stripCacheChars += entryChars
+  }
+  return result
+}
+
+function computeStripThinkingTags(content: string): string {
   const str = String(content).trim()
 
   const hasThink = /<think>[\s\S]*?<\/think>/i.test(str)
