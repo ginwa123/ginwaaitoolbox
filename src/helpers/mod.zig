@@ -241,8 +241,9 @@ fn unixTimestampWindows() i64 {
 ///   Declared as `extern "c"` (not in std.c in 0.16 for some configs).
 /// - **Windows:** `GetSystemTimeAsFileTime` (FILETIME = 100-ns ticks
 ///   since 1601-01-01 UTC) → nanoseconds since 1970-01-01 UTC by
-///   dividing ticks by 10 (100-ns → 1-ns) and subtracting the 1601→1970
+///   multiplying ticks by 100 (100-ns → 1-ns) and subtracting the 1601→1970
 ///   offset (11_644_473_600 seconds = 11_644_473_600_000_000_000 ns).
+///   Conversion lives in `filetimeTicksToUnixNanos` (pure + unit-tested).
 pub fn unixTimestampNanos() i128 {
     return switch (builtin.os.tag) {
         .linux, .macos => unixTimestampNanosPosix(),
@@ -258,15 +259,33 @@ fn unixTimestampNanosPosix() i128 {
     return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
 }
 
+/// Pure Win32 FILETIME → unix-nanos conversion (platform-independent so
+/// it is unit-testable on any host; the Windows-only part is just the
+/// `GetSystemTimeAsFileTime` call in `unixTimestampNanosWindows`).
+///
+/// FILETIME counts 100-ns intervals since 1601-01-01 UTC. 1 tick = 100 ns,
+/// so ticks → ns is `* 100` — NOT `/ 10`. The old `/ 10` under-scaled by
+/// 1000× (values came out microsecond-scale) and, after subtracting the
+/// 1601→1970 offset, went hugely NEGATIVE (~−1.16e19 ns). That negative
+/// flowed into `cron.fromUnixNanos`' `@intCast` into unsigned
+/// `EpochSeconds.secs` and panicked every scheduled-routine create/update
+/// on Windows (CI, 2026-09-11) while POSIX stayed green via clock_gettime.
+fn filetimeTicksToUnixNanos(ticks: u128) i128 {
+    const ns_since_1601: i128 = @intCast(ticks * 100);
+    const ns_1601_to_1970: i128 = 11_644_473_600 * std.time.ns_per_s;
+    return ns_since_1601 - ns_1601_to_1970;
+}
+
 fn unixTimestampNanosWindows() i128 {
     var ft: std.os.windows.FILETIME = undefined;
     GetSystemTimeAsFileTime(&ft);
-    // 100-ns ticks → ns: divide by 10. (FILETIME counts 100-ns intervals
-    // since 1601-01-01; we want ns since 1970-01-01.)
+    // Combine low + high 32 bits into u128 (little-endian on Windows).
     const ticks: u128 = (@as(u128, ft.dwHighDateTime) << 32) | @as(u128, ft.dwLowDateTime);
-    const ns_since_1601: i128 = @intCast(ticks / 10);
-    const ns_1601_to_1970: i128 = 11_644_473_600 * std.time.ns_per_s;
-    const base_ns = ns_since_1601 - ns_1601_to_1970;
+    const base_ns = filetimeTicksToUnixNanos(ticks);
+    // Raw 1601-based nanos for the same-tick dedup counter below
+    // (pre-offset, so the counter never conflates absolute time with
+    // the in-tick sequence number).
+    const ns_since_1601: i128 = @intCast(ticks * 100);
 
     // Ensure uniqueness across rapid back-to-back calls. `GetSystemTimeAsFileTime`
     // has only 100-ns resolution, so two consecutive calls inside a single tick
@@ -544,6 +563,43 @@ test "unixTimestamp: returns positive value within sane range" {
     try std.testing.expect(ts > 1_577_836_800);
     // Sanity upper bound: 2100-01-01 ≈ 4_102_444_800.
     try std.testing.expect(ts < 4_102_444_800);
+}
+
+test "filetimeTicksToUnixNanos: 1970-01-01 epoch vector converts to 0" {
+    // FILETIME ticks for 1970-01-01T00:00:00Z = 11_644_473_600 s × 10_000_000 ticks/s.
+    const ticks: u128 = 11_644_473_600 * 10_000_000;
+    try std.testing.expectEqual(@as(i128, 0), filetimeTicksToUnixNanos(ticks));
+}
+
+test "filetimeTicksToUnixNanos: 2000-01-01 vector converts to 946684800e9 ns" {
+    // 2000-01-01T00:00:00Z = unix 946_684_800.
+    const ticks: u128 = (11_644_473_600 + 946_684_800) * 10_000_000;
+    try std.testing.expectEqual(
+        @as(i128, 946_684_800) * std.time.ns_per_s,
+        filetimeTicksToUnixNanos(ticks),
+    );
+}
+
+test "filetimeTicksToUnixNanos: now-scale ticks stay positive (Windows cron-panic guard)" {
+    // ~2026-01-01T00:00:00Z (unix 1_767_225_600). The old `/ 10` formula
+    // returned a hugely NEGATIVE value here, which panicked
+    // cron.fromUnixNanos' `@intCast` into unsigned EpochSeconds.secs on
+    // Windows (CI, 2026-09-11). This test pins the fixed `* 100` scale.
+    const ticks: u128 = (11_644_473_600 + 1_767_225_600) * 10_000_000;
+    const ns = filetimeTicksToUnixNanos(ticks);
+    // 2020-01-01 ≈ 1_577_836_800 s. Result must be well above (positive).
+    try std.testing.expect(ns > 1_577_836_800 * std.time.ns_per_s);
+    // Sanity upper bound: 2100-01-01 ≈ 4_102_444_800 s.
+    try std.testing.expect(ns < 4_102_444_800 * std.time.ns_per_s);
+}
+
+test "unixTimestampNanos: returns positive value within sane range" {
+    // On POSIX this exercises clock_gettime; on Windows CI it exercises
+    // the fixed FILETIME path — the missing coverage that let the `/ 10`
+    // bug ship (only the seconds-precision `unixTimestamp` was asserted).
+    const ns = unixTimestampNanos();
+    try std.testing.expect(ns > 1_577_836_800 * std.time.ns_per_s);
+    try std.testing.expect(ns < 4_102_444_800 * std.time.ns_per_s);
 }
 
 test "unixTimestamp: 4-byte suseconds_t read does not pick up padding bytes (macOS struct-layout regression guard)" {
