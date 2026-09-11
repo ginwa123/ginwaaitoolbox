@@ -250,9 +250,17 @@ fn chooseSpawnPort(allocator: std.mem.Allocator, io: std.Io, preferred: u16) u16
         return preferred;
     };
     if (free.port == preferred) return preferred;
+    // Tell the user how to get back to the well-known port — otherwise
+    // every launch keeps spawning a fresh daemon on a random port because
+    // the squatter never goes away and (unlike `nalar service start`) a
+    // spawned daemon writes no state file for the next launch to find.
     std.log.warn(
         "Port {d} is already in use by a server that does not serve the webapp; spawning on {d} instead",
         .{ preferred, free.port },
+    );
+    std.log.warn(
+        "To stop that server and go back to port {d}, run:  nalar service stop  (or kill the process listening on {d})",
+        .{ preferred, preferred },
     );
     return free.port;
 }

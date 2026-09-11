@@ -25,6 +25,7 @@
 //     Io runtime.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const extraction = @import("extraction.zig");
 const testing = std.testing;
 
@@ -156,6 +157,7 @@ fn tmpBase(tmp: *std.testing.TmpDir, buf: *[std.fs.max_path_bytes]u8) ![]const u
 }
 
 test "ensurePersistentIn: materialises assets, marks the dir complete, and reuses it" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest; // helpers use raw linux syscalls
     const allocator = testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -199,6 +201,7 @@ test "ensurePersistentIn: materialises assets, marks the dir complete, and reuse
 }
 
 test "ensurePersistentIn: changed asset bytes land in a different dir" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -226,6 +229,7 @@ test "ensurePersistentIn: changed asset bytes land in a different dir" {
 }
 
 test "ensurePersistentIn: republishes a torn (marker-less) dir" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -258,6 +262,7 @@ test "ensurePersistentIn: republishes a torn (marker-less) dir" {
 }
 
 test "ensurePersistentIn: zero assets still publishes a reusable dir" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     // The CI stub build (-Dno-webapp-rebuild) embeds zero assets. It must
     // not error, and it must not rewrite the dir on every launch either —
     // otherwise the path handed to a long-lived daemon keeps changing.

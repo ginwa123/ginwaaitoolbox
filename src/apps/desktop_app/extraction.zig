@@ -282,6 +282,9 @@ fn getenvNonEmpty(name: [*:0]const u8) ?[]const u8 {
 ///
 /// Field order in the hash is fixed (path, mime, content) and each field
 /// is NUL-separated so `("a", "bc")` and `("ab", "c")` can't collide.
+///
+/// 128 bits of Blake3-256 — truncation is fine here: the digest is a cache
+/// key for our own generated assets, not a security boundary.
 fn assetSetHashHex(allocator: std.mem.Allocator, assets: anytype) ![]u8 {
     var hasher = std.crypto.hash.Blake3.init(.{});
     for (assets) |asset| {
@@ -294,9 +297,14 @@ fn assetSetHashHex(allocator: std.mem.Allocator, assets: anytype) ![]u8 {
     }
     var digest: [32]u8 = undefined;
     hasher.final(&digest);
-    var hex: [32]u8 = undefined;
-    _ = std.fmt.bufPrint(&hex, "{x}", .{digest[0..16]}) catch unreachable;
-    return allocator.dupe(u8, &hex);
+    var hex_buf: [32]u8 = undefined;
+    // Dupe the slice `bufPrint` actually wrote — not the whole buffer.
+    // `{x}` on 16 bytes currently emits exactly 32 chars, but binding to
+    // the returned slice keeps the dir name correct even if that changes
+    // (uninitialised trailing bytes in a path would silently break the
+    // reuse property this whole function exists for).
+    const hex = std.fmt.bufPrint(&hex_buf, "{x}", .{digest[0..16]}) catch unreachable;
+    return allocator.dupe(u8, hex);
 }
 
 /// True when `dir` holds a completed extraction. Only the marker is

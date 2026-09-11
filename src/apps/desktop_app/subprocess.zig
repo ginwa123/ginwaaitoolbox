@@ -368,8 +368,14 @@ fn httpGetPosix(port: u16, path: []const u8) HttpProbe {
         "GET {s} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
         .{path},
     ) catch return .{};
-    const write_rc = std.c.write(fd, req.ptr, req.len);
-    if (write_rc != @as(isize, @intCast(req.len))) return .{};
+    // Loop the write: a short write on the post-spawn verification path
+    // would look like "server down" and get a healthy child killed.
+    var sent: usize = 0;
+    while (sent < req.len) {
+        const n: isize = std.c.write(fd, req[sent..].ptr, req.len - sent);
+        if (n <= 0) return .{};
+        sent += @intCast(n);
+    }
 
     // Read the status line + the start of the body. We stop early once we
     // have both (see probeResponseComplete) and otherwise at EOF, which
