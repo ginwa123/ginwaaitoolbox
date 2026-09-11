@@ -27,7 +27,7 @@
 //!   8. Return the success XML to the LLM.
 //!
 //! Plan: docs/superpowers/plans/2026-07-29-create-kanban-task-tool.md
-//! Parallel HTTP handler: `src/ai_workflow/tui/http_handlers/task_create.zig`
+//! Parallel HTTP handler: `src/http_handlers/task_create.zig`
 //!   ::createStandardTask (lines 337-503).
 
 const std = @import("std");
@@ -35,8 +35,8 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const tags_validation = @import("../../../ai_workflow/tui/http_handlers/tags_validation.zig");
-const image_urls_validation = @import("../../../ai_workflow/tui/http_handlers/image_urls_validation.zig");
+const tags_validation = @import("../../../http_handlers/tags_validation.zig");
+const image_urls_validation = @import("../../../http_handlers/image_urls_validation.zig");
 
 /// Input structure for `create_kanban_task` tool.
 ///

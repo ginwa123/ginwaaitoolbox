@@ -215,7 +215,7 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
 //
 // We test this via static source-check (the pattern used by 12+ other
 // tests in this codebase, e.g.
-// `src/ai_workflow/tui/http_handlers/git_pr_create_test.zig`). A
+// `src/http_handlers/git_pr_create_test.zig`). A
 // behavioural GinwaServer-level test would require spinning up a real
 // Io runtime + concurrent group + accepting socket, which is brittle for
 // a unit test and out of scope for this task. The source-check is the
@@ -317,7 +317,7 @@ test "HTTP server: SSE response says Connection: close (NOT keep-alive)" {
 //
 // This is a static source-check (matching the project's established
 // pattern for "guard against revert" tests, see the 12+ tests in
-// `src/ai_workflow/tui/http_handlers/`). We assert the function body
+// `src/http_handlers/`). We assert the function body
 // contains BOTH the lock acquisition AND the matching unlock — guards
 // against someone re-commenting the lock again.
 // ============================================================================

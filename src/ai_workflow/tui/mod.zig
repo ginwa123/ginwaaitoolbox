@@ -1,13 +1,14 @@
 //! Thin re-export surface for the `tui` module (mounted as `nalarcore.ai_mod.*`).
 //!
-//! As of 2026-09-11, the agent loop lives at `src/agentic_loop/`
-//! (flattened from `src/ai_workflow/tui/agentic_loop/`).
+//! As of 2026-09-11, the agent loop lives at `src/agentic_loop/` and the
+//! HTTP handlers at `src/http_handlers/` (both flattened from
+//! `src/ai_workflow/tui/`).
 //! This `mod.zig` re-exports it so existing call sites (`nalarcore.ai_mod.*`)
 //! keep working unchanged.
 
 pub const nalarcore = @import("nalarcore");
 pub const models = @import("../../agentic_loop/models.zig");
-pub const http_handlers = @import("http_handlers/mod.zig");
+pub const http_handlers = @import("../../http_handlers/mod.zig");
 pub const ai_workflow = @import("../../agentic_loop/workflow.zig");
 pub const llm_history = @import("../../agentic_loop/llm_history.zig");
 pub const on_event_sent = @import("../../agentic_loop/on_event_sent.zig");

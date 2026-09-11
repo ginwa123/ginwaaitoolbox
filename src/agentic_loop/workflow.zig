@@ -2144,7 +2144,7 @@ fn maybeOverrideAllowedToolsForKanban(
 const text_normalize = @import("helpers").text_normalize;
 
 const workspaceItemsUpdateHandlerPath =
-    "src/ai_workflow/tui/http_handlers/workspace_items_update.zig";
+    "src/http_handlers/workspace_items_update.zig";
 
 fn workspaceItemsUpdateReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(
