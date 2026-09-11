@@ -51,7 +51,7 @@ const xmlEscape = helpers.xml_escape;
 // Import the storage layer directly (the `nalarcore.session_plan`
 // alias is wired up in src/root.zig by Task 4; for the pure-fn layer
 // we just need the module itself).
-const session_plan = @import("../../../ai_workflow/tui/agentic_loop/session_plan.zig");
+const session_plan = @import("../../../agentic_loop/session_plan.zig");
 
 /// Re-export the storage-layer cap so callers/tests don't have to
 /// reach into the storage module. Same value (256 KiB).

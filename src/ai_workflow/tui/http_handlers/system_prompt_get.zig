@@ -33,9 +33,9 @@ const llm_history = nalarcore.llm_history;
 const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 
-const buildMessages = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
+const buildMessages = @import("../../../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
 
-const agentic_loop = @import("../agentic_loop/workflow.zig");
+const agentic_loop = @import("../../../agentic_loop/workflow.zig");
 const SqliteBackend = nalarcore.sqlite.SqliteBackend;
 
 /// JSON response struct. `size_bytes` is the byte length of the rendered

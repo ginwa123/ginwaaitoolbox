@@ -72,7 +72,7 @@ const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
 const test_sqlite = @import("nalarcore").sqlite;
-const Migration081CreateAgentKanbans = @import("../../../migrations/migration.zig").Migration081CreateAgentKanbans;
+const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 
 const TestCtx = struct {
     db: test_sqlite.SqliteBackend,

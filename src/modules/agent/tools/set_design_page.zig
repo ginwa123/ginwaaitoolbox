@@ -446,16 +446,16 @@ const set_design_page = @import("set_design_page.zig");
 const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/set_design_page.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
+const TOOL_REGISTRY_PATH = "src/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 /// The exec function was migrated from `tool_registry.zig` to
-/// `src/ai_workflow/tui/agentic_loop/tools_exec_set_design_page.zig`.
-const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_set_design_page.zig";
+/// `src/agentic_loop/tools_exec_set_design_page.zig`.
+const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_set_design_page.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
-/// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
+/// `src/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
 /// Each entry in that comptime `tools_list` array uses the
 /// trailing-comma format (`.tool_name,`) that this test grep matches.
-const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
+const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
 const ROOT_PATH = "src/root.zig";
 
 /// Read a source file from disk, relative to the project root.

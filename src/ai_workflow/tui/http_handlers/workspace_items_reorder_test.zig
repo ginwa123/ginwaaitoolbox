@@ -21,7 +21,7 @@ const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_reorder.
 // `llm_history.zig` (the workspace_items module is re-exported from
 // there per `mod.zig`). The test enforces the contract at the file
 // where the actual SELECT lives, not at the thin handler wrapper.
-const LIST_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
+const LIST_PATH = "src/agentic_loop/llm_history.zig";
 const CREATE_PATH = "src/ai_workflow/tui/http_handlers/workspace_items_create.zig";
 const RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 const MIGRATION_PATH = "src/migrations/migration.zig";

@@ -739,7 +739,7 @@ pub fn sendStreamToolCallDelta(
 const testing_oes = std.testing;
 const nalarcore_oes = tree1_mod;
 const text_normalize = @import("helpers").text_normalize;
-const ON_EVENT_SENT_PATH = "src/ai_workflow/tui/agentic_loop/on_event_sent.zig";
+const ON_EVENT_SENT_PATH = "src/agentic_loop/on_event_sent.zig";
 
 fn readSourceOES(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(testing_oes.io, path, allocator, .unlimited);

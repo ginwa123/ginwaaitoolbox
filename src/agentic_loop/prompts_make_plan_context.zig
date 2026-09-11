@@ -32,8 +32,8 @@ const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const session_plan = nalarcore.session_plan;
-const migration = @import("../../../migrations/migration.zig");
-const update_plan_mod = @import("../../../modules/agent/tools/update_plan.zig");
+const migration = @import("../migrations/migration.zig");
+const update_plan_mod = @import("../modules/agent/tools/update_plan.zig");
 
 /// Build a "## Current Plan" section for the system prompt. Reads
 /// `session_plan` for the current `session_id` and renders the

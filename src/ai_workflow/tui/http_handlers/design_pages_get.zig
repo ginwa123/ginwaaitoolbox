@@ -21,7 +21,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
-const design_model = @import("../agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 
 pub const DesignPageGetError = error{
     PageIdRequired,

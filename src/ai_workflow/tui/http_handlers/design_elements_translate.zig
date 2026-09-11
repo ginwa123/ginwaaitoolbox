@@ -48,7 +48,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const sqlite = nalarcore.sqlite;
-const design_model = @import("../agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 
 /// HTTP request body. Both `dx` and `dy` are required.
 const TranslateBody = struct {

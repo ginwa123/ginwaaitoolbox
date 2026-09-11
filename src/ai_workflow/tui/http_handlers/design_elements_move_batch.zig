@@ -27,7 +27,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const gserverz = nalarcore.gserverz;
-const design_model = @import("../agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 const http_response = @import("http_response.zig");
 
 /// HTTP request body for move-batch. Each `items[i]`'s `(dx, dy)`

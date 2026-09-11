@@ -33,7 +33,7 @@ const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/task_delete.zig";
 const MOD_PATH = "src/ai_workflow/tui/http_handlers/mod.zig";
-const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
+const LLM_HISTORY_PATH = "src/agentic_loop/llm_history.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(

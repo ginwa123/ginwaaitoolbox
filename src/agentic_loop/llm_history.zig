@@ -7221,7 +7221,7 @@ test "buildSessionMessagesJson emits true/false values in both directions" {
 
 const text_normalize = @import("helpers").text_normalize;
 
-const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
+const LLM_HISTORY_PATH = "src/agentic_loop/llm_history.zig";
 
 fn llmHistoryDescriptionReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(
@@ -8094,7 +8094,7 @@ test "needs_human_review predicate returns 0 when no sessions row exists for the
 // Inlined from llm_history_search_fts_query_safety_test.zig
 // ════════════════════════════════════════════════════════════════════════════
 
-const migration = @import("../../../migrations/migration.zig");
+const migration = @import("../migrations/migration.zig");
 
 
 fn llmHistorySearchFtsQuerySafetySetupDb() !TestCtx {

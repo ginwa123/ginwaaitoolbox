@@ -18,7 +18,7 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
-const migration = @import("../../../migrations/migration.zig");
+const migration = @import("../migrations/migration.zig");
 
 const sqlite = nalarcore.sqlite;
 const session_plan = @import("session_plan.zig");

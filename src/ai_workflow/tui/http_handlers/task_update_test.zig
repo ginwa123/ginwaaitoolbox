@@ -40,7 +40,7 @@ const nalarcore = @import("nalarcore");
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/task_update.zig";
-const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
+const LLM_HISTORY_PATH = "src/agentic_loop/llm_history.zig";
 
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).

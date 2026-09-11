@@ -7723,7 +7723,7 @@ test "updateElement with parent_id = null leaves existing parent_id unchanged" {
 
 // ─── Test helpers ─────────────────────────────────────────────────────────
 
-const DESIGN_MODEL_PATH = "src/ai_workflow/tui/agentic_loop/design_model.zig";
+const DESIGN_MODEL_PATH = "src/agentic_loop/design_model.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 
 fn parentIdReadSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

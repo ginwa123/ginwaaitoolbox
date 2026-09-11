@@ -1104,7 +1104,7 @@ pub const Migration053AddKanbanColumnDescription = struct {
 // So an image-only queued message (params.message = "" with params.image_urls
 // non-empty) triggers `NOT NULL constraint failed:
 // session_queue_messages.message` at INSERT time in `queueMessage`
-// (src/ai_workflow/tui/agentic_loop/llm_history.zig:1861).
+// (src/agentic_loop/llm_history.zig:1861).
 //
 // Fix: drop the NOT NULL on `message` so image-only queued messages can be
 // inserted. Image-only queue messages are valid — they represent an attachment

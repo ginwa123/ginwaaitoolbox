@@ -532,7 +532,7 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
 // Inline tests
 // ───────────────────────────────────────────────────────────────────────
 
-const migration = @import("../../../migrations/migration.zig");
+const migration = @import("../migrations/migration.zig");
 
 const TestCtx = struct {
     db: nalarcore.sqlite.SqliteBackend,

@@ -1579,7 +1579,7 @@ test "replaceColumnsWith uses toOwnedSlice pattern (no double-free)" {
     const allocator = testing.allocator;
     const source = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
-        "src/ai_workflow/tui/agentic_loop/kanban_model.zig",
+        "src/agentic_loop/kanban_model.zig",
         allocator,
         .limited(256 * 1024),
     );

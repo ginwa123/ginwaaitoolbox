@@ -33,7 +33,7 @@ const nalarcore = @import("nalarcore");
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/tasks_list.zig";
-const LLM_HISTORY_PATH = "src/ai_workflow/tui/agentic_loop/llm_history.zig";
+const LLM_HISTORY_PATH = "src/agentic_loop/llm_history.zig";
 const HTTP_RESPONSE_PATH = "src/ai_workflow/tui/http_handlers/http_response.zig";
 const MIGRATION_PATH = "src/migrations/migration.zig";
 

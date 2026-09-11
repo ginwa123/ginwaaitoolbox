@@ -407,10 +407,10 @@ const group_elements = @import("group_design_elements.zig");
 const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/group_design_elements.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
-const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_group_elements.zig";
-const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
-const TOOLS_ZIG_PATH = "src/ai_workflow/tui/agentic_loop/tools.zig";
+const TOOL_REGISTRY_PATH = "src/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
+const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_group_elements.zig";
+const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
+const TOOLS_ZIG_PATH = "src/agentic_loop/tools.zig";
 const ROOT_PATH = "src/root.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

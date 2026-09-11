@@ -42,7 +42,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const gserverz = nalarcore.gserverz;
-const design_model = @import("../agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 
 /// HTTP request body for batch-geometry-update. Each `updates[i]` is a
 /// partial geometry patch — only the listed fields are SET in the SQL

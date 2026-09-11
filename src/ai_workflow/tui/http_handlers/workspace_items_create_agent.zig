@@ -36,7 +36,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
-const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
+const tools_equipped = @import("../../../agentic_loop/tools_equipped.zig");
 
 /// Request body for the agent-item create endpoint. Both fields are
 /// required (the Agent has a cwd like Kanban/Design).

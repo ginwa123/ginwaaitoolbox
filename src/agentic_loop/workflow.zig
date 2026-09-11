@@ -246,7 +246,7 @@ fn re_read_selected_profile_model(
 // In-memory SQLite with the full migration chain applied (so the
 // `sessions` table has the `selected_profile_model` column exactly as
 // production does — see `llm-history-test-use-migrations-module.md`).
-// Mirrors `src/ai_workflow/tui/agentic_loop/llm_history_search_fts_query_safety_test.zig::setupDb`.
+// Mirrors `src/agentic_loop/llm_history_search_fts_query_safety_test.zig::setupDb`.
 const ReReadTestCtx = struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,
@@ -2251,7 +2251,7 @@ test "workspace_items_update handler rejects empty body with 400" {
 // file source at runtime via a repo-root-relative path.
 // ════════════════════════════════════════════════════════════════════════════
 
-const workflowSelfPath = "src/ai_workflow/tui/agentic_loop/workflow.zig";
+const workflowSelfPath = "src/agentic_loop/workflow.zig";
 
 fn workflowReadSelfSource(allocator: std.mem.Allocator) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(

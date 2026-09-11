@@ -7,7 +7,7 @@ test {
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
-    _ = @import("agentic_loop/workflow.zig");
+    _ = @import("../../agentic_loop/workflow.zig");
     _ = @import("http_handlers/nalar_config_put_test.zig");
 _ = @import("http_handlers/design_elements_reorder_test.zig"); // Chunk 5 — POST /reorder handler
 _ = @import("http_handlers/design_elements_ungroup_test.zig"); // POST /ungroup handler
@@ -213,7 +213,7 @@ _ = @import("http_handlers/design_pages_update_test.zig");
     // docs/superpowers/plans/2026-08-19-session-plan-agent-tool.md).
     // _ = @import("extract_base64_image_urls_test.zig"); // DISABLED - 9 failing tests (investigation shows std.testing.expectEqualStrings has a bug with literal strings)
     // _ = @import("session_db_test.zig"); // DISABLED - pre-existing test errors (see session_db_test.zig for details)
-    _ = @import("agentic_loop/test_runner.zig");
+    _ = @import("../../agentic_loop/test_runner.zig");
     _ = @import("../../modules/agent/tools/create_kanban_task.zig");
     _ = @import("../../modules/agent/tools/add_skill.zig");
     _ = @import("../../modules/agent/tools/set_design_page.zig");

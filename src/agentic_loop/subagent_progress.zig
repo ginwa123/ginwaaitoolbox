@@ -43,8 +43,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const tree1_mod = nalarcore;
-const agentic_loop = @import("../mod.zig");
-const on_event_sent = agentic_loop.on_event_sent;
+const on_event_sent = @import("on_event_sent.zig");
 const loggermod = nalarcore.loggermod;
 const helpers = @import("helpers");
 

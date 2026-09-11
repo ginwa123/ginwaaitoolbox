@@ -11,7 +11,7 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
-const migration = @import("../../../migrations/migration.zig");
+const migration = @import("../migrations/migration.zig");
 
 const sqlite = nalarcore.sqlite;
 const config_mod = nalarcore.config;
@@ -251,7 +251,7 @@ test "execListSubAgent: empty-string args still return the wrapped envelope" {
 
 const equipped_src = @embedFile("tools_equipped.zig");
 const tools_src = @embedFile("tools.zig");
-const root_src = @embedFile("../../../root.zig");
+const root_src = @embedFile("../root.zig");
 
 test "static contract: list_sub_agent is wired into tools_equipped.zig" {
     // Import + equips() entry + UNIFIED_TOOL_REGISTRY() entry.

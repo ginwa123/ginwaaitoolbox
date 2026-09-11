@@ -735,19 +735,19 @@ const kanban_model = nalarcore.ai_mod.kanban_model;
 const text_normalize = @import("helpers").text_normalize;
 
 const TOOL_PATH = "src/modules/agent/tools/kanban_list.zig";
-const TOOL_REGISTRY_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
+const TOOL_REGISTRY_PATH = "src/agentic_loop/tools_equipped.zig"; // legacy alias; tool_registry.zig was deleted 2026-08-06 — see plan
 /// The exec function was migrated from `tool_registry.zig` to
-/// `src/ai_workflow/tui/agentic_loop/tools_exec_kanban_list.zig`
+/// `src/agentic_loop/tools_exec_kanban_list.zig`
 /// (re-exported as `agentic_loop_mod.tools.execKanbanList`).
 /// This path is where the static-contract tests now look for
 /// `pub fn execKanbanList(`.
-const TOOL_EXEC_PATH = "src/ai_workflow/tui/agentic_loop/tools_exec_kanban_list.zig";
+const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_kanban_list.zig";
 /// The comptime tool list moved out of `tool_registry.zig` into
-/// `src/ai_workflow/tui/agentic_loop/tools_equipped.zig` (which
+/// `src/agentic_loop/tools_equipped.zig` (which
 /// `agentic_loop.tools.all_agent_tools` re-exports as `equips`).
 /// Each entry in that comptime `tools_list` array uses the
 /// trailing-comma format (`.tool_name,`) that this test grep matches.
-const TOOLS_EQUIPPED_PATH = "src/ai_workflow/tui/agentic_loop/tools_equipped.zig";
+const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
 
 /// Read a source file from disk, relative to the project root.
 /// Normalizes CRLF → LF so multi-line literal needles match even when

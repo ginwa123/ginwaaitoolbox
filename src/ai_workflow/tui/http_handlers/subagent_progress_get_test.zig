@@ -21,7 +21,7 @@ const nalarcore = @import("nalarcore");
 const text_normalize = @import("helpers").text_normalize;
 
 const HANDLER_PATH = "src/ai_workflow/tui/http_handlers/subagent_progress_get.zig";
-const SNAPSHOT_PATH = "src/ai_workflow/tui/agentic_loop/subagent_progress.zig";
+const SNAPSHOT_PATH = "src/agentic_loop/subagent_progress.zig";
 const MOD_PATH = "src/ai_workflow/tui/http_handlers/mod.zig";
 const MAIN_PATH = "src/main.zig";
 const TUI_TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";

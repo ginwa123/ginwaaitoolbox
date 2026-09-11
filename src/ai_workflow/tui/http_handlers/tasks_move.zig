@@ -19,7 +19,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
-const kanban_model = @import("../agentic_loop/kanban_model.zig");
+const kanban_model = @import("../../../agentic_loop/kanban_model.zig");
 const on_event_sent_kanban = nalarcore.ai_mod.on_event_sent_kanban;
 
 /// Request body for task-move.

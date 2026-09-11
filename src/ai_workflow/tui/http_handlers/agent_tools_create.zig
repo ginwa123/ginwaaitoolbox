@@ -17,7 +17,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
-const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
+const tools_equipped = @import("../../../agentic_loop/tools_equipped.zig");
 const helpers = @import("helpers");
 
 /// HTTP request body for tool-create. Decoupled from the

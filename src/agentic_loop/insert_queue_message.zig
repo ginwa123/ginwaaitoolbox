@@ -4,7 +4,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const logger_mod = nalarcore.loggermod;
 const event_bus_mod = nalarcore.event_bus;
-const on_event_sent = @import("../mod.zig").on_event_sent;
+const on_event_sent = @import("on_event_sent.zig");
 const testing = std.testing;
 
 pub const InsertQueueMessageInput = struct {

@@ -28,7 +28,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const mark_history_not_for_llmrun = @import("markHistoryNotForLLMRun.zig").markHistoryNotForLLMRun;
-const migration = @import("../../../migrations/migration.zig");
+const migration = @import("../migrations/migration.zig");
 
 const LlmConfig = nalarcore.config.LlmConfig;
 const LlmProfile = nalarcore.config.LlmConfig.LlmProfile;

@@ -561,7 +561,7 @@ test "unixTimestamp: 4-byte suseconds_t read does not pick up padding bytes (mac
     // The test is a const-fold guard: just call the function and
     // assert the result is in the sane range. The PRIMARY regression
     // guard is the matching test in
-    // src/ai_workflow/tui/agentic_loop/llm_history.zig (#unixMillisNow) which
+    // src/agentic_loop/llm_history.zig (#unixMillisNow) which
     // observes the downstream failure as a `last_human_touched_at`
     // storage test failure.
     const ts = unixTimestamp();

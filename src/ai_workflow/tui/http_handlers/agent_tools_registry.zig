@@ -20,7 +20,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
-const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
+const tools_equipped = @import("../../../agentic_loop/tools_equipped.zig");
 
 /// One entry in the registry response.
 pub const RegistryEntry = struct {

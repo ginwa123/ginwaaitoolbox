@@ -1,17 +1,17 @@
-//! Builds the `## Agent System Prompt` system-prompt section for sessions
-//! bound to an Agent workspace-item.
+//! Builds the `## Kanban System Prompt` system-prompt section for
+//! sessions bound to a kanban workspace-item WITH an `agent_kanbans`
+//! row (Migration 081).
 //!
-//! Reads every `agent_system_prompt` row (Migration 080) and concatenates
-//! them into a section appended BEFORE `## Agent Knowledge` (persona
-//! instructions precede reference data).
+//! Mirrors `prompts_make_agent_system_prompt.zig` but reads from the
+//! `agent_kanban_system_prompt` table (keyed by kanban_id) and only
+//! fires when:
+//!   - the session's workspace_item is of type 'kanban', AND
+//!   - an `agent_kanbans` row exists for it (opt-in config)
 //!
-//! Behaviour:
-//!   - Empty for non-agent items (item_type != 'agent') → returns ""
-//!   - Empty for agents with no system-prompt rows → returns ""
-//!   - Rows whose content trims to empty are skipped
+//! Unconfigured boards are completely unaffected — returns "".
 //!
-//! Plan: docs/superpowers/plans/2026-08-21-agent-system-prompt.md
-//! Task: task_1787408958280_1
+//! Plan: docs/superpowers/plans/2026-08-25-agent-kanbans-mirror.md
+//! Task: task_1787597624259_2
 
 const std = @import("std");
 const sqlite = @import("nalarcore").sqlite;
@@ -35,29 +35,29 @@ fn resolveWorkspaceItemId(
     return try allocator.dupe(u8, "");
 }
 
-/// Resolve `workspace_item_id` → is-it-an-agent check. Returns false when
-/// the workspace_item doesn't exist OR isn't an agent.
-fn isAgentItem(
+/// Resolve `workspace_item_id` → is-it-a-configured-kanban check.
+/// True only when item_type == 'kanban' AND an agent_kanbans row exists.
+fn isConfiguredKanbanItem(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     workspace_item_id: []const u8,
 ) !bool {
     if (workspace_item_id.len == 0) return false;
     var q = db.query(allocator,
-        "SELECT item_type FROM workspace_items WHERE id = ?",
-        &[_][]const u8{workspace_item_id},
-    ) catch return false;
+        \\SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban'
+        \\AND EXISTS (SELECT 1 FROM agent_kanbans WHERE id = ?)
+    , &[_][]const u8{ workspace_item_id, workspace_item_id }) catch return false;
     defer q.deinit();
     if (q.next() catch null) |row| {
         defer row.deinit(allocator);
-        return std.mem.eql(u8, row.values[0], "agent");
+        return true;
     }
     return false;
 }
 
-/// Build the `## Agent System Prompt` system-prompt section. Returns an
-/// owned slice (empty for non-agent sessions). Caller frees.
-pub fn makeAgentSystemPrompt(
+/// Build the `## Kanban System Prompt` system-prompt section. Returns an
+/// owned slice (empty for non-configured-kanban sessions). Caller frees.
+pub fn makeAgentKanbanSystemPrompt(
     allocator: std.mem.Allocator,
     io: std.Io,
     db: *sqlite.SqliteBackend,
@@ -69,15 +69,15 @@ pub fn makeAgentSystemPrompt(
     const workspace_item_id = try resolveWorkspaceItemId(allocator, db, session_id);
     defer allocator.free(workspace_item_id);
 
-    if (!try isAgentItem(allocator, db, workspace_item_id)) {
+    if (!try isConfiguredKanbanItem(allocator, db, workspace_item_id)) {
         return try allocator.dupe(u8, "");
     }
 
     // Fetch the prompt rows (position DESC — same ordering convention as
-    // agent_knowledge).
+    // agent_kanban_knowledges).
     var q = db.query(allocator,
-        \\SELECT title, content FROM agent_system_prompt
-        \\WHERE agent_id = ? ORDER BY position DESC
+        \\SELECT title, content FROM agent_kanban_system_prompt
+        \\WHERE kanban_id = ? ORDER BY position DESC
     , &[_][]const u8{workspace_item_id}) catch return try allocator.dupe(u8, "");
     defer q.deinit();
 
@@ -103,9 +103,9 @@ pub fn makeAgentSystemPrompt(
     errdefer out.deinit(allocator);
 
     try out.appendSlice(allocator,
-        \\n## Agent System Prompt
+        \\n## Kanban System Prompt
         \\
-        \\The following instructions define this Agent's persona and behaviour.
+        \\The following instructions define this board's persona and behaviour.
         \\Follow them throughout this session; they take precedence over generic
         \\defaults but not over the user's explicit requests.
         \\
@@ -132,8 +132,7 @@ pub fn makeAgentSystemPrompt(
     }
 
     // Every row was whitespace-only → emit nothing (matches the
-    // "no rows" contract instead of a bare header). Free the partial
-    // buffer before returning the empty slice.
+    // "no rows" contract instead of a bare header).
     if (std.mem.indexOf(u8, out.items, "### ") == null) {
         out.deinit(allocator);
         return try allocator.dupe(u8, "");
@@ -147,8 +146,7 @@ const testing = std.testing;
 // Use a fresh alias for the test section to avoid duplicate-struct-
 // member shadowing (file-level `const sqlite` already exists).
 const test_sqlite = @import("nalarcore").sqlite;
-const Migration076 = @import("../../../migrations/migration.zig").Migration076AddAgentsAndAgentKnowledgeAndAgentTools;
-const Migration080 = @import("../../../migrations/migration.zig").Migration080AddAgentSystemPrompt;
+const Migration081CreateAgentKanbans = @import("../migrations/migration.zig").Migration081CreateAgentKanbans;
 
 const TestCtx = struct {
     db: test_sqlite.SqliteBackend,
@@ -185,11 +183,7 @@ fn setupDb() !TestCtx {
         \\    task_type TEXT DEFAULT 'standard'
         \\)
     , &[_][]const u8{});
-    try Migration076.up(&db, alloc);
-    // Production DBs run every migration in order — the harness must
-    // mirror that, or the agent_system_prompt table (Migration 080) is
-    // missing and prompt-row INSERTs fail.
-    try Migration080.up(&db, alloc);
+    try Migration081CreateAgentKanbans.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -209,39 +203,61 @@ fn insertSession(ctx: *TestCtx, session_id: []const u8, workspace_item_id: []con
     );
 }
 
-fn insertPrompt(ctx: *TestCtx, id: []const u8, agent_id: []const u8, title: []const u8, content: []const u8, position: i64) !void {
+fn insertConfig(ctx: *TestCtx, config_id: []const u8, workspace_item_id: []const u8) !void {
+    const alloc = testing.allocator;
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_kanbans (id, workspace_item_id) VALUES (?, ?)",
+        &[_][]const u8{ config_id, workspace_item_id },
+    );
+}
+
+fn insertPrompt(ctx: *TestCtx, id: []const u8, kanban_id: []const u8, title: []const u8, content: []const u8, position: i64) !void {
     const alloc = testing.allocator;
     const pos_str = try std.fmt.allocPrint(alloc, "{d}", .{position});
     defer alloc.free(pos_str);
     try ctx.db.exec(alloc,
-        "INSERT INTO agent_system_prompt (id, agent_id, title, content, position) VALUES (?, ?, ?, ?, ?)",
-        &[_][]const u8{ id, agent_id, title, content, pos_str },
+        "INSERT INTO agent_kanban_system_prompt (id, kanban_id, title, content, position) VALUES (?, ?, ?, ?, ?)",
+        &[_][]const u8{ id, kanban_id, title, content, pos_str },
     );
 }
 
-test "makeAgentSystemPrompt: returns empty slice when session_id is empty" {
+test "makeAgentKanbanSystemPrompt: returns empty slice when session_id is empty" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "");
     defer alloc.free(result);
     try testing.expectEqual(@as(usize, 0), result.len);
 }
 
-test "makeAgentSystemPrompt: returns empty slice when session doesn't exist" {
+test "makeAgentKanbanSystemPrompt: returns empty slice when session doesn't exist" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "non_existent_session");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "non_existent_session");
     defer alloc.free(result);
     try testing.expectEqual(@as(usize, 0), result.len);
 }
 
-test "makeAgentSystemPrompt: returns empty slice when workspace_item is not an agent" {
+test "makeAgentKanbanSystemPrompt: returns empty slice when workspace_item is not a kanban" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertSession(&ctx, "sess_1", "ws_item_1");
+
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    defer alloc.free(result);
+    try testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "makeAgentKanbanSystemPrompt: returns empty slice when kanban has no agent_kanbans row" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -250,57 +266,60 @@ test "makeAgentSystemPrompt: returns empty slice when workspace_item is not an a
     try insertWorkspaceItem(&ctx, "ws_item_1", "kanban");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
     defer alloc.free(result);
     try testing.expectEqual(@as(usize, 0), result.len);
 }
 
-test "makeAgentSystemPrompt: returns empty slice when agent has no prompt rows" {
+test "makeAgentKanbanSystemPrompt: returns empty slice when configured but no prompt rows" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertWorkspaceItem(&ctx, "ws_item_1", "kanban");
+    try insertConfig(&ctx, "ws_item_1", "ws_item_1");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
     defer alloc.free(result);
     try testing.expectEqual(@as(usize, 0), result.len);
 }
 
-test "makeAgentSystemPrompt: returns ## Agent System Prompt section with row contents" {
+test "makeAgentKanbanSystemPrompt: renders ## Kanban System Prompt section with row contents" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertWorkspaceItem(&ctx, "ws_item_1", "kanban");
+    try insertConfig(&ctx, "ws_item_1", "ws_item_1");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    try insertPrompt(&ctx, "asp_1", "ws_item_1", "Persona", "You are a pirate captain.", 0);
+    try insertPrompt(&ctx, "aksp_1", "ws_item_1", "Persona", "You are a board wrangler.", 0);
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "## Agent System Prompt") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "## Kanban System Prompt") != null);
     try testing.expect(std.mem.indexOf(u8, result, "### Persona") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "You are a pirate captain.") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "You are a board wrangler.") != null);
 }
 
-test "makeAgentSystemPrompt: respects position DESC ordering" {
+test "makeAgentKanbanSystemPrompt: respects position DESC ordering" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertWorkspaceItem(&ctx, "ws_item_1", "kanban");
+    try insertConfig(&ctx, "ws_item_1", "ws_item_1");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    try insertPrompt(&ctx, "asp_low", "ws_item_1", "Low", "content_low_marker", 0);
-    try insertPrompt(&ctx, "asp_high", "ws_item_1", "High", "content_high_marker", 100);
+    try insertPrompt(&ctx, "aksp_low", "ws_item_1", "Low", "content_low_marker", 0);
+    try insertPrompt(&ctx, "aksp_high", "ws_item_1", "High", "content_high_marker", 100);
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
     defer alloc.free(result);
 
     const high_idx = std.mem.indexOf(u8, result, "content_high_marker") orelse return error.MarkerNotFound;
@@ -308,18 +327,19 @@ test "makeAgentSystemPrompt: respects position DESC ordering" {
     try testing.expect(high_idx < low_idx);
 }
 
-test "makeAgentSystemPrompt: skips rows whose content is whitespace-only" {
+test "makeAgentKanbanSystemPrompt: skips rows whose content is whitespace-only" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertWorkspaceItem(&ctx, "ws_item_1", "kanban");
+    try insertConfig(&ctx, "ws_item_1", "ws_item_1");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    try insertPrompt(&ctx, "asp_empty", "ws_item_1", "Empty", "   \n\t  ", 0);
+    try insertPrompt(&ctx, "aksp_empty", "ws_item_1", "Empty", "   \n\t  ", 0);
 
-    const result = try makeAgentSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    const result = try makeAgentKanbanSystemPrompt(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
     defer alloc.free(result);
 
     try testing.expectEqual(@as(usize, 0), result.len);

@@ -24,7 +24,7 @@
 const std = @import("std");
 const testing = std.testing;
 const design_elements_group = @import("design_elements_group.zig");
-const design_model = @import("../agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 

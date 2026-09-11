@@ -638,7 +638,7 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 // =====================================================================
 
 const testing = std.testing;
-const impl_path = "src/ai_workflow/tui/agentic_loop/tools_exec_spawn_sub_agent.zig";
+const impl_path = "src/agentic_loop/tools_exec_spawn_sub_agent.zig";
 
 test "execSpawnSubAgent uses emitProgressEvent for launched/completed/failed" {
     const max_bytes: usize = 1 * 1024 * 1024; // 1 MiB — impl is ~17KB

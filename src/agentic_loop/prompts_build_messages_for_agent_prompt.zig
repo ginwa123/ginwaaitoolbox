@@ -15,10 +15,10 @@ const tool_models = nalarcore.tool_models;
 // Inner prompt-template modules. Imported directly (not via
 // `nalarcore.prompt`) because the orchestrator-side file owns the
 // `build_agent_prompt` rendering assembly as of the 2026-08-23 move.
-const prompts_const = @import("../../../modules/agent/prompts/prompts.zig");
-const memory_prompts = @import("../../../modules/agent/prompts/memory.zig");
-const tool_list_skills_mod = @import("../../../modules/agent/tools/list_skills.zig");
-const tool_memories_mod = @import("../../../modules/agent/tools/memories.zig");
+const prompts_const = @import("../modules/agent/prompts/prompts.zig");
+const memory_prompts = @import("../modules/agent/prompts/memory.zig");
+const tool_list_skills_mod = @import("../modules/agent/tools/list_skills.zig");
+const tool_memories_mod = @import("../modules/agent/tools/memories.zig");
 
 // Per-file tool system prompts are now stored directly in each tool's
 // `AgentTool.function.system_prompt` field (see schemas.zig). The aggregator

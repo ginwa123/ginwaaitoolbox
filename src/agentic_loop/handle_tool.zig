@@ -1125,7 +1125,7 @@ test "parseDiffViewFromResult - unescapes multiline content with entities" {
 // chat card regression returns and these tests fail closed.
 // =============================================================================
 
-const placeholder_impl_path = "src/ai_workflow/tui/agentic_loop/handle_tool.zig";
+const placeholder_impl_path = "src/agentic_loop/handle_tool.zig";
 
 test "Phase 1 placeholder uses wrapToolOutput for both known + unknown branches" {
     // Reads THIS file at runtime via a known repo-root-relative path,

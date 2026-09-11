@@ -36,7 +36,7 @@ const cleanup = nalarcore.cleanup_stale_background_process;
 // referenced. Use the supported `@import("helpers")` route directly (same
 // as cleanup_stale_background_process.zig).
 const process_status = @import("helpers").process_status;
-const migration = @import("../../../migrations/migration.zig");
+const migration = @import("../migrations/migration.zig");
 const testing = std.testing;
 
 /// Poll interval between `isProcessRunning` checks (production).
@@ -313,7 +313,7 @@ test "background_watcher schedules via Io group, never std.Thread.spawn (static-
     // error. Precedent: command.zig cmd-fallback static-contract test.
     const src = try std.Io.Dir.cwd().readFileAlloc(
         testing.io,
-        "src/ai_workflow/tui/agentic_loop/background_watcher.zig",
+        "src/agentic_loop/background_watcher.zig",
         testing.allocator,
         std.Io.Limit.unlimited,
     );

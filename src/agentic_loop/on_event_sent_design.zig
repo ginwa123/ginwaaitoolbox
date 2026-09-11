@@ -205,7 +205,7 @@ pub fn onEventSendDesignPageDeleted(
 
 const testing_oesd = std.testing;
 const text_normalize_oesd = @import("helpers").text_normalize;
-const ON_EVENT_SENT_DESIGN_PATH = "src/ai_workflow/tui/agentic_loop/on_event_sent_design.zig";
+const ON_EVENT_SENT_DESIGN_PATH = "src/agentic_loop/on_event_sent_design.zig";
 
 fn readSourceOESD(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(testing_oesd.io, path, allocator, .unlimited);

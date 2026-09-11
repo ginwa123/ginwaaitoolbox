@@ -7,7 +7,7 @@ const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 const http_response = nalarcore.http_response;
 const workflow = nalarcore.ai_mod.ai_workflow;
-const buildMessages = @import("../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
+const buildMessages = @import("../../../agentic_loop/prompts_build_messages_for_agent_prompt.zig").buildMessages;
 
 
 /// Trigger session compaction directly (synchronous - blocks until done)

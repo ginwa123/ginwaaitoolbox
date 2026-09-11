@@ -6,7 +6,7 @@
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
-const design_model = @import("../agentic_loop/design_model.zig");
+const design_model = @import("../../../agentic_loop/design_model.zig");
 const http_handlers = @import("../http_handlers/mod.zig");
 const migration = @import("../../../migrations/migration.zig");
 
