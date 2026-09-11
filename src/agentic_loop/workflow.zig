@@ -1103,7 +1103,6 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         for (db_messages) |*m| {
             m.deinit(allocator);
         }
-        db_messages.deinit(allocator);
 
         // Lifecycle: `CallResponse` (and everything it points at —
         // `content`, `reasoning_content`, each
