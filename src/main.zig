@@ -889,6 +889,7 @@ fn dispatchServiceSubcommand(
             main_service.serviceStart(allocator, io, .{
                 .port = s.port,
                 .no_static_dir = s.no_static_dir,
+                .static_dir = s.static_dir,
                 .state_path = state_path,
                 .log_path = log_path,
                 .on_shutdown = dummy_shutdown,
@@ -922,6 +923,7 @@ fn dispatchServiceSubcommand(
             main_service.serviceStart(allocator, io, .{
                 .port = s.port,
                 .no_static_dir = false,
+                .static_dir = s.static_dir,
                 .state_path = state_path,
                 .log_path = log_path,
                 .on_shutdown = dummy_shutdown2,
