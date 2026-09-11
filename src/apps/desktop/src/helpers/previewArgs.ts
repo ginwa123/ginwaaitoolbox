@@ -27,8 +27,7 @@
  *    to the double-wrap in `jsonArgsToXml`) embedded the raw JSON
  *    inside `<parameters>`. These are rare but still in old DB
  *    rows. Consumers should also try `JSON.parse(...)` and fall
- *    back to `{}` on failure (mirrors the existing
- *    `PreviewSidePanel.vue` behavior).
+ *    back to `{}` on failure.
  *
  * Usage:
  *
@@ -36,14 +35,8 @@
  *   const args = extractPreviewArgs(params)
  *   // args.content === "<h1>Hi</h1>" (XML-unescaped from <content>)
  *
- * This helper is the single source of truth shared by:
- *   - `<ShowPreview>` (the chat-bubble card)
- *   - `<PreviewSidePanel>` (the right-side panel)
- *
- * Keeping one implementation prevents the two renderers from drifting
- * (the original bug: PreviewSidePanel handled both shapes, ShowPreview
- * only handled JSON, so chat-bubble HTML previews rendered blank while
- * side-panel previews worked).
+ * This helper is the single source of truth used by `<ShowPreview>`
+ * (the inline chat-bubble card) and `PreviewContentRenderer`.
  */
 
 import { findXmlTag } from './unwrapToolOutput'
@@ -73,8 +66,7 @@ export function extractPreviewArgs(parameters: string | undefined | null): Previ
   if (!parameters) return {}
 
   // 1. XML extraction (current backend — `jsonArgsToXml`).
-  //    Mirrors `PreviewSidePanel.vue::activeArgs` (lines 178-184 in
-  //    the version that shipped in main as of 2026-08-06).
+  //    XML extraction for the current backend shape.
   const fromXml: PreviewArgs = {
     content_type: findXmlTag(parameters, 'content_type') ?? undefined,
     content: findXmlTag(parameters, 'content') ?? undefined,

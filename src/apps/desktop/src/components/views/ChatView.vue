@@ -59,9 +59,7 @@ import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
-import PreviewSidePanel from '../preview/PreviewSidePanel.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
-import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
 import type { AgentErrorEntry } from '../../stores/agentError'
@@ -154,7 +152,7 @@ interface Message {
    * JSON-stringified tool input arguments (e.g. for `show_preview`:
    * `{content_type, content, title, language, caption}`). Populated
    * by the same `tryUnwrapToolOutput` pipeline that fills
-   * `unwrappedByMessageId`. Used by `PreviewSidePanel` to render
+   * `unwrappedByMessageId`. Used by `ShowPreview` to render
    * rich previews without re-fetching.
    */
   parameters?: string,
@@ -567,102 +565,10 @@ const error = ref<string | null>(null)
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
 
-// Preview side panel: derived list + UI state. The panel subscribes to
-// every tool message whose `tool_name === 'show_preview'`. It defaults
-// to COLLAPSED (renders as a small `w-8` tab on the right edge) so the
-// chat view stays focused on messages — auto-opening the panel every
-// time the assistant produces a `show_preview` was disruptive and hid
-// the chat. The user explicitly opens it either by:
-//
-//   1. Clicking the collapsed tab (which expands it via the
-//      `v-model:collapsed` binding), or
-//   2. Clicking a `show_preview` tool message bubble in the chat
-//      (handled by `openPreviewForMessage` below, which both
-//      un-collapses and sets `previewToShowId` to jump to that tab).
-//
-// The user can dismiss the panel entirely with the ✕ button (sets
-// `previewPanelDismissed = true`, mounts the panel). The wrapper has its
-// own `v-if="previews.length > 0"` so the panel disappears when the
-// filtered list is empty.
-const showPreviewMessages = computed(() =>
-  messages.value.filter((m) => m.tool_name === 'show_preview' && m.is_output === true)
-)
-const previewPanelCollapsed = ref(true)
-const previewPanelDismissed = ref(false)
-// When the user clicks a `show_preview` message bubble in the chat,
-// this gets set to the bubble's `msg.id`. The PreviewSidePanel
-// uses this to jump to that preview's tab. We DO NOT auto-clear
-// it on next-render — keeping it set lets the user click the
-// same bubble repeatedly and reliably re-jump the panel to it.
-// It's cleared by ChatView's `watch(() => props.chatId)` reset
-// (avoids stale focus id from the previous chat dictating the
-// new chat's panel tab).
-const previewToShowId = ref<string | null>(null)
-
-// ─── Display mode (user-controlled sidebar/inline toggle, 2026-08-06) ──
-//
-// The user picks between two rendering modes for `show_preview` outputs
-// via the PreviewSidePanel header toggle (when the panel is visible)
-// or the ChatView restore button (when in inline mode + panel hidden).
-// Default: 'side' (matches existing behaviour).
-//
-// When the mode is 'inline':
-//   - We hide the side panel by setting `previewPanelDismissed = true`.
-//     The user's existing dismiss preference is preserved so we can
-//     restore it when they switch back to 'side'.
-//   - ShowPreview cards render rich content directly inside the chat
-//     bubble (see ShowPreview.vue).
-//
-// When the mode is 'side':
-//   - The side panel's visibility follows the user's normal
-//     collapsed/dismissed state. We do NOT auto-show the panel just
-//     because they flipped to 'side' — if they had explicitly
-//     dismissed it before, it stays dismissed until they click the
-//     toggle or restore button.
-const { isInline, setMode } = usePreviewDisplayMode()
-const previewPanelWasDismissedBeforeInline = ref(false) // remember user intent
-
-watch(isInline, (nowInline) => {
-  if (nowInline) {
-    // Switching INTO inline mode: remember whether the user had
-    // explicitly dismissed the panel, then dismiss it for the
-    // duration of inline mode.
-    previewPanelWasDismissedBeforeInline.value = previewPanelDismissed.value
-    previewPanelDismissed.value = true
-  } else {
-    // Switching back to side mode: restore the user's previous
-    // dismiss preference. If they had explicitly dismissed before,
-    // leave it dismissed; otherwise the panel becomes visible again.
-    previewPanelDismissed.value = previewPanelWasDismissedBeforeInline.value
-  }
-}, { immediate: true })
-
-// Click handler for `show_preview` message bubbles in the chat.
-// The bubble is rendered *collapsed* (no expand toggle — that would
-// make the user click twice: once to expand, once to view). Instead,
-// the click directly opens the right-side preview panel, jumping to
-// the preview that corresponds to the clicked message id. This is
-// the ONLY path that un-collapses the panel automatically; new
-// previews arriving in the chat do NOT auto-open it (see comment
-// block above).
-const openPreviewForMessage = (msgId: string) => {
-  previewPanelCollapsed.value = false
-  previewPanelDismissed.value = false
-  previewToShowId.value = msgId
-}
-
-watch(
-  () => props.chatId,
-  () => {
-    // Switching chats clears `previewToShowId` so a stale focus id from
-    // the previous chat doesn't dictate the new chat's panel tab. We
-    // intentionally do NOT touch `previewPanelCollapsed` or
-    // `previewPanelDismissed` here — the user's expanded/collapsed
-    // preference persists across chats (consistent with the
-    // "auto-open is opt-in, via the click handler" policy).
-    previewToShowId.value = null
-  },
-)
+// show_preview previews render inline inside the chat bubble
+// (see ShowPreview.vue + PreviewContentRenderer.vue). There is no
+// side panel — wide HTML content offers an "Open in new tab"
+// action via a Blob URL instead.
 // Whether the VirtualScroller's container is currently scrollable
 // (`scrollHeight > clientHeight`). When the container IS scrollable,
 // the user can scroll to the top to trigger loadMore via the
@@ -3428,31 +3334,18 @@ const compactSession = async () => {
                             :message="msg"
                           />
                           <!--
-                            `show_preview` is intentionally NOT
-                            expandable like the other tool outputs.
-                            The whole point of the side panel is to
-                            keep the chat bubble minimal (status,
-                            preview id, content_type, length) and let
-                            the user inspect the rich content in the
-                            right-side panel. A click on the bubble
-                            here does THREE things:
-                              1. Opens / un-dismisses the panel.
-                              2. Un-collapses the panel.
-                              3. Jumps the panel to the matching
-                                 preview tab via the `focusId` prop.
-                            We delegate the visual rendering to
-                            `<ShowPreview>` (which parses the XML
-                            envelope into a header line matching the
-                            rest of the tool cards); the click handler
-                            just calls `openPreviewForMessage` to
-                            focus the matching tab in the side panel.
+                            `show_preview` renders inline in the chat
+                            bubble via `<ShowPreview>` (which parses
+                            the XML envelope into a header line plus
+                            the rich content). HTML previews offer an
+                            "Open in new tab" action for full-width
+                            viewing.
                           -->
                           <ShowPreview
                             v-else-if="msg.tool_name === 'show_preview'"
                             :content="innerToolData(msg)"
                             :message-id="msg.id"
                             :parameters="getParametersForMessage(msg)"
-                            @open="openPreviewForMessage($event)"
                           />
                           <!--
                             `generate_image` is expandable (not side-panel
@@ -3966,50 +3859,7 @@ const compactSession = async () => {
       @close="nav.closePeek()"
       @open-full="onPeekOpenFull"
     />
-    <!--
-      Preview side panel: renders every `show_preview` tool result
-      for this chat in a right-side vertical column. Lives inside
-      the outer `flex h-full w-full` wrapper as a sibling of both
-      the main chat column (above) and `SubAgentPeekPanel` (also
-      here). The panel manages its own width via `w-8` (collapsed
-      tab) / inline `style.width = localWidth + 'px'` (expanded,
-      persisted to localStorage as `nalar-preview-panel-width`)
-      — adding `flex-1` would let it grow and crowd out the messages.
-      The `v-if="!previewPanelDismissed"` stays mounted only until
-      the user clicks ✕. The panel DEFAULTS to collapsed (renders as
-      a tab) and stays that way until the user clicks the tab to
-      expand or clicks a `show_preview` bubble in the chat — we
-      deliberately do NOT auto-open on new preview arrivals.
-    -->
-    <PreviewSidePanel
-      v-if="!previewPanelDismissed"
-      :previews="showPreviewMessages"
-      :focus-id="previewToShowId"
-      v-model:collapsed="previewPanelCollapsed"
-      @dismiss="previewPanelDismissed = true"
-    />
 
-    <!--
-      Restore button — floating top-right of the chat area, only
-      visible when:
-        1. Display mode is 'inline' (side panel is hidden), AND
-        2. There is at least one `show_preview` message in this chat.
-      Click → flips mode back to 'side', which re-shows the panel
-      (via the watch above). Mirrors the "back to sidebar" affordance
-      users expect when content renders inline. Sits next to the
-      chat so it's discoverable without scrolling.
-    -->
-    <button
-      v-if="isInline && showPreviewMessages.length > 0"
-      type="button"
-      class="absolute top-2 right-2 z-20 px-2 py-1 rounded-md text-xs font-mono border border-[var(--color-border)] bg-[var(--semantic-card-bg)] text-[var(--semantic-text)] cursor-pointer shadow-sm hover:border-[var(--color-violet)]/40 hover:text-[var(--color-violet)] transition-colors flex items-center gap-1"
-      data-testid="restore-preview-panel-button"
-      title="Open preview side panel"
-      @click="setMode('side')"
-    >
-      <span aria-hidden="true">📋</span>
-      <span>Open preview panel</span>
-    </button>
   </div>
 </template>
 
