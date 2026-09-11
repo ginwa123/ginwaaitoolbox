@@ -2468,20 +2468,32 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
     };
     for (cross_targets, 0..) |query, i| {
+        const resolved = b.resolveTargetQuery(query);
+        // A per-TARGET `helpers` module. Reusing the project-wide
+        // `helpers_mod` here would be a host-target module inside a
+        // foreign-target build, which makes Zig compile the host's
+        // `std.os.<host>` against the foreign target and die on the calling
+        // convention (observed on the Windows runner: `aarch64_aapcs_win` not
+        // supported by compiler backend `stage2_llvm`, blamed on
+        // helpers/mod.zig's `extern "kernel32" fn Sleep`). `src/helpers` is
+        // self-contained (std + local files only), so a fresh module per
+        // target is safe — and it lets the check cover subprocess.zig's
+        // winsock branch too.
+        const cross_helpers = b.createModule(.{
+            .root_source_file = b.path("src/helpers/mod.zig"),
+            .target = resolved,
+            .optimize = optimize,
+        });
         const obj = b.addObject(.{
             .name = b.fmt("desktop-cross-check-{d}", .{i}),
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/apps/desktop_app/cross_compile_check.zig"),
-                .target = b.resolveTargetQuery(query),
+                .target = resolved,
                 .optimize = optimize,
                 .link_libc = true,
-                // NOTE: no imports. Deliberately kept std-only — importing a
-                // host-target module (e.g. `helpers`, which comes from a
-                // package built for the host) into a foreign-target module
-                // makes Zig compile the HOST's std against the foreign target
-                // and fail on the calling convention (observed on the Windows
-                // runner: `aarch64_aapcs_win` not supported, reported from
-                // helpers/mod.zig's `extern "kernel32" fn Sleep`).
+                .imports = &.{
+                    .{ .name = "helpers", .module = cross_helpers },
+                },
             }),
         });
         check_desktop_cross.dependOn(&obj.step);
