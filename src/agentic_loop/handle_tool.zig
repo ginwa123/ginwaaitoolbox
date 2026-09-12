@@ -19,6 +19,7 @@ const agentic_loop_mod = @import("workflow.zig");
 const wrapToolOutput = agentic_loop_mod.tools.wrapToolOutput;
 const xmlUnescape = @import("helpers").xmlUnescape;
 const on_event_sent = @import("on_event_sent.zig");
+const hooks = @import("hooks.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
 
@@ -179,21 +180,87 @@ const MainAgentToolResult = struct {
 
 /// Lookup a tool by name and execute it using unified registry
 /// Refactored: Uses entry.exec() directly instead of double lookup
+///
+/// Lua hooks (`hooks/register_hook.lua :: init(event, data)`) wrap every
+/// dispatch: the pre hook may deny (error envelope, no exec), modify args,
+/// or mock the output (no exec); the post hook may replace the output.
+/// All hook failures degrade to the no-hook behavior (see hooks.zig).
 fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
-    const tool_name = tool_call.function.name;
+    var effective_call = tool_call;
+    var modified_args: ?[]const u8 = null;
+    defer if (modified_args) |a| ctx.allocator.free(a);
 
-    for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
-        if (std.mem.eql(u8, tool_name, entry.name)) {
-            return dispatchFromRegistry(ctx, tool_call, entry.exec);
+    switch (runPreHookAction(ctx, tool_call.function.name, tool_call.function.arguments)) {
+        .proceed => {},
+        .proceed_modified => |a| {
+            modified_args = a;
+            effective_call.function.arguments = a;
+        },
+        .short_circuit => |out| return ToolResult{ .output = out },
+    }
+
+    var result: ToolResult = blk: {
+        for (tools_equipped.UNIFIED_TOOL_REGISTRY()) |entry| {
+            if (std.mem.eql(u8, effective_call.function.name, entry.name)) {
+                break :blk try dispatchFromRegistry(ctx, effective_call, entry.exec);
+            }
         }
-    }
 
-    // Check if it's an MCP tool (format: mcp_serverName_toolName)
-    if (isMCPTool(ctx.config, tool_name)) {
-        return dispatchMCP(ctx, tool_call);
-    }
+        // Check if it's an MCP tool (format: mcp_serverName_toolName)
+        if (isMCPTool(ctx.config, effective_call.function.name)) {
+            break :blk try dispatchMCP(ctx, effective_call);
+        }
 
-    return error.UnknownTool;
+        return error.UnknownTool;
+    };
+
+    if (runPostHookOverride(ctx, effective_call.function.name, effective_call.function.arguments, result.output)) |replacement| {
+        result.output = replacement;
+    }
+    return result;
+}
+
+/// Outcome of the Lua pre hook for one tool call. Owned strings transfer
+/// to the caller (short_circuit becomes the tool output, proceed_modified
+/// must be freed after dispatch).
+const PreHookAction = union(enum) {
+    proceed,
+    proceed_modified: []const u8,
+    short_circuit: []const u8,
+};
+
+fn runPreHookAction(ctx: ToolContext, tool_name: []const u8, arguments: []const u8) PreHookAction {
+    const hook_ctx = hooks.HookContext{ .session_id = ctx.session_id, .cwd = ctx.cwd, .model = ctx.model };
+    const pre = hooks.runPreHook(ctx.allocator, ctx.logger, ctx.environment, tool_name, arguments, hook_ctx) catch return .proceed;
+    switch (pre) {
+        .allow => return .proceed,
+        .deny => |reason| {
+            defer ctx.allocator.free(reason);
+            const out = wrapToolOutput(ctx.allocator, tool_name, arguments, false, reason, "") catch return .proceed;
+            return .{ .short_circuit = out };
+        },
+        .modify => |new_args| return .{ .proceed_modified = new_args },
+        .mock => |mock_output| {
+            defer ctx.allocator.free(mock_output);
+            const out = wrapToolOutput(ctx.allocator, tool_name, arguments, true, null, mock_output) catch return .proceed;
+            return .{ .short_circuit = out };
+        },
+    }
+}
+
+/// Run the Lua post hook. Returns an owned replacement output, or null to
+/// keep `current`. Never errors outward (fail-open inside).
+fn runPostHookOverride(ctx: ToolContext, tool_name: []const u8, arguments: []const u8, current: []const u8) ?[]const u8 {
+    const hook_ctx = hooks.HookContext{ .session_id = ctx.session_id, .cwd = ctx.cwd, .model = ctx.model };
+    const post = hooks.runPostHook(ctx.allocator, ctx.logger, ctx.environment, tool_name, arguments, current, hook_ctx) catch return null;
+    switch (post) {
+        .keep => return null,
+        .replace => |new_output| return new_output,
+        .deny => |reason| {
+            defer ctx.allocator.free(reason);
+            return wrapToolOutput(ctx.allocator, tool_name, arguments, false, reason, "") catch null;
+        },
+    }
 }
 
 /// Dispatch tool execution from registry entry
@@ -596,26 +663,48 @@ pub fn handle_tool(
                 continue;
             }
 
-            // Check if this is an MCP tool
+            // Check if this is an MCP tool. Lua hooks apply here too
+            // (same pre/post contract as dispatchTool below) so hook
+            // authors see every tool call, not just builtin ones.
             if (isMCPTool(config, tool_call.function.name)) {
+                var mcp_call = tool_call;
+                var mcp_modified_args: ?[]const u8 = null;
+                defer if (mcp_modified_args) |a| allocator.free(a);
+                switch (runPreHookAction(ctx, tool_call.function.name, tool_call.function.arguments)) {
+                    .proceed => {},
+                    .proceed_modified => |a| {
+                        mcp_modified_args = a;
+                        mcp_call.function.arguments = a;
+                    },
+                    .short_circuit => |out| {
+                        tool_result = out;
+                        errdefer allocator.free(tool_result);
+                        try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                        allocator.free(tool_result);
+                        continue;
+                    },
+                }
                 // Call MCP handler
                 tool_result = handle_mcp_tool.handle_mcp_tool_run(
                     allocator,
                     logger,
-                    tool_call,
+                    mcp_call,
                     config,
                 ) catch |err| {
                     const err_msg = try std.fmt.allocPrint(allocator, "MCP tool {s} failed: {s}", .{
-                        tool_call.function.name,
+                        mcp_call.function.name,
                         @errorName(err),
                     });
-                    tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
+                    tool_result = try wrapToolOutput(allocator, mcp_call.function.name, mcp_call.function.arguments, false, err_msg, "");
                     errdefer allocator.free(tool_result);
-                    try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                    try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                     allocator.free(tool_result);
                     continue;
                 };
-                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                if (runPostHookOverride(ctx, mcp_call.function.name, mcp_call.function.arguments, tool_result)) |replacement| {
+                    tool_result = replacement;
+                }
+                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, mcp_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
                 continue;
             }
 
@@ -1239,4 +1328,162 @@ test "wrapToolOutput envelope is round-trip parseable (envelope shape vs fronten
     try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<success>false</success>") != null);
     try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<error>unknown tools</error>") != null);
     try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<data>") == null);
+}
+
+// ============================================================================
+// Lua hook seam tests (plan 2026-09-12-hook-lua-pre-post-tool-use, Phase 3)
+// ============================================================================
+//
+// These cover runPreHookAction / runPostHookOverride — the exact helpers
+// dispatchTool and the MCP branch call. The helpers only touch
+// allocator/logger/environment, so db/config/loops stay `undefined`
+// (never dereferenced on these paths; a future touch would crash loudly).
+// End-to-end exec-skipping is covered by tests/functional/hooks_lua_test.py.
+
+/// Minimal ToolContext for hook tests: only allocator/logger/environment
+/// (+ identity strings) are read by the hook path.
+fn hookTestCtx(
+    allocator: std.mem.Allocator,
+    logger: *logger_mod.Logger,
+    environment: ?*const std.process.Environ.Map,
+) ToolContext {
+    var temp: f32 = 0.4;
+    var thinking: bool = false;
+    return ToolContext{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .db = undefined,
+        .logger = logger,
+        .session_id = "sess_hook_test",
+        .model = "test-model",
+        .cwd = "/tmp",
+        .api_key = "",
+        .base_url = "",
+        .config = undefined,
+        .agent_temperature = &temp,
+        .is_thinking = &thinking,
+        .environment = environment,
+        .active_loops = undefined,
+    };
+}
+
+/// HOME=tmpdir with hooks/register_hook.lua containing `lua_source`.
+/// Returns the env map (caller frees map + tmpdir via cleanup).
+const HookFixture = struct {
+    env_map: std.process.Environ.Map,
+    tmp: std.testing.TmpDir,
+    home: []const u8, // slice into path_buf below — keep alive via tmp
+
+    fn deinit(self: *HookFixture) void {
+        self.env_map.deinit();
+        self.tmp.cleanup();
+    }
+};
+
+fn hookFixture(allocator: std.mem.Allocator, lua_source: []const u8, path_buf: *[std.Io.Dir.max_path_bytes]u8) !HookFixture {
+    var tmp = std.testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    const n = try tmp.dir.realPath(std.testing.io, path_buf);
+    const home = path_buf[0..n];
+    try tmp.dir.createDirPath(std.testing.io, ".config/nalar/hooks");
+    var hooks_dir = try tmp.dir.openDir(std.testing.io, ".config/nalar/hooks", .{});
+    defer hooks_dir.close(std.testing.io);
+    try hooks_dir.writeFile(std.testing.io, .{ .sub_path = hooks.HOOK_FILENAME, .data = lua_source });
+    var env_map = std.process.Environ.Map.init(allocator);
+    errdefer env_map.deinit();
+    try env_map.put("HOME", home);
+    return HookFixture{ .env_map = env_map, .tmp = tmp, .home = home };
+}
+
+test "hook seam: no hook file proceeds without touching exec deps" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var empty_tmp = std.testing.tmpDir(.{});
+    defer empty_tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try empty_tmp.dir.realPath(std.testing.io, &path_buf);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", path_buf[0..n]);
+
+    const ctx = hookTestCtx(allocator, &lg, &env_map);
+    const action = runPreHookAction(ctx, "bash", "{}");
+    try std.testing.expect(action == .proceed);
+    try std.testing.expect(runPostHookOverride(ctx, "bash", "{}", "some output") == null);
+}
+
+test "hook seam: pre deny short-circuits with error envelope" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fx = try hookFixture(allocator, "function init(event, data) if event == 'pre_tool_use' then return { deny = 'blocked by hook' } end return nil end\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookTestCtx(allocator, &lg, &fx.env_map);
+    const action = runPreHookAction(ctx, "bash", "{}");
+    try std.testing.expect(action == .short_circuit);
+    defer allocator.free(action.short_circuit);
+    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "<success>false</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "blocked by hook") != null);
+}
+
+test "hook seam: pre modify rewrites args" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fx = try hookFixture(allocator, "function init(event, data) return { arguments = '{\"command\":\"echo safe\"}' } end\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookTestCtx(allocator, &lg, &fx.env_map);
+    const action = runPreHookAction(ctx, "bash", "{\"command\":\"rm -rf /\"}");
+    try std.testing.expect(action == .proceed_modified);
+    defer allocator.free(action.proceed_modified);
+    try std.testing.expectEqualStrings("{\"command\":\"echo safe\"}", action.proceed_modified);
+}
+
+test "hook seam: pre mock returns success envelope" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fx = try hookFixture(allocator, "function init(event, data) return { output = 'mocked output' } end\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookTestCtx(allocator, &lg, &fx.env_map);
+    const action = runPreHookAction(ctx, "bash", "{}");
+    try std.testing.expect(action == .short_circuit);
+    defer allocator.free(action.short_circuit);
+    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "<success>true</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "mocked output") != null);
+}
+
+test "hook seam: post replace swaps output" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fx = try hookFixture(allocator, "function init(event, data) if event == 'post_tool_use' then return { output = 'redacted' } end return nil end\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookTestCtx(allocator, &lg, &fx.env_map);
+    const replacement = runPostHookOverride(ctx, "bash", "{}", "secret=abc");
+    try std.testing.expect(replacement != null);
+    defer allocator.free(replacement.?);
+    try std.testing.expectEqualStrings("redacted", replacement.?);
+}
+
+test "hook seam: broken hook file fails open to proceed/keep" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fx = try hookFixture(allocator, "function init(((\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookTestCtx(allocator, &lg, &fx.env_map);
+    try std.testing.expect(runPreHookAction(ctx, "bash", "{}") == .proceed);
+    try std.testing.expect(runPostHookOverride(ctx, "bash", "{}", "out") == null);
 }
