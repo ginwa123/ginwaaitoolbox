@@ -816,5 +816,229 @@ export function parseMcp(toolName: string, content: string): ParsedMcp {
   }
 }
 
+// ─── progressive tools (search_tool / view_tool / use_tool) ──────────────────
+//
+// Universal `<ProgressiveTool>` card: the three agent tools that let the model
+// browse a catalog of not-yet-enabled tools and equip one for the session.
+// Backend renderers live in `src/agentic_loop/progressive_catalog.zig`; the
+// exec adapter wraps them with the standard `wrapToolOutput` envelope, and
+// `ChatView.innerToolData` passes the inner body here.
+//
+//   search_tool success:
+//     <search_tool><query>q</query>[<server>s</server>]
+//       <count>N</count><total>M</total><tools>
+//         <tool><name>n</name><kind>builtin|mcp</kind><server>s</server>
+//           <equipped>session|no</equipped><summary>one-liner</summary></tool>
+//         ...
+//       </tools>[<truncated/>][<hint>…</hint>]</search_tool>
+//   view_tool found:
+//     <view_tool><name>n</name><kind>…</kind><server>s</server>
+//       <equipped>session|no</equipped><description>…</description>
+//       <parameters><![CDATA[{"type":"object",…}]]></parameters>
+//       [<note>…</note>|<hint>…</hint>]</view_tool>
+//   view_tool miss:
+//     <view_tool><name>n</name><found>false</found><error>…</error>
+//       [<did_you_mean><name>…</name>…</did_you_mean>]
+//       <hint>…</hint></view_tool>
+//   use_tool found:
+//     <use_tool><name>n</name><kind>…</kind><equipped>true</equipped>
+//       <inserted>true|false</inserted>[<wait_next_turn>true</wait_next_turn>]
+//       [<source>session</source>][<parameters><![CDATA[…]]></parameters>]
+//       <note>…</note></use_tool>
+//   use_tool miss:
+//     <use_tool><name>n</name><equipped>false</equipped><inserted>false</inserted>
+//       <error>…</error>[<did_you_mean>…</did_you_mean>]<hint>…</hint></use_tool>
+
+export interface ProgressiveCatalogEntry {
+  name: string
+  kind: string
+  server: string
+  equipped: string
+  summary: string
+}
+
+export interface ParsedSearchTool {
+  query: string
+  server: string | null
+  count: number
+  total: number
+  tools: ProgressiveCatalogEntry[]
+  truncated: boolean
+  hint: string | null
+  success: boolean
+  error: string | null
+}
+
+export interface ParsedViewTool {
+  name: string
+  kind: string | null
+  server: string | null
+  equipped: string | null
+  description: string | null
+  parameters: string
+  prettyParameters: string
+  isJsonParameters: boolean
+  found: boolean
+  note: string | null
+  hint: string | null
+  suggestions: string[]
+  success: boolean
+  error: string | null
+}
+
+export interface ParsedUseTool {
+  name: string
+  kind: string | null
+  equipped: boolean
+  inserted: boolean
+  waitNextTurn: boolean
+  source: string | null
+  parameters: string
+  prettyParameters: string
+  isJsonParameters: boolean
+  note: string | null
+  hint: string | null
+  suggestions: string[]
+  success: boolean
+  error: string | null
+}
+
+function extractCdata(content: string, tag: string): string | null {
+  const openSeq = `<${tag}>`
+  const closeSeq = `</${tag}>`
+  const openIdx = content.indexOf(openSeq)
+  if (openIdx === -1) return null
+  const valueStart = openIdx + openSeq.length
+  const closeIdx = content.indexOf(closeSeq, valueStart)
+  if (closeIdx === -1) return null
+  let inner = content.slice(valueStart, closeIdx)
+  const cdataOpen = '<![CDATA['
+  const cdataClose = ']]>'
+  const cOpen = inner.indexOf(cdataOpen)
+  const cClose = inner.lastIndexOf(cdataClose)
+  if (cOpen !== -1 && cClose !== -1 && cClose > cOpen) {
+    inner = inner.slice(cOpen + cdataOpen.length, cClose)
+  }
+  return inner
+}
+
+function extractAllNames(content: string): string[] {
+  const block = extractTag(content, 'did_you_mean')
+  if (block === null) return []
+  const out: string[] = []
+  const re = /<name>([\s\S]*?)<\/name>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(block)) !== null) {
+    if (m[1] !== undefined) out.push(unescapeXml(m[1]).trim())
+  }
+  return out.filter((s) => s.length > 0)
+}
+
+function prettyJsonOrRaw(s: string): { pretty: string; isJson: boolean } {
+  const trimmed = s.trim()
+  if (!trimmed) return { pretty: '', isJson: false }
+  try {
+    return { pretty: JSON.stringify(JSON.parse(trimmed), null, 2), isJson: true }
+  } catch {
+    return { pretty: s, isJson: false }
+  }
+}
+
+export function parseSearchTool(content: string): ParsedSearchTool {
+  const errorTag = extractTag(content, 'error')
+  if (errorTag !== null) {
+    return {
+      query: extractTag(content, 'query') ?? '',
+      server: extractTag(content, 'server'),
+      count: 0,
+      total: 0,
+      tools: [],
+      truncated: false,
+      hint: extractTag(content, 'hint'),
+      success: false,
+      error: errorTag,
+    }
+  }
+  const query = extractTag(content, 'query') ?? ''
+  const server = extractTag(content, 'server')
+  const countRaw = extractTag(content, 'count')
+  const totalRaw = extractTag(content, 'total')
+  const count = countRaw !== null ? parseInt(countRaw, 10) || 0 : 0
+  const total = totalRaw !== null ? parseInt(totalRaw, 10) || 0 : 0
+  const toolsBlock = extractTag(content, 'tools') ?? ''
+  const tools: ProgressiveCatalogEntry[] = []
+  const toolRe = /<tool>([\s\S]*?)<\/tool>/g
+  let m: RegExpExecArray | null
+  while ((m = toolRe.exec(toolsBlock)) !== null) {
+    const block = m[1] ?? ''
+    const name = extractTag(block, 'name') ?? ''
+    if (!name) continue
+    tools.push({
+      name,
+      kind: extractTag(block, 'kind') ?? '',
+      server: extractTag(block, 'server') ?? '',
+      equipped: extractTag(block, 'equipped') ?? '',
+      summary: extractTag(block, 'summary') ?? '',
+    })
+  }
+  return {
+    query,
+    server,
+    count,
+    total,
+    tools,
+    truncated: content.includes('<truncated'),
+    hint: extractTag(content, 'hint'),
+    success: true,
+    error: null,
+  }
+}
+
+export function parseViewTool(content: string): ParsedViewTool {
+  const errorTag = extractTag(content, 'error')
+  const foundTag = extractTag(content, 'found')
+  const found = foundTag === null ? errorTag === null : foundTag !== 'false'
+  const rawParams = extractCdata(content, 'parameters') ?? ''
+  const { pretty, isJson } = prettyJsonOrRaw(rawParams)
+  return {
+    name: extractTag(content, 'name') ?? '',
+    kind: extractTag(content, 'kind'),
+    server: extractTag(content, 'server'),
+    equipped: extractTag(content, 'equipped'),
+    description: extractTag(content, 'description'),
+    parameters: rawParams,
+    prettyParameters: pretty,
+    isJsonParameters: isJson,
+    found,
+    note: extractTag(content, 'note'),
+    hint: extractTag(content, 'hint'),
+    suggestions: extractAllNames(content),
+    success: errorTag === null,
+    error: errorTag,
+  }
+}
+
+export function parseUseTool(content: string): ParsedUseTool {
+  const errorTag = extractTag(content, 'error')
+  const rawParams = extractCdata(content, 'parameters') ?? ''
+  const { pretty, isJson } = prettyJsonOrRaw(rawParams)
+  return {
+    name: extractTag(content, 'name') ?? '',
+    kind: extractTag(content, 'kind'),
+    equipped: extractTag(content, 'equipped') === 'true',
+    inserted: extractTag(content, 'inserted') === 'true',
+    waitNextTurn: extractTag(content, 'wait_next_turn') === 'true',
+    source: extractTag(content, 'source'),
+    parameters: rawParams,
+    prettyParameters: pretty,
+    isJsonParameters: isJson,
+    note: extractTag(content, 'note'),
+    hint: extractTag(content, 'hint'),
+    suggestions: extractAllNames(content),
+    success: errorTag === null,
+    error: errorTag,
+  }
+}
+
 // Re-export shared param helper (single source of truth in helpers/).
 export { extractParam } from '../../../helpers/extractParam'

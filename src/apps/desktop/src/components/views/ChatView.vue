@@ -59,6 +59,7 @@ import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
+import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
@@ -3373,6 +3374,19 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name?.startsWith('mcp_')"
                             :content="innerToolData(msg)"
                             :tool-name="msg.tool_name ?? 'mcp_tool'"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                          />
+                          <!--
+                            Progressive discovery card: `search_tool` /
+                            `view_tool` / `use_tool` render here — never in
+                            the generic fallback below. Same expandable
+                            ToolCardHeader pattern as McpTool/ListDirectory.
+                          -->
+                          <ProgressiveTool
+                            v-else-if="msg.tool_name === 'search_tool' || msg.tool_name === 'view_tool' || msg.tool_name === 'use_tool'"
+                            :content="innerToolData(msg)"
+                            :tool-name="msg.tool_name ?? 'search_tool'"
                             :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
