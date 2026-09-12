@@ -360,3 +360,4 @@ test "eligibleNames: both policies compose" {
     const names = try eligibleNames(a, tools, "read_file,glob,kanban_list,spawn_sub_agent", true, "kanban");
     try expectNames(&.{ "read_file", "glob", "kanban_list" }, names);
 }
+

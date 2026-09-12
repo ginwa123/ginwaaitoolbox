@@ -2,19 +2,19 @@
 
 The feature keeps MCP tools and NOT-enabled built-in tools out of the LLM's
 tool list until the agent equips them with `use_tool` (recorded in
-`session_progressive_tool`). These tests replay the real wire path and assert
-on what the tool list ACTUALLY contained.
+`session_progressive_tool`), and the three meta-tools are **default-equipped in
+agent and kanban mode only** — the two modes whose creation path seeds
+`DEFAULT_AGENT_TOOLS`. Design and folder items seed no tool list, and a plain
+chat session has no workspace item at all, so none of them get the three.
 
-The hook is `[STREAM START] model=... | messages=N | tools=K | streaming=true`
-— the tool count of the real LLM request. The harness's stub profile points
-`base_url` at http://127.0.0.1:1 (a port that never answers), so there is no
-upstream to capture a request body from; this log line is the observable
-substitute, and it is emitted by the same code path that builds the request.
+These tests assert on what the real LLM request contained, via
+`[STREAM START] model=... | messages=N | tools=K`. The harness's stub profile
+points `base_url` at http://127.0.0.1:1 (a dead port), so there is no upstream
+to capture a body from.
 
-Note on a dead end: the workflow's `[CHECKPOINT] ...` `logger.infoFmt` lines
-(including the one extended with mcp_equipped / builtin_equipped / catalog)
-do NOT appear in the harness log, while the Agent's own `[info] [STREAM ...]`
-lines do. So the tests deliberately key off the STREAM line instead.
+Note on a dead end: `workflow.zig`'s `[CHECKPOINT] ...` `logger.infoFmt` lines
+do NOT reach the harness log, while the Agent's `[info] [STREAM ...]` lines do —
+so these tests deliberately key off the STREAM line.
 
 Plan: docs/superpowers/plans/2026-09-12-progressive-tool-search.md
 """
@@ -25,6 +25,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,12 +34,18 @@ from harness import FunctionalHarness
 # `[STREAM START] model=stub-model | messages=2 | tools=5 | streaming=true`
 STREAM_START_RE = re.compile(r"\[STREAM START\].*?\btools=(?P<tools>\d+)")
 
-# Deliberately restrictive: with only two built-ins enabled, 38 of the 40
-# registered tools are NOT enabled, so the catalog is large and the three
-# meta-tools are injected. Expected request tool count = 2 + 3 = 5.
-RESTRICTED_ALLOWLIST = "read_file,glob"
-EXPECTED_RESTRICTED_TOOLS = 5
-EXPECTED_RESTRICTED_PLUS_ONE_EQUIP = 6
+PROGRESSIVE_TOOL_NAMES = ("search_tool", "view_tool", "use_tool")
+
+# A fresh kanban item seeds DEFAULT_AGENT_TOOLS + DEFAULT_KANBAN_TOOLS. The
+# agent defaults list ALREADY contains search_tool/view_tool/use_tool, so the
+# three arrive through the seeded tool config — that seed is what scopes the
+# default to agent/kanban mode, and only these two creation paths apply it.
+AGENT_DEFAULTS = 25
+KANBAN_ONLY_DEFAULTS = 2
+KANBAN_SEEDED_TOOLS = AGENT_DEFAULTS + KANBAN_ONLY_DEFAULTS  # 27
+# A tool that is NOT in the seeded set and is not design-only, so equipping it
+# is legal for a kanban item and observably adds exactly one tool.
+NOT_SEEDED_KANBAN_TOOL = "set_git_worktree"
 
 
 def _db_path(h: FunctionalHarness) -> Path:
@@ -46,10 +53,9 @@ def _db_path(h: FunctionalHarness) -> Path:
 
 
 def _wait_for_tool_count(h: FunctionalHarness, timeout_s: float = 45.0) -> int:
-    """The largest `tools=N` seen across the session's LLM calls.
+    """The largest `tools=N` seen, i.e. the main agent call's tool count.
 
-    The main agent call carries the full tool list; the session-name generator
-    call that precedes it reports tools=0, so the max is the real answer.
+    The session-name generator call that precedes it reports tools=0.
     """
     deadline = time.monotonic() + timeout_s
     tail = ""
@@ -68,8 +74,8 @@ def _wait_for_tool_count(h: FunctionalHarness, timeout_s: float = 45.0) -> int:
     )
 
 
-def _queue_message(h: FunctionalHarness, session_id: str, allowed_tools: str) -> None:
-    """Create a session and queue one message (the nalar-tui body shape)."""
+def _queue_plain_message(h: FunctionalHarness, session_id: str, allowed_tools: str) -> None:
+    """A plain (unbound) chat session — the nalar-tui body shape."""
     h.http(
         "POST",
         "/api/llm/session",
@@ -78,6 +84,96 @@ def _queue_message(h: FunctionalHarness, session_id: str, allowed_tools: str) ->
             "queue_message": "hello from the progressive tool search test",
             "cwd_session": str(h.temp_dir),
             "allowed_tools": allowed_tools,
+            "image_urls": "",
+            "selected_profile_model": "",
+            "is_auto_retry_until_stop": "",
+        },
+        expect=(201, 500),
+    )
+
+
+def _create_workspace(h: FunctionalHarness, name: str = "prog-ws") -> str:
+    return h.http("POST", "/api/workspaces", json_body={"name": name}, expect=201).json()["id"]
+
+
+def _create_kanban(h: FunctionalHarness, workspace_id: str, name: str = "prog-board") -> str:
+    r = h.http(
+        "POST",
+        f"/api/workspaces/{workspace_id}/items/kanban",
+        json_body={"name": name},
+        expect=201,
+    )
+    return r.json()["item"]["id"]
+
+
+def _run_kanban_task(
+    h: FunctionalHarness,
+    workspace_id: str,
+    kanban_id: str,
+    *,
+    name: str,
+    description: str = "run the agent",
+) -> str:
+    """Create + run a kanban task; returns its session id (== task id).
+
+    This is how a session gets bound to a kanban item, which is what makes
+    `self_item_type == "kanban"` during the agent run.
+    """
+    r = h.http(
+        "POST",
+        f"/api/workspaces/{workspace_id}/items/{kanban_id}/kanban/tasks",
+        json_body={
+            "mode": "create_and_run",
+            "name": name,
+            "description": description,
+            "queue_message": f"{name}\n\n{description}",
+        },
+        expect=201,
+    )
+    body: dict[str, Any] = r.json()
+    task = body.get("task")
+    assert task is not None, f"create response missing 'task': {body!r}"
+    return task["id"]
+
+
+def _create_kanban_task_idle(
+    h: FunctionalHarness,
+    workspace_id: str,
+    kanban_id: str,
+    *,
+    name: str,
+) -> str:
+    """Create a kanban task WITHOUT running it; returns its id (== session id).
+
+    Needed because an equip row must exist BEFORE the session's first LLM call,
+    and the session id is only known once the task exists.
+    """
+    r = h.http(
+        "POST",
+        f"/api/workspaces/{workspace_id}/items/{kanban_id}/kanban/tasks",
+        json_body={"mode": "create_session", "name": name, "description": ""},
+        expect=201,
+    )
+    body: dict[str, Any] = r.json()
+    task = body.get("task")
+    assert task is not None, f"create response missing 'task': {body!r}"
+    return task["id"]
+
+
+def _run_existing_session(h: FunctionalHarness, session_id: str) -> None:
+    """Queue a message onto an existing session, starting the workflow.
+
+    `allowed_tools` is deliberately empty: for a kanban-bound session the board
+    override supplies the real allowlist, which is the behaviour under test.
+    """
+    h.http(
+        "POST",
+        "/api/llm/session",
+        json_body={
+            "session_id": session_id,
+            "queue_message": "continue",
+            "cwd_session": str(h.temp_dir),
+            "allowed_tools": "",
             "image_urls": "",
             "selected_profile_model": "",
             "is_auto_retry_until_stop": "",
@@ -111,99 +207,83 @@ def stub_harness(default_nalar_bin: Path):
         h.teardown()
 
 
-# ─── 1. A restricted allowlist leaves a catalog, so the meta-tools ship ─────
+# ─── 1. KANBAN mode: seeded defaults + the three meta-tools ─────────────────
 
 
-def test_meta_tools_are_injected_when_a_catalog_exists(stub_harness: FunctionalHarness) -> None:
-    """2 allowlisted built-ins + search_tool + view_tool + use_tool == 5 tools
-    on the real LLM request."""
-    _queue_message(stub_harness, "prog-test-catalog", RESTRICTED_ALLOWLIST)
-
-    assert _wait_for_tool_count(stub_harness) == EXPECTED_RESTRICTED_TOOLS, (
-        "expected the 2 allowlisted built-ins plus the 3 progressive meta-tools"
-    )
-
-
-# ─── 2. The meta-tools are equipped in EVERY mode, catalog or not ───────────
-
-PROGRESSIVE_TOOL_NAMES = ("search_tool", "view_tool", "use_tool")
-
-# `GET /api/agent-tools/registry` is a SUPERSET of what `equips()` injects:
-# `move_element_to_page` is registered so dispatch and the Tools tab know it,
-# but it is deliberately absent from the equipped set. Excluding it keeps the
-# arithmetic below exact.
-REGISTRY_ONLY_NAMES = frozenset({"move_element_to_page"})
-
-
-def test_meta_tools_ship_even_when_the_catalog_is_empty(
+def test_kanban_mode_gets_the_seeded_tools_plus_the_three_meta_tools(
     stub_harness: FunctionalHarness,
 ) -> None:
-    """The three progressive tools are default-equipped in every mode — they
-    are NOT gated on there being something to discover.
-
-    This is the discriminating case: the allowlist names every equipped
-    built-in EXCEPT the three meta-tools, so the discoverable catalog is empty
-    and a catalog-gated implementation would drop them. They must still be on
-    the request, so the count is exactly (allowlisted built-ins + 3).
-    """
-    registry = stub_harness.http("GET", "/api/agent-tools/registry", expect=200).json()
-    all_names = [t["name"] for t in registry["tools"]]
-    assert len(all_names) > 10, f"suspicious registry: {all_names!r}"
-
-    allowlist = [
-        n
-        for n in all_names
-        if n not in PROGRESSIVE_TOOL_NAMES and n not in REGISTRY_ONLY_NAMES
-    ]
-    assert PROGRESSIVE_TOOL_NAMES[0] not in allowlist
-
-    _queue_message(stub_harness, "prog-test-always-on", ",".join(allowlist))
+    ws = _create_workspace(stub_harness)
+    kanban = _create_kanban(stub_harness, ws)
+    _run_kanban_task(stub_harness, ws, kanban, name="prog kanban default")
 
     got = _wait_for_tool_count(stub_harness)
-    expected = len(allowlist) + len(PROGRESSIVE_TOOL_NAMES)
-    assert got == expected, (
-        "the three progressive tools must be appended unconditionally, even "
-        f"with an empty catalog; expected {expected} "
-        f"({len(allowlist)} built-ins + {len(PROGRESSIVE_TOOL_NAMES)} meta), got {got}"
+    assert got == KANBAN_SEEDED_TOOLS, (
+        f"a kanban run should carry its {KANBAN_SEEDED_TOOLS} seeded tools "
+        f"(the agent defaults incl. the three progressive tools, + 2 kanban "
+        f"tools), got {got}"
     )
 
 
-# ─── 3. An equipped not-enabled built-in reaches the real tool list ─────────
+# ─── 2. KANBAN mode: equipping a not-seeded built-in adds exactly one ───────
 
 
-def test_equipped_builtin_is_injected_even_when_the_allowlist_excludes_it(
+def test_kanban_mode_equipped_builtin_is_injected(stub_harness: FunctionalHarness) -> None:
+    ws = _create_workspace(stub_harness)
+    kanban = _create_kanban(stub_harness, ws)
+
+    # Create the task WITHOUT running it, so the equip row exists before the
+    # session's first LLM call.
+    session_id = _create_kanban_task_idle(stub_harness, ws, kanban, name="prog equip")
+    _equip_row(stub_harness, session_id, NOT_SEEDED_KANBAN_TOOL)
+
+    _run_existing_session(stub_harness, session_id)
+
+    got = _wait_for_tool_count(stub_harness)
+    expected = KANBAN_SEEDED_TOOLS + 1
+    assert got == expected, (
+        f"equipping one not-seeded built-in must add exactly one tool; "
+        f"expected {expected}, got {got}"
+    )
+
+
+# ─── 3. Every OTHER mode: the three are absent ─────────────────────────────
+
+
+def test_unbound_chat_session_does_not_get_the_meta_tools(
     stub_harness: FunctionalHarness,
 ) -> None:
-    """The heart of the feature: `kanban_list` is NOT in the allowlist, but a
-    session_progressive_tool row makes it appear — the request grows from 5 to
-    6 tools."""
-    session_id = "prog-test-equip"
-    _equip_row(stub_harness, session_id, "kanban_list")
+    """A plain chat session has no workspace item, so `self_item_type` is "" —
+    not agent/kanban — and the three progressive tools must NOT be injected.
+    This is what scopes the default to the two modes the user asked for."""
+    _queue_plain_message(stub_harness, "prog-test-unbound", "read_file,glob")
 
-    _queue_message(stub_harness, session_id, RESTRICTED_ALLOWLIST)
-
-    assert _wait_for_tool_count(stub_harness) == EXPECTED_RESTRICTED_PLUS_ONE_EQUIP, (
-        "equipping one built-in must add exactly one tool to the request"
+    got = _wait_for_tool_count(stub_harness)
+    assert got == 2, (
+        f"a session with no workspace item must get only its 2 allowlisted "
+        f"built-ins (no progressive tools), got {got}"
     )
 
 
-# ─── 3. A stale equip name is inert ─────────────────────────────────────────
+# ─── 4. A stale equip name is inert ─────────────────────────────────────────
 
 
 def test_stale_equip_name_adds_nothing(stub_harness: FunctionalHarness) -> None:
     """A name that is neither a registered built-in nor a cached MCP tool (a
     server that was since removed, say) must not change the tool list."""
-    session_id = "prog-test-stale"
+    ws = _create_workspace(stub_harness)
+    kanban = _create_kanban(stub_harness, ws)
+
+    session_id = _create_kanban_task_idle(stub_harness, ws, kanban, name="prog stale")
     _equip_row(stub_harness, session_id, "mcp_removed_server_do_thing", "removed")
 
-    _queue_message(stub_harness, session_id, RESTRICTED_ALLOWLIST)
+    _run_existing_session(stub_harness, session_id)
 
-    assert _wait_for_tool_count(stub_harness) == EXPECTED_RESTRICTED_TOOLS, (
-        "a stale session_progressive_tool row must contribute nothing"
-    )
+    got = _wait_for_tool_count(stub_harness)
+    assert got == KANBAN_SEEDED_TOOLS, f"a stale row must contribute nothing, got {got}"
 
 
-# ─── 4. The validation rule at the DB level ─────────────────────────────────
+# ─── 5. The validation rule at the DB level ─────────────────────────────────
 
 
 def test_duplicate_equip_row_is_rejected_by_the_primary_key(
@@ -213,8 +293,8 @@ def test_duplicate_equip_row_is_rejected_by_the_primary_key(
     equipped, do not insert" — INSERT OR IGNORE leaves exactly one row, which
     is what makes `use_tool`'s inserted=false honest."""
     session_id = "prog-test-dup"
-    _equip_row(stub_harness, session_id, "glob")
-    _equip_row(stub_harness, session_id, "glob")
+    _equip_row(stub_harness, session_id, "set_git_worktree")
+    _equip_row(stub_harness, session_id, "set_git_worktree")
 
     conn = sqlite3.connect(str(_db_path(stub_harness)))
     try:
@@ -226,16 +306,3 @@ def test_duplicate_equip_row_is_rejected_by_the_primary_key(
         conn.close()
 
     assert n == 1, f"expected exactly one row after two identical equips, got {n}"
-
-
-# ─── 5. The equip is per session ────────────────────────────────────────────
-
-
-def test_equip_does_not_leak_into_another_session(stub_harness: FunctionalHarness) -> None:
-    _equip_row(stub_harness, "prog-test-scope-a", "kanban_list")
-
-    _queue_message(stub_harness, "prog-test-scope-b", RESTRICTED_ALLOWLIST)
-
-    assert _wait_for_tool_count(stub_harness) == EXPECTED_RESTRICTED_TOOLS, (
-        "another session's equip row must not reach this session's tool list"
-    )

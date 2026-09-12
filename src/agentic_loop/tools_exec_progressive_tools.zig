@@ -296,11 +296,27 @@ test "static contract: handle_tool persists progressive_tool_save" {
     try testing.expect(std.mem.indexOf(u8, src, "saveProgressiveTool") != null);
 }
 
-test "static contract: the workflow gates the meta tools on a non-empty catalog" {
+test "static contract: the three tools are injected via the session's tool config, and seeded at creation" {
     const src = @embedFile("workflow.zig");
 
     try testing.expect(std.mem.indexOf(u8, src, "progressive_catalog.buildCatalog") != null);
-    // The meta-tools must be appended unconditionally — no catalog gate.
-    try testing.expect(std.mem.indexOf(u8, src, "ALL_PROGRESSIVE_TOOLS") != null);
+    // No catalog-size gate and no mode gate: the three are ordinary tools,
+    // present when the session's allowlist names them.
     try testing.expect(std.mem.indexOf(u8, src, "include_progressive_tools") == null);
+    try testing.expect(std.mem.indexOf(u8, src, "catalog.len > 0 or") == null);
+}
+
+test "static contract: DEFAULT_AGENT_TOOLS carries the three, and only agent/kanban seed it" {
+    const equipped_src = @embedFile("tools_equipped.zig");
+    for (pmod.PROGRESSIVE_TOOL_NAMES) |name| {
+        try testing.expect(std.mem.indexOf(u8, equipped_src, name) != null);
+    }
+    try testing.expect(std.mem.indexOf(u8, equipped_src, "DEFAULT_AGENT_TOOLS") != null);
+
+    // The seed is what scopes the default to agent + kanban mode: those are
+    // the only creation paths that apply it.
+    const agent_src = @embedFile("../http_handlers/workspace_items_create_agent.zig");
+    try testing.expect(std.mem.indexOf(u8, agent_src, "seedDefaultAgentTools") != null);
+    const kanban_src = @embedFile("../http_handlers/workspace_items_create_kanban.zig");
+    try testing.expect(std.mem.indexOf(u8, kanban_src, "seedDefaultKanbanTools") != null);
 }

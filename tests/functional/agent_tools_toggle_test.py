@@ -170,11 +170,14 @@ EXPECTED_DEFAULTS = [
     "save_memory",
     "search",
     "search_history",
+    "search_tool",
     "spawn_sub_agent",
     "text_replace",
     "update_activity",
     "update_plan",
     "use_skill",
+    "use_tool",
+    "view_tool",
     "write_file",
 ]
 NON_DEFAULT_TOOL = "show_preview"

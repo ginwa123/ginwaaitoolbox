@@ -314,11 +314,14 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
     list_sub_agent_mod.list_sub_agent_tool.function.name,
 
-    // progressive tool search — part of the default equipped set in every
-    // mode. They are also appended unconditionally by
-    // `workflow.filterAndMergeTools` (and are exempt from the allowlist), so
-    // listing them here is about making the feature visible in the Tools tab
-    // rather than about gating it.
+    // progressive tool search — part of the default equipped set, seeded at
+    // creation. ONLY `workspace_items_create_agent` and
+    // `workspace_items_create_kanban` call the seed functions, so this list is
+    // the mechanism that scopes the three tools to AGENT and KANBAN mode:
+    // design and folder items seed no tool list at all and therefore never get
+    // them. They are also appended by `workflow.filterAndMergeTools` for those
+    // two modes (and are exempt from the allowlist), which is what lets an
+    // agent whose rows predate them still use them.
     progressive_tools_mod.search_tool_tool.function.name,
     progressive_tools_mod.view_tool_tool.function.name,
     progressive_tools_mod.use_tool_tool.function.name,

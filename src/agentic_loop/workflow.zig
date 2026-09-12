@@ -1039,9 +1039,10 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
 
         const registered_tools = tools.all_agent_tools(allocator);
-        // The catalog is built for the diagnostic log below (how many tools
-        // this session could still discover). It no longer gates anything:
-        // the three meta-tools are equipped in every mode.
+        // The catalog is built for the diagnostic log line below (how many
+        // tools this session could still discover). It gates nothing: the
+        // three progressive tools are ordinary tools, injected when the
+        // session's tool config includes them.
         const catalog = try progressive_catalog.buildCatalog(
             allocator,
             registered_tools,
@@ -1060,12 +1061,13 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             progressive_names,
         );
         logger.infoFmt(
-            "[CHECKPOINT] tools resolved mcp_count={d} mcp_equipped={d} builtin_equipped={d} catalog={d} merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
+            "[CHECKPOINT] tools resolved mcp_count={d} mcp_equipped={d} builtin_equipped={d} catalog={d} item_type='{s}' merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
             .{
                 if (mcp_tools) |t| t.len else 0,
                 countNamesIn(mcp_tools orelse &.{}, progressive_names),
                 countNamesIn(registered_tools, progressive_names),
                 catalog.len,
+                workspace_item_type,
                 merged_tools.len,
                 copy_allowed_tools.len,
                 copy_is_sub_agent,
@@ -1792,14 +1794,14 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 ///   in equip order. Built-ins named here are injected even when the
 ///   allowlist excluded them — that is what `use_tool` is for.
 ///
-/// `search_tool` / `view_tool` / `use_tool` are ALWAYS appended, in every
-/// mode (agent, kanban, design, folder, chat, sub-agent). They are the
-/// session's only route to a tool it does not have, so gating them on the
-/// catalogue being non-empty would silently remove that route exactly when a
-/// catalogue appears — e.g. right after the agent equips the last
-/// discoverable tool. They are also exempt from the allowlist (like the MCP
-/// tools): they are infrastructure, not user-curated capability, so an agent
-/// whose `agent_tools` rows predate them still gets them.
+/// `search_tool` / `view_tool` / `use_tool` are ordinary tools here: they are
+/// injected when the session's tool config includes them. That config is the
+/// creation-time seed (`DEFAULT_AGENT_TOOLS`), which ONLY
+/// `workspace_items_create_agent` and `workspace_items_create_kanban` apply —
+/// so those two modes get them by default, and they are the user's to toggle
+/// from the Tools tab afterwards. No design or folder creation path seeds a
+/// tool list, so those modes only get them if their config explicitly
+/// includes them.
 pub fn filterAndMergeTools(
     allocator: std.mem.Allocator,
     mcp_tools: ?[]const agent.AgentTool,
@@ -1829,19 +1831,8 @@ pub fn filterAndMergeTools(
         try out.append(allocator, tool);
     }
 
-    // The meta-tools sit immediately after the enabled block. Putting them
-    // BEFORE the session-equipped tools is what makes the whole array
-    // append-only under equipping: everything `use_tool` adds lands at the
-    // very end, so the prefix never shifts (see the append-only invariant in
-    // the plan). Unconditional — see the doc comment above.
-    for (progressive_tools_mod.ALL_PROGRESSIVE_TOOLS) |tool| {
-        if (seen.contains(tool.function.name)) continue;
-        try seen.put(allocator, tool.function.name, {});
-        try out.append(allocator, tool);
-    }
-
     // Built-ins this session enabled for itself. Injected even when the
-    // allowlist excluded them.
+    // allowlist excluded them — that is the point of `use_tool`.
     for (progressive_equipped) |name| {
         if (seen.contains(name)) continue;
         if (is_sub_agent and std.mem.eql(u8, name, "spawn_sub_agent")) continue;
@@ -2603,31 +2594,53 @@ test "filterAndMergeTools: a not-enabled built-in becomes available once session
     try testing.expect(found_read_file);
 }
 
-test "filterAndMergeTools: the progressive meta-tools are ALWAYS appended, in every mode" {
+test "filterAndMergeTools: the progressive tools ship when the tool config names them" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Reference point: an allowlist that names only read_file (so every other
-    // built-in is excluded). Note "read_file" is NOT one of the meta names.
-    const merged = try filterAndMergeTools(alloc, null, "read_file", false, &.{});
+    // A tool config that NAMES them — which is exactly what the creation-time
+    // seed does for agent and kanban items (DEFAULT_AGENT_TOOLS includes the
+    // three, and only workspace_items_create_agent / _kanban apply that list).
+    const seeded = "read_file,search_tool,view_tool,use_tool";
+    const with_metas = try filterAndMergeTools(alloc, null, seeded, false, &.{});
     for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
         var found = false;
-        for (merged) |t| {
+        for (with_metas) |t| {
             if (std.mem.eql(u8, t.function.name, name)) found = true;
         }
         try testing.expect(found);
     }
-    // ...and they bypass the allowlist, as does nothing else here.
     var found_read_file = false;
-    for (merged) |t| {
+    for (with_metas) |t| {
         if (std.mem.eql(u8, t.function.name, "read_file")) found_read_file = true;
     }
     try testing.expect(found_read_file);
-    try testing.expectEqual(@as(usize, 1 + progressive_tools_mod.PROGRESSIVE_TOOL_NAMES.len), merged.len);
+    try testing.expectEqual(@as(usize, 4), with_metas.len);
 
-    // Same for a sub-agent: only spawn_sub_agent is ever stripped.
-    const sub = try filterAndMergeTools(alloc, null, "read_file", true, &.{});
+    // A tool config that does NOT name them (a design or folder item, which
+    // seeds no list, or a user who unticked them): they are simply absent —
+    // no special-casing either way.
+    const without_metas = try filterAndMergeTools(alloc, null, "read_file,glob", false, &.{});
+    for (without_metas) |t| {
+        for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
+            try testing.expect(!std.mem.eql(u8, t.function.name, name));
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), without_metas.len);
+
+    // `use_tool` remains the escape hatch: an equipped tool is injected even
+    // when the allowlist excluded it.
+    const equipped = try filterAndMergeTools(alloc, null, "read_file", false, &.{"use_tool"});
+    var found_equipped = false;
+    for (equipped) |t| {
+        if (std.mem.eql(u8, t.function.name, "use_tool")) found_equipped = true;
+    }
+    try testing.expect(found_equipped);
+    try testing.expectEqual(@as(usize, 2), equipped.len);
+
+    // Only spawn_sub_agent is ever stripped for a sub-agent.
+    const sub = try filterAndMergeTools(alloc, null, seeded, true, &.{});
     for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
         var found = false;
         for (sub) |t| {
@@ -2714,7 +2727,10 @@ test "progressive tool search: equipping a built-in makes it appear in the next 
     try testing.expect(glob_discoverable);
 
     var names_before: [0][]const u8 = .{};
-    const before = try filterAndMergeTools(a, null, "read_file", false, &names_before);
+    // What agent/kanban creation seeds: the three progressive tools are
+    // named in the tool config, so they are in the list from turn one.
+    const seeded_allowlist = "read_file" ++ ",search_tool" ++ ",view_tool" ++ ",use_tool";
+    const before = try filterAndMergeTools(a, null, seeded_allowlist, false, &names_before);
     var found_glob_before = false;
     var found_search_tool_before = false;
     for (before) |t| {
@@ -2743,7 +2759,7 @@ test "progressive tool search: equipping a built-in makes it appear in the next 
         try testing.expect(!std.mem.eql(u8, entry.name, "glob"));
     }
 
-    const after = try filterAndMergeTools(a, null, "read_file", false, names_after);
+    const after = try filterAndMergeTools(a, null, seeded_allowlist, false, names_after);
     var found_glob_after = false;
     var found_read_file_after = false;
     var found_search_tool_after = false;

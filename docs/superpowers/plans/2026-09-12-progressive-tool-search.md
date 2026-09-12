@@ -1,11 +1,19 @@
-# Progressive Tool Search Implementation Plan (rev 4)
+# Progressive Tool Search Implementation Plan (rev 5)
 
-> **Rev 4 (post-implementation, 2026-09-12).** `search_tool` / `view_tool` /
-> `use_tool` are now **default-equipped in every mode**, at the reviewer's
-> request: `filterAndMergeTools` appends them unconditionally (the
-> catalog-size gate described in Design Decision 7 is gone) and they are
-> seeded into `DEFAULT_AGENT_TOOLS`, so both agent and kanban items list them.
-> Design Decision 7 below is kept for history but is superseded.
+> **Rev 4/5 (post-implementation, 2026-09-12).** `search_tool` / `view_tool` /
+> `use_tool` are **default-equipped in agent mode and kanban mode only**, via
+> the creation-time seed: they are part of `DEFAULT_AGENT_TOOLS`, and the only
+> two creation paths that apply that list are
+> `workspace_items_create_agent` and `workspace_items_create_kanban`. No
+> design or folder creation path seeds a tool list, so those modes never get
+> them by default.
+>
+> They are therefore **ordinary tools** as far as injection goes — present when
+> the session's tool config names them, and the user can toggle them from the
+> Tools tab. Two designs were tried and dropped on the way here: gating them on
+> a non-empty catalog (rev 3's Design Decision 7, which removed the agent's
+> only route to an un-equipped tool exactly when a catalog existed) and an
+> unconditional append (rev 4). Both are superseded by the seed.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
