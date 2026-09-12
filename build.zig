@@ -544,6 +544,14 @@ fn linkPlatformDeps(
             // "unable to find dynamic system library 'ssl' using strategy 'paths_first'. searched paths: none".
             // Forcing the path here makes the linker find the system libs.
             exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+            // Lua hooks (src/agentic_loop/lua_bindings.zig + hooks.zig):
+            // hand-declared Lua 5.4 externs, paired with
+            // /usr/include/lua5.4 headers (NOT top-level /usr/include/lua.h,
+            // which is 5.5 — mixing segfaults). Linux-only: other targets
+            // skip this and hooks.zig compiles to no-ops via a comptime
+            // builtin.os.tag guard, so macOS/Windows never need the lib.
+            // No addIncludePath needed (no @cImport — pure extern fns).
+            exe.root_module.linkSystemLibrary("lua5.4", .{});
         },
         .macos => {
             // Everything database-related (sqlite3 amalgamation) is handled
@@ -2688,6 +2696,10 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         mod_tests_module.link_libc = true;
         if (test_target.result.os.tag == .linux) {
             mod_tests_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+            // Lua hooks (src/agentic_loop/lua_bindings.zig + hooks.zig) —
+            // same Linux-only linkage as linkPlatformDeps above. Non-Linux
+            // test hosts skip it; hooks tests self-skip via comptime guard.
+            mod_tests_module.linkSystemLibrary("lua5.4", .{});
         }
     }
 

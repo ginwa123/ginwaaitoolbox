@@ -896,6 +896,11 @@ test {
     _ = @import("agentic_loop/agent_kanban_tools_allowed.zig");
     _ = @import("agentic_loop/prompts_make_agent_kanban_knowledge.zig");
     _ = @import("agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
+    // Single-file Lua hooks (plan 2026-09-12-hook-lua-pre-post-tool-use):
+    // impl + inline tests in one file each. Same discovery workaround as
+    // mcp_http above — the `pub const` re-export alone doesn't pull tests.
+    _ = @import("agentic_loop/lua_bindings.zig");
+    _ = @import("agentic_loop/hooks.zig");
     // `databases` package tests run via its own `zig build test`
     // (cd src/modules/databases && zig build test) — see the
     // package's build.zig. The main test step doesn't import them
