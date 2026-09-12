@@ -448,7 +448,7 @@ pub fn build(b: *std.Build) void {
             } else {
                 mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
             }
-            // bcrypt.dll is needed by src/modules/kabelweb/src/server/security.zig
+            // bcrypt.dll is needed by kabelweb repo src/server/security.zig
             // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
             mod.linkSystemLibrary("bcrypt", .{});
         },

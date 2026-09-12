@@ -2969,7 +2969,7 @@ pub const Agent = struct {
                 // network drop from an EOF mid-line, instead of all collapsing
                 // into "StreamInterrupted". Special-case `UnsupportedProtocol`
                 // when the URL was https:// — the vendored libcurl in
-                // src/modules/kabelweb/vendor/curl/ is built with
+                // kabelweb repo vendor/curl/ is built with
                 // --disable-ssl (see scripts/build-vendor-curl.sh:8-18), so
                 // the only way an https URL produces CURLE_UNSUPPORTED_PROTOCOL
                 // is that the vendored libcurl literally doesn't know the

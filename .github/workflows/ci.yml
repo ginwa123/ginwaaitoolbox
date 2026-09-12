@@ -1053,11 +1053,11 @@ jobs:
             .zig-cache
             # Module-owned vendor dirs (each module carries its own; the
             # root-level `vendor/` was removed in PR #211's
-            # self-contained-package refactor). Both `src/modules/...`
+            # self-contained-package refactor). `src/modules/...`
             # paths are the ones build.zig's `addObjectFile` and
-            # `addIncludePath` calls read from.
+            # `addIncludePath` calls read from. (kabelweb's vendor dir
+            # is gone — external URL dependency now.)
             src/modules/databases/vendor
-            src/modules/kabelweb/vendor
           # PERF (2026-08-25): `zig-out` (~90 MB nalar + ~34 MB
           # nalar-desktop per cell) and
           # `src/apps/desktop_app/embedded/webapp_assets.zig` were

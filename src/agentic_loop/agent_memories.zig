@@ -357,7 +357,7 @@ pub fn loadMemoriesByFts(
 
 /// Generate a fresh `mem_<16-hex>` id.
 ///
-/// Platform CSPRNG dispatch (mirrors `src/modules/kabelweb/src/server/security.zig::generateNonce`):
+/// Platform CSPRNG dispatch (mirrors `kabelweb repo src/server/security.zig::generateNonce`):
 ///   * Linux → libc `getrandom(2)` (loops on partial reads). Declared
 ///     inside a `comptime` `.linux` branch so the `std.os.linux.getrandom`
 ///     reference is only validated when compiling for Linux targets — see

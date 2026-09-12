@@ -10,16 +10,13 @@
         .databases = .{
             .path = "src/modules/databases",
         },
-        // Unified web-framework library (pure-Zig HTTP server +
-        // libcurl-backed HTTP client). Lives in-tree at
-        // src/modules/kabelweb/ and exposes a single `kabelweb` module;
-        // consumers `@import("kabelweb")` and reach
-        // `kabelweb.server` / `kabelweb.client`. The package's own
-        // build.zig wires the vendored prebuilt archive from
-        // vendor/curl/<target>/lib/libcurl.a plus system ssl/crypto
-        // for the server-side TLS.
+        // External web-framework library (pure-Zig HTTP server +
+        // libcurl-backed HTTP client). Pinned by URL + hash; exposes a
+        // single `kabelweb` module — consumers `@import("kabelweb")`
+        // and reach `kabelweb.server` / `kabelweb.client`.
         .kabelweb = .{
-            .path = "src/modules/kabelweb",
+            .url = "https://github.com/ginwa123/kabelweb/archive/519f42b0e654af4e58b1c13c8fa1a55e74bf5aef.tar.gz",
+            .hash = "kabelweb-0.0.0-vhZam9nLGADq96sxxBxtio-9Da_vjlwWh_wvpxcfMoP-",
         },
         // Cross-platform portable helpers (sleep, fileExists,
         // unixTimestampNanos, etc.) used by every module. Promoted

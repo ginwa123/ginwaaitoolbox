@@ -167,7 +167,7 @@ default or the dev backend.
 
 The probe socket sets `SO_REUSEADDR` so it can bind ports in TIME_WAIT
 state. nalar's listener also sets `SO_REUSEADDR` (see
-`src/modules/kabelweb/src/server/http_server.zig:201 setReuseAddr`),
+`kabelweb repo src/server/http_server.zig:201 setReuseAddr`),
 so it can subsequently bind the same port despite lingering server-side
 TIME_WAITs from prior runs.
 

@@ -1064,7 +1064,7 @@ test "StdioRegistry.deinit kills spawned children (no hang)" {
 
 // ── FD-leak regression tests ───────────────────────────────────────────────
 //
-// Same pattern as modules/kabelweb/src/client/fd_leak_test.zig — we
+// Same pattern as kabelweb repo src/client/fd_leak_test.zig — we
 // count open FDs via `ls /proc/self/fd | wc -l` (Linux only; skip on
 // other OS) and assert that spawn + deinit cycles do not grow the count.
 // The test spawns multiple stdio children in a tight loop and verifies

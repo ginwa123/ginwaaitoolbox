@@ -868,9 +868,10 @@ pub const workspace_item_tasks = @import("agentic_loop/llm_history.zig");
 pub const http_response = @import("http_handlers/http_response.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("http_handlers/mod.zig");
-// kabelweb — unified web-framework library (pure-Zig HTTP server +
-// libcurl-backed HTTP client). `gserverz` stays as the server alias so
-// the ~40 handlers keep compiling untouched.
+// kabelweb — external web-framework library (pure-Zig HTTP server +
+// libcurl-backed HTTP client, pinned by URL in build.zig.zon).
+// `gserverz` stays as the server alias so the ~40 handlers keep
+// compiling untouched.
 pub const kabelweb = @import("kabelweb");
 pub const gserverz = kabelweb.server;
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
@@ -902,10 +903,9 @@ test {
     // its root.zig's `test { ... }` block.
     _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
-    // kabelweb (server + client) tests run through the package's own
-    // runner: the repo-root gate compiles a kabelweb test binary (see
-    // build.zig's kabelweb gate), and `cd src/modules/kabelweb &&
-    // zig build test` runs everything including the 60 s SSE soaks.
+    // kabelweb (server + client) is an external URL dependency — its
+    // suites run in its own repo CI (github.com/ginwa123/kabelweb), not
+    // here. A consumer build never runs a dependency's test blocks.
     // (read_html_test.zig stays excluded everywhere — orphaned from
     // ginwasaas, its fixtures don't exist in ginwaaitoolbox.)
     _ = @import("modules/test_runner.zig");

@@ -636,7 +636,7 @@ pub fn cleanupStaleBackgroundProcesses(input: CleanupStaleBackgroundProcessInput
 }
 
 /// Cron callback. Signature is fixed by
-/// `cronjob_manager.register` (`src/modules/kabelweb/src/server/cronjob_manager.zig:87`):
+/// `cronjob_manager.register` (`kabelweb repo src/server/cronjob_manager.zig:87`):
 /// `*const fn (ctx: ?*anyopaque, now_unix: i64) void`.
 ///
 /// Returns `void` (not `!void`) — DB errors are caught and logged

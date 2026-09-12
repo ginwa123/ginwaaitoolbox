@@ -516,7 +516,7 @@ fn findBashOnWindows() ?[]const u8 {
 ///   - Linux:     ssl / crypto / pq + /usr/include (sqlite3 lives in the
 ///                `databases` package — propagated via the module graph)
 ///   - macOS:     (nothing — curl is universal via kabelweb_mod)
-///   - Windows:   bcrypt (for src/modules/kabelweb/src/server/security.zig)
+///   - Windows:   bcrypt (for kabelweb repo src/server/security.zig)
 ///
 /// What used to live here: per-platform sqlite3 amalgamation/archives
 /// + brew paths. Those moved to src/modules/databases/build.zig, which
@@ -554,7 +554,7 @@ fn linkPlatformDeps(
         .windows => {
             // Everything database-related (sqlite3 amalgamation + bcrypt)
             // is handled by the `databases` package. bcrypt.dll is needed
-            // by src/modules/kabelweb/src/server/security.zig
+            // by kabelweb repo src/server/security.zig
             // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
         },
         else => {
@@ -931,7 +931,7 @@ pub fn build(b: *std.Build) void {
     // which links the vendored prebuilt archive from
     // vendor/curl/<target>/lib/libcurl.a. The package picks up the
     // right archive based on the target the consumer passes via
-    // b.dependency(). See src/modules/kabelweb/build.zig for
+    // b.dependency(). See the kabelweb repo build.zig for
     // the full rationale.
 
     const mod = b.addModule("nalarcore", .{
@@ -1004,7 +1004,7 @@ pub fn build(b: *std.Build) void {
     // === kabelweb module (libcurl-backed HTTP) ===
     // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
     // can `@import("kabelweb")`. Same libcurl deps as the
-    // sibling build at src/modules/kabelweb/build.zig.
+    // sibling build in the kabelweb repo.
     //
     // Self-contained package — mirrors the `databases` package pattern.
     // The package's own build.zig wires the vendored prebuilt archive
@@ -1242,70 +1242,13 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // === fetch-vendor-curl build step ===
-    // Cross-compile to macOS/Windows AND native Linux builds need
-    // the vendored libcurl.a archive in
-    // src/modules/kabelweb/vendor/curl/<target>/lib/. The
-    // script (src/modules/kabelweb/scripts/build-vendor-curl.sh
-    // — co-located with the package) cross-compiles from source. It's
-    // idempotent — re-running on a populated vendor/ is fast (no-op
-    // after first build).
-    //
-    // MUST be defined BEFORE `b.installArtifact(exe)` below — the
-    // default `install` step (which `zig build` runs) depends on
-    // the installed artifact's step, which we're about to add a
-    // dependency on. Defining fetch_vendor_curl_step after
-    // b.installArtifact would mean the default install doesn't
-    // trigger the fetch, leaving the build broken on fresh checkouts
-    // (where vendor/curl/ is gitignored + empty).
-    //
-    // SKIP-WHEN-SYSTEM-PRESENT: same pattern as fetch-vendor-sqlite3.
-    // On a Linux host with system libcurl + openssl, the fetch step
-    // is replaced with a no-op so `zig build` doesn't spend ~30 min
-    // cross-compiling curl + openssl from source.
-    const fetch_vendor_curl_step = b.step(
-        "fetch-vendor-curl",
-        "Build src/modules/kabelweb/vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
-            "Auto-runs on `zig build` or any install:* target when the vendor dir is missing. SKIPPED when the host has system libcurl + ssl + crypto (see system-deps probe output).",
-    );
-    if (curl_uses_system) {
-        // Shell selection (cross-platform fix): see the matching
-        // fetch-vendor-sqlite3 block above for the rationale.
-        const skip_msg = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
-            .windows => &.{ "cmd.exe", "/c", "echo [fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected)." },
-            else => &.{ "sh", "-c", "echo '[fetch-vendor-curl] SKIPPED — host has system libcurl + ssl + crypto (probe detected).'" },
-        });
-        fetch_vendor_curl_step.dependOn(&skip_msg.step);
-    } else {
-        // Windows: `bash` is not on PATH (Git for Windows ships it at
-        // `C:\Program Files\Git\bin\bash.exe` without adding that dir to
-        // PATH). `findBashOnWindows()` probes the canonical install
-        // locations and returns the absolute path. Linux/macOS hosts
-        // keep the bare `"bash"` (always on PATH on POSIX).
-        //
-        // Even with bash found, building libcurl + OpenSSL from source
-        // on Windows requires gcc/make/perl + the Perl Locale/Maketext
-        // module that the OpenSSL Configure script pulls in. On a
-        // typical dev box those aren't installed. The script itself
-        // detects a Windows host via `uname -s == *MINGW* / MSYS*` and
-        // exits with a clear error so the user gets an actionable
-        // message instead of an opaque `process exited with error code 49`.
-        const bash_path: []const u8 = switch (b.graph.host.result.os.tag) {
-            .windows => findBashOnWindows() orelse "bash",
-            else => "bash",
-        };
-        const fetch_vendor_curl_run = b.addSystemCommand(&.{
-            bash_path, "src/modules/kabelweb/scripts/build-vendor-curl.sh",
-        });
-        fetch_vendor_curl_run.setCwd(b.path(""));
-        fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
-    }
+    // NOTE: there is no fetch-vendor-curl step anymore. kabelweb is an
+    // external URL dependency — its own package + CI own the vendored
+    // curl archive (see the kabelweb repo's scripts/build-vendor-curl.sh).
+    // nalar builds link system curl/ssl/crypto through the module graph
+    // (kabelweb's system probe), so no fetch is needed here.
 
     b.installArtifact(exe);
-    // Make the default `install` step (which `zig build` runs)
-    // depend on fetch_vendor_curl — this is what makes `zig build`
-    // work on a fresh checkout where vendor/curl/ is empty.
-    b.getInstallStep().dependOn(fetch_vendor_curl_step);
 
     exe.root_module.linkSystemLibrary("c", .{});
     exe.root_module.link_libc = true;
@@ -2506,7 +2449,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //   - GET   /api/llm/session/:id/messages
     //   - GET   /api/events?channels=...   (SSE)
     // via the project's `kabelweb` module (libcurl-backed,
-    // cross-platform per `src/modules/kabelweb/NALAR.md`).
+    // cross-platform per the kabelweb repo docs).
     //
     // The CLI module is independent of `nalarcore`: it talks HTTP,
     // not SQLite, so importing `mod` would pull in the database +
@@ -2765,47 +2708,36 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     prependVcpkgBinToPath(b, run_mod_tests);
 
     const test_step = b.step("test", "Run tests");
-    // Fresh checkouts need both vendor dirs populated before any
-    // Compile step can link the vendored libcurl archive or compile
-    // the sqlite3 amalgamation. Without these deps, `zig build test`
+    // Fresh checkouts need the sqlite3 amalgamation before any
+    // Compile step can compile it. Without this dep, `zig build test`
     // on a clean checkout fails with "file not found" for
-    // vendor/sqlite3/sqlite3.c (databases package) and/or
-    // vendor/curl/<target>/lib/libcurl.a (kabelweb package).
+    // vendor/sqlite3/sqlite3.c (databases package).
     //
-    // The deps MUST be on the COMPILE step (`mod_tests.step`), not
+    // (libcurl needs no fetch step: kabelweb is an external URL
+    // dependency now — its own package + CI own the vendored curl
+    // archive, and nalar builds link system curl/ssl/crypto via the
+    // module graph. See the kabelweb repo.)
+    //
+    // The dep MUST be on the COMPILE step (`mod_tests.step`), not
     // just on `test_step` or on the wrap step (`run_mod_tests.step`).
     // `addRunArtifact(mod_tests)` wraps the Compile step in a Run
     // step; the Compile step and any deps we attach to the Run step
     // become siblings under that Run step. Zig's build runner
     // dispatches siblings of a parent step in parallel (see
     // `compiler/build_runner.zig:1408-1410`), so attaching the fetch
-    // deps to `run_mod_tests.step` makes them parallel to the compile
-    // step — the compile then races the curl build script and loses
-    // (failure observed on CI run 31706196476: `error: .../vendor/curl/
-    // linux_x86_64/lib/libcurl.a: file not found`). Attaching the deps
-    // to `mod_tests.step` (the Compile step itself) makes them
-    // ordering constraints of the Compile step — the build runner's
+    // dep to `run_mod_tests.step` makes it parallel to the compile
+    // step. Attaching the dep
+    // to `mod_tests.step` (the Compile step itself) makes it an
+    // ordering constraint of the Compile step — the build runner's
     // `pending_deps` counter (see compiler/build_runner.zig:1413-1418)
     // gates the compile on fetch completion.
     test_step.dependOn(&run_mod_tests.step);
-    mod_tests.step.dependOn(fetch_vendor_curl_step);
     mod_tests.step.dependOn(vendor_sqlite3_step);
 
-    // === kabelweb gate (server + client suites, fast set, no 60 s soaks) ===
-    // Reuses the SAME kabelweb module instance nalarcore imports above,
-    // so its files are owned by exactly one module — no "file exists in
-    // two modules" error. Runs kabelweb/src/root.zig's test block
-    // (server runner + sse_chunked + client suites). Link/include lines
-    // propagate from the kabelweb package itself. The 60 s SSE soaks run
-    // only via the package's own build (`cd src/modules/kabelweb &&
-    // zig build test`).
-    const kabelweb_tests = b.addTest(.{
-        .root_module = kabelweb_mod,
-    });
-    kabelweb_tests.step.dependOn(fetch_vendor_curl_step);
-    const run_kabelweb_tests = b.addRunArtifact(kabelweb_tests);
-    prependVcpkgBinToPath(b, run_kabelweb_tests);
-    test_step.dependOn(&run_kabelweb_tests.step);
+    // kabelweb's own suites (server + client) run in the kabelweb
+    // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
+    // external URL dependency, and a consumer build never runs a
+    // dependency's test blocks.
 
     const ai_workflow_tui_test_mod = b.addTest(.{
         .root_module = mod_tests_module,
@@ -2817,14 +2749,12 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     prependVcpkgBinToPath(b, run_ai_workflow_tui_tests);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
     // Same race-condition fix as `test_step` above — the TUI test
-    // reuses `mod_tests_module` (which transitively imports the
-    // vendored libcurl.a + sqlite3.c), so the COMPILE step
-    // (`ai_workflow_tui_test_mod.step`) must wait for the fetch
-    // steps to complete. Attaching to the Run step (the wrap) is
-    // wrong — it would make the fetch a sibling of the compile, not
-    // a prerequisite.
+    // reuses `mod_tests_module` (which transitively imports sqlite3.c),
+    // so the COMPILE step (`ai_workflow_tui_test_mod.step`) must wait
+    // for the fetch step to complete. Attaching to the Run step (the
+    // wrap) is wrong — it would make the fetch a sibling of the
+    // compile, not a prerequisite.
     test_ai_workflow_tui_step.dependOn(&run_ai_workflow_tui_tests.step);
-    ai_workflow_tui_test_mod.step.dependOn(fetch_vendor_curl_step);
     ai_workflow_tui_test_mod.step.dependOn(vendor_sqlite3_step);
 
     const linux_step = b.step("install:linux", "Build for Linux x86_64");
@@ -2842,12 +2772,10 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // build.zig). No need to call linkSystemLibrary("curl", ...) or
     // linkCurlIncludePath here — the module graph handles it.
     linux_exe.root_module.link_libc = true;
-    linux_step.dependOn(fetch_vendor_curl_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
     // step (not just the parent step) so the build runner's
     // pending_deps counter gates the compile on the fetch completion.
     // Same rationale as the comment on `test_step` above.
-    linux_exe.step.dependOn(fetch_vendor_curl_step);
     linux_exe.step.dependOn(vendor_sqlite3_step);
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
@@ -2863,21 +2791,15 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
     const windows_exe = createPlatformExe(b, mod, helpers_mod, windows_target, optimize, "nalarcore-windows-x86_64");
-    // libcurl is linked via kabelweb_mod's transitive deps.
-    // NOTE: src/modules/kabelweb/vendor/curl/windows-amd64/
-    // is NOT built yet (MinGW setup pending — see the curl build
-    // script for the gap).
+    // libcurl is linked via kabelweb_mod's transitive deps (kabelweb
+    // package owns its Windows/vcpkg wiring).
     windows_exe.root_module.link_libc = true;
     // Fresh checkout: src/modules/databases/vendor/sqlite3/ doesn't
     // exist yet. Depend on the auto-fetch step so the cross-target
     // linker sees sqlite3.c.
-    // Also depend on fetch-vendor-curl so the windows-amd64/ vendor
-    // dir gets built (currently fails — see MinGW note above).
-    windows_step.dependOn(fetch_vendor_curl_step);
     windows_step.dependOn(vendor_sqlite3_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
     // step. See the `test_step` comment for the full rationale.
-    windows_exe.step.dependOn(fetch_vendor_curl_step);
     windows_exe.step.dependOn(vendor_sqlite3_step);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
@@ -2906,18 +2828,10 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "nalarcore-macos-x86_64");
     // libcurl is linked via kabelweb_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
-    macos_step.dependOn(fetch_vendor_curl_step);
     macos_step.dependOn(vendor_sqlite3_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
     // step. See the `test_step` comment for the full rationale.
-    macos_exe.step.dependOn(fetch_vendor_curl_step);
     macos_exe.step.dependOn(vendor_sqlite3_step);
-    // When the host is macOS, the system-deps probe already short-
-    // circuited fetch_vendor_curl_step to a no-op. When the host is
-    // Linux/Windows (cross-compile), the probe returned use_system=false
-    // AND the package's vendored-archive path was selected — so we
-    // ALSO need the fetch to actually run. The `dependOn` above
-    // covers both.
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -2929,11 +2843,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
     // libcurl is linked via kabelweb_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
-    macos_arm_step.dependOn(fetch_vendor_curl_step);
     macos_arm_step.dependOn(vendor_sqlite3_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
     // step. See the `test_step` comment for the full rationale.
-    macos_arm_exe.step.dependOn(fetch_vendor_curl_step);
     macos_arm_exe.step.dependOn(vendor_sqlite3_step);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
@@ -2945,11 +2857,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via kabelweb_mod's transitive deps.
     linux_system_exe.root_module.link_libc = true;
-    linux_system_step.dependOn(fetch_vendor_curl_step);
     linux_system_step.dependOn(vendor_sqlite3_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
     // step. See the `test_step` comment for the full rationale.
-    linux_system_exe.step.dependOn(fetch_vendor_curl_step);
     linux_system_exe.step.dependOn(vendor_sqlite3_step);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
@@ -3106,10 +3016,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     dev_exe.root_module.linkSystemLibrary("c", .{});
     // libcurl is linked via kabelweb_mod's transitive deps.
     dev_exe.root_module.link_libc = true;
-    dev_linux_system_step.dependOn(fetch_vendor_curl_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
     // step. See the `test_step` comment for the full rationale.
-    dev_exe.step.dependOn(fetch_vendor_curl_step);
     dev_exe.step.dependOn(vendor_sqlite3_step);
     linkPlatformDeps(b, dev_exe, target);
     if (target.result.os.tag == .windows) {
@@ -3312,28 +3220,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const functional_test_ui_step = b.step("functional-test-ui", "Run UI functional tests (Playwright Python) against nalar + Vite dev server");
     functional_test_ui_step.dependOn(&run_functional_ui.step);
 
-    // ============================================================
-    // kabelweb server demo (TCP) - build step
-    // (The canonical demo now lives in the kabelweb package as
-    // `kabelweb-server-demo`; this root step is the same binary.)
-    // ============================================================
-    const tcp_exe = b.addExecutable(.{
-        .name = "kabelweb-server-demo",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/modules/kabelweb/src/examples/server_demo.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "helpers", .module = helpers_mod },
-            },
-        }),
-    });
-    tcp_exe.root_module.linkSystemLibrary("c", .{});
-
-    const run_tcp_step = b.step("run:custom_tcp", "Run the kabelweb server demo");
-    const run_tcp_cmd = b.addRunArtifact(tcp_exe);
-    run_tcp_step.dependOn(&run_tcp_cmd.step);
-
     // =====================================================================
     // End-of-build success/failure banner
     // =====================================================================
@@ -3533,7 +3419,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Make `zig build` (default) auto-fetch the vendored curl archive
     // when missing. The fetch script is idempotent — re-running on a
     // populated vendor/ is a fast no-op.
-    build_all_step.dependOn(fetch_vendor_curl_step);
 
     // Default: same as `build:all`. Without this, `zig build` (no args)
     // runs the `install` step alone, which prints no summary on success.
