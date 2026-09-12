@@ -110,7 +110,7 @@ pub fn execSearchTool(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
             "search_tool",
             tc.function.arguments,
             false,
-            "search_tool failed to parse input (expected {\"query\"?: string, \"server\"?: string})",
+            "search_tool failed to parse input (expected {\"query\"?: string, \"literal\"?: bool, \"limit\"?: number, \"offset\"?: number, \"server\"?: string})",
             "",
         );
         return result(ctx, output);
@@ -118,21 +118,66 @@ pub fn execSearchTool(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     defer parsed.deinit();
 
     const query = parsed.value.query orelse "";
+    const literal = parsed.value.literal orelse false;
     const server = parsed.value.server orelse "";
+
+    // ── Paging bounds ──
+    // Rejected, never silently clamped: the model pages by offset from the
+    // `<total>` it was shown, so a quiet clamp would make its next call land
+    // on the wrong window. The messages name the accepted range.
+    const limit: usize = blk: {
+        const raw = parsed.value.limit orelse @as(i64, @intCast(progressive_catalog.DEFAULT_SEARCH_LIMIT));
+        if (raw < 1) {
+            const msg = try std.fmt.allocPrint(ctx.allocator, "search_tool: limit must be at least 1 (got {d})", .{raw});
+            const output = try wrapToolOutput(ctx.allocator, "search_tool", tc.function.arguments, false, msg, "");
+            return result(ctx, output);
+        }
+        if (raw > @as(i64, @intCast(progressive_catalog.MAX_SEARCH_LIMIT))) {
+            const msg = try std.fmt.allocPrint(
+                ctx.allocator,
+                "search_tool: limit must be at most {d} (got {d})",
+                .{ progressive_catalog.MAX_SEARCH_LIMIT, raw },
+            );
+            const output = try wrapToolOutput(ctx.allocator, "search_tool", tc.function.arguments, false, msg, "");
+            return result(ctx, output);
+        }
+        break :blk @intCast(raw);
+    };
+    const offset: usize = blk: {
+        const raw = parsed.value.offset orelse 0;
+        if (raw < 0) {
+            const msg = try std.fmt.allocPrint(ctx.allocator, "search_tool: offset must not be negative (got {d})", .{raw});
+            const output = try wrapToolOutput(ctx.allocator, "search_tool", tc.function.arguments, false, msg, "");
+            return result(ctx, output);
+        }
+        break :blk @intCast(raw);
+    };
 
     const inputs = try loadInputs(ctx);
     const catalog = try buildCatalog(ctx, inputs);
 
-    // `matchQuery` returns every match (no cap); `renderSearchResult` applies
-    // MAX_SEARCH_ROWS and reports the real total so the model can narrow.
-    const matches = try progressive_catalog.matchQuery(ctx.allocator, catalog, query, server);
-    const inner = try progressive_catalog.renderSearchResult(
+    // `matchQuery` returns every match (no cap); `pageSlice` + the renderer
+    // apply `offset`/`limit`, and `total` is always the pre-page count so the
+    // model can page deterministically. The query is a regex unless `literal`
+    // says otherwise; a bad pattern degrades to a literal substring match and
+    // the outcome carries the warning.
+    const outcome = try progressive_catalog.matchQuery(
         ctx.allocator,
-        matches,
-        matches.len,
+        catalog,
         query,
         server,
+        .{ .literal = literal },
     );
+    const page = progressive_catalog.pageSlice(outcome.entries, offset, limit);
+    const inner = try progressive_catalog.renderSearchResult(ctx.allocator, page, .{
+        .total = outcome.entries.len,
+        .offset = offset,
+        .limit = limit,
+        .query = query,
+        .server = server,
+        .mode = outcome.mode,
+        .warning = outcome.warning,
+    });
 
     const output = try wrapToolOutput(ctx.allocator, "search_tool", tc.function.arguments, true, null, inner);
     return result(ctx, output);
@@ -264,6 +309,189 @@ pub fn execUseTool(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 // ============================================================================
 // Static contracts
 // ============================================================================
+
+// ============================================================================
+// Adapter integration: the real registry + a real (in-memory) DB
+// ============================================================================
+
+const test_sqlite = nalarcore.sqlite;
+const Migration085 = @import("../migrations/migration.zig").Migration085AddSessionProgressiveTool;
+
+/// The `<tools>…</tools>` block of a rendered result — the rows only, NOT the
+/// `<tool><name>search_tool</name>` in the `wrapToolOutput` envelope around it.
+fn catalogBody(out: []const u8) []const u8 {
+    const open = std.mem.indexOf(u8, out, "<tools>") orelse return "";
+    const start = open + "<tools>".len;
+    const close = std.mem.indexOfPos(u8, out, start, "</tools>") orelse out.len;
+    return out[start..close];
+}
+
+/// Pull every `<tool><name>X</name>` row out of a rendered result, joined by ','.
+fn namesJoined(allocator: std.mem.Allocator, out: []const u8) ![]const u8 {
+    const body = catalogBody(out);
+    var list: std.ArrayList(u8) = .empty;
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, body, cursor, "<tool><name>")) |start_raw| {
+        const start = start_raw + "<tool><name>".len;
+        const end = std.mem.indexOfPos(u8, body, start, "</name>") orelse break;
+        if (list.items.len > 0) try list.append(allocator, ',');
+        try list.appendSlice(allocator, body[start..end]);
+        cursor = end;
+    }
+    return try list.toOwnedSlice(allocator);
+}
+
+fn totalOf(out: []const u8) !usize {
+    const key = "<total>";
+    const start = (std.mem.indexOf(u8, out, key) orelse return error.NoTotal) + key.len;
+    const end = std.mem.indexOfScalarPos(u8, out, start, '<') orelse return error.NoTotal;
+    return std.fmt.parseInt(usize, out[start..end], 10);
+}
+
+fn searchCall(args_json: []const u8) agent.ToolCall {
+    return .{ .id = "call_regex", .type = "function", .function = .{
+        .name = "search_tool",
+        .arguments = args_json,
+    } };
+}
+
+/// One `search_tool` dispatch against the REAL registry, with `read_file` and
+/// `search_tool` enabled (so both are legitimately absent from the catalog) and
+/// everything else discoverable.
+fn searchToolOutput(a: std.mem.Allocator, db: *test_sqlite.SqliteBackend, io: std.Io, args_json: []const u8) ![]const u8 {
+    var dummy_f32: f32 = 0.0;
+    var dummy_bool: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = a,
+        .io = io,
+        .db = db,
+        .logger = undefined,
+        .session_id = "sess_regex",
+        .model = "test",
+        .cwd = "/tmp",
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &dummy_f32,
+        .is_thinking = &dummy_bool,
+        .environment = null,
+        .active_loops = undefined,
+        .allowed_tools = "read_file,search_tool",
+        .is_sub_agent = false,
+    };
+    const res = try execSearchTool(ctx, searchCall(args_json));
+    if (!res.output_allocated) return error.OutputNotOwned;
+    return res.output;
+}
+
+test "execSearchTool: a regex finds tools a literal substring could not, end to end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    var db: test_sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try Migration085.up(&db, testing.allocator);
+
+    // The literal text "^(list|load|save)_" appears in no tool name or
+    // description, so a substring search would return nothing. The rows below
+    // can only come from the pattern language.
+    const args = "{\"query\":\"^(list|load|save)_\"}";
+    const out = try searchToolOutput(a, &db, threaded.io(), args);
+
+    try testing.expect(std.mem.indexOf(u8, out, "<pattern_mode>regex</pattern_mode>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<pattern_warning>") == null);
+    const total = try totalOf(out);
+    try testing.expect(total >= 5); // list_directory/list_skills/list_sub_agent + load_/save_memory at least
+    try testing.expect(std.mem.indexOf(u8, catalogBody(out), "<name>save_memory</name>") != null);
+
+    // Enabled tools are NOT discoverable (they are already in the tool list).
+    try testing.expect(std.mem.indexOf(u8, catalogBody(out), "<name>read_file</name>") == null);
+    // …nor are the browsing meta-tools themselves.
+    try testing.expect(std.mem.indexOf(u8, catalogBody(out), "<name>view_tool</name>") == null);
+
+    // `literal: true` over the same text finds nothing — the flag is honoured
+    // through the adapter, not just in the pure matcher.
+    const literal_out = try searchToolOutput(
+        a,
+        &db,
+        threaded.io(),
+        "{\"query\":\"^(list|load|save)_\",\"literal\":true}",
+    );
+    try testing.expect(std.mem.indexOf(u8, literal_out, "<pattern_mode>literal</pattern_mode>") != null);
+    try testing.expect(std.mem.indexOf(u8, literal_out, "<count>0</count>") != null);
+
+    // A pattern the engine rejects degrades to a literal substring search and
+    // says so — never a hard failure.
+    const bad_out = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"^(list\"}");
+    try testing.expect(std.mem.indexOf(u8, bad_out, "<pattern_mode>literal_fallback</pattern_mode>") != null);
+    try testing.expect(std.mem.indexOf(u8, bad_out, "<pattern_warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, bad_out, "not a valid regex") != null);
+}
+
+test "execSearchTool: limit/offset page the matches and report the true total" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    var db: test_sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try Migration085.up(&db, testing.allocator);
+
+    const page1 = try searchToolOutput(
+        a,
+        &db,
+        threaded.io(),
+        "{\"query\":\"^(list|load|save)_\",\"limit\":3,\"offset\":0}",
+    );
+    const total = try totalOf(page1);
+    try testing.expect(total >= 5); // list_directory/list_skills/list_sub_agent + load_/save_memory
+    try testing.expect(total > 3); // otherwise "page 2" would be empty
+    try testing.expect(std.mem.indexOf(u8, page1, "<count>3</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, page1, "<offset>0</offset><limit>3</limit>") != null);
+    try testing.expect(std.mem.indexOf(u8, page1, "<truncated/>") != null);
+    try testing.expect(std.mem.indexOf(u8, page1, "offset=3") != null);
+
+    const page2 = try searchToolOutput(
+        a,
+        &db,
+        threaded.io(),
+        "{\"query\":\"^(list|load|save)_\",\"limit\":3,\"offset\":3}",
+    );
+    const expect_page2_count = try std.fmt.allocPrint(a, "<count>{d}</count>", .{total - 3});
+    try testing.expect(std.mem.indexOf(u8, page2, expect_page2_count) != null);
+    try testing.expect(std.mem.indexOf(u8, page2, "<offset>3</offset><limit>3</limit>") != null);
+    try testing.expectEqual(total, try totalOf(page2));
+
+    // The two pages are disjoint windows — not the same rows twice.
+    const first = try namesJoined(a, page1);
+    const second = try namesJoined(a, page2);
+    try testing.expect(!std.mem.eql(u8, first, second));
+    var it = std.mem.splitScalar(u8, second, ',');
+    while (it.next()) |name| {
+        try testing.expect(std.mem.indexOf(u8, first, name) == null);
+    }
+    // Sanity: the extractor is reading the row block, not the envelope name
+    // (`<tool><name>search_tool</name>` wraps every result).
+    try testing.expect(std.mem.indexOf(u8, first, "search_tool") == null);
+
+    // Out-of-range input is rejected with the accepted range, never clamped
+    // (a clamp would desync the model's offset arithmetic). The message avoids
+    // `<`/`>`, which `wrapToolOutput` XML-escapes in `<error>`.
+    const too_big = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"a\",\"limit\":5000}");
+    try testing.expect(std.mem.indexOf(u8, too_big, "<success>false</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, too_big, "limit must be at most 200") != null);
+    const zero = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"a\",\"limit\":0}");
+    try testing.expect(std.mem.indexOf(u8, zero, "limit must be at least 1") != null);
+    const negative = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"a\",\"offset\":-1}");
+    try testing.expect(std.mem.indexOf(u8, negative, "offset must not be negative") != null);
+}
 
 const testing = std.testing;
 

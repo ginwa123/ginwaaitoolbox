@@ -43,6 +43,7 @@ test {
     _ = @import("tools_exec_list_sub_agent.zig"); // list_sub_agent exec adapter + registry static contracts
     _ = @import("tool_eligibility.zig"); // allowlist + item-type eligibility (shared leaf module)
     _ = @import("progressive_catalog.zig"); // progressive tool catalog + result renderers
+    _ = @import("progressive_regex.zig"); // search_tool's in-process regex engine (Pike VM + python-`re` oracle table)
     _ = @import("tools_exec_update_plan.zig"); // inlined 3 tests from tools_exec_update_plan_test.zig
     _ = @import("tools_exec_memory.zig"); // merged save/load/delete exec wrappers + inlined 2 delete tests
     _ = @import("tools_exec_add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool — Step 3 (exec wrapper)
