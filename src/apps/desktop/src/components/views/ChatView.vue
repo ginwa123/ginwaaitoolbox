@@ -3070,7 +3070,7 @@ const compactSession = async () => {
                      estimated scroll model from the real DOM and blanks
                      the whole chat on scrollToBottom. -->
                 <div
-                  class="min-w-0"
+                  class="min-w-0 flex-1 w-full"
                   :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'max-w-[90%]' : 'max-w-full'"
                 >
                   <div
@@ -3976,6 +3976,8 @@ const compactSession = async () => {
 :deep(.tool-sequence) {
   display: flex;
   flex-direction: column;
+  width: 100%;
+  min-width: 0;
   /* 2026-08-23 paragraph-mode margin pass — the old 0.25rem gap was
      sized for boxed cards that carried their own visual separation.
      De-bubbled rows are flat, so they need explicit rhythm to read as
@@ -3985,6 +3987,8 @@ const compactSession = async () => {
 
 :deep(.tool-item) {
   padding: 0.125rem 0;
+  width: 100%;
+  min-width: 0;
 }
 
 :deep(.tool-item-border) {
@@ -4142,7 +4146,16 @@ const compactSession = async () => {
   border-left: 2px solid var(--color-border);
   border-radius: 0;
   overflow: visible;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   transition: background-color 0.15s ease, border-left-color 0.15s ease;
+}
+
+:deep(.chat-tool-card pre) {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 :deep(.chat-tool-card:hover) {

@@ -123,7 +123,7 @@ const openInEditorClick = (e: Event) => {
     <span class="text-[var(--color-violet)] font-semibold text-xs">{{ toolName }}</span>
     <span v-if="inlineTag" class="text-xs" :class="inlineTagClass">{{ inlineTag }}</span>
     <span
-      class="flex-1 truncate text-left text-xs"
+      class="flex-1 min-w-0 truncate text-left text-xs"
       :class="primaryClass"
       :title="primaryTitle ?? primary ?? ''"
     >{{ primary || 'unknown' }}</span>
