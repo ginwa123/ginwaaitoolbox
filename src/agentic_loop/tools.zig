@@ -66,6 +66,13 @@ pub const execListSubAgent = @import("tools_exec_list_sub_agent.zig").execListSu
 // appear on the next iteration's system prompt.
 pub const execAddMcpServer = @import("tools_exec_add_mcp_server.zig").execAddMcpServer;
 
+// Progressive tool search (plan 2026-09-12-progressive-tool-search): the three
+// meta-tools that browse and enable the catalog of tools this session does not
+// already have (MCP tools + not-enabled built-ins).
+pub const execSearchTool = @import("tools_exec_progressive_tools.zig").execSearchTool;
+pub const execViewTool = @import("tools_exec_progressive_tools.zig").execViewTool;
+pub const execUseTool = @import("tools_exec_progressive_tools.zig").execUseTool;
+
 pub const SkillSaveInfo = struct {
     name: []const u8,
     content: []const u8,
@@ -110,6 +117,23 @@ pub const ToolExecContext = struct {
     /// routes by it). Empty string default so every existing call
     /// site that doesn't care about this field continues to compile.
     tool_call_id: []const u8 = "",
+    /// This session's resolved `allowed_tools` CSV (the agent/kanban
+    /// allowlist, or "" / "all" for no filtering). The progressive-tool
+    /// adapter needs it to compute which built-ins are NOT enabled, and
+    /// therefore discoverable. Defaulted so unrelated call sites compile.
+    allowed_tools: []const u8 = "",
+    /// Whether this is a sub-agent session. Mirrors the flag the workflow
+    /// uses for the anti-recursion strip; the catalog honours it too so a
+    /// sub-agent cannot discover its way back to `spawn_sub_agent`.
+    is_sub_agent: bool = false,
+};
+
+/// Set by `use_tool` when it actually INSERTed a `session_progressive_tool`
+/// row. `handle_tool` persists it; the flag exists so the tool result's
+/// `inserted` value can never disagree with the database.
+pub const ProgressiveToolSaveInfo = struct {
+    name: []const u8,
+    server_name: []const u8,
 };
 
 pub const ToolExecResult = struct {
@@ -119,6 +143,7 @@ pub const ToolExecResult = struct {
     is_thinking: ?bool = null,
     skill_save: ?SkillSaveInfo = null,
     agent_save: ?AgentSaveInfo = null,
+    progressive_tool_save: ?ProgressiveToolSaveInfo = null,
 
     pub fn deinit(self: *const ToolExecResult, allocator: std.mem.Allocator) void {
         if (self.output_allocated) {

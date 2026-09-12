@@ -199,6 +199,59 @@ pub fn findByName(entries: []const Entry, name: []const u8) ?Entry {
     return null;
 }
 
+/// Look up a tool definition by name across BOTH the registered built-ins and
+/// the MCP catalog, regardless of whether it is enabled or already equipped.
+///
+/// Needed because `buildCatalog` deliberately excludes enabled and
+/// already-equipped names (they are not discoverable), yet `use_tool` /
+/// `view_tool` must still recognise such a name to answer "already enabled"
+/// instead of "unknown tool". `equipped` is set to `.session` by the caller's
+/// context; this helper always reports `.session` when found, and callers
+/// that know better overwrite it.
+pub fn findAnyByName(
+    registered: []const AgentTool,
+    mcp: ?[]const AgentTool,
+    name: []const u8,
+) ?Entry {
+    for (registered) |tool| {
+        if (std.mem.eql(u8, tool.function.name, name)) {
+            return .{
+                .name = tool.function.name,
+                .kind = .builtin,
+                .server = "",
+                .equipped = .session,
+                .tool = tool,
+            };
+        }
+    }
+    if (mcp) |mcp_tools| {
+        for (mcp_tools) |tool| {
+            if (std.mem.eql(u8, tool.function.name, name)) {
+                return .{
+                    .name = tool.function.name,
+                    .kind = .mcp,
+                    .server = serverOf(tool.function.name),
+                    .equipped = .session,
+                    .tool = tool,
+                };
+            }
+        }
+    }
+    return null;
+}
+
+/// Drop any entry whose name is not in `names`. Used by the adapters to build
+/// the "already equipped" lookup from the full registered+MCP set.
+pub fn findAnyByNameFiltered(
+    registered: []const AgentTool,
+    mcp: ?[]const AgentTool,
+    name: []const u8,
+    names: []const []const u8,
+) ?Entry {
+    if (!containsName(names, name)) return null;
+    return findAnyByName(registered, mcp, name);
+}
+
 /// Cheap "did you mean" candidates for an unknown name: ASCII
 /// case-insensitive, separators (`_`/`-`) folded away, then a substring
 /// sweep in both directions. Enough to catch `kanban_listt` →

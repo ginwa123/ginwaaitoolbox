@@ -1022,10 +1022,53 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, logger, io, db, event_bus);
         }
 
-        const merged_tools = try filterAndMergeTools(allocator, mcp_tools, copy_allowed_tools, copy_is_sub_agent);
+        // ─── Progressive tool search ───────────────────────────────────
+        // The catalog is what this session could still enable: registered
+        // built-ins that are NOT enabled, plus every MCP tool (MCP is
+        // progressive — it never reaches the prompt unless equipped). It is
+        // computed with the SAME eligibility helper the merge below uses, so
+        // the offer can never drift from what the model actually receives.
+        const progressive_rows = try llm_history.getProgressiveTools(allocator, db, copy_session_id);
+        const progressive_names = try allocator.alloc([]const u8, progressive_rows.len);
+        for (progressive_rows, 0..) |row, i| progressive_names[i] = row.tool_name;
+
+        const workspace_item_type: []const u8 = blk: {
+            const wctx = (llm_history.getWorkspaceContext(allocator, db, copy_session_id) catch break :blk "") orelse break :blk "";
+            defer wctx.deinit(allocator);
+            break :blk try allocator.dupe(u8, wctx.self_item_type);
+        };
+
+        const registered_tools = tools.all_agent_tools(allocator);
+        const catalog = try progressive_catalog.buildCatalog(
+            allocator,
+            registered_tools,
+            copy_allowed_tools,
+            copy_is_sub_agent,
+            mcp_tools,
+            progressive_names,
+            workspace_item_type,
+        );
+
+        const merged_tools = try filterAndMergeTools(
+            allocator,
+            mcp_tools,
+            copy_allowed_tools,
+            copy_is_sub_agent,
+            progressive_names,
+            catalog.len > 0,
+        );
         logger.infoFmt(
-            "[CHECKPOINT] tools resolved mcp_count={d} merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
-            .{ if (mcp_tools) |t| t.len else 0, merged_tools.len, copy_allowed_tools.len, copy_is_sub_agent, mcp_tools == null },
+            "[CHECKPOINT] tools resolved mcp_count={d} mcp_equipped={d} builtin_equipped={d} catalog={d} merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
+            .{
+                if (mcp_tools) |t| t.len else 0,
+                countNamesIn(mcp_tools orelse &.{}, progressive_names),
+                countNamesIn(registered_tools, progressive_names),
+                catalog.len,
+                merged_tools.len,
+                copy_allowed_tools.len,
+                copy_is_sub_agent,
+                mcp_tools == null,
+            },
         );
 
         const initialMessages = try build_msg_prompt.buildMessages(allocator, io, db, copy_cwd, copy_session_id, copy_parent_session_id, db_messages, merged_tools, copy_inherited_context, sub_agent_system_prompt);
@@ -1276,7 +1319,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // sub-agents stuck to the profile at run start.) The snapshot
                 // stays allocated for the run's lifetime as the fallback if
                 // a future iteration's re-read fails.
-                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, eff.model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, live_selected_profile_model);
+                try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, eff.model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, live_selected_profile_model, copy_allowed_tools, copy_is_sub_agent);
             } else {
                 retry_count += 1;
                 // Capture the unexpected finish_reason as a synthetic
@@ -1740,33 +1783,103 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 ///   line below used to claim "" = no tools while the code did the
 ///   opposite; `tool_eligibility.allowlistFilter` preserves the code's
 ///   behaviour, and the discrepancy is called out there.
-/// - mcp_tools: null = no MCP (not configured or fetch failed) → base tools only;
-///   non-null slice (possibly empty) = merge them in. Nullable so the
-///   caller doesn't need a dummy `orelse &[_]AgentTool{}` struct.
+/// - mcp_tools: null = no MCP (not configured or fetch failed); non-null
+///   slice = the catalog. MCP tools are PROGRESSIVE: only the ones named in
+///   `progressive_equipped` reach the LLM's tool list.
+/// - progressive_equipped: this session's `session_progressive_tool` names,
+///   in equip order. Built-ins named here are injected even when the
+///   allowlist excluded them — that is what `use_tool` is for.
+/// - include_progressive_tools: append search_tool/view_tool/use_tool. The
+///   caller decides from the discoverable catalog size (it needs the DB to
+///   know the item type, which this function deliberately does not).
 pub fn filterAndMergeTools(
     allocator: std.mem.Allocator,
     mcp_tools: ?[]const agent.AgentTool,
     allowed_tools: []const u8,
     is_sub_agent: bool,
+    progressive_equipped: []const []const u8,
+    include_progressive_tools: bool,
 ) ![]agent.AgentTool {
     // Single source of truth for the allowlist + sub-agent strip
     // (shared with the progressive-tool catalog so the two can never
     // disagree about what is already enabled).
-    const base_tools = try tool_eligibility.allowlistFilter(
+    const registered = tools.all_agent_tools(allocator);
+    const enabled = try tool_eligibility.allowlistFilter(
         allocator,
-        tools.all_agent_tools(allocator),
+        registered,
         allowed_tools,
         is_sub_agent,
     );
 
-    // Merge base tools and MCP tools (null = no MCP, skip the append)
-    var all_tools_list: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
-    try all_tools_list.appendSlice(allocator, base_tools);
-    if (mcp_tools) |mt| {
-        try all_tools_list.appendSlice(allocator, mt);
+    var out: std.ArrayList(agent.AgentTool) = .empty;
+    // Dedup by name, first wins. Today a server tool named `read_file` used to
+    // ship twice; the built-in now wins.
+    var seen: std.StringArrayHashMapUnmanaged(void) = .{};
+
+    for (enabled) |tool| {
+        if (seen.contains(tool.function.name)) continue;
+        try seen.put(allocator, tool.function.name, {});
+        try out.append(allocator, tool);
     }
 
-    return try all_tools_list.toOwnedSlice(allocator);
+    // Built-ins this session enabled for itself. Injected even when the
+    // allowlist excluded them.
+    for (progressive_equipped) |name| {
+        if (seen.contains(name)) continue;
+        if (is_sub_agent and std.mem.eql(u8, name, "spawn_sub_agent")) continue;
+        for (registered) |tool| {
+            if (std.mem.eql(u8, tool.function.name, name)) {
+                try seen.put(allocator, name, {});
+                try out.append(allocator, tool);
+                break;
+            }
+        }
+    }
+
+    // MCP tools reach the wire ONLY when this session equipped them.
+    if (mcp_tools) |mcp| {
+        for (mcp) |tool| {
+            if (seen.contains(tool.function.name)) continue;
+            var equipped = false;
+            for (progressive_equipped) |name| {
+                if (std.mem.eql(u8, name, tool.function.name)) {
+                    equipped = true;
+                    break;
+                }
+            }
+            if (!equipped) continue;
+            try seen.put(allocator, tool.function.name, {});
+            try out.append(allocator, tool);
+        }
+    }
+
+    // Appended last, and exempt from the allowlist: they are how the agent
+    // reaches everything above, so gating them on agent_tools rows that
+    // predate them would make the feature invisible for existing agents.
+    if (include_progressive_tools) {
+        for (progressive_tools_mod.ALL_PROGRESSIVE_TOOLS) |tool| {
+            if (seen.contains(tool.function.name)) continue;
+            try seen.put(allocator, tool.function.name, {});
+            try out.append(allocator, tool);
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+/// How many of `names` exist in `list` (registered built-ins or the MCP
+/// catalog). Used for the resolution checkpoint log.
+fn countNamesIn(list: []const agent.AgentTool, names: []const []const u8) usize {
+    var n: usize = 0;
+    for (names) |name| {
+        for (list) |tool| {
+            if (std.mem.eql(u8, tool.function.name, name)) {
+                n += 1;
+                break;
+            }
+        }
+    }
+    return n;
 }
 
 pub const RunParams = struct {
@@ -2404,14 +2517,13 @@ test "saveRetryAttemptMessage stamps sessions.last_human_touched_at (Task 5 inva
     }
 }
 
-test "filterAndMergeTools: MCP tools appear in agent tool list (agent sees MCP)" {
-    // Proves the user-visible contract: when buildMCPToolsRun returns
-    // mcp_graphify_* tools, filterAndMergeTools includes them in the
-    // final list the LLM receives. Uses mock MCP tools (no spawn).
+test "filterAndMergeTools: MCP tools are progressive — absent from the tool list unless equipped" {
+    // MCP is progressive: the catalog is fetched and cached (so search_tool
+    // can offer it) but NOT injected into the LLM's tool list until the
+    // session equips it. Uses mock MCP tools (no spawn).
     //
-    // Uses a per-test arena: filterAndMergeTools has pre-existing
-    // intermediate allocs (base_tools copy) that production's
-    // per-iteration arena reaps but DebugAllocator would flag as
+    // Uses a per-test arena: filterAndMergeTools has intermediate allocs that
+    // production's per-iteration arena reaps but DebugAllocator would flag as
     // leaks. The arena gives us the same reaping semantics here.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -2424,27 +2536,127 @@ test "filterAndMergeTools: MCP tools appear in agent tool list (agent sees MCP)"
             .parameters = .{ .type = "object", .properties = &.{}, .required = &.{} },
         },
     }};
-    // allowed_tools="" means no filtering — all base + all MCP
-    const merged = try filterAndMergeTools(alloc, &mock_mcp, "", false);
-    var found = false;
+    // allowed_tools="" means no filtering — every built-in, no MCP.
+    const merged = try filterAndMergeTools(alloc, &mock_mcp, "", false, &.{}, false);
+    try testing.expect(merged.len > 0);
     for (merged) |t| {
-        if (std.mem.eql(u8, t.function.name, "mcp_graphify_query_graph")) {
-            found = true;
-            break;
-        }
+        try testing.expect(!std.mem.startsWith(u8, t.function.name, "mcp_"));
     }
-    try testing.expect(found);
-    // Also verify null MCP (not configured) still yields base tools
-    const merged_null = try filterAndMergeTools(alloc, null, "", false);
+
+    // Null MCP (not configured) still yields the built-ins.
+    const merged_null = try filterAndMergeTools(alloc, null, "", false, &.{}, false);
     try testing.expect(merged_null.len > 0);
-    var found_mcp = false;
-    for (merged_null) |t| {
-        if (std.mem.startsWith(u8, t.function.name, "mcp_")) {
-            found_mcp = true;
-            break;
+}
+
+test "filterAndMergeTools: an equipped MCP tool is appended after the built-ins" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var mock_mcp = [_]agent.AgentTool{.{
+        .type = "function",
+        .function = .{
+            .name = try alloc.dupe(u8, "mcp_graphify_query_graph"),
+            .description = try alloc.dupe(u8, "Search the graph"),
+            .parameters = .{ .type = "object", .properties = &.{}, .required = &.{} },
+        },
+    }};
+
+    const merged = try filterAndMergeTools(alloc, &mock_mcp, "", false, &.{"mcp_graphify_query_graph"}, false);
+
+    // Present, and LAST — append-only so the built-in prefix stays stable.
+    const last = merged[merged.len - 1];
+    try testing.expectEqualStrings("mcp_graphify_query_graph", last.function.name);
+    for (merged[0 .. merged.len - 1]) |t| {
+        try testing.expect(!std.mem.startsWith(u8, t.function.name, "mcp_"));
+    }
+}
+
+test "filterAndMergeTools: a not-enabled built-in becomes available once session-equipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // allowlist "read_file" → glob is not enabled, so normally absent.
+    const without = try filterAndMergeTools(alloc, null, "read_file", false, &.{}, false);
+    var found_glob = false;
+    for (without) |t| {
+        if (std.mem.eql(u8, t.function.name, "glob")) found_glob = true;
+    }
+    try testing.expect(!found_glob);
+
+    // Equipped via use_tool → injected even though the allowlist excluded it.
+    const with_equipped = try filterAndMergeTools(alloc, null, "read_file", false, &.{"glob"}, false);
+    var found_read_file = false;
+    found_glob = false;
+    for (with_equipped) |t| {
+        if (std.mem.eql(u8, t.function.name, "glob")) found_glob = true;
+        if (std.mem.eql(u8, t.function.name, "read_file")) found_read_file = true;
+    }
+    try testing.expect(found_glob);
+    try testing.expect(found_read_file);
+}
+
+test "filterAndMergeTools: the progressive meta-tools are appended only when the catalog is non-empty" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Gate closed: none of the three appear.
+    const closed = try filterAndMergeTools(alloc, null, "read_file", false, &.{}, false);
+    for (closed) |t| {
+        for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
+            try testing.expect(!std.mem.eql(u8, t.function.name, name));
         }
     }
-    try testing.expect(!found_mcp);
+
+    // Gate open: all three appear, and they bypass the allowlist.
+    const open = try filterAndMergeTools(alloc, null, "read_file", false, &.{}, true);
+    for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
+        var found = false;
+        for (open) |t| {
+            if (std.mem.eql(u8, t.function.name, name)) found = true;
+        }
+        try testing.expect(found);
+    }
+    var found_read_file = false;
+    for (open) |t| {
+        if (std.mem.eql(u8, t.function.name, "read_file")) found_read_file = true;
+    }
+    try testing.expect(found_read_file);
+}
+
+test "filterAndMergeTools: dedup by name, the built-in wins over a colliding MCP tool" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // A server tool named exactly like a built-in.
+    var mock_mcp = [_]agent.AgentTool{.{
+        .type = "function",
+        .function = .{
+            .name = try alloc.dupe(u8, "read_file"),
+            .description = try alloc.dupe(u8, "impostor from an MCP server"),
+            .parameters = .{ .type = "object", .properties = &.{}, .required = &.{} },
+        },
+    }};
+
+    const merged = try filterAndMergeTools(alloc, &mock_mcp, "read_file", false, &.{"read_file"}, false);
+    var count: usize = 0;
+    for (merged) |t| {
+        if (std.mem.eql(u8, t.function.name, "read_file")) count += 1;
+    }
+    try testing.expectEqual(@as(usize, 1), count);
+}
+
+test "filterAndMergeTools: a sub-agent cannot re-equip spawn_sub_agent" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const merged = try filterAndMergeTools(alloc, null, "all", true, &.{"spawn_sub_agent"}, false);
+    for (merged) |t| {
+        try testing.expect(!std.mem.eql(u8, t.function.name, "spawn_sub_agent"));
+    }
 }
 
 /// Insert a minimal session row (matching the production schema: the

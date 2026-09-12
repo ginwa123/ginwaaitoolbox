@@ -51,6 +51,10 @@ const ToolContext = struct {
     environment: ?*const std.process.Environ.Map,
     active_loops: *ActiveLoops,
     selected_profile_model: []const u8 = "",
+    /// See `tools.ToolExecContext.allowed_tools` — the progressive-tool
+    /// adapter needs it to know which built-ins are not enabled.
+    allowed_tools: []const u8 = "",
+    is_sub_agent: bool = false,
 };
 
 /// Result of parsing diff_view XML from tool result.
@@ -145,6 +149,7 @@ const ToolResult = struct {
     is_thinking: ?bool = null,
     skill_saved: ?SkillSaveInfo = null,
     agent_saved: ?AgentSaveInfo = null,
+    progressive_tool_saved: ?ProgressiveToolSaveInfo = null,
 };
 
 const SkillSaveInfo = struct {
@@ -154,6 +159,12 @@ const SkillSaveInfo = struct {
 
 const AgentSaveInfo = struct {
     name: []const u8,
+};
+
+/// `use_tool` actually INSERTed a `session_progressive_tool` row.
+const ProgressiveToolSaveInfo = struct {
+    name: []const u8,
+    server_name: []const u8,
 };
 
 /// Extended result type for main agent tool execution
@@ -209,6 +220,10 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tools
         // execSpawnSubAgent can emit progress events keyed by it
         // (ChatView.vue's reducer filters on this exact value).
         .tool_call_id = tool_call.id,
+        // Progressive tool search: the exec-side catalog computes which
+        // built-ins are NOT enabled, which needs the resolved allowlist.
+        .allowed_tools = ctx.allowed_tools,
+        .is_sub_agent = ctx.is_sub_agent,
     };
     const exec_result = try exec(ctx_local, tool_call);
 
@@ -218,6 +233,10 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tools
         .is_thinking = exec_result.is_thinking,
         .skill_saved = if (exec_result.skill_save) |sk| SkillSaveInfo{ .name = sk.name, .content = sk.content } else null,
         .agent_saved = if (exec_result.agent_save) |ag| AgentSaveInfo{ .name = ag.name } else null,
+        .progressive_tool_saved = if (exec_result.progressive_tool_save) |pt| ProgressiveToolSaveInfo{
+            .name = pt.name,
+            .server_name = pt.server_name,
+        } else null,
     };
 }
 
@@ -332,6 +351,11 @@ pub fn handle_tool(
     environment: ?*const std.process.Environ.Map,
     active_loops: *ActiveLoops,
     selected_profile_model: []const u8,
+    // Passed straight through to `ToolExecContext`. Zig has no default
+    // parameter values, so every caller must supply them; `workflow.zig`
+    // does. The tool-result envelope stays the same either way.
+    allowed_tools: []const u8,
+    is_sub_agent: bool,
 ) !void {
     if (res_dynamic_agent.tool_calls) |tc| {
         // ─── Phase 1: INSERT placeholder rows for ALL known tools ───
@@ -542,6 +566,8 @@ pub fn handle_tool(
             .environment = environment,
             .active_loops = active_loops,
             .selected_profile_model = selected_profile_model,
+            .allowed_tools = allowed_tools,
+            .is_sub_agent = is_sub_agent,
         };
 
         // ─── Phase 3: dispatch each tool & UPDATE placeholder in place ───
@@ -624,6 +650,17 @@ pub fn handle_tool(
             if (exec_result.agent_saved) |agent_info| {
                 SaveAgent(allocator, db, logger, session_id, agent_info.name) catch |err| {
                     logger.errFmt("Failed to save agent '{s}': {s}", .{ agent_info.name, @errorName(err) });
+                };
+            }
+
+            // Progressive tool search: `use_tool` records the equip so the
+            // NEXT iteration's tool resolution includes it. Persisting here
+            // (rather than only inside the exec adapter) means a failure to
+            // write is visible as a log line instead of a tool that silently
+            // never becomes callable.
+            if (exec_result.progressive_tool_saved) |pt| {
+                _ = llm_history.saveProgressiveTool(allocator, db, logger, session_id, pt.name, pt.server_name) catch |err| {
+                    logger.errFmt("Failed to equip progressive tool '{s}': {s}", .{ pt.name, @errorName(err) });
                 };
             }
 

@@ -59,6 +59,10 @@ const semantic_search_mod = nalarcore.semantic_search;
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 const kanban_create_task_tool = nalarcore.create_kanban_task;
 const command_tool_mod = nalarcore.command_tool;
+// Progressive tool search: search_tool / view_tool / use_tool. Pure tool data
+// lives in `nalarcore.progressive_tools`; the catalog + renderers live in
+// `src/agentic_loop/progressive_catalog.zig`.
+const progressive_tools_mod = nalarcore.progressive_tools;
 const xmlEscape = helpers.xml_escape;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
@@ -114,6 +118,14 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         move_design_element_mod.move_design_element_tool,
         get_design_context_mod.get_design_context_tool,
         preview_design_page_mod.preview_design_page_tool,
+
+        // progressive tool search — always present (the workflow appends them
+        // only when the discoverable catalog is non-empty, so an item whose
+        // allowlist covers every built-in and has no MCP servers never sees
+        // them). See src/agentic_loop/progressive_catalog.zig.
+        progressive_tools_mod.search_tool_tool,
+        progressive_tools_mod.view_tool_tool,
+        progressive_tools_mod.use_tool_tool,
     };
     return allocator.dupe(AgentTool, tools_list) catch return &.{};
 }
@@ -154,6 +166,16 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // the next iteration's system prompt. v1 supports the `stdio`
         // transport only (HTTP lands in task_1787928601804_8).
         .{ .name = "add_mcp_server", .exec = tools.execAddMcpServer, .tool_def = add_mcp_server_mod.add_mcp_server_tool },
+
+        // === PROGRESSIVE TOOL SEARCH ===
+        // search_tool / view_tool / use_tool browse and enable the catalog of
+        // tools this session does not already have. Exempt from the
+        // allowed_tools allowlist (like the MCP tools) — they are
+        // infrastructure, not user-curated capability, so an agent whose
+        // agent_tools rows predate them still gets them.
+        .{ .name = "search_tool", .exec = tools.execSearchTool, .tool_def = progressive_tools_mod.search_tool_tool },
+        .{ .name = "view_tool", .exec = tools.execViewTool, .tool_def = progressive_tools_mod.view_tool_tool },
+        .{ .name = "use_tool", .exec = tools.execUseTool, .tool_def = progressive_tools_mod.use_tool_tool },
 
         // === AGENT MANAGEMENT (auto-save) ===
 
