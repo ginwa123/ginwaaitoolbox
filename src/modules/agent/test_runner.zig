@@ -63,7 +63,6 @@ test {
     _ = @import("tools/glob.zig");
     _ = @import("tools/memory.zig");
     _ = @import("tools/kanban_list.zig");
-    _ = @import("tools/update_activity.zig");
     _ = @import("tools/show_preview.zig");
     _ = @import("tools/pwsh.zig");
     _ = @import("tools/command.zig");

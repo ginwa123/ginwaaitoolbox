@@ -2633,9 +2633,6 @@ pub fn updateWorkerActivityWithDescription(
 
 /// Append a single row to the `session_activity` per-session log
 /// (Migration 073). Called by:
-///   - `tools_exec_update_activity.zig::execUpdateActivity` after the
-///     existing `updateWorkerActivityWithDescription` UPDATE — every
-///     `update_activity` tool call appends one row.
 ///   - `workflow_compact_message.zig::buildCompactionEnvelope` after
 ///     the envelope is built — every compaction event appends one row.
 ///

@@ -33,7 +33,6 @@ pub const LocalMemorySystem = prompts.LocalMemorySystem;
 pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const ResponseFormatting = prompts.ResponseFormatting;
-pub const UpdateActivityRule = prompts.UpdateActivityRule;
 pub const SearchToolRule = prompts.SearchToolRule;
 pub const SearchHistoryToolRule = prompts.SearchHistoryToolRule;
 pub const MemoryToolRule = prompts.MemoryToolRule;
