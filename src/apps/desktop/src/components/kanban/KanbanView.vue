@@ -59,6 +59,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
+import { buildTaskCreateMessage } from './buildTaskCreateMessage'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
@@ -938,6 +939,9 @@ const handleCreateTaskSave = async (payload: {
   name: string
   description: string
   is_auto_retry_until_stop?: '0' | '1'
+  // Create-mode worktree toggle from the dialog (undefined = off).
+  // Only consumed on the create_and_run path.
+  useGitWorktree?: boolean
   tags?: string[]
   // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
   // string = backend default / "Default (top-level config)". Threaded
@@ -991,10 +995,8 @@ const handleCreateTaskSave = async (payload: {
     // We still need to:
     //   1. Convert pendingFiles to base64 data URLs (the api helper
     //      joins them with `||` for the wire).
-    //   2. Build the queue_message for create_and_run mode
-    //      (`title + "\n\n" + description` when description is
-    //      non-empty, else just the title — Q1=B, Q2=2b from the
-    //      2026-08-06 kanban-create-task-run-agent plan).
+    //   2. Build the queue_message for create_and_run mode via
+    //      buildTaskCreateMessage.
     //   3. Move the task to the column the user clicked (the
     //      backend's auto-assign put it in the first column; the
     //      moveTaskToColumn overwrites that).
@@ -1028,9 +1030,11 @@ const handleCreateTaskSave = async (payload: {
 
     const queueMessage =
       payload.mode === 'create_and_run'
-        ? payload.description.trim() !== ''
-          ? `${payload.name}\n\n${payload.description}`
-          : payload.name
+        ? buildTaskCreateMessage(
+            payload.name,
+            payload.description,
+            payload.useGitWorktree ?? false,
+          )
         : undefined
 
     const response = await workspacesStore.addKanbanTask(

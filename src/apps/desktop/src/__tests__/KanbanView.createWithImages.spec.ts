@@ -168,7 +168,7 @@ describe('KanbanView.handleCreateTaskSave — image_urls via /kanban/tasks (Migr
     expect(payload.imageUrls[1]).toContain('STUB_FOR_two.jpg')
 
     // 2. queue_message is plain text (no base64).
-    expect(payload.queue_message).toBe('Bug screenshot\n\nSee screenshots')
+    expect(payload.queue_message).toBe('Task : Bug screenshot\nDescription: See screenshots')
 
     // 3. moveTaskToColumn ran.
     expect(moveSpy).toHaveBeenCalledWith(
