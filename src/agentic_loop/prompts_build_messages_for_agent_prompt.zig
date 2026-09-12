@@ -25,6 +25,7 @@ const tool_memories_mod = @import("../modules/agent/tools/memories.zig");
 // below reads `tool.function.system_prompt` dynamically from `filtered_tools`
 // without hardcoding names — the tool's own `.name` is the key.
 const config_mod = nalarcore.config;
+const tool_eligibility = @import("tool_eligibility.zig");
 const custom_http_client = @import("custom_http_client");
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
@@ -1200,24 +1201,16 @@ fn BuildSubAgentsListing(
 // to keep the prompt compact, large enough to cover most multi-page designs.
 const MAX_DESIGN_PAGES: u32 = 10;
 
-fn removeTools(tools: []tool_models.AgentTool, names: []const []const u8) []tool_models.AgentTool {
-    var count: usize = 0;
-    for (tools) |tool| {
-        var keep = true;
-        for (names) |name| {
-            if (std.mem.eql(u8, tool.function.name, name)) {
-                keep = false;
-                break;
-            }
-        }
-        if (keep) {
-            tools[count] = tool;
-            count += 1;
-        }
-    }
-    return tools[0..count];
-}
-
+/// Strip the item-type-forbidden tools (kanban ↔ design) from `tools`.
+///
+/// The policy itself lives in `tool_eligibility.itemTypeStrip` so that the
+/// progressive-tool catalog applies exactly the same rule — if the two
+/// drifted, the catalog could offer a tool the prompt path had stripped.
+///
+/// NOTE: this only affects the *prompt* (gating `hasTool` sections and the
+/// tool-behavior text). The LLM's `tools[]` array comes from
+/// `workflow.filterAndMergeTools`, which does not apply the item-type strip —
+/// a pre-existing inconsistency, deliberately left alone here.
 pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, tools: []tool_models.AgentTool) ![]tool_models.AgentTool {
     const ctx = (llm_history.getWorkspaceContext(allocator, db, session_id) catch |err| {
         std.log.warn("BuildDesignCanvasPrompt: getWorkspaceContext failed: {}", .{err});
@@ -1225,44 +1218,7 @@ pub fn filteringTools(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, s
     }) orelse return tools;
     defer ctx.deinit(allocator);
 
-    var result = tools;
-
-    if (std.mem.eql(u8, ctx.self_item_type, "design")) {
-        result = removeTools(result, &.{
-            kanban_list_mod.kanban_list_tool.function.name,
-            kanban_move_task_mod.kanban_move_task_tool.function.name,
-            kanban_create_task_tool.create_kanban_task_tool.function.name,
-        });
-    }
-
-    if (std.mem.eql(u8, ctx.self_item_type, "folder")) {
-        result = removeTools(result, &.{
-            kanban_list_mod.kanban_list_tool.function.name,
-            kanban_move_task_mod.kanban_move_task_tool.function.name,
-            kanban_create_task_tool.create_kanban_task_tool.function.name,
-            set_design_page_mod.set_design_page_tool.function.name,
-            add_design_element_mod.add_design_element_tool.function.name,
-            update_design_element_mod.update_design_element_tool.function.name,
-            group_design_elements_mod.group_design_element_tool.function.name,
-            set_element_parent_mod.set_element_parent_tool.function.name,
-            move_design_element_mod.move_design_element_tool.function.name,
-            move_element_to_page_mod.move_element_to_page_tool.function.name,
-        });
-    }
-
-    if (std.mem.eql(u8, ctx.self_item_type, "kanban")) {
-        result = removeTools(result, &.{
-            set_design_page_mod.set_design_page_tool.function.name,
-            add_design_element_mod.add_design_element_tool.function.name,
-            update_design_element_mod.update_design_element_tool.function.name,
-            group_design_elements_mod.group_design_element_tool.function.name,
-            set_element_parent_mod.set_element_parent_tool.function.name,
-            move_design_element_mod.move_design_element_tool.function.name,
-            move_element_to_page_mod.move_element_to_page_tool.function.name,
-        });
-    }
-
-    return result;
+    return tool_eligibility.itemTypeStrip(tools, ctx.self_item_type);
 }
 
 // =============================================================================

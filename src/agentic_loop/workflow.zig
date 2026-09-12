@@ -39,6 +39,9 @@ const is_worker_running_mod = @import("is_worker_running.zig");
 const mark_history_not_for_llmrun_mod = @import("markHistoryNotForLLMRun.zig");
 const retry_delay_ms_mod = @import("retry_delay_ms.zig");
 const session_skills_mod = @import("session_skills.zig");
+const tool_eligibility = @import("tool_eligibility.zig");
+const progressive_catalog = @import("progressive_catalog.zig");
+const progressive_tools_mod = nalarcore.progressive_tools;
 const sse_mod = @import("sse.zig");
 const stream_snapshot = @import("stream_snapshot.zig");
 const sse_on_event_send_session_mod = @import("sse_on_event_send_session.zig");
@@ -1732,7 +1735,11 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 }
 
 /// Filter and merge tools based on allowed_tools setting
-/// - allowed_tools: "" = no tools, "all" = all tools, comma-separated = specific tools
+/// - allowed_tools: "" = no filtering (all tools), "all" = all tools,
+///   comma-separated = specific tools. NOTE the pre-existing wart: the doc
+///   line below used to claim "" = no tools while the code did the
+///   opposite; `tool_eligibility.allowlistFilter` preserves the code's
+///   behaviour, and the discrepancy is called out there.
 /// - mcp_tools: null = no MCP (not configured or fetch failed) → base tools only;
 ///   non-null slice (possibly empty) = merge them in. Nullable so the
 ///   caller doesn't need a dummy `orelse &[_]AgentTool{}` struct.
@@ -1742,41 +1749,15 @@ pub fn filterAndMergeTools(
     allowed_tools: []const u8,
     is_sub_agent: bool,
 ) ![]agent.AgentTool {
-    var base_tools = try allocator.alloc(agent.AgentTool, tools.all_agent_tools(allocator).len);
-    @memcpy(base_tools, tools.all_agent_tools(allocator));
-
-    // Filter base tools if allowed_tools is specified
-    if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
-        var allowed_tools_set: std.StringArrayHashMapUnmanaged(void) = .{};
-
-        var it = std.mem.splitScalar(u8, allowed_tools, ',');
-        while (it.next()) |tool_name| {
-            const trimmed = std.mem.trim(u8, tool_name, " ");
-            if (trimmed.len > 0) {
-                try allowed_tools_set.put(allocator, trimmed, {});
-            }
-        }
-
-        var filtered_tools: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
-
-        for (base_tools) |tool| {
-            if (allowed_tools_set.contains(tool.function.name)) {
-                try filtered_tools.append(allocator, tool);
-            }
-        }
-        base_tools = try filtered_tools.toOwnedSlice(allocator);
-    }
-
-    // Sub-agents cannot spawn more sub-agents - strip spawn_sub_agent to prevent infinite recursion
-    if (is_sub_agent) {
-        var filtered: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
-        for (base_tools) |tool| {
-            if (!std.mem.eql(u8, tool.function.name, "spawn_sub_agent")) {
-                try filtered.append(allocator, tool);
-            }
-        }
-        base_tools = try filtered.toOwnedSlice(allocator);
-    }
+    // Single source of truth for the allowlist + sub-agent strip
+    // (shared with the progressive-tool catalog so the two can never
+    // disagree about what is already enabled).
+    const base_tools = try tool_eligibility.allowlistFilter(
+        allocator,
+        tools.all_agent_tools(allocator),
+        allowed_tools,
+        is_sub_agent,
+    );
 
     // Merge base tools and MCP tools (null = no MCP, skip the append)
     var all_tools_list: std.ArrayList(agent.AgentTool) = std.ArrayList(agent.AgentTool).empty;
