@@ -1481,187 +1481,6 @@ jobs:
           grep -q "smoke: using installed webapp at .*html" /tmp/desktop-html-check.log             || { echo "✗ desktop did NOT select the bundled html/ (embedded stub?)"; cat /tmp/desktop-html-check.log; exit 1; }
           echo "✓ desktop uses bundled html/ as its webview dir"
 
-      - name: Cache python venv + playwright chromium
-        # PERF (2026-08-25): the pytest venv + Playwright Chromium
-        # (~150 MB browser download) used to be recreated on EVERY run
-        # because they lived inside the workspace, which self-hosted
-        # runners `git clean` between runs. Both now live OUTSIDE the
-        # workspace:
-        #   - venv at ${{ runner.temp }}/nalar-ci-venv (via the
-        #     NALAR_FUNC_VENV_DIR env var that build.zig reads)
-        #   - chromium at ~/.cache/ms-playwright (playwright's default)
-        # and this cache step persists them across runs. Keyed by both
-        # requirements.txt files so a dep bump invalidates cleanly.
-        #
-        # Runs on Linux + macOS (skipped on Windows — no functional/UI suites there).
-        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ${{ runner.temp }}/nalar-ci-venv
-          key: v1-py-${{ runner.os }}-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
-          restore-keys: |
-            v1-py-${{ runner.os }}-
-
-      - name: "Functional tests: real-data isolation suites"
-        # 8 functional test suites exercising the real nalar HTTP API
-        # against non-trivial data shapes. Each test boots a fresh
-        # nalar binary against an isolated tmpdir HOME (mktemp),
-        # drives the API, and rmtree's the tempdir on teardown.
-        # The Python harness enforces the "never delete real $HOME"
-        # invariant via is_safe_tmp() — see tests/functional/harness.py
-        # for the safety guards.
-        #
-        # Test count: 8 suites × ~9 tests each = ~55 tests.
-        # Wall-clock: ~5 min total (each test = ~10s including
-        # boot + teardown).
-        #
-        # Two gates:
-        #   matrix.target.step != '__SKIP__' — preserves the
-        #   existing cross-compile-cell guard from before this PR.
-        #   runner.os != 'Windows' — Windows skips functional suites.
-        #
-        # Runs on Linux + macOS (skipped on Windows). The Python pytest harness's
-        # is_safe_tmp() allow-list previously blocked Windows temp
-        # paths (C:/Users/.../AppData/Local/Temp); this was extended
-        # in the worktree/fix-ci-windows-webview2 follow-up so the
-        # Win temp roots are recognised as safe to rmtree. See
-        # tests/functional/harness.py is_safe_tmp() for the full
-        # Windows allow-list.
-        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
-        shell: bash
-        env:
-          # Relocate the pytest venv OUTSIDE the workspace (which is
-          # `git clean`ed between runs on self-hosted runners) so the
-          # "Cache python venv + playwright chromium" step above can
-          # persist it. build.zig reads this at config time.
-          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
-        run: |
-          set -u
-          echo "→ functional-test: starting"
-          date +%s > /tmp/functional-test-start.$$ 2>/dev/null || true
-          # zig build functional-test creates the venv at
-          # $NALAR_FUNC_VENV_DIR (see the env block above), installs
-          # requirements, and runs the suite.
-          zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
-          rc=${PIPESTATUS[0]}
-          echo "→ functional-test: exit code $rc"
-          if [ "$rc" -ne 0 ]; then
-            echo "✗ functional-test: failed (see /tmp/functional-test.log)"
-            # Surface the last 100 lines for debugging.
-            tail -n 100 /tmp/functional-test.log
-            exit 1
-          fi
-          echo "✓ functional-test: passed"
-          # Time taken.
-          END=$(date +%s)
-          START=$(cat /tmp/functional-test-start.$$ 2>/dev/null || echo 0)
-          if [ "$START" -gt 0 ]; then
-            echo "→ functional-test: $((END - START))s elapsed"
-          fi
-          rm -f /tmp/functional-test-start.$$
-
-      - name: Install pnpm + webapp dependencies (UI tests need Vite)
-        # The Vite dev server is spawned by UIHarness during the
-        # functional-test-ui step via `pnpm run dev` (2026-08-28 — pnpm
-        # migration, previously `npm run dev`). The webapp's node_modules
-        # is gitignored; cache it keyed by pnpm-lock.yaml hash + restore +
-        # `pnpm install --frozen-lockfile` on cache miss. Without this
-        # step, vite isn't on PATH and the UI tests fail with
-        # `vite: command not found` (PR #293 feedback).
-        #
-        # Linux + macOS only (skipped on Windows — UI suite doesn't run there).
-        # node + pnpm are on PATH from the `Install Node.js 24` +
-        # `Install pnpm 11` steps at the top of the job.
-        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -u
-          # pnpm is on PATH from the pnpm/action-setup step earlier in
-          # this job; node is on PATH from setup-node. Both must resolve.
-          if ! command -v pnpm >/dev/null 2>&1; then
-            echo "✗ pnpm not on PATH — pnpm/action-setup step must have failed"
-            exit 1
-          fi
-          if ! command -v node >/dev/null 2>&1; then
-            echo "✗ node not on PATH — setup-node step must have failed"
-            exit 1
-          fi
-          # Restore node_modules from cache (if hit). pnpm-lock.yaml is
-          # the canonical lockfile (2026-08-28 — pnpm migration). The
-          # cache key prefix is `pnpm-` so old npm-cached tarballs from
-          # the npm-everywhere era (2026-08-25) don't shadow the new
-          # pnpm-cached ones.
-          CACHE_DIR="$HOME/.cache/nalar-pnpm-node-modules"
-          mkdir -p "$CACHE_DIR"
-          HASH=$(sha256sum src/apps/desktop/pnpm-lock.yaml)
-          CACHE_TARBALL="$CACHE_DIR/node_modules-${HASH}.tar.gz"
-          if [[ -f "$CACHE_TARBALL" ]]; then
-            echo "→ cache HIT ($HASH); restoring node_modules"
-            tar -xzf "$CACHE_TARBALL" -C src/apps/desktop
-          else
-            echo "→ cache MISS ($HASH); running pnpm install"
-            cd src/apps/desktop && pnpm install --frozen-lockfile && cd -
-            echo "→ saving node_modules to cache"
-            # pnpm with `node-linker=hoisted` (workspace .npmrc) lays
-            # the deps flat at node_modules/, so archiving that single
-            # dir is enough — no need to also archive .pnpm/ (the
-            # content-addressed store is rebuilt by the pnpm install
-            # on a cache miss; or by Vite's own resolution via
-            # node_modules/ on a cache hit).
-            tar -czf "$CACHE_TARBALL.tmp" -C src/apps/desktop node_modules \
-              && mv "$CACHE_TARBALL.tmp" "$CACHE_TARBALL"
-          fi
-          echo "→ webapp deps ready"
-
-      - name: "UI tests: functional-test-ui (Playwright + DB-seeded)"
-        # 30 Playwright tests exercising the running Vue webapp
-        # (nalar backend + Vite dev server) in headless Chromium.
-        # Boots a fresh backend + vite per test against an isolated
-        # tmpdir HOME; the chatview tests DB-seed `sessions` +
-        # `llm_history` rows so no real LLM is invoked.
-        #
-        # Three gates:
-        #   1. matrix.target.step != '__SKIP__' — preserves the
-        #      existing cross-compile-cell guard.
-        #   2. Functional-test ran first — functional-test-ui inherits
-        #      the .venv-func that functional-test just created.
-        #   3. runner.os != 'Windows' — Windows skips functional suites.
-        #
-        # Runs on Linux + macOS (skipped on Windows).
-        if: matrix.target.step != '__SKIP__' && runner.os != 'Windows'
-        shell: bash
-        env:
-          # Same venv relocation as the functional-test step — the UI
-          # suite installs playwright + chromium into THIS venv.
-          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
-        run: |
-          set -u
-          # pnpm is already on PATH from pnpm/action-setup.
-          echo "→ functional-test-ui: starting"
-          date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
-          # zig build functional-test-ui installs playwright into the
-          # existing venv at $NALAR_FUNC_VENV_DIR, downloads Chromium,
-          # and runs the 30 Playwright tests (10 chatview + 11 safety
-          # + 5 smoke + 4 kanban). Cold cache: ~5 min; warm cache:
-          # ~3 min.
-          zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
-          rc=${PIPESTATUS[0]}
-          echo "→ functional-test-ui: exit code $rc"
-          if [ "$rc" -ne 0 ]; then
-            echo "✗ functional-test-ui: failed (see /tmp/functional-test-ui.log)"
-            tail -n 100 /tmp/functional-test-ui.log
-            exit 1
-          fi
-          echo "✓ functional-test-ui: passed"
-          END=$(date +%s)
-          START=$(cat /tmp/functional-test-ui-start.$$ 2>/dev/null || echo 0)
-          if [ "$START" -gt 0 ]; then
-            echo "→ functional-test-ui: $((END - START))s elapsed"
-          fi
-          rm -f /tmp/functional-test-ui-start.$$
-
       - name: Stage binaries with target-triple names
         # Replaces the old actions/upload-artifact@v4 step. Artifacts are
         # QUOTA-METERED Actions storage and the repo hit the cap
@@ -1906,4 +1725,244 @@ jobs:
           prerelease: true
           make_latest: false
           files: bin-stage-${{ matrix.target.zig }}/*
+
+  functional-test:
+    # Linux-only: API functional suites. Chained after the backend
+    # matrix via needs: (backend builds the release binaries; this
+    # job rebuilds from the same SHA via `zig build functional-test`).
+    name: functional-test (Linux X64)
+    runs-on: [self-hosted, Linux, X64]
+    needs: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pnpm 11
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache python venv + playwright chromium
+        # PERF (2026-08-25): the pytest venv + Playwright Chromium
+        # (~150 MB browser download) used to be recreated on EVERY run
+        # because they lived inside the workspace, which self-hosted
+        # runners `git clean` between runs. Both now live OUTSIDE the
+        # workspace:
+        #   - venv at ${{ runner.temp }}/nalar-ci-venv (via the
+        #     NALAR_FUNC_VENV_DIR env var that build.zig reads)
+        #   - chromium at ~/.cache/ms-playwright (playwright's default)
+        # and this cache step persists them across runs. Keyed by both
+        # requirements.txt files so a dep bump invalidates cleanly.
+        #
+        # Linux-only job — chained after backend via needs: (no matrix gate needed).
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ${{ runner.temp }}/nalar-ci-venv
+          key: v1-py-${{ runner.os }}-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          restore-keys: |
+            v1-py-${{ runner.os }}-
+
+      - name: "Functional tests: real-data isolation suites"
+        # 8 functional test suites exercising the real nalar HTTP API
+        # against non-trivial data shapes. Each test boots a fresh
+        # nalar binary against an isolated tmpdir HOME (mktemp),
+        # drives the API, and rmtree's the tempdir on teardown.
+        # The Python harness enforces the "never delete real $HOME"
+        # invariant via is_safe_tmp() — see tests/functional/harness.py
+        # for the safety guards.
+        #
+        # Test count: 8 suites × ~9 tests each = ~55 tests.
+        # Wall-clock: ~5 min total (each test = ~10s including
+        # boot + teardown).
+        #
+        # Gate: needs: backend — runs only after the backend matrix is green.
+        #
+        # The Python pytest harness's
+        # is_safe_tmp() allow-list previously blocked Windows temp
+        # paths (C:/Users/.../AppData/Local/Temp); this was extended
+        # in the worktree/fix-ci-windows-webview2 follow-up so the
+        # Win temp roots are recognised as safe to rmtree. See
+        # tests/functional/harness.py is_safe_tmp() for the full
+        # Windows allow-list.
+        shell: bash
+        env:
+          # Relocate the pytest venv OUTSIDE the workspace (which is
+          # `git clean`ed between runs on self-hosted runners) so the
+          # "Cache python venv + playwright chromium" step above can
+          # persist it. build.zig reads this at config time.
+          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+        run: |
+          set -u
+          echo "→ functional-test: starting"
+          date +%s > /tmp/functional-test-start.$$ 2>/dev/null || true
+          # zig build functional-test creates the venv at
+          # $NALAR_FUNC_VENV_DIR (see the env block above), installs
+          # requirements, and runs the suite.
+          zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
+          rc=${PIPESTATUS[0]}
+          echo "→ functional-test: exit code $rc"
+          if [ "$rc" -ne 0 ]; then
+            echo "✗ functional-test: failed (see /tmp/functional-test.log)"
+            # Surface the last 100 lines for debugging.
+            tail -n 100 /tmp/functional-test.log
+            exit 1
+          fi
+          echo "✓ functional-test: passed"
+          # Time taken.
+          END=$(date +%s)
+          START=$(cat /tmp/functional-test-start.$$ 2>/dev/null || echo 0)
+          if [ "$START" -gt 0 ]; then
+            echo "→ functional-test: $((END - START))s elapsed"
+          fi
+          rm -f /tmp/functional-test-start.$$
+
+  functional-test-ui:
+    # Linux-only: Playwright UI suites. Chained after functional-test
+    # via needs: so the UI never runs on a red functional suite.
+    name: functional-test-ui (Linux X64)
+    runs-on: [self-hosted, Linux, X64]
+    needs: functional-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pnpm 11
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Cache python venv + playwright chromium
+        # PERF (2026-08-25): the pytest venv + Playwright Chromium
+        # (~150 MB browser download) used to be recreated on EVERY run
+        # because they lived inside the workspace, which self-hosted
+        # runners `git clean` between runs. Both now live OUTSIDE the
+        # workspace:
+        #   - venv at ${{ runner.temp }}/nalar-ci-venv (via the
+        #     NALAR_FUNC_VENV_DIR env var that build.zig reads)
+        #   - chromium at ~/.cache/ms-playwright (playwright's default)
+        # and this cache step persists them across runs. Keyed by both
+        # requirements.txt files so a dep bump invalidates cleanly.
+        #
+        # Linux-only job — chained after backend via needs: (no matrix gate needed).
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ${{ runner.temp }}/nalar-ci-venv
+          key: v1-py-${{ runner.os }}-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          restore-keys: |
+            v1-py-${{ runner.os }}-
+
+      - name: Install pnpm + webapp dependencies (UI tests need Vite)
+        # The Vite dev server is spawned by UIHarness during the
+        # functional-test-ui step via `pnpm run dev` (2026-08-28 — pnpm
+        # migration, previously `npm run dev`). The webapp's node_modules
+        # is gitignored; cache it keyed by pnpm-lock.yaml hash + restore +
+        # `pnpm install --frozen-lockfile` on cache miss. Without this
+        # step, vite isn't on PATH and the UI tests fail with
+        # `vite: command not found` (PR #293 feedback).
+        #
+        # node + pnpm are on PATH from the setup steps at the top of this job.
+        shell: bash
+        run: |
+          set -u
+          # pnpm is on PATH from the pnpm/action-setup step earlier in
+          # this job; node is on PATH from setup-node. Both must resolve.
+          if ! command -v pnpm >/dev/null 2>&1; then
+            echo "✗ pnpm not on PATH — pnpm/action-setup step must have failed"
+            exit 1
+          fi
+          if ! command -v node >/dev/null 2>&1; then
+            echo "✗ node not on PATH — setup-node step must have failed"
+            exit 1
+          fi
+          # Restore node_modules from cache (if hit). pnpm-lock.yaml is
+          # the canonical lockfile (2026-08-28 — pnpm migration). The
+          # cache key prefix is `pnpm-` so old npm-cached tarballs from
+          # the npm-everywhere era (2026-08-25) don't shadow the new
+          # pnpm-cached ones.
+          CACHE_DIR="$HOME/.cache/nalar-pnpm-node-modules"
+          mkdir -p "$CACHE_DIR"
+          HASH=$(sha256sum src/apps/desktop/pnpm-lock.yaml)
+          CACHE_TARBALL="$CACHE_DIR/node_modules-${HASH}.tar.gz"
+          if [[ -f "$CACHE_TARBALL" ]]; then
+            echo "→ cache HIT ($HASH); restoring node_modules"
+            tar -xzf "$CACHE_TARBALL" -C src/apps/desktop
+          else
+            echo "→ cache MISS ($HASH); running pnpm install"
+            cd src/apps/desktop && pnpm install --frozen-lockfile && cd -
+            echo "→ saving node_modules to cache"
+            # pnpm with `node-linker=hoisted` (workspace .npmrc) lays
+            # the deps flat at node_modules/, so archiving that single
+            # dir is enough — no need to also archive .pnpm/ (the
+            # content-addressed store is rebuilt by the pnpm install
+            # on a cache miss; or by Vite's own resolution via
+            # node_modules/ on a cache hit).
+            tar -czf "$CACHE_TARBALL.tmp" -C src/apps/desktop node_modules \
+              && mv "$CACHE_TARBALL.tmp" "$CACHE_TARBALL"
+          fi
+          echo "→ webapp deps ready"
+
+      - name: "UI tests: functional-test-ui (Playwright + DB-seeded)"
+        # 30 Playwright tests exercising the running Vue webapp
+        # (nalar backend + Vite dev server) in headless Chromium.
+        # Boots a fresh backend + vite per test against an isolated
+        # tmpdir HOME; the chatview tests DB-seed `sessions` +
+        # `llm_history` rows so no real LLM is invoked.
+        #
+        # Gate: needs: functional-test — runs only after functional-test passes.
+        # The venv + chromium are restored from cache (saved by the
+        # functional-test job under the same cache key).
+        shell: bash
+        env:
+          # Same venv relocation as the functional-test step — the UI
+          # suite installs playwright + chromium into THIS venv.
+          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+        run: |
+          set -u
+          # pnpm is already on PATH from pnpm/action-setup.
+          echo "→ functional-test-ui: starting"
+          date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
+          # zig build functional-test-ui installs playwright into the
+          # existing venv at $NALAR_FUNC_VENV_DIR, downloads Chromium,
+          # and runs the 30 Playwright tests (10 chatview + 11 safety
+          # + 5 smoke + 4 kanban). Cold cache: ~5 min; warm cache:
+          # ~3 min.
+          zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
+          rc=${PIPESTATUS[0]}
+          echo "→ functional-test-ui: exit code $rc"
+          if [ "$rc" -ne 0 ]; then
+            echo "✗ functional-test-ui: failed (see /tmp/functional-test-ui.log)"
+            tail -n 100 /tmp/functional-test-ui.log
+            exit 1
+          fi
+          echo "✓ functional-test-ui: passed"
+          END=$(date +%s)
+          START=$(cat /tmp/functional-test-ui-start.$$ 2>/dev/null || echo 0)
+          if [ "$START" -gt 0 ]; then
+            echo "→ functional-test-ui: $((END - START))s elapsed"
+          fi
+          rm -f /tmp/functional-test-ui-start.$$
 
