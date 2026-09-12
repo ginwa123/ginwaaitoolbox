@@ -160,6 +160,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
     expect(input).not.toBeNull()
     expect(input!.value).toContain('.config/nalar/.worktrees')
     expect(input!.value).toContain('my-task')
+    expect(input!.value).toMatch(/my-task-\d+$/)
   })
 
   it('prefills an absolute path when home is known (Option A canonical root)', async () => {
@@ -179,7 +180,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
       '[data-testid="kanban-task-detail-use-git-worktree-path"]',
     )
     expect(input).not.toBeNull()
-    expect(input!.value).toBe('/home/testuser/.config/nalar/.worktrees/my-task')
+    expect(input!.value).toMatch(/^\/home\/testuser\/\.config\/nalar\/\.worktrees\/my-task-\d+$/)
   })
 
   it('expands a ~/ path to absolute on create-and-run emit', async () => {
