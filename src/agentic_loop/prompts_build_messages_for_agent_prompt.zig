@@ -17,7 +17,7 @@ const tool_models = nalarcore.tool_models;
 // `build_agent_prompt` rendering assembly as of the 2026-08-23 move.
 const prompts_const = @import("../modules/agent/prompts/prompts.zig");
 const memory_prompts = @import("../modules/agent/prompts/memory.zig");
-const tool_list_skills_mod = @import("../modules/agent/tools/list_skills.zig");
+const tool_list_skills_mod = @import("../modules/agent/tools/skill_tools.zig");
 const tool_memories_mod = @import("../modules/agent/tools/memories.zig");
 
 // Per-file tool system prompts are now stored directly in each tool's
@@ -43,15 +43,15 @@ const bash_tool_mod = nalarcore.bash_tool;
 const read_file_mod = nalarcore.read_file;
 const text_replace_mod = nalarcore.text_replace_tool;
 const write_file_mod = nalarcore.write_file;
-const list_skills_mod = nalarcore.list_skills_tool;
+const list_skills_mod = nalarcore.skill_tools;
 const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
 const search_history_mod = nalarcore.search_history_tool;
-const use_skill_mod = nalarcore.use_skill_tool;
-const remove_skill_mod = nalarcore.remove_skill_tool;
+const use_skill_mod = nalarcore.skill_tools;
+const remove_skill_mod = nalarcore.skill_tools;
 const list_agents_mod = nalarcore.list_agents;
-const add_skill_mod = nalarcore.add_skill;
-const edit_skill_mod = nalarcore.edit_skill;
+const add_skill_mod = nalarcore.skill_tools;
+const edit_skill_mod = nalarcore.skill_tools;
 const set_git_worktree_mod = nalarcore.set_git_worktree;
 const kanban_list_mod = nalarcore.kanban_list;
 const kanban_move_task_mod = nalarcore.kanban_move_task;

@@ -56,7 +56,7 @@ test {
 
     // 2026-08-14 — list_directory agent tool tests (Task 5 of the same plan).
     _ = @import("tools/create_kanban_task.zig");
-    _ = @import("tools/add_skill.zig");
+    _ = @import("tools/skill_tools.zig");
     _ = @import("tools/set_design_page.zig");
     _ = @import("tools/update_plan.zig");
     _ = @import("tools/search_history.zig");
@@ -64,9 +64,7 @@ test {
     _ = @import("tools/memory.zig");
     _ = @import("tools/list_skills.zig");
     _ = @import("tools/kanban_list.zig");
-    _ = @import("tools/use_skill.zig");
     _ = @import("tools/update_activity.zig");
-    _ = @import("tools/remove_skill.zig");
     _ = @import("tools/show_preview.zig");
     _ = @import("tools/pwsh.zig");
     _ = @import("tools/command.zig");
@@ -78,7 +76,6 @@ test {
     _ = @import("tools/kanban_move_task.zig");
     _ = @import("tools/list_directory.zig");
     _ = @import("tools/generate_image.zig");
-    _ = @import("tools/edit_skill.zig");
     _ = @import("tools/move_design_element.zig");
     _ = @import("tools/shell.zig");
     _ = @import("tools/text_replace.zig");
