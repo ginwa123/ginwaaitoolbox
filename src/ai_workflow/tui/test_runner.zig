@@ -218,7 +218,6 @@ _ = @import("../../http_handlers/session_messages_get.zig");
     _ = @import("../../modules/agent/tools/search_history.zig");
     _ = @import("../../modules/agent/tools/glob.zig");
     _ = @import("../../modules/agent/tools/memory.zig");
-    _ = @import("../../modules/agent/tools/list_skills.zig");
     _ = @import("../../modules/agent/tools/kanban_list.zig");
     _ = @import("../../modules/agent/tools/update_activity.zig");
     _ = @import("../../modules/agent/tools/show_preview.zig");

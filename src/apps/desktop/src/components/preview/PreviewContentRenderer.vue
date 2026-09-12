@@ -68,7 +68,6 @@ const props = withDefaults(
   { variant: 'inline' },
 )
 
-const isInline = computed(() => true)
 
 // ─── Iframe ref + auto-resize message handling ──────────────────────
 //

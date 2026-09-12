@@ -62,7 +62,6 @@ test {
     _ = @import("tools/search_history.zig");
     _ = @import("tools/glob.zig");
     _ = @import("tools/memory.zig");
-    _ = @import("tools/list_skills.zig");
     _ = @import("tools/kanban_list.zig");
     _ = @import("tools/update_activity.zig");
     _ = @import("tools/show_preview.zig");
