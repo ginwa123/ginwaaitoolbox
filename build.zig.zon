@@ -8,8 +8,8 @@
         // Pinned by URL + hash; exposes a single `databases` module;
         // consumers `@import("databases")` to use it.
         .databases = .{
-            .url = "https://github.com/ginwa123/ruangsql/archive/2ff5f0968d953ddbe29de3fe950eab167c09dfb7.tar.gz",
-            .hash = "databases-0.0.0-vy-BCB5DBAC_foirpjWqNhUG-NLB9YzBtCu5H_gAW1BX",
+            .url = "https://github.com/ginwa123/ruangsql/archive/85028d124ee45657284ba1ffd7829ac77128c7a5.tar.gz",
+            .hash = "databases-0.0.0-vy-BCDZHBADVKi0k29yABvgpYZNEumlxTIjEhK36vuei",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Pinned by URL + hash; exposes a
