@@ -13,7 +13,7 @@
 //! precedent) and `migration_routines_test.zig`.
 //!
 //! The SqliteBackend's public API (see
-//! `src/modules/databases/sqlite/Sqlite.zig`) is: `init`, `exec`,
+//! `ruangsql src/sqlite/Sqlite.zig (github.com/ginwa123/ruangsql)`) is: `init`, `exec`,
 //! `query` (returns `Rows` with `next()` → `?Row` carrying
 //! `values: [][]u8`). There is no `prepare`/`step`/`columnText`/
 //! `columnInt` public API — column reads go through `Row.values[i]`,
