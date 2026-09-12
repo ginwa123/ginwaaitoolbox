@@ -70,6 +70,10 @@ _ = @import("../../http_handlers/local_memories_list.zig");
     // 2026-09-10-web-launch-toggle): handler + buildWebUrl unit tests +
     // static contracts live in the single file, mirroring mcp_test.zig.
     _ = @import("../../http_handlers/web_status.zig");
+    // LLM profile Test probe: validation + probe-body builders + reply
+    // parsers + route/export static contracts live in the single file,
+    // mirroring mcp_test.zig above.
+    _ = @import("../../http_handlers/llm_test.zig");
 _ = @import("../../http_handlers/frontend_log_post.zig");
 _ = @import("../../http_handlers/frontend_log_get.zig");
 _ = @import("../../http_handlers/system_folder.zig");

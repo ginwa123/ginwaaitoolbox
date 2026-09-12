@@ -74,6 +74,11 @@ pub const devSseEmitLlmHandler = @import("dev_sse_emit.zig").emitLlmHandler;
 // verify their command / args / env / cwd (or URL + headers) before
 // clicking Save in the MCP server modal.
 pub const mcpTestHandler = @import("mcp_test.zig").mcpTestHandler;
+// LLM profile "Test" probe — fires one minimal non-streaming chat call
+// against a candidate model + base_url + api_key + url_style (without
+// persisting anything) so the user can verify the profile before
+// clicking Save in the Add/Edit profile modal.
+pub const llmTestHandler = @import("llm_test.zig").llmTestHandler;
 // Agent Mode tools CRUD (Tasks 7-8)
 pub const agentToolsRegistryHandler = @import("agent_tools_registry.zig").agentToolsRegistryHandler;
 pub const agentToolsListHandler = @import("agent_tools_list.zig").agentToolsListHandler;

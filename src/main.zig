@@ -537,6 +537,14 @@ pub fn main(init: std.process.Init) !void {
     // work before clicking Save.
     try gs.router.post("/api/mcp/test", ai_mod.http_handlers.mcpTestHandler);
 
+    // LLM profile "Test" probe — fires one minimal non-streaming chat
+    // call against a candidate profile without persisting anything.
+    // Used by the Add/Edit profile modal's "Test" button so the user
+    // can verify model + base_url + api_key + url_style actually work
+    // before clicking Save. Literal path with no `:param` siblings —
+    // no matchRoute shadowing risk (router.zig walks registration order).
+    try gs.router.post("/api/llm/test", ai_mod.http_handlers.llmTestHandler);
+
     // Frontend error log endpoints — capture unhandled JS exceptions,
     // unhandled promise rejections, and existing console.error / console.warn
     // calls from the nalar-desktop webapp. See

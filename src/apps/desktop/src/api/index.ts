@@ -3941,6 +3941,56 @@ export async function testMcpServer(body: {
   }
 }
 
+// ─── LLM profile test probe ─────────────────────────────────────────────────
+// Wire shape mirrors the backend `POST /api/llm/test` handler in
+// src/http_handlers/llm_test.zig. The probe fires one minimal
+// non-streaming chat call ("Reply with exactly: ok") against the
+// candidate model + base_url + api_key + url_style without persisting
+// anything — used by the "Test" button in LlmConfigModal (Add/Edit
+// profile + sub-agent dialogs) so the user can verify the profile
+// actually works before clicking Save.
+//
+// Success: `{ ok: true, model, reply, latency_ms }`
+// Failure: `{ ok: false, error, details }`
+// Always HTTP 200 — failure is carried in the `ok` field, not the status.
+export interface LlmTestRequest {
+  model: string
+  base_url: string
+  api_key: string
+  url_style: string
+}
+export type LlmTestResult =
+  | { ok: true; model: string; reply: string; latency_ms: number }
+  | { ok: false; error: string; details?: string }
+
+export async function testLlmProfile(body: LlmTestRequest): Promise<LlmTestResult> {
+  // Deliberately NOT the shared `apiFetch` wrapper (same reason as
+  // `testMcpServer` above): the endpoint always returns HTTP 200 with
+  // a payload that may carry `{ ok: false, ... }`, and we want the
+  // modal's inline result panel to render the error rather than
+  // firing a toast notification.
+  const res = await fetch(`${API_BASE}/llm/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const text = await res.text().catch(() => '')
+  let parsed: unknown = null
+  try {
+    parsed = text.length > 0 ? JSON.parse(text) : null
+  } catch {
+    // Non-JSON response — fall through to the generic error shape.
+  }
+  if (parsed && typeof parsed === 'object') {
+    return parsed as LlmTestResult
+  }
+  return {
+    ok: false,
+    error: `Unexpected response (HTTP ${res.status})`,
+    details: text.slice(0, 200),
+  }
+}
+
 // Git File Diff API
 export interface GitFileDiff {
   path: string
