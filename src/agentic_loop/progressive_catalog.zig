@@ -82,6 +82,14 @@ fn containsName(names: []const []const u8, name: []const u8) bool {
     return false;
 }
 
+/// The meta-tools are infrastructure for browsing the catalog; offering them
+/// AS catalog entries would let the agent "discover" search_tool with
+/// search_tool. They are always injected by the workflow when the catalog is
+/// non-empty, so they are never candidates.
+fn isProgressiveMetaTool(name: []const u8) bool {
+    return containsName(&nalarcore.progressive_tools.PROGRESSIVE_TOOL_NAMES, name);
+}
+
 /// Build the catalog. `registered` is the full built-in registry
 /// (`tools_equipped.equips()`); `mcp` is the live MCP tool cache (null =
 /// none configured/fetched); `equipped_names` are this session's
@@ -121,6 +129,8 @@ pub fn buildCatalog(
         // Anti-recursion invariant: a sub-agent must not be able to
         // discover its way back to spawn_sub_agent.
         if (is_sub_agent and std.mem.eql(u8, name, "spawn_sub_agent")) continue;
+        // Never offer the browsing meta-tools as things to browse.
+        if (isProgressiveMetaTool(name)) continue;
         if (containsName(equipped_names, name)) continue;
         try out.append(allocator, .{
             .name = name,
@@ -467,6 +477,25 @@ test "buildCatalog: MCP tools are always candidates (they bypass the allowlist)"
     try testing.expectEqualStrings("mcp_ctx_query-docs", catalog[4].name);
     try testing.expectEqual(Kind.mcp, catalog[4].kind);
     try testing.expectEqualStrings("mcp_ctx_resolve-library-id", catalog[5].name);
+}
+
+test "buildCatalog: the browsing meta-tools are never offered as catalog entries" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // The real registry: it CONTAINS the three meta-tools (they are injected
+    // by the workflow), so without an explicit exclusion they would show up
+    // as things to discover — letting the agent find search_tool with
+    // search_tool.
+    const registered = @import("tools_equipped.zig").equips(a);
+    const catalog = try buildCatalog(a, registered, NONE_ENABLED, false, null, &.{}, "agent");
+    try testing.expect(catalog.len > 0);
+    for (catalog) |entry| {
+        for (@import("nalarcore").progressive_tools.PROGRESSIVE_TOOL_NAMES) |meta| {
+            try testing.expect(!std.mem.eql(u8, entry.name, meta));
+        }
+    }
 }
 
 test "matchQuery: name and description substring, case-insensitive" {
