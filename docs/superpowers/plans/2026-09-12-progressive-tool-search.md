@@ -1,4 +1,11 @@
-# Progressive Tool Search Implementation Plan (rev 3)
+# Progressive Tool Search Implementation Plan (rev 4)
+
+> **Rev 4 (post-implementation, 2026-09-12).** `search_tool` / `view_tool` /
+> `use_tool` are now **default-equipped in every mode**, at the reviewer's
+> request: `filterAndMergeTools` appends them unconditionally (the
+> catalog-size gate described in Design Decision 7 is gone) and they are
+> seeded into `DEFAULT_AGENT_TOOLS`, so both agent and kanban items list them.
+> Design Decision 7 below is kept for history but is superseded.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

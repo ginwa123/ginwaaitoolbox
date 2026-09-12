@@ -300,6 +300,7 @@ test "static contract: the workflow gates the meta tools on a non-empty catalog"
     const src = @embedFile("workflow.zig");
 
     try testing.expect(std.mem.indexOf(u8, src, "progressive_catalog.buildCatalog") != null);
-    // The catalog size decides whether search_tool/view_tool/use_tool ship.
-    try testing.expect(std.mem.indexOf(u8, src, "catalog.len > 0") != null);
+    // The meta-tools must be appended unconditionally — no catalog gate.
+    try testing.expect(std.mem.indexOf(u8, src, "ALL_PROGRESSIVE_TOOLS") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "include_progressive_tools") == null);
 }

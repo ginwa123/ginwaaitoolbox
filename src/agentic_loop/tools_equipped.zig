@@ -313,6 +313,15 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // spawn
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
     list_sub_agent_mod.list_sub_agent_tool.function.name,
+
+    // progressive tool search — part of the default equipped set in every
+    // mode. They are also appended unconditionally by
+    // `workflow.filterAndMergeTools` (and are exempt from the allowlist), so
+    // listing them here is about making the feature visible in the Tools tab
+    // rather than about gating it.
+    progressive_tools_mod.search_tool_tool.function.name,
+    progressive_tools_mod.view_tool_tool.function.name,
+    progressive_tools_mod.use_tool_tool.function.name,
 };
 
 pub const DEFAULT_KANBAN_TOOLS: []const []const u8 = &.{
@@ -369,7 +378,7 @@ pub fn seedDefaultKanbanTools(
     }
 }
 
-test "DEFAULT_AGENT_TOOLS ships the spawn pair (spawn_sub_agent + list_sub_agent)" {
+test "DEFAULT_AGENT_TOOLS ships the spawn pair and the progressive meta-tools" {
     var found_spawn = false;
     var found_list = false;
     for (DEFAULT_AGENT_TOOLS) |name| {
@@ -377,5 +386,16 @@ test "DEFAULT_AGENT_TOOLS ships the spawn pair (spawn_sub_agent + list_sub_agent
         if (std.mem.eql(u8, name, "list_sub_agent")) found_list = true;
     }
     try std.testing.expect(found_spawn and found_list);
+
+    // Progressive tool search is part of the default equipped set in every
+    // mode: agent items seed DEFAULT_AGENT_TOOLS, kanban items seed it plus
+    // DEFAULT_KANBAN_TOOLS, so both modes get the three.
+    for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
+        var found = false;
+        for (DEFAULT_AGENT_TOOLS) |seeded| {
+            if (std.mem.eql(u8, seeded, name)) found = true;
+        }
+        try std.testing.expect(found);
+    }
 }
 

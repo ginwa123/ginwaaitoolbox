@@ -124,7 +124,51 @@ def test_meta_tools_are_injected_when_a_catalog_exists(stub_harness: FunctionalH
     )
 
 
-# ─── 2. An equipped not-enabled built-in reaches the real tool list ─────────
+# ─── 2. The meta-tools are equipped in EVERY mode, catalog or not ───────────
+
+PROGRESSIVE_TOOL_NAMES = ("search_tool", "view_tool", "use_tool")
+
+# `GET /api/agent-tools/registry` is a SUPERSET of what `equips()` injects:
+# `move_element_to_page` is registered so dispatch and the Tools tab know it,
+# but it is deliberately absent from the equipped set. Excluding it keeps the
+# arithmetic below exact.
+REGISTRY_ONLY_NAMES = frozenset({"move_element_to_page"})
+
+
+def test_meta_tools_ship_even_when_the_catalog_is_empty(
+    stub_harness: FunctionalHarness,
+) -> None:
+    """The three progressive tools are default-equipped in every mode — they
+    are NOT gated on there being something to discover.
+
+    This is the discriminating case: the allowlist names every equipped
+    built-in EXCEPT the three meta-tools, so the discoverable catalog is empty
+    and a catalog-gated implementation would drop them. They must still be on
+    the request, so the count is exactly (allowlisted built-ins + 3).
+    """
+    registry = stub_harness.http("GET", "/api/agent-tools/registry", expect=200).json()
+    all_names = [t["name"] for t in registry["tools"]]
+    assert len(all_names) > 10, f"suspicious registry: {all_names!r}"
+
+    allowlist = [
+        n
+        for n in all_names
+        if n not in PROGRESSIVE_TOOL_NAMES and n not in REGISTRY_ONLY_NAMES
+    ]
+    assert PROGRESSIVE_TOOL_NAMES[0] not in allowlist
+
+    _queue_message(stub_harness, "prog-test-always-on", ",".join(allowlist))
+
+    got = _wait_for_tool_count(stub_harness)
+    expected = len(allowlist) + len(PROGRESSIVE_TOOL_NAMES)
+    assert got == expected, (
+        "the three progressive tools must be appended unconditionally, even "
+        f"with an empty catalog; expected {expected} "
+        f"({len(allowlist)} built-ins + {len(PROGRESSIVE_TOOL_NAMES)} meta), got {got}"
+    )
+
+
+# ─── 3. An equipped not-enabled built-in reaches the real tool list ─────────
 
 
 def test_equipped_builtin_is_injected_even_when_the_allowlist_excludes_it(
