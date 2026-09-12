@@ -496,13 +496,13 @@ function formatElapsed(ms: number): string {
           <!-- Expanded agent response/error -->
           <div v-if="expandedAgents.has(idx) && agent.response" class="px-3 py-2 bg-black/[0.02]">
             <pre 
-              class="whitespace-pre-wrap break-all text-xs leading-relaxed max-h-64 overflow-y-auto"
+              class="whitespace-pre-wrap break-all text-xs leading-relaxed max-h-64 overflow-y-auto max-w-full min-w-0 overflow-x-auto"
               style="color: var(--semantic-text);"
             >{{ agent.response }}</pre>
           </div>
           <div v-if="expandedAgents.has(idx) && agent.error" class="px-3 py-2 bg-red-500/5">
             <pre 
-              class="whitespace-pre-wrap break-all text-xs leading-relaxed text-red-500"
+              class="whitespace-pre-wrap break-all text-xs leading-relaxed text-red-500 max-w-full min-w-0 overflow-x-auto"
             >{{ agent.error }}</pre>
           </div>
         </div>

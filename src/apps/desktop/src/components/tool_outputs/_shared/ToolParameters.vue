@@ -34,6 +34,6 @@ const pretty = computed(() => {
     <summary class="cursor-pointer select-none text-[var(--semantic-text-dim)] hover:opacity-100 opacity-70">
       Arguments
     </summary>
-    <pre class="mt-1 p-2 m-0 whitespace-pre-wrap break-words text-[var(--semantic-text-dim)] text-xs">{{ pretty }}</pre>
+    <pre class="mt-1 p-2 m-0 whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto text-[var(--semantic-text-dim)] text-xs">{{ pretty }}</pre>
   </details>
 </template>
