@@ -809,7 +809,6 @@ pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const remove_file = @import("modules/agent/tools/remove_file.zig");
 pub const system_folder = @import("modules/system_folder/system_folder.zig");
 
-pub const update_activity = @import("modules/agent/tools/update_activity.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // update_plan (UPSERT) + get_plan (fetch) — the agent's persistent markdown task plan.
 pub const update_plan = @import("modules/agent/tools/update_plan.zig");

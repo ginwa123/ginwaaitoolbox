@@ -173,7 +173,6 @@ EXPECTED_DEFAULTS = [
     "search_tool",
     "spawn_sub_agent",
     "text_replace",
-    "update_activity",
     "update_plan",
     "use_skill",
     "use_tool",

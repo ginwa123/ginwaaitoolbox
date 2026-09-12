@@ -51,7 +51,6 @@ pub const execPwsh = @import("tools_exec_pwsh.zig").execPwsh;
 pub const execCommand = @import("tools_exec_command.zig").execCommand;
 // 2026-08-14 — list_directory agent tool (Task 5 of ban-absolute-paths plan).
 pub const execListDirectory = @import("tools_exec_list_directory.zig").execListDirectory;
-pub const execUpdateActivity = @import("tools_exec_update_activity.zig").execUpdateActivity;
 pub const execSpawnSubAgent = @import("tools_exec_spawn_sub_agent.zig").execSpawnSubAgent;
 
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).

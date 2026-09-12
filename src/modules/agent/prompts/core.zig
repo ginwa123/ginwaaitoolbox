@@ -118,25 +118,6 @@ pub const ResponseFormatting =
     \\Use for: internal reasoning, planning before execution, explaining decision rationale, breaking down complex problems.
 ;
 
-pub const UpdateActivityRule =
-    \\## Activity Tracking (MANDATORY)
-    \\
-    \\**You MUST call `update_activity` BEFORE writing files or running bash commands!**
-    \\
-    \\It records the agent's current thinking/work status. The `thought` must include:
-    \\- Timestamp (YYYY-MM-DD HH:MM), session_id, current working directory (cwd)
-    \\- What you're doing: analyzing, planning, researching, debugging, implementing, testing, reviewing, searching, coordinating with other agents
-    \\- **When writing files: ALWAYS include the absolute file path**
-    \\
-    \\**Call format:**
-    \\```
-    \\use update_activity with thought="[YYYY-MM-DD HH:MM] session_XXXX @ /path/to/dir | Action | Details"
-    \\```
-    \\
-    \\**Examples:**
-    \\- `use update_activity with thought="[2025-01-15 10:30] session_123 @ /project | Implementing | Writing /project/src/core.zig"`
-    \\- `use update_activity with thought="[2025-01-15 10:31] session_123 @ /project | Testing | Running build command to verify changes"`
-;
 
 pub const ProgressiveToolRule =
     \\## Progressive Tools (some tools are not loaded yet)

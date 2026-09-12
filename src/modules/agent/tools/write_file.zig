@@ -104,7 +104,6 @@ pub const write_file_tool_system_prompt =
     \\Use `write_file` to create or overwrite a file.
     \\- Provide absolute `path` and full `content`. Set `create_with_dir=true` to auto-create parent directories.
     \\- For partial edits, prefer `text_replace` over rewriting the whole file.
-    \\- Always call `update_activity` before writing.
     \\
 ;
 

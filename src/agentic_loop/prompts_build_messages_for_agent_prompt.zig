@@ -69,7 +69,6 @@ const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
 const change_agent_mod = nalarcore.change_agent;
 const web_search_mod = nalarcore.web_search;
-const update_activity_mod = nalarcore.update_activity;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
 const semantic_search_mod = nalarcore.semantic_search;
@@ -116,9 +115,6 @@ pub fn buildMessages(
             \\current state explicitly.
             \\
         );
-    }
-    if (hasTool(filtered_tools, "update_activity")) {
-        try final_system.appendSlice(allocator, prompts_const.UpdateActivityRule);
     }
     if (hasTool(filtered_tools, "list_skills")) {
         try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
@@ -1310,7 +1306,6 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
         ,
         .requires_tool = "update_plan",
     },
-    .{ .name = "update_activity", .content = prompts_const.UpdateActivityRule },
 };
 
 /// Check if a tool with the given name is present in the runtime tool list.

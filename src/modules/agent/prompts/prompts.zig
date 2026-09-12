@@ -21,7 +21,6 @@ pub const special = @import("special.zig");
 pub const UniversalRules = core.UniversalRules;
 pub const PromptAutoFix = core.PromptAutoFix;
 pub const ResponseFormatting = core.ResponseFormatting;
-pub const UpdateActivityRule = core.UpdateActivityRule;
 pub const SearchToolRule = core.SearchToolRule;
 // Progressive tool search: tells the model that some tools are lazy and how
 // to reach them (search_tool -> view_tool -> use_tool). Gated on the

@@ -39,7 +39,6 @@ const remove_file_mod = nalarcore.remove_file;
 const change_agent_mod = nalarcore.change_agent;
 const web_search_mod = nalarcore.web_search;
 const generate_image_mod = nalarcore.generate_image;
-const update_activity_mod = nalarcore.update_activity;
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Markdown task plan with - [ ] / - [x] checklist, persisted across iterations.
 const update_plan_mod = nalarcore.update_plan;
@@ -72,7 +71,6 @@ const ToolExecResult = tools.ToolExecResult;
 pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
     const tools_list = comptime &[_]AgentTool{
         spawn_sub_agent_tool.spawn_sub_agent_tool,
-        update_activity_mod.update_activity_tool,
         // 2026-08-19 — session_plan tools (Task 4). The plan is
         // automatically re-injected into the system prompt on every
         // iteration, so the LLM sees the current checklist even
@@ -148,7 +146,6 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
     return &.{
         // === AGENT CONTROL (main agent only) ===
         .{ .name = "spawn_sub_agent", .exec = tools.execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool },
-        .{ .name = "update_activity", .exec = tools.execUpdateActivity, .tool_def = update_activity_mod.update_activity_tool },
 
         // === PLAN TOOLS ===
         // 2026-08-19 — session_plan agent tools (Task 4 of
@@ -294,7 +291,6 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // for context-aware tools
     update_plan_mod.update_plan_tool.function.name,
     get_plan_mod.get_plan_tool.function.name,
-    update_activity_mod.update_activity_tool.function.name,
 
     // for memory tools // addon
     save_memory_mod.save_memory_tool.function.name,
