@@ -137,3 +137,26 @@ pub const UpdateActivityRule =
     \\- `use update_activity with thought="[2025-01-15 10:30] session_123 @ /project | Implementing | Writing /project/src/core.zig"`
     \\- `use update_activity with thought="[2025-01-15 10:31] session_123 @ /project | Testing | Running build command to verify changes"`
 ;
+
+pub const ProgressiveToolRule =
+    \\## Progressive Tools (some tools are not loaded yet)
+    \\
+    \\Not every tool is in your tool list. MCP server tools and built-in tools that
+    \\this agent does not have enabled are kept out of context until you ask for them.
+    \\
+    \\**A missing capability is never a dead end — search for it:**
+    \\- `search_tool` — query the catalog of tools you do NOT currently have. Accepts
+    \\  `query` (name/description substring) and optional `server` (one MCP server).
+    \\- `view_tool` — read one candidate's full parameter schema. Read-only; inspect
+    \\  before committing.
+    \\- `use_tool` — enable a tool for this session. It becomes callable from your
+    \\  NEXT turn (the current turn's tool list was already sent), and the result
+    \\  includes the schema so you can write the call correctly right away.
+    \\
+    \\**Rules:**
+    \\- Never guess a tool name — `use_tool` rejects unknown names and writes nothing.
+    \\- Never invent an argument name — call `view_tool` first if you are unsure.
+    \\- Tools you already have are NOT listed by `search_tool`. Check your own tool list
+    \\  before concluding something is missing; if it is genuinely absent, search.
+    \\- `use_tool` affects THIS session only. It never changes the user's saved config.
+;

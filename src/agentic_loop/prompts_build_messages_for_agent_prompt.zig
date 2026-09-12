@@ -123,6 +123,9 @@ pub fn buildMessages(
     if (hasTool(filtered_tools, "list_skills")) {
         try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
     }
+    if (hasTool(filtered_tools, "search_tool")) {
+        try final_system.appendSlice(allocator, prompts_const.ProgressiveToolRule);
+    }
     _ = activeAgentContent;
 
     // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)

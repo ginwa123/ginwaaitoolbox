@@ -47,9 +47,11 @@ const get_plan_mod = nalarcore.get_plan;
 const list_sub_agent_mod = nalarcore.list_sub_agent;
 // 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
 // LLM-callable tool that registers a new MCP server in the live config +
-// persists to disk + hot-reloads `di.llm_config` so the new server's tools
-// appear on the next iteration's system prompt. v1 is stdio-only (HTTP lands
-// in task_1787928601804_8 without changing the wire shape).
+// persists to disk + hot-reloads `di.llm_config`. The new server's tools are
+// PROGRESSIVE: they become discoverable via `search_tool` on the next
+// iteration and reach the LLM's tool list only after `use_tool` equips one.
+// v1 is stdio-only (HTTP lands in task_1787928601804_8 without changing the
+// wire shape).
 const add_mcp_server_mod = nalarcore.add_mcp_server;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
@@ -162,9 +164,10 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === MCP MANAGEMENT ===
         // 2026-08-28 — add_mcp_server (Task 5 of 2026-08-28-add-mcp-server-agent-tool.md).
         // Registers a new MCP server in the live config + persists to disk +
-        // hot-reloads `di.llm_config` so the new server's tools appear on
-        // the next iteration's system prompt. v1 supports the `stdio`
-        // transport only (HTTP lands in task_1787928601804_8).
+        // hot-reloads `di.llm_config`. Its tools then become discoverable via
+        // `search_tool` and callable only after `use_tool` equips them (MCP
+        // tools are progressive). v1 supports the `stdio` transport only
+        // (HTTP lands in task_1787928601804_8).
         .{ .name = "add_mcp_server", .exec = tools.execAddMcpServer, .tool_def = add_mcp_server_mod.add_mcp_server_tool },
 
         // === PROGRESSIVE TOOL SEARCH ===

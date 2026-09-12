@@ -62,8 +62,9 @@ pub const execGetPlan = @import("tools_exec_get_plan.zig").execGetPlan;
 pub const execListSubAgent = @import("tools_exec_list_sub_agent.zig").execListSubAgent;
 // 2026-08-28 — add_mcp_server agent tool (Step 3 of 2026-08-28-add-mcp-server-agent-tool.md).
 // Lets the LLM register a new MCP server (stdio in v1) in the live config +
-// persist to disk + hot-reload `di.llm_config` so the new server's tools
-// appear on the next iteration's system prompt.
+// persist to disk + hot-reload `di.llm_config`. MCP tools are progressive:
+// the new server's tools become discoverable via `search_tool` on the next
+// iteration and reach the tool list only after `use_tool` equips them.
 pub const execAddMcpServer = @import("tools_exec_add_mcp_server.zig").execAddMcpServer;
 
 // Progressive tool search (plan 2026-09-12-progressive-tool-search): the three
