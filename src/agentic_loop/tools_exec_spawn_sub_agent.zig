@@ -26,7 +26,7 @@ const SubAgentThreadArgs = struct {
     parent_sess_id: []const u8,
     agent_name: []const u8,
     instruction: []const u8,
-    tools: ?[]const []const u8,
+    tools: []const []const u8, // REQUIRED explicit allowlist — parse rejects omit/empty/"all"
     llm_config: *const config_mod.LlmConfig,
     cwd: []const u8,
     is_sub_agent: bool,
@@ -275,14 +275,17 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .message = args_ptr.instruction,
         .cwd = args_ptr.cwd,
         .body = "",
-        .allowed_tools = if (args_ptr.tools) |sub_agent_tools| blk: {
+        .allowed_tools = blk: {
+            // `tools` is required per sub-agent (parse rejects omit/empty/"all"),
+            // so there is no omit-means-all fallback here — the CSV always
+            // comes from the parent's explicit list.
             var tools_str = std.ArrayList(u8).empty;
-            for (sub_agent_tools, 0..) |tool, i| {
+            for (args_ptr.tools, 0..) |tool, i| {
                 if (i > 0) tools_str.append(args_ptr.allocator, ',') catch break;
                 tools_str.appendSlice(args_ptr.allocator, tool) catch break;
             }
             break :blk tools_str.items;
-        } else "",
+        },
         .is_sub_agent = is_sub_agent,
         .inherited_context = args_ptr.inherited_context,
         .sub_agent_overrides = args_ptr.sub_agent_overrides,

@@ -22,7 +22,7 @@ describe('SpawnSubAgent peek button', () => {
         content: sampleResult,
         expanded: true,
         subAgentArgs: [
-          { agent_name: 'backend-dev', instruction: 'do X' },
+          { agent_name: 'backend-dev', instruction: 'do X', tools: ['read_file'] },
         ],
       },
     })
@@ -56,8 +56,8 @@ describe('SpawnSubAgent peek button', () => {
         content: twoAgentResult,
         expanded: true,
         subAgentArgs: [
-          { agent_name: 'a', instruction: 'do A' },
-          { agent_name: 'b', instruction: 'do B' },
+          { agent_name: 'a', instruction: 'do A', tools: ['read_file'] },
+          { agent_name: 'b', instruction: 'do B', tools: ['glob'] },
         ],
       },
     })
@@ -75,7 +75,7 @@ describe('SpawnSubAgent peek button', () => {
       props: {
         content: noSessionResult,
         expanded: true,
-        subAgentArgs: [{ agent_name: 'a', instruction: 'do A' }],
+        subAgentArgs: [{ agent_name: 'a', instruction: 'do A', tools: ['read_file'] }],
       },
     })
     expect(wrapper.findAll('[data-testid="peek-button"]')).toHaveLength(0)

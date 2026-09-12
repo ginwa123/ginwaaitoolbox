@@ -8,7 +8,7 @@ const inherited_context_helper = @import("../../../agentic_loop/inherited_contex
 
 pub const SubAgentInput = struct {
     instruction: []const u8,
-    tools: ?[]const []const u8 = null, // optional list of tool names to allow
+    tools: []const []const u8, // REQUIRED explicit allowlist — no omit, no "all", no empty
     timeout_seconds: ?u32 = null, // optional timeout for this sub-agent (0 = no timeout)
     inherited_context: ?[]const u8 = null, // optional mode string for parent history inheritance
     agent_name: []const u8,
@@ -20,12 +20,10 @@ pub const SubAgentsInput = struct {
     pub fn deinit(self: *const SubAgentsInput, allocator: std.mem.Allocator) void {
         for (self.sub_agents) |sa| {
             allocator.free(sa.instruction);
-            if (sa.tools) |t| {
-                for (t) |tool_name| {
-                    allocator.free(tool_name);
-                }
-                allocator.free(t);
+            for (sa.tools) |tool_name| {
+                allocator.free(tool_name);
             }
+            allocator.free(sa.tools);
             // Note: timeout_seconds doesn't need freeing (it's an optional primitive)
             if (sa.inherited_context) |ctx| allocator.free(ctx);
             allocator.free(sa.agent_name);
@@ -37,8 +35,10 @@ pub const SubAgentsInput = struct {
 pub const spawn_sub_agent_tool_system_prompt =
     \\## Spawn Sub Agent Tool — Behavior
     \\Use `spawn_sub_agent` to delegate independent sub-tasks in parallel.
-    \\- Provide `instruction` (full task details) and `agent_name` (from available sub-agents). The sub-agent runs isolated and returns a result.
+    \\- Provide `instruction` (full task details), `agent_name` (from available sub-agents), and `tools` (REQUIRED explicit allowlist — never omit, never "all"). The sub-agent runs isolated and returns a result.
     \\- Use for parallel research or multi-file work, not for trivial single-step tasks. Up to 20 sub-agents in parallel.
+    \\- Explorer-code sub-agents (read-only: read_file, glob, search) share your cwd — NO new worktree needed.
+    \\- Writer sub-agents (write_file, text_replace, remove_file, writing bash) MUST be told explicitly in `instruction` to call `set_git_worktree` first (path `.worktree/worktrees_agent_<randomname>`), do the work there, then return a summary of changed files and optionally push. Include `set_git_worktree` in their `tools`.
     \\
 ;
 
@@ -59,10 +59,14 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\- Use when you need to research multiple topics simultaneously.
         \\- Use when processing multiple files, URLs, or data sources at once.
         \\
-        \\TOOL SELECTION GUIDE (optional "tools" field):
-        \\- Omit "tools" to give the sub-agent access to ALL default tools.
-        \\- Specify "tools" to restrict the sub-agent to only those tools (saves tokens, improves focus).
-        \\- Unknown tools will return an error message explaining why they can't be used.
+        \\TOOLS (REQUIRED, explicit allowlist):
+        \\- Every sub-agent MUST list its own "tools" — a non-empty array of exact tool names. Missing, empty, or ["all"] is rejected at parse time.
+        \\- There is no omit-means-all: pick the minimal set the task needs. Explorer-code (read-only research) e.g. ["read_file", "glob", "search"]. Writer e.g. ["read_file", "write_file", "text_replace", "set_git_worktree", "command"].
+        \\- Unknown names are ignored (the child simply never receives them), so double-check spelling against the tool list.
+        \\
+        \\WORKTREE RULE (explorer shares, writer isolates):
+        \\- Explorer-code sub-agent (read-only: read_file, glob, search, semantic_search, web_search): NO new worktree — it shares your cwd, that is fine.
+        \\- Writer/editor sub-agent (anything that creates or modifies files): you MUST tell it explicitly in "instruction" to call `set_git_worktree` FIRST with a path under `.worktree/worktrees_agent_<randomname>`, do all file work inside that worktree, then return a summary of changed files and whether it pushed. Its "tools" MUST include "set_git_worktree" plus the write tools it needs.
         \\
         \\TIMEOUT OPTION:
         \\- Each sub-agent can have an optional "timeout_seconds" field.
@@ -108,13 +112,14 @@ pub const spawn_sub_agent_tool = AgentTool{
         \\  is used. The system prompt is the default (no specialized
         \\  system_prompt injection). The result XML will carry
         \\  `random_fallback="true"` on the affected <agent> tag.
-        \\- Example: { "instruction": "Review the diff in src/foo.zig",
+        \\- Example: { "instruction": "Review the diff in src/foo.zig and summarize the risks",
+        \\             "tools": ["read_file", "glob", "search"],
         \\             "agent_name": "code-reviewer" }
         \\
         \\EXAMPLE USE CASES:
-        \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C
-        \\  - Spawn 5 agents to process 5 different files in parallel
-        \\  - Spawn agents with ["web_browse"] to research multiple topics at once
+        \\  - Spawn 3 agents: one to browse URL A, one to browse URL B, one to browse URL C (each with "tools": ["web_search"])
+        \\  - Spawn 5 agents to explore 5 different files in parallel (explorer-code, read-only tools, no worktree)
+        \\  - Spawn a writer agent with ["read_file", "write_file", "text_replace", "set_git_worktree", "command"] and an instruction that starts with "First call set_git_worktree ..."
         ,
         .parameters = .{
             .type = "object",
@@ -135,19 +140,29 @@ pub const spawn_sub_agent_tool = AgentTool{
                     \\                                          //   (looked up in the active profile's sub_agents
                     \\                                          //   only). Also used as the
                     \\                                          //   sub-agent's label in the result XML.
-                    \\      "tools": ["bash", "web_browse"],    // Optional. Omit for all tools.
+                    \\      "tools": ["read_file", "glob", "search"], // REQUIRED. Non-empty explicit allowlist. Never omit, never "all".
                     \\      "timeout_seconds": 300,             // Optional. Timeout in seconds (0 = no limit).
                     \\      "inherited_context": "last:5"        // Optional. Mode for parent history inheritance.
                     \\    }
                     \\  ]
                     \\}
                     \\
-                    \\GOOD INSTRUCTION EXAMPLE:
+                    \\GOOD EXPLORER-CODE EXAMPLE (read-only, no worktree):
                     \\  "instruction": "Browse https://example.com/pricing and extract all pricing
-                    \\   tiers, their names, prices, and included features. Return as a markdown table."
+                    \\   tiers, their names, prices, and included features. Return as a markdown table.",
+                    \\  "tools": ["web_search"]
+                    \\
+                    \\GOOD WRITER EXAMPLE (own worktree, then summarize):
+                    \\  "instruction": "First call set_git_worktree with path `.worktree/worktrees_agent_<randomname>`.
+                    \\   Then implement the fix inside that worktree. When done, return a summary of changed
+                    \\   files and whether you pushed.",
+                    \\  "tools": ["read_file", "write_file", "text_replace", "set_git_worktree", "command"]
                     \\
                     \\BAD INSTRUCTION EXAMPLE (too vague, no context):
                     \\  "instruction": "Check the pricing page"  ← agent won't know what site or goal
+                    \\
+                    \\BAD TOOLS EXAMPLES (all rejected at parse time):
+                    \\  missing "tools" field, "tools": [], or "tools": ["all"]
                     ,
                 },
             },
@@ -231,6 +246,8 @@ fn parseSubAgentsFromValue(
     errdefer {
         for (sub_agents_list.items) |sa| {
             allocator.free(sa.instruction);
+            for (sa.tools) |t| allocator.free(t);
+            allocator.free(sa.tools);
             allocator.free(sa.agent_name);
         }
         sub_agents_list.deinit(allocator);
@@ -245,20 +262,41 @@ fn parseSubAgentsFromValue(
         const instruction = try allocator.dupe(u8, instr_val.string);
         errdefer allocator.free(instruction);
 
-        // Parse optional "tools" field
-        var tools: ?[]const []const u8 = null;
-        if (agent_obj.get("tools")) |tools_val| {
-            const tools_array = tools_val.array;
-            var tools_list = std.ArrayList([]const u8).empty;
-            errdefer {
-                for (tools_list.items) |t| allocator.free(t);
-                tools_list.deinit(allocator);
+        // Parse REQUIRED "tools" field — explicit allowlist, no omit, no "all", no empty.
+        // Explorer-code sub-agents list read-only tools (read_file, glob,
+        // search); writer sub-agents must also list set_git_worktree plus
+        // the write tools so they can isolate in their own worktree.
+        const tools_val = agent_obj.get("tools") orelse {
+            return error.MissingSubAgentTools;
+        };
+        if (tools_val != .array) {
+            return error.InvalidSubAgentsFormat;
+        }
+        const tools_array = tools_val.array;
+        if (tools_array.items.len == 0) {
+            return error.EmptySubAgentTools;
+        }
+        var tools_list = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (tools_list.items) |t| allocator.free(t);
+            tools_list.deinit(allocator);
+        }
+        for (tools_array.items) |tool_val| {
+            if (tool_val != .string or tool_val.string.len == 0) {
+                return error.InvalidSubAgentsFormat;
             }
-            for (tools_array.items) |tool_val| {
-                const tool_name = try allocator.dupe(u8, tool_val.string);
-                try tools_list.append(allocator, tool_name);
+            const trimmed = std.mem.trim(u8, tool_val.string, " ");
+            if (std.mem.eql(u8, trimmed, "all")) {
+                return error.AllToolsNotAllowed;
             }
-            tools = try tools_list.toOwnedSlice(allocator);
+            const tool_name = try allocator.dupe(u8, trimmed);
+            errdefer allocator.free(tool_name);
+            try tools_list.append(allocator, tool_name);
+        }
+        const tools = try tools_list.toOwnedSlice(allocator);
+        errdefer {
+            for (tools) |t| allocator.free(t);
+            allocator.free(tools);
         }
 
         // Parse optional "timeout_seconds" field
@@ -269,6 +307,7 @@ fn parseSubAgentsFromValue(
 
         // Parse optional "inherited_context" field
         var inherited_context: ?[]const u8 = null;
+        errdefer if (inherited_context) |c| allocator.free(c);
         if (agent_obj.get("inherited_context")) |ctx_val| {
             if (ctx_val == .string) {
                 // Validate the mode string at parse time so the LLM gets a clear
@@ -323,7 +362,7 @@ const spawn = @import("spawn_sub_agent.zig");
 test "parse_sub_agents - inherited_context 'last:3' is parsed into SubAgentInput" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","inherited_context":"last:3"}]}
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","tools":["read_file"],"inherited_context":"last:3"}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     defer parsed.deinit(alloc);
@@ -335,7 +374,7 @@ test "parse_sub_agents - inherited_context 'last:3' is parsed into SubAgentInput
 test "parse_sub_agents - omitted inherited_context is null" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"a","instruction":"do x"}]}
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","tools":["read_file"]}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     defer parsed.deinit(alloc);
@@ -345,7 +384,7 @@ test "parse_sub_agents - omitted inherited_context is null" {
 test "parse_sub_agents - inherited_context 'none' is parsed" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"a","instruction":"x","inherited_context":"none"}]}
+        \\{"sub_agents":[{"agent_name":"a","instruction":"x","tools":["read_file"],"inherited_context":"none"}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     defer parsed.deinit(alloc);
@@ -355,7 +394,7 @@ test "parse_sub_agents - inherited_context 'none' is parsed" {
 test "parse_sub_agents - inherited_context 'all' is parsed" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"a","instruction":"x","inherited_context":"all"}]}
+        \\{"sub_agents":[{"agent_name":"a","instruction":"x","tools":["read_file"],"inherited_context":"all"}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     defer parsed.deinit(alloc);
@@ -365,7 +404,7 @@ test "parse_sub_agents - inherited_context 'all' is parsed" {
 test "parse_sub_agents - inherited_context is freed by deinit (ASan-safe)" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"a","instruction":"x","inherited_context":"last:5"}]}
+        \\{"sub_agents":[{"agent_name":"a","instruction":"x","tools":["read_file"],"inherited_context":"last:5"}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     parsed.deinit(alloc); // Must not leak; testing.allocator will assert.
@@ -375,7 +414,7 @@ test "parse_sub_agents - inherited_context is freed by deinit (ASan-safe)" {
 test "parse_sub_agents - invalid inherited_context mode returns InvalidInheritedContextMode" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"a","instruction":"x","inherited_context":"last:5x"}]}
+        \\{"sub_agents":[{"agent_name":"a","instruction":"x","tools":["read_file"],"inherited_context":"last:5x"}]}
     ;
     try std.testing.expectError(error.InvalidInheritedContextMode, spawn.parse_sub_agents(alloc, input_json, 20));
 }
@@ -392,7 +431,7 @@ test "parse_sub_agents - invalid inherited_context mode returns InvalidInherited
 test "parse_sub_agents - agent_name is parsed into SubAgentInput" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"code-reviewer","instruction":"do x"}]}
+        \\{"sub_agents":[{"agent_name":"code-reviewer","instruction":"do x","tools":["read_file"]}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     defer parsed.deinit(alloc);
@@ -403,7 +442,7 @@ test "parse_sub_agents - agent_name is parsed into SubAgentInput" {
 test "parse_sub_agents - missing agent_name returns MissingSubAgentAgentName" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"instruction":"do x"}]}
+        \\{"sub_agents":[{"instruction":"do x","tools":["read_file"]}]}
     ;
     try std.testing.expectError(error.MissingSubAgentAgentName, spawn.parse_sub_agents(alloc, input_json, 20));
 }
@@ -411,7 +450,7 @@ test "parse_sub_agents - missing agent_name returns MissingSubAgentAgentName" {
 test "parse_sub_agents - empty string agent_name returns MissingSubAgentAgentName" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"","instruction":"do x"}]}
+        \\{"sub_agents":[{"agent_name":"","instruction":"do x","tools":["read_file"]}]}
     ;
     try std.testing.expectError(error.MissingSubAgentAgentName, spawn.parse_sub_agents(alloc, input_json, 20));
 }
@@ -427,7 +466,7 @@ test "parse_sub_agents - agent_name too long (>256 chars) returns AgentNameTooLo
     const prefix = "{\"sub_agents\":[{\"agent_name\":\"";
     @memcpy(input_buf[0..prefix.len], prefix);
     @memcpy(input_buf[prefix.len..][0..long_name.len], long_name);
-    const suffix = "\",\"instruction\":\"do x\"}]}";
+    const suffix = "\",\"instruction\":\"do x\",\"tools\":[\"read_file\"]}]}";
     @memcpy(input_buf[prefix.len + long_name.len ..][0..suffix.len], suffix);
     const input_json = input_buf[0 .. prefix.len + long_name.len + suffix.len];
 
@@ -437,7 +476,7 @@ test "parse_sub_agents - agent_name too long (>256 chars) returns AgentNameTooLo
 test "parse_sub_agents - agent_name is freed by deinit (ASan-safe)" {
     const alloc = std.testing.allocator;
     const input_json =
-        \\{"sub_agents":[{"agent_name":"code-reviewer","instruction":"do x"}]}
+        \\{"sub_agents":[{"agent_name":"code-reviewer","instruction":"do x","tools":["read_file"]}]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
     parsed.deinit(alloc); // Must not leak; testing.allocator fails on deinit if it does.
@@ -447,9 +486,9 @@ test "parse_sub_agents - multiple sub_agents each carry their own agent_name" {
     const alloc = std.testing.allocator;
     const input_json =
         \\{"sub_agents":[
-        \\  {"agent_name":"reviewer","instruction":"x"},
-        \\  {"agent_name":"explorer","instruction":"x"},
-        \\  {"agent_name":"writer","instruction":"x"}
+        \\  {"agent_name":"reviewer","instruction":"x","tools":["read_file"]},
+        \\  {"agent_name":"explorer","instruction":"x","tools":["glob"]},
+        \\  {"agent_name":"writer","instruction":"x","tools":["read_file","write_file"]}
         \\]}
     ;
     var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
@@ -458,4 +497,92 @@ test "parse_sub_agents - multiple sub_agents each carry their own agent_name" {
     try std.testing.expectEqualStrings("reviewer", parsed.sub_agents[0].agent_name);
     try std.testing.expectEqualStrings("explorer", parsed.sub_agents[1].agent_name);
     try std.testing.expectEqualStrings("writer", parsed.sub_agents[2].agent_name);
+}
+
+// -------------------------------------------------------------------------
+// parse_sub_agents — tools (REQUIRED, explicit allowlist, no "all")
+// -------------------------------------------------------------------------
+//
+// `tools` is required per sub-agent: the parent must list exactly which
+// tools the child may use. Omitting it, passing an empty array, or
+// passing "all" is a parse error — there is no omit-means-all fallback.
+
+test "parse_sub_agents - missing tools returns MissingSubAgentTools" {
+    const alloc = std.testing.allocator;
+    const input_json =
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x"}]}
+    ;
+    try std.testing.expectError(error.MissingSubAgentTools, spawn.parse_sub_agents(alloc, input_json, 20));
+}
+
+test "parse_sub_agents - empty tools array returns EmptySubAgentTools" {
+    const alloc = std.testing.allocator;
+    const input_json =
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","tools":[]}]}
+    ;
+    try std.testing.expectError(error.EmptySubAgentTools, spawn.parse_sub_agents(alloc, input_json, 20));
+}
+
+test "parse_sub_agents - tools containing all returns AllToolsNotAllowed" {
+    const alloc = std.testing.allocator;
+    const input_json =
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","tools":["all"]}]}
+    ;
+    try std.testing.expectError(error.AllToolsNotAllowed, spawn.parse_sub_agents(alloc, input_json, 20));
+}
+
+test "parse_sub_agents - tools containing all among others returns AllToolsNotAllowed" {
+    const alloc = std.testing.allocator;
+    const input_json =
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","tools":["read_file","all"]}]}
+    ;
+    try std.testing.expectError(error.AllToolsNotAllowed, spawn.parse_sub_agents(alloc, input_json, 20));
+}
+
+test "parse_sub_agents - explicit tools are parsed into SubAgentInput" {
+    const alloc = std.testing.allocator;
+    const input_json =
+        \\{"sub_agents":[{"agent_name":"a","instruction":"do x","tools":["read_file","glob"]}]}
+    ;
+    var parsed = try spawn.parse_sub_agents(alloc, input_json, 20);
+    defer parsed.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 2), parsed.sub_agents[0].tools.len);
+    try std.testing.expectEqualStrings("read_file", parsed.sub_agents[0].tools[0]);
+    try std.testing.expectEqualStrings("glob", parsed.sub_agents[0].tools[1]);
+}
+
+// -------------------------------------------------------------------------
+// Tool description + system prompt — required-tools + worktree wording
+// -------------------------------------------------------------------------
+//
+// The model only learns the REQUIRED-tools rule and the explorer-shares /
+// writer-isolates worktree rule from this text (the registry route exposes
+// the description; the system prompt rides every spawn-capable turn), so
+// lock the load-bearing sentences, not just keywords.
+
+test "spawn_sub_agent description teaches REQUIRED explicit tools" {
+    const desc = spawn.spawn_sub_agent_tool.function.description;
+    try std.testing.expect(std.mem.indexOf(u8, desc, "REQUIRED, explicit allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desc, "Missing, empty, or [\"all\"] is rejected") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desc, "There is no omit-means-all") != null);
+    // The old omit-means-all sentence must stay dead.
+    try std.testing.expect(std.mem.indexOf(u8, desc, "Omit \"tools\" to give the sub-agent access to ALL") == null);
+    // Unknown names are ignored (allowlistFilter), never an error.
+    try std.testing.expect(std.mem.indexOf(u8, desc, "Unknown names are ignored") != null);
+}
+
+test "spawn_sub_agent description teaches explorer-shares writer-isolates" {
+    const desc = spawn.spawn_sub_agent_tool.function.description;
+    try std.testing.expect(std.mem.indexOf(u8, desc, "Explorer-code sub-agent") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desc, "NO new worktree") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desc, "set_git_worktree") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desc, "return a summary of changed files") != null);
+}
+
+test "spawn_sub_agent system prompt carries tools-required and worktree rules" {
+    const sp = spawn.spawn_sub_agent_tool_system_prompt;
+    try std.testing.expect(std.mem.indexOf(u8, sp, "`tools` (REQUIRED explicit allowlist") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sp, "Explorer-code sub-agents") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sp, "Writer sub-agents") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sp, "set_git_worktree") != null);
 }
