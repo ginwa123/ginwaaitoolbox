@@ -19,7 +19,7 @@
 const std = @import("std");
 const testing = std.testing;
 const client = @import("client.zig");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 
 /// Per-spawn context. Heap-allocated by `EchoServer.start`, freed by
 /// `EchoServer.stop` after the thread joins.

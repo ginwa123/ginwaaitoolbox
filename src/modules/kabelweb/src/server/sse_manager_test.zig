@@ -498,14 +498,14 @@ test "sse: setFdSendTimeout bounds a write to a peer that never reads" {
 /// under. Two callers exist:
 ///   - the parent suite (`zig build test` at the repo root, which is
 ///     what CI runs) → repo-root-relative path first;
-///   - the module's own `zig build test` (`cd src/modules/custom_http_server`)
+///   - the package's own `zig build test` (`cd src/modules/kabelweb`)
 ///     → package-local path.
 /// `sse_chunked_test.zig` hardcodes the repo-root form; we tolerate both
-/// so the standalone module suite keeps working too.
+/// so the standalone package suite keeps working too.
 fn readSseManagerSource(allocator: std.mem.Allocator) ![]u8 {
     const candidates = [_][]const u8{
-        "src/modules/custom_http_server/src/sse_manager.zig",
-        "src/sse_manager.zig",
+        "src/modules/kabelweb/src/server/sse_manager.zig",
+        "src/server/sse_manager.zig",
     };
     var last_err: anyerror = error.FileNotFound;
     for (candidates) |path| {

@@ -515,8 +515,8 @@ fn findBashOnWindows() ?[]const u8 {
 ///   - universal: libc + link_libc
 ///   - Linux:     ssl / crypto / pq + /usr/include (sqlite3 lives in the
 ///                `databases` package — propagated via the module graph)
-///   - macOS:     (nothing — curl is universal via custom_http_client_mod)
-///   - Windows:   bcrypt (for src/modules/custom_http_server/src/security.zig)
+///   - macOS:     (nothing — curl is universal via kabelweb_mod)
+///   - Windows:   bcrypt (for src/modules/kabelweb/src/server/security.zig)
 ///
 /// What used to live here: per-platform sqlite3 amalgamation/archives
 /// + brew paths. Those moved to src/modules/databases/build.zig, which
@@ -549,12 +549,12 @@ fn linkPlatformDeps(
             // Everything database-related (sqlite3 amalgamation) is handled
             // by the `databases` package. macOS doesn't need openssl/pq
             // here (libpq is not currently used on macOS; openssl rides
-            // along via custom_http_client_mod).
+            // along via kabelweb_mod).
         },
         .windows => {
             // Everything database-related (sqlite3 amalgamation + bcrypt)
             // is handled by the `databases` package. bcrypt.dll is needed
-            // by src/modules/custom_http_server/src/security.zig
+            // by src/modules/kabelweb/src/server/security.zig
             // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
         },
         else => {
@@ -625,7 +625,7 @@ fn createPlatformExe(
 /// test executable depends on (`libcurl.dll`, `sqlite3.dll`,
 /// `libssl-3-x64.dll`, `libcrypto-3-x64.dll`, `libpq.dll`, …).
 ///
-/// WHY: when the `databases` + `custom_http_client` packages link the
+/// WHY: when the `databases` + `kabelweb` packages link the
 /// system-installed copies of these libs (probed at config time),
 /// they pull in the import `.lib` from `C:\vcpkg\installed\x64-windows\
 /// lib\`, but the actual `.dll` implementations live one level up at
@@ -673,7 +673,7 @@ fn prependVcpkgBinToPath(b: *std.Build, run: *std.Build.Step.Run) void {
 
 /// Bundle vcpkg runtime DLLs next to the exe so Explorer double-click works.
 ///
-/// WHY: `databases` + `custom_http_client` link the vcpkg IMPORT `.lib`
+/// WHY: `databases` + `kabelweb` link the vcpkg IMPORT `.lib`
 /// files (`sqlite3.lib`, `libcurl.lib`, `libssl.lib`, ...) on Windows.
 /// At runtime the Windows loader must find the matching `.dll`
 /// (`sqlite3.dll`, `libcurl.dll`, `libssl-3-x64.dll`, ...) via the
@@ -844,7 +844,7 @@ pub fn build(b: *std.Build) void {
             //     vcpkg install --recurse ...:x64-windows
             // (see .github/workflows/ci.yml:560). vcpkg emits artefacts as
             // x64 — `libcurl.lib`/`libssl.lib`/etc. live at
-            // `C:\vcpkg\installed\x64-windows\...`. The custom_http_client
+            // `C:\vcpkg\installed\x64-windows\...`. The kabelweb
             // and databases packages wire those exact paths into the link
             // line.
             //
@@ -903,7 +903,7 @@ pub fn build(b: *std.Build) void {
     // We promote `helpers` to its own Zig package (declared in
     // `build.zig.zon`) instead of creating a top-level `helpers`
     // module from a plain `b.createModule` so multiple sub-packages
-    // (custom_http_client, databases, …) can all reach it through a
+    // (kabelweb, databases, …) can all reach it through a
     // single shared module instance. In Zig 0.16 every `.zig` file
     // belongs to exactly one module, so duplicating the helpers
     // module from each sub-build.zig would collide on the file
@@ -927,11 +927,11 @@ pub fn build(b: *std.Build) void {
     // based on the target the consumer passes via b.dependency().
     //
     // Note: `-Dcurl-prefix` / `-Dcurl-vcpkg-root` are gone — curl wiring
-    // now lives in the `custom_http_client` package's own build.zig,
+    // now lives in the `kabelweb` package's own build.zig,
     // which links the vendored prebuilt archive from
     // vendor/curl/<target>/lib/libcurl.a. The package picks up the
     // right archive based on the target the consumer passes via
-    // b.dependency(). See src/modules/custom_http_client/build.zig for
+    // b.dependency(). See src/modules/kabelweb/build.zig for
     // the full rationale.
 
     const mod = b.addModule("nalarcore", .{
@@ -981,7 +981,7 @@ pub fn build(b: *std.Build) void {
     const databases_mod = databases_dep.module("databases");
     mod.addImport("databases", databases_mod);
 
-    // === Self-contained `custom_http_client` package (vendored libcurl) ===
+    // === Self-contained `kabelweb` package (vendored libcurl) ===
     // Mirrors the `databases` package pattern. The package's own build.zig
     // wires the vendored prebuilt archive from vendor/curl/<target>/lib/
     // libcurl.a based on the TARGET we pass in below. Consumers (mod,
@@ -992,19 +992,19 @@ pub fn build(b: *std.Build) void {
     // Required glibc version bumped to 2.38 — curl's source uses
     // `__isoc23_*` (glibc 2.38+) and `arc4random` (glibc 2.36+ in
     // weak-symbol form). Older glibc versions fail to link with
-    // "undefined reference to __isoc23_strtol" etc. The custom
-    // http_client target overrides glibc when needed.
-    const custom_http_client_dep = b.dependency("custom_http_client", .{
+    // "undefined reference to __isoc23_strtol" etc. The kabelweb
+    // http-client target overrides glibc when needed.
+    const kabelweb_dep = b.dependency("kabelweb", .{
         .target = target,
         .optimize = optimize,
     });
-    const custom_http_client_mod = custom_http_client_dep.module("custom_http_client");
-    mod.addImport("custom_http_client", custom_http_client_mod);
+    const kabelweb_mod = kabelweb_dep.module("kabelweb");
+    mod.addImport("kabelweb", kabelweb_mod);
 
-    // === custom_http_client module (libcurl-backed HTTP) ===
+    // === kabelweb module (libcurl-backed HTTP) ===
     // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
-    // can `@import("custom_http_client")`. Same libcurl deps as the
-    // sibling build at src/modules/custom_http_client/build.zig.
+    // can `@import("kabelweb")`. Same libcurl deps as the
+    // sibling build at src/modules/kabelweb/build.zig.
     //
     // Self-contained package — mirrors the `databases` package pattern.
     // The package's own build.zig wires the vendored prebuilt archive
@@ -1018,7 +1018,7 @@ pub fn build(b: *std.Build) void {
     // `linkCurlIncludePath()` helper. The package owns its own deps.
 
     // === System-deps probe ===
-    // Run the same probe as the `databases` and `custom_http_client`
+    // Run the same probe as the `databases` and `kabelweb`
     // packages to decide whether to attach the vendor fetch steps.
     // The packages ALSO run their own probes (to decide their own
     // link line). Running the probe twice is intentional — keeps
@@ -1151,7 +1151,7 @@ pub fn build(b: *std.Build) void {
     };
 
     std.debug.print(
-        "[build.zig] system-deps probe: databases_uses_system={}, custom_http_client_uses_system={}\n",
+        "[build.zig] system-deps probe: databases_uses_system={}, kabelweb_uses_system={}\n",
         .{ dbs_uses_system, curl_uses_system },
     );
 
@@ -1245,8 +1245,8 @@ pub fn build(b: *std.Build) void {
     // === fetch-vendor-curl build step ===
     // Cross-compile to macOS/Windows AND native Linux builds need
     // the vendored libcurl.a archive in
-    // src/modules/custom_http_client/vendor/curl/<target>/lib/. The
-    // script (src/modules/custom_http_client/scripts/build-vendor-curl.sh
+    // src/modules/kabelweb/vendor/curl/<target>/lib/. The
+    // script (src/modules/kabelweb/scripts/build-vendor-curl.sh
     // — co-located with the package) cross-compiles from source. It's
     // idempotent — re-running on a populated vendor/ is fast (no-op
     // after first build).
@@ -1265,7 +1265,7 @@ pub fn build(b: *std.Build) void {
     // cross-compiling curl + openssl from source.
     const fetch_vendor_curl_step = b.step(
         "fetch-vendor-curl",
-        "Build src/modules/custom_http_client/vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
+        "Build src/modules/kabelweb/vendor/curl/<target>/ from source (cross-compiles libcurl for Linux + macOS; idempotent). " ++
             "Auto-runs on `zig build` or any install:* target when the vendor dir is missing. SKIPPED when the host has system libcurl + ssl + crypto (see system-deps probe output).",
     );
     if (curl_uses_system) {
@@ -1295,7 +1295,7 @@ pub fn build(b: *std.Build) void {
             else => "bash",
         };
         const fetch_vendor_curl_run = b.addSystemCommand(&.{
-            bash_path, "src/modules/custom_http_client/scripts/build-vendor-curl.sh",
+            bash_path, "src/modules/kabelweb/scripts/build-vendor-curl.sh",
         });
         fetch_vendor_curl_run.setCwd(b.path(""));
         fetch_vendor_curl_step.dependOn(&fetch_vendor_curl_run.step);
@@ -1313,7 +1313,7 @@ pub fn build(b: *std.Build) void {
     // linkPlatformDeps handles all 4 targets in one switch — replaces the
     // old if/else chain that leaked Linux libs into cross-compile artifacts.
     linkPlatformDeps(b, exe, target);
-    // libcurl is linked via custom_http_client_mod's transitive deps
+    // libcurl is linked via kabelweb_mod's transitive deps
     // (the vendored prebuilt archive is added in the package's own
     // build.zig). No need to call linkSystemLibrary("curl", ...) or
     // addIncludePath here — the module graph handles it.
@@ -2505,20 +2505,20 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //   - GET   /api/llm/session
     //   - GET   /api/llm/session/:id/messages
     //   - GET   /api/events?channels=...   (SSE)
-    // via the project's `custom_http_client` module (libcurl-backed,
-    // cross-platform per `src/modules/custom_http_client/NALAR.md`).
+    // via the project's `kabelweb` module (libcurl-backed,
+    // cross-platform per `src/modules/kabelweb/NALAR.md`).
     //
     // The CLI module is independent of `nalarcore`: it talks HTTP,
     // not SQLite, so importing `mod` would pull in the database +
     // SSE machinery we don't need. We build its executable directly
-    // from `src/apps/cli/main.zig` and hand it the `custom_http_client`
+    // from `src/apps/cli/main.zig` and hand it the `kabelweb`
     // import that's already prepared above. The `libc` + `curl` link
-    // flags ride along through `custom_http_client_mod` itself.
+    // flags ride along through `kabelweb_mod` itself.
     const cli_module = b.addModule("cli", .{
         .root_source_file = b.path("src/apps/cli/src/root.zig"),
         .target = target,
     });
-    cli_module.addImport("custom_http_client", custom_http_client_mod);
+    cli_module.addImport("kabelweb", kabelweb_mod);
 
     const cli_exe = b.addExecutable(.{
         .name = "nalarcli",
@@ -2528,7 +2528,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "cli", .module = cli_module },
-                .{ .name = "custom_http_client", .module = custom_http_client_mod },
+                .{ .name = "kabelweb", .module = kabelweb_mod },
                 .{ .name = "helpers", .module = helpers_mod },
             },
         }),
@@ -2538,14 +2538,14 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Same linkPlatformDeps treatment as the main exe: on Linux
     // native builds, the linker needs `/usr/lib` on its search path
     // to find the system libcurl / libssl / libcrypto .so files
-    // (the ones added by `custom_http_client_mod` going system via
+    // (the ones added by `kabelweb_mod` going system via
     // its probe). Without this, the CLI link fails with
     // "unable to find dynamic system library 'curl'" (same as the
     // main exe's pre-probe behavior). Vendored path didn't need this
     // because the static archive was embedded directly via
     // addObjectFile — no dynamic linker search required.
     linkPlatformDeps(b, cli_exe, target);
-    // libcurl is linked via custom_http_client_mod's transitive deps
+    // libcurl is linked via kabelweb_mod's transitive deps
     // (the vendored prebuilt archive is added in the package's own
     // build.zig). No need to call linkCurlIncludePath here — the
     // module graph handles it.
@@ -2566,7 +2566,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // The CLI module re-exports test files via its `root.zig`, so a
     // single `b.addTest({ .root_module = cli_module })` step picks up
     // every `_test.zig` under `src/apps/cli/` without listing them.
-    // libcurl is wired via custom_http_client_mod's transitive deps.
+    // libcurl is wired via kabelweb_mod's transitive deps.
     const cli_tests = b.addTest(.{ .root_module = cli_module });
     cli_tests.root_module.linkSystemLibrary("c", .{});
     cli_tests.root_module.link_libc = true;
@@ -2588,12 +2588,12 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // endpoints as `nalarcli`. Powered by the from-scratch `tui` module
     // (Bubble-Tea-style Model/update/view architecture) that lives at
     // `src/apps/cli/src/tui/`. Same libcurl transport via
-    // `custom_http_client_mod`; no new dependencies.
+    // `kabelweb_mod`; no new dependencies.
     const tui_module = b.addModule("tui", .{
         .root_source_file = b.path("src/apps/cli/src/tui/root.zig"),
         .target = target,
     });
-    tui_module.addImport("custom_http_client", custom_http_client_mod);
+    tui_module.addImport("kabelweb", kabelweb_mod);
     // Let the app model reach the transport helpers through the same
     // import surface used by nalarcli.
     tui_module.addImport("cli", cli_module);
@@ -2607,7 +2607,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
             .imports = &.{
                 .{ .name = "tui", .module = tui_module },
                 .{ .name = "cli", .module = cli_module },
-                .{ .name = "custom_http_client", .module = custom_http_client_mod },
+                .{ .name = "kabelweb", .module = kabelweb_mod },
                 .{ .name = "helpers", .module = helpers_mod },
             },
         }),
@@ -2708,7 +2708,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // Tests need a SEPARATE module (not `mod`) so we can attach native
     // platform deps without polluting `mod` for cross-compile consumers.
     // The test module does self-import ("nalarcore" → itself) the same
-    // way `mod` does, and imports custom_http_client from the shared
+    // way `mod` does, and imports kabelweb from the shared
     // module so test code can use the HTTP client.
     const test_target = target; // tests always run on the native host
     const mod_tests_module = b.createModule(.{
@@ -2717,7 +2717,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .optimize = optimize,
     });
     mod_tests_module.addImport("nalarcore", mod_tests_module);
-    mod_tests_module.addImport("custom_http_client", custom_http_client_mod);
+    mod_tests_module.addImport("kabelweb", kabelweb_mod);
     mod_tests_module.addImport("helpers", helpers_mod);
     // Same `databases` import as `mod` — tests that touch sqlite3 get
     // the package's deps (link_libc + sqlite3.c amalgamation + openssl +
@@ -2732,7 +2732,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // After the `databases` package extraction: sqlite3 amalgamation +
     // openssl + crypto + libpq + /usr/include + /usr/include/postgresql
     // are ALL propagated via mod.addImport above. We only need libc here
-    // — libcurl is fully wired via custom_http_client_mod's transitive
+    // — libcurl is fully wired via kabelweb_mod's transitive
     // deps (the vendored prebuilt archive handles the link line; the
     // portable C headers handle the @cImport include path on every host).
     //
@@ -2770,7 +2770,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // the sqlite3 amalgamation. Without these deps, `zig build test`
     // on a clean checkout fails with "file not found" for
     // vendor/sqlite3/sqlite3.c (databases package) and/or
-    // vendor/curl/<target>/lib/libcurl.a (custom_http_client package).
+    // vendor/curl/<target>/lib/libcurl.a (kabelweb package).
     //
     // The deps MUST be on the COMPILE step (`mod_tests.step`), not
     // just on `test_step` or on the wrap step (`run_mod_tests.step`).
@@ -2790,6 +2790,22 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     test_step.dependOn(&run_mod_tests.step);
     mod_tests.step.dependOn(fetch_vendor_curl_step);
     mod_tests.step.dependOn(vendor_sqlite3_step);
+
+    // === kabelweb gate (server + client suites, fast set, no 60 s soaks) ===
+    // Reuses the SAME kabelweb module instance nalarcore imports above,
+    // so its files are owned by exactly one module — no "file exists in
+    // two modules" error. Runs kabelweb/src/root.zig's test block
+    // (server runner + sse_chunked + client suites). Link/include lines
+    // propagate from the kabelweb package itself. The 60 s SSE soaks run
+    // only via the package's own build (`cd src/modules/kabelweb &&
+    // zig build test`).
+    const kabelweb_tests = b.addTest(.{
+        .root_module = kabelweb_mod,
+    });
+    kabelweb_tests.step.dependOn(fetch_vendor_curl_step);
+    const run_kabelweb_tests = b.addRunArtifact(kabelweb_tests);
+    prependVcpkgBinToPath(b, run_kabelweb_tests);
+    test_step.dependOn(&run_kabelweb_tests.step);
 
     const ai_workflow_tui_test_mod = b.addTest(.{
         .root_module = mod_tests_module,
@@ -2821,7 +2837,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const linux_exe = createPlatformExe(b, mod, helpers_mod, linux_target, optimize, "nalarcore-linux-x86_64");
     linux_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    // libcurl is linked via custom_http_client_mod's transitive deps
+    // libcurl is linked via kabelweb_mod's transitive deps
     // (the vendored prebuilt archive is added in the package's own
     // build.zig). No need to call linkSystemLibrary("curl", ...) or
     // linkCurlIncludePath here — the module graph handles it.
@@ -2847,8 +2863,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // already produces the doubled suffix `nalarcore-windows-x86_64.exe.exe`
     // (which the CI yaml's verify step doesn't expect).
     const windows_exe = createPlatformExe(b, mod, helpers_mod, windows_target, optimize, "nalarcore-windows-x86_64");
-    // libcurl is linked via custom_http_client_mod's transitive deps.
-    // NOTE: src/modules/custom_http_client/vendor/curl/windows-amd64/
+    // libcurl is linked via kabelweb_mod's transitive deps.
+    // NOTE: src/modules/kabelweb/vendor/curl/windows-amd64/
     // is NOT built yet (MinGW setup pending — see the curl build
     // script for the gap).
     windows_exe.root_module.link_libc = true;
@@ -2888,7 +2904,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .os_tag = .macos,
     });
     const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "nalarcore-macos-x86_64");
-    // libcurl is linked via custom_http_client_mod's transitive deps.
+    // libcurl is linked via kabelweb_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
     macos_step.dependOn(fetch_vendor_curl_step);
     macos_step.dependOn(vendor_sqlite3_step);
@@ -2911,7 +2927,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .os_tag = .macos,
     });
     const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
-    // libcurl is linked via custom_http_client_mod's transitive deps.
+    // libcurl is linked via kabelweb_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
     macos_arm_step.dependOn(fetch_vendor_curl_step);
     macos_arm_step.dependOn(vendor_sqlite3_step);
@@ -2927,7 +2943,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const linux_system_exe = createPlatformExe(b, mod, helpers_mod, target, optimize, "nalar");
     linux_system_exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
-    // libcurl is linked via custom_http_client_mod's transitive deps.
+    // libcurl is linked via kabelweb_mod's transitive deps.
     linux_system_exe.root_module.link_libc = true;
     linux_system_step.dependOn(fetch_vendor_curl_step);
     linux_system_step.dependOn(vendor_sqlite3_step);
@@ -3088,7 +3104,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         }),
     });
     dev_exe.root_module.linkSystemLibrary("c", .{});
-    // libcurl is linked via custom_http_client_mod's transitive deps.
+    // libcurl is linked via kabelweb_mod's transitive deps.
     dev_exe.root_module.link_libc = true;
     dev_linux_system_step.dependOn(fetch_vendor_curl_step);
     // Race-condition fix: depend on the fetch steps from the COMPILE
@@ -3297,12 +3313,14 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     functional_test_ui_step.dependOn(&run_functional_ui.step);
 
     // ============================================================
-    // Custom HTTP Server (TCP) - build step
+    // kabelweb server demo (TCP) - build step
+    // (The canonical demo now lives in the kabelweb package as
+    // `kabelweb-server-demo`; this root step is the same binary.)
     // ============================================================
     const tcp_exe = b.addExecutable(.{
-        .name = "custom-http-server",
+        .name = "kabelweb-server-demo",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/modules/custom_http_server/src/main.zig"),
+            .root_source_file = b.path("src/modules/kabelweb/src/examples/server_demo.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -3312,7 +3330,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     });
     tcp_exe.root_module.linkSystemLibrary("c", .{});
 
-    const run_tcp_step = b.step("run:custom_tcp", "Run the custom TCP echo server");
+    const run_tcp_step = b.step("run:custom_tcp", "Run the kabelweb server demo");
     const run_tcp_cmd = b.addRunArtifact(tcp_exe);
     run_tcp_step.dependOn(&run_tcp_cmd.step);
 

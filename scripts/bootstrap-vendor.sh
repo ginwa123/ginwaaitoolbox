@@ -7,12 +7,12 @@
 #
 # Modules own their own vendor dirs:
 #   - src/modules/databases/vendor/sqlite3/        (sqlite3 amalgamation)
-#   - src/modules/custom_http_client/vendor/curl/   (prebuilt libcurl.a per target)
+#   - src/modules/kabelweb/vendor/curl/   (prebuilt libcurl.a per target)
 #
 # Steps:
 #   1. SQLite amalgamation (C source) — src/modules/databases/scripts/fetch-vendor-sqlite3.sh
 #   2. SQLite prebuilt archives (per target) — scripts/build-vendor-sqlite3-windows.sh
-#   3. Curl prebuilt archives (per target, HTTP only) — src/modules/custom_http_client/scripts/build-vendor-curl.sh
+#   3. Curl prebuilt archives (per target, HTTP only) — src/modules/kabelweb/scripts/build-vendor-curl.sh
 #   4. MinGW symlink farm (Windows cross-compile) — scripts/build-vendor-mingw.sh
 #
 # All scripts are idempotent — re-running is a no-op if artifacts exist.
@@ -41,7 +41,7 @@ bash scripts/build-vendor-mingw.sh
 
 echo ""
 echo "Step 4/4: Curl prebuilt archives (per target, HTTP-only)"
-bash src/modules/custom_http_client/scripts/build-vendor-curl.sh
+bash src/modules/kabelweb/scripts/build-vendor-curl.sh
 
 echo ""
 echo "============================================================"

@@ -11,7 +11,7 @@
 
 const std = @import("std");
 const tui = @import("root.zig");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 const transport = @import("transport.zig");
 const render_msg = @import("render_msg.zig");
 

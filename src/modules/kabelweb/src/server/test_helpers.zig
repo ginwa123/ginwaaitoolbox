@@ -1,4 +1,4 @@
-// src/modules/custom_http_server/src/test_helpers.zig
+// src/modules/kabelweb/src/server/test_helpers.zig
 //
 // Cross-platform test helpers for the custom_http_server test suite.
 // Tests that need to create connected socket pairs, cast fd_t → i32

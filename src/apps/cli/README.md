@@ -1,7 +1,7 @@
 # `nalarcli` — native Zig CLI for the nalar HTTP API
 
 Wraps the backend's REST API from the terminal. Built with the same
-libcurl-backed `custom_http_client` module the rest of the project
+libcurl-backed `kabelweb.client` module the rest of the project
 uses, so libcurl paths are reused (no duplicate `-Dcurl-prefix` /
 `-Dcurl-vcpkg-root` wiring).
 
@@ -40,7 +40,7 @@ src/apps/cli/src/tui/
 ├── msg.zig         # Msg union + Cmd side-effects
 ├── widgets.zig     # Viewport, Input (history), Spinner, StatusBar
 ├── app.zig         # chat Model: send/poll state machine
-├── transport.zig   # HTTP glue over custom_http_client
+├── transport.zig   # HTTP glue over kabelweb.client
 └── sse.zig         # SSE frame parser (for the streaming follow-up)
 ```
 
@@ -70,7 +70,7 @@ all three binaries.
 | `send <msg>` | POST `/api/llm/session` | Queue a message; creates a fresh `session-<unix-ms>` if none is given. |
 | `sessions` | GET `/api/llm/session?limit=N` | List recent sessions. |
 | `messages <id>` | GET `/api/llm/session/<id>/messages` | List messages in a session. |
-| `events` | GET `/api/events?channels=…` | Long-lived SSE tail (uses `custom_http_client.openStream`). |
+| `events` | GET `/api/events?channels=…` | Long-lived SSE tail (uses `kabelweb.client.openStream`). |
 | `help` | — | Print usage. |
 
 Run `nalarcli help` for the full flag list.
@@ -103,9 +103,9 @@ src/apps/cli/
 ├── README.md                   # this file
 ├── src/
 │   ├── main.zig                # entry point: argv → config → dispatch
-│   ├── root.zig                # package re-exports (config, client, format, commands, custom_http_client)
+│   ├── root.zig                # package re-exports (config, client, format, commands, kabelweb.client)
 │   ├── config.zig              # server/session/profile resolution (flags → env → defaults)
-│   ├── client.zig              # HTTP helpers over custom_http_client
+│   ├── client.zig              # HTTP helpers over kabelweb.client
 │   ├── format.zig              # JSON formatter (placeholder for future use)
 │   ├── *_test.zig              # unit tests
 │   └── commands/

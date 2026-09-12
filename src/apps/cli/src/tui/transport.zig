@@ -6,7 +6,7 @@
 //!   - GET  /api/events?channels=...  (SSE stream)
 
 const std = @import("std");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 
 pub const TransportError = error{
     HttpRequestFailed,

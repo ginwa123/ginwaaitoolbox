@@ -144,7 +144,7 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     // fallback" — which then tried to compile the 9 MB sqlite3.c
     // amalgamation even though vcpkg already had vcpkg-installed
     // sqlite3.lib. Same failure mode as the root build.zig + the
-    // custom_http_client probe — all three get fixed by the same
+    // kabelweb probe — all three get fixed by the same
     // `fileExists(...)` helper at the top of this file.
     var sqlite_hdr: bool = false;
     var sqlite_lib: bool = false;
@@ -402,7 +402,7 @@ pub fn build(b: *std.Build) void {
             // finds it. Otherwise fall back to the vendored
             // amalgamation (works on every host with a C compiler).
             // macOS doesn't currently use libpq or openssl via this
-            // package — ssl/crypto are wired only in custom_http_client
+            // package — ssl/crypto are wired only in kabelweb
             // (the libcurl backend needs them for https://).
             if (sys.use_system_sqlite3) {
                 mod.linkSystemLibrary("sqlite3", .{});
@@ -448,7 +448,7 @@ pub fn build(b: *std.Build) void {
             } else {
                 mod.addCSourceFile(.{ .file = sqlite_c, .flags = sqlite_flags });
             }
-            // bcrypt.dll is needed by src/modules/custom_http_server/src/security.zig
+            // bcrypt.dll is needed by src/modules/kabelweb/src/server/security.zig
             // (BCryptGenRandom — Zig's std.c.getrandom is `void` on Windows).
             mod.linkSystemLibrary("bcrypt", .{});
         },

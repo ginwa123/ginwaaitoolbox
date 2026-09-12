@@ -3,7 +3,7 @@
 //! Used for manual smoke tests against real endpoints.
 
 const std = @import("std");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();

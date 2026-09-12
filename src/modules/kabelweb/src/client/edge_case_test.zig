@@ -12,7 +12,7 @@ const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
 const custom_http_client = @import("root.zig");
-const gserverz = @import("custom_http_server");
+const gserverz = @import("../server/http_server.zig");
 
 const HttpContext = gserverz.HttpContext;
 const HttpRequest = gserverz.HttpRequest;

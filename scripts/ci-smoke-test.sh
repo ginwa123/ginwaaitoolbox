@@ -17,7 +17,7 @@
 # the `kill -TERM` escalation path uses `TerminateProcess` (forceful
 # exit) instead of delivering a Unix signal, which matches what
 # docker / kubernetes do on container stop. The GinwaServer shutdown
-# method (src/modules/custom_http_server/src/http_server.zig:535) calls
+# method (src/modules/kabelweb/src/server/http_server.zig:535) calls
 # `shutdown(sock, SHUT_RDWR)` to wake the listen loop's blocked accept
 # call, so the graceful path is fast on both POSIX and Winsock.
 #

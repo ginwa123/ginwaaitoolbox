@@ -31,7 +31,7 @@ const helpers = @import("helpers");
 /// Hard cap on the size of a single preview's `content` payload.
 /// Set to 1 MiB so even a large markdown rendering or a base64 image
 /// stays well under the SSE payload limits (see
-/// `custom_http_server/sse_manager.zig` for the max-chunk-size
+/// kabelweb `server/sse_manager.zig` for the max-chunk-size
 /// constant). If the LLM sends more, validation rejects it with a
 /// clear error so the LLM can split the content.
 pub const MAX_CONTENT_BYTES: usize = 1 * 1024 * 1024;

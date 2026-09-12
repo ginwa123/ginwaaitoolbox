@@ -10,14 +10,16 @@
         .databases = .{
             .path = "src/modules/databases",
         },
-        // Self-contained libcurl-backed HTTP client package. The package
-        // lives in-tree at src/modules/custom_http_client/ and exposes a
-        // single `custom_http_client` module; consumers
-        // `@import("custom_http_client")` to use it. The package's own
+        // Unified web-framework library (pure-Zig HTTP server +
+        // libcurl-backed HTTP client). Lives in-tree at
+        // src/modules/kabelweb/ and exposes a single `kabelweb` module;
+        // consumers `@import("kabelweb")` and reach
+        // `kabelweb.server` / `kabelweb.client`. The package's own
         // build.zig wires the vendored prebuilt archive from
-        // vendor/curl/<target>/lib/libcurl.a (HTTP-only — no TLS).
-        .custom_http_client = .{
-            .path = "src/modules/custom_http_client",
+        // vendor/curl/<target>/lib/libcurl.a plus system ssl/crypto
+        // for the server-side TLS.
+        .kabelweb = .{
+            .path = "src/modules/kabelweb",
         },
         // Cross-platform portable helpers (sleep, fileExists,
         // unixTimestampNanos, etc.) used by every module. Promoted
@@ -34,7 +36,7 @@
         "src",
         // Exclude vendored deps from the package hash — they're
         // hermetic (sqlite3 amalgamation is deterministic) but bloat
-        // the cache. Same convention as custom_http_client/build.zig.zon.
+        // the cache. Same convention as kabelweb/build.zig.zon.
         // (Doesn't matter much for in-tree path deps, but keeps the
         // hash consistent with future url-based consumers.)
     },

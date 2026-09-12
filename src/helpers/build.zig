@@ -5,7 +5,7 @@ const std = @import("std");
 /// `unixTimestamp`, `nanosleep`, `clock_gettime`, etc.).
 ///
 /// This package exists so multiple `modules/*/build.zig` files
-/// (custom_http_client, databases, …) can `@import("helpers")` and
+/// (kabelweb, databases, …) can `@import("helpers")` and
 /// share the SAME module instance — promoting helpers to its own
 /// Zig package (with `build.zig` + `build.zig.zon`) gives it a
 /// single owner and lets consumers declare the dependency through

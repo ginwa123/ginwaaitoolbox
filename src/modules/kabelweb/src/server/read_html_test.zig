@@ -19,7 +19,7 @@
 
 const std = @import("std");
 const testing = std.testing;
-const rootmod = @import("../../../root.zig");
+const rootmod = @import("../../../../root.zig");
 const gserverz = rootmod.gserverz;
 const Template = gserverz.Template;
 

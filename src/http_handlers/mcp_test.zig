@@ -57,10 +57,10 @@ const http_response = nalarcore.http_response;
 const logger_mod = nalarcore.loggermod;
 const mcp_stdio = nalarcore.mcp_stdio;
 const tool_models = nalarcore.tool_models;
-// `custom_http_client` is a separate top-level package imported
-// directly via `@import("custom_http_client")` (see root.zig:509),
+// kabelweb is the unified web-framework package imported
+// directly via `@import("kabelweb").client` (see root.zig:509),
 // not a member of `nalarcore`.
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 
 /// Per-call deadline for HTTP probes (libcurl has OS-level timeout
 /// support). See the "Timeout model" comment at the top.

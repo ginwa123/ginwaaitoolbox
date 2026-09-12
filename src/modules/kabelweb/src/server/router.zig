@@ -325,9 +325,12 @@ pub const Group = struct {
 
     /// WebSocket route on the group. Always GET (per RFC 6455 §4.1).
     /// Same caveat as `sse` — middleware doesn't currently run on WS.
-    pub fn ws(self: *Group, path: []const u8, handler: anytype) !void {
+    /// Takes ONLY the WS handler (mirrors `Router.ws`): `.handler` is
+    /// parked on `defaultHandler` because dispatch never reads it for
+    /// websocket routes (see `RouteResult.websocket`).
+    pub fn ws(self: *Group, path: []const u8, handler: WsHandlerFn) !void {
         const combined = try combinePrefix(self.router.arena, self.prefix, path);
-        try self.appendRoute("GET", combined, handler, .websocket, null, handler);
+        try self.appendRoute("GET", combined, defaultHandler, .websocket, null, handler);
     }
 
     /// Nested group. Inherits parent's prefix (concatenates with this

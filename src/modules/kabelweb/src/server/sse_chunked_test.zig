@@ -221,7 +221,12 @@ test "SseManager: removeClient sends the terminating chunk (0\\r\\n\\r\\n) befor
 // a unit test and out of scope for this task. The source-check is the
 // canonical regression guard for "header X is present on response Y".
 
-const HTTP_SERVER_PATH = "src/modules/custom_http_server/src/http_server.zig";
+const HTTP_SERVER_CANDIDATES = &.{
+    // cwd = repo root (repo-root `zig build test` gate)
+    "src/modules/kabelweb/src/server/http_server.zig",
+    // cwd = kabelweb package dir (package's own `zig build test`)
+    "src/server/http_server.zig",
+};
 
 fn readHttpServerSource(allocator: std.mem.Allocator) ![]u8 {
     // `.unlimited` so the static source-check tests don't break when
@@ -233,12 +238,23 @@ fn readHttpServerSource(allocator: std.mem.Allocator) ![]u8 {
     // size limit). `.unlimited` matches the contract of every other
     // test that does source-grep; the read still goes through the
     // arena-allocator and the file is freed by the caller.
-    return std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        HTTP_SERVER_PATH,
-        allocator,
-        .unlimited,
-    );
+    // Try each candidate cwd-relative path in order — the suite runs
+    // both from the repo root (root gate) and from the kabelweb package
+    // dir (package's own build), which have different cwds.
+    var last_err: anyerror = error.FileNotFound;
+    inline for (HTTP_SERVER_CANDIDATES) |path| {
+        if (std.Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            path,
+            allocator,
+            .unlimited,
+        )) |source| {
+            return source;
+        } else |err| {
+            last_err = err;
+        }
+    }
+    return last_err;
 }
 
 test "HTTP server: SSE response declares Transfer-Encoding: chunked" {
@@ -322,19 +338,32 @@ test "HTTP server: SSE response says Connection: close (NOT keep-alive)" {
 // against someone re-commenting the lock again.
 // ============================================================================
 
-const SSE_MANAGER_PATH = "src/modules/custom_http_server/src/sse_manager.zig";
+const SSE_MANAGER_CANDIDATES = &.{
+    // cwd = repo root (repo-root `zig build test` gate)
+    "src/modules/kabelweb/src/server/sse_manager.zig",
+    // cwd = kabelweb package dir (package's own `zig build test`)
+    "src/server/sse_manager.zig",
+};
 
 fn readSseManagerSource(allocator: std.mem.Allocator) ![]u8 {
     // See `readHttpServerSource` for the rationale on `.unlimited`.
     // sse_manager.zig is currently ~43 KiB (under the old 64 KiB cap)
     // but we use `.unlimited` here too so future growth doesn't break
     // these tests asymmetrically.
-    return std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        SSE_MANAGER_PATH,
-        allocator,
-        .unlimited,
-    );
+    var last_err: anyerror = error.FileNotFound;
+    inline for (SSE_MANAGER_CANDIDATES) |path| {
+        if (std.Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            path,
+            allocator,
+            .unlimited,
+        )) |source| {
+            return source;
+        } else |err| {
+            last_err = err;
+        }
+    }
+    return last_err;
 }
 
 test "SseManager: sendHeartbeat takes the manager lock during the client snapshot" {

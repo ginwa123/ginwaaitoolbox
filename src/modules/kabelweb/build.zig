@@ -1,11 +1,12 @@
-//! `custom_http_client` package — self-contained Zig package that
-//! exposes the libcurl-backed HTTP client used by nalarcore.
+//! `kabelweb` package — self-contained Zig web-framework library used
+//! by nalarcore: a pure-Zig HTTP server (`server/`) + a libcurl-backed
+//! HTTP client (`client/`).
 //!
 //! Mirrors `src/modules/databases/build.zig`'s pattern: vendored
 //! libcurl is a per-target prebuilt archive under
 //! `vendor/curl/<target>/lib/libcurl.a` + a portable C header under
 //! `vendor/curl/<target>/include/`. Consumers
-//! (`b.dependency("custom_http_client", .{...})`) get the right
+//! (`b.dependency("kabelweb", .{...})`) get the right
 //! include path + library archive for the TARGET they pass in,
 //! without the consumer needing to wire per-platform system library
 //! paths itself.
@@ -13,8 +14,14 @@
 //! Why per-TARGET (not per-Compile from the consumer): the consumer
 //! build.zig's curl include-path plumbing no longer needs to know
 //! about Homebrew keg-only paths or vcpkg sysroots. The
-//! custom_http_client module carries those for its own target, and
+//! kabelweb module carries those for its own target, and
 //! Zig's module-graph dep propagation handles the rest.
+//!
+//! The server half needs no vendored deps (pure Zig + system
+//! ssl/crypto for the OpenSSL server-side TLS, linked via
+//! `linkSystemLibrary` in the system path and covered by the fat
+//! libcurl archive — curl + ssl + crypto merged — in the vendored
+//! path).
 //!
 //! Why `addObjectFile` (not `linkSystemLibrary("curl")`): the
 //! vendored `libcurl.a` lives at a non-standard path that the
@@ -106,7 +113,7 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
 
 /// Windows-only stub-libcurl generator. Compiles
 /// `scripts/stub_libcurl.c` (a no-op implementation of the libcurl
-/// symbols `custom_http_client/src/curl.zig` references) and writes
+/// symbols kabelweb `src/client/curl.zig` references) and writes
 /// the resulting `.o` + `.a` + stub `curl/curl.h` header into the
 /// per-target vendor directory so the test compile's cimport + link
 /// line resolve cleanly on dev boxes that don't have vcpkg libcurl
@@ -119,7 +126,7 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x00000010;
 ///     serialize them through the build runner's parallel-execution
 ///     model.
 ///   - A deferred step would require propagating the step handle
-///     through `custom_http_client_mod.user_data` so root build.zig's
+///     through the kabelweb module graph so root build.zig's
 ///     test compile could wire a `dependOn` — that's brittle and
 ///     cross-module-coupled.
 ///
@@ -182,7 +189,7 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
             .{ .argv = &argv },
         ) catch |err| {
             std.debug.print(
-                "[custom_http_client] stub-libcurl mkdir failed: {t} (fallback skipped)\n",
+                "[kabelweb] stub-libcurl mkdir failed: {t} (fallback skipped)\n",
                 .{err},
             );
             return;
@@ -197,7 +204,7 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
         };
         if (bad_exit) {
             std.debug.print(
-                "[custom_http_client] stub-libcurl mkdir exited non-zero ({t})\n",
+                "[kabelweb] stub-libcurl mkdir exited non-zero ({t})\n",
                 .{result.term},
             );
             std.debug.print("  stderr: {s}\n", .{result.stderr});
@@ -231,7 +238,7 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
             .{ .argv = &argv },
         ) catch |err| {
             std.debug.print(
-                "[custom_http_client] stub-libcurl header copy failed: {t} (fallback skipped)\n",
+                "[kabelweb] stub-libcurl header copy failed: {t} (fallback skipped)\n",
                 .{err},
             );
             return;
@@ -246,14 +253,14 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
         };
         if (bad_exit) {
             std.debug.print(
-                "[custom_http_client] stub-libcurl header copy exited non-zero ({t})\n",
+                "[kabelweb] stub-libcurl header copy exited non-zero ({t})\n",
                 .{result.term},
             );
             std.debug.print("  stderr: {s}\n", .{result.stderr});
             return;
         }
         std.debug.print(
-            "[custom_http_client] wrote stub header: {s}\\include\\curl\\curl.h\n",
+            "[kabelweb] wrote stub header: {s}\\include\\curl\\curl.h\n",
             .{target_dir},
         );
     }
@@ -285,7 +292,7 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
             .{ .argv = &argv },
         ) catch |err| {
             std.debug.print(
-                "[custom_http_client] zig cc (stub-libcurl compile) failed: {t}\n",
+                "[kabelweb] zig cc (stub-libcurl compile) failed: {t}\n",
                 .{err},
             );
             return;
@@ -300,14 +307,14 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
         };
         if (bad_exit) {
             std.debug.print(
-                "[custom_http_client] zig cc (stub-libcurl compile) exited non-zero ({t})\n",
+                "[kabelweb] zig cc (stub-libcurl compile) exited non-zero ({t})\n",
                 .{result.term},
             );
             std.debug.print("  stderr: {s}\n", .{result.stderr});
             return;
         }
         std.debug.print(
-            "[custom_http_client] compiled stub object: {s}\n",
+            "[kabelweb] compiled stub object: {s}\n",
             .{obj_path},
         );
     }
@@ -339,7 +346,7 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
             .{ .argv = &argv },
         ) catch |err| {
             std.debug.print(
-                "[custom_http_client] zig ar (stub-libcurl archive) failed: {t}\n",
+                "[kabelweb] zig ar (stub-libcurl archive) failed: {t}\n",
                 .{err},
             );
             return;
@@ -354,14 +361,14 @@ fn generateStubLibcurlWindows(b: *std.Build, target_dir: []const u8) void {
         };
         if (bad_exit) {
             std.debug.print(
-                "[custom_http_client] zig ar (stub-libcurl archive) exited non-zero ({t})\n",
+                "[kabelweb] zig ar (stub-libcurl archive) exited non-zero ({t})\n",
                 .{result.term},
             );
             std.debug.print("  stderr: {s}\n", .{result.stderr});
             return;
         }
         std.debug.print(
-            "[custom_http_client] wrote stub archive: {s}\n",
+            "[kabelweb] wrote stub archive: {s}\n",
             .{archive_path},
         );
     }
@@ -525,7 +532,7 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     //     installed without runtime) means consumer compile passes
     //     but the linked .so is missing → runtime crash. The .so/.dylib
     //     files live under the same brew keg / distro paths.
-    //   - Windows: header-only. The custom_http_client module uses
+    //   - Windows: header-only. The kabelweb module uses
     //     `addObjectFile` to wire the exact `.lib` path into the
     //     link line; that fails loudly if the lib is actually
     //     missing (Zig prints the missing path). So we don't need
@@ -545,12 +552,12 @@ pub fn probeSystemLibs(b: *std.Build, target: std.Build.ResolvedTarget) SystemLi
     // stderr — easy to spot in build output.
     if (use_system) {
         std.debug.print(
-            "[custom_http_client] using system libcurl + ssl + crypto (host has all 3 headers)\n",
+            "[kabelweb] using system libcurl + ssl + crypto (host has all 3 headers)\n",
             .{},
         );
     } else {
         std.debug.print(
-            "[custom_http_client] using vendored libcurl fat archive (host probe: curl_hdr={} ssl_hdr={})\n",
+            "[kabelweb] using vendored libcurl fat archive (host probe: curl_hdr={} ssl_hdr={})\n",
             .{ curl_hdr, ssl_hdr },
         );
     }
@@ -587,49 +594,73 @@ pub fn build(b: *std.Build) void {
         "Skip the system probe and always use the vendored libcurl archive",
     ) orelse false;
 
-    const mod = b.addModule("custom_http_client", .{
+    const mod = b.addModule("kabelweb", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
 
     // Portable helpers (PosixTimespec / clock_gettime) — used by
-    // cpu_usage_test.zig. Declared as a package dependency in this
-    // build.zig.zon; mirrors how the root build.zig wires `helpers`.
+    // client/cpu_usage_test.zig. Declared as a package dependency in
+    // this build.zig.zon; mirrors how the root build.zig wires `helpers`.
     const helpers_dep = b.dependency("helpers", .{
         .target = target,
         .optimize = optimize,
     });
     mod.addImport("helpers", helpers_dep.module("helpers"));
 
-    // In-process test fixture server. The streaming / integration / edge /
-    // stress / memory-leak / cpu-usage suites spin up a real GinwaServer on
-    // an ephemeral port (no external network). Sibling path dep declared in
-    // build.zig.zon; the server package exposes it via b.addModule.
-    //
-    // NOTE: intentionally wired ONLY into `test_mod` below, NOT into the
-    // lib `mod`. nalarcore file-imports http_server.zig directly
-    // (src/root.zig's `gserverz`), and one file in two modules is a hard
-    // compile error — putting this import on the lib broke `zig build run`
-    // ("file exists in modules 'nalarcore' and 'custom_http_server'").
-    const server_dep = b.dependency("custom_http_server", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Test-only module: same sources as the lib (same src/root.zig root,
-    // so the `test { ... }` block discovers every suite) PLUS the fixture
-    // server import. Separate module keeps that import out of downstream
-    // link lines (`zig build run`, root `zig build test`).
+    // Test module: the full entry (src/full_test.zig) — fast suites via
+    // src/root.zig PLUS the 60 s SSE soaks. The repo-root gate runs the
+    // fast set only (via the kabelweb lib module); run this package's
+    // own `zig build test` to exercise everything including soaks.
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/full_test.zig"),
         .target = target,
         .optimize = optimize,
     });
     test_mod.addImport("helpers", helpers_dep.module("helpers"));
-    test_mod.addImport("custom_http_server", server_dep.module("custom_http_server"));
     test_mod.linkSystemLibrary("c", .{});
     test_mod.link_libc = true;
+
+    // Example binaries (living docs — see src/examples/). The server
+    // demo serves the landing page + SSE/WS/template routes; the client
+    // smoke CLI fires one request. Both consume the lib via
+    // `@import("kabelweb")` (same as any external user) and join the
+    // link wiring loop below.
+    const server_demo_exe = b.addExecutable(.{
+        .name = "kabelweb-server-demo",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/server_demo.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "kabelweb", .module = mod },
+            },
+        }),
+    });
+    server_demo_exe.root_module.link_libc = true;
+    b.installArtifact(server_demo_exe);
+    const client_smoke_exe = b.addExecutable(.{
+        .name = "kabelweb-client-smoke",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/examples/client_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "kabelweb", .module = mod },
+            },
+        }),
+    });
+    client_smoke_exe.root_module.link_libc = true;
+    b.installArtifact(client_smoke_exe);
+
+    const run_step = b.step("run", "Run the kabelweb server demo");
+    const run_cmd = b.addRunArtifact(server_demo_exe);
+    run_step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
 
     // Universal: libc is required by every libcurl binding + cimport.
     mod.linkSystemLibrary("c", .{});
@@ -647,12 +678,12 @@ pub fn build(b: *std.Build) void {
         .found_crypto = false,
     } else probeSystemLibs(b, target);
 
-    // Curl wiring applies to BOTH modules (lib + test-only) — the test
-    // binary compiles the same client sources, so it needs the same
-    // include paths + libcurl link line. Second iteration skips the
-    // Windows stub generation via the fileExists check (first iteration
-    // already wrote the archive).
-    for ([_]*std.Build.Module{ mod, test_mod }) |m| {
+    // Lib wiring applies to ALL modules (lib + test + both example exes).
+    // The test binary compiles the same server + client sources, so it
+    // needs the same include paths + link line; the exes need it too.
+    // Second iteration skips the Windows stub generation via the
+    // fileExists check (first iteration already wrote the archive).
+    for ([_]*std.Build.Module{ mod, test_mod, server_demo_exe.root_module, client_smoke_exe.root_module }) |m| {
         if (sys.use_system) {
             // System libs path. `linkSystemLibrary("curl")` does NOT auto-
             // pull libssl/libcrypto (no pkg-config Requires honour), so we
@@ -788,9 +819,9 @@ pub fn build(b: *std.Build) void {
             // which causes two failures during `zig build test`:
             //
             //   1. `src/modules/agent/Agent.zig` transitively pulls in
-            //      `custom_http_client` (via the test runner imports), so
-            //      the test compile includes custom_http_client's source.
-            //      `custom_http_client/src/curl.zig` does
+            //      kabelweb (via the test runner imports), so
+            //      the test compile includes kabelweb's client sources.
+            //      kabelweb `src/client/curl.zig` does
             //      `@cImport(@cInclude("curl/curl.h"))` — without the
             //      header, the cimport fails with "file not found".
             //   2. The test compile's link line references the missing
@@ -803,7 +834,7 @@ pub fn build(b: *std.Build) void {
             // no-ops (curl_easy_init returns NULL, curl_easy_perform
             // returns CURLE_FAILED_INIT) — enough to satisfy the linker +
             // cimport without providing real network capability. Tests that
-            // merely construct a custom_http_client.Client and never fire
+            // merely construct a kabelweb `Client` and never fire
             // a request pass; tests that actually call .get/.post/.stream
             // fail at runtime with a clear InitFailed error from the stub
             // (visible in `zig build test` output).
@@ -825,14 +856,19 @@ pub fn build(b: *std.Build) void {
     }
 
     // === Tests for the package itself ===
-    // `b.addTest({ .root_module = test_mod })` walks every `_test.zig`
-    // reachable from src/root.zig via the `test { _ = @import(...) }`
-    // block. test_mod carries link_libc + (system or vendored) libcurl
-    // (wired above) + the `custom_http_server` fixture import, so the
-    // in-process-server suites link and resolve cleanly.
+    // `b.addTest({ .root_module = test_mod })` runs the full entry
+    // (src/full_test.zig): fast suites + the 60 s SSE soaks. test_mod
+    // carries link_libc + (system or vendored) curl/ssl/crypto (wired
+    // above) + the `helpers` import, so the TLS + in-process-server
+    // suites link and resolve cleanly. On
+    // Linux the system libssl/libcrypto live in /usr/lib, which Zig does
+    // not add by default for some Compile steps.
+    if (target.result.os.tag == .linux and sys.use_system) {
+        test_mod.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+    }
     const mod_tests = b.addTest(.{ .root_module = test_mod });
     const run_mod_tests = b.addRunArtifact(mod_tests);
-    const test_step = b.step("test", "Run custom_http_client package tests");
+    const test_step = b.step("test", "Run kabelweb package tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(b.getInstallStep());
 }

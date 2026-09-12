@@ -34,7 +34,7 @@ pub const Snapshot = struct {
 
 /// Zig 0.16 removed `std.Thread.Mutex` — use `std.atomic.Mutex` (an
 /// enum with tryLock/unlock) wrapped in a spinlock, matching the
-/// pattern in custom_http_server/security.zig:114.
+/// pattern in kabelweb server/security.zig:114.
 var mutex: std.atomic.Mutex = .unlocked;
 
 fn mutexLock(m: *std.atomic.Mutex) void {

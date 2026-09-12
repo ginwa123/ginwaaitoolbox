@@ -100,7 +100,7 @@ test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
 
 const AGENT_SOURCE_PATH = "src/modules/agent/Agent.zig";
 
-test "callStreaming uses custom_http_client (libcurl) transport" {
+test "callStreaming uses kabelweb client (libcurl) transport" {
     const source = std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         AGENT_SOURCE_PATH,
@@ -112,10 +112,11 @@ test "callStreaming uses custom_http_client (libcurl) transport" {
     };
     defer std.testing.allocator.free(source);
 
-    // Contract 1: callStreaming must import the libcurl-backed transport.
-    if (std.mem.indexOf(u8, source, "@import(\"custom_http_client\")") == null) {
+    // Contract 1: callStreaming must import the libcurl-backed transport
+    // (kabelweb's client half).
+    if (std.mem.indexOf(u8, source, "@import(\"kabelweb\")") == null) {
         std.debug.print(
-            "!! {s} does not import custom_http_client — callStreaming regressed " ++
+            "!! {s} does not import kabelweb — callStreaming regressed " ++
                 "to the std.http.Client path that caused the FD-leak hang !!\n",
             .{AGENT_SOURCE_PATH},
         );

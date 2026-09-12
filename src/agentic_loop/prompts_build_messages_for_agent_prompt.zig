@@ -26,7 +26,7 @@ const tool_memories_mod = @import("../modules/agent/tools/memories.zig");
 // without hardcoding names — the tool's own `.name` is the key.
 const config_mod = nalarcore.config;
 const tool_eligibility = @import("tool_eligibility.zig");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 const background_process = @import("background_process.zig");
 const ProcessInfo = background_process.ProcessInfo;
 const inherited_context = @import("inherited_context.zig");

@@ -14,7 +14,7 @@ const std = @import("std");
 const testing = std.testing;
 const builtin = @import("builtin");
 const custom_http_client = @import("root.zig");
-const gserverz = @import("custom_http_server");
+const gserverz = @import("../server/http_server.zig");
 
 const HttpContext = gserverz.HttpContext;
 const HttpRequest = gserverz.HttpRequest;
@@ -225,12 +225,28 @@ fn makeTestServer(allocator: std.mem.Allocator, io: std.Io) !*TestServer {
 // ----- Tests -----
 
 test "stream: static-contract — cleanup pairs with init (handles init, defer, deinit)" {
-    const source = try std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        "src/stream.zig",
-        testing.allocator,
-        .limited(256 * 1024),
-    );
+    // Candidate cwd-relative paths — the suite runs both from the repo
+    // root (root gate) and from the kabelweb package dir (package build).
+    const candidates = &.{
+        "src/modules/kabelweb/src/client/stream.zig",
+        "src/client/stream.zig",
+    };
+    var last_err: anyerror = error.FileNotFound;
+    const source: []u8 = blk: {
+        inline for (candidates) |path| {
+            if (std.Io.Dir.cwd().readFileAlloc(
+                std.testing.io,
+                path,
+                testing.allocator,
+                .limited(256 * 1024),
+            )) |s| {
+                break :blk s;
+            } else |err| {
+                last_err = err;
+            }
+        }
+        return last_err;
+    };
     defer testing.allocator.free(source);
 
     // Each runtime path that creates a CURL handle must have exactly

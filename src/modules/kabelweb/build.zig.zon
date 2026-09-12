@@ -1,0 +1,22 @@
+.{
+    .name = .kabelweb,
+    .version = "0.0.0",
+    .fingerprint = 0x4af4db419b5a16be,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Cross-platform portable helpers (sleep, fileExists,
+        // unixTimestampNanos, etc.) used by the client test suites
+        // (cpu_usage_test.zig). Path is relative to this package dir
+        // (src/modules/kabelweb → src/helpers).
+        .helpers = .{
+            .path = "../../helpers",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "scripts",
+        "README.md",
+    },
+}

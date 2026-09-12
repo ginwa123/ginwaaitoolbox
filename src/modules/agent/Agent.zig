@@ -12,7 +12,7 @@ pub const AgentTool = schemas.AgentTool;
 pub const prompt = @import("prompts.zig");
 pub const LLMModels = @import("LLMModels.zig");
 const helpers = @import("helpers");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };
@@ -2969,7 +2969,7 @@ pub const Agent = struct {
                 // network drop from an EOF mid-line, instead of all collapsing
                 // into "StreamInterrupted". Special-case `UnsupportedProtocol`
                 // when the URL was https:// — the vendored libcurl in
-                // src/modules/custom_http_client/vendor/curl/ is built with
+                // src/modules/kabelweb/vendor/curl/ is built with
                 // --disable-ssl (see scripts/build-vendor-curl.sh:8-18), so
                 // the only way an https URL produces CURLE_UNSUPPORTED_PROTOCOL
                 // is that the vendored libcurl literally doesn't know the
@@ -2978,7 +2978,7 @@ pub const Agent = struct {
                     std.mem.startsWith(u8, uri_str, "https://"))
                     std.fmt.allocPrint(
                         self.allocator,
-                        "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see custom_http_client/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/nalar/config.json to an http:// endpoint",
+                        "scanner.next failed after {d} chunk(s): UnsupportedProtocol — vendored libcurl was built --disable-ssl (see kabelweb/scripts/build-vendor-curl.sh); URL must be http:// until OpenSSL is vendored, or change base_url in ~/.config/nalar/config.json to an http:// endpoint",
                         .{chunk_count},
                     ) catch null
                 else

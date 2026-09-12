@@ -1,26 +1,22 @@
 
 
-// Test runner for the custom_http_server module.
+// Test runner for kabelweb's server half.
 //
-// Runs every test in this module EXCEPT two files that have hard
-// dependencies on the parent project (Zig 0.16 forbids `@import` /
-// `@embedFile` of files outside the module package path):
+// Runs every server test EXCEPT two files:
+//   - `sse_chunked_test.zig` — registered by kabelweb's lib root
+//     (src/root.zig) instead, so both the package's own build and the
+//     repo-root gate cover it.
+//   - `read_html_test.zig` — parent-only (imports nalarcore's
+//     src/root.zig, which would be a package cycle from here). The
+//     repo root re-imports it directly.
+//   - `sse_keepalive_test.zig` (2×60 s soaks) — registered by
+//     src/full_test.zig, which is the root of this package's own
+//     `zig build test`. The repo-root gate (via kabelweb's lib root)
+//     skips the soaks so `zig build test` stays fast.
 //
-//   - `sse_chunked_test.zig` — `@embedFile("../../../../src/root.zig")`
-//   - `read_html_test.zig`   — `@import("../../../root.zig")`
+// To exercise everything (including soaks), run:
 //
-// These two are re-imported directly by `src/root.zig` in the parent
-// project so they're still covered when running `zig build test` from
-// the repo root.
-//
-// The 60 s SSE-keepalive soak tests in `sse_keepalive_test.zig` are
-// INTENTIONALLY included here so the parent project's `zig build test`
-// stays fast (the two soaks dominate runtime at ~120 s). To exercise
-// them, run:
-//
-//   cd src/modules/custom_http_server && zig build test --summary all
-//
-// (the parent project's `zig build test` skips them — see src/root.zig).
+//   cd src/modules/kabelweb && zig build test --summary all
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -30,18 +26,15 @@ test {
     _ = @import("sse_manager_test.zig");
     _ = @import("router_test.zig");
     _ = @import("http_parser_test.zig");
-    // sse_chunked_test.zig is excluded because its static-contract tests
-    // use `@embedFile("../../../../src/root.zig")` which Zig 0.16 rejects
-    // (embed of file outside package path). Those tests run as part of
-    // the parent project's `zig build test` instead.
-    // _ = @import("sse_chunked_test.zig");
+    // sse_chunked_test.zig lives in kabelweb's lib root (src/root.zig)
+    // so both this package's build and the repo-root gate cover it.
     _ = @import("test_session_lifecycle.zig");
     _ = @import("complex_cases_test.zig");
     _ = @import("complex_cases_extra_test.zig");
     _ = @import("main_static_html_test.zig");
-    // 60s soak test for the SSE-keepalive bug — intentionally ONLY
-    // here, not in the parent's `zig build test` (see header comment).
-    _ = @import("sse_keepalive_test.zig");
+    // NOTE: sse_keepalive_test.zig (2×60 s soaks) is intentionally NOT
+    // here — it runs via src/full_test.zig (this package's own
+    // `zig build test`) so the repo-root gate stays fast.
     // WebSocket support (RFC 6455) — frames, handshake, manager
     _ = @import("websocket_frames_test.zig");
     _ = @import("websocket_handshake_test.zig");
@@ -53,9 +46,8 @@ test {
     // Jinja-style template engine — tokenizer, parser, renderer, inheritance
     _ = @import("template_test.zig");
     // readHtml helper — read template file with embedded-source fallback.
-    // Excluded from the module's own build because it imports
-    // ../../../root.zig (parent only). The parent project re-imports it
-    // directly via src/root.zig.
+    // Parent-only: read_html_test.zig imports nalarcore's src/root.zig
+    // (a package cycle from here). The repo root re-imports it directly.
     // _ = @import("read_html_test.zig");
     // Per-request Context value bag + HttpResponse.redirectWithContext
     _ = @import("context_test.zig");

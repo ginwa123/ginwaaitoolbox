@@ -33,24 +33,36 @@ else
 extern "c" fn fseek(stream: *std.c.FILE, offset: Clong, whence: c_int) c_int;
 extern "c" fn ftell(stream: *std.c.FILE) Clong;
 
-const main_zig_path = "src/main.zig";
+// Candidate cwd-relative paths for the demo source — the suite runs
+// both from the repo root (root gate) and from the kabelweb package
+// dir (package's own build).
+const main_zig_candidates = &.{
+    "src/modules/kabelweb/src/examples/server_demo.zig",
+    "src/examples/server_demo.zig",
+};
 
-/// Read main.zig into a heap-allocated buffer. Caller frees the slice.
+/// Read the demo source into a heap-allocated buffer. Caller frees the slice.
 /// Uses Zig 0.16's std.Io.Dir.cwd() + readFileAlloc with std.testing.io,
 /// which is the canonical replacement for the removed std.fs.cwd() in
 /// tests — see `.nalar/memories/zig-0.16-stdlib-changes.md`.
 fn readMainSource(allocator: std.mem.Allocator) ![]u8 {
     // std.Io.Dir.cwd() works in `zig build test` because std.testing.io
     // provides a Threaded Io runtime (test_target uses real threads even
-    // for unit tests). The cwd at test time is the build's `src/`
-    // directory when invoked from `src/test_runner.zig`'s `addTest`
-    // target — same cwd as the source files.
-    return std.Io.Dir.cwd().readFileAlloc(
-        std.testing.io,
-        main_zig_path,
-        allocator,
-        .limited(1 << 20), // cap at 1 MiB
-    );
+    // for unit tests).
+    var last_err: anyerror = error.FileNotFound;
+    inline for (main_zig_candidates) |path| {
+        if (std.Io.Dir.cwd().readFileAlloc(
+            std.testing.io,
+            path,
+            allocator,
+            .limited(1 << 20), // cap at 1 MiB
+        )) |source| {
+            return source;
+        } else |err| {
+            last_err = err;
+        }
+    }
+    return last_err;
 }
 
 test "main.zig declares LANDING_PAGE_HTML constant" {

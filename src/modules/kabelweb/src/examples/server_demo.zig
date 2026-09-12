@@ -1,6 +1,6 @@
 const std = @import("std");
 const linux = std.posix.system;
-const gserverz = @import("http_server.zig");
+const gserverz = @import("kabelweb").server;
 
 // implementation http server custom
 pub fn main(init: std.process.Init) void {
@@ -283,7 +283,7 @@ const LANDING_PAGE_HTML =
     \\    </section>
     \\
     \\    <footer>
-    \\      Source: <code>src/modules/custom_http_server/src/main.zig</code> &middot; see <code>LANDING_PAGE_HTML</code>.
+    \\      Source: <code>src/modules/kabelweb/src/examples/server_demo.zig</code> &middot; see <code>LANDING_PAGE_HTML</code>.
     \\    </footer>
     \\  </div>
     \\</body>
@@ -514,7 +514,7 @@ fn sseStreamHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: g
 // for testability.
 // ============================================================================
 
-const ws_frames = @import("websocket_frames.zig");
+const ws_frames = @import("kabelweb").server.ws_frames;
 
 fn wsEchoHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, server_ptr: *anyopaque, client_fd: i32, client_id: *[16]u8) !void {
     const server: *gserverz.GinwaServer = @ptrCast(@alignCast(server_ptr));
@@ -714,6 +714,7 @@ pub fn run(init: std.process.Init) !void {
     // No-cache: dev-mode helper that prevents intermediate caches
     // from caching demo responses. Useful for `/`, `/example` etc.
     // during local development so reloads reflect the latest source.
+    // (Defined for reference — not wired into the demo routes.)
     const noCacheMiddleware = struct {
         fn h(
             ctx: gserverz.HttpContext,
@@ -725,6 +726,7 @@ pub fn run(init: std.process.Init) !void {
             return chain.next(ctx, req, stamped);
         }
     }.h;
+    _ = noCacheMiddleware;
 
     // Connection-Id: stamps SSE/WS responses with a per-connection
     // correlation header. Real apps would use a unique id per

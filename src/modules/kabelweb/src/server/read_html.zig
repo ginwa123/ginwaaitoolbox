@@ -16,7 +16,7 @@
 //      be a string literal at compile time, so the helper cannot decide
 //      itself.
 //   2. `@embedFile` resolves relative to the SOURCE FILE where it's called.
-//      Since `readHtml` lives in `src/modules/custom_http_server/src/`,
+//      Since `readHtml` lives in `src/modules/kabelweb/src/server/`,
 //      embedding here would require a path relative to that directory
 //      (e.g. `"../../../handlers/landing.html"`) — fragile and coupled to
 //      the helper's location in the file tree.

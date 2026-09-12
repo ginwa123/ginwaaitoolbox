@@ -19,8 +19,8 @@ list" tables, cross-checked against `hpack`.
 Usage:
     python3 tools/gen_hpack_tables.py \
         --rfc /path/to/rfc7541.txt \
-        --out-tables  src/modules/custom_http_server/src/http2/generated_tables.zig \
-        --out-vectors src/modules/custom_http_server/src/http2/rfc7541_vectors.zig
+        --out-tables  src/modules/kabelweb/src/server/http2/generated_tables.zig \
+        --out-vectors src/modules/kabelweb/src/server/http2/rfc7541_vectors.zig
 
 Requires: `pip install hpack` (dev-time only; the generated files are checked in).
 """

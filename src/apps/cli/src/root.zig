@@ -15,13 +15,11 @@ pub const client = @import("client.zig");
 pub const format = @import("format.zig");
 pub const commands = @import("commands/root.zig");
 
-/// Re-export the lower-level HTTP client module so subcommands can
-/// write `@import("custom_http_client")` via the `cli` namespace:
-/// `cli.custom_http_client.Client`. We DON'T shadow the
-/// `custom_http_client` name (would conflict with `addImport`); the
-/// canonical access path from inside the `cli` package is the
-/// re-exported `custom_http_client` namespace below.
-pub const custom_http_client = @import("custom_http_client");
+/// Re-export kabelweb's client so subcommands can reach it via the
+/// `cli` namespace: `cli.custom_http_client.Client`. The alias keeps
+/// its old name so subcommand files stay untouched; the canonical
+/// access path is `@import("kabelweb").client`.
+pub const custom_http_client = @import("kabelweb").client;
 
 // Test imports — keep them sorted alphabetically.
 test {

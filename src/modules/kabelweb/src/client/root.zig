@@ -1,6 +1,6 @@
-//! Public API surface for the custom_http_client module.
+//! Public API surface for kabelweb's client half.
 //!
-//! Consumers import this file as `@import("custom_http_client")` and
+//! Consumers import this file as `@import("kabelweb").client` and
 //! reach `Client`, `Request`, `Response`, etc. directly.
 //!
 //! Naming style matches `std.http.Client` and the existing
