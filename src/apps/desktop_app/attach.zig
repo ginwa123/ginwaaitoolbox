@@ -2,10 +2,17 @@
 //
 // Desktop's "find nalar" logic (Chunk 4 of the decoupled-nalar-service plan).
 //
-// On launch, the desktop probes for a running nalar daemon and attaches
-// the webview. If none is found and --no-auto-start is NOT set, the
-// desktop spawns a detached nalar via `nalar service start` and waits
-// for it to come up.
+// On launch, the desktop probes for a running nalar daemon that can serve
+// the webapp and attaches the webview. If none is found and --no-auto-start
+// is NOT set, the desktop spawns a detached nalar via `subprocess.spawn`
+// and waits for it to come up.
+//
+// "Can serve the webapp" is deliberately stronger than "is running": a
+// daemon answers /health with 200 even when its --static-dir no longer
+// exists, and attaching to such a daemon opens the webview on
+// `404 Not Found`. Every candidate must pass `probeWebapp` (2xx on GET /
+// with an HTML body) before we hand it to the webview, and a freshly
+// spawned child must pass it too before we return it.
 //
 // The desktop never signals nalar on close — closing the window does
 // NOT stop the daemon. Only `nalar service stop` (a separate CLI
@@ -16,6 +23,7 @@ const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
 const subprocess = @import("subprocess.zig");
 const path_resolve = @import("path_resolve.zig");
+const port = @import("port.zig");
 
 pub const AttachOptions = struct {
     /// Path to the nalar state file (from `state_file.defaultStatePath`).
@@ -68,6 +76,13 @@ pub const AttachError = error{
 /// Probe state.json, then the default port, then auto-spawn as needed.
 /// Returns the AttachTarget. Never returns "we_spawned=true" without
 /// having actually launched a daemon — the caller can trust this.
+///
+/// A server is only attachable when it serves the WEBAPP (`probeWebapp`),
+/// not merely when it answers `/health`. A daemon whose `--static-dir`
+/// vanished is still "healthy" while answering `GET /` with
+/// `404 Not Found`; attaching the webview to it is the blank-page bug
+/// this guards against. When the only daemon around is unusable we fall
+/// through to the auto-spawn path instead of giving up.
 pub fn resolveAttachTarget(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -76,11 +91,10 @@ pub fn resolveAttachTarget(
     // 1. State file: read it, check the pid is alive, probe the port.
     if (try nalarcore.state_file.readStateFile(allocator, io, opts.state_path)) |state| {
         defer nalarcore.state_file.freeState(allocator, state);
-        if (probeHealth(state.host, state.port, io)) {
-            // Caller now owns state.host/version/static_dir — they
-            // outlive this function. We can't pass a slice into a
-            // returned struct without making a copy; for v1, copy
-            // the strings.
+        if (isUsableWebappServer(state.host, state.port, io)) {
+            // Caller now owns state.host — it outlives this function. We
+            // can't pass a slice into a returned struct without making a
+            // copy; for v1, copy the strings.
             const host_dup = try allocator.dupe(u8, state.host);
             errdefer allocator.free(host_dup);
             return .{
@@ -95,7 +109,7 @@ pub fn resolveAttachTarget(
     //    would use for the state-file success path (matches the
     //    ownership convention — the returned AttachTarget is always
     //    caller-owned).
-    if (probeHealth("127.0.0.1", opts.default_port, io)) {
+    if (isUsableWebappServer("127.0.0.1", opts.default_port, io)) {
         return .{
             .host = try allocator.dupe(u8, "127.0.0.1"),
             .port = opts.default_port,
@@ -107,19 +121,27 @@ pub fn resolveAttachTarget(
     return try autoSpawnAndWaitForHealth(allocator, io, opts);
 }
 
-fn probeHealth(host: []const u8, port: u16, io: std.Io) bool {
+/// True when `port` hosts a nalar that actually serves the webapp.
+/// Logs (loudly) why a merely-healthy server was rejected, because the
+/// user's next question is always "my nalar is running, why did it
+/// start a second one?".
+fn isUsableWebappServer(host: []const u8, backend_port: u16, io: std.Io) bool {
+    if (!probeHealth(host, backend_port, io)) return false;
+    if (subprocess.probeWebapp(backend_port)) return true;
+    std.log.warn(
+        "nalar on port {d} is alive but does not serve the webapp at / (GET / is not HTML) — ignoring it",
+        .{backend_port},
+    );
+    return false;
+}
+
+fn probeHealth(host: []const u8, backend_port: u16, io: std.Io) bool {
     _ = host;
     _ = io;
     // 1-second connect+GET /health probe. Returns true on 2xx, false
-    // otherwise. The desktop's main.zig owns the actual probe impl
-    // (this stub is a placeholder; tests verify the function pointer
-    // works, not the wire details).
-    //
-    // Implementation: subprocess.waitForHealth blocks until /api/health
-    // returns 2xx (or `timeout_ms` elapses, returning error.HealthCheckTimeout).
-    // We treat timeout AND any error as "not healthy yet".
-    subprocess.waitForHealth(port, 1000, 100) catch return false;
-    return true;
+    // otherwise. Health alone is NOT enough to attach — see
+    // `isUsableWebappServer`.
+    return subprocess.probeHealth(backend_port);
 }
 
 fn autoSpawnAndWaitForHealth(
@@ -149,22 +171,32 @@ fn autoSpawnAndWaitForHealth(
     };
     defer allocator.free(nalar_path);
 
-    std.log.info("No nalar daemon found — spawning a new one at {s} --port {d}", .{
+    // 2. Pick a port the child can actually bind. Prefer the well-known
+    //    one (keeps 8081 / --attach-port working), but if something else
+    //    holds it — typically a nalar that does not serve the webapp,
+    //    which steps 1/2 above refused to attach to — take an ephemeral
+    //    port instead. Spawning into an occupied port would fail to bind
+    //    while the squatter's own `/health` kept answering our readiness
+    //    probe, so we'd report success for a port we don't own.
+    const spawn_port = chooseSpawnPort(allocator, io, opts.default_port);
+
+    std.log.info("No usable nalar daemon found — spawning a new one at {s} --port {d} (static dir: {s})", .{
         nalar_path,
-        opts.default_port,
+        spawn_port,
+        if (opts.static_dir.len > 0) opts.static_dir else "(none)",
     });
 
-    // 2. Spawn the child process. Pass `opts.static_dir` so the spawned
-    //    nalar serves the extracted webapp at `/`. If static_dir is
-    //    empty (caller didn't provide one), we still pass it through;
-    //    nalar treats `--static-dir ""` as "no static dir" and the
-    //    spawned process will only serve API endpoints, not the webapp.
-    //    In practice main.zig always populates this.
+    // 3. Spawn the child process. Pass `opts.static_dir` so the spawned
+    //    nalar serves the webapp at `/`. If static_dir is empty (caller
+    //    didn't provide one), `nalar` only serves API endpoints and the
+    //    webapp check in step 5 below fails — which is the honest answer
+    //    for a desktop that exists to show the webapp. In practice
+    //    main.zig always populates this with a persistent dir.
     var child = subprocess.spawn(
         allocator,
         io,
         nalar_path,
-        opts.default_port,
+        spawn_port,
         if (opts.static_dir.len > 0) opts.static_dir else null,
     ) catch |err| {
         std.log.err("Spawning nalar at {s} failed: {s}", .{ nalar_path, @errorName(err) });
@@ -173,21 +205,62 @@ fn autoSpawnAndWaitForHealth(
         return error.AutoSpawnFailed;
     };
 
-    // 3. Wait for /health to respond with 200. The child is now running;
+    // 4. Wait for /health to respond with 200. The child is now running;
     //    if the desktop closes, the child is NOT auto-terminated (that's
     //    the chunk 4 architectural commitment — desktop doesn't signal
     //    nalar on close). The child becomes a long-lived daemon the user
-    //    has to stop manually via `nalar service stop`.
-    subprocess.waitForHealth(opts.default_port, 5_000, 100) catch |err| {
+    //    has to stop manually via `nalar service stop` — which is
+    //    precisely why its --static-dir must be a persistent directory.
+    subprocess.waitForHealth(spawn_port, 5_000, 100) catch |err| {
         std.log.err("Spawned nalar but /health never came up: {s}", .{@errorName(err)});
         // Don't leak the orphan: kill it before bailing.
         child.terminate(io);
         return error.AutoSpawnFailed;
     };
 
+    // 5. Verify the child can serve the APP, not just /health. Handing
+    //    the webview a URL that 404s is exactly the bug this path exists
+    //    to prevent, so fail loudly (and don't leave a useless daemon
+    //    behind) instead of opening a blank window.
+    if (!subprocess.probeWebapp(spawn_port)) {
+        std.log.err(
+            "Spawned nalar on port {d} but it does not serve the webapp at / — refusing to open a 404 window.",
+            .{spawn_port},
+        );
+        std.log.err("Check that the webapp dir contains index.html and is readable.", .{});
+        child.terminate(io);
+        return error.AutoSpawnFailed;
+    }
+
     return .{
         .host = try allocator.dupe(u8, "127.0.0.1"),
-        .port = opts.default_port,
+        .port = spawn_port,
         .we_spawned = true,
     };
+}
+
+/// Prefer `preferred` unless something is already listening there, in
+/// which case hand back an ephemeral free port.
+fn chooseSpawnPort(allocator: std.mem.Allocator, io: std.Io, preferred: u16) u16 {
+    if (port.isFree(allocator, io, preferred)) return preferred;
+    const free = port.findFree(allocator, io) catch {
+        // Couldn't probe for a free port — try the preferred one anyway
+        // rather than refusing to start at all.
+        std.log.warn("Could not allocate a free port; trying {d} anyway", .{preferred});
+        return preferred;
+    };
+    if (free.port == preferred) return preferred;
+    // Tell the user how to get back to the well-known port — otherwise
+    // every launch keeps spawning a fresh daemon on a random port because
+    // the squatter never goes away and (unlike `nalar service start`) a
+    // spawned daemon writes no state file for the next launch to find.
+    std.log.warn(
+        "Port {d} is already in use by a server that does not serve the webapp; spawning on {d} instead",
+        .{ preferred, free.port },
+    );
+    std.log.warn(
+        "To stop that server and go back to port {d}, run:  nalar service stop  (or kill the process listening on {d})",
+        .{ preferred, preferred },
+    );
+    return free.port;
 }

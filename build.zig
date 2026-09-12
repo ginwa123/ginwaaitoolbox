@@ -2430,11 +2430,74 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         .root_module = desktop_exe.root_module,
     });
     desktop_tests.root_module.linkSystemLibrary("c", .{});
+    // The test compile shares `desktop_exe.root_module`, which imports the
+    // gitignored `embedded/webapp_assets.zig`. Without the same codegen edge
+    // `desktop_exe` has, a fresh checkout fails to even compile the tests
+    // ("unable to load 'webapp_assets.zig': FileNotFound") — which is why
+    // this step was unrunnable from a clean tree. With -Dno-webapp-rebuild
+    // the stub was already written at configure time by the desktop_exe
+    // block above, so the edge is skipped there (same as desktop_exe).
+    if (!no_webapp_rebuild) {
+        desktop_tests.step.dependOn(&webapp_rebuild_codegen.step);
+    }
     const run_desktop_tests = b.addRunArtifact(desktop_tests);
     // Windows: ensure vcpkg bin (libcurl.dll, sqlite3.dll, …) is on PATH
     // at test runtime — see `prependVcpkgBinToPath` doc comment.
     prependVcpkgBinToPath(b, run_desktop_tests);
     test_desktop.dependOn(&run_desktop_tests.step);
+
+    // === Cross-target compile check (desktop app's per-OS branches) ===
+    // `extraction.zig` / `subprocess.zig` fork on `builtin.os.tag`, and Zig
+    // only analyses the branch matching the TARGET — so running
+    // `test:desktop-app` on Linux cannot see a type error in the Windows or
+    // macOS paths. That hole shipped a real Windows-only compile error
+    // (`MoveFileW` returns a typed BOOL enum; `!= 0` on it) which only CI's
+    // Windows runner caught, 20 minutes in.
+    //
+    // This step compiles `cross_compile_check.zig` (an `export fn` that calls
+    // those modules' public API) as an OBJECT for each target, forcing full
+    // semantic analysis + codegen. Objects only — no linking, no SDK, no
+    // webview/vcpkg deps — so it is cheap enough to run on every CI job.
+    const check_desktop_cross = b.step(
+        "check:desktop-cross",
+        "Compile-check the desktop app's per-OS branches for Windows/macOS/Linux",
+    );
+    const cross_targets = [_]std.Target.Query{
+        .{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu },
+        .{ .cpu_arch = .aarch64, .os_tag = .macos },
+        .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+    };
+    for (cross_targets, 0..) |query, i| {
+        const resolved = b.resolveTargetQuery(query);
+        // A per-TARGET `helpers` module. Reusing the project-wide
+        // `helpers_mod` here would be a host-target module inside a
+        // foreign-target build, which makes Zig compile the host's
+        // `std.os.<host>` against the foreign target and die on the calling
+        // convention (observed on the Windows runner: `aarch64_aapcs_win` not
+        // supported by compiler backend `stage2_llvm`, blamed on
+        // helpers/mod.zig's `extern "kernel32" fn Sleep`). `src/helpers` is
+        // self-contained (std + local files only), so a fresh module per
+        // target is safe — and it lets the check cover subprocess.zig's
+        // winsock branch too.
+        const cross_helpers = b.createModule(.{
+            .root_source_file = b.path("src/helpers/mod.zig"),
+            .target = resolved,
+            .optimize = optimize,
+        });
+        const obj = b.addObject(.{
+            .name = b.fmt("desktop-cross-check-{d}", .{i}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/apps/desktop_app/cross_compile_check.zig"),
+                .target = resolved,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "helpers", .module = cross_helpers },
+                },
+            }),
+        });
+        check_desktop_cross.dependOn(&obj.step);
+    }
 
     // =====================================================================
     // CLI executable (`src/apps/cli/main.zig`) — wraps
