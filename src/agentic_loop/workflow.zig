@@ -1049,13 +1049,20 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             workspace_item_type,
         );
 
+        // The meta-tools ship when there is something to discover OR the
+        // session has already discovered something. Including the second
+        // condition keeps them from vanishing the moment the catalog empties
+        // (equipping the last discoverable tool), which would otherwise
+        // remove search_tool right after the agent used it.
+        const include_progressive_tools = catalog.len > 0 or progressive_names.len > 0;
+
         const merged_tools = try filterAndMergeTools(
             allocator,
             mcp_tools,
             copy_allowed_tools,
             copy_is_sub_agent,
             progressive_names,
-            catalog.len > 0,
+            include_progressive_tools,
         );
         logger.infoFmt(
             "[CHECKPOINT] tools resolved mcp_count={d} mcp_equipped={d} builtin_equipped={d} catalog={d} merged_count={d} allowed_tools_len={d} is_sub_agent={} mcp_null={}",
@@ -1822,6 +1829,21 @@ pub fn filterAndMergeTools(
         try out.append(allocator, tool);
     }
 
+    // The meta-tools sit immediately after the enabled block. Putting them
+    // BEFORE the session-equipped tools is what makes the whole array
+    // append-only under equipping: everything `use_tool` adds lands at the
+    // very end, so the prefix never shifts (see the append-only invariant in
+    // the plan). Appended here, and exempt from the allowlist: they are how
+    // the agent reaches everything below, so gating them on agent_tools rows
+    // that predate them would make the feature invisible for existing agents.
+    if (include_progressive_tools) {
+        for (progressive_tools_mod.ALL_PROGRESSIVE_TOOLS) |tool| {
+            if (seen.contains(tool.function.name)) continue;
+            try seen.put(allocator, tool.function.name, {});
+            try out.append(allocator, tool);
+        }
+    }
+
     // Built-ins this session enabled for itself. Injected even when the
     // allowlist excluded them.
     for (progressive_equipped) |name| {
@@ -1848,17 +1870,6 @@ pub fn filterAndMergeTools(
                 }
             }
             if (!equipped) continue;
-            try seen.put(allocator, tool.function.name, {});
-            try out.append(allocator, tool);
-        }
-    }
-
-    // Appended last, and exempt from the allowlist: they are how the agent
-    // reaches everything above, so gating them on agent_tools rows that
-    // predate them would make the feature invisible for existing agents.
-    if (include_progressive_tools) {
-        for (progressive_tools_mod.ALL_PROGRESSIVE_TOOLS) |tool| {
-            if (seen.contains(tool.function.name)) continue;
             try seen.put(allocator, tool.function.name, {});
             try out.append(allocator, tool);
         }
@@ -2657,6 +2668,148 @@ test "filterAndMergeTools: a sub-agent cannot re-equip spawn_sub_agent" {
     for (merged) |t| {
         try testing.expect(!std.mem.eql(u8, t.function.name, "spawn_sub_agent"));
     }
+}
+
+// Composition test: replays exactly what the loop does at the resolution
+// point (getProgressiveTools -> buildCatalog -> filterAndMergeTools) against
+// a real database, so the three pieces are proven to fit together — not just
+// individually.
+test "progressive tool search: equipping a built-in makes it appear in the next resolution" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE IF NOT EXISTS session_progressive_tool (
+        \\    session_id TEXT NOT NULL,
+        \\    tool_name TEXT NOT NULL,
+        \\    server_name TEXT NOT NULL DEFAULT '',
+        \\    loaded_at_nano INTEGER NOT NULL DEFAULT 0,
+        \\    PRIMARY KEY (session_id, tool_name)
+        \\)
+    , &.{});
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const registered = tools.all_agent_tools(a);
+    const session_id = "s_prog";
+
+    // ── Before: only read_file is enabled, so glob is NOT in the tool list
+    //    but IS discoverable, and the meta-tools ship because the catalog is
+    //    non-empty.
+    const catalog_before = try progressive_catalog.buildCatalog(a, registered, "read_file", false, null, &.{}, "agent");
+    try testing.expect(catalog_before.len > 0);
+    var glob_discoverable = false;
+    for (catalog_before) |entry| {
+        if (std.mem.eql(u8, entry.name, "glob")) glob_discoverable = true;
+        // An enabled tool is never offered.
+        try testing.expect(!std.mem.eql(u8, entry.name, "read_file"));
+    }
+    try testing.expect(glob_discoverable);
+
+    var names_before: [0][]const u8 = .{};
+    const before = try filterAndMergeTools(a, null, "read_file", false, &names_before, catalog_before.len > 0);
+    var found_glob_before = false;
+    var found_search_tool_before = false;
+    for (before) |t| {
+        if (std.mem.eql(u8, t.function.name, "glob")) found_glob_before = true;
+        if (std.mem.eql(u8, t.function.name, "search_tool")) found_search_tool_before = true;
+    }
+    try testing.expect(!found_glob_before);
+    try testing.expect(found_search_tool_before);
+
+    // ── The agent calls use_tool("glob") → one row.
+    const inserted = try llm_history.saveProgressiveTool(a, &db, &lg, session_id, "glob", "");
+    try testing.expect(inserted);
+    // Re-equipping writes nothing (the validation rule).
+    const again = try llm_history.saveProgressiveTool(a, &db, &lg, session_id, "glob", "");
+    try testing.expect(!again);
+
+    // ── After: the loop re-reads the session's equip set.
+    const rows = try llm_history.getProgressiveTools(a, &db, session_id);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    const names_after = try a.alloc([]const u8, rows.len);
+    for (rows, 0..) |row, i| names_after[i] = row.tool_name;
+
+    const catalog_after = try progressive_catalog.buildCatalog(a, registered, "read_file", false, null, names_after, "agent");
+    // An equipped tool is no longer discoverable (it is enabled now).
+    for (catalog_after) |entry| {
+        try testing.expect(!std.mem.eql(u8, entry.name, "glob"));
+    }
+
+    const after = try filterAndMergeTools(a, null, "read_file", false, names_after, catalog_after.len > 0);
+    var found_glob_after = false;
+    var found_read_file_after = false;
+    var found_search_tool_after = false;
+    for (after) |t| {
+        if (std.mem.eql(u8, t.function.name, "glob")) found_glob_after = true;
+        if (std.mem.eql(u8, t.function.name, "read_file")) found_read_file_after = true;
+        if (std.mem.eql(u8, t.function.name, "search_tool")) found_search_tool_after = true;
+    }
+    // The equipped built-in is injected even though the allowlist excluded it,
+    // the enabled built-in is still there, and the meta-tools remain.
+    try testing.expect(found_glob_after);
+    try testing.expect(found_read_file_after);
+    try testing.expect(found_search_tool_after);
+
+    // ── Append-only: the enabled prefix is unchanged, glob is last.
+    try testing.expect(after.len > before.len);
+    for (before, after[0..before.len]) |b, aft| {
+        try testing.expectEqualStrings(b.function.name, aft.function.name);
+    }
+    try testing.expectEqualStrings("glob", after[after.len - 1].function.name);
+}
+
+test "progressive tool search: an MCP tool is invisible until equipped, then appended last" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE IF NOT EXISTS session_progressive_tool (
+        \\    session_id TEXT NOT NULL,
+        \\    tool_name TEXT NOT NULL,
+        \\    server_name TEXT NOT NULL DEFAULT '',
+        \\    loaded_at_nano INTEGER NOT NULL DEFAULT 0,
+        \\    PRIMARY KEY (session_id, tool_name)
+        \\)
+    , &.{});
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var mock_mcp = [_]agent.AgentTool{.{
+        .type = "function",
+        .function = .{
+            .name = "mcp_ctx_query-docs",
+            .description = "Query docs",
+            .parameters = .{ .type = "object", .properties = &.{}, .required = &.{} },
+        },
+    }};
+    const session_id = "s_mcp";
+
+    // Never injected while the equip set is empty, even with "all" built-ins.
+    const before = try filterAndMergeTools(a, &mock_mcp, "all", false, &.{}, false);
+    for (before) |t| {
+        try testing.expect(!std.mem.eql(u8, t.function.name, "mcp_ctx_query-docs"));
+    }
+
+    _ = try llm_history.saveProgressiveTool(a, &db, &lg, session_id, "mcp_ctx_query-docs", "ctx");
+    const rows = try llm_history.getProgressiveTools(a, &db, session_id);
+    const names = try a.alloc([]const u8, rows.len);
+    for (rows, 0..) |row, i| names[i] = row.tool_name;
+
+    const after = try filterAndMergeTools(a, &mock_mcp, "all", false, names, false);
+    try testing.expectEqualStrings("mcp_ctx_query-docs", after[after.len - 1].function.name);
 }
 
 /// Insert a minimal session row (matching the production schema: the
