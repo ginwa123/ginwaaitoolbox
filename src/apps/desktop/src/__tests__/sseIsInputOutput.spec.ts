@@ -88,33 +88,5 @@ describe('SseEvent.is_input / is_output wire format', () => {
     expect(eventFalse.is_output === true).toBe(false)
   })
 
-  it('ChatView showPreviewMessages filter uses === true (boolean compare)', async () => {
-    // Static-contract test: read the ChatView.vue source and assert
-    // the runtime filter uses boolean compare. Mirrors the project's
-    // convention of source-grep tests when the runtime path is wired
-    // through Vue's reactivity (not easily mockable from vitest).
-    //
-    // The runtime tests for the showPreviewMessages filter
-    // (chatViewShowPreviewBubble.spec.ts) cover the user-visible
-    // behavior; this test locks the source-level invariant so a
-    // future refactor that flips the compare back to `=== '1'`
-    // is caught immediately.
-    const fs = await import('node:fs/promises')
-    const path = await import('node:path')
-    const chatviewPath = path.resolve(
-      __dirname,
-      '..',
-      'components',
-      'views',
-      'ChatView.vue'
-    )
-    const source = await fs.readFile(chatviewPath, 'utf8')
-    // The filter must compare against the boolean true, not the string '1'.
-    // Anchored with `\b` so the substring `=== true` does NOT accidentally
-    // match `=== 'true'` (a string in single quotes) or `=== "true"`
-    // (a string in double quotes).
-    expect(source).toMatch(/is_output\s*===\s*true\b/)
-    expect(source).not.toMatch(/is_output\s*===\s*'1'/)
-    expect(source).not.toMatch(/is_output\s*===\s*"1"/)
-  })
+
 })

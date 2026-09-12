@@ -3,8 +3,7 @@
 
   Renders the XML envelope produced by `executeShowPreviewToString` in
   `src/modules/agent/tools/show_preview.zig`. The component is purely
-  presentational: no API calls, no store mutations, no panel control —
-  the parent (ChatView.vue) handles the side-panel navigation on click.
+  presentational: no API calls, no store mutations.
 
   Two response shapes are possible:
     Success:
@@ -23,22 +22,13 @@
     `show_preview → <title | content_type> · <content_length> ✓` (success)
     `show_preview → <error_message> ✗`                       (failure)
 
+  Body (success): rich content renders inline via
+  PreviewContentRenderer. HTML previews offer an "Open in new tab"
+  action for full-width viewing.
+
   Style is consistent with the rest of the tool_outputs components
   (KanbanMove, UpdateActivity): monospace, rounded-md, border + soft
   card bg, violet tool-name, ✗/✓ status indicators.
-
-  Click behavior — INTENTIONAL DIFFERENCE from the other tool cards:
-  ShowPreview is NOT expandable. The whole point of the side panel is
-  to keep the chat bubble minimal (status, preview id, content_type,
-  length) and let the user inspect the rich content in the right-side
-  panel. A click on the bubble here does THREE things (handled by the
-  parent):
-    1. Opens / un-dismisses the preview side panel.
-    2. Un-collapses the panel.
-    3. Jumps the panel to the matching preview tab via the `focusId` prop.
-  We emit an `open` event with the message id; the parent decides what
-  to do. The card itself has no expand toggle — the user's mental
-  model is "the bubble is just a bookmark; the panel is the content."
 
   Parameters prop — OPTIONAL:
   When provided, the component reads `title` and `content_type` from
@@ -49,7 +39,6 @@
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { usePreviewDisplayMode } from '@/composables/usePreviewDisplayMode'
 import PreviewContentRenderer from '@/components/preview/PreviewContentRenderer.vue'
 import { extractPreviewArgs, type PreviewArgs } from '@/helpers/previewArgs'
 import ToolParameters from './_shared/ToolParameters.vue'
@@ -58,8 +47,7 @@ interface Props {
   /** The XML envelope produced by the show_preview tool. */
   content: string
   /**
-   * The message id (passed back to the parent on click). The parent
-   * uses this to focus the matching preview in the side panel.
+   * The message id (used for test ids).
    */
   messageId: string
   /**
@@ -78,27 +66,6 @@ const props = withDefaults(defineProps<Props>(), {
   parameters: '',
 })
 
-const emit = defineEmits<{
-  /**
-   * Fired when the user clicks the card (anywhere on it, not just a
-   * specific button). Parent should navigate to / focus the side
-   * panel for `messageId`.
-   *
-   * NOT emitted in `inline` mode — the rich content is already
-   * visible inline, so there's nothing to navigate to.
-   */
-  open: [string]
-}>()
-
-// ─── XML tag extraction (local helper) ───────────────────────────────────
-// Same regex-based extractor used in PreviewSidePanel.vue. Kept
-// inline so ShowPreview has zero cross-file coupling (project convention
-// for tool-output components — see KanbanMove.vue:47-82).
-//
-// Used to extract fields from the `content` prop (the INNER envelope,
-// `<show_preview>...</show_preview>`), which is ALWAYS XML — never JSON.
-// Don't try to JSON.parse this; it always starts with `<show_preview>`.
-
 function findTag(haystack: string, tag: string): string | null {
   const openSeq = `<${tag}>`
   const closeSeq = `</${tag}>`
@@ -109,8 +76,6 @@ function findTag(haystack: string, tag: string): string | null {
   if (end === -1) return null
   return haystack.slice(valueStart, end)
 }
-
-// ─── Response envelope parsers ────────────────────────────────────────────
 
 const previewId = computed(() => {
   const v = findTag(props.content, 'preview_id')
@@ -134,30 +99,11 @@ const errorMessage = computed(() => {
   return v?.trim() || null
 })
 
-// ─── Inline-mode rendering (2026-08-06) ──────────────────────────────────
-//
-// Args extracted from the `parameters` prop via the shared
-// `extractPreviewArgs` helper (helpers/previewArgs.ts). The helper
-// tries XML extraction first (current backend — `jsonArgsToXml`)
-// then falls back to JSON.parse (legacy raw-JSON rows).
-//
-// Bug fix (2026-08-06): the previous code did `JSON.parse(props.parameters)`
-// directly, which threw SyntaxError on the XML shape (current production
-// data) and silently fell through to `{}` — so the iframe was blank
-// while the same preview in the side panel rendered correctly. Both
-// renderers now go through the same helper.
-
-const { isInline } = usePreviewDisplayMode()
-
 const previewArgs = computed<PreviewArgs>(() => extractPreviewArgs(props.parameters))
 
 const contentTypeFromParams = computed(() => previewArgs.value.content_type ?? null)
 const titleFromParams = computed(() => previewArgs.value.title ?? null)
 
-// Prefer the response envelope's `<content_type>` for the header meta
-// (it's the canonical value the side panel renders), but fall back to
-// the parameter value if the response envelope omits it. This matches
-// the pre-fix behaviour but reads both sources through the new helper.
 const contentType = computed(() => {
   const fromEnvelope = findTag(props.content, 'content_type')?.trim()
   if (fromEnvelope) return fromEnvelope
@@ -165,7 +111,6 @@ const contentType = computed(() => {
 })
 
 const title = computed(() => {
-  // Prefer parameter title when present.
   return titleFromParams.value
 })
 
@@ -192,16 +137,12 @@ const rendererArgs = computed(() => ({
   caption: previewArgs.value.caption ?? undefined,
 }))
 
-// ─── Derived display values ──────────────────────────────────────────────
-
 const isSuccess = computed(
   () => errorMessage.value === null && status.value === 'shown',
 )
 
 const statusIndicator = computed(() => (isSuccess.value ? '✓' : '✗'))
 
-// Human-friendly content_length: show in B / KB / MB so the user can
-// glance and see "this is a 200 KB image" vs "this is a 4 KB snippet".
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -210,19 +151,14 @@ function formatBytes(n: number): string {
 
 const headerLabel = computed(() => {
   if (!isSuccess.value) return errorMessage.value ?? 'error'
-  // Prefer the parameter title when present (it's what the LLM chose
-  // to label the preview with), otherwise fall back to the content_type.
   const label = title.value ?? contentType.value ?? 'preview'
   return label
 })
 
-// Right-meta text — content_type + size, dim gray, only on success.
 const rightMeta = computed(() => {
   if (!isSuccess.value) return null
   const parts: string[] = []
   if (contentType.value && title.value) {
-    // Title is shown as primary, so repeat the content_type here for
-    // disambiguation (a "Plan" might be markdown OR text).
     parts.push(contentType.value)
   }
   if (contentLength.value !== null) {
@@ -233,21 +169,8 @@ const rightMeta = computed(() => {
 
 const headerTitle = computed(() => {
   if (!isSuccess.value) return errorMessage.value ?? ''
-  // Hover title shows the canonical preview_id for power users to copy.
   return previewId.value ? `preview_id: ${previewId.value}` : ''
 })
-
-// ─── Event handlers ──────────────────────────────────────────────────────
-
-const handleClick = () => {
-  // In inline mode the content is already visible — nothing to navigate
-  // to. Emit `open` only in side mode (when the click would expand
-  // content into the right-side panel).
-  if (isInline.value) return
-  // Emit the bubble's message id; the parent decides how to navigate
-  // (focus the side panel, dismiss collapsed state, etc.).
-  emit('open', props.messageId)
-}
 
 const copyPreviewId = async (e: Event) => {
   e.stopPropagation()
@@ -262,25 +185,19 @@ const copyPreviewId = async (e: Event) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs hover:border-violet-500/40 transition-colors"
+    class="chat-tool-card font-mono text-xs"
     :class="[
-      !isInline ? 'cursor-pointer' : '',
       { 'border-red-500/50 opacity-90': !isSuccess },
     ]"
-    :role="!isInline ? 'button' : undefined"
-    :tabindex="!isInline ? 0 : undefined"
     :aria-label="isSuccess
-      ? `Show preview ${previewId ?? ''} in side panel`
+      ? `Show preview ${previewId ?? ''} inline`
       : `Show preview error: ${errorMessage ?? 'unknown error'}`"
     :data-testid="`show-preview-card-${messageId}`"
-    :title="isSuccess ? 'Click to open in side panel' : errorMessage ?? ''"
-    @click="handleClick"
-    @keydown.enter="handleClick"
-    @keydown.space.prevent="handleClick"
+    :title="headerTitle"
   >
     <!-- Header (always visible) -->
     <div
-      class="group flex items-center gap-1 px-2 py-1 select-none hover:bg-violet-500/5"
+      class="group flex items-center gap-1 px-2 py-1 select-none"
     >
       <span class="text-[var(--color-violet)] font-semibold text-xs">show_preview</span>
       <span
@@ -310,46 +227,20 @@ const copyPreviewId = async (e: Event) => {
       >⎘</button>
     </div>
 
-    <!--
-      Inline-mode body: rich content rendered directly inside the
-      chat bubble (no need to click through to the side panel).
-      Hidden in 'side' mode (the user clicks to open the panel).
-
-      The container has its own padding + max-w-full so the renderer
-      (which renders an iframe at up to 320px tall) stays visually
-      distinct from the message thread above it. `variant="inline"`
-      switches PreviewContentRenderer to compact sizing and adds an
-      "Open full preview" button for HTML content.
-    -->
+    <!-- Inline body: rich content rendered directly inside the chat bubble. -->
     <div
-      v-if="isInline && isSuccess && resolvedContentType"
+      v-if="isSuccess && resolvedContentType"
       class="border-t border-dashed border-[var(--color-border)] px-3 py-2"
       data-testid="show-preview-inline-content"
-      @click.stop
     >
-      <!--
-        2026-08-29: PreviewContentRenderer now emits a dedicated
-        'open-in-side-panel' event when the inline CTA strip's
-        '↗ Open in side panel' button is clicked. We re-emit the
-        existing 'open' event with our messageId so ChatView.vue's
-        `@open="openPreviewForMessage"` handler at line 3093 keeps
-        working unchanged. The renderer is also free to drop the
-        event in the future (a "click to expand" pattern, etc.) —
-        we don't depend on it.
-      -->
       <PreviewContentRenderer
         :content-type="resolvedContentType"
         :args="rendererArgs"
         variant="inline"
-        @open-in-side-panel="emit('open', messageId)"
       />
     </div>
 
-    <!-- Error body — only when the tool failed. Success case has
-         nothing to show inline when in side mode; the rich content
-         lives in the side panel. The error message is wrapped in a
-         single line so the user can scan the chat log without it
-         expanding the card. -->
+    <!-- Error body — only when the tool failed. -->
     <div
       v-if="!isSuccess && errorMessage"
       class="px-2 py-1.5 text-red-500 text-xs border-t border-dashed border-[var(--color-border)] whitespace-pre-wrap break-all"

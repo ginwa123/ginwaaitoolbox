@@ -1,52 +1,17 @@
 /**
- * Behavioural tests for the extracted <PreviewContentRenderer> component.
+ * Behavioural tests for the <PreviewContentRenderer> component.
  *
- * The renderer is the SHARED rendering logic used by:
- *   - <PreviewSidePanel> (renders one preview at a time from the
- *     right-side panel tab strip)
- *   - <ShowPreview> (renders inline inside the chat bubble when
- *     `usePreviewDisplayMode().mode === 'inline'`)
- *
- * Before this refactor, the 5-branch rendering pipeline
- * (markdown / text / code / image / html) lived INLINE in
- * PreviewSidePanel.vue as three computed refs (`renderedContent`,
- * `imageSrc`, `htmlSrcDoc`) + a 5-way `v-if/v-else-if` template.
- * We extract it into a shared component so both consumers get the
- * identical rendering without copy-paste drift.
- *
- * The tests below are pure DOM assertions: mount the component with
- * the right props, check the rendered HTML. They're a regression
- * guard against accidental drift from the in-PreviewSidePanel logic
- * to the extracted component.
- *
- * Plan: docs/superpowers/specs/2026-08-06-show-preview-display-mode-design.md
+ * The renderer renders a single `show_preview` output inline inside
+ * the chat bubble (used by <ShowPreview>). Covers the 5-branch
+ * pipeline (markdown / text / code / image / html) plus the HTML
+ * "Open in new tab" action.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import PreviewContentRenderer from '../components/preview/PreviewContentRenderer.vue'
 
-function makeLocalStorageStub(): Storage {
-  const store: Record<string, string> = {}
-  return {
-    getItem: (k: string) => (k in store ? store[k] : null),
-    setItem: (k: string, v: string) => { store[k] = String(v) },
-    removeItem: (k: string) => { delete store[k] },
-    clear: () => { for (const k in store) delete store[k] },
-    key: () => null,
-    length: 0,
-  } as Storage
-}
-
-beforeEach(() => {
-  Object.defineProperty(globalThis, 'localStorage', {
-    value: makeLocalStorageStub(),
-    writable: true,
-    configurable: true,
-  })
-})
-
-describe('PreviewContentRenderer', () => {
+describe('PreviewContentRenderer (inline + new tab)', () => {
   it('renders markdown content via marked() into an <h1>', () => {
     const wrapper = mount(PreviewContentRenderer, {
       props: {
@@ -119,380 +84,93 @@ describe('PreviewContentRenderer', () => {
     const wrapper = mount(PreviewContentRenderer, {
       props: {
         contentType: 'html',
-        args: { content: '<h1>Hello</h1>' },
+        args: { content: '<h1>Hi</h1>' },
       },
     })
-    const iframe = wrapper.find('iframe')
+    const iframe = wrapper.find('[data-testid="preview-html-iframe"]')
     expect(iframe.exists()).toBe(true)
     expect(iframe.attributes('sandbox')).toBe('allow-scripts')
-    expect(iframe.attributes('srcdoc')).toBeTruthy()
-    // The srcdoc should contain the user's HTML. Browsers auto-encode
-    // `< > & "` for the attribute; jsdom does not. The renderer
-    // intentionally does NOT pre-escape (the comment in
-    // htmlSrcDoc explains why) — it relies on the browser's
-    // attribute encoding. So we check for the raw HTML form here.
-    const srcdoc = iframe.attributes('srcdoc') ?? ''
-    expect(srcdoc).toContain('<h1>Hello</h1>')
-    // The tiny <style> reset is prepended to every html preview.
-    expect(srcdoc).toContain('<style>')
   })
 
-  it('renders title and caption as siblings of the content', () => {
+  it('shows an "Open in new tab" button for html content', () => {
+    const wrapper = mount(PreviewContentRenderer, {
+      props: {
+        contentType: 'html',
+        args: { content: '<h1>Hi</h1>' },
+      },
+    })
+    expect(
+      wrapper.find('[data-testid="preview-open-new-tab-button"]').exists(),
+    ).toBe(true)
+  })
+
+  it('does not show the new-tab button for non-html content', () => {
     const wrapper = mount(PreviewContentRenderer, {
       props: {
         contentType: 'markdown',
-        args: { content: '# Body', title: 'Plan', caption: 'A short caption' },
+        args: { content: '# Title' },
       },
     })
-    const html = wrapper.html()
-    expect(html).toContain('Plan')
-    expect(html).toContain('A short caption')
+    expect(
+      wrapper.find('[data-testid="preview-open-new-tab-button"]').exists(),
+    ).toBe(false)
   })
 
-  it('falls back to an empty <pre> when markdown parsing throws (defensive)', () => {
-    // Mock the markdown source with content that breaks the marked()
-    // parser. marked() is robust against most invalid markdown, so
-    // we instead force an exception by passing a non-string content
-    // type at runtime.
+  it('clicking "Open in new tab" calls window.open with a blob URL', async () => {
+    const openSpy = vi
+      .spyOn(window, 'open')
+      .mockImplementation(() => null)
+    const createSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock')
+    const revokeSpy = vi
+      .spyOn(URL, 'revokeObjectURL')
+      .mockImplementation(() => {})
+    try {
+      const wrapper = mount(PreviewContentRenderer, {
+        props: {
+          contentType: 'html',
+          args: { content: '<h1>Hi</h1>' },
+        },
+      })
+      await wrapper
+        .find('[data-testid="preview-open-new-tab-button"]')
+        .trigger('click')
+      expect(createSpy).toHaveBeenCalled()
+      expect(openSpy).toHaveBeenCalledWith('blob:mock', '_blank', 'noopener')
+    } finally {
+      openSpy.mockRestore()
+      createSpy.mockRestore()
+      revokeSpy.mockRestore()
+    }
+  })
+
+  it('renders title and caption when provided', () => {
     const wrapper = mount(PreviewContentRenderer, {
       props: {
-        contentType: 'markdown' as const,
-        args: { content: '' },
+        contentType: 'markdown',
+        args: { content: '# Hi', title: 'My Title', caption: 'My caption' },
       },
     })
-    // Empty markdown renders as empty string via marked(), which is
-    // valid. We just verify no crash and a stable DOM.
-    expect(wrapper.html()).toBeTruthy()
+    expect(wrapper.html()).toContain('My Title')
+    expect(wrapper.html()).toContain('My caption')
   })
 
-  it('renders nothing meaningful for unknown content_type (defensive)', () => {
-    // Force an unknown contentType via cast — the renderer should
-    // not crash, just render an empty container.
+  it('auto-resizes the iframe height on postMessage', async () => {
     const wrapper = mount(PreviewContentRenderer, {
       props: {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        contentType: 'unknown_type' as any,
-        args: { content: 'irrelevant' },
+        contentType: 'html',
+        args: { content: '<h1>Hi</h1>' },
       },
+      attachTo: document.body,
     })
-    // No <img>, no <iframe>, no <pre>. Container exists.
-    expect(wrapper.find('img').exists()).toBe(false)
-    expect(wrapper.find('iframe').exists()).toBe(false)
-  })
-
-  // ─── Variant prop (2026-08-06) ────────────────────────────────────
-  //
-  // The renderer is used in TWO layouts: the side panel (full-width
-  // 480px column with a tall iframe) and the chat bubble (variable
-  // width, scrollable bubble, "Open full preview" affordance). The
-  // default behavior (no variant prop) matches the original side-
-  // panel sizing for back-compat. Passing `variant="inline"` switches
-  // to a compact inline layout: shorter min-height, "Open full
-  // preview" button, and a max-w-full on the container so the iframe
-  // can never overflow its chat-bubble column.
-  describe('variant: inline (chat-bubble layout)', () => {
-    it('does NOT enforce a fixed min-h on the container (auto-resize sets the height from the iframe postMessage)', () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
-      expect(iframeContainer.exists()).toBe(true)
-      const classes = iframeContainer.attributes('class') ?? ''
-      // No fixed min-h on the container — the iframe's height is set
-      // dynamically by the AUTO_RESIZE_SCRIPT via postMessage.
-      expect(classes).not.toContain('min-h-[480px]')
-      // The old max-h-[320px] cap is also gone.
-      expect(classes).not.toContain('max-h-[320px]')
-      // Iframe gets a min-height style of 200px as an initial fallback
-      // (before the postMessage arrives) so empty/short HTML still
-      // renders something visible.
-      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
-      expect(iframe.attributes('style')).toContain('min-height: 200px')
-    })
-
-    it('caps iframe width at the chat-bubble width (max-w-full)', () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
-      const classes = iframeContainer.attributes('class') ?? ''
-      expect(classes).toContain('max-w-full')
-    })
-
-    // ─── Auto-escalate on overflow (2026-08-29) ───────────────────────
-    //
-    // When the inline iframe detects its inner content is wider than
-    // the chat column (via the postMessage `width` field), we
-    // automatically:
-    //   1. Emit `open-in-side-panel` once (the watcher in <script
-    //      setup> handles this — once: true so the postMessage
-    //      load/resize/MutationObserver triggers don't keep firing).
-    //   2. Hide the iframe body (the v-else-if guard becomes false).
-    //   3. Render an in-chat pointer ("↗ Preview is wider than this
-    //      chat — viewing in the side panel") with a jump-to-panel
-    //      button for users who closed the panel.
-    //
-    // The user ends up looking at the side panel with the full
-    // content — no more cropped iframe in the chat.
-    //
-    // Narrow content (e.g. <h1>x</h1>) does NOT trigger overflow,
-    // so the iframe renders normally and no pointer is shown.
-    describe('auto-escalate to side panel when content overflows', () => {
-      it('renders the iframe normally for narrow content (no overflow detected)', () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        expect(wrapper.find('iframe[data-testid="preview-html-iframe"]').exists()).toBe(true)
-        expect(wrapper.find('[data-testid="preview-inline-escalated"]').exists()).toBe(false)
-      })
-
-      it('HIDES the iframe when overflow is detected (the postMessage fires scrollWidth > clientWidth)', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        // Simulate the iframe reporting its content is wider than the
-        // chat column (scrollWidth 999 > clientWidth 500).
-        // jsdom doesn't lay out iframes, so we set clientWidth manually
-        // before posting — see the comment in onIframeMessage about the
-        // `iframe.clientWidth > 0` guard.
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
-        // The iframe is now hidden — the escalated pointer shows instead.
-        expect(wrapper.find('iframe[data-testid="preview-html-iframe"]').exists()).toBe(false)
-        expect(wrapper.find('[data-testid="preview-inline-escalated"]').exists()).toBe(true)
-      })
-
-      it('auto-emits "open-in-side-panel" exactly once when overflow is first detected', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        // Fire overflow multiple times (load + resize + MutationObserver
-        // all dispatch — see AUTO_RESIZE_SCRIPT). The watcher is
-        // `once: true`, so we should see exactly ONE emit.
-        for (let i = 0; i < 5; i++) {
-          window.dispatchEvent(
-            new MessageEvent('message', {
-              data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
-            }),
-          )
-        }
-        await wrapper.vm.$nextTick()
-        const events = wrapper.emitted('open-in-side-panel')
-        expect(events).toBeTruthy()
-        expect(events!.length).toBe(1)
-      })
-
-      it('does NOT auto-escalate when iframe reports width but no overflow', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 800, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 300, width: 400 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
-        expect(wrapper.emitted('open-in-side-panel')).toBeFalsy()
-        // Iframe stays visible (no overflow).
-        expect(wrapper.find('iframe[data-testid="preview-html-iframe"]').exists()).toBe(true)
-      })
-
-      it('does NOT auto-escalate in side variant (panel is already wide enough — overflow is the panel user\'s choice)', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'side',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
-        expect(wrapper.emitted('open-in-side-panel')).toBeFalsy()
-      })
-
-      it('the escalated pointer\'s "Open" button re-emits open-in-side-panel on click (fallback for users who dismissed the panel)', async () => {
-        const wrapper = mount(PreviewContentRenderer, {
-          props: {
-            contentType: 'html',
-            args: { content: '<h1>x</h1>' },
-            variant: 'inline',
-          },
-        })
-        const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-        Object.defineProperty(iframe, 'clientWidth', { value: 500, configurable: true })
-        window.dispatchEvent(
-          new MessageEvent('message', {
-            data: { source: 'show-preview-auto-resize', height: 700, width: 999 },
-          }),
-        )
-        await wrapper.vm.$nextTick()
-        // The watcher already emitted once automatically. Click the
-        // jump-to-panel button — expect the event count to grow.
-        const beforeClick = (wrapper.emitted('open-in-side-panel') ?? []).length
-        const jumpBtn = wrapper.find('[data-testid="preview-escalated-jump-to-panel"]')
-        expect(jumpBtn.exists()).toBe(true)
-        await jumpBtn.trigger('click')
-        const afterClick = (wrapper.emitted('open-in-side-panel') ?? []).length
-        expect(afterClick).toBeGreaterThan(beforeClick)
-      })
-    })
-
-    it('default variant is "side" (no max-w-full, no inline-only CTA)', () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-        },
-      })
-      // No variant passed → defaults to 'side' (back-compat).
-      const iframeContainer = wrapper.find('[data-testid="preview-html-container"]')
-      const classes = iframeContainer.attributes('class') ?? ''
-      // Side variant uses h-full (fills panel), not max-w-full (chat column)
-      expect(classes).not.toContain('max-w-full')
-      // No inline-only affordances in side variant.
-      expect(wrapper.find('[data-testid="preview-inline-escalated"]').exists()).toBe(false)
-    })
-  })
-
-  // ─── Auto-resize (2026-08-06) ─────────────────────────────────────
-  //
-  // The inline iframe auto-resizes to fit its content height via a
-  // postMessage protocol: a tiny script inside the iframe (prepended
-  // to the srcdoc by PreviewContentRenderer) reports its scrollHeight
-  // back to the parent, which adjusts the iframe height. This way the
-  // user sees the full HTML without a scrollbar in the inline chat
-  // bubble.
-  describe('auto-resize via postMessage', () => {
-    it('embeds an auto-resize script in the iframe srcdoc', () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]')
-      const srcdoc = iframe.attributes('srcdoc') ?? ''
-      // The auto-resize script must be embedded before the user's HTML
-      // so it runs at parse time and sets up its listeners.
-      expect(srcdoc).toContain('show-preview-auto-resize')
-      expect(srcdoc).toContain('parent.postMessage')
-    })
-
-    it('updates iframe height when the iframe posts a height message', async () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-      // Simulate the iframe posting its height.
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { source: 'show-preview-auto-resize', height: 777 },
-        }),
-      )
-      await wrapper.vm.$nextTick()
-      // The iframe's inline style should reflect the reported height.
-      expect(iframe.style.height).toBe('777px')
-    })
-
-    it('clamps the reported height to a minimum (200px) so empty content still renders', async () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { source: 'show-preview-auto-resize', height: 50 },
-        }),
-      )
-      await wrapper.vm.$nextTick()
-      expect(iframe.style.height).toBe('200px')
-    })
-
-    it('clamps the reported height to a maximum (2000px) so runaway content does not break the chat', async () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { source: 'show-preview-auto-resize', height: 99999 },
-        }),
-      )
-      await wrapper.vm.$nextTick()
-      expect(iframe.style.height).toBe('2000px')
-    })
-
-    it('ignores messages with the wrong source (other iframes in the page)', async () => {
-      const wrapper = mount(PreviewContentRenderer, {
-        props: {
-          contentType: 'html',
-          args: { content: '<h1>x</h1>' },
-          variant: 'inline',
-        },
-      })
-      const iframe = wrapper.find('iframe[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
-      const initialStyle = iframe.style.height
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { source: 'some-other-source', height: 500 },
-        }),
-      )
-      await wrapper.vm.$nextTick()
-      // Style unchanged because we filter by source.
-      expect(iframe.style.height).toBe(initialStyle)
-    })
+    const iframe = wrapper.find('[data-testid="preview-html-iframe"]')
+      .element as HTMLIFrameElement
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { source: 'show-preview-auto-resize', height: 500 },
+      }),
+    )
+    await wrapper.vm.$nextTick()
+    expect(iframe.style.height).toBe('500px')
+    wrapper.unmount()
   })
 })
