@@ -10,8 +10,14 @@
  *   - stripThinkingTags: unwraps <html> like <plain>/<markdown>, drops
  *     <think> when a sibling wrapper exists, keeps visibility non-empty
  */
-import { describe, expect, it } from 'vitest'
-import { getHtmlTags, isHtmlTags, stripThinkingTags } from '../helpers/stripTags'
+import { beforeEach, describe, expect, it } from 'vitest'
+import {
+  _resetStripThinkingTagsCache,
+  _stripThinkingTagsCacheStats,
+  getHtmlTags,
+  isHtmlTags,
+  stripThinkingTags,
+} from '../helpers/stripTags'
 
 describe('getHtmlTags', () => {
   it('extracts inner content of a single block', () => {
@@ -152,5 +158,78 @@ describe('stripThinkingTags — fenced markdown wrappers', () => {
     expect(stripThinkingTags('<think>reasoning only</think>')).toBe(
       '<think>reasoning only</think>',
     )
+  })
+})
+
+// 2026-09-11 — chatview open/stream freeze.
+//
+// ChatView re-scans the WHOLE loaded transcript with stripThinkingTags on
+// every `messages` mutation (filteredMessages + hasBubbleContent +
+// renderResponse), and one SSE chunk = one mutation. Measured on the real DB
+// (newest-100 rows of a 2.21 MB session): 34 of the 43 ms per chunk were the
+// repeated stripThinkingTags passes. The memo collapses repeat calls over
+// unchanged messages to a Map lookup, so only the streaming message is
+// re-scanned. These tests lock in the memo's observable contract.
+describe('stripThinkingTags — memoization (per-chunk render cost)', () => {
+  beforeEach(() => {
+    _resetStripThinkingTagsCache()
+  })
+
+  it('does not re-scan content it has already seen (cache hit adds no entry)', () => {
+    const body = 'a'.repeat(2000)
+    const content = `<markdown>${body}</markdown>`
+    expect(stripThinkingTags(content)).toBe(body)
+    const afterFirst = _stripThinkingTagsCacheStats()
+    expect(afterFirst.entries).toBe(1)
+    // Same string again — a recompute would be a no-op for the cache, but the
+    // 2nd call must not grow it (i.e. it was served from the memo).
+    expect(stripThinkingTags(content)).toBe(body)
+    expect(_stripThinkingTagsCacheStats()).toEqual(afterFirst)
+    // A DIFFERENT content does add an entry (the cache is keyed by content).
+    expect(stripThinkingTags('<markdown>other</markdown>')).toBe('other')
+    expect(_stripThinkingTagsCacheStats().entries).toBe(2)
+  })
+
+  it('recomputes after a cache reset (no stale values survive)', () => {
+    const body = 'b'.repeat(2000)
+    const content = `<markdown>${body}</markdown>`
+    expect(stripThinkingTags(content)).toBe(body)
+    _resetStripThinkingTagsCache()
+    expect(_stripThinkingTagsCacheStats().entries).toBe(0)
+    expect(stripThinkingTags(content)).toBe(body)
+    expect(_stripThinkingTagsCacheStats().entries).toBe(1)
+  })
+
+  it('does not confuse different contents that strip to the same text', () => {
+    expect(stripThinkingTags('<markdown>same</markdown>')).toBe('same')
+    expect(stripThinkingTags('<plain>same</plain>')).toBe('same')
+    expect(stripThinkingTags('same')).toBe('same')
+  })
+
+  it('still returns the passthrough string for lone think blocks', () => {
+    expect(stripThinkingTags('<think>only</think>')).toBe('<think>only</think>')
+    expect(stripThinkingTags('<think>only</think>')).toBe('<think>only</think>')
+  })
+
+  it('handles the empty / undefined inputs without caching them', () => {
+    expect(stripThinkingTags('')).toBe('')
+    expect(stripThinkingTags(undefined)).toBe('')
+    expect(_stripThinkingTagsCacheStats().entries).toBe(0)
+  })
+
+  it('stays bounded: the cache is dropped once it exceeds its byte budget', () => {
+    // 24 distinct ~700 KB strings ≈ 33 MB of key+value chars, well past the
+    // 16 MB budget — the cache must clear instead of growing without limit.
+    const firstContent = 'c'.repeat(700_000)
+    expect(stripThinkingTags(firstContent)).toBe(firstContent)
+    expect(_stripThinkingTagsCacheStats().entries).toBe(1)
+    for (let i = 0; i < 24; i++) {
+      const content = `${'d'.repeat(700_000)}${i}`
+      expect(stripThinkingTags(content)).toBe(content)
+    }
+    const stats = _stripThinkingTagsCacheStats()
+    expect(stats.entries).toBeLessThan(24) // evicted, not unbounded
+    expect(stats.chars).toBeLessThanOrEqual(16 * 1024 * 1024)
+    expect(stripThinkingTags(firstContent)).toBe(firstContent)
   })
 })

@@ -33,7 +33,7 @@
 //! file is the LLM-facing wrapper — JSON schema, input struct, success/
 //! error XML envelopes. The exec adapter in
 //! `src/agentic_loop/tools_exec_add_mcp_server.zig` calls
-//! `executeAddMcpServerToString` (same shape as `save_memory.zig`'s
+//! `executeAddMcpServerToString` (same shape as `memory.zig`'s
 //! `executeAddSkillToString`).
 //!
 //! Notes for the future HTTP branch: the input struct already has

@@ -49,6 +49,26 @@ test "parseServiceSubcommand accepts restart with --port and --graceful-timeout-
     });
     try testing.expectEqual(@as(u16, 9999), cmd.restart.port);
     try testing.expectEqual(@as(u32, 2000), cmd.restart.graceful_timeout_ms);
+    try testing.expect(cmd.restart.static_dir == null);
+}
+
+test "parseServiceSubcommand accepts restart --static-dir (webapp survives a restart)" {
+    // Regression: the usage text advertised --static-dir for `restart` but
+    // the parser rejected it with UnknownSubcommand, and main.zig never
+    // forwarded the value either — so a restarted daemon silently lost its
+    // webapp dir (and state.json's static_dir stayed null). The desktop's
+    // webview then showed `404 Not Found` after a restart.
+    const cmd = try main_service.parseServiceSubcommand(&.{
+        "restart", "--port", "9999", "--static-dir", "/tmp/webapp",
+    });
+    try testing.expectEqualStrings("/tmp/webapp", cmd.restart.static_dir.?);
+}
+
+test "parseServiceSubcommand start keeps --static-dir" {
+    const cmd = try main_service.parseServiceSubcommand(&.{
+        "start", "--port", "9999", "--static-dir", "/tmp/webapp",
+    });
+    try testing.expectEqualStrings("/tmp/webapp", cmd.start.static_dir.?);
 }
 
 test "parseServiceSubcommand rejects empty args" {

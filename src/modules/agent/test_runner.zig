@@ -61,7 +61,8 @@ test {
     _ = @import("tools/update_plan.zig");
     _ = @import("tools/search_history.zig");
     _ = @import("tools/glob.zig");
-    _ = @import("tools/load_memory.zig");
+    _ = @import("tools/memory.zig");
+    _ = @import("tools/list_skills.zig");
     _ = @import("tools/kanban_list.zig");
     _ = @import("tools/update_activity.zig");
     _ = @import("tools/show_preview.zig");
@@ -81,8 +82,7 @@ test {
     _ = @import("tools/diff.zig");
     _ = @import("tools/list_memory.zig");
     _ = @import("tools/add_design_element.zig");
-    _ = @import("tools/save_memory.zig");
-    _ = @import("tools/delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool
+    _ = @import("tools/memory.zig");
     _ = @import("tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool (Step 2)
     _ = @import("tools/spawn_sub_agent.zig");
     _ = @import("tools/list_sub_agent.zig");

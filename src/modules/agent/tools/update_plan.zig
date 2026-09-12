@@ -22,7 +22,7 @@
 //! the frontend can reuse the same envelope parser.
 //!
 //! The actual UPSERT lives in `session_plan.savePlan`. This file is a
-//! thin XML wrapper (mirrors the `save_memory.zig` pattern — same
+//! thin XML wrapper (mirrors the `memory.zig` save_memory pattern — same
 //! successXml/errorXml shape, same XmlEscape for user-trusted content).
 //!
 //! Design choices:

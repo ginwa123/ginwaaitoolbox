@@ -3468,7 +3468,7 @@ pub const Migration076AddAgentsAndAgentKnowledgeAndAgentTools = struct {
 // ─────────────────────────
 // `snippet()` returns NULL for external-content FTS5 tables. The
 // `load_memory` tool needs snippets to render compact `<snippet>` blocks
-// (10 tokens with `[match]` markers — see `load_memory.zig::successXml`).
+// (10 tokens with `[match]` markers — see `memory.zig::loadSuccessXml`).
 // Duplicating content costs ~2x storage but enables the only UX feature
 // that matters here. This matches the existing `messages_fts` pattern
 // (Migration 058 — see `migration.zig:1511` for the rationale).

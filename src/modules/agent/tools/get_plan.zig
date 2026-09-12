@@ -10,7 +10,7 @@
 //!   or:     <get_plan><empty/></get_plan> (when no plan set, per D6)
 //!
 //! The actual read lives in `session_plan.getPlan`. This file is a
-//! thin XML wrapper around it (mirrors the `load_memory.zig` pattern —
+//! thin XML wrapper around it (mirrors the `memory.zig` load_memory pattern —
 //! thin wrapper around `agent_memories.loadMemoriesByFts`).
 //!
 //! CDATA wrapping: the plan content is wrapped in CDATA so the raw

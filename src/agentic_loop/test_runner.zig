@@ -42,7 +42,7 @@ test {
     _ = @import("tools_exec_get_plan.zig"); // inlined 2 tests from tools_exec_get_plan_test.zig
     _ = @import("tools_exec_list_sub_agent.zig"); // list_sub_agent exec adapter + registry static contracts
     _ = @import("tools_exec_update_plan.zig"); // inlined 3 tests from tools_exec_update_plan_test.zig
-    _ = @import("tools_exec_delete_memory.zig"); // 2026-08-24-delete-memory-agent-tool — inlined 2 tests
+    _ = @import("tools_exec_memory.zig"); // merged save/load/delete exec wrappers + inlined 2 delete tests
     _ = @import("tools_exec_add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool — Step 3 (exec wrapper)
     _ = @import("kanban_model.zig"); // Phase 4 — inlined tests from 3 kanban_model_*_test.zig files
     _ = @import("design_io.zig"); // Phase 4 — inlined tests from design_io_test.zig

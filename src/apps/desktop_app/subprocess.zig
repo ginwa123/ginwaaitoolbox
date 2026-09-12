@@ -51,7 +51,7 @@ const builtin = @import("builtin");
 const helpers = @import("helpers");
 
 // Windows-only WinSock2 externs, declared at module scope so they
-// can be used by the Windows branch of `tryProbe`.
+// can be used by the Windows branch of `httpGet` (`httpGetWindows`).
 //
 // Why a full winsock block instead of `std.c.socket`? — Two reasons:
 //   1. Zig 0.16's `std.c.private.socket` is declared as returning
@@ -169,7 +169,7 @@ pub fn waitForHealth(
     const timeout_ns: u64 = @as(u64, timeout_ms) * std.time.ns_per_ms;
 
     while (true) {
-        if (tryProbe(port)) return;
+        if (probeHealth(port)) return;
 
         const elapsed_ns = helpers.monotonicTimestampNanos() - start_ns;
         if (elapsed_ns >= timeout_ns) return error.HealthCheckTimeout;
@@ -184,26 +184,83 @@ pub fn waitForHealth(
     }
 }
 
-/// One connect+probe attempt. Returns `true` on a 2xx response, `false`
-/// on any other outcome (connect refused, timeout, non-2xx status, etc).
-/// The caller treats `false` as "not ready, sleep and retry".
-fn tryProbe(port: u16) bool {
-    // Platform dispatch: winsock on Windows (UCRT socket calls don't
-    // work on SOCKET handles), libc sockets on POSIX.
-    if (comptime builtin.os.tag == .windows) return tryProbeWindows(port);
-    return tryProbePosix(port);
+/// Result of one `GET <path>` over a raw loopback socket.
+pub const HttpProbe = struct {
+    /// Parsed HTTP status code, or 0 when the connection failed or the
+    /// status line could not be read.
+    status: u16 = 0,
+    /// True when a literal `<` appears in the response BODY. Distinguishes
+    /// "index.html was served" from "some other 2xx response" — without it
+    /// any server that answers `/` with 200 would look like a servable
+    /// webapp.
+    body_looks_html: bool = false,
+};
+
+/// How much of a probe response we read. Comfortably covers the status
+/// line + headers + the start of index.html, which is all the status/`<`
+/// sniff below needs.
+const max_probe_bytes: usize = 2048;
+
+/// Platform dispatch: winsock on Windows (UCRT socket calls don't work on
+/// SOCKET handles), libc sockets on POSIX.
+fn httpGet(port: u16, path: []const u8) HttpProbe {
+    if (comptime builtin.os.tag == .windows) return httpGetWindows(port, path);
+    return httpGetPosix(port, path);
+}
+
+/// `GET <path>` and report the status code (+ a body sniff). Never
+/// allocates, never panics: any failure is reported as `status = 0` so
+/// callers can treat "unreachable" and "not what we asked for" alike.
+/// Is something answering `GET /health` with 2xx on this port?
+///
+/// NOTE: this is NOT sufficient to decide the desktop can use a server —
+/// `/health` is an API route and answers 200 even when the process was
+/// started without a usable `--static-dir`. Use `probeWebapp` for that.
+pub fn probeHealth(port: u16) bool {
+    const p = httpGet(port, "/health");
+    return p.status >= 200 and p.status < 300;
+}
+
+/// Does this server actually serve the desktop webapp at `/`?
+///
+/// Requires a 2xx AND an HTML-looking body. A daemon whose `--static-dir`
+/// no longer exists answers `/health` with 200 but `/` with
+/// `404 Not Found`; attaching the webview to it is exactly the "blank 404
+/// page" bug this check exists to prevent.
+pub fn probeWebapp(port: u16) bool {
+    const p = httpGet(port, "/");
+    return p.status >= 200 and p.status < 300 and p.body_looks_html;
+}
+
+/// Can we stop reading? We need the status line (all of it) plus at least
+/// one body byte that looks like markup.
+fn probeResponseComplete(bytes: []const u8) bool {
+    const header_end = std.mem.indexOf(u8, bytes, "\r\n\r\n") orelse return false;
+    return std.mem.indexOfScalar(u8, bytes[header_end + 4 ..], '<') != null;
+}
+
+fn parseProbeResponse(bytes: []const u8) HttpProbe {
+    var out: HttpProbe = .{};
+    // Status line is "HTTP/1.x NNN ..." — the 3 digits start at index 9.
+    if (bytes.len >= 12 and std.mem.startsWith(u8, bytes, "HTTP/1.")) {
+        out.status = std.fmt.parseInt(u16, bytes[9..12], 10) catch 0;
+    }
+    if (std.mem.indexOf(u8, bytes, "\r\n\r\n")) |header_end| {
+        out.body_looks_html = std.mem.indexOfScalar(u8, bytes[header_end + 4 ..], '<') != null;
+    }
+    return out;
 }
 
 /// Windows probe via the winsock API directly. Requires WSAStartup
 /// (lazy-init'd above) — without it every `socket()` call fails with
 /// WSANOTINITIALISED and the probe can never succeed.
-fn tryProbeWindows(port: u16) bool {
+fn httpGetWindows(port: u16, path: []const u8) HttpProbe {
     win_net.ensureWinsockInitialized();
 
     // AF_INET=2, SOCK_STREAM=1, IPPROTO_TCP=6 (same constants
     // http_server.zig and test_helpers.zig use on Windows).
     const sock = win_net.socket(2, 1, 6);
-    if (sock == -1) return false; // INVALID_SOCKET
+    if (sock == -1) return .{}; // INVALID_SOCKET
     defer _ = win_net.closesocket(sock);
 
     // 1-second per-call recv() timeout so a half-dead server can't hang
@@ -216,44 +273,44 @@ fn tryProbeWindows(port: u16) bool {
     // sockaddr_in for 127.0.0.1:port. Layout matches test_helpers.zig's
     // TCP-loopback fixture (family/port/addr/zero); 0x0100007f is
     // 127.0.0.1 as a little-endian u32 (wire bytes 127,0,0,1).
-    var addr: std.c.sockaddr.in = .{
+    const sockaddr = std.c.sockaddr.in{
         .family = std.c.AF.INET,
         .port = std.mem.nativeToBig(u16, port),
         .addr = 0x0100007f,
         .zero = [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0 },
     };
-    if (win_net.connect(sock, std.mem.asBytes(&addr), @sizeOf(std.c.sockaddr.in)) != 0) return false;
+    if (win_net.connect(sock, std.mem.asBytes(&sockaddr), @sizeOf(std.c.sockaddr.in)) != 0) return .{};
 
     // Send a minimal HTTP/1.0 request (server closes after one response
     // — no keep-alive bookkeeping needed).
-    const req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    var req_buf: [256]u8 = undefined;
+    const req = std.fmt.bufPrint(
+        &req_buf,
+        "GET {s} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        .{path},
+    ) catch return .{};
     var sent: usize = 0;
     while (sent < req.len) {
         const n = win_net.send(sock, req[sent..].ptr, @intCast(req.len - sent), 0);
-        if (n <= 0) return false;
+        if (n <= 0) return .{};
         sent += @intCast(n);
     }
 
-    // Read until we can check the status code: "HTTP/1.x N" — the 9th
-    // byte (index 9) is the first status digit; '2' means 2xx.
-    var buf: [512]u8 = undefined;
+    // Read the status line + the start of the body. We stop early once we
+    // have both (see probeResponseComplete) and otherwise at EOF, which
+    // `Connection: close` guarantees.
+    var buf: [max_probe_bytes]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
         const n = win_net.recv(sock, buf[total..].ptr, @intCast(buf.len - total), 0);
-        if (n == -1) return false;
-        if (n == 0) break; // EOF — server closed
+        if (n <= 0) break; // -1 = error/timeout, 0 = EOF — server closed
         total += @intCast(n);
-        if (total >= 12 and
-            std.mem.startsWith(u8, buf[0..total], "HTTP/1.") and
-            buf[9] == '2')
-        {
-            return true;
-        }
+        if (probeResponseComplete(buf[0..total])) break;
     }
-    return false;
+    return parseProbeResponse(buf[0..total]);
 }
 
-fn tryProbePosix(port: u16) bool {
+fn httpGetPosix(port: u16, path: []const u8) HttpProbe {
     // Open a blocking TCP socket. SO_RCVTIMEO gives the recv() call a
     // per-attempt deadline so a half-dead server can't make the probe
     // hang past the next-poll interval.
@@ -262,9 +319,9 @@ fn tryProbePosix(port: u16) bool {
     // `std.os.linux.socket` which compiles on macOS but invokes the
     // Linux syscall number — which doesn't exist on the Darwin kernel,
     // so the process gets killed with SIGSYS on the first probe.
-    // (Windows never reaches this function — see `tryProbe` dispatch.)
+    // (Windows never reaches this function — see `httpGet` dispatch.)
     const fd: std.c.fd_t = std.c.socket(std.c.AF.INET, std.c.SOCK.STREAM, 0);
-    if (fd == -1) return false;
+    if (fd == -1) return .{};
     defer _ = std.c.close(fd);
 
     // 1-second per-call recv() timeout. If the server hasn't responded
@@ -300,39 +357,38 @@ fn tryProbePosix(port: u16) bool {
         @ptrCast(&sockaddr),
         @sizeOf(std.c.sockaddr.in),
     );
-    if (connect_rc == -1) return false;
+    if (connect_rc == -1) return .{};
 
     // Send a minimal HTTP/1.0 request. We use HTTP/1.0 (not 1.1) so
     // the server is allowed to close the connection after the single
     // response — no keep-alive bookkeeping needed.
-    const req = "GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-    const write_rc = std.c.write(fd, req.ptr, req.len);
-    if (write_rc != @as(isize, @intCast(req.len))) return false;
+    var req_buf: [256]u8 = undefined;
+    const req = std.fmt.bufPrint(
+        &req_buf,
+        "GET {s} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        .{path},
+    ) catch return .{};
+    // Loop the write: a short write on the post-spawn verification path
+    // would look like "server down" and get a healthy child killed.
+    var sent: usize = 0;
+    while (sent < req.len) {
+        const n: isize = std.c.write(fd, req[sent..].ptr, req.len - sent);
+        if (n <= 0) return .{};
+        sent += @intCast(n);
+    }
 
-    // Read the response. The status line is "HTTP/1.x NNN ..." — we
-    // only need to read far enough to find the 3-digit status code.
-    // 512 bytes is plenty for any well-formed HTTP/1.0 response from
-    // nalar's health endpoint. recv() returns 0 on EOF, which is
-    // fine — we check the status code as soon as we've seen the
-    // "HTTP/1.x" prefix + first status digit.
-    var buf: [512]u8 = undefined;
+    // Read the status line + the start of the body. We stop early once we
+    // have both (see probeResponseComplete) and otherwise at EOF, which
+    // `Connection: close` guarantees.
+    var buf: [max_probe_bytes]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
         const n_rc = std.c.recvfrom(fd, buf[total..].ptr, buf.len - total, 0, null, null);
-        if (n_rc == -1) return false;
-        const n: usize = @intCast(n_rc);
-        if (n == 0) break; // EOF — server closed
-        total += n;
-        // We have enough to check the status code as soon as we see
-        // "HTTP/1.x N". The 9th byte (index 9) is the first status digit.
-        if (total >= 12 and
-            std.mem.startsWith(u8, buf[0..total], "HTTP/1.") and
-            buf[9] == '2')
-        {
-            return true;
-        }
+        if (n_rc <= 0) break; // -1 = error/timeout, 0 = EOF — server closed
+        total += @intCast(n_rc);
+        if (probeResponseComplete(buf[0..total])) break;
     }
-    return false;
+    return parseProbeResponse(buf[0..total]);
 }
 
 /// Spawn nalar as a child process with `--port <port>` and, optionally,

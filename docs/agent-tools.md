@@ -4,9 +4,7 @@ This document lists the agent tools that the nalar LLM can call.
 
 ## `show_preview`
 
-Show a visual preview to the user in the side panel of the chat, OR
-inline within the chat message bubble (user choice — see "Display
-mode" below).
+Show a visual preview to the user inline within the chat message bubble. HTML previews offer an "Open in new tab" action for full-width viewing.
 
 **Input** (JSON object):
 - `content_type` (required): one of `"markdown"`, `"text"`, `"code"`, `"image"`, `"html"`
@@ -19,9 +17,9 @@ mode" below).
 - Success: `<show_preview><status>shown</status><preview_id>pv_...</preview_id><content_type>markdown</content_type><content_length>NN</content_length></show_preview>`
 - Error: `<show_preview><error>...</error></show_preview>`
 
-**SSE event:** none — uses the standard `llm_full` event with `tool_name='show_preview'`. The frontend's `<PreviewSidePanel>` filters the `messages` array.
+**SSE event:** none — uses the standard `llm_full` event with `tool_name='show_preview'`. The frontend's `<ShowPreview>` card renders the message inline.
 
-**Persistence:** `llm_history` row with `tool_name='show_preview'` and `parameters` containing the full content. The inner `<data>` envelope carries only metadata (status, preview_id, content_type, content_length) — the actual content is delivered via `parameters` to keep storage compact. On reload, `loadChatHistory` returns the row and the side panel re-renders from `messages`.
+**Persistence:** `llm_history` row with `tool_name='show_preview'` and `parameters` containing the full content. The inner `<data>` envelope carries only metadata (status, preview_id, content_type, content_length) — the actual content is delivered via `parameters` to keep storage compact. On reload, `loadChatHistory` returns the row and the inline card re-renders from `messages`.
 
 **Error cases** (return `success=false` to the LLM):
 - Empty or missing `content_type` / `content`
@@ -29,29 +27,8 @@ mode" below).
 - `content` exceeds 1 MB
 - `content_type='code'` with no `language` (or empty `language`)
 
-**Display mode** (user-controlled toggle, 2026-08-06):
-The user chooses where previews render via a 2-button segmented
-control in the side panel header (`Side` / `Inline`). The choice
-persists across reloads via `localStorage['nalar-preview-display-mode']`.
-Default: `inline` — matches the behaviour of every other tool
-output (`read_file`, `bash`, etc.), so previews are visible in
-the chat history without an extra click.
-
-| Mode | Where it renders |
-|---|---|
-| `inline` (default) | Rich content renders directly inside the chat message bubble (in `<ShowPreview>`). |
-| `side` (opt-in) | The right-side `<PreviewSidePanel>` — for users who prefer a dedicated sidebar over inline rendering. |
-
-In inline mode, the side panel auto-hides. A floating "📋 Open
-preview panel" button appears at top-right of the chat area when
-the user wants to switch to side mode. Click → flips mode back
-to `side`.
-
-The LLM does NOT pick the display mode per-call — only the user
-decides. Same UX model as `<DiffView>`'s split/unified toggle.
-
-**Frontend rendering** (`PreviewContentRenderer.vue`, used by both
-`<PreviewSidePanel>` and `<ShowPreview>`):
+**Frontend rendering** (`PreviewContentRenderer.vue`, used by
+`<ShowPreview>`):
 - `markdown` → rendered via `marked()`
 - `text` → preserved whitespace in a `<pre>` block
 - `code` → syntax-highlighted via `<pre><code class="language-X">`

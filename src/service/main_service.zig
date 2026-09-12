@@ -110,6 +110,7 @@ pub fn parseServiceSubcommand(
     if (std.mem.eql(u8, verb, "restart")) {
         var port: u16 = 8081;
         var graceful_timeout_ms: u32 = 5000;
+        var static_dir: ?[]const u8 = null;
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
@@ -121,9 +122,21 @@ pub fn parseServiceSubcommand(
                 i += 1;
                 if (i >= args.len) return error.MissingValue;
                 graceful_timeout_ms = std.fmt.parseInt(u32, args[i], 10) catch return error.InvalidPort;
+            } else if (std.mem.eql(u8, arg, "--static-dir")) {
+                // The usage text has always advertised this flag, but the
+                // parser used to reject it with UnknownSubcommand — so a
+                // restarted daemon silently lost its webapp dir (and
+                // state.json's static_dir stayed null).
+                i += 1;
+                if (i >= args.len) return error.MissingValue;
+                static_dir = args[i];
             } else return error.UnknownSubcommand;
         }
-        return .{ .restart = .{ .port = port, .graceful_timeout_ms = graceful_timeout_ms } };
+        return .{ .restart = .{
+            .port = port,
+            .graceful_timeout_ms = graceful_timeout_ms,
+            .static_dir = static_dir,
+        } };
     }
 
     return error.UnknownSubcommand;

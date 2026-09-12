@@ -125,7 +125,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       expect.objectContaining({
         name: 'My task',
         description: 'The login button is broken',
-        queue_message: 'My task\n\nThe login button is broken',
+        queue_message: 'Task : My task\nDescription: The login button is broken',
         isAutoRetryUntilStop: '0',
         tags: [],
       }),
@@ -146,7 +146,7 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
     expect(view.emitted('selectTask')).toBeUndefined()
   })
 
-  it('queue message is just the title when description is empty', async () => {
+  it('queue message uses the Task/Description format without a Description line when description is empty', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fakeTask = { id: 'task_new', name: 'Just title', task_type: 'standard' } as any
     const fakeSession = { id: 'task_new', name: 'Just title', status: 'send' }
@@ -173,8 +173,8 @@ describe('KanbanView.handleCreateTaskSave — create_and_run', () => {
       'item_1',
       'create_and_run',
       expect.objectContaining({
-         
-        queue_message: 'Just title',
+        // Empty description → no `Description:` line.
+        queue_message: 'Task : Just title',
       }),
     )
   })
