@@ -1341,6 +1341,20 @@ export async function getChatHistory(
 // "1" opts into unattended mode (the workflow re-reads this column
 // on entry and soft-bails past retry_count > 10). Default undefined
 // = today's behavior.
+// Default tools for a new chat session (the "+" New Chat button).
+// Minimal progressive-disclosure set: the agent discovers everything else
+// via search_tool / view_tool / use_tool. `command` for shell,
+// `load_memory` for recall, `list_skills` + `use_skill` for skills.
+export const DEFAULT_CHAT_TOOLS = [
+  'search_tool',
+  'view_tool',
+  'use_tool',
+  'command',
+  'load_memory',
+  'list_skills',
+  'use_skill',
+].join(',')
+
 export async function sendChatMessage(
   sessionId: string,
   message: string,
@@ -1363,7 +1377,7 @@ export async function sendChatMessage(
         body: {
           session_id: sessionId,
           queue_message: message,
-          allowed_tools: 'all',
+          allowed_tools: DEFAULT_CHAT_TOOLS,
           cwd_session: cwdSession,
           image_urls: imageUrlsStr,
           selected_profile_model: selectedProfile || '',
