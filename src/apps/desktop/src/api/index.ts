@@ -1344,13 +1344,14 @@ export async function getChatHistory(
 // Default tools for a new chat session (the "+" New Chat button).
 // Minimal progressive-disclosure set: the agent discovers everything else
 // via search_tool / view_tool / use_tool. `command` for shell,
-// `load_memory` for recall, `list_skills` + `use_skill` for skills.
+// `load_memory` / `save_memory` for recall, `list_skills` + `use_skill` for skills.
 export const DEFAULT_CHAT_TOOLS = [
   'search_tool',
   'view_tool',
   'use_tool',
   'command',
   'load_memory',
+  'save_memory',
   'list_skills',
   'use_skill',
 ].join(',')
