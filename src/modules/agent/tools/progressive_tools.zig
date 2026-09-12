@@ -5,7 +5,7 @@
 //! browse a CATALOG of tools it does not currently have and enable one for
 //! the rest of the session:
 //!
-//!   search_tool  → query the catalog (name/description substring)
+//!   search_tool  → query the catalog (regex over name/description)
 //!   view_tool    → read one entry's full parameter schema (read-only)
 //!   use_tool     → enable it for this session (`session_progressive_tool`)
 //!
@@ -22,10 +22,16 @@ const std = @import("std");
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 
-/// Input for `search_tool`. Both fields optional: no args returns the first
-/// page of the whole catalog.
+/// Input for `search_tool`. Every field optional: no args returns the first
+/// page of the whole catalog. `query` is a regex unless `literal` is set —
+/// the same matching-mode contract as the `search` agent tool. `limit`/`offset`
+/// page the matches so a big catalog (or a broad pattern) cannot flood the
+/// context window.
 pub const SearchToolInput = struct {
     query: ?[]const u8 = null,
+    literal: ?bool = null,
+    limit: ?i64 = null,
+    offset: ?i64 = null,
     server: ?[]const u8 = null,
 };
 
@@ -42,7 +48,11 @@ pub const UseToolInput = struct {
 pub const search_tool_system_prompt =
     \\## Search Tool — Behavior
     \\Some tools are NOT loaded into your context by default. `search_tool` finds them.
-    \\- Query matches tool names and descriptions (case-insensitive). `server` narrows to one MCP server.
+    \\- `query` is a REGEX (case-insensitive, unanchored) matched against tool names and descriptions. A pattern finds tools a phrase cannot: `^mcp_.*_create` (MCP create-tools on any server), `doc|documentation` (either spelling, one call), `\bsearch\b` (the word, not "searcher"). A query with no metacharacters still behaves as a plain substring search.
+    \\- Set `literal: true` when the query is literal text rather than a pattern (e.g. `fn(`, `*.zig`) — otherwise its metacharacters are interpreted.
+    \\- Results are PAGED: `limit` (default 40, max 200) caps how many rows you get back, `total` is the real match count, and `offset` skips matches. A broad query on a big catalog is browsed page by page — the `<hint>` tells you the next offset instead of dumping everything into your context.
+    \\- An invalid pattern is not a failure: it is matched as a literal substring and the result carries `<pattern_warning>` listing the supported syntax. Read it instead of retrying blindly.
+    \\- `server` narrows the search to one MCP server.
     \\- Results show `kind` (builtin/mcp), `server` and whether the entry is already enabled for this session.
     \\- Tools you already have in your tool list are NOT listed — check your own tool definitions first before concluding a capability is missing.
     \\- After finding a candidate, call `view_tool` for its full parameters, then `use_tool` to enable it.
@@ -54,7 +64,7 @@ pub const search_tool_tool = AgentTool{
     .function = .{
         .name = "search_tool",
         .description =
-        \\Search the catalog of tools that are NOT currently enabled for this session (MCP tools and built-in tools this agent does not have). Returns name, kind, server, enabled state and a one-line summary — never the full parameter schema; call view_tool for that. Tools already in your tool list are excluded, so a zero-result search means 'look at your existing tools'. Call this whenever a task needs a capability you do not seem to have.
+        \\Search the catalog of tools that are NOT currently enabled for this session (MCP tools and built-in tools this agent does not have). `query` is a case-insensitive REGEX matched against tool names and descriptions, so one pattern reaches a capability spelled several ways (`^mcp_.*_create`, `doc|documentation`, `\bsearch\b`); pass `literal: true` when the query is literal text. Results are PAGED — `limit` (default 40) caps the rows returned, `total` is the real match count, and `offset` continues the listing — so a big catalog or a broad pattern never floods your context. Returns name, kind, server, enabled state and a one-line summary — never the full parameter schema; call view_tool for that. Tools already in your tool list are excluded, so a zero-result search means 'look at your existing tools'. Call this whenever a task needs a capability you do not seem to have.
         ,
         .parameters = .{
             .type = "object",
@@ -62,7 +72,22 @@ pub const search_tool_tool = AgentTool{
                 .{
                     .name = "query",
                     .type = "string",
-                    .description = "Case-insensitive substring to match against tool name and description. Omit to list the start of the catalog.",
+                    .description = "Regex, matched case-insensitively against every catalog tool's name and description. A pattern finds tools a phrase cannot: '^mcp_.*_create' = MCP create-tools on any server, 'doc|docs|documentation' = one call instead of three, 'memory.*(save|store)' = either concept, '\\bsearch\\b' = the word without matching 'searcher'. Supported: literals, '.', '[...]', '\\d \\w \\s', '\\b', '* + ? {m,n}', '( )', '|', '^', '$'. A metacharacter-free query is still a plain substring search. An invalid pattern is matched as a literal substring instead and the result says so in <pattern_warning>. Omit to list the start of the catalog.",
+                },
+                .{
+                    .name = "literal",
+                    .type = "boolean",
+                    .description = "Treat `query` as a literal string — regex metacharacters like '.', '*', '[', '(' are matched verbatim. Set this for code-shaped queries ('fn(', '*.zig'). Default false (regex mode).",
+                },
+                .{
+                    .name = "limit",
+                    .type = "number",
+                    .description = "Maximum matches in THIS response (default 40, max 200). The catalog can hold the built-ins plus every tool from every connected MCP server, so results are paged to keep the context window small. The result always reports the true `<total>` — raise limit, or page with offset, only when you need more.",
+                },
+                .{
+                    .name = "offset",
+                    .type = "number",
+                    .description = "Skip the first N matches, for paging a broad query (default 0). The previous page's `<hint>` names the exact offset that continues it; a broad pattern plus a small limit is how you browse a big catalog without flooding your context.",
                 },
                 .{
                     .name = "server",
@@ -174,10 +199,10 @@ test "progressive tools: wire names are exactly search_tool/view_tool/use_tool" 
     }
 }
 
-test "search_tool: both params optional; description points at view_tool/use_tool" {
+test "search_tool: every param optional; description points at view_tool/use_tool" {
     try testing.expectEqualStrings("function", search_tool_tool.type);
     try testing.expectEqual(@as(usize, 0), search_tool_tool.function.parameters.required.len);
-    try testing.expectEqual(@as(usize, 2), search_tool_tool.function.parameters.properties.len);
+    try testing.expectEqual(@as(usize, 5), search_tool_tool.function.parameters.properties.len);
     const d = search_tool_tool.function.description;
     try testing.expect(std.mem.indexOf(u8, d, "view_tool") != null);
     try testing.expect(std.mem.indexOf(u8, d, "MCP tools") != null);
@@ -185,6 +210,87 @@ test "search_tool: both params optional; description points at view_tool/use_too
     // description too, not only the system prompt — the description is the
     // signal the model reads when deciding whether to call.
     try testing.expect(std.mem.indexOf(u8, d, "already in your tool list are excluded") != null);
+    // Paging is advertised at the top level too: the catalog can be big, and
+    // the model must not assume one call returns everything.
+    try testing.expect(std.mem.indexOf(u8, d, "PAGED") != null);
+    try testing.expect(std.mem.indexOf(u8, d, "offset") != null);
+}
+
+test "search_tool: limit/offset are documented as the anti-context-flood paging pair" {
+    const props = search_tool_tool.function.parameters.properties;
+    var limit_desc: []const u8 = "";
+    var offset_desc: []const u8 = "";
+    var limit_type: []const u8 = "";
+    var offset_type: []const u8 = "";
+    for (props) |p| {
+        if (std.mem.eql(u8, p.name, "limit")) {
+            limit_desc = p.description;
+            limit_type = p.type;
+        }
+        if (std.mem.eql(u8, p.name, "offset")) {
+            offset_desc = p.description;
+            offset_type = p.type;
+        }
+    }
+    try testing.expectEqualStrings("number", limit_type);
+    try testing.expectEqualStrings("number", offset_type);
+
+    // WHY: the catalog grows with every MCP server, and the result rides in
+    // the context window — so the description must say default + max + total.
+    try testing.expect(std.mem.indexOf(u8, limit_desc, "default 40, max 200") != null);
+    try testing.expect(std.mem.indexOf(u8, limit_desc, "context window") != null);
+    try testing.expect(std.mem.indexOf(u8, limit_desc, "<total>") != null);
+    try testing.expect(std.mem.indexOf(u8, offset_desc, "Skip the first N matches") != null);
+    try testing.expect(std.mem.indexOf(u8, offset_desc, "<hint>") != null);
+}
+
+test "search_tool: `query` documents regex-by-default WITH the reason, plus the literal escape hatch" {
+    const props = search_tool_tool.function.parameters.properties;
+    var query_desc: []const u8 = "";
+    var literal_desc: []const u8 = "";
+    var literal_type: []const u8 = "";
+    for (props) |p| {
+        if (std.mem.eql(u8, p.name, "query")) query_desc = p.description;
+        if (std.mem.eql(u8, p.name, "literal")) {
+            literal_desc = p.description;
+            literal_type = p.type;
+        }
+    }
+
+    // The parameter starts with a plain substring search no more: it says
+    // "Regex" and the escape hatch that goes with it.
+    try testing.expect(std.mem.indexOf(u8, query_desc, "Regex") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "case-insensitively") != null);
+    // WHY a pattern language helps — the concrete "one call instead of N"
+    // examples are the whole point of the description.
+    try testing.expect(std.mem.indexOf(u8, query_desc, "A pattern finds tools a phrase cannot") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "^mcp_.*_create") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "doc|docs|documentation") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "one call instead of three") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "\\bsearch\\b") != null);
+    // The supported subset and the graceful-failure contract.
+    try testing.expect(std.mem.indexOf(u8, query_desc, "Supported:") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "<pattern_warning>") != null);
+    // Backwards compatible for the common case.
+    try testing.expect(std.mem.indexOf(u8, query_desc, "plain substring search") != null);
+    try testing.expect(std.mem.indexOf(u8, query_desc, "Omit to list the start of the catalog") != null);
+
+    // `literal` mirrors the `search` agent tool's flag: same name, same
+    // boolean type, same "matched verbatim" semantics.
+    try testing.expectEqualStrings("boolean", literal_type);
+    try testing.expect(std.mem.indexOf(u8, literal_desc, "literal string") != null);
+    try testing.expect(std.mem.indexOf(u8, literal_desc, "verbatim") != null);
+    try testing.expect(std.mem.indexOf(u8, literal_desc, "Default false (regex mode)") != null);
+}
+
+test "search_tool: the system prompt teaches the pattern syntax, the fallback and paging" {
+    const p = search_tool_system_prompt;
+    try testing.expect(std.mem.indexOf(u8, p, "REGEX") != null);
+    try testing.expect(std.mem.indexOf(u8, p, "literal: true") != null);
+    try testing.expect(std.mem.indexOf(u8, p, "^mcp_.*_create") != null);
+    try testing.expect(std.mem.indexOf(u8, p, "<pattern_warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, p, "PAGED") != null);
+    try testing.expect(std.mem.indexOf(u8, p, "<hint>") != null);
 }
 
 test "view_tool: name is required; description states read-only" {

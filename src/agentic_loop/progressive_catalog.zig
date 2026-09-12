@@ -21,6 +21,7 @@ const nalarcore = @import("nalarcore");
 const agent = nalarcore.agent;
 const AgentTool = agent.AgentTool;
 const tool_eligibility = @import("tool_eligibility.zig");
+const progressive_regex = @import("progressive_regex.zig");
 
 pub const Kind = enum { builtin, mcp };
 
@@ -166,30 +167,108 @@ pub fn buildCatalog(
     return try out.toOwnedSlice(allocator);
 }
 
-/// Case-insensitive substring match over name + description, plus an exact
-/// `server` filter when provided.
+/// How a query was interpreted. Rendered into the result so the model can tell
+/// a real regex hit from a literal fallback without guessing.
+pub const QueryMode = enum {
+    /// No query given: the whole catalog (server filter only).
+    all,
+    /// Compiled and matched as a regex.
+    regex,
+    /// `literal: true` was passed: case-insensitive substring.
+    literal,
+    /// The query did not compile as a regex and was matched as a literal
+    /// substring instead. `QueryResult.warning` says why.
+    regex_fallback,
+};
+
+pub const MatchOptions = struct {
+    /// Mirror of the `search` agent tool's flag: treat the query as opaque
+    /// text instead of a pattern. The escape hatch for code-shaped queries
+    /// (`fn(`, `*.zig`, `.json`).
+    literal: bool = false,
+};
+
+pub const QueryResult = struct {
+    entries: []const Entry,
+    mode: QueryMode,
+    /// Non-empty only when the query was reinterpreted or the match ran out of
+    /// budget. Rendered as `<pattern_warning>`.
+    warning: []const u8 = "",
+};
+
+/// Match the catalog.
+///
+/// `query` is a REGEX by default — case-insensitive, unanchored, ASCII /
+/// byte-oriented (see `progressive_regex.zig` for the supported subset, which
+/// mirrors the `search` agent tool: regex unless `literal` is set). Either way
+/// it is matched against the tool NAME and its DESCRIPTION.
+///
+/// A query that fails to compile is never a hard error: it degrades to the
+/// pre-regex behaviour (case-insensitive substring) and the result carries the
+/// reason, so a stray `(` in a legitimate search costs the agent nothing and
+/// teaches it the syntax in the same turn.
 pub fn matchQuery(
     allocator: std.mem.Allocator,
     entries: []const Entry,
     query: []const u8,
     server: []const u8,
-) ![]const Entry {
+    opts: MatchOptions,
+) !QueryResult {
     var matched: std.ArrayList(Entry) = .empty;
-    for (entries) |entry| {
-        if (server.len > 0 and !std.mem.eql(u8, entry.server, server)) continue;
-        if (query.len == 0) {
+
+    if (query.len == 0) {
+        for (entries) |entry| {
+            if (server.len > 0 and !std.mem.eql(u8, entry.server, server)) continue;
             try matched.append(allocator, entry);
-            continue;
         }
-        if (containsIgnoreCase(entry.name, query)) {
-            try matched.append(allocator, entry);
-            continue;
-        }
-        if (containsIgnoreCase(entry.tool.function.description, query)) {
-            try matched.append(allocator, entry);
+        return .{ .entries = try matched.toOwnedSlice(allocator), .mode = .all };
+    }
+
+    var regex: ?progressive_regex.Regex = null;
+    defer {
+        if (regex) |*re| re.deinit();
+    }
+
+    var mode: QueryMode = .literal;
+    var warning: []const u8 = "";
+
+    if (!opts.literal) {
+        if (progressive_regex.compile(allocator, query, .{})) |re| {
+            regex = re;
+            mode = .regex;
+        } else |err| {
+            mode = .regex_fallback;
+            warning = try std.fmt.allocPrint(
+                allocator,
+                "query is not a valid regex ({s}) — matched as a case-insensitive literal substring instead."
+                    ++ " Supported: literals, '.', '[...]', '\\d \\w \\s \\b', '*', '+', '?', '{{m,n}}' ranges, '( )' groups, '|', '^', '$'."
+                    ++ " Pass literal:true when the query is literal text.",
+                .{@errorName(err)},
+            );
         }
     }
-    return try matched.toOwnedSlice(allocator);
+
+    for (entries) |entry| {
+        if (server.len > 0 and !std.mem.eql(u8, entry.server, server)) continue;
+        const hit = if (regex) |*re|
+            (re.isMatch(entry.name) or re.isMatch(entry.tool.function.description))
+        else
+            (containsIgnoreCase(entry.name, query) or
+                containsIgnoreCase(entry.tool.function.description, query));
+        if (hit) try matched.append(allocator, entry);
+    }
+
+    if (regex) |*re| {
+        if (re.exhausted()) {
+            warning = "the pattern was too expensive to finish matching, so some entries were skipped — anchor it with '^' or pass literal:true";
+        }
+    }
+
+    return .{
+        .entries = try matched.toOwnedSlice(allocator),
+        .mode = mode,
+        .warning = warning,
+    };
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -513,21 +592,183 @@ test "matchQuery: name and description substring, case-insensitive" {
     const mcp_list = try makeToolList(a, &mcp_specs);
     const entries = try buildCatalog(a, reg, NONE_ENABLED, false, mcp_list, &.{}, "agent");
 
-    const by_name = try matchQuery(a, entries, "KANBAN", "");
-    try testing.expectEqual(@as(usize, 1), by_name.len);
-    try testing.expectEqualStrings("kanban_list", by_name[0].name);
+    // A metacharacter-free query is still a plain substring search.
+    const by_name = try matchQuery(a, entries, "KANBAN", "", .{});
+    try testing.expectEqual(@as(usize, 1), by_name.entries.len);
+    try testing.expectEqualStrings("kanban_list", by_name.entries[0].name);
+    try testing.expectEqual(QueryMode.regex, by_name.mode);
+    try testing.expectEqualStrings("", by_name.warning);
 
-    const by_desc = try matchQuery(a, entries, "pattern", "");
-    try testing.expectEqual(@as(usize, 1), by_desc.len);
-    try testing.expectEqualStrings("glob", by_desc[0].name);
+    const by_desc = try matchQuery(a, entries, "pattern", "", .{});
+    try testing.expectEqual(@as(usize, 1), by_desc.entries.len);
+    try testing.expectEqualStrings("glob", by_desc.entries[0].name);
 
     // Server filter.
-    const by_server = try matchQuery(a, entries, "", "ctx");
-    try testing.expectEqual(@as(usize, 1), by_server.len);
-    try testing.expectEqualStrings("mcp_ctx_query-docs", by_server[0].name);
+    const by_server = try matchQuery(a, entries, "", "ctx", .{});
+    try testing.expectEqual(@as(usize, 1), by_server.entries.len);
+    try testing.expectEqualStrings("mcp_ctx_query-docs", by_server.entries[0].name);
+    try testing.expectEqual(QueryMode.all, by_server.mode);
 
-    const no_match = try matchQuery(a, entries, "zzzz", "");
-    try testing.expectEqual(@as(usize, 0), no_match.len);
+    const no_match = try matchQuery(a, entries, "zzzz", "", .{});
+    try testing.expectEqual(@as(usize, 0), no_match.entries.len);
+}
+
+fn matchedNamesJoined(
+    allocator: std.mem.Allocator,
+    result: QueryResult,
+) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (result.entries, 0..) |e, i| {
+        if (i > 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, e.name);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn catalogForRegexTests(allocator: std.mem.Allocator) ![]const Entry {
+    const reg_specs = [_][2][]const u8{
+        .{ "kanban_list", "Enumerate every card on a board." },
+        .{ "kanban_move_task", "Move a card." },
+        .{ "search_history", "Search past conversation history." },
+        .{ "crawl_web", "Searcher index for external pages." },
+        .{ "glob", "Find files by PATTERN." },
+        .{ "read_file", "Read a file with line numbers." },
+    };
+    const mcp_specs = [_][2][]const u8{
+        .{ "mcp_linear_create-issue", "Create an issue in Linear." },
+        .{ "mcp_github_create-pr", "Open a pull request." },
+        .{ "mcp_ctx_query-docs", "Query library documentation." },
+    };
+    const reg = try makeToolList(allocator, &reg_specs);
+    const mcp_list = try makeToolList(allocator, &mcp_specs);
+    return buildCatalog(allocator, reg, NONE_ENABLED, false, mcp_list, &.{}, "agent");
+}
+
+test "matchQuery: a regex query, not just a substring" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const entries = try catalogForRegexTests(a);
+
+    // Anchored prefix + wildcard: every MCP tool from any server that creates.
+    const creates = try matchQuery(a, entries, "^mcp_.*_create", "", .{});
+    try testing.expectEqual(QueryMode.regex, creates.mode);
+    try testing.expectEqualStrings("mcp_linear_create-issue,mcp_github_create-pr", try matchedNamesJoined(a, creates));
+
+    // Alternation catches a capability under several spellings in ONE call —
+    // the whole reason for the feature.
+    const either = try matchQuery(a, entries, "docs|documentation", "", .{});
+    try testing.expectEqualStrings("mcp_ctx_query-docs", try matchedNamesJoined(a, either));
+
+    // Two concepts in one call (the substring equivalent was impossible).
+    const both = try matchQuery(a, entries, "create.*(issue|pr)", "", .{});
+    try testing.expectEqualStrings("mcp_linear_create-issue,mcp_github_create-pr", try matchedNamesJoined(a, both));
+
+    // A word, not a fragment: \bsearch\b removes the "Searcher" noise that the
+    // plain substring keeps — the A/B is the point.
+    const word = try matchQuery(a, entries, "\\bsearch\\b", "", .{});
+    try testing.expectEqualStrings("search_history", try matchedNamesJoined(a, word));
+    const fragment = try matchQuery(a, entries, "search", "", .{});
+    try testing.expectEqualStrings("search_history,crawl_web", try matchedNamesJoined(a, fragment));
+
+    // `_` is a word byte, exactly like rg's -w: \blist\b cannot match the NAME
+    // `kanban_list` (the underscore is a word byte on its left), and no
+    // description in this fixture carries the standalone word either.
+    const underscored = try matchQuery(a, entries, "\\blist\\b", "", .{});
+    try testing.expectEqual(@as(usize, 0), underscored.entries.len);
+    // The unanchored fragment does find it, which is the noise \b removes.
+    const loose = try matchQuery(a, entries, "_list", "", .{});
+    try testing.expectEqualStrings("kanban_list", try matchedNamesJoined(a, loose));
+
+    // '.' is a wildcard, and `$` is strict end-of-text.
+    const any_char = try matchQuery(a, entries, "kanban_.*", "", .{});
+    try testing.expectEqual(@as(usize, 2), any_char.entries.len);
+    const at_end = try matchQuery(a, entries, "_task$", "", .{});
+    try testing.expectEqualStrings("kanban_move_task", try matchedNamesJoined(a, at_end));
+}
+
+test "matchQuery: literal:true disables the pattern language" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const reg_specs = [_][2][]const u8{.{ "add_element", "Add an element (design)." }};
+    const reg = try makeToolList(a, &reg_specs);
+    const entries = try buildCatalog(a, reg, NONE_ENABLED, false, null, &.{}, "agent");
+
+    // The literal text IS in the description…
+    const as_literal = try matchQuery(a, entries, "element (design)", "", .{ .literal = true });
+    try testing.expectEqual(QueryMode.literal, as_literal.mode);
+    try testing.expectEqual(@as(usize, 1), as_literal.entries.len);
+    try testing.expectEqualStrings("", as_literal.warning);
+
+    // …but as a regex the parens are a GROUP, so the pattern means
+    // "element design" and finds nothing. This is exactly why the escape hatch
+    // exists — and why regex-by-default must be documented.
+    const as_regex = try matchQuery(a, entries, "element (design)", "", .{});
+    try testing.expectEqual(QueryMode.regex, as_regex.mode);
+    try testing.expectEqual(@as(usize, 0), as_regex.entries.len);
+
+    // A bare '*' is not a regex at all → fallback; as a literal it matches only
+    // a real asterisk (no tool has one).
+    const star = try matchQuery(a, entries, "*", "", .{ .literal = true });
+    try testing.expectEqual(@as(usize, 0), star.entries.len);
+    const star_regex = try matchQuery(a, entries, "*", "", .{});
+    try testing.expectEqual(QueryMode.regex_fallback, star_regex.mode);
+}
+
+test "matchQuery: an invalid pattern falls back to a literal substring and says why" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const reg_specs = [_][2][]const u8{
+        .{ "kanban_list", "List a kanban board." },
+        .{ "group_elements", "Group elements (design pages)." },
+    };
+    const reg = try makeToolList(a, &reg_specs);
+    const entries = try buildCatalog(a, reg, NONE_ENABLED, false, null, &.{}, "agent");
+
+    // Unbalanced '(' is not a regex — the call still works, as a substring.
+    const result = try matchQuery(a, entries, "elements (design", "", .{});
+    try testing.expectEqual(QueryMode.regex_fallback, result.mode);
+    try testing.expectEqual(@as(usize, 1), result.entries.len);
+    try testing.expectEqualStrings("group_elements", result.entries[0].name);
+    try testing.expect(std.mem.indexOf(u8, result.warning, "not a valid regex") != null);
+    try testing.expect(std.mem.indexOf(u8, result.warning, "literal:true") != null);
+
+    // The warning survives rendering, XML-escaped.
+    const out = try renderSearchResult(a, result.entries, .{
+        .total = result.entries.len,
+        .offset = 0,
+        .limit = DEFAULT_SEARCH_LIMIT,
+        .query = "elements (design",
+        .server = "",
+        .mode = result.mode,
+        .warning = result.warning,
+    });
+    try testing.expect(std.mem.indexOf(u8, out, "<pattern_mode>literal_fallback</pattern_mode>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<pattern_warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "literal:true") != null);
+}
+
+test "matchQuery: regex mode ignores substring artifacts of the old implementation" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const entries = try catalogForRegexTests(a);
+
+    // Case-insensitive by default, like the substring search it replaces.
+    const upper = try matchQuery(a, entries, "KANBAN", "", .{});
+    try testing.expectEqual(@as(usize, 2), upper.entries.len);
+
+    // `$` is strict end-of-text.
+    const end = try matchQuery(a, entries, "history$", "", .{});
+    try testing.expectEqualStrings("search_history", try matchedNamesJoined(a, end));
+
+    // server filter still applies on top of a regex.
+    const scoped = try matchQuery(a, entries, "create", "linear", .{});
+    try testing.expectEqualStrings("mcp_linear_create-issue", try matchedNamesJoined(a, scoped));
 }
 
 test "findByName + didYouMean: fuzzy recovery for a mistyped name" {
@@ -573,6 +814,34 @@ test "findByName + didYouMean: fuzzy recovery for a mistyped name" {
 
 pub const MAX_SEARCH_ROWS: usize = 40;
 pub const SUMMARY_MAX: usize = 120;
+
+/// Default page size (== the pre-paging cap) and the hard ceiling. The catalog
+/// can be large once an MCP server is connected, and the result rides in the
+/// context window, so a single call may never return the whole thing.
+pub const DEFAULT_SEARCH_LIMIT: usize = MAX_SEARCH_ROWS;
+pub const MAX_SEARCH_LIMIT: usize = 200;
+
+/// Everything `renderSearchResult` needs beyond the page rows themselves.
+pub const SearchPageParams = struct {
+    /// Matches before paging, so the model can tell how much it is not seeing.
+    total: usize,
+    /// How many matches were skipped to produce `page`.
+    offset: usize,
+    /// The requested page size. The renderer still caps `page` at this.
+    limit: usize,
+    query: []const u8,
+    server: []const u8,
+    mode: QueryMode,
+    warning: []const u8,
+};
+
+/// The `offset`/`limit` window of `entries`. Paging is applied HERE rather than
+/// in `matchQuery` so the pre-page `total` stays available to the renderer.
+pub fn pageSlice(entries: []const Entry, offset: usize, limit: usize) []const Entry {
+    if (offset >= entries.len or limit == 0) return &.{};
+    const end = if (limit > entries.len - offset) entries.len else offset + limit;
+    return entries[offset..end];
+}
 
 fn xmlEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     for (s) |c| {
@@ -671,44 +940,64 @@ fn appendEntryRow(out: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: 
     try out.appendSlice(allocator, "</summary></tool>");
 }
 
-/// `<search_tool>` result. `total` is the pre-cap match count so the model
-/// can tell how much it is not seeing.
+/// `<search_tool>` result. `page` is the `offset`/`limit` window (the renderer
+/// re-caps it at `params.limit`); `params.total` is the pre-page match count and
+/// `params.offset` the window start, so the model knows exactly how much it has
+/// not seen and which offset continues the listing. `mode` + `warning` report
+/// how the query was interpreted, so a literal fallback is never silent.
 pub fn renderSearchResult(
     allocator: std.mem.Allocator,
-    matches: []const Entry,
-    total: usize,
-    query: []const u8,
-    server: []const u8,
+    page: []const Entry,
+    params: SearchPageParams,
 ) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     try out.appendSlice(allocator, "<search_tool><query>");
-    try xmlEscapeInto(&out, allocator, query);
-    try out.appendSlice(allocator, "</query>");
-    if (server.len > 0) {
+    try xmlEscapeInto(&out, allocator, params.query);
+    try out.appendSlice(allocator, "</query><pattern_mode>");
+    try out.appendSlice(allocator, switch (params.mode) {
+        .all => "all",
+        .regex => "regex",
+        .literal => "literal",
+        .regex_fallback => "literal_fallback",
+    });
+    try out.appendSlice(allocator, "</pattern_mode>");
+    if (params.warning.len > 0) {
+        try out.appendSlice(allocator, "<pattern_warning>");
+        try xmlEscapeInto(&out, allocator, params.warning);
+        try out.appendSlice(allocator, "</pattern_warning>");
+    }
+    if (params.server.len > 0) {
         try out.appendSlice(allocator, "<server>");
-        try xmlEscapeInto(&out, allocator, server);
+        try xmlEscapeInto(&out, allocator, params.server);
         try out.appendSlice(allocator, "</server>");
     }
     {
-        const n = try std.fmt.allocPrint(allocator, "<count>{d}</count><total>{d}</total><tools>", .{
-            @min(matches.len, MAX_SEARCH_ROWS),
-            total,
-        });
+        const n = try std.fmt.allocPrint(
+            allocator,
+            "<count>{d}</count><total>{d}</total><offset>{d}</offset><limit>{d}</limit><tools>",
+            .{
+                @min(page.len, params.limit),
+                params.total,
+                params.offset,
+                params.limit,
+            },
+        );
         defer allocator.free(n);
         try out.appendSlice(allocator, n);
     }
 
-    const shown = @min(matches.len, MAX_SEARCH_ROWS);
-    for (matches[0..shown]) |entry| try appendEntryRow(&out, allocator, entry);
+    const shown = @min(page.len, params.limit);
+    for (page[0..shown]) |entry| try appendEntryRow(&out, allocator, entry);
     try out.appendSlice(allocator, "</tools>");
 
-    if (total > shown) {
+    if (params.offset + shown < params.total) {
+        const next = params.offset + shown;
         const n = try std.fmt.allocPrint(
             allocator,
-            "<truncated/><hint>Showing {d} of {d} — narrow with query.</hint>",
-            .{ shown, total },
+            "<truncated/><hint>Showing {d}-{d} of {d} matches — call again with offset={d} (same query) for the next page, or narrow the query.</hint>",
+            .{ params.offset, next, params.total, next },
         );
         defer allocator.free(n);
         try out.appendSlice(allocator, n);
@@ -862,10 +1151,23 @@ test "renderSearchResult: rows, chips and the not-listed hint" {
     const mcp_list = try makeToolList(a, &mcp_specs);
     const entries = try buildCatalog(a, reg, NONE_ENABLED, false, mcp_list, &.{}, "agent");
 
-    const matches = try matchQuery(a, entries, "", "");
-    const out = try renderSearchResult(a, matches, matches.len, "", "");
+    const q = try matchQuery(a, entries, "", "", .{});
+    const out = try renderSearchResult(a, q.entries, .{
+        .total = q.entries.len,
+        .offset = 0,
+        .limit = DEFAULT_SEARCH_LIMIT,
+        .query = "",
+        .server = "",
+        .mode = q.mode,
+        .warning = q.warning,
+    });
 
     try testing.expect(std.mem.indexOf(u8, out, "<count>2</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "<total>2</total>") != null);
+    // The page window is always explicit, so a paging model can trust it.
+    try testing.expect(std.mem.indexOf(u8, out, "<offset>0</offset>") != null);
+    const expect_limit = try std.fmt.allocPrint(a, "<limit>{d}</limit>", .{DEFAULT_SEARCH_LIMIT});
+    try testing.expect(std.mem.indexOf(u8, out, expect_limit) != null);
     try testing.expect(std.mem.indexOf(u8, out, "<name>kanban_list</name>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<kind>builtin</kind>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<kind>mcp</kind>") != null);
@@ -880,7 +1182,15 @@ test "renderSearchResult: empty match count is not an error" {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const out = try renderSearchResult(a, &.{}, 0, "memory", "");
+    const out = try renderSearchResult(a, &.{}, .{
+        .total = 0,
+        .offset = 0,
+        .limit = DEFAULT_SEARCH_LIMIT,
+        .query = "memory",
+        .server = "",
+        .mode = .all,
+        .warning = "",
+    });
     try testing.expect(std.mem.indexOf(u8, out, "<count>0</count>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<tools></tools>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
@@ -902,13 +1212,124 @@ test "renderSearchResult: caps rows and emits <truncated/> with the real total" 
     const entries = try buildCatalog(a, tools_list, NONE_ENABLED, false, null, &.{}, "agent");
     try testing.expectEqual(MAX_SEARCH_ROWS + 2, entries.len);
 
-    const matches = try matchQuery(a, entries, "", "");
-    const out = try renderSearchResult(a, matches, matches.len, "", "");
+    const q = try matchQuery(a, entries, "", "", .{});
+    const out = try renderSearchResult(a, pageSlice(q.entries, 0, DEFAULT_SEARCH_LIMIT), .{
+        .total = q.entries.len,
+        .offset = 0,
+        .limit = DEFAULT_SEARCH_LIMIT,
+        .query = "",
+        .server = "",
+        .mode = q.mode,
+        .warning = q.warning,
+    });
     try testing.expect(std.mem.indexOf(u8, out, "<truncated/>") != null);
     const expect_count = try std.fmt.allocPrint(a, "<count>{d}</count>", .{MAX_SEARCH_ROWS});
     try testing.expect(std.mem.indexOf(u8, out, expect_count) != null);
     const expect_total = try std.fmt.allocPrint(a, "<total>{d}</total>", .{MAX_SEARCH_ROWS + 2});
     try testing.expect(std.mem.indexOf(u8, out, expect_total) != null);
+    // The hint must name the offset that continues the listing, not merely say
+    // "narrow it" — a big catalog is browsed page by page.
+    const expect_next = try std.fmt.allocPrint(a, "offset={d}", .{MAX_SEARCH_ROWS});
+    try testing.expect(std.mem.indexOf(u8, out, expect_next) != null);
+}
+
+test "pageSlice: window arithmetic, including past-the-end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var specs: [5][2][]const u8 = undefined;
+    var names: [5][]const u8 = undefined;
+    for (0..5) |i| {
+        names[i] = try std.fmt.allocPrint(a, "tool_{d}", .{i});
+        specs[i] = .{ names[i], "desc" };
+    }
+    const tools_list = try makeToolList(a, &specs);
+    const entries = try buildCatalog(a, tools_list, NONE_ENABLED, false, null, &.{}, "agent");
+    try testing.expectEqual(@as(usize, 5), entries.len);
+
+    try testing.expectEqualStrings("tool_0,tool_1", try matchedNamesJoined(a, .{
+        .entries = pageSlice(entries, 0, 2),
+        .mode = .all,
+    }));
+    try testing.expectEqualStrings("tool_2,tool_3", try matchedNamesJoined(a, .{
+        .entries = pageSlice(entries, 2, 2),
+        .mode = .all,
+    }));
+    // limit past the end → short page, never out of range.
+    try testing.expectEqualStrings("tool_4", try matchedNamesJoined(a, .{
+        .entries = pageSlice(entries, 4, 40),
+        .mode = .all,
+    }));
+    // offset == len → empty page (the caller still reports the real total).
+    try testing.expectEqual(@as(usize, 0), pageSlice(entries, 5, 40).len);
+    try testing.expectEqual(@as(usize, 0), pageSlice(entries, 99, 40).len);
+    // limit == 0 → empty, never "everything".
+    try testing.expectEqual(@as(usize, 0), pageSlice(entries, 0, 0).len);
+}
+
+test "renderSearchResult: paging walks the matches and ends without a truncation hint" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var specs: [5][2][]const u8 = undefined;
+    var names: [5][]const u8 = undefined;
+    for (0..5) |i| {
+        names[i] = try std.fmt.allocPrint(a, "tool_{d}", .{i});
+        specs[i] = .{ names[i], "desc" };
+    }
+    const tools_list = try makeToolList(a, &specs);
+    const entries = try buildCatalog(a, tools_list, NONE_ENABLED, false, null, &.{}, "agent");
+
+    // Page 1 of 2: two rows, real total, and the next offset in the hint.
+    const p1 = try renderSearchResult(a, pageSlice(entries, 0, 2), .{
+        .total = entries.len,
+        .offset = 0,
+        .limit = 2,
+        .query = "",
+        .server = "",
+        .mode = .all,
+        .warning = "",
+    });
+    try testing.expect(std.mem.indexOf(u8, p1, "<count>2</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, p1, "<total>5</total>") != null);
+    try testing.expect(std.mem.indexOf(u8, p1, "<offset>0</offset><limit>2</limit>") != null);
+    try testing.expect(std.mem.indexOf(u8, p1, "<name>tool_0</name>") != null);
+    try testing.expect(std.mem.indexOf(u8, p1, "<name>tool_2</name>") == null);
+    try testing.expect(std.mem.indexOf(u8, p1, "offset=2") != null);
+
+    // Page 3 (last): no <truncated/>, and the enable-it hint is back.
+    const p3 = try renderSearchResult(a, pageSlice(entries, 4, 2), .{
+        .total = entries.len,
+        .offset = 4,
+        .limit = 2,
+        .query = "",
+        .server = "",
+        .mode = .all,
+        .warning = "",
+    });
+    try testing.expect(std.mem.indexOf(u8, p3, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, p3, "<total>5</total>") != null);
+    try testing.expect(std.mem.indexOf(u8, p3, "<name>tool_4</name>") != null);
+    try testing.expect(std.mem.indexOf(u8, p3, "<truncated/>") == null);
+    try testing.expect(std.mem.indexOf(u8, p3, "NOT listed here") != null);
+
+    // An offset past the end is an empty page that still reports the total,
+    // so the model can recover instead of guessing.
+    const past = try renderSearchResult(a, pageSlice(entries, 7, 2), .{
+        .total = entries.len,
+        .offset = 7,
+        .limit = 2,
+        .query = "",
+        .server = "",
+        .mode = .all,
+        .warning = "",
+    });
+    try testing.expect(std.mem.indexOf(u8, past, "<count>0</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, past, "<total>5</total>") != null);
+    try testing.expect(std.mem.indexOf(u8, past, "<tools></tools>") != null);
+    try testing.expect(std.mem.indexOf(u8, past, "<error>") == null);
 }
 
 test "renderViewTool: full schema in CDATA, hint to enable" {
