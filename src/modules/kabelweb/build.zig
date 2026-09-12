@@ -600,15 +600,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Portable helpers (PosixTimespec / clock_gettime) — used by
-    // client/cpu_usage_test.zig. Declared as a package dependency in
-    // this build.zig.zon; mirrors how the root build.zig wires `helpers`.
-    const helpers_dep = b.dependency("helpers", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    mod.addImport("helpers", helpers_dep.module("helpers"));
-
     // Test module: the full entry (src/full_test.zig) — fast suites via
     // src/root.zig PLUS the 60 s SSE soaks. The repo-root gate runs the
     // fast set only (via the kabelweb lib module); run this package's
@@ -618,7 +609,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    test_mod.addImport("helpers", helpers_dep.module("helpers"));
     test_mod.linkSystemLibrary("c", .{});
     test_mod.link_libc = true;
 

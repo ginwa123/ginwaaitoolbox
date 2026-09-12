@@ -43,7 +43,15 @@ const testing = std.testing;
 const builtin = @import("builtin");
 const custom_http_client = @import("root.zig");
 const gserverz = @import("../server/http_server.zig");
-const helpers = @import("helpers");
+
+// Local libc `clock_gettime` shim (this is a Linux-only test) — keeps
+// kabelweb dependency-free instead of pulling the helpers package.
+const Clong = if (@bitSizeOf(usize) == 64 and builtin.os.tag != .windows) i64 else i32;
+const PosixTimespec = extern struct {
+    sec: Clong,
+    nsec: Clong,
+};
+extern "c" fn clock_gettime(clk_id: c_int, tp: *PosixTimespec) c_int;
 
 const HttpContext = gserverz.HttpContext;
 const HttpRequest = gserverz.HttpRequest;
@@ -86,10 +94,10 @@ const ProcessCpuTime = struct {
     nsec: i64,
 
     fn now() ProcessCpuTime {
-        var ts: helpers.PosixTimespec = undefined;
+        var ts: PosixTimespec = undefined;
         // CLOCK_PROCESS_CPUTIME_ID = 12 on Linux x86_64.
         // Linux-only test (SkipZigTest gate below); no rusage fallback needed.
-        const rc = helpers.clock_gettime(12, &ts);
+        const rc = clock_gettime(12, &ts);
         if (rc != 0) return .{ .sec = 0, .nsec = 0 };
         return .{ .sec = ts.sec, .nsec = ts.nsec };
     }
