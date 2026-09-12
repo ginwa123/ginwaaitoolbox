@@ -184,7 +184,7 @@ const handleToggle = (next: boolean) => {
           </div>
           <pre
             v-if="view.prettyParameters"
-            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
+            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
             data-testid="progressive-tool-parameters"
           >{{ view.prettyParameters }}</pre>
           <div v-if="view.note" class="text-[var(--semantic-text-muted)]">{{ view.note }}</div>
@@ -219,7 +219,7 @@ const handleToggle = (next: boolean) => {
           </div>
           <pre
             v-if="use.prettyParameters"
-            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
+            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
             data-testid="progressive-tool-parameters"
           >{{ use.prettyParameters }}</pre>
           <div v-if="use.note" class="text-[var(--semantic-text-muted)]">{{ use.note }}</div>
