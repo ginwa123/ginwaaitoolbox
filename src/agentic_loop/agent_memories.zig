@@ -1,7 +1,13 @@
 //! Storage layer for the `save_memory` + `load_memory` agent tools.
 //!
+//! Append-only: every `saveMemory` call inserts a NEW row with a fresh
+//! `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. There is no
+//! update and no delete — a correction is just another row, and FTS5
+//! ranking surfaces the most relevant one. (Per user decision 2026-09-12:
+//! "memory is always add, no need edit or delete".)
+//!
 //! Three public functions:
-//!   - `saveMemory` — UPSERT a memory row (insert-or-replace by `id`)
+//!   - `saveMemory` — insert a new memory row (always a fresh id)
 //!   - `loadMemoriesByFts` — FTS5 phrase search with snippet + tags filter
 //!   - `getMemoryById` — lookup a single row by id (returns null if missing)
 //!
@@ -66,7 +72,8 @@ pub const MemoryHit = struct {
     }
 };
 
-/// Arguments for `saveMemory`.
+/// Arguments for `saveMemory`. Append-only: the caller supplies content
+/// + tags; the id and both timestamps are always generated fresh.
 pub const SaveMemoryArgs = struct {
     /// The note body. 1 KiB – 1 MiB. Empty string → `error.InvalidContent`.
     content: []const u8,
@@ -74,9 +81,6 @@ pub const SaveMemoryArgs = struct {
     /// `||`-joined (matches the project's `tags` / `image_urls` convention
     /// — see Migration 067 / 069).
     tags: []const []const u8,
-    /// Caller-provided id slug for UPSERT. Empty string → auto-generate
-    /// `mem_<16-hex>`.
-    id: []const u8,
 };
 
 /// Hard cap on the size of a single memory. 1 MiB is well above any
@@ -84,13 +88,13 @@ pub const SaveMemoryArgs = struct {
 /// prevents a runaway agent from filling the DB.
 pub const MAX_CONTENT_BYTES: usize = 1 << 20; // 1 MiB
 
-/// Save a memory. UPSERT by `id` — if a row with the same id exists,
-/// its content + tags are replaced and `updated_at` is bumped. If `id`
-/// is empty, a fresh `mem_<16-hex>` id is generated.
+/// Save a memory. ALWAYS inserts a new row with a fresh `mem_<16-hex>`
+/// id and `CURRENT_TIMESTAMP` for both `created_at` and `updated_at`.
+/// There is no update path — saving the same content twice yields two
+/// rows (a correction supersedes by recency/rank, it never overwrites).
 ///
-/// Returns the persisted row (with the auto-generated id if `id` was
-/// empty). Caller owns the row's strings and must free with
-/// `freeMemoryRow`.
+/// Returns the persisted row (with the auto-generated id). Caller owns
+/// the row's strings and must free with `freeMemoryRow`.
 ///
 /// Errors:
 ///   - `error.InvalidContent` — content is empty
@@ -104,38 +108,40 @@ pub fn saveMemory(
     if (args.content.len == 0) return error.InvalidContent;
     if (args.content.len > MAX_CONTENT_BYTES) return error.ContentTooLarge;
 
-    // Generate id if caller didn't provide one.
-    const id: []const u8 = if (args.id.len == 0)
-        try generateMemoryId(allocator)
-    else
-        args.id;
+    // Every save mints a fresh id — append-only, never overwrite.
+    const id = try generateMemoryId(allocator);
+    defer allocator.free(id);
 
-    // Build the `||`-joined tags string. Empty tags array → empty string
-    // (the canonical "no tags" sentinel — matches Migration 067/069).
-    const tags_str = if (args.tags.len == 0)
-        try allocator.dupe(u8, "")
-    else
-        try joinTags(allocator, args.tags);
-    defer if (args.tags.len > 0) allocator.free(tags_str);
+    // Plain INSERT. The `agent_memories_ai` trigger keeps the FTS5 index
+    // in sync. (No OR REPLACE: a primary-key collision is practically
+    // impossible with 64-bit random ids, and silently replacing a row
+    // would violate append-only.)
+    //
+    // When there are no tags the `tags` column is OMITTED so the schema
+    // `DEFAULT ''` applies. Binding an empty slice would land as SQL
+    // NULL (`SqliteBackend.exec` binds zero-length slices via
+    // `sqlite3_bind_null`) and violate the `NOT NULL` constraint.
+    if (args.tags.len == 0) {
+        const insert_sql =
+            \\INSERT INTO agent_memories (id, content, created_at, updated_at)
+            \\VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ;
+        var binds: [2][]const u8 = .{ id, args.content };
+        try db.exec(allocator, insert_sql, &binds);
+    } else {
+        // Build the `||`-joined tags string (matches Migration 067/069).
+        const tags_str = try joinTags(allocator, args.tags);
+        defer allocator.free(tags_str);
 
-    // UPSERT via SQLite's INSERT OR REPLACE. The DELETE+INSERT fires
-    // both the `agent_memories_ad` and `agent_memories_ai` triggers,
-    // which keeps the FTS5 index in sync. (Plain INSERT with a primary
-    // key collision would crash; REPLACE handles the collision.)
-    const insert_sql =
-        \\INSERT OR REPLACE INTO agent_memories (id, content, tags, created_at, updated_at)
-        \\VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    ;
-    var binds: [3][]const u8 = .{ id, args.content, tags_str };
-    try db.exec(allocator, insert_sql, &binds);
+        const insert_sql =
+            \\INSERT INTO agent_memories (id, content, tags, created_at, updated_at)
+            \\VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ;
+        var binds: [3][]const u8 = .{ id, args.content, tags_str };
+        try db.exec(allocator, insert_sql, &binds);
+    }
 
     // Read the row back so the caller sees the canonical timestamps.
-    // If `id` was caller-provided, we MUST NOT free it (it's a borrow
-    // of the caller's slice). If we generated it, we MUST free it.
-    var generated_id: ?[]u8 = null;
-    if (args.id.len == 0) generated_id = @constCast(id);
-    defer if (generated_id) |g| allocator.free(g);
-
     const row = (try getMemoryById(allocator, db, id)) orelse return error.RowNotFoundAfterInsert;
     return row;
 }
@@ -164,26 +170,6 @@ pub fn getMemoryById(
         .created_at = try allocator.dupe(u8, row.values[3]),
         .updated_at = try allocator.dupe(u8, row.values[4]),
     };
-}
-
-/// Delete a memory by id. Returns `true` when a row was removed,
-/// `false` when no row matched (idempotent — callers treat both as
-/// success). The `agent_memories_ad` AFTER DELETE trigger (Migration
-/// 070) removes the matching FTS5 index entry automatically.
-///
-/// Errors:
-///   - `error.InvalidId` — id is empty
-///   - DB errors propagate verbatim
-pub fn deleteMemory(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    id: []const u8,
-) !bool {
-    if (id.len == 0) return error.InvalidId;
-
-    const sql = "DELETE FROM agent_memories WHERE id = ?";
-    try db.exec(allocator, sql, &.{id});
-    return db.changes() > 0;
 }
 
 /// Free a single MemoryRow's owned strings.
@@ -545,7 +531,6 @@ test "saveMemory: inserts a new row with auto-generated mem_<16-hex> id" {
     const row = try saveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred LLM is claude-sonnet-4-5",
         .tags = &.{"preferences", "user"},
-        .id = "",
     });
     defer freeMemoryRow(alloc, row);
 
@@ -570,7 +555,7 @@ test "saveMemory: inserts a new row with auto-generated mem_<16-hex> id" {
     try testing.expectEqualStrings("preferences||user", db_row.values[1]);
 }
 
-test "saveMemory: UPSERTs when caller passes an existing id" {
+test "saveMemory: appends a new row on every call (never overwrites)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -580,44 +565,31 @@ test "saveMemory: UPSERTs when caller passes an existing id" {
     const first = try saveMemory(alloc, &ctx.db, .{
         .content = "original content",
         .tags = &.{"preferences"},
-        .id = "user-preferred-model",
     });
     defer freeMemoryRow(alloc, first);
 
-    // Tiny sleep so the UPDATE bumps `updated_at` (DATETIME resolution is 1s).
-    // std.c.nanosleep — std.Thread.sleep doesn't exist in Zig 0.16.
-    // Use a portable helper because std.c.timespec is broken on Windows
-    // (Zig 0.16 — see test_sleep.zig for details).
-    const test_sleep = @import("test_sleep.zig");
-    test_sleep.sleep(1, 0);
-
-    // UPSERT with the same id.
+    // Saving the same content again appends a SECOND row (append-only:
+    // corrections supersede by recency, they never replace in place).
     const second = try saveMemory(alloc, &ctx.db, .{
-        .content = "updated content — user switched to claude-opus-4-1",
-        .tags = &.{"preferences", "updated"},
-        .id = "user-preferred-model",
+        .content = "original content",
+        .tags = &.{"preferences"},
     });
     defer freeMemoryRow(alloc, second);
 
-    // Same id (UPSERT replaces the row in place).
-    try testing.expectEqualStrings("user-preferred-model", second.id);
-    // Content replaced.
-    try testing.expectEqualStrings("updated content — user switched to claude-opus-4-1", second.content);
-    // Tags replaced (||-joined).
-    try testing.expectEqualStrings("preferences||updated", second.tags);
-    // updated_at is bumped (>= first.updated_at — DATETIME second resolution
-    // means the bump may be 0 seconds, but it must be >= not <).
-    try testing.expect(std.mem.lessThan(u8, first.updated_at, second.updated_at) or
-        std.mem.eql(u8, first.updated_at, second.updated_at));
+    // Different auto-generated ids.
+    try testing.expect(!std.mem.eql(u8, first.id, second.id));
+    try testing.expect(std.mem.startsWith(u8, second.id, "mem_"));
+    // Same content stored twice.
+    try testing.expectEqualStrings(first.content, second.content);
 
-    // Verify only ONE row in the DB (UPSERT, not INSERT-OR-APPEND).
+    // Verify TWO rows in the DB (append, not UPSERT).
     var q = try ctx.db.query(alloc,
-        "SELECT COUNT(*) FROM agent_memories WHERE id = ?",
-        &.{"user-preferred-model"});
+        "SELECT COUNT(*) FROM agent_memories WHERE content = ?",
+        &.{"original content"});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
-    try testing.expectEqualStrings("1", row.values[0]);
+    try testing.expectEqualStrings("2", row.values[0]);
 }
 
 test "saveMemory: empty content returns InvalidContent" {
@@ -629,7 +601,6 @@ test "saveMemory: empty content returns InvalidContent" {
     const result = saveMemory(alloc, &ctx.db, .{
         .content = "",
         .tags = &.{},
-        .id = "should-not-be-inserted",
     });
     try testing.expectError(error.InvalidContent, result);
 }
@@ -648,7 +619,6 @@ test "saveMemory: content > 1 MiB returns ContentTooLarge" {
     const result = saveMemory(alloc, &ctx.db, .{
         .content = oversize,
         .tags = &.{},
-        .id = "oversize-memory",
     });
     try testing.expectError(error.ContentTooLarge, result);
 }
@@ -663,19 +633,16 @@ test "loadMemoriesByFts: returns ranked hits with snippets" {
     const row1 = try saveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred model is claude-sonnet for coding tasks",
         .tags = &.{"preferences"},
-        .id = "mem-coding",
     });
     defer freeMemoryRow(alloc, row1);
     const row2 = try saveMemory(alloc, &ctx.db, .{
         .content = "the project's database is SQLite with FTS5 enabled",
         .tags = &.{"project"},
-        .id = "mem-database",
     });
     defer freeMemoryRow(alloc, row2);
     const row3 = try saveMemory(alloc, &ctx.db, .{
         .content = "claude-sonnet is also the user's preferred writing model",
         .tags = &.{"preferences"},
-        .id = "mem-writing",
     });
     defer freeMemoryRow(alloc, row3);
 
@@ -715,24 +682,21 @@ test "loadMemoriesByFts: AND-filters by tags" {
     const row1 = try saveMemory(alloc, &ctx.db, .{
         .content = "memory one with model preference",
         .tags = &.{"preferences", "user"},
-        .id = "mem-one",
     });
     defer freeMemoryRow(alloc, row1);
     const row2 = try saveMemory(alloc, &ctx.db, .{
         .content = "memory two with project context",
         .tags = &.{"preferences", "project"},
-        .id = "mem-two",
     });
     defer freeMemoryRow(alloc, row2);
     const row3 = try saveMemory(alloc, &ctx.db, .{
         .content = "memory three with project context",
         .tags = &.{"project"},
-        .id = "mem-three",
     });
     defer freeMemoryRow(alloc, row3);
 
     // Search for "context" + filter by tags=["project"] → should return
-    // mem-two + mem-three (both have "project" tag) but NOT mem-one
+    // row2 + row3 (both have "project" tag) but NOT row1
     // (only has "preferences" + "user").
     const hits = try loadMemoriesByFts(alloc, &ctx.db, .{
         .query = "context",
@@ -751,7 +715,7 @@ test "loadMemoriesByFts: AND-filters by tags" {
     try testing.expectEqual(@as(usize, 2), hits.len);
     try testing.expectEqual(@as(u32, 2), hits[0].total_count);
 
-    // AND filter — tags=["preferences", "project"] → only mem-two has BOTH.
+    // AND filter — tags=["preferences", "project"] → only row2 has BOTH.
     const hits2 = try loadMemoriesByFts(alloc, &ctx.db, .{
         .query = "context",
         .tags = &.{ "preferences", "project" },
@@ -767,7 +731,7 @@ test "loadMemoriesByFts: AND-filters by tags" {
     }
 
     try testing.expectEqual(@as(usize, 1), hits2.len);
-    try testing.expectEqualStrings("mem-two", hits2[0].id);
+    try testing.expectEqualStrings(row2.id, hits2[0].id);
 }
 
 test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
@@ -776,17 +740,14 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    // Insert 15 memories, each with a unique ID and a common word "match".
+    // Insert 15 memories, each with a common word "match" (ids auto-generated).
     var i: u32 = 0;
     while (i < 15) : (i += 1) {
-        const id = std.fmt.allocPrint(alloc, "mem-page-{d}", .{i}) catch unreachable;
-        defer alloc.free(id);
         const content = std.fmt.allocPrint(alloc, "match row number {d}", .{i}) catch unreachable;
         defer alloc.free(content);
         const row = try saveMemory(alloc, &ctx.db, .{
             .content = content,
             .tags = &.{},
-            .id = id,
         });
         freeMemoryRow(alloc, row);
     }
@@ -860,110 +821,17 @@ test "getMemoryById: returns the row when id exists, null otherwise" {
     const row1 = try saveMemory(alloc, &ctx.db, .{
         .content = "the test memory content",
         .tags = &.{"test"},
-        .id = "test-id-exists",
     });
     defer freeMemoryRow(alloc, row1);
 
     // Existing id → returns the row.
-    const found = (try getMemoryById(alloc, &ctx.db, "test-id-exists")) orelse return error.GetReturnedNull;
+    const found = (try getMemoryById(alloc, &ctx.db, row1.id)) orelse return error.GetReturnedNull;
     defer freeMemoryRow(alloc, found);
-    try testing.expectEqualStrings("test-id-exists", found.id);
+    try testing.expectEqualStrings(row1.id, found.id);
     try testing.expectEqualStrings("the test memory content", found.content);
     try testing.expectEqualStrings("test", found.tags);
 
     // Missing id → returns null (not error).
     const missing = try getMemoryById(alloc, &ctx.db, "no-such-id");
     try testing.expect(missing == null);
-}
-
-// ─── deleteMemory tests (2026-08-24-delete-memory-agent-tool) ────────────
-
-test "deleteMemory: removes an existing row and returns true" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const row = try saveMemory(alloc, &ctx.db, .{
-        .content = "obsolete note that must be deletable",
-        .tags = &.{"cleanup"},
-        .id = "del-me",
-    });
-    defer freeMemoryRow(alloc, row);
-
-    const deleted = try deleteMemory(alloc, &ctx.db, "del-me");
-    try testing.expect(deleted);
-
-    // The row is gone from the table.
-    const gone = try getMemoryById(alloc, &ctx.db, "del-me");
-    try testing.expect(gone == null);
-}
-
-test "deleteMemory: returns false for unknown id (idempotent)" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    // No error raised — callers treat false as "nothing to delete".
-    const deleted = try deleteMemory(alloc, &ctx.db, "never-existed");
-    try testing.expect(!deleted);
-}
-
-test "deleteMemory: empty id returns InvalidId" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    try testing.expectError(error.InvalidId, deleteMemory(alloc, &ctx.db, ""));
-}
-
-test "deleteMemory: FTS5 index no longer finds deleted content" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const row = try saveMemory(alloc, &ctx.db, .{
-        .content = "unique-delete-marker-xyz searchable phrase",
-        .tags = &.{"fts"},
-        .id = "fts-victim",
-    });
-    defer freeMemoryRow(alloc, row);
-
-    // Sanity: 1 hit before the delete.
-    const before = try loadMemoriesByFts(alloc, &ctx.db, .{
-        .query = "unique-delete-marker-xyz",
-        .tags = &.{},
-        .limit = 10,
-        .offset = 0,
-    });
-    defer {
-        for (before) |h| {
-            var copy = h;
-            copy.deinit(alloc);
-        }
-        alloc.free(before);
-    }
-    try testing.expectEqual(@as(usize, 1), before.len);
-
-    _ = try deleteMemory(alloc, &ctx.db, "fts-victim");
-
-    // After the delete the FTS5 index must return 0 hits — this proves
-    // Migration 070's `agent_memories_ad` AFTER DELETE trigger fired.
-    const after = try loadMemoriesByFts(alloc, &ctx.db, .{
-        .query = "unique-delete-marker-xyz",
-        .tags = &.{},
-        .limit = 10,
-        .offset = 0,
-    });
-    defer {
-        for (after) |h| {
-            var copy = h;
-            copy.deinit(alloc);
-        }
-        alloc.free(after);
-    }
-    try testing.expectEqual(@as(usize, 0), after.len);
 }

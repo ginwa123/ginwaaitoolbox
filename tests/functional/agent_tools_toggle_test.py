@@ -156,7 +156,6 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
 EXPECTED_DEFAULTS = [
     "add_skill",
     "command",
-    "delete_memory",
     "edit_skill",
     "get_plan",
     "glob",

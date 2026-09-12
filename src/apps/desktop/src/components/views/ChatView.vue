@@ -52,7 +52,6 @@ import KanbanList from '../tool_outputs/KanbanList.vue'
 import ListDirectory from '../tool_outputs/ListDirectory.vue'
 import SaveMemory from '../tool_outputs/SaveMemory.vue'
 import LoadMemory from '../tool_outputs/LoadMemory.vue'
-import DeleteMemory from '../tool_outputs/DeleteMemory.vue'
 import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
 import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
@@ -3302,12 +3301,6 @@ const compactSession = async () => {
                           />
                           <LoadMemory
                             v-else-if="msg.tool_name === 'load_memory'"
-                            :content="innerToolData(msg)"
-                            :parameters="getParametersForMessage(msg)"
-                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
-                          />
-                          <DeleteMemory
-                            v-else-if="msg.tool_name === 'delete_memory'"
                             :content="innerToolData(msg)"
                             :parameters="getParametersForMessage(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"

@@ -4,10 +4,10 @@ Plan: docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md
 
 Covers:
   * AGENT — POST /api/workspaces/:ws/items/agent → GET /api/agents/:id/tools
-    returns the 25-tool DEFAULT_AGENT_TOOLS (sorted ASC).
+    returns the 24-tool DEFAULT_AGENT_TOOLS (sorted ASC).
   * KANBAN — POST /api/workspaces/:ws/items/kanban →
-    GET /api/agent-kanbans/:id/tools returns the 25 agent defaults +
-    2 kanban tools (kanban_list, kanban_move_task) — 27 total — and the
+    GET /api/agent-kanbans/:id/tools returns the 24 agent defaults +
+    2 kanban tools (kanban_list, kanban_move_task) — 26 total — and the
     bundle GET /api/workspaces/:ws/items/:id/agent_kanban is 200 (configured,
     not 404 NotConfigured).
   * NO-BACKFILL — deleting all tools on a fresh agent leaves [] (empty is
@@ -21,7 +21,6 @@ from harness import FunctionalHarness
 EXPECTED_DEFAULTS = [
     "add_skill",
     "command",
-    "delete_memory",
     "edit_skill",
     "get_plan",
     "glob",
@@ -49,7 +48,6 @@ EXPECTED_DEFAULTS = [
 EXPECTED_KANBAN_DEFAULTS = [
     "add_skill",
     "command",
-    "delete_memory",
     "edit_skill",
     "get_plan",
     "glob",
