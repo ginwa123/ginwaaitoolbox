@@ -1487,3 +1487,164 @@ test "hook seam: broken hook file fails open to proceed/keep" {
     try std.testing.expect(runPreHookAction(ctx, "bash", "{}") == .proceed);
     try std.testing.expect(runPostHookOverride(ctx, "bash", "{}", "out") == null);
 }
+
+// ============================================================================
+// Lua hook dispatch tests: real registry + real read_file exec + real Lua.
+// A real in-memory DB is provided (read_file ignores it); config stays
+// undefined because read_file always hits the registry (config is only
+// read on registry miss). These prove the wiring, not just the helpers.
+// ============================================================================
+
+const HookDispatchCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn hookDispatchSetup() !HookDispatchCtx {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn hookDispatchCtx(
+    allocator: std.mem.Allocator,
+    setup: *HookDispatchCtx,
+    logger: *logger_mod.Logger,
+    environment: ?*const std.process.Environ.Map,
+) ToolContext {
+    var temp: f32 = 0.4;
+    var thinking: bool = false;
+    return ToolContext{
+        .allocator = allocator,
+        .io = setup.threaded.io(),
+        .db = &setup.db,
+        .logger = logger,
+        .session_id = "sess_hook_dispatch",
+        .model = "test-model",
+        .cwd = "/tmp",
+        .api_key = "",
+        .base_url = "",
+        .config = undefined,
+        .agent_temperature = &temp,
+        .is_thinking = &thinking,
+        .environment = environment,
+        .active_loops = undefined,
+    };
+}
+
+fn readFileCall(allocator: std.mem.Allocator, path: []const u8) !agent.ToolCall {
+    const args = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{path});
+    return agent.ToolCall{ .id = "call_hook_dispatch", .function = .{ .name = "read_file", .arguments = args } };
+}
+
+test "hook dispatch: no hook runs real read_file" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dispatch_alloc = arena.allocator();
+    var lg = logger_mod.Logger.init(dispatch_alloc, std.testing.io, .{});
+    var setup = try hookDispatchSetup();
+    defer setup.threaded.deinit();
+    defer setup.db.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "real.txt", .data = "REAL CONTENT" });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const abs = try std.fs.path.join(dispatch_alloc, &.{ path_buf[0..n], "real.txt" });
+
+    var empty_tmp = std.testing.tmpDir(.{});
+    defer empty_tmp.cleanup();
+    var home_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const hn = try empty_tmp.dir.realPath(std.testing.io, &home_buf);
+    var env_map = std.process.Environ.Map.init(dispatch_alloc);
+    defer env_map.deinit();
+    try env_map.put("HOME", home_buf[0..hn]);
+
+    const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &env_map);
+    const tc = try readFileCall(dispatch_alloc, abs);
+    const result = try dispatchTool(ctx, tc);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "REAL CONTENT") != null);
+}
+
+test "hook dispatch: pre deny skips exec (missing file still denies)" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dispatch_alloc = arena.allocator();
+    var lg = logger_mod.Logger.init(dispatch_alloc, std.testing.io, .{});
+    var setup = try hookDispatchSetup();
+    defer setup.threaded.deinit();
+    defer setup.db.deinit();
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fx = try hookFixture(dispatch_alloc, "function init(event, data) if event == 'pre_tool_use' and data.tool_name == 'read_file' then return { deny = 'reads blocked' } end return nil end\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &fx.env_map);
+    // Points at a file that does not exist: without the hook this would
+    // be a read_file error envelope, with the hook it must be the deny.
+    const tc = try readFileCall(dispatch_alloc, "/tmp/nalar-hook-test-does-not-exist-12345.txt");
+    const result = try dispatchTool(ctx, tc);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "reads blocked") != null);
+}
+
+test "hook dispatch: pre modify rewrites args seen by exec" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dispatch_alloc = arena.allocator();
+    var lg = logger_mod.Logger.init(dispatch_alloc, std.testing.io, .{});
+    var setup = try hookDispatchSetup();
+    defer setup.threaded.deinit();
+    defer setup.db.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "other.txt", .data = "OTHER CONTENT" });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const other_abs = try std.fs.path.join(dispatch_alloc, &.{ path_buf[0..n], "other.txt" });
+
+    const lua_source = try std.fmt.allocPrint(dispatch_alloc, "function init(event, data) if event == 'pre_tool_use' then return {{ arguments = '{{\"path\":\"{s}\"}}' }} end return nil end\n", .{other_abs});
+    var fx = try hookFixture(dispatch_alloc, lua_source, &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &fx.env_map);
+    const tc = try readFileCall(dispatch_alloc, "/tmp/nalar-hook-test-original-12345.txt");
+    const result = try dispatchTool(ctx, tc);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "OTHER CONTENT") != null);
+}
+
+test "hook dispatch: post replace swaps real output" {
+    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const dispatch_alloc = arena.allocator();
+    var lg = logger_mod.Logger.init(dispatch_alloc, std.testing.io, .{});
+    var setup = try hookDispatchSetup();
+    defer setup.threaded.deinit();
+    defer setup.db.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "secret.txt", .data = "TOP SECRET" });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const abs = try std.fs.path.join(dispatch_alloc, &.{ path_buf[0..n], "secret.txt" });
+
+    var fx = try hookFixture(dispatch_alloc, "function init(event, data) if event == 'post_tool_use' then return { output = 'REDACTED BY HOOK' } end return nil end\n", &path_buf);
+    defer fx.deinit();
+
+    const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &fx.env_map);
+    const tc = try readFileCall(dispatch_alloc, abs);
+    const result = try dispatchTool(ctx, tc);
+    try std.testing.expectEqualStrings("REDACTED BY HOOK", result.output);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "TOP SECRET") == null);
+}
