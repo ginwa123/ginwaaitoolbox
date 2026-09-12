@@ -28,7 +28,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const mcp_types = @import("mcp_types.zig");
-const custom_http_client_mod = @import("custom_http_client");
+const custom_http_client_mod = @import("kabelweb").client;
 
 // ============================================================================
 // SECTION A — MCP spec constants (pub so the registry in Section D can read)

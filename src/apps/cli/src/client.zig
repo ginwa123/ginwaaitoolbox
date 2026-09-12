@@ -1,9 +1,9 @@
-//! HTTP client wrapper around the project's `custom_http_client`
+//! HTTP client wrapper around kabelweb's client
 //! module.
 //!
 //! The thin shim exists to:
 //!   1. keep the call sites in `commands/*.zig` terse (one `getJson` /
-//!      `postJson` call instead of three lines of `custom_http_client.{get,post}`
+//!      `postJson` call instead of three lines of `client.{get,post}`
 //!   2. centralize the JSON header so commands don't all repeat
 //!      `Content-Type: application/json`
 //!   3. centralize status-code mapping (2xx → success, otherwise
@@ -11,10 +11,10 @@
 //!      error printing)
 //!
 //! The underlying libcurl-backed transport is cross-platform
-//! (Linux/macOS/Windows) per `src/modules/custom_http_client/NALAR.md`.
+//! (Linux/macOS/Windows) per `kabelweb repo docs-client-NALAR.md`.
 
 const std = @import("std");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 
 pub const Response = custom_http_client.Response;
 

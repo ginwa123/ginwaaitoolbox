@@ -832,7 +832,7 @@ def _find_free_port_sequential(start: int) -> int:
     Uses ``SO_REUSEADDR`` so the scan can pick ports in TIME_WAIT state.
     After the harness closes its probe socket, nalar (which also sets
     ``SO_REUSEADDR`` on its listener — see
-    ``src/modules/custom_http_server/src/http_server.zig:201 setReuseAddr``)
+    ``kabelweb repo src/server/http_server.zig:201 setReuseAddr``)
     can bind the same port despite lingering server-side TIME_WAITs from
     previous test runs. Without ``SO_REUSEADDR``, rapid test runs would
     saturate the 120-port scan window with TIME_WAIT entries and every

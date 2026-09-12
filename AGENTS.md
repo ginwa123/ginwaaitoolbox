@@ -11,7 +11,7 @@ it. Three recurring failure modes only surface from a real wire round-trip and
 NONE of them are visible from unit tests:
 
 1. **Route-order shadowing** — `matchRoute` walks routes in registration order
-   (see `src/modules/custom_http_server/src/router.zig:182`), so a literal
+   (see `kabelweb repo src/server/router.zig:182`), so a literal
    `/foo/reorder` registered AFTER `/foo/:bar` is captured with `bar="reorder"`.
    Unit tests on the useCase don't exercise routing.
 2. **Empty-slice-as-NULL binding** — `SqliteBackend.exec` binds `""` slices as

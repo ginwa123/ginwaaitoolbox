@@ -469,7 +469,7 @@ def test_nalar_http_client_calls_real_mcp_server() -> None:
           → handle_mcp_tool.zig
           → mcp_http.HttpRegistry.getOrConnect()
           → mcp_http.HttpClient.callTool()
-          → custom_http_client.post()
+          → kabelweb.client.post()
           → libcurl → localhost:port
           → mcp-http-hello-world (Node + @modelcontextprotocol/sdk)
           → StreamableHTTPServerTransport

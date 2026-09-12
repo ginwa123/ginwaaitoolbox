@@ -141,7 +141,7 @@ pub fn workspaceGetHandler(
             // copies them into a fresh allocation. No manual
             // `defer allocator.free(...)` is needed — `ctx.allocator`
             // is a per-request `ArenaAllocator` (see
-            // `custom_http_server/src/http_server.zig:349-362`); when
+            // `kabelweb/src/server/http_server.zig:349-362`); when
             // the request scope ends the arena `deinit()`s and frees
             // every arena-backed allocation in one shot.
             const body = try std.fmt.allocPrint(

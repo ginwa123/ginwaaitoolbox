@@ -11,7 +11,7 @@
 //! API:  https://developers.openai.com/api/reference/resources/images/methods/generate
 
 const std = @import("std");
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const ToolProperty = schemas.ToolProperty;
@@ -891,17 +891,17 @@ test "generate_image defines MAX_RESPONSE_BYTES cap" {
     }
 }
 
-test "generate_image references custom_http_client (libcurl-backed HTTP)" {
+test "generate_image references kabelweb client (libcurl-backed HTTP)" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
-    // The implementation MUST use the custom_http_client module
+    // The implementation MUST use kabelweb's client
     // (libcurl-backed, cross-platform) — not std.http.Client (which the
     // nalar_browser tool uses for its localhost server, but is not
     // appropriate for HTTPS to api.openai.com). Guards against an
     // accidental std-lib-only stub.
-    if (!contains(source, "custom_http_client")) {
-        std.debug.print("!! generate_image.zig does not @import(\"custom_http_client\") — must use the libcurl-backed client for api.openai.com !!\n", .{});
+    if (!contains(source, "kabelweb")) {
+        std.debug.print("!! generate_image.zig does not @import(\"kabelweb\") — must use the libcurl-backed client for api.openai.com !!\n", .{});
         return error.CustomHttpClientMissing;
     }
 }

@@ -22,7 +22,7 @@
 //! the module importable from unit tests without an Io context.
 
 const std = @import("std");
-const gserverz = @import("../custom_http_server/src/http_server.zig");
+const gserverz = @import("kabelweb").server;
 
 /// Inclusive low end of the random range (matches the harness).
 pub const web_port_range_start: u16 = 40000;

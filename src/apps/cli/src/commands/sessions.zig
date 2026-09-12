@@ -10,7 +10,7 @@ pub const Args = struct {
 
 pub fn run(args: Args, cfg: config.Config, io: std.Io) @import("root.zig").DispatchResult {
     const allocator = std.heap.page_allocator;
-    var http_client = @import("custom_http_client").Client.init(allocator);
+    var http_client = @import("kabelweb").client.Client.init(allocator);
     defer http_client.deinit();
 
     const path = std.fmt.allocPrint(allocator, "/api/llm/session?limit={d}", .{args.limit}) catch return .err;

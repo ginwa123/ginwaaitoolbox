@@ -71,5 +71,5 @@ pub fn run(args: Args, cfg: config.Config, io: std.Io) @import("root.zig").Dispa
 
 // A tiny alias so the run() signature reads naturally without forcing
 // the caller to spell out `custom_http_client.Client`.
-const custom_http_client = @import("custom_http_client");
+const custom_http_client = @import("kabelweb").client;
 const client_typedef = custom_http_client;

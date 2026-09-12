@@ -647,8 +647,8 @@ pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
 
 // `modules/http/HttpClient.zig` was removed — the project uses the
-// libcurl-backed `custom_http_client` module (imported directly via
-// `@import("custom_http_client")`; the dep is added in build.zig).
+// libcurl-backed client inside the `kabelweb` package (imported via
+// `@import("kabelweb").client`; the dep is added in build.zig).
 // The MCP call sites in `handle_mcp_tool.zig` and
 // `prompts_build_messages_for_agent_prompt.zig` were migrated to it.
 pub const loggermod = @import("modules/logger/Logger.zig");
@@ -868,7 +868,12 @@ pub const workspace_item_tasks = @import("agentic_loop/llm_history.zig");
 pub const http_response = @import("http_handlers/http_response.zig");
 pub const spawn_sub_agent = @import("modules/agent/tools/spawn_sub_agent.zig");
 pub const http_handlers = @import("http_handlers/mod.zig");
-pub const gserverz = @import("modules/custom_http_server/src/http_server.zig");
+// kabelweb — external web-framework library (pure-Zig HTTP server +
+// libcurl-backed HTTP client, pinned by URL in build.zig.zon).
+// `gserverz` stays as the server alias so the ~40 handlers keep
+// compiling untouched.
+pub const kabelweb = @import("kabelweb");
+pub const gserverz = kabelweb.server;
 pub const ai_mod = @import("ai_workflow/tui/mod.zig");
 pub const event_bus = @import("modules/event_bus/src/event.zig");
 pub const static_files = @import("modules/static_files.zig");
@@ -898,32 +903,11 @@ test {
     // its root.zig's `test { ... }` block.
     _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
-    // custom_http_server tests run mostly through the module's own
-    // `zig build test` (run from src/modules/custom_http_server/). The
-    // two exceptions live here because they need the parent project's
-    // root + on-disk fixtures:
-    //   - test_session_lifecycle.zig + sse_chunked_test.zig — already
-    //     discovered by the module's test_runner.zig when that build
-    //     runs, but the parent imports them directly too so they're
-    //     covered even if the module's own build isn't exercised.
-    //   - read_html_test.zig — orphaned from ginwasaas; its fixtures
-    //     (`src/handlers/landing.html`) don't exist in ginwaaitoolbox.
-    //     Excluded from BOTH the parent and the module's test_runner
-    //     until the test is fixed/moved.
-    //   - sse_keepalive_test.zig (the 60 s soak) — EXCLUDED here on
-    //     purpose. It eats ~120 s of wall-clock and dominates
-    //     `zig build test` runtime. Run it via the module's own build:
-    //     `cd src/modules/custom_http_server && zig build test`.
-    _ = @import("modules/custom_http_server/src/test_session_lifecycle.zig");
-    _ = @import("modules/custom_http_server/src/sse_chunked_test.zig");
-    // sse_manager_test.zig is std-only + the module's local
-    // test_helpers.zig, so it compiles in the parent's module tree
-    // without a `custom_http_server` module import. Registered here
-    // because the module's OWN `zig build test` currently fails to
-    // compile for unrelated reasons (websocket_frames.zig:253), which
-    // would otherwise leave the SSE send-timeout regression uncovered
-    // in CI.
-    _ = @import("modules/custom_http_server/src/sse_manager_test.zig");
+    // kabelweb (server + client) is an external URL dependency — its
+    // suites run in its own repo CI (github.com/ginwa123/kabelweb), not
+    // here. A consumer build never runs a dependency's test blocks.
+    // (read_html_test.zig stays excluded everywhere — orphaned from
+    // ginwasaas, its fixtures don't exist in ginwaaitoolbox.)
     _ = @import("modules/test_runner.zig");
     _ = @import("modules/notification/test_runner.zig");
     _ = @import("migrations/test_runner.zig");
@@ -956,18 +940,6 @@ test {
     // doesn't trigger discovery.
     _ = @import("modules/config/Config.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
-
-    // HTTP/2 (h2c): frames/HPACK/streams/flow-control + the socket-level server
-    // tests and the peekable reader. Registered HERE as well as in the module's
-    // own `test_runner.zig` — the CI gate runs this file's test block, and a
-    // `pub const` re-export alone does NOT make a test discoverable.
-    _ = @import("modules/custom_http_server/src/connection_reader.zig");
-    // Transport abstraction + TLS/ALPN (OpenSSL). The root test module already
-    // links ssl/crypto transitively via the `databases`/`custom_http_client`
-    // modules, so these tests run under the CI gate too.
-    _ = @import("modules/custom_http_server/src/stream.zig");
-    _ = @import("modules/custom_http_server/src/http2/tls.zig");
-    _ = @import("modules/custom_http_server/src/http2/test_runner.zig");
 }
 
 // ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───
