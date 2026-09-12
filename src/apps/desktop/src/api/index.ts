@@ -1350,6 +1350,7 @@ export const DEFAULT_CHAT_TOOLS = [
   'view_tool',
   'use_tool',
   'command',
+  'search',
   'load_memory',
   'save_memory',
   'list_skills',
