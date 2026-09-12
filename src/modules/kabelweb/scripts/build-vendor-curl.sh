@@ -62,8 +62,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 PROJECT_DIR="$( cd "${SCRIPT_DIR}/.." >/dev/null 2>&1 && pwd )"
-# Modules own their own vendor dir. The script lives in
-# src/modules/custom_http_client/scripts/ and writes to `vendor/`
+# kabelweb owns its own vendor dir. The script lives in
+# scripts/ and writes to `vendor/`
 # dirs co-located with the package (../vendor/{curl,openssl} from here).
 VENDOR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/vendor"
 CURL_VENDOR_DIR="${VENDOR_ROOT}/curl"
@@ -120,16 +120,16 @@ case "$(uname -s)" in
   Two paths forward for Windows builds:
 
     1. Install vcpkg and `vcpkg install curl:x64-windows openssl:x64-windows`.
-       The src/modules/custom_http_client/build.zig system-probe will
+       The kabelweb build.zig system-probe will
        then pick up C:/vcpkg/installed/x64-windows/lib/{libcurl,libssl,
        libcrypto}.lib and link those instead of the vendored archive.
 
     2. Cross-compile the vendor archive from a Linux/macOS host:
-         git clone … && cd … && bash src/modules/custom_http_client/scripts/build-vendor-curl.sh
-       then copy src/modules/custom_http_client/vendor/curl/<target>/
+         git clone … && cd … && bash scripts/build-vendor-curl.sh
+       then copy vendor/curl/<target>/
        to the Windows box.
 
-  (The custom_http_client package's vendored-path lookup hardcodes
+  (The kabelweb package's vendored-path lookup hardcodes
   `windows-amd64/` for Windows targets, but the script intentionally
   never builds it — see the comment at "Windows archive" below.)
 EOF
