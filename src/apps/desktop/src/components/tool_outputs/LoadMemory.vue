@@ -2,7 +2,7 @@
   LoadMemory — tool output component for the `load_memory` agent tool.
 
   Renders the XML envelope produced by `executeLoadMemory` in
-  `src/modules/agent/tools/load_memory.zig`. The component is purely
+  `src/modules/agent/tools/memory.zig`. The component is purely
   presentational: no API calls, no store mutations, no navigation.
 
   Three response shapes are possible (inner data extracted by

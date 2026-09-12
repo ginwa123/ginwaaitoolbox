@@ -1,11 +1,7 @@
-// Exec wrapper for the `delete_memory` agent tool.
-//
-// Plan: docs/superpowers/plans/2026-08-24-delete-memory-agent-tool.md
-// Task: task_1787546484030_8 (Task 3 of 6)
-//
-// RED PHASE: production code stub intentionally missing. See tests
-// below — they exercise execDeleteMemory end-to-end and currently fail
-// at compile time because execDeleteMemory is not yet defined.
+// Exec wrappers for the `save_memory` / `load_memory` / `delete_memory`
+// agent tools (merged 2026-09-11 memory-merge refactor — one file, three
+// exec fns; the public names `execSaveMemory` / `execLoadMemory` /
+// `execDeleteMemory` are unchanged).
 
 const std = @import("std");
 const testing = std.testing;
@@ -18,12 +14,96 @@ const agent_memories = nalarcore.agent_memories;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
-const delete_memory_mod = nalarcore.delete_memory;
+const memory_mod = nalarcore.memory;
 const wrapToolOutput = tools.wrapToolOutput;
+
+// ─── save_memory ───
+
+pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        memory_mod.SaveMemoryInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "save_memory failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = memory_mod.executeSaveMemory(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "save_memory failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect the <save_memory><error>...</error></save_memory> shape and
+    // surface it as a tool failure (so the LLM sees success=false rather
+    // than a successful wrapper around an error body).
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+// ─── load_memory ───
+
+pub fn execLoadMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const parsed = std.json.parseFromSlice(
+        memory_mod.LoadMemoryInput,
+        ctx.allocator,
+        tc.function.arguments,
+        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "load_memory failed to parse input: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer parsed.deinit();
+
+    const inner = memory_mod.executeLoadMemory(
+        ctx.allocator,
+        ctx.db,
+        parsed.value,
+    ) catch |err| {
+        const err_msg = try std.fmt.allocPrint(ctx.allocator, "load_memory failed: {s}", .{@errorName(err)});
+        const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, "");
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    };
+    defer ctx.allocator.free(inner);
+
+    // Detect the <load_memory><error>...</error></load_memory> shape and
+    // surface it as a tool failure (so the LLM sees success=false rather
+    // than a successful wrapper around an error body).
+    if (std.mem.indexOf(u8, inner, "<error>") != null) {
+        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
+        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
+        const err_msg = inner[err_start .. err_start + err_end];
+        const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, inner);
+        return ToolExecResult{ .output = output, .output_allocated = true };
+    }
+
+    const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, true, null, inner);
+    return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+// ─── delete_memory ───
 
 pub fn execDeleteMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
-        delete_memory_mod.DeleteMemoryInput,
+        memory_mod.DeleteMemoryInput,
         ctx.allocator,
         tc.function.arguments,
         .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
@@ -35,7 +115,7 @@ pub fn execDeleteMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     };
     defer parsed.deinit();
 
-    const inner = delete_memory_mod.executeDeleteMemory(
+    const inner = memory_mod.executeDeleteMemory(
         ctx.allocator,
         ctx.db,
         parsed.value,
@@ -61,6 +141,8 @@ pub fn execDeleteMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     const output = try wrapToolOutput(ctx.allocator, "delete_memory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
+
+// ─── tests (from tools_exec_delete_memory.zig) ───
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
