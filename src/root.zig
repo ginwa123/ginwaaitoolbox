@@ -611,8 +611,8 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
 pub const agent = @import("modules/agent/Agent.zig");
 pub const llm_models = @import("modules/agent/LLMModels.zig");
 pub const prompt = @import("modules/agent/prompts.zig");
-// `databases` is the self-contained sqlite3 + libpq package — see
-// src/modules/databases/build.zig. Imported via the build-graph
+// `databases` is the self-contained sqlite3 + libpq package (ruangsql,
+// github.com/ginwa123/ruangsql). Imported via the build-graph
 // dependency declared in build.zig (mod.addImport("databases", databases_mod)).
 pub const sqlite = @import("databases").sqlite;
 // Unified interface — prefer this over `sqlite` in new code:
@@ -896,11 +896,11 @@ test {
     _ = @import("agentic_loop/agent_kanban_tools_allowed.zig");
     _ = @import("agentic_loop/prompts_make_agent_kanban_knowledge.zig");
     _ = @import("agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
-    // `databases` package tests run via its own `zig build test`
-    // (cd src/modules/databases && zig build test) — see the
-    // package's build.zig. The main test step doesn't import them
-    // here because the package already discovers its own tests via
-    // its root.zig's `test { ... }` block.
+    // `databases` package tests run in the ruangsql repo's own CI
+    // (github.com/ginwa123/ruangsql) — see the package's build.zig.
+    // The main test step doesn't import them here because the package
+    // already discovers its own tests via its root.zig's `test { ... }`
+    // block.
     _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
     // kabelweb (server + client) is an external URL dependency — its

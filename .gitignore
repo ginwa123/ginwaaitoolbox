@@ -37,8 +37,9 @@ zig-out
 # The build.zig auto-fetches the curl vendor via `fetch-vendor-curl` step
 # (no-op if already built).
 /vendor/
-/src/modules/databases/vendor/
 /src/modules/custom_http_client/vendor/
+# (sqlite3 amalgamation moved out with ruangsql — now an external URL
+# dependency. Its own repo owns vendor/sqlite3/ + the fetch script.)
 # webview/webview vendored source IS committed (small: 1 header + 1 TU +
 # LICENSE) — exempt it from the blanket /vendor/ ignore above.
 !/vendor/webview/
