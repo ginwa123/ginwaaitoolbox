@@ -178,7 +178,7 @@ pub fn addColumn(
     defer allocator.free(pos_str);
 
     // SQLiteBackend.exec binds `arg.len == 0` as SQL NULL (see
-    // `src/modules/databases/sqlite/Sqlite.zig:73-74`). The
+    // `ruangsql src/sqlite/Sqlite.zig (github.com/ginwa123/ruangsql):73-74`). The
     // `description` column is `NOT NULL DEFAULT ''`, so binding
     // NULL would violate the constraint. Omit the column from the
     // INSERT when description is empty so the DEFAULT '' applies.

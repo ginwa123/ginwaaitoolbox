@@ -4,11 +4,12 @@
     .fingerprint = 0x288cfd2ff6c19f4c,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        // Self-contained sqlite3 / openssl / libpq package. The package
-        // lives in-tree at src/modules/databases/ and exposes a single
-        // `databases` module; consumers `@import("databases")` to use it.
+        // Self-contained sqlite3 / openssl / libpq package (ruangsql).
+        // Pinned by URL + hash; exposes a single `databases` module;
+        // consumers `@import("databases")` to use it.
         .databases = .{
-            .path = "src/modules/databases",
+            .url = "https://github.com/ginwa123/ruangsql/archive/2ff5f0968d953ddbe29de3fe950eab167c09dfb7.tar.gz",
+            .hash = "databases-0.0.0-vy-BCB5DBAC_foirpjWqNhUG-NLB9YzBtCu5H_gAW1BX",
         },
         // External web-framework library (pure-Zig HTTP server +
         // libcurl-backed HTTP client). Pinned by URL + hash; exposes a
