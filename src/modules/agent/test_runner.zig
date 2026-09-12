@@ -69,6 +69,7 @@ test {
     _ = @import("tools/command.zig");
     _ = @import("tools/get_plan.zig");
     _ = @import("tools/write_file.zig");
+    _ = @import("tools/progressive_tools.zig");
     _ = @import("tools/move_element_to_page.zig");
     _ = @import("tools/group_design_elements.zig");
     _ = @import("tools/change_agent.zig");

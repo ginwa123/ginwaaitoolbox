@@ -100,7 +100,8 @@ pub const AddMcpServerInput = struct {
 pub const add_mcp_server_tool_system_prompt =
     \\## Add MCP Server Tool — Behavior
     \\Use `add_mcp_server` to register a new MCP server at runtime.
-    \\- Provide `name`, `transport="stdio"`, `command`, and optional `args`/`cwd`. The new server's tools appear on the NEXT iteration.
+    \\- Provide `name`, `transport="stdio"`, `command`, and optional `args`/`cwd`. The new server's tools become discoverable with `search_tool` on the NEXT iteration; call `use_tool` to make one callable.
+    \\- The server's tools are NOT injected into your tool list automatically — MCP tools are progressive.
     \\- v1 supports `stdio` only; `http` will return an error.
     \\
 ;
@@ -112,7 +113,7 @@ pub const add_mcp_server_tool = AgentTool{
         .description =
             \\The `add_mcp_server` tool registers a new MCP (Model Context Protocol) server so its tools become available to you on the NEXT iteration. Call this when the user asks to add a new MCP server, configure a stdio MCP integration, or register a tool provider the user wants to use.
             \\
-            \\After a successful call, the new server's tools are exposed as `mcp_<serverName>_<toolName>` on the next system-prompt rebuild. Until then, the just-added server does NOT have callable tools yet — finish your reply first.
+            \\After a successful call, the new server's tools become discoverable as `mcp_<serverName>_<toolName>` on the next iteration — find them with `search_tool`, then call `use_tool` to make one callable. They are NOT added to your tool list automatically, and until you equip one the just-added server has no callable tools — finish your reply first.
             \\
             \\v1 supports the `stdio` transport only (per current scope). The fields you MUST provide for stdio:
             \\  - `name`     : the server key (letters/digits/`_`/`-` recommended). Must not already exist.

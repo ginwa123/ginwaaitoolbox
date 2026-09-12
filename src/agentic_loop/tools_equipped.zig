@@ -47,9 +47,11 @@ const get_plan_mod = nalarcore.get_plan;
 const list_sub_agent_mod = nalarcore.list_sub_agent;
 // 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
 // LLM-callable tool that registers a new MCP server in the live config +
-// persists to disk + hot-reloads `di.llm_config` so the new server's tools
-// appear on the next iteration's system prompt. v1 is stdio-only (HTTP lands
-// in task_1787928601804_8 without changing the wire shape).
+// persists to disk + hot-reloads `di.llm_config`. The new server's tools are
+// PROGRESSIVE: they become discoverable via `search_tool` on the next
+// iteration and reach the LLM's tool list only after `use_tool` equips one.
+// v1 is stdio-only (HTTP lands in task_1787928601804_8 without changing the
+// wire shape).
 const add_mcp_server_mod = nalarcore.add_mcp_server;
 const glob_tool_mod = nalarcore.glob_tool;
 const search_tool_mod = nalarcore.search_tool;
@@ -59,6 +61,10 @@ const semantic_search_mod = nalarcore.semantic_search;
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 const kanban_create_task_tool = nalarcore.create_kanban_task;
 const command_tool_mod = nalarcore.command_tool;
+// Progressive tool search: search_tool / view_tool / use_tool. Pure tool data
+// lives in `nalarcore.progressive_tools`; the catalog + renderers live in
+// `src/agentic_loop/progressive_catalog.zig`.
+const progressive_tools_mod = nalarcore.progressive_tools;
 const xmlEscape = helpers.xml_escape;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
@@ -114,6 +120,14 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         move_design_element_mod.move_design_element_tool,
         get_design_context_mod.get_design_context_tool,
         preview_design_page_mod.preview_design_page_tool,
+
+        // progressive tool search — always present (the workflow appends them
+        // only when the discoverable catalog is non-empty, so an item whose
+        // allowlist covers every built-in and has no MCP servers never sees
+        // them). See src/agentic_loop/progressive_catalog.zig.
+        progressive_tools_mod.search_tool_tool,
+        progressive_tools_mod.view_tool_tool,
+        progressive_tools_mod.use_tool_tool,
     };
     return allocator.dupe(AgentTool, tools_list) catch return &.{};
 }
@@ -150,10 +164,21 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // === MCP MANAGEMENT ===
         // 2026-08-28 — add_mcp_server (Task 5 of 2026-08-28-add-mcp-server-agent-tool.md).
         // Registers a new MCP server in the live config + persists to disk +
-        // hot-reloads `di.llm_config` so the new server's tools appear on
-        // the next iteration's system prompt. v1 supports the `stdio`
-        // transport only (HTTP lands in task_1787928601804_8).
+        // hot-reloads `di.llm_config`. Its tools then become discoverable via
+        // `search_tool` and callable only after `use_tool` equips them (MCP
+        // tools are progressive). v1 supports the `stdio` transport only
+        // (HTTP lands in task_1787928601804_8).
         .{ .name = "add_mcp_server", .exec = tools.execAddMcpServer, .tool_def = add_mcp_server_mod.add_mcp_server_tool },
+
+        // === PROGRESSIVE TOOL SEARCH ===
+        // search_tool / view_tool / use_tool browse and enable the catalog of
+        // tools this session does not already have. Exempt from the
+        // allowed_tools allowlist (like the MCP tools) — they are
+        // infrastructure, not user-curated capability, so an agent whose
+        // agent_tools rows predate them still gets them.
+        .{ .name = "search_tool", .exec = tools.execSearchTool, .tool_def = progressive_tools_mod.search_tool_tool },
+        .{ .name = "view_tool", .exec = tools.execViewTool, .tool_def = progressive_tools_mod.view_tool_tool },
+        .{ .name = "use_tool", .exec = tools.execUseTool, .tool_def = progressive_tools_mod.use_tool_tool },
 
         // === AGENT MANAGEMENT (auto-save) ===
 
@@ -288,6 +313,18 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // spawn
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
     list_sub_agent_mod.list_sub_agent_tool.function.name,
+
+    // progressive tool search — part of the default equipped set, seeded at
+    // creation. ONLY `workspace_items_create_agent` and
+    // `workspace_items_create_kanban` call the seed functions, so this list is
+    // the mechanism that scopes the three tools to AGENT and KANBAN mode:
+    // design and folder items seed no tool list at all and therefore never get
+    // them. They are also appended by `workflow.filterAndMergeTools` for those
+    // two modes (and are exempt from the allowlist), which is what lets an
+    // agent whose rows predate them still use them.
+    progressive_tools_mod.search_tool_tool.function.name,
+    progressive_tools_mod.view_tool_tool.function.name,
+    progressive_tools_mod.use_tool_tool.function.name,
 };
 
 pub const DEFAULT_KANBAN_TOOLS: []const []const u8 = &.{
@@ -344,7 +381,7 @@ pub fn seedDefaultKanbanTools(
     }
 }
 
-test "DEFAULT_AGENT_TOOLS ships the spawn pair (spawn_sub_agent + list_sub_agent)" {
+test "DEFAULT_AGENT_TOOLS ships the spawn pair and the progressive meta-tools" {
     var found_spawn = false;
     var found_list = false;
     for (DEFAULT_AGENT_TOOLS) |name| {
@@ -352,5 +389,16 @@ test "DEFAULT_AGENT_TOOLS ships the spawn pair (spawn_sub_agent + list_sub_agent
         if (std.mem.eql(u8, name, "list_sub_agent")) found_list = true;
     }
     try std.testing.expect(found_spawn and found_list);
+
+    // Progressive tool search is part of the default equipped set in every
+    // mode: agent items seed DEFAULT_AGENT_TOOLS, kanban items seed it plus
+    // DEFAULT_KANBAN_TOOLS, so both modes get the three.
+    for (progressive_tools_mod.PROGRESSIVE_TOOL_NAMES) |name| {
+        var found = false;
+        for (DEFAULT_AGENT_TOOLS) |seeded| {
+            if (std.mem.eql(u8, seeded, name)) found = true;
+        }
+        try std.testing.expect(found);
+    }
 }
 
