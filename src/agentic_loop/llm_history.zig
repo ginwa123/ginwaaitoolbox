@@ -3759,6 +3759,138 @@ pub fn getSessionSkills(
 }
 
 // =============================================================================
+// Session Progressive Tool Functions (progressive tool search, Migration 085)
+//
+// The agent enables tools for itself with `use_tool`; the record lives here.
+// Session-scoped by design so it can never overwrite the user's persistent
+// `agent_tools` / `agent_kanban_tools` configuration.
+// =============================================================================
+
+pub const ProgressiveToolInfo = struct {
+    tool_name: []u8,
+    server_name: []u8,
+    loaded_at: ?i64 = null,
+
+    pub fn deinit(self: ProgressiveToolInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.tool_name);
+        allocator.free(self.server_name);
+    }
+};
+
+/// Check whether a tool is already enabled for this session. The caller
+/// uses this for the "already equipped → do not insert" rule.
+pub fn isProgressiveToolEquipped(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    tool_name: []const u8,
+) !bool {
+    if (session_id.len == 0 or tool_name.len == 0) return false;
+
+    const sql = "SELECT 1 FROM session_progressive_tool WHERE session_id = ? AND tool_name = ? LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{ session_id, tool_name });
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        row.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
+/// Enable `tool_name` for `session_id`.
+///
+/// Returns `true` only when a row was actually INSERTed. A repeat call for
+/// the same (session_id, tool_name) is a silent no-op returning `false` —
+/// `INSERT OR IGNORE` + the PRIMARY KEY is the DB-level half of the
+/// "already equipped → do not insert" rule. `tool_load` in the tool result
+/// must be derived from this return value, never assumed.
+///
+/// `loaded_at_nano` uses the same `strftime('%s','now')` origin as
+/// `session_skills` (seconds, despite the column name). Reads order by
+/// `(loaded_at_nano, tool_name)` so the sequence is deterministic even when
+/// several tools are equipped within the same second.
+pub fn saveProgressiveTool(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    session_id: []const u8,
+    tool_name: []const u8,
+    server_name: []const u8,
+) !bool {
+    if (session_id.len == 0 or tool_name.len == 0) return false;
+
+    // COALESCE on server_name is REQUIRED, not cosmetic: SqliteBackend binds
+    // an empty `[]const u8` as SQL NULL, and `server_name` is NOT NULL — so
+    // a built-in (always passed with "") would violate the constraint and
+    // `INSERT OR IGNORE` would silently swallow the row. Same class of bug as
+    // Migration 079's `content` column.
+    const sql = "INSERT OR IGNORE INTO session_progressive_tool (session_id, tool_name, server_name, loaded_at_nano) VALUES (?, ?, COALESCE(?, ''), strftime('%s', 'now'))";
+    try db.exec(allocator, sql, &.{ session_id, tool_name, server_name });
+
+    const inserted = db.changes() > 0;
+    if (inserted) {
+        logger.debugFmt(
+            "Progressive tool '{s}' equipped for session {s}",
+            .{ tool_name, session_id },
+        );
+    }
+    return inserted;
+}
+
+/// All tools this session has enabled, oldest first (see
+/// `saveProgressiveTool` for the ordering rule). Caller owns each entry and
+/// the slice.
+pub fn getProgressiveTools(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]ProgressiveToolInfo {
+    if (session_id.len == 0) return &.{};
+
+    const sql = "SELECT tool_name, server_name, loaded_at_nano FROM session_progressive_tool WHERE session_id = ? ORDER BY loaded_at_nano ASC, tool_name ASC";
+    var rows = try db.query(allocator, sql, &.{session_id});
+    defer rows.deinit();
+
+    var out: std.ArrayList(ProgressiveToolInfo) = .empty;
+    errdefer {
+        for (out.items) |*t| t.deinit(allocator);
+        out.deinit(allocator);
+    }
+
+    while (try rows.next()) |row| {
+        const tool_name = row.values[0];
+        const server_name = row.values[1];
+        const loaded_at = if (row.values[2].len > 0) std.fmt.parseInt(i64, row.values[2], 10) catch null else null;
+
+        try out.append(allocator, .{
+            .tool_name = try allocator.dupe(u8, tool_name),
+            .server_name = try allocator.dupe(u8, server_name),
+            .loaded_at = loaded_at,
+        });
+        row.deinit(allocator);
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Drop a tool from this session's progressive set. Used by tests and by a
+/// future "unload" affordance; the normal path never removes a row.
+pub fn deleteProgressiveTool(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    tool_name: []const u8,
+) !void {
+    if (session_id.len == 0 or tool_name.len == 0) return;
+    try db.exec(
+        allocator,
+        "DELETE FROM session_progressive_tool WHERE session_id = ? AND tool_name = ?",
+        &.{ session_id, tool_name },
+    );
+}
+
+// =============================================================================
 // Workspace Items Functions (migrated from workspace_items_table.zig)
 // =============================================================================
 
@@ -9589,4 +9721,151 @@ test "getWorkerBySessionId returns worker with empty git_worktree_cwd for orphan
 
     try testing.expectEqualStrings("orphan", worker.session_id);
     try testing.expectEqualStrings("", worker.git_worktree_cwd);
+}
+
+// =============================================================================
+// Session progressive tool persistence (Migration 085)
+// =============================================================================
+
+const ProgressiveTestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn progressiveSetupDb() !ProgressiveTestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE session_progressive_tool (
+        \\    session_id TEXT NOT NULL,
+        \\    tool_name TEXT NOT NULL,
+        \\    server_name TEXT NOT NULL DEFAULT '',
+        \\    loaded_at_nano INTEGER NOT NULL DEFAULT 0,
+        \\    PRIMARY KEY (session_id, tool_name)
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "saveProgressiveTool: first call inserts, the second is a no-op returning false" {
+    const alloc = testing.allocator;
+    var ctx = try progressiveSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    const first = try saveProgressiveTool(alloc, &ctx.db, &lg, "s1", "glob", "");
+    try testing.expect(first);
+
+    const second = try saveProgressiveTool(alloc, &ctx.db, &lg, "s1", "glob", "");
+    try testing.expect(!second);
+
+    const rows = try getProgressiveTools(alloc, &ctx.db, "s1");
+    defer {
+        for (rows) |r| r.deinit(alloc);
+        alloc.free(rows);
+    }
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("glob", rows[0].tool_name);
+}
+
+test "saveProgressiveTool: stores the server name for MCP tools" {
+    const alloc = testing.allocator;
+    var ctx = try progressiveSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    _ = try saveProgressiveTool(alloc, &ctx.db, &lg, "s1", "mcp_context7_query-docs", "context7");
+
+    const rows = try getProgressiveTools(alloc, &ctx.db, "s1");
+    defer {
+        for (rows) |r| r.deinit(alloc);
+        alloc.free(rows);
+    }
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("context7", rows[0].server_name);
+}
+
+test "saveProgressiveTool / isProgressiveToolEquipped: empty ids are inert" {
+    const alloc = testing.allocator;
+    var ctx = try progressiveSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    // Empty session → nothing written, reported as not inserted.
+    try testing.expect(!try saveProgressiveTool(alloc, &ctx.db, &lg, "", "glob", ""));
+    // Empty tool name → same.
+    try testing.expect(!try saveProgressiveTool(alloc, &ctx.db, &lg, "s1", "", ""));
+
+    const rows = try getProgressiveTools(alloc, &ctx.db, "s1");
+    defer {
+        for (rows) |r| r.deinit(alloc);
+        alloc.free(rows);
+    }
+    try testing.expectEqual(@as(usize, 0), rows.len);
+
+    try testing.expect(!try isProgressiveToolEquipped(alloc, &ctx.db, "", "glob"));
+    try testing.expect(!try isProgressiveToolEquipped(alloc, &ctx.db, "s1", "glob"));
+}
+
+test "isProgressiveToolEquipped detects a row written by saveProgressiveTool" {
+    const alloc = testing.allocator;
+    var ctx = try progressiveSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    _ = try saveProgressiveTool(alloc, &ctx.db, &lg, "s1", "kanban_list", "");
+    try testing.expect(try isProgressiveToolEquipped(alloc, &ctx.db, "s1", "kanban_list"));
+    // Another session is unaffected — the set is per session.
+    try testing.expect(!try isProgressiveToolEquipped(alloc, &ctx.db, "s2", "kanban_list"));
+}
+
+test "getProgressiveTools: unknown session is empty and deleteProgressiveTool removes a row" {
+    const alloc = testing.allocator;
+    var ctx = try progressiveSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+
+    const none = try getProgressiveTools(alloc, &ctx.db, "nope");
+    defer alloc.free(none);
+    try testing.expectEqual(@as(usize, 0), none.len);
+
+    _ = try saveProgressiveTool(alloc, &ctx.db, &lg, "s1", "glob", "");
+    try deleteProgressiveTool(alloc, &ctx.db, "s1", "glob");
+
+    const rows = try getProgressiveTools(alloc, &ctx.db, "s1");
+    defer {
+        for (rows) |r| r.deinit(alloc);
+        alloc.free(rows);
+    }
+    try testing.expectEqual(@as(usize, 0), rows.len);
+}
+
+test "getProgressiveTools: order is deterministic for tools equipped in the same second" {
+    const alloc = testing.allocator;
+    var ctx = try progressiveSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Same loaded_at_nano for all three (the second-resolution caveat).
+    try ctx.db.exec(alloc, "INSERT INTO session_progressive_tool (session_id, tool_name, server_name, loaded_at_nano) VALUES ('s1','zeta','',5), ('s1','alpha','',5), ('s1','mid','',5)", &.{});
+
+    const rows = try getProgressiveTools(alloc, &ctx.db, "s1");
+    defer {
+        for (rows) |r| r.deinit(alloc);
+        alloc.free(rows);
+    }
+    try testing.expectEqual(@as(usize, 3), rows.len);
+    try testing.expectEqualStrings("alpha", rows[0].tool_name);
+    try testing.expectEqualStrings("mid", rows[1].tool_name);
+    try testing.expectEqualStrings("zeta", rows[2].tool_name);
 }

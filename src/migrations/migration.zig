@@ -1976,6 +1976,7 @@ pub const allMigrations: []const Migration = &.{
     // Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md.
     // Task: task_1789032258828_0.
     .{ .version = Migration084ReplaceRoutinesWithWorkspaceRoutines.version, .name = Migration084ReplaceRoutinesWithWorkspaceRoutines.name, .up = Migration084ReplaceRoutinesWithWorkspaceRoutines.up },
+    .{ .version = Migration085AddSessionProgressiveTool.version, .name = Migration085AddSessionProgressiveTool.name, .up = Migration085AddSessionProgressiveTool.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4674,6 +4675,46 @@ pub const Migration084ReplaceRoutinesWithWorkspaceRoutines = struct {
 };
 
 // ============================================================================
+// Migration 085 — session_progressive_tool (progressive tool search)
+// ============================================================================
+
+/// Per-session record of tools the agent enabled for itself through
+/// `use_tool`. Session-scoped on purpose: enabling a tool here must never
+/// touch the user's persistent `agent_tools` / `agent_kanban_tools`
+/// configuration, and it reverts by starting a new session.
+///
+/// Shape mirrors `session_skills` (Migration 008). No `content` column —
+/// tool definitions are code, so a definition change must take effect on
+/// the next turn instead of being shadowed by a stale stored copy.
+///
+/// `PRIMARY KEY(session_id, tool_name)` is the DB-level half of the
+/// "if it is already equipped, do not insert" rule; callers use
+/// `INSERT OR IGNORE` and treat `false` as "already present".
+///
+/// Plan: docs/superpowers/plans/2026-09-12-progressive-tool-search.md
+pub const Migration085AddSessionProgressiveTool = struct {
+    pub const version: u32 = 85;
+    pub const name = "add_session_progressive_tool";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_progressive_tool (
+            \\    session_id TEXT NOT NULL,
+            \\    tool_name TEXT NOT NULL,
+            \\    server_name TEXT NOT NULL DEFAULT '',
+            \\    loaded_at_nano INTEGER NOT NULL DEFAULT 0,
+            \\    PRIMARY KEY (session_id, tool_name)
+            \\)
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_session_progressive_tool_session ON session_progressive_tool(session_id)",
+            &[_][]const u8{},
+        );
+    }
+};
+
+// ============================================================================
 // Migration 083 — llm_history reasoning metadata — inline tests
 // ============================================================================
 
@@ -5150,4 +5191,87 @@ test "Migration084 is registered in allMigrations" {
         if (m.version == Migration084.version) return;
     }
     return error.Migration084NotRegistered;
+}
+
+// ============================================================================
+// Migration 085 — session_progressive_tool — inline tests
+// ============================================================================
+
+test "Migration085 creates session_progressive_tool with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration085AddSessionProgressiveTool.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "session_progressive_tool");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "session_id",
+        "tool_name",
+        "server_name",
+        "loaded_at_nano",
+    });
+}
+
+test "Migration085 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration085AddSessionProgressiveTool.up(&ctx.db, alloc);
+    try Migration085AddSessionProgressiveTool.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_progressive_tool'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration085 PRIMARY KEY(session_id, tool_name) rejects a duplicate" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration085AddSessionProgressiveTool.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO session_progressive_tool (session_id, tool_name, server_name, loaded_at_nano) VALUES ('s1', 'glob', '', 1)",
+        &.{});
+    // A second insert with the same (session_id, tool_name) must be rejected
+    // by the PRIMARY KEY. Asserted as "some error" rather than a specific
+    // name: the DB layer's Error set has no ConstraintViolation variant.
+    var duplicate_failed = false;
+    ctx.db.exec(alloc,
+        "INSERT INTO session_progressive_tool (session_id, tool_name, server_name, loaded_at_nano) VALUES ('s1', 'glob', '', 2)",
+        &.{}) catch {
+        duplicate_failed = true;
+    };
+    try testing.expect(duplicate_failed);
+    // INSERT OR IGNORE (what the production helper uses) is a silent no-op.
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO session_progressive_tool (session_id, tool_name, server_name, loaded_at_nano) VALUES ('s1', 'glob', '', 3)",
+        &.{});
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM session_progressive_tool WHERE session_id = 's1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration085 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration085AddSessionProgressiveTool.version) return;
+    }
+    return error.Migration085NotRegistered;
 }
