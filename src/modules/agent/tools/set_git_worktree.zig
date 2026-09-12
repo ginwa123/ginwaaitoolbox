@@ -11,10 +11,9 @@ const sqlite = nalar.sqlite;
 pub const SetGitWorktreeInput = struct {
     /// Absolute path to the worktree directory. The directory must NOT
     /// already exist (git worktree add will create it). The parent
-    /// directory MUST exist. Examples:
-    ///   "/home/me/projects/myapp/.worktrees/auth-fix"
-    ///   "/tmp/experiments/rpc-rewrite"
-    ///   "/Users/me/code/myapp.worktrees/fix-bug-123"
+    /// directory MUST exist. Canonical root (Option A):
+    ///   "/home/you/.config/nalar/.worktrees/fix-login"
+    /// Ad-hoc paths elsewhere are accepted.
     /// Required unless `clear=true`. Must be absolute, ≤ 4096 chars,
     /// contain no `..` segments, no null bytes. The basename must
     /// match `[A-Za-z0-9._-]{1,100}` (so the auto-derived branch name
@@ -39,8 +38,14 @@ pub const set_git_worktree_tool_system_prompt =
     \\you MUST call `set_git_worktree` before any `bash`/`read_file`/`write_file`
     \\operation touches repo files. Never operate on the original repo path.
     \\
-    \\- `path` MUST be an absolute native path under Nalar's config directory:
-    \\  `.worktree/worktrees_agent_<randomname>`.
+    \\- Canonical root (Option A): `$HOME/.config/nalar/.worktrees/<task-slug>`.
+    \\  Example: `/home/you/.config/nalar/.worktrees/fix-login`.
+    \\  The kanban dialog prefills this absolute path as the `Path:` line after
+    \\  `#Notes UseGitWorktree`. Prefer it when given; when the note has no
+    \\  `Path:` line, create the worktree under the same root derived from the
+    \\  task name.
+    \\- If a `Path:` value starts with `~/`, expand `~` to `$HOME` first —
+    \\  `validatePath` rejects non-absolute paths.
     \\- `path` MUST NOT contain `..`.
     \\- The parent directory MUST exist.
     \\- Once set, all subsequent `bash`/`read_file`/`write_file` operations run
@@ -53,7 +58,7 @@ pub const set_git_worktree_tool = AgentTool{
     .function = .{
         .name = "set_git_worktree",
         .description =
-            \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. The worktree can be in any folder (e.g. '/home/me/project/.worktrees/auth-fix', '/tmp/experiments/x', or anywhere else). While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
+            \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
             \\
             \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
         ,
@@ -63,7 +68,7 @@ pub const set_git_worktree_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Absolute path to the worktree directory. Must be absolute, contain no '..' segments, no null bytes, be ≤ 4096 chars, and the parent directory must already exist. The basename must match [A-Za-z0-9._-]{1,100} (so the auto-derived branch name is legal). Examples: '/home/me/proj/.worktrees/auth-fix', '/tmp/experiments/rpc-rewrite'.",
+                    .description = "Absolute path to the worktree directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login'). Must be absolute, contain no '..' segments, no null bytes, be ≤ 4096 chars, and the parent directory must already exist. The basename must match [A-Za-z0-9._-]{1,100} (so the auto-derived branch name is legal). Expand a leading `~/` to `$HOME` before calling.",
                 },
                 .{
                     .name = "branch",

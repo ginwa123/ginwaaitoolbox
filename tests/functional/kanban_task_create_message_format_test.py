@@ -7,6 +7,8 @@ formats the create_and_run `queue_message` as:
     Description: <description>   <- omitted when empty/whitespace
                                    <- blank line +
     #Notes UseGitWorktree         <- only when the worktree toggle is ON
+    Path: <worktreePath>          <- only when the toggle is ON and a
+                                     custom path was entered
 
 The backend passes `queue_message` through verbatim (emit_run_agent →
 insertQueueMessage → queue-drain → llm_history user row), so these tests
@@ -212,3 +214,34 @@ def test_create_session_keeps_server_composition(harness: FunctionalHarness) -> 
     msgs = _user_role_messages(harness, task_id)
     assert len(msgs) == 1
     assert msgs[0].get("content") == "Plain task\n\nplain desc"
+
+
+# ─── Test 5: toggle ON + custom path appends the Path line ────────────────────
+
+
+def test_create_and_run_appends_worktree_path_when_provided(
+    worker_harness: FunctionalHarness,
+) -> None:
+    """The worktree path input lands as the `Path:` line after the note."""
+    ws_id = _create_workspace(worker_harness)
+    kanban_id = _create_kanban(worker_harness, ws_id)
+
+    resp = _create_task(
+        worker_harness,
+        ws_id,
+        kanban_id,
+        name="Isolated work",
+        description="blablabla",
+        mode="create_and_run",
+        queue_message=(
+            "Task : Isolated work\nDescription: blablabla\n\n"
+            "#Notes UseGitWorktree\nPath: ~/.config/nalar/.worktrees/isolated-work"
+        ),
+    )
+    task_id = resp["task"]["id"]
+
+    msgs = _wait_for_user_message(worker_harness, task_id)
+    assert msgs[0].get("content") == (
+        "Task : Isolated work\nDescription: blablabla\n\n"
+        "#Notes UseGitWorktree\nPath: ~/.config/nalar/.worktrees/isolated-work"
+    )

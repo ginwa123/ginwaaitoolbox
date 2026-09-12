@@ -186,6 +186,11 @@ const emit = defineEmits<{
       // worktree (host bakes `#Notes UseGitWorktree` into the
       // create_and_run queue_message; plain create ignores it).
       useGitWorktree: boolean
+      // Create-mode only. Custom worktree path input (visible when
+      // the worktree toggle is ON). Empty string = agent picks the
+      // path itself; non-empty is baked as the `Path:` line after
+      // `#Notes UseGitWorktree` in the queue_message.
+      worktreePath: string
       // NEW (kanban task tags, Migration 067): array of free-form
       // tag strings. Empty array = no tags. Host forwards via
       // api.createTask's `tags` param; backend validates + persists.
@@ -235,6 +240,8 @@ const emit = defineEmits<{
       is_auto_retry_until_stop: '0' | '1'
       // Mirror of `useGitWorktree` on the `create` emit (baked into queue_message).
       useGitWorktree: boolean
+      // Mirror of `worktreePath` on the `create` emit (the `Path:` line).
+      worktreePath: string
       tags: string[]
       // NEW (plan: 2026-08-06-kanban-task-profile-selector). See
       // note on the `create` emit above. Threaded through to
@@ -289,6 +296,44 @@ const unattended = ref<'0' | '1'>('1')
 // the host bakes `#Notes UseGitWorktree` into the create_and_run
 // queue_message. Plain create ignores it (no queue_message there).
 const useGitWorktree = ref(false)
+// Worktree path input (create mode only, visible when the toggle is
+// ON). Canonical root is $HOME/.config/nalar/.worktrees (Option A) —
+// prefilled on toggle-on from the task name so the user can accept or
+// edit it. Empty = agent picks the path itself (bare `#Notes UseGitWorktree`).
+// The prefill is always an absolute path: validatePath in
+// set_git_worktree.zig rejects `~`-prefixed paths (not absolute), so a
+// literal `~` would fail at tool-call time. Home is resolved via
+// getSystemFolder().home; until loaded we fall back to `~` for display
+// and expand on emit.
+const WORKTREE_DIR_SUFFIX = '.config/nalar/.worktrees'
+const homeDir = ref('')
+const resolveWorktreeDir = (): string => {
+  const home = homeDir.value.trim()
+  if (home !== '') {
+    const sep = home.endsWith('/') ? '' : '/'
+    return `${home}${sep}${WORKTREE_DIR_SUFFIX}`
+  }
+  return `~/${WORKTREE_DIR_SUFFIX}`
+}
+const expandWorktreePath = (raw: string): string => {
+  const trimmed = raw.trim()
+  const home = homeDir.value.trim()
+  if (trimmed.startsWith('~/') && home !== '') {
+    const sep = home.endsWith('/') ? '' : '/'
+    return `${home}${sep}${trimmed.slice(2)}`
+  }
+  return trimmed
+}
+const worktreePath = ref('')
+const slugifyWorktreeName = (raw: string): string => {
+  const slug = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 50)
+  return slug || 'task'
+}
 const tags = ref<string[]>([])
 // Template ref for the chip input — handleSave calls commitDraft()
 // imperatively before reading `tags.value` so a draft tag typed but
@@ -574,6 +619,8 @@ watch(
       name.value = ''
       description.value = ''
       unattended.value = '1'
+      useGitWorktree.value = false
+      worktreePath.value = ''
       tags.value = []  // NEW: start with empty tags in create mode
       selectedProfile.value = ''  // NEW: profile selector defaults to backend default
       // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Sync
@@ -642,6 +689,7 @@ watch(
     // user clicks it.
     if (isCreateMode.value) {
       void loadProfiles()
+      void loadHomeDir()
     }
   },
   { immediate: true },
@@ -809,7 +857,10 @@ const handleSave = () => {
         // inserts a sessions row when the value is '1'.
         is_auto_retry_until_stop: unattended.value,
         // Forwarded for the create-and-run path (baked into queue_message).
+        // Expanded to absolute so a `~` prefill never reaches the wire —
+        // the agent's validatePath rejects non-absolute paths.
         useGitWorktree: useGitWorktree.value,
+        worktreePath: expandWorktreePath(worktreePath.value),
         // NEW (Migration 067 — kanban task tags): forward the
         // current tags array. The KanbanTagsInput already
         // validates + dedupes, so the array is ready to persist.
@@ -882,6 +933,7 @@ const handleRunAgent = () => {
     description: description.value,
     is_auto_retry_until_stop: unattended.value,
     useGitWorktree: useGitWorktree.value,
+    worktreePath: expandWorktreePath(worktreePath.value),
     tags: tags.value,
     // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
     // string = backend default. Host threads through to
@@ -943,6 +995,22 @@ const handleUnattendedToggle = (event: Event) => {
 const handleUseGitWorktreeToggle = (event: Event) => {
   const target = event.target as HTMLInputElement
   useGitWorktree.value = target.checked
+  if (target.checked && worktreePath.value.trim() === '') {
+    worktreePath.value = `${resolveWorktreeDir()}/${slugifyWorktreeName(name.value)}`
+  }
+}
+
+// Resolve $HOME for the worktree prefill. Called on create-mode open;
+// failure leaves homeDir empty so the prefill falls back to `~` display
+// and expandWorktreePath becomes a trim-only passthrough.
+const loadHomeDir = async () => {
+  if (homeDir.value !== '') return
+  try {
+    const info = await getSystemFolder()
+    if (info?.home?.trim()) homeDir.value = info.home.trim()
+  } catch {
+    // Offline / backend down — keep the `~` fallback.
+  }
 }
 
 // NEW (plan: 2026-08-06-kanban-task-profile-selector). Load profiles
@@ -1654,6 +1722,39 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                     :class="useGitWorktree ? 'translate-x-5' : ''"
                   />
                 </label>
+              </div>
+              <!-- Worktree path input (create mode only, visible when the
+                   toggle is ON). Baked as the `Path:` line after
+                   `#Notes UseGitWorktree` in the queue_message. -->
+              <div
+                v-if="isCreateMode && useGitWorktree"
+                class="pt-2 flex flex-col gap-1"
+                data-testid="kanban-task-detail-use-git-worktree-path-wrap"
+              >
+                <label
+                  class="text-xs font-medium"
+                  style="color: var(--semantic-text-dim);"
+                  for="kanban-worktree-path-input"
+                >
+                  Worktree path
+                </label>
+                <input
+                  id="kanban-worktree-path-input"
+                  type="text"
+                  v-model="worktreePath"
+                  placeholder="/home/you/.config/nalar/.worktrees/my-task"
+                  class="w-full px-2 py-1.5 rounded-lg text-xs"
+                  style="
+                    background-color: var(--semantic-sidebar-bg);
+                    border: 1px solid var(--color-border);
+                    color: var(--semantic-text);
+                  "
+                  data-testid="kanban-task-detail-use-git-worktree-path"
+                />
+                <div class="text-[11px]" style="color: var(--semantic-text-dim);">
+                  Default: $HOME/.config/nalar/.worktrees/&lt;task-name&gt;. Must be
+                  absolute; the parent folder must exist.
+                </div>
               </div>
             </div>
           </div>

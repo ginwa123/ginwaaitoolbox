@@ -7,6 +7,8 @@
  *   Description: <description>   <- omitted when empty/whitespace
  *                                  <- blank line +
  *   #Notes UseGitWorktree         <- only when useGitWorktree is true
+ *   Path: <worktreePath>          <- only when useGitWorktree is true
+ *                                    AND worktreePath is non-empty
  */
 import { describe, expect, it } from 'vitest'
 
@@ -43,5 +45,31 @@ describe('buildTaskCreateMessage', () => {
     expect(buildTaskCreateMessage('My task', '  padded  ', false)).toBe(
       'Task : My task\nDescription: padded',
     )
+  })
+
+  it('toggle on + path → Path line after the note', () => {
+    expect(
+      buildTaskCreateMessage('My task', 'blablabla', true, '/home/you/.config/nalar/.worktrees/my-task'),
+    ).toBe(
+      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/my-task',
+    )
+  })
+
+  it('toggle on + whitespace-only path degrades to the bare note', () => {
+    expect(buildTaskCreateMessage('My task', 'blablabla', true, '   ')).toBe(
+      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree',
+    )
+  })
+
+  it('toggle off + path → path is ignored', () => {
+    expect(
+      buildTaskCreateMessage('My task', 'blablabla', false, '/home/you/.config/nalar/.worktrees/my-task'),
+    ).toBe('Task : My task\nDescription: blablabla')
+  })
+
+  it('trims a padded path', () => {
+    expect(
+      buildTaskCreateMessage('My task', '', true, '  /home/you/.config/nalar/.worktrees/x  '),
+    ).toBe('Task : My task\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x')
   })
 })

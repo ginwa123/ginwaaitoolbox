@@ -7,6 +7,7 @@ zig-out
 
 # === Worktrees (created by `git worktree add`) ===
 /.worktrees
+/.worktree
 
 # === Frontend dependencies + builds ===
 /src/apps/kerjabot/node_modules

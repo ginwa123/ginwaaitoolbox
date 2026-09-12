@@ -942,6 +942,9 @@ const handleCreateTaskSave = async (payload: {
   // Create-mode worktree toggle from the dialog (undefined = off).
   // Only consumed on the create_and_run path.
   useGitWorktree?: boolean
+  // Create-mode worktree path from the dialog (undefined/empty =
+  // agent picks the path itself). Only consumed on create_and_run.
+  worktreePath?: string
   tags?: string[]
   // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
   // string = backend default / "Default (top-level config)". Threaded
@@ -1034,6 +1037,7 @@ const handleCreateTaskSave = async (payload: {
             payload.name,
             payload.description,
             payload.useGitWorktree ?? false,
+            payload.worktreePath ?? '',
           )
         : undefined
 

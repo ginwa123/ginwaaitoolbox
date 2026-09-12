@@ -8,11 +8,12 @@
  * <Teleport to="body">, so use `attachTo: document.body` +
  * `document.querySelector` (NOT `wrapper.find`).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 
 import KanbanTaskDetailDialog from '@/components/kanban/KanbanTaskDetailDialog.vue'
+import * as api from '@/api'
 import type { Task } from '@/stores/workspaces'
 
 function findInDom<T extends Element = Element>(selector: string): T | null {
@@ -33,6 +34,7 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
   afterEach(() => {
     wrapper?.unmount()
     wrapper = null
+    vi.restoreAllMocks()
     findAllInDom('[data-testid="kanban-task-detail-dialog"]').forEach((el) => el.remove())
   })
 
@@ -61,6 +63,15 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
     if (!toggle) throw new Error('worktree toggle missing')
     toggle.checked = checked
     toggle.dispatchEvent(new Event('change', { bubbles: true }))
+  }
+
+  function setWorktreePath(value: string) {
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-use-git-worktree-path"]',
+    )
+    if (!input) throw new Error('worktree path input missing')
+    input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
   }
 
   it('renders the worktree toggle in create mode, default OFF', async () => {
@@ -126,5 +137,112 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
     const emitted = wrapper!.emitted('create')
     expect(emitted).toBeTruthy()
     expect((emitted![0]![0] as { useGitWorktree: boolean }).useGitWorktree).toBe(true)
+  })
+
+  it('hides the path input when the toggle is OFF', async () => {
+    mountDialog()
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="kanban-task-detail-use-git-worktree-path"]'),
+    ).toBeNull()
+  })
+
+  it('prefills the path under ~/.config/nalar/.worktrees when toggled on', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-use-git-worktree-path"]',
+    )
+    expect(input).not.toBeNull()
+    expect(input!.value).toContain('.config/nalar/.worktrees')
+    expect(input!.value).toContain('my-task')
+  })
+
+  it('prefills an absolute path when home is known (Option A canonical root)', async () => {
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      path: '/home/testuser',
+      absolute: '/home/testuser',
+      home: '/home/testuser',
+      entries: [],
+    })
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    const input = findInDom<HTMLInputElement>(
+      '[data-testid="kanban-task-detail-use-git-worktree-path"]',
+    )
+    expect(input).not.toBeNull()
+    expect(input!.value).toBe('/home/testuser/.config/nalar/.worktrees/my-task')
+  })
+
+  it('expands a ~/ path to absolute on create-and-run emit', async () => {
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      path: '/home/testuser',
+      absolute: '/home/testuser',
+      home: '/home/testuser',
+      entries: [],
+    })
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    setWorktreePath('~/.config/nalar/.worktrees/custom')
+    await flushPromises()
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect((emitted![0]![0] as { worktreePath: string }).worktreePath).toBe(
+      '/home/testuser/.config/nalar/.worktrees/custom',
+    )
+  })
+
+  it('custom path flows into the create-and-run emit', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    setWorktreePath('/tmp/custom-wt/my-task')
+    await flushPromises()
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect((emitted![0]![0] as { worktreePath: string }).worktreePath).toBe(
+      '/tmp/custom-wt/my-task',
+    )
+  })
+
+  it('custom path flows into the plain create emit', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    setWorktreePath('/tmp/custom-wt/my-task')
+    await flushPromises()
+    findInDom<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create')
+    expect(emitted).toBeTruthy()
+    expect((emitted![0]![0] as { worktreePath: string }).worktreePath).toBe(
+      '/tmp/custom-wt/my-task',
+    )
   })
 })

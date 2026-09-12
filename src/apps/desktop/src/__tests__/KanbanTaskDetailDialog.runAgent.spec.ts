@@ -116,6 +116,7 @@ describe('KanbanTaskDetailDialog — Create task & run agent', () => {
         is_auto_retry_until_stop: '1',
         // Default OFF — the dialog's worktree toggle was not flipped.
         useGitWorktree: false,
+        worktreePath: '',
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',

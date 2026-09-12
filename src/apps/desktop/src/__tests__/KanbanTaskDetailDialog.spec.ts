@@ -837,6 +837,7 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         is_auto_retry_until_stop: '1',
         // Default OFF — the dialog's worktree toggle was not flipped.
         useGitWorktree: false,
+        worktreePath: '',
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
@@ -877,6 +878,7 @@ describe('KanbanTaskDetailDialog — create mode', () => {
         is_auto_retry_until_stop: '1',
         // Default OFF — this test only flips the unattended toggle.
         useGitWorktree: false,
+        worktreePath: '',
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
