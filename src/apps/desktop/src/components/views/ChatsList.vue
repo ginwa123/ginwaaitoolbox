@@ -5,6 +5,8 @@ import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { useTabsStore } from '../../stores/tabs'
+import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
@@ -252,6 +254,7 @@ const loadChats = async () => {
     console.error('Failed to load chats:', err)
     navItems.value = []
   } finally {
+    publishChatTitles()
     console.log(
       '[ChatsList] loadChats finished, chatsLoading:',
       chatsLoading.value,
@@ -315,6 +318,45 @@ const createChat = () => {
   // Update navigation store
   navigationStore.setActiveChat(newChatId, name)
   emit('navigate', `chat-${newChatId}`, name)
+}
+
+const tabsStore = useTabsStore()
+
+/**
+ * The tab strip shows chats the user may never have navigated to, so it
+ * cannot rely on the open-time title alone — publish whatever the list just
+ * loaded. Only already-open tabs are touched.
+ */
+const publishChatTitles = () => {
+  for (const entry of navItems.value) tabsStore.setChatTitle(entry.id, entry.name)
+}
+
+/**
+ * Ctrl/Cmd+click and middle click open a chat in a background tab instead
+ * of navigating — the browser gesture, and the reason the strip exists. A
+ * plain click keeps the previous behaviour.
+ */
+const openChatInBackground = (item: { id: string; name: string }) => {
+  tabsStore.openInBackground({
+    path: '/app',
+    query: { view: 'chat', session: item.id },
+    title: item.name,
+    kind: 'chat',
+  })
+}
+
+const onChatRowClick = (event: MouseEvent, item: { id: string; name: string }) => {
+  if (isBackgroundOpenEvent(event)) {
+    openChatInBackground(item)
+    return
+  }
+  void setActive(item.id)
+}
+
+const onChatRowAuxClick = (event: MouseEvent, item: { id: string; name: string }) => {
+  if (event.button !== 1) return
+  event.preventDefault()
+  openChatInBackground(item)
 }
 
 const setActive = async (id: string) => {
@@ -565,7 +607,8 @@ defineExpose({
       >
         <template #default="{ item }">
           <button
-            @click="setActive(item.id)"
+            @click="onChatRowClick($event, item)"
+            @auxclick="onChatRowAuxClick($event, item)"
             class="relative w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent overflow-hidden"
             :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="

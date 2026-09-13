@@ -3,6 +3,7 @@ import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as api from './api'
 import { installSseBus, useSseBus } from './helpers/sseBus'
+import { useTabsStore } from './stores/tabs'
 import { useNavigationStore } from './stores/navigation'
 
 // LLM processing state - provided to child components
@@ -70,6 +71,12 @@ onMounted(() => {
   const bus = installSseBus()
   offWorker = bus.on('worker', handleWorkerEvent)
 
+  // Tab titles for chat sessions. Subscribed HERE, next to the install, because
+  // children mount before their parent: an AppLayout-side subscription runs
+  // before the bus exists and would silently never attach (that is exactly why
+  // chat tabs kept the generic "Chat" label after a rename).
+  useTabsStore().initTitleFeed()
+
   // Wire the frontendLogClient's route/session context callbacks
   // AFTER Vue router is alive and the navigation store is ready.
   // `main.ts` installed the client with no-op stubs
@@ -123,6 +130,7 @@ onUnmounted(() => {
     offWorker()
     offWorker = null
   }
+  useTabsStore().disposeTitleFeed()
   // Close the bus. Forwards to all underlying SseClients (global +
   // any per-session). Terminal — removes visibility/online listeners,
   // cancels retry timers (no timer leak that would create a dangling

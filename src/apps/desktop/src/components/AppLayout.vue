@@ -12,6 +12,7 @@ import SettingsView from './views/SettingsView.vue'
 import CodeEditor from './views/CodeEditor.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
+import TabBar from './shell/TabBar.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
@@ -26,6 +27,9 @@ import KanbanSettingsView from './views/KanbanSettingsView.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
+import { useTabsStore } from '../stores/tabs'
+import { sameRouteQuery, withTabParam } from '../helpers/tabTarget'
+import { useTabShortcuts } from '../composables/useTabShortcuts'
 import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
@@ -48,6 +52,7 @@ import {
 const router = useRouter()
 const route = useRoute()
 const navigationStore = useNavigationStore()
+const tabsStore = useTabsStore()
 const workspacesStore = useWorkspacesStore()
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const sidebarStore = useSidebarStore()
@@ -470,6 +475,11 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
   if (activeChatId.value === `chat-${oldId}`) {
     navigationStore.setActiveChat(newId)
   }
+  // Keep the strip's pointer in step: a brand-new chat starts life with the
+  // synthetic `session-<timestamp>` id and gets its real one on the first
+  // message, so a tab left keyed on the old id would be dead — and the route
+  // funnel would add a second tab for the same chat.
+  tabsStore.renameChatTab(oldId, newId)
   sidebarRef.value?.updateChatId(oldId, newId)
 }
 
@@ -2218,9 +2228,146 @@ watch(chatSessionCwd, (newCwd) => {
 // addDesignElement wire invokes the handler directly because tests
 // stub the DesignView child. Keeping the seam tiny: just one more
 // named export.
+// ─── Tab mode ─────────────────────────────────────────────────────────────────
+//
+// Tabs are a view over the URL: the `currentView` chain above still decides
+// what renders, and activating a tab is just a navigation. Only two pieces
+// are needed here — push the active tab's target into the URL, and turn
+// every URL change into tab state (create / focus / normalise).
+//
+// `replace`, never `push`: Back must keep meaning "go back inside the active
+// tab" rather than becoming a tab switcher. A normal navigation still uses
+// `push`, so history stays about navigation, not about tab switches.
+
+/**
+ * The store side of a navigation.
+ *
+ * The render chain reads the STORES (`workspacesStore.activeWorkspaceItem`,
+ * `navigationStore.activeChatId`) — not the URL — so a navigation that only
+ * rewrote the URL left the previous view on screen. A sidebar click set both
+ * (WorkspaceItem → Sidebar.handleSelectItem → emit), which is why this only
+ * showed up once tabs could be activated directly: switching between two
+ * workspace tabs kept rendering the same item.
+ */
+function mirrorTargetIntoStores(path: string, query: Record<string, string>, chatName?: string) {
+  if (path !== '/app') return
+  const view = query.view ?? 'chat'
+
+  if (view === 'workspace') {
+    const parsed = parseItemIdWithChat(query.itemId ?? '')
+    navigationStore.clearAll()
+    workspacesStore.setActiveTask(parsed.chatTaskId)
+    workspacesStore.setActiveWorkspaceItem(parsed.itemId || null)
+    if (query.pageId) workspacesStore.setActiveDesignPage(query.pageId)
+    return
+  }
+
+  // A chat (with or without a session) wins over any workspace item — the same
+  // sequence the sidebar's chat path performs.
+  workspacesStore.setActiveTask(null)
+  workspacesStore.setActiveWorkspaceItem(null)
+  if (query.session) navigationStore.setActiveChat(query.session, chatName ?? '')
+  else navigationStore.clearAll()
+}
+
+/** Navigate to the active tab's target. Called by the strip after it acts. */
+function applyActiveTabToUrl() {
+  const tab = tabsStore.activeTab
+  if (!tab) return
+  mirrorTargetIntoStores(tab.path, tab.query, tab.title)
+  const query = withTabParam(tab.query, tab.id)
+  if (route.path === tab.path && sameRouteQuery(route.query, query)) return
+  router.replace({ path: tab.path, query })
+}
+
+/**
+ * The funnel. Every navigation in the app lands here — sidebar clicks, the
+ * chats list, kanban/design chat dialogs, deep links, the Back button — so
+ * no call site has to know the tab strip exists, and a view type added
+ * later becomes tabbable for free.
+ *
+ * Gated on mount so it runs AFTER the restore block above: the deep link is
+ * resolved by the existing code first, then normalised with its `tab=` name.
+ */
+function syncFromRoute() {
+  // The item's type decides whether a task chat belongs to the item's tab
+  // (kanban/design open it as a dialog inside that view) or gets its own.
+  // Only trust it when it describes the item this URL points at — on a cold
+  // boot the tree may not be loaded yet, and the store adopts the tab later.
+  const active = workspacesStore.activeWorkspaceItem
+  const urlItemId = parseItemIdWithChat((route.query.itemId as string) ?? '').itemId
+  const itemType = active && active.id === urlItemId ? (active.item_type ?? null) : null
+  const result = tabsStore.syncFromTarget(route.path, { ...route.query }, itemType)
+  if (result.changed) router.replace({ path: result.path, query: result.query })
+}
+
+let tabsFunnelReady = false
+
+// Registered AFTER the restore block above, and Vue fires `onMounted` hooks
+// in registration order — so a cold boot is already resolved by the time
+// this runs, and it stays synchronous so it cannot shift mount timing.
+onMounted(() => {
+  tabsFunnelReady = true
+  syncFromRoute()
+})
+
+/**
+ * Shortcuts and the live title feed are window-scoped wiring, so they live
+ * here and are torn down with the layout. Every handler re-applies the URL
+ * through `applyActiveTabToUrl`, so the shortcut map can never leave the
+ * URL pointing at a tab the user is no longer on.
+ */
+const stopTabShortcuts = useTabShortcuts({
+  isEnabled: () => tabsStore.enabled,
+  tabCount: () => tabsStore.tabCount,
+  handlers: {
+    newTab: () => {
+      tabsStore.openHomeTab()
+      applyActiveTabToUrl()
+    },
+    closeTab: () => {
+      tabsStore.close(tabsStore.activeTabId)
+      applyActiveTabToUrl()
+    },
+    reopenTab: () => {
+      tabsStore.reopenLastClosed()
+      applyActiveTabToUrl()
+    },
+    nextTab: () => {
+      tabsStore.next()
+      applyActiveTabToUrl()
+    },
+    previousTab: () => {
+      tabsStore.prev()
+      applyActiveTabToUrl()
+    },
+    selectTab: (index: number) => {
+      tabsStore.activateIndex(index - 1)
+      applyActiveTabToUrl()
+    },
+  },
+})
+
+// The tab title feed is owned by App.vue (it installs the SSE bus), so nothing
+// to unregister here — only the shortcuts, which live in this component.
+onUnmounted(() => {
+  stopTabShortcuts()
+})
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (tabsFunnelReady) syncFromRoute()
+  },
+)
+
 defineExpose({
   handleDesignOpenChat,
   handleDesignCreateElement,
+  applyActiveTabToUrl,
+  mirrorTargetIntoStores,
+  syncFromRoute,
+  handleUpdateChatId,
 })
 </script>
 
@@ -2235,6 +2382,7 @@ defineExpose({
       @resize="handleSidebarResize"
     />
     <main class="flex-1 flex flex-col overflow-hidden relative">
+      <TabBar @navigate="applyActiveTabToUrl" />
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"

@@ -3,6 +3,7 @@ import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { WorkspaceItem } from '../../stores/workspaces'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 import DesignPageRow from './DesignPageRow.vue'
 import type { DesignPage } from '../../api'
@@ -43,6 +44,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   click: [item: WorkspaceItem]
+  /**
+   * Ctrl/Cmd+click / middle click on the row: the parent opens (or focuses) a
+   * background tab for this item instead of navigating.
+   */
+  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string; itemType?: string }]
   delete: [item: WorkspaceItem]
   addTask: [item: WorkspaceItem]
   // The three task-level events are emitted by the child
@@ -124,7 +130,19 @@ const firstProcessingTaskId = computed<string | null>(() => {
   return null
 })
 
-const handleClick = () => {
+const handleClick = (event?: MouseEvent) => {
+  // Ctrl/Cmd+click and middle click mean "open in a background tab" — the
+  // gesture users bring from a browser. Handle it before the expand/navigate
+  // behaviour so nothing is activated behind their back.
+  if (event && isBackgroundOpenEvent(event)) {
+    emit('openItemInBackground', {
+      workspaceId: props.workspaceId,
+      itemId: props.item.id,
+      name: props.item.name,
+      itemType: props.item.item_type,
+    })
+    return
+  }
   // Agent/folder/memory items toggle expand/collapse here.
   // Kanban items render the board in the main content area (see
   // AppLayout.vue's KanbanView branch) AND show their tasks inline
@@ -506,7 +524,7 @@ const handlePinnedDrop = (event: DragEvent) => {
       <!-- Main Item Row -->
       <div class="flex items-center group/item">
         <button
-          @click="handleClick"
+          @click="handleClick($event)"
           class="relative flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
           :style="isCurrentMainView
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`

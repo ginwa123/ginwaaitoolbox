@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api'
@@ -20,6 +21,9 @@ const mockWebStatus = api.getWebStatus as unknown as ReturnType<typeof vi.fn>
 
 describe('NalarSettings (orchestrator)', () => {
   beforeEach(() => {
+    // NalarSettings reads the tabs store for the "Browser-style tabs"
+    // preference (Settings → General), so it needs an active pinia.
+    setActivePinia(createPinia())
     mockGet.mockReset()
     mockSave.mockReset()
     mockWebStatus.mockReset()
