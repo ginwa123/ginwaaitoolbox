@@ -1810,8 +1810,39 @@ jobs:
           # zig build functional-test creates the venv at
           # $NALAR_FUNC_VENV_DIR (see the env block above), installs
           # requirements, and runs the suite.
-          zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
-          rc=${PIPESTATUS[0]}
+          # Retry wrapper (2026-09-13, run 34741794778): `zig build`
+          # resolves build.zig.zon deps over the network at config time
+          # (kabelweb/ruangsql tarballs from github.com). A transient
+          # DNS flake aborts the whole job before any test runs with
+          # `build.zig.zon:19:20: error: invalid HTTP response:
+          # NameServerFailure`. The backend `install` step already
+          # retries 3x for the same class of flake — do the same here,
+          # but ONLY for fetch-phase network errors (log matches the
+          # network pattern). A real pytest failure is not retried.
+          attempt=1
+          max_attempts=3
+          rc=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "→ functional-test: attempt $attempt/$max_attempts"
+            set +e
+            zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
+            rc=${PIPESTATUS[0]}
+            set -e
+            echo "→ functional-test: attempt $attempt exit code $rc"
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if grep -Eq "NameServerFailure|invalid HTTP response|TemporaryFailure|NetworkUnreachable|ConnectionReset|Connection refused|failed to fetch|Could not resolve host" /tmp/functional-test.log 2>/dev/null; then
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                backoff=$((15 * attempt))
+                echo "→ functional-test: transient fetch error, retrying in ${backoff}s..."
+                sleep "$backoff"
+                attempt=$((attempt + 1))
+                continue
+              fi
+            fi
+            break
+          done
           echo "→ functional-test: exit code $rc"
           if [ "$rc" -ne 0 ]; then
             echo "✗ functional-test: failed (see /tmp/functional-test.log)"
@@ -1950,8 +1981,33 @@ jobs:
           # and runs the 30 Playwright tests (10 chatview + 11 safety
           # + 5 smoke + 4 kanban). Cold cache: ~5 min; warm cache:
           # ~3 min.
-          zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
-          rc=${PIPESTATUS[0]}
+          # Same transient-fetch retry as the functional-test job above
+          # (2026-09-13, run 34741794778): only network-phase errors
+          # are retried, never real Playwright failures.
+          attempt=1
+          max_attempts=3
+          rc=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "→ functional-test-ui: attempt $attempt/$max_attempts"
+            set +e
+            zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
+            rc=${PIPESTATUS[0]}
+            set -e
+            echo "→ functional-test-ui: attempt $attempt exit code $rc"
+            if [ "$rc" -eq 0 ]; then
+              break
+            fi
+            if grep -Eq "NameServerFailure|invalid HTTP response|TemporaryFailure|NetworkUnreachable|ConnectionReset|Connection refused|failed to fetch|Could not resolve host" /tmp/functional-test-ui.log 2>/dev/null; then
+              if [ "$attempt" -lt "$max_attempts" ]; then
+                backoff=$((15 * attempt))
+                echo "→ functional-test-ui: transient fetch error, retrying in ${backoff}s..."
+                sleep "$backoff"
+                attempt=$((attempt + 1))
+                continue
+              fi
+            fi
+            break
+          done
           echo "→ functional-test-ui: exit code $rc"
           if [ "$rc" -ne 0 ]; then
             echo "✗ functional-test-ui: failed (see /tmp/functional-test-ui.log)"
