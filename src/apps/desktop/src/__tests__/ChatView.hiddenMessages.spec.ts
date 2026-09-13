@@ -247,4 +247,18 @@ describe('HTML tag support — ChatView render branch (source contract)', () => 
     // The listener must be torn down with the view.
     expect(source).toMatch(/window\.removeEventListener\('message', onHtmlFrameResize\)/)
   })
+
+  // 2026-09-13 follow-up (same task): the model authors this HTML blind —
+  // real payload 1789313976387498377 shipped GitHub's light
+  // `background:#f6f8fa` inline on every <pre>, which beat the shell
+  // stylesheet and left theme ink on a light chip (1.57:1 contrast).
+  it('forces the text surfaces so payload-authored light colours cannot win', async () => {
+    const source = await readChatViewSource()
+    // `!important` is the point: an inline style loses to it.
+    expect(source).toMatch(/pre,code,th,td\{background:\$\{p\.chip\}!important;color:\$\{p\.fg\}!important\}/)
+    expect(source).toMatch(/pre code\{background:transparent!important;padding:0\}/)
+    // Chip + inline-code ink come from the app's own markdown tokens.
+    expect(source).toMatch(/readCssVar\('--color-bg-p1'/)
+    expect(source).toMatch(/readCssVar\('--color-aqua'/)
+  })
 })

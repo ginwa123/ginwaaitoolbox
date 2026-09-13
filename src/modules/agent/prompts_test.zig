@@ -1536,6 +1536,13 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
     try std.testing.expect(contains(prompt, "you can use"));
     // Verbatim-emission note (wire-format requirement).
     try std.testing.expect(contains(prompt, "verbatim"));
+    // Theme note (2026-09-13, task_1789312493325_7). The model authors the
+    // HTML blind: real payloads (llm_history 1789313976387498377) shipped
+    // GitHub's light `background:#f6f8fa` on every <pre>, which the dark
+    // transcript then rendered at 1.57:1 contrast — unreadable. The prompt
+    // has to state the theme, or the model keeps guessing "light page".
+    try std.testing.expect(contains(prompt, "DARK"));
+    try std.testing.expect(contains(prompt, "#1D1C19"));
 }
 
 // -------------------------------------------------------------------------
