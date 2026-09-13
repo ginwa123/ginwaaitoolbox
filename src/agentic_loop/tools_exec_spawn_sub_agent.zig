@@ -417,7 +417,11 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     errdefer subagent_progress.clearSnapshot(ctx.tool_call_id);
     const parsed = spawn_sub_agent_tool.parse_sub_agents(ctx.allocator, tc.function.arguments, 20) catch |err| {
         ctx.logger.errFmt("parse_sub_agents failed: {}", .{err});
-        return error.InvalidArguments;
+        // Propagate the SPECIFIC parse error (e.g. AllToolsNotAllowed,
+        // EmptySubAgentTools) instead of collapsing to a generic
+        // InvalidArguments — dispatchTool formats @errorName(err) into
+        // the envelope <error>, which the card now renders.
+        return err;
     };
     defer parsed.deinit(ctx.allocator);
 

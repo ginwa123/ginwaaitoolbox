@@ -300,3 +300,17 @@ describe('applySnapshotRows (2026-09-04 refresh rehydrate)', () => {
     expect(map.tc_1?.[1]?.status).toBe('done')
   })
 })
+
+describe('isPlaceholderSpawnRow — failed envelope is not a placeholder', () => {
+  it('rejects a pre-thread failure row (<success>false</success>, no <summary>)', () => {
+    expect(
+      isPlaceholderSpawnRow({
+        role: 'tool',
+        tool_name: 'spawn_sub_agent',
+        tool_call_id: 'tc_1',
+        content:
+          '<tool><name>spawn_sub_agent</name><parameters>{}</parameters><success>false</success><error>spawn_sub_agent failed: AllToolsNotAllowed</error></tool>',
+      }),
+    ).toBe(false)
+  })
+})
