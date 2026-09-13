@@ -3,22 +3,18 @@
 //! Follows the same recipe as the OpenSSL bindings (see
 //! `.nalar/skills/openssl-c-bindings-from-zig016/SKILL.MD`): declare each
 //! symbol as an `extern fn` with `callconv(.c)` and verify every constant
-//! against the system headers instead of trusting memory.
+//! against the vendored headers in `vendor/lua/` (Lua 5.4.9, see
+//! `vendor/lua/README.vendor`):
+//!   LUA_OK = 0, LUA_TNIL = 0 / LUA_TBOOLEAN = 1 / LUA_TNUMBER = 3 /
+//!   LUA_TSTRING = 4 / LUA_TTABLE = 5 / LUA_TFUNCTION = 6, LUA_MULTRET = -1.
 //!
-//! Verified against `/usr/include/lua5.4/lua.h`, `lauxlib.h`, `lualib.h`:
-//!   LUA_OK = 0 (lua.h:48), LUA_TNIL = 0 / LUA_TBOOLEAN = 1 /
-//!   LUA_TNUMBER = 3 / LUA_TSTRING = 4 / LUA_TTABLE = 5 /
-//!   LUA_TFUNCTION = 6 (lua.h:62-70), LUA_MULTRET = -1 (lua.h:35).
-//!
-//! Header/lib pairing matters: the top-level `/usr/include/lua.h` on this
-//! box is Lua 5.5 while we link `liblua5.4` — mixing them segfaults inside
-//! `luaL_newstate`. Always pair `/usr/include/lua5.4/*` with `-llua5.4`
-//! (see `build.zig` `linkPlatformDeps`). Any binary calling these symbols
-//! must also link libc (missing `-lc` segfaults in `luaL_newstate` —
-//! proven by the Phase 0 spike); `linkPlatformDeps` already links `"c"`.
+//! Lua is compiled from vendored C for every target (`build.zig`
+//! `linkVendoredLua`), so these symbols exist on Linux, macOS, and
+//! Windows. Any binary calling them must link libc (missing `-lc`
+//! segfaults in `luaL_newstate` — proven by the Phase 0 spike);
+//! `linkPlatformDeps` already links `"c"` on every target.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 pub const LuaState = opaque {};
 
@@ -52,11 +48,6 @@ pub const LUA_TFUNCTION: c_int = 6;
 pub const LUA_MULTRET: c_int = -1;
 
 test "lua bindings round-trip: script sets global, Zig reads it back" {
-    // Lua is only linked on Linux (see build.zig linkPlatformDeps); the
-    // comptime guard keeps this file linkable on macOS/Windows where the
-    // symbols don't exist.
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
-
     const L = luaL_newstate() orelse return error.HookNoState;
     defer lua_close(L);
     luaL_openlibs(L);
@@ -72,7 +63,6 @@ test "lua bindings round-trip: script sets global, Zig reads it back" {
 }
 
 test "lua bindings: pcall return value readable via tolstring" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
 
     const L = luaL_newstate() orelse return error.HookNoState;
     defer lua_close(L);

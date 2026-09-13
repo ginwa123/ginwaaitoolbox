@@ -1396,7 +1396,6 @@ fn hookFixture(allocator: std.mem.Allocator, lua_source: []const u8, path_buf: *
 }
 
 test "hook seam: no hook file proceeds without touching exec deps" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
     var empty_tmp = std.testing.tmpDir(.{});
@@ -1414,7 +1413,6 @@ test "hook seam: no hook file proceeds without touching exec deps" {
 }
 
 test "hook seam: pre deny short-circuits with error envelope" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -1430,7 +1428,6 @@ test "hook seam: pre deny short-circuits with error envelope" {
 }
 
 test "hook seam: pre modify rewrites args" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -1445,7 +1442,6 @@ test "hook seam: pre modify rewrites args" {
 }
 
 test "hook seam: pre mock returns success envelope" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -1461,7 +1457,6 @@ test "hook seam: pre mock returns success envelope" {
 }
 
 test "hook seam: post replace swaps output" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -1476,7 +1471,6 @@ test "hook seam: post replace swaps output" {
 }
 
 test "hook seam: broken hook file fails open to proceed/keep" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     var lg = logger_mod.Logger.init(allocator, std.testing.io, .{});
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -1542,7 +1536,6 @@ fn readFileCall(allocator: std.mem.Allocator, path: []const u8) !agent.ToolCall 
 }
 
 test "hook dispatch: no hook runs real read_file" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const dispatch_alloc = arena.allocator();
@@ -1573,7 +1566,6 @@ test "hook dispatch: no hook runs real read_file" {
 }
 
 test "hook dispatch: pre deny skips exec (missing file still denies)" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const dispatch_alloc = arena.allocator();
@@ -1596,7 +1588,6 @@ test "hook dispatch: pre deny skips exec (missing file still denies)" {
 }
 
 test "hook dispatch: pre modify rewrites args seen by exec" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const dispatch_alloc = arena.allocator();
@@ -1623,7 +1614,6 @@ test "hook dispatch: pre modify rewrites args seen by exec" {
 }
 
 test "hook dispatch: post replace swaps real output" {
-    if (comptime @import("builtin").os.tag != .linux) return error.SkipZigTest;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const dispatch_alloc = arena.allocator();

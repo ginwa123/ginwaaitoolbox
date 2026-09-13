@@ -1,23 +1,33 @@
 # Lua Hooks
 
-Run your own Lua code around every agent tool call. One file, one function.
+Run your own Lua code around every agent tool call. Two tiers, one
+function each.
 
-## Location
+## Locations
 
-Create exactly one file:
+| Tier | Path |
+|---|---|
+| Global | `<config_dir>/hooks/register_hook.lua` |
+| Project | `<cwd>/.nalar/hooks/register_hook.lua` (the tool call's working directory) |
 
-| OS | Path |
+`<config_dir>` per OS:
+
+| OS | Global path |
 |---|---|
 | Linux | `~/.config/nalar/hooks/register_hook.lua` |
 | macOS | `~/Library/Application Support/nalar/hooks/register_hook.lua` |
 | Windows | `%APPDATA%/nalar/hooks/register_hook.lua` |
 
-No file → hooks disabled, tools run normally. No settings, no reload
-command: the file is loaded fresh on every tool call, so edits apply
-immediately.
+Both files are optional; missing files are skipped silently. The global
+hook runs first, then the project hook sees whatever the global hook
+left (modified args / replaced output chain forward). The first `deny`
+wins and stops the chain; a pre `mock` also stops the chain and skips
+the real tool.
 
-Linux-only in v1: other platforms boot and run normally with hooks
-silently disabled.
+No settings, no reload command: each file is loaded fresh on every tool
+call, so edits apply immediately. Lua is embedded on all platforms
+(vendored, no system dependency) — hooks work on Linux, macOS, and
+Windows.
 
 ## Contract
 

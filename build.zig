@@ -473,6 +473,32 @@ fn webview2MissingPrereq(b: *std.Build) ?[]const u8 {
     return null;
 }
 
+/// Vendored Lua 5.4 sources compiled into a module.
+///
+/// Hooks embed Lua on EVERY target (Linux/macOS/Windows) with no system
+/// dependency: `vendor/lua/` carries the upstream library C files
+/// (see vendor/lua/README.vendor). Compiled per-target by Zig's bundled
+/// C compiler, so cross-compiles Just Work. Excludes lua.c/luac.c
+/// (standalone mains). No platform `-D` defines: the core language +
+/// the stdlib subset hooks need is define-free (dynamic C-module loading
+/// via require() is unavailable — hooks are plain scripts).
+fn linkVendoredLua(b: *std.Build, module: *std.Build.Module) void {
+    module.addCSourceFiles(.{
+        .root = b.path("vendor/lua"),
+        .files = &.{
+            "lapi.c",     "lauxlib.c", "lbaselib.c", "lcode.c",
+            "lcorolib.c", "lctype.c",  "ldblib.c",   "ldebug.c",
+            "ldo.c",      "ldump.c",   "lfunc.c",    "lgc.c",
+            "linit.c",    "liolib.c",  "llex.c",     "lmathlib.c",
+            "lmem.c",     "loadlib.c", "lobject.c",  "lopcodes.c",
+            "loslib.c",   "lparser.c", "lstate.c",   "lstring.c",
+            "lstrlib.c",  "ltable.c",  "ltablib.c",  "ltm.c",
+            "lundump.c",  "lutf8lib.c", "lvm.c",     "lzio.c",
+        },
+        .flags = &.{ "-std=c99", "-O2" },
+    });
+}
+
 /// Link platform-specific system libraries + include paths for a Compile
 /// step based on the COMPILE'S OWN target (NOT the global default target).
 /// Every caller that produces a binary linked against nalarcore MUST
@@ -513,14 +539,6 @@ fn linkPlatformDeps(
             // "unable to find dynamic system library 'ssl' using strategy 'paths_first'. searched paths: none".
             // Forcing the path here makes the linker find the system libs.
             exe.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-            // Lua hooks (src/agentic_loop/lua_bindings.zig + hooks.zig):
-            // hand-declared Lua 5.4 externs, paired with
-            // /usr/include/lua5.4 headers (NOT top-level /usr/include/lua.h,
-            // which is 5.5 — mixing segfaults). Linux-only: other targets
-            // skip this and hooks.zig compiles to no-ops via a comptime
-            // builtin.os.tag guard, so macOS/Windows never need the lib.
-            // No addIncludePath needed (no @cImport — pure extern fns).
-            exe.root_module.linkSystemLibrary("lua5.4", .{});
         },
         .macos => {
             // Everything database-related (sqlite3 amalgamation) is handled
@@ -972,6 +990,11 @@ pub fn build(b: *std.Build) void {
     });
     const kabelweb_mod = kabelweb_dep.module("kabelweb");
     mod.addImport("kabelweb", kabelweb_mod);
+
+    // === Vendored Lua 5.4 (single-file hooks) ===
+    // Compiled into `mod` for every target, so all exes (native +
+    // install:* cross-compiles) embed Lua with no system dependency.
+    linkVendoredLua(b, mod);
 
     // === kabelweb module (libcurl-backed HTTP) ===
     // Exposed as a separate module so Agent2.zig (in src/modules/agent/)
@@ -2605,11 +2628,10 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
         mod_tests_module.link_libc = true;
         if (test_target.result.os.tag == .linux) {
             mod_tests_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
-            // Lua hooks (src/agentic_loop/lua_bindings.zig + hooks.zig) —
-            // same Linux-only linkage as linkPlatformDeps above. Non-Linux
-            // test hosts skip it; hooks tests self-skip via comptime guard.
-            mod_tests_module.linkSystemLibrary("lua5.4", .{});
         }
+        // Vendored Lua for hooks tests (same sources as `mod` above;
+        // this is a separate root module so it needs its own attach).
+        linkVendoredLua(b, mod_tests_module);
     }
 
     const mod_tests = b.addTest(.{

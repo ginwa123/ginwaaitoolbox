@@ -1,7 +1,15 @@
-//! Single-file Lua hooks.
+//! Lua hooks: global + per-project single-file hooks.
 //!
-//! If `<config_dir>/hooks/register_hook.lua` exists, its `init(event, data)`
-//! function runs around every tool call:
+//! Two tiers, each an optional `register_hook.lua` whose `init(event, data)`
+//! runs around every tool call:
+//!   1. global:  `<config_dir>/hooks/register_hook.lua`
+//!   2. project: `<cwd>/.nalar/hooks/register_hook.lua` (the tool call's cwd)
+//!
+//! The global hook runs first, then the project hook sees whatever the
+//! global hook left (modified args / replaced output chain forward). The
+//! first `deny` wins and stops the chain. A `mock` (pre) also stops the
+//! chain and skips the real tool.
+//!
 //!   event = "pre_tool_use"  with data { tool_name, arguments, session_id, cwd, model }
 //!   event = "post_tool_use" with data { tool_name, arguments, output, session_id, cwd, model }
 //!
@@ -14,12 +22,11 @@
 //! bad return shape logs a line and behaves as if no hook existed. Only
 //! an explicit `deny`/`arguments`/`output` table changes behavior.
 //!
-//! Lua is only linked on Linux (see `build.zig` `linkPlatformDeps`); on
-//! other targets every entry point returns the no-op variant via a
-//! comptime guard so this file links without the Lua symbols.
+//! Lua is vendored (see `vendor/lua/README.vendor` + `build.zig`
+//! `linkVendoredLua`) and compiled for every target, so hooks work on
+//! Linux, macOS, and Windows with no system dependency.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const nalar = @import("nalarcore");
 const helpers = @import("helpers");
 
@@ -79,11 +86,10 @@ pub fn getHooksDir(allocator: std.mem.Allocator, environment: ?*const std.proces
     return try std.fs.path.join(allocator, &.{ config_dir, "hooks" });
 }
 
-/// Resolve the single hook file path (caller frees). Returns null when
-/// hooks are disabled: non-Linux target, no environment, or the file
-/// does not exist. Never errors on a missing file — absence is normal.
+/// Resolve the global hook file path (caller frees). Returns null when
+/// there is no environment or the file does not exist. Never errors on
+/// a missing file — absence is normal.
 pub fn resolveHookFile(allocator: std.mem.Allocator, environment: ?*const std.process.Environ.Map) !?[]u8 {
-    if (comptime builtin.os.tag != .linux) return null;
     const hooks_dir = try getHooksDir(allocator, environment) orelse return null;
     defer allocator.free(hooks_dir);
     const full = try std.fs.path.join(allocator, &.{ hooks_dir, HOOK_FILENAME });
@@ -95,8 +101,24 @@ pub fn resolveHookFile(allocator: std.mem.Allocator, environment: ?*const std.pr
     return full;
 }
 
-/// Run the pre-tool hook. Always returns a result (never errors to the
-/// caller beyond OOM): any hook problem degrades to `.allow`.
+/// Resolve the per-project hook file `<cwd>/.nalar/hooks/register_hook.lua`
+/// (caller frees). Returns null when cwd is empty or the file does not
+/// exist. No directory walk: the path is exact and predictable.
+pub fn resolveProjectHookFile(allocator: std.mem.Allocator, cwd: []const u8) !?[]u8 {
+    if (cwd.len == 0) return null;
+    const full = try std.fs.path.join(allocator, &.{ cwd, ".nalar", "hooks", HOOK_FILENAME });
+    errdefer allocator.free(full);
+    if (!helpers.fileExists(full)) {
+        allocator.free(full);
+        return null;
+    }
+    return full;
+}
+
+/// Run the pre-tool hooks: global first, then project (which sees the
+/// global hook's modifications). First `deny` or `mock` stops the chain.
+/// Always returns a result (never errors beyond OOM): any hook problem
+/// degrades to `.allow`.
 pub fn runPreHook(
     allocator: std.mem.Allocator,
     logger: *Logger,
@@ -105,20 +127,51 @@ pub fn runPreHook(
     arguments: []const u8,
     ctx: HookContext,
 ) !PreResult {
-    if (comptime builtin.os.tag != .linux) return .allow;
-    const hook_file_opt = resolveHookFile(allocator, environment) catch |err| {
-        logger.warnFmt("[hooks] resolve failed, hooks disabled: {s}", .{@errorName(err)});
-        return .allow;
+    var cur_args: []const u8 = arguments;
+    var owned_args: ?[]u8 = null;
+    defer if (owned_args) |o| allocator.free(o);
+
+    const files: [2]?[]u8 = .{
+        resolveHookFile(allocator, environment) catch |err| blk: {
+            logger.warnFmt("[hooks] global resolve failed, skipping: {s}", .{@errorName(err)});
+            break :blk null;
+        },
+        resolveProjectHookFile(allocator, ctx.cwd) catch |err| blk: {
+            logger.warnFmt("[hooks] project resolve failed, skipping: {s}", .{@errorName(err)});
+            break :blk null;
+        },
     };
-    const hook_file = hook_file_opt orelse return .allow;
-    defer allocator.free(hook_file);
-    return callPreHook(allocator, logger, hook_file, tool_name, arguments, ctx) catch |err| {
-        logger.debugFmt("[hooks] pre hook failed open: {s}", .{@errorName(err)});
-        return .allow;
-    };
+    defer {
+        for (files) |f| if (f) |p| allocator.free(p);
+    }
+
+    for (files) |hook_file_opt| {
+        const hook_file = hook_file_opt orelse continue;
+        const r = callPreHook(allocator, logger, hook_file, tool_name, cur_args, ctx) catch |err| {
+            logger.debugFmt("[hooks] pre hook {s} failed open: {s}", .{ hook_file, @errorName(err) });
+            continue;
+        };
+        switch (r) {
+            .allow => {},
+            .deny => |reason| return .{ .deny = reason },
+            .modify => |new_args| {
+                if (owned_args) |o| allocator.free(o);
+                owned_args = @constCast(new_args);
+                cur_args = new_args;
+            },
+            .mock => |out| return .{ .mock = out },
+        }
+    }
+
+    if (owned_args) |o| {
+        owned_args = null;
+        return .{ .modify = o };
+    }
+    return .allow;
 }
 
-/// Run the post-tool hook. Same fail-open contract as `runPreHook`.
+/// Run the post-tool hooks: same global-then-project chain as `runPreHook`.
+/// First `deny` stops the chain; `replace` outputs chain forward.
 pub fn runPostHook(
     allocator: std.mem.Allocator,
     logger: *Logger,
@@ -128,17 +181,46 @@ pub fn runPostHook(
     output: []const u8,
     ctx: HookContext,
 ) !PostResult {
-    if (comptime builtin.os.tag != .linux) return .keep;
-    const hook_file_opt = resolveHookFile(allocator, environment) catch |err| {
-        logger.warnFmt("[hooks] resolve failed, hooks disabled: {s}", .{@errorName(err)});
-        return .keep;
+    var cur_output: []const u8 = output;
+    var owned_output: ?[]u8 = null;
+    defer if (owned_output) |o| allocator.free(o);
+
+    const files: [2]?[]u8 = .{
+        resolveHookFile(allocator, environment) catch |err| blk: {
+            logger.warnFmt("[hooks] global resolve failed, skipping: {s}", .{@errorName(err)});
+            break :blk null;
+        },
+        resolveProjectHookFile(allocator, ctx.cwd) catch |err| blk: {
+            logger.warnFmt("[hooks] project resolve failed, skipping: {s}", .{@errorName(err)});
+            break :blk null;
+        },
     };
-    const hook_file = hook_file_opt orelse return .keep;
-    defer allocator.free(hook_file);
-    return callPostHook(allocator, logger, hook_file, tool_name, arguments, output, ctx) catch |err| {
-        logger.debugFmt("[hooks] post hook failed open: {s}", .{@errorName(err)});
-        return .keep;
-    };
+    defer {
+        for (files) |f| if (f) |p| allocator.free(p);
+    }
+
+    for (files) |hook_file_opt| {
+        const hook_file = hook_file_opt orelse continue;
+        const r = callPostHook(allocator, logger, hook_file, tool_name, arguments, cur_output, ctx) catch |err| {
+            logger.debugFmt("[hooks] post hook {s} failed open: {s}", .{ hook_file, @errorName(err) });
+            continue;
+        };
+        switch (r) {
+            .keep => {},
+            .deny => |reason| return .{ .deny = reason },
+            .replace => |new_output| {
+                if (owned_output) |o| allocator.free(o);
+                owned_output = @constCast(new_output);
+                cur_output = new_output;
+            },
+        }
+    }
+
+    if (owned_output) |o| {
+        owned_output = null;
+        return .{ .replace = o };
+    }
+    return .keep;
 }
 
 /// Load `hook_file`, call `init("pre_tool_use", data)`, parse the return.
@@ -316,8 +398,7 @@ fn logLuaError(logger: *Logger, L: ?*lua.LuaState, hook_file: []const u8, phase:
 }
 
 // ============================================================================
-// Tests (Linux-only: Lua is only linked there; the comptime guard keeps
-// this file linkable on macOS/Windows).
+// Tests (Lua is vendored for every target, so these run everywhere).
 // ============================================================================
 
 const testing = std.testing;
@@ -338,7 +419,6 @@ fn hookPath(allocator: std.mem.Allocator, dir: std.Io.Dir, io: std.Io, name: []c
 }
 
 test "hooks: missing file resolves to null (disabled)" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
@@ -353,7 +433,6 @@ test "hooks: missing file resolves to null (disabled)" {
 }
 
 test "hooks: existing register_hook.lua resolves" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
@@ -378,7 +457,6 @@ test "hooks: existing register_hook.lua resolves" {
 }
 
 test "hooks: file without init is allow/keep" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -396,7 +474,6 @@ test "hooks: file without init is allow/keep" {
 }
 
 test "hooks: nil return is allow/keep" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -411,7 +488,6 @@ test "hooks: nil return is allow/keep" {
 }
 
 test "hooks: pre deny returns reason" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -427,7 +503,6 @@ test "hooks: pre deny returns reason" {
 }
 
 test "hooks: pre modify with valid JSON" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -443,7 +518,6 @@ test "hooks: pre modify with valid JSON" {
 }
 
 test "hooks: pre modify with invalid JSON fails open to allow" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -458,7 +532,6 @@ test "hooks: pre modify with invalid JSON fails open to allow" {
 }
 
 test "hooks: pre mock output skips exec" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -474,7 +547,6 @@ test "hooks: pre mock output skips exec" {
 }
 
 test "hooks: post replace swaps output" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -490,7 +562,6 @@ test "hooks: post replace swaps output" {
 }
 
 test "hooks: broken syntax fails open" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -510,7 +581,6 @@ test "hooks: broken syntax fails open" {
 }
 
 test "hooks: non-table return is ignored" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -525,7 +595,6 @@ test "hooks: non-table return is ignored" {
 }
 
 test "hooks: data table reaches Lua (tool_name visible)" {
-    if (comptime builtin.os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     var lg = testLogger(allocator);
     var tmp = testing.tmpDir(.{});
@@ -538,4 +607,159 @@ test "hooks: data table reaches Lua (tool_name visible)" {
     defer pre.deinit(allocator);
     try testing.expect(pre == .mock);
     try testing.expectEqualStrings("saw:read_file:pre_tool_use", pre.mock);
+}
+
+/// Write a per-project hook at <proj>/.nalar/hooks/register_hook.lua.
+/// Returns the project root absolute path (owned).
+fn writeProjectHook(allocator: std.mem.Allocator, proj: std.Io.Dir, io: std.Io, content: []const u8) ![]u8 {
+    try proj.createDirPath(io, ".nalar/hooks");
+    var hooks_dir = try proj.openDir(io, ".nalar/hooks", .{});
+    defer hooks_dir.close(io);
+    try writeHookFile(hooks_dir, io, HOOK_FILENAME, content);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try proj.realPath(io, &path_buf);
+    return try allocator.dupe(u8, path_buf[0..n]);
+}
+
+fn emptyHomeEnv(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) !std.process.Environ.Map {
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    var env_map = std.process.Environ.Map.init(allocator);
+    errdefer env_map.deinit();
+    try env_map.put("HOME", path_buf[0..n]);
+    return env_map;
+}
+
+test "hooks: project-only hook denies without global" {
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var home_tmp = testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var env_map = try emptyHomeEnv(allocator, &home_tmp);
+    defer env_map.deinit();
+
+    var proj_tmp = testing.tmpDir(.{});
+    defer proj_tmp.cleanup();
+    const proj_root = try writeProjectHook(allocator, proj_tmp.dir, testing.io, "function init(event, data) if event == 'pre_tool_use' then return { deny = 'project says no' } end return nil end\n");
+    defer allocator.free(proj_root);
+
+    const pre = try runPreHook(allocator, &lg, &env_map, "bash", "{}", .{ .cwd = proj_root });
+    defer pre.deinit(allocator);
+    try testing.expect(pre == .deny);
+    try testing.expectEqualStrings("project says no", pre.deny);
+}
+
+test "hooks: global modify chains into project" {
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var home_tmp = testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try home_tmp.dir.realPath(testing.io, &path_buf);
+    const home = path_buf[0..n];
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", home);
+    try home_tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
+    var global_dir = try home_tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
+    defer global_dir.close(testing.io);
+    try writeHookFile(global_dir, testing.io, HOOK_FILENAME, "function init(event, data) return { arguments = '{\"v\":\"global\"}' } end\n");
+
+    var proj_tmp = testing.tmpDir(.{});
+    defer proj_tmp.cleanup();
+    // Project echoes the args it RECEIVED — proves it saw the global edit.
+    const proj_root = try writeProjectHook(allocator, proj_tmp.dir, testing.io, "function init(event, data) return { output = 'proj saw:' .. data.arguments } end\n");
+    defer allocator.free(proj_root);
+
+    const pre = try runPreHook(allocator, &lg, &env_map, "bash", "{\"v\":\"orig\"}", .{ .cwd = proj_root });
+    defer pre.deinit(allocator);
+    try testing.expect(pre == .mock);
+    try testing.expectEqualStrings("proj saw:{\"v\":\"global\"}", pre.mock);
+}
+
+test "hooks: global deny stops project" {
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var home_tmp = testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try home_tmp.dir.realPath(testing.io, &path_buf);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", path_buf[0..n]);
+    try home_tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
+    var global_dir = try home_tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
+    defer global_dir.close(testing.io);
+    try writeHookFile(global_dir, testing.io, HOOK_FILENAME, "function init(event, data) return { deny = 'global block' } end\n");
+
+    var proj_tmp = testing.tmpDir(.{});
+    defer proj_tmp.cleanup();
+    // Would mock if it ran — the deny must win instead.
+    const proj_root = try writeProjectHook(allocator, proj_tmp.dir, testing.io, "function init(event, data) return { output = 'project ran' } end\n");
+    defer allocator.free(proj_root);
+
+    const pre = try runPreHook(allocator, &lg, &env_map, "bash", "{}", .{ .cwd = proj_root });
+    defer pre.deinit(allocator);
+    try testing.expect(pre == .deny);
+    try testing.expectEqualStrings("global block", pre.deny);
+}
+
+test "hooks: broken project fails open" {
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var home_tmp = testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var env_map = try emptyHomeEnv(allocator, &home_tmp);
+    defer env_map.deinit();
+
+    var proj_tmp = testing.tmpDir(.{});
+    defer proj_tmp.cleanup();
+    const proj_root = try writeProjectHook(allocator, proj_tmp.dir, testing.io, "function init(((\n");
+    defer allocator.free(proj_root);
+
+    const pre = try runPreHook(allocator, &lg, &env_map, "bash", "{}", .{ .cwd = proj_root });
+    defer pre.deinit(allocator);
+    try testing.expect(pre == .allow);
+}
+
+test "hooks: post replace chains, project wins" {
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var home_tmp = testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try home_tmp.dir.realPath(testing.io, &path_buf);
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("HOME", path_buf[0..n]);
+    try home_tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
+    var global_dir = try home_tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
+    defer global_dir.close(testing.io);
+    try writeHookFile(global_dir, testing.io, HOOK_FILENAME, "function init(event, data) if event == 'post_tool_use' then return { output = 'GLOBAL' } end return nil end\n");
+
+    var proj_tmp = testing.tmpDir(.{});
+    defer proj_tmp.cleanup();
+    const proj_root = try writeProjectHook(allocator, proj_tmp.dir, testing.io, "function init(event, data) if event == 'post_tool_use' then return { output = 'PROJECT:' .. data.output } end return nil end\n");
+    defer allocator.free(proj_root);
+
+    const post = try runPostHook(allocator, &lg, &env_map, "bash", "{}", "orig", .{ .cwd = proj_root });
+    defer post.deinit(allocator);
+    try testing.expect(post == .replace);
+    try testing.expectEqualStrings("PROJECT:GLOBAL", post.replace);
+}
+
+test "hooks: empty cwd skips project tier" {
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var home_tmp = testing.tmpDir(.{});
+    defer home_tmp.cleanup();
+    var env_map = try emptyHomeEnv(allocator, &home_tmp);
+    defer env_map.deinit();
+
+    const pre = try runPreHook(allocator, &lg, &env_map, "bash", "{}", .{ .cwd = "" });
+    defer pre.deinit(allocator);
+    try testing.expect(pre == .allow);
+    const post = try runPostHook(allocator, &lg, &env_map, "bash", "{}", "out", .{ .cwd = "" });
+    defer post.deinit(allocator);
+    try testing.expect(post == .keep);
 }
