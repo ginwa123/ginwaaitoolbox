@@ -3,7 +3,17 @@ import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Re
 import { marked } from 'marked'
 import * as api from '../../api'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
-import { stripThinkingTags, isHtmlTags, VirtualScroller, renderResponse } from '@/helpers'
+import {
+  stripThinkingTags,
+  isHtmlTags,
+  VirtualScroller,
+  renderResponse,
+  CHAT_HTML_FRAME_RESIZE_SOURCE,
+  autoResizeScript,
+  clampFrameHeight,
+  findSenderFrame,
+  readAutoResizeHeight,
+} from '@/helpers'
 import {
   buildScrollContext,
   createScrollLogger,
@@ -268,22 +278,110 @@ const extractHtmlBlocks = (content: string): HtmlSegment[] => {
 }
 
 /**
- * Build the srcdoc document for an html block. Full documents pass
- * through verbatim; fragments get wrapped in a minimal shell with sane
- * defaults (margin, system font, white background).
+ * The `<html>` frame is a separate document with a NULL origin, so the
+ * app's CSS custom properties do NOT cascade into it — the theme values
+ * have to be inlined into the srcdoc. Read them from the app's own tokens
+ * (`src/style.css`) so the block always matches the surrounding transcript;
+ * the literals below are the Kanagawa Dragon fallbacks for when there is no
+ * DOM (vitest/jsdom, SSR) or a token is unavailable.
+ */
+interface HtmlFramePalette {
+  bg: string
+  fg: string
+  muted: string
+  border: string
+  link: string
+}
+
+const HTML_FRAME_PALETTE_FALLBACK: HtmlFramePalette = {
+  bg: '#1D1C19', // --semantic-card-bg
+  fg: '#c5c9c5', // --semantic-text
+  muted: '#a6a69c', // --semantic-text-muted
+  border: '#282727', // --color-border
+  link: '#8ba4b0', // --semantic-link
+}
+
+let htmlFramePalette: HtmlFramePalette | null = null
+
+const readCssVar = (name: string, fallback: string): string => {
+  if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return value || fallback
+}
+
+/** Memoized — the theme is fixed for the app's lifetime and this runs for
+ *  every `<html>` block on every assistant render. */
+const resolveHtmlFramePalette = (): HtmlFramePalette => {
+  if (htmlFramePalette) return htmlFramePalette
+  const fallback = HTML_FRAME_PALETTE_FALLBACK
+  htmlFramePalette = {
+    bg: readCssVar('--semantic-card-bg', fallback.bg),
+    fg: readCssVar('--semantic-text', fallback.fg),
+    muted: readCssVar('--semantic-text-muted', fallback.muted),
+    border: readCssVar('--color-border', fallback.border),
+    link: readCssVar('--semantic-link', fallback.link),
+  }
+  return htmlFramePalette
+}
+
+/**
+ * Build the srcdoc document for an html block.
+ *
+ * Full documents (`<!doctype html>` / `<html ...>`) pass through verbatim.
+ * Fragments get a minimal shell carrying three things the fragment itself
+ * cannot know:
+ *   1. The app's THEME (see resolveHtmlFramePalette) — a hardcoded white
+ *      body turned an LLM's HTML report into a bright slab in the dark
+ *      transcript.
+ *   2. `color-scheme: dark` — otherwise native scrollbars and form
+ *      controls inside the frame render light.
+ *   3. The auto-resize reporter (helpers/iframeAutoResize.ts) — the parent
+ *      grows the frame to its content instead of clipping it behind an
+ *      inner scrollbar at the browser's 150 px default height.
  */
 const buildHtmlSrcdoc = (block: string): string => {
   const trimmed = block.trim()
   if (/<!doctype html|<html[\s>]/i.test(trimmed)) {
     return trimmed
   }
+  const p = resolveHtmlFramePalette()
   return (
     '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-    '<style>body{margin:8px;font-family:system-ui,sans-serif;background:#fff;color:#111}</style>' +
+    '<style>' +
+    ':root{color-scheme:dark}' +
+    'html,body{margin:0;padding:0}' +
+    `body{font-family:system-ui,sans-serif;background:${p.bg};color:${p.fg};margin:8px}` +
+    `a{color:${p.link}}` +
+    'img{max-width:100%}' +
+    'code,pre{font-family:ui-monospace,"SF Mono",Menlo,monospace;' +
+    'background:rgba(255,255,255,.07);border-radius:3px}' +
+    'code{padding:.1em .3em}' +
+    'pre{padding:.6em .8em;overflow-x:auto}' +
+    `table{border-collapse:collapse}th,td{border:1px solid ${p.border};padding:4px 8px}` +
+    `hr{border:none;border-top:1px solid ${p.border}}` +
+    `blockquote{margin:.6em 0;padding-left:.8em;border-left:3px solid ${p.border};color:${p.muted}}` +
+    '</style>' +
     '</head><body>' +
     trimmed +
-    '</body></html>'
+    '</body>' +
+    autoResizeScript(CHAT_HTML_FRAME_RESIZE_SOURCE) +
+    '</html>'
   )
+}
+
+/**
+ * The reporter script inside each frame posts its content height; grow the
+ * frame that sent it. Identity-matching on `contentWindow` is the only
+ * handle a null-origin sandbox leaves the parent (see
+ * helpers/iframeAutoResize.ts). Without this a long `<html>` block renders
+ * at the browser's 150 px default inside its own scrollbar.
+ */
+const onHtmlFrameResize = (event: MessageEvent): void => {
+  const reported = readAutoResizeHeight(event, CHAT_HTML_FRAME_RESIZE_SOURCE)
+  if (reported === null) return
+  const frame = findSenderFrame(document, event, 'iframe.chat-html-frame')
+  if (!frame) return
+  frame.style.height = `${clampFrameHeight(reported)}px`
 }
 
 // Detect a compaction summary message — a user-role message whose
@@ -2685,11 +2783,17 @@ onUnmounted(() => {
   disconnectSse()
   stopGitStatusPoll()
   document.removeEventListener('click', closeOnOutsideClick)
+  window.removeEventListener('message', onHtmlFrameResize)
 })
 
 // Load available profiles (called once on mount)
 loadProfiles()
 document.addEventListener('click', closeOnOutsideClick)
+// `<html>` blocks auto-size themselves via postMessage (see
+// onHtmlFrameResize above). Registered here — paired with the
+// removeEventListener in onUnmounted — for the same lifetime as the
+// other window-level listener this view owns.
+window.addEventListener('message', onHtmlFrameResize)
 
 // When the session changes, load the current selection from the backend
 watch(
@@ -4110,15 +4214,21 @@ const compactSession = async () => {
 
 /* ─── <html> wrapper-tag sandboxed iframe (2026-08-23 html-tag-support) ──
    Live HTML blocks from the LLM render inside a null-origin iframe
-   (sandbox="allow-scripts", no allow-same-origin). White background so
-   arbitrary LLM pages read as "a page", rounded to match chat cards. */
+   (sandbox="allow-scripts", no allow-same-origin). The frame paints the
+   app's CARD surface, NOT white: an LLM that answers in HTML mode (the
+   response-formatting prompt explicitly offers it) is still part of the
+   transcript, and a hardcoded #fff read as a bright slab in the dark
+   theme. `color-scheme: dark` keeps the frame's native scrollbars dark
+   too. Height is set inline by the frame's own auto-resize report
+   (helpers/iframeAutoResize.ts) once it has measured its content. */
 .chat-html-frame {
   display: block;
   width: 100%;
   min-height: 120px;
   border: 1px solid var(--color-border, #ddd);
   border-radius: 8px;
-  background: #fff;
+  background: var(--semantic-card-bg, #1D1C19);
+  color-scheme: dark;
 }
 
 /* ─── Tool-output cards, de-bubbled (2026-08-23) ────────────────────────
