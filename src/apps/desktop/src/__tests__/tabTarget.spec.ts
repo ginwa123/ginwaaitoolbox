@@ -53,17 +53,23 @@ describe('tabKeyOf', () => {
     ).toBe('ws:ws_1:item_7:page_2')
   })
 
-  it('treats a task chat inside a board as the board itself', () => {
-    // The chat dialog is rendered by the same AppLayout branch as the
-    // board, so it must not open a second tab for the same item.
-    const withDialog = tabKeyOf('/app', {
+  it('gives a task chat its own tab instead of reusing the item tab', () => {
+    // A task chat is a session (task.id == session.id) with its own view, so
+    // selecting another task must not replace the tab the user was reading.
+    const withTask = tabKeyOf('/app', {
       view: 'workspace',
       workspaceId: 'ws_1',
       itemId: 'item_7/chat/task_9',
     })
+    const otherTask = tabKeyOf('/app', {
+      view: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_7/chat/task_10',
+    })
     const bareBoard = tabKeyOf('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
-    expect(withDialog).toBe('ws:ws_1:item_7')
-    expect(withDialog).toBe(bareBoard)
+    expect(withTask).toBe('ws:ws_1:item_7:chat:task_9')
+    expect(withTask).not.toBe(otherTask)
+    expect(withTask).not.toBe(bareBoard)
   })
 
   it('keys the legacy view=task shape as a chat', () => {
@@ -233,7 +239,7 @@ describe('parseTabList', () => {
       ),
     )
     const tab = list.tabs[0]
-    expect(tab?.key).toBe('ws:ws_1:item_7')
+    expect(tab?.key).toBe('ws:ws_1:item_7:chat:task_9')
     expect(tab?.kind).toBe('workspace')
     expect(tab?.title).toBe('Workspace')
   })

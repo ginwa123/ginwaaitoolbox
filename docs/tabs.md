@@ -105,11 +105,18 @@ Two navigations that mean the same target focus one tab:
 | `view=chat` with no session (the chats list) | `home` |
 | `view=chat&session=X` | `chat:X` |
 | `view=workspace&workspaceId=W&itemId=I[&pageId=P]` | `ws:W:<bare I>[:P]` |
+| `view=workspace&itemId=I/chat/T` (a task chat) | `ws:W:<bare I>:chat:T` |
 | legacy `view=task&task=T` | `chat:T` |
 
-`<bare I>` strips the `/chat/<taskId>` suffix, so **opening a task chat
-inside a board focuses the board's tab** — the dialog renders inside the
-same board view, so a second tab would be a duplicate of the same place.
+**A task chat is a session** (`task.id == session.id`, migration 052) and a view
+of its own, so it gets **its own tab**: selecting another task in the same item
+opens (or focuses) a second tab instead of replacing the one you were reading.
+Going back to the item itself focuses the item's tab again.
+
+A brand-new chat starts life with a synthetic `session-<timestamp>` id and
+receives the backend's real id on the first message. The tab follows that change
+**in place** (same tab id, same position, new key) — it is never left behind as a
+dead pointer, and no duplicate tab appears.
 
 ### Tab labels
 

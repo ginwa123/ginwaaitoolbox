@@ -475,6 +475,11 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
   if (activeChatId.value === `chat-${oldId}`) {
     navigationStore.setActiveChat(newId)
   }
+  // Keep the strip's pointer in step: a brand-new chat starts life with the
+  // synthetic `session-<timestamp>` id and gets its real one on the first
+  // message, so a tab left keyed on the old id would be dead — and the route
+  // funnel would add a second tab for the same chat.
+  tabsStore.renameChatTab(oldId, newId)
   sidebarRef.value?.updateChatId(oldId, newId)
 }
 
@@ -2322,6 +2327,7 @@ defineExpose({
   handleDesignCreateElement,
   applyActiveTabToUrl,
   syncFromRoute,
+  handleUpdateChatId,
 })
 </script>
 

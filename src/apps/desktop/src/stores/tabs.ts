@@ -440,6 +440,38 @@ export const useTabsStore = defineStore('tabs', () => {
     offTitleFeed = null
   }
 
+  /**
+   * Follow a session-id change *in place*. `ChatsList` mints a synthetic
+   * `session-<timestamp>` id for a brand-new chat; when the real id arrives
+   * (the `update-chat-id` path), a tab still keyed on the old id is a dead
+   * pointer — and the route funnel would add a second tab for the same chat.
+   * Ids are stable across a rename, so the strip (and the user's muscle
+   * memory) sees one tab that simply became the real chat.
+   */
+  function renameChatTab(oldSessionId: string, newSessionId: string): boolean {
+    if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return false
+    const oldKey = `chat:${oldSessionId}`
+    const newKey = `chat:${newSessionId}`
+    const renamed = byKey(oldKey)
+    if (!renamed) return false
+
+    const alreadyOpen = byKey(newKey)
+    if (alreadyOpen && alreadyOpen.id !== renamed.id) {
+      // The live chat is already open: drop the dead pointer and focus it.
+      close(renamed.id)
+      activate(alreadyOpen.id)
+      return true
+    }
+
+    tabs.value = tabs.value.map((tab) =>
+      tab.id === renamed.id
+        ? { ...tab, key: newKey, query: { ...tab.query, session: newSessionId } }
+        : tab,
+    )
+    persist()
+    return true
+  }
+
   /** Live title feed (session SSE + the chats list). */
   function setChatTitle(sessionId: string, name: string): void {
     const tab = tabs.value.find((candidate) => candidate.kind === 'chat' && candidate.key === `chat:${sessionId}`)
@@ -520,6 +552,7 @@ export const useTabsStore = defineStore('tabs', () => {
     prev,
     reopenLastClosed,
     syncFromTarget,
+    renameChatTab,
     setEnabled,
     openHomeTab,
     initTitleFeed,

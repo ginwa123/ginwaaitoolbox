@@ -391,7 +391,7 @@ describe('tabs store', () => {
       expect(tabs.activeTabId).toBe(a.id)
     })
 
-    it('treats a task chat as its board', () => {
+    it('opens a separate tab for a task chat', () => {
       const tabs = useTabsStore()
       const board1 = tabs.open({ query: board('item_7') })
       const result = tabs.syncFromTarget('/app', {
@@ -399,10 +399,19 @@ describe('tabs store', () => {
         workspaceId: 'ws_1',
         itemId: 'item_7/chat/task_9',
       })
-      expect(result.query.tab).toBe(board1.id)
+      expect(result.query.tab).not.toBe(board1.id)
       expect(result.changed).toBe(true)
-      expect(tabs.tabCount).toBe(2)
-      expect(tabs.activeTabId).toBe(board1.id)
+      expect(tabs.tabCount).toBe(3)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+      // and re-selecting the same task focuses it rather than adding another
+      const again = tabs.syncFromTarget('/app', {
+        view: 'workspace',
+        workspaceId: 'ws_1',
+        itemId: 'item_7/chat/task_9',
+        tab: String(result.query.tab),
+      })
+      expect(again.changed).toBe(false)
+      expect(tabs.tabCount).toBe(3)
     })
 
     it('never touches the URL of an overlay view and creates no tab', () => {
@@ -436,6 +445,50 @@ describe('tabs store', () => {
       expect(tabs.activeTab?.kind).toBe('kanban-settings')
       expect(tabs.activeTab?.key).toBe('ks:item_7')
       expect(tabs.tabCount).toBe(3)
+    })
+  })
+
+  describe('renameChatTab (synthetic → real session id)', () => {
+    it('renames the tab in place, keeping its identity and position', () => {
+      const tabs = useTabsStore()
+      const first = tabs.open({ query: chat('sa') })
+      const synthetic = tabs.open({ query: chat('session-1789000000000'), title: 'New Chat' })
+      tabs.activate(synthetic.id)
+
+      expect(tabs.renameChatTab('session-1789000000000', 'real-7')).toBe(true)
+
+      const renamed = tabs.tabs.find((t) => t.id === synthetic.id)
+      expect(renamed?.key).toBe('chat:real-7')
+      expect(renamed?.query).toEqual({ view: 'chat', session: 'real-7' })
+      expect(renamed?.title).toBe('New Chat')
+      expect(tabs.tabs.map((t) => t.id)).toEqual([tabs.tabs[0]?.id, first.id, synthetic.id])
+      expect(tabs.activeTabId).toBe(synthetic.id)
+      // and it persists, so a reload does not resurrect the dead id
+      expect(rawList()?.tabs.map((t) => t.key)).toContain('chat:real-7')
+    })
+
+    it('drops the dead pointer when the real chat is already open', () => {
+      const tabs = useTabsStore()
+      const real = tabs.open({ query: chat('real-7'), title: 'Real' })
+      const synthetic = tabs.open({ query: chat('session-1'), title: 'New Chat' })
+      tabs.activate(synthetic.id)
+
+      expect(tabs.renameChatTab('session-1', 'real-7')).toBe(true)
+
+      expect(tabs.tabs.some((t) => t.id === synthetic.id)).toBe(false)
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTabId).toBe(real.id)
+    })
+
+    it('is a no-op when there is nothing to rename', () => {
+      const tabs = useTabsStore()
+      tabs.open({ query: chat('sa') })
+      const before = tabs.tabs.map((t) => t.key)
+      expect(tabs.renameChatTab('nope', 'real-7')).toBe(false)
+      expect(tabs.renameChatTab('sa', 'sa')).toBe(false)
+      expect(tabs.renameChatTab('', 'real-7')).toBe(false)
+      expect(tabs.renameChatTab('sa', '')).toBe(false)
+      expect(tabs.tabs.map((t) => t.key)).toEqual(before)
     })
   })
 

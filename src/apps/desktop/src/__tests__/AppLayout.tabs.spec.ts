@@ -245,7 +245,7 @@ describe('AppLayout — tab mode', () => {
     expect(replaceCalls.length).toBe(settled)
   })
 
-  it('treats a task chat inside a board as the board tab', async () => {
+  it('opens a separate tab for a task chat inside an item', async () => {
     setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
     mountApp()
     await settle()
@@ -255,9 +255,15 @@ describe('AppLayout — tab mode', () => {
 
     setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' })
     await settle()
-    expect(tabs.tabCount).toBe(2)
-    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+    expect(tabs.tabCount).toBe(3)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
     expect(route.query.tab).toBe(tabs.activeTabId)
+
+    // going back to the item focuses its own tab again
+    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
+    await settle()
+    expect(tabs.tabCount).toBe(3)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
   })
 
   it('repairs a ?tab= that names a different target', async () => {
@@ -354,6 +360,32 @@ describe('AppLayout — tab mode', () => {
     await settle()
     expect(tabs.activeTabId).toBe(background?.id)
     expect(route.query).toEqual({ view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7', tab: background?.id })
+  })
+
+  it('follows a session-id change in place instead of leaving a dead tab', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const sidebar = wrapper.findComponent(Sidebar)
+
+    sidebar.vm.$emit('navigate', 'chat-session-1789000000000', 'New Chat')
+    await settle()
+    expect(tabs.tabCount).toBe(2)
+    const synthetic = tabs.activeTab
+    expect(synthetic?.key).toBe('chat:session-1789000000000')
+
+    // the backend assigns the real id on the first message → update-chat-id
+    const app = wrapper.vm as unknown as { handleUpdateChatId: (oldId: string, newId: string) => void }
+    app.handleUpdateChatId('session-1789000000000', 'real-7')
+    setRoute('/app', { view: 'chat', session: 'real-7' })
+    await settle()
+
+    // one chat, one tab: the synthetic key is gone and the tab kept its identity
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTabId).toBe(synthetic?.id)
+    expect(tabs.byKey('chat:real-7')?.id).toBe(synthetic?.id)
+    expect(tabs.byKey('chat:session-1789000000000')).toBeNull()
+    expect(route.query.tab).toBe(synthetic?.id)
   })
 
   it('creates no tab, renders no strip and never adds ?tab= when tab mode is off', async () => {

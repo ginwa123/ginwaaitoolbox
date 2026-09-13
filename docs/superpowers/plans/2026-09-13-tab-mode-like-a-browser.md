@@ -405,4 +405,18 @@ and the python harness were correctly not run):
 7. **TabBar has no `api` import at all**, so "closing a tab never stops an
    agent" is structural rather than assertion-based (verified by grep); the
    close tooltip states it in the UI.
+8. **Post-review correction (user-reported): a task chat now gets its own tab.**
+   The plan keyed `itemId=I/chat/T` onto the item's tab (`ws:W:I`), on the
+   reasoning that the chat dialog renders inside the board view. The user
+   reported the consequence: selecting another task/session appeared to
+   *replace* the tab they were reading, because a task IS a session
+   (`task.id == session.id`, migration 052). Now `ws:W:I:chat:T`, so each task
+   chat is its own tab and re-selecting focuses it. The plan's §2 identity table
+   and `docs/tabs.md` were updated with it.
+9. **`renameChatTab(oldId, newId)`** was added and wired into
+   `AppLayout.handleUpdateChatId`. Without it, the synthetic
+   `session-<timestamp>` id of a brand-new chat left a dead tab behind while the
+   funnel opened a second tab for the real session id — i.e. two tabs for one
+   chat. Ids are preserved across the rename; if the real chat is already open,
+   the dead pointer is dropped and the live tab focused.
 

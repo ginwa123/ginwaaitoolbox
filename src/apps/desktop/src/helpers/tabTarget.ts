@@ -151,9 +151,14 @@ export function tabKeyOf(path: string, query: Record<string, unknown> | null | u
   if (view === 'chat') return q.session ? `chat:${q.session}` : 'home'
   if (view === 'task') return q.task ? `chat:${q.task}` : 'home'
   if (view === 'workspace') {
-    const itemId = parseItemIdWithChat(q.itemId ?? '').itemId
-    const parts = ['ws', q.workspaceId ?? '', itemId]
+    const parsed = parseItemIdWithChat(q.itemId ?? '')
+    const parts = ['ws', q.workspaceId ?? '', parsed.itemId]
     if (q.pageId) parts.push(q.pageId)
+    // A task chat IS a session (task.id == session.id, migration 052) and its
+    // own view, so it gets its own tab. Keying it onto the item's tab made
+    // selecting another task reuse — i.e. visibly replace — the tab the user
+    // was reading.
+    if (parsed.chatTaskId) parts.push(`chat:${parsed.chatTaskId}`)
     return parts.join(':')
   }
   return `view:${view}`
