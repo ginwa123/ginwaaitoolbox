@@ -19,6 +19,7 @@ Three independent defects, all in the event loop / ownership layer:
 | **F1** | `main()` hands the TUI `init.arena.allocator()` — the *process-lifetime* arena, whose `free()` only ever reclaims the most recent allocation | unbounded RSS growth; eventually the machine swaps and everything slows down | **+1.76 MB/s while completely idle**; **+364 KB per keystroke** at 200×50; **+2.78 MB per keystroke** at 400×100 (16 MB → 442 MB in ~40 s of typing) |
 | **F2** | `Reader.readSliceShort()` is used to drain stdin. Despite the name it keeps reading until its destination buffer is **completely full**, so each keypress is followed by further reads that wait for the tty's `VTIME` (100 ms) to expire | every keystroke and every wheel notch has a ~100 ms delay behind it | poll wakes **0.0 ms** after the keypress, the following read returns **108 ms** later ⇒ keystroke latency **p50 104 ms** |
 | **F3** | The loop `read()` → (nothing) → `io.sleep(100 ms)` → tick → draw, with no `poll()` | keystrokes and ticks fight each other; latency floor, drifting 500 ms poll cadence | idle redraw cadence 10/s; latency unchanged (104 ms) even at 442 MB RSS, while per-draw CPU is only ~2.7 ms |
+| **F7** | "Is this turn over?" was decided by scanning the **whole** polled array for *any* assistant row with `finish_reason="stop"` — but the poll returns the session's last 100 messages, including the *previous* turn's completed reply (found after the first pass, see §3.7) | **the second and every later turn in a session renders nothing** — no user message, no reply — while the desktop (SSE) shows the answer exists | fake-backend repro: turn 1 renders, turn 2's `SECOND-TURN-REPLY` never reaches the pty; the client stops polling ~500 ms after the send |
 
 After the fixes (200×50 terminal, same pty harness):
 
@@ -151,6 +152,46 @@ Once scrollback hit the 10 000-line cap, every further line did
 `lines.orderedRemove(0)`, i.e. a `memmove` of the whole 10 000-entry array
 (240 KB) per line — a 60-line streamed reply paid 60 full array shifts.
 
+### F7 — the "turn is over" scan read the previous turn's stop
+
+Reported after the first pass: *"next prompt response not showup in tui"* — turn 1
+rendered (user → assistant → tool card → assistant), turn 2 showed neither the
+user's message nor the reply, while the desktop client showed the answer existed.
+
+`App.onMessages` decided the turn was over with:
+
+```zig
+if (self.is_streaming) {
+    while (idx < arr.items.len) : (idx += 1) {
+        ... if (assistant row has finish_reason == "stop") { self.is_streaming = false; break; }
+    }
+}
+```
+
+`transport.getMessages` polls `GET /api/llm/session/:id/messages?limit=100&direction=asc`,
+so `arr` is the **whole session window** — it always contains the previous turn's
+completed reply. On the first poll of turn 2 (≈500 ms after Enter) the scan found
+turn 1's `stop`, set `is_streaming = false`, and `handleTick` stopped returning
+`poll_messages` — so nothing else was ever fetched or rendered. Turn 1 only worked
+because the array contained no earlier `stop`; every subsequent turn in a session
+was dead. It also explains the missing *user* message: the queued row is inserted
+by the backend worker, so if the first poll predates that insert, the single poll
+the client ever made contained no news at all.
+
+Reproduced deterministically with a fake backend serving two turns
+(`tests/functional/tui_turn_streaming_test.py`): turn 1 renders, turn 2's
+`SECOND-TURN-REPLY` never reaches the pty. Fix: decide "turn over" in the same
+render pass and only for rows that are **new in this poll** — a stop row that has
+already been rendered is history. The `finish_reason`-less legacy fallback ("the
+last row is an assistant row") is scoped the same way.
+
+Alongside it, a cosmetic bug visible in the same screenshot: the status bar was
+written exactly once (`init` → `"new session"`), so it stayed `"new session"`
+forever, and the left slot was overwritten with `"session {session_id}"` against
+an id that already starts with `session-`, rendering
+`session session-1789312667194`. `onSendOk` now writes the id once, in the right
+slot, and leaves the app name alone.
+
 ### Ruled out (measured, not assumed)
 
 * **CPU-bound rendering** — per-draw CPU is 2.0–2.7 ms at 400×100 and ~0.7 ms at
@@ -176,8 +217,9 @@ Once scrollback hit the 10 000-line cap, every further line did
 | `src/apps/cli/src/tui/program.zig` | Event loop waits in `poll()` for the next stdin byte **or** the next tick (whichever first); reads once with `readVec` (F2); passes real elapsed time to `.tick`; ticks are serviced between input bursts; `draw()` transfers frame ownership instead of allocating + copying (F5); `renderDiff` split out so the allocation behaviour is unit-testable. |
 | `src/apps/cli/src/tui/terminal.zig` | Documented why `VMIN=0/VTIME=1` stays (with `readVec` the fallback timer can never fire; `VMIN=1` would hang on a stale readiness) and that it was *not* the cause of the old latency floor. |
 | `src/apps/cli/src/tui/widgets.zig` | `wrapText` returns **borrowed subslices** instead of `dupe`s; the render path reuses one `wrap_scratch` chunk list across lines **and frames**; `wrappedHeight` counts rows without allocating; batched scrollback trim with `enforceCap()` (F6). |
-| `src/apps/cli/src/tui/app.zig` | Calls `Viewport.enforceCap()`; the per-message render arena is `defer`-freed on every path. |
+| `src/apps/cli/src/tui/app.zig` | Calls `Viewport.enforceCap()`; the per-message render arena is `defer`-freed on every path. **F7:** the "turn over" decision moved into the render pass and is restricted to rows *new in this poll*, so a previous turn's `finish_reason="stop"` can no longer end the next one; `onSendOk` fixes the duplicated/stale status-bar text. |
 | `tests/functional/tui_perf_probe.py`, `tests/functional/tui_perf_test.py` | New pty regression gate: idle leak < 256 KB/s, typing leak < 32 KB/key, keystroke p50 < 30 ms. Fails on the pre-fix binary (1 638 KB/s, 103.8 ms), passes now. |
+| `tests/functional/tui_turn_streaming_test.py` | New pty regression gate for F7: a fake backend serves two turns and asserts both turns' user text and replies reach the terminal (fails pre-fix). |
 
 Unit-level regression tests added next to the code they guard:
 
@@ -190,6 +232,10 @@ Unit-level regression tests added next to the code they guard:
   by `testing.allocator`); a second draw of an unchanged model emits only the
   cursor park (proves the swap keeps the *rendered* frame as the diff reference);
   `tickElapsedMs` saturates and clamps after a suspend.
+* `app.zig` — a previous turn's `finish_reason="stop"` does not end the next turn
+  (F7); a poll that raced ahead of the user-row insert keeps streaming; the
+  `finish_reason`-less fallback is scoped to new rows too; the status bar shows
+  the session id once, in the right slot.
 
 ## 5. Before / after (same harness, same machine, 200×50 unless noted)
 
@@ -211,12 +257,14 @@ AFTER   fake backend: user + assistant + wrapped line + tool card all render,
 ## 6. Verification
 
 ```bash
-zig build test:tui --summary all          # 165/165 pass
+zig build test:tui --summary all          # 169/169 pass
 zig build install:tui                     # produces zig-out/bin/nalar-tui
 python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/nalar-tui
 #   idle 4 KB/s · 0.4 KB/key · p50 1.1 ms · PASS
 /home/ginwa/ginwaaitoolbox/.venv-func/bin/python -m pytest tests/functional/tui_perf_test.py -v
 #   3 passed
+/home/ginwa/ginwaaitoolbox/.venv-func/bin/python -m pytest tests/functional/tui_turn_streaming_test.py -v
+#   2 passed — turn 2's user message and reply both render
 python3 tests/functional/tui_perf_probe.py --binary <pre-fix binary>   # FAILs as expected
 ```
 
@@ -224,7 +272,8 @@ Interactive checks done through the pty harness: typing echoes and edits, PgUp/P
 and mouse-wheel scrolling move by the expected rows, `Ctrl-C` restores the terminal,
 and a full send → poll → render cycle against a fake backend renders the user
 message, the assistant reply, a wrapped long line and a tool card, with keystroke
-latency staying ~1 ms throughout.
+latency staying ~1 ms throughout. A second fake-backend suite drives **two
+consecutive turns** in one session and asserts both turns render (F7).
 
 ## 7. Follow-ups (deliberately not in this PR)
 
