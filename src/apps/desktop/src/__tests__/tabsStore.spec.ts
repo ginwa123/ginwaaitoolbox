@@ -1,8 +1,10 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { createApp } from 'vue'
 
 import { MAX_TABS, type Tab } from '../helpers/tabTarget'
 import { __resetWindowIdForTests } from '../helpers/windowId'
+import { __dispatchSseBus, __resetSseBus, installSseBus } from '../helpers/sseBus'
 import { useTabsStore } from '../stores/tabs'
 import { makeLocalStorageStub } from './helpers'
 
@@ -465,6 +467,50 @@ describe('tabs store', () => {
       expect(tabs.getDraft('')).toBe('')
       tabs.setDraft('', 'ignored')
       expect(tabs.drafts).toEqual({})
+    })
+
+    it('opens the chats tab, focusing it when it is already open', () => {
+      const tabs = useTabsStore()
+      const home = tabs.tabs[0]
+      tabs.open({ query: chat('sa') })
+      expect(tabs.activeTab).not.toBeNull()
+
+      const backHome = tabs.openHomeTab()
+      expect(backHome.id).toBe(home?.id)
+      expect(tabs.activeTabId).toBe(home?.id)
+      expect(tabs.tabCount).toBe(2)
+    })
+
+    it('tolerates a title feed with no bus installed', () => {
+      __resetSseBus()
+      const tabs = useTabsStore()
+      expect(() => tabs.initTitleFeed()).not.toThrow()
+      expect(() => tabs.disposeTitleFeed()).not.toThrow()
+    })
+
+    it('feeds tab titles from the session SSE channel and stops on dispose', () => {
+      __resetSseBus()
+      installSseBus(createApp({}))
+      const tabs = useTabsStore()
+      const a = tabs.open({ query: chat('sa'), title: 'Old' })
+      tabs.initTitleFeed()
+
+      __dispatchSseBus('session', { action: 'updated', id: 'sa', name: 'Renamed live' } as never)
+      expect(tabs.tabs.find((t) => t.id === a.id)?.title).toBe('Renamed live')
+
+      __dispatchSseBus('session', { action: 'created', id: 'sb', name: 'Brand new' } as never)
+      expect(tabs.tabs.find((t) => t.key === 'chat:sb')).toBeUndefined()
+
+      // only created/updated carry a meaningful name
+      __dispatchSseBus('session', { action: 'deleted', id: 'sa', name: 'Gone' } as never)
+      expect(tabs.tabs.find((t) => t.id === a.id)?.title).toBe('Renamed live')
+
+      // idempotent registration: a second init must not double-subscribe
+      tabs.initTitleFeed()
+      tabs.disposeTitleFeed()
+      __dispatchSseBus('session', { action: 'updated', id: 'sa', name: 'After dispose' } as never)
+      expect(tabs.tabs.find((t) => t.id === a.id)?.title).toBe('Renamed live')
+      __resetSseBus()
     })
   })
 })

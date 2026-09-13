@@ -41,6 +41,7 @@ import {
   type TabQuery,
 } from '../helpers/tabTarget'
 import { getWindowId } from '../helpers/windowId'
+import { useSseBus } from '../helpers/sseBus'
 
 const ENABLED_KEY = 'nalar-tabs-enabled'
 const LIST_PREFIX = 'nalar-tabs:v1:'
@@ -406,6 +407,39 @@ export const useTabsStore = defineStore('tabs', () => {
     writeStorage(ENABLED_KEY, value ? 'true' : 'false')
   }
 
+  /** The `+` button and `Shift+Alt+T`: open (or focus) the chats-list tab. */
+  function openHomeTab(): Tab {
+    return open({ path: '/app', query: { view: 'chat' }, title: fallbackTitle('home'), kind: 'home' })
+  }
+
+  /**
+   * Live tab titles. The backend already announces renames on the `session`
+   * channel (`SessionEvent { action, id, name }`), so a chat tab keeps up
+   * with the auto-rename-on-first-message cascade without polling. Guarded
+   * because the bus is not installed until App.vue mounts.
+   */
+  let offTitleFeed: (() => void) | null = null
+
+  function initTitleFeed(): void {
+    if (offTitleFeed) return
+    try {
+      offTitleFeed = useSseBus().on('session', (event) => {
+        if (event.action !== 'created' && event.action !== 'updated') return
+        setChatTitle(event.id, event.name)
+      })
+    } catch {
+      // No bus yet (early boot / unit test): titles keep whatever the chats
+      // list last published.
+      offTitleFeed = null
+    }
+  }
+
+  function disposeTitleFeed(): void {
+    if (!offTitleFeed) return
+    offTitleFeed()
+    offTitleFeed = null
+  }
+
   /** Live title feed (session SSE + the chats list). */
   function setChatTitle(sessionId: string, name: string): void {
     if (!sessionId || !name) return
@@ -478,6 +512,9 @@ export const useTabsStore = defineStore('tabs', () => {
     reopenLastClosed,
     syncFromTarget,
     setEnabled,
+    openHomeTab,
+    initTitleFeed,
+    disposeTitleFeed,
     setChatTitle,
     getDraft,
     setDraft,

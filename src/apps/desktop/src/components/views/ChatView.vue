@@ -3607,6 +3607,7 @@ const compactSession = async () => {
             @submit="handleFileInputSubmit"
             @files-selected="handleFileInputSubmit"
             @stop-session="handleStopSession"
+            :draft-key="sessionId ? `chat:${sessionId}` : undefined"
           />
           <!-- Status bar -->
           <div class="flex items-center gap-2 mt-3">

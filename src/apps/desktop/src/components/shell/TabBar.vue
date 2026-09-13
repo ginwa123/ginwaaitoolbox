@@ -82,7 +82,7 @@ function closeToRight(id: string): void {
 }
 
 function newTab(): void {
-  tabsStore.open({ path: '/app', query: { view: 'chat' }, title: fallbackTitle('home'), kind: 'home' })
+  tabsStore.openHomeTab()
   emit('navigate')
 }
 

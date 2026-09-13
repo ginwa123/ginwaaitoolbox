@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
 import * as api from '../../api'
+import { getActivePinia } from 'pinia'
+import { useTabsStore } from '../../stores/tabs'
 import FilePreview from './FilePreview.vue'
 import { parseBackgroundCommandOutput } from '@/helpers/isBackgroundCommandOutput'
 
@@ -29,6 +31,14 @@ const props = defineProps<{
    * (driven by the SSE `worker deleted` event).
    */
   isStopping?: boolean
+  /**
+   * Optional draft bucket. When set, typed-but-unsent text survives this
+   * component being remounted — and remounting is exactly what every tab
+   * switch does (AppLayout keys each view by the active tab), so without a
+   * bucket the text would silently vanish. Parents that pass no `draftKey`
+   * (GitFileViewer) read and write nothing.
+   */
+  draftKey?: string
 }>()
 
 const emit = defineEmits<{
@@ -67,6 +77,41 @@ const nativeFileInput = ref<HTMLInputElement | null>(null)
 // to our textarea only — so we don't swallow paste events from sibling
 // inputs (other chat tabs, search fields, etc.).
 const chatTextareaRef = ref<HTMLTextAreaElement | null>(null)
+
+// ── Draft survival across remounts (tab switches) ─────────────────────
+// Every tab switch remounts this component, so the text in the box would
+// otherwise be lost. The bucket lives in the tabs store (in memory, per
+// window) and is keyed by the chat session, so closing and reopening a tab
+// within the session still finds the draft.
+const draftKey = computed(() => props.draftKey ?? '')
+
+function draftBucket(): ReturnType<typeof useTabsStore> | null {
+  if (!draftKey.value) return null
+  // FileInput is also mounted outside any app (unit tests, GitFileViewer)
+  // where there is no active pinia — drafts are simply unavailable there.
+  if (!getActivePinia()) return null
+  return useTabsStore()
+}
+
+let draftTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushDraft(): void {
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  const bucket = draftBucket()
+  if (bucket) bucket.setDraft(draftKey.value, inputText.value)
+}
+
+watch(inputText, (value) => {
+  if (!draftKey.value) return
+  if (draftTimer) clearTimeout(draftTimer)
+  draftTimer = setTimeout(() => {
+    draftTimer = null
+    draftBucket()?.setDraft(draftKey.value, value)
+  }, 200)
+})
 
 // ── Autofocus on session switch ───────────────────────────────────────
 // Clicking a chat session remounts ChatView (AppLayout `:key="activeChatId"`)
@@ -138,6 +183,13 @@ const sendMessageWithFiles = async () => {
   
   // Clear state before emit so parent can process
   inputText.value = ''
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  // The text is gone from the box AND from the draft bucket — a sent
+  // message must never come back as a draft.
+  draftBucket()?.clearDraft(draftKey.value)
   showFilePicker.value = false
   previewFiles.value.forEach(item => {
     if (item.previewUrl.startsWith('blob:')) {
@@ -308,11 +360,21 @@ const handlePaste = async (e: ClipboardEvent) => {
 // images were attached.
 onMounted(() => {
   document.addEventListener('paste', handlePaste, true)
+  // Restore a draft from an earlier mount of this chat (tab switch), but
+  // never clobber text the parent already put in the box.
+  const bucket = draftBucket()
+  if (bucket && !inputText.value) {
+    const saved = bucket.getDraft(draftKey.value)
+    if (saved) inputText.value = saved
+  }
   // Session switch remounts this component — land the cursor in the box.
   nextTick(() => focusInput())
 })
 
 onBeforeUnmount(() => {
+  // A fast tab switch can beat the 200 ms debounce — persist synchronously
+  // so the text is already in the bucket when the next mount looks for it.
+  if (draftTimer) flushDraft()
   document.removeEventListener('paste', handlePaste, true)
   if (fileDebounceTimer) clearTimeout(fileDebounceTimer)
   if (fileSearchTimer) clearTimeout(fileSearchTimer)

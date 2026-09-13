@@ -29,6 +29,7 @@ import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useTabsStore } from '../stores/tabs'
 import { sameRouteQuery, withTabParam } from '../helpers/tabTarget'
+import { useTabShortcuts } from '../composables/useTabShortcuts'
 import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
@@ -2264,6 +2265,49 @@ let tabsFunnelReady = false
 onMounted(() => {
   tabsFunnelReady = true
   syncFromRoute()
+  tabsStore.initTitleFeed()
+})
+
+/**
+ * Shortcuts and the live title feed are window-scoped wiring, so they live
+ * here and are torn down with the layout. Every handler re-applies the URL
+ * through `applyActiveTabToUrl`, so the shortcut map can never leave the
+ * URL pointing at a tab the user is no longer on.
+ */
+const stopTabShortcuts = useTabShortcuts({
+  isEnabled: () => tabsStore.enabled,
+  tabCount: () => tabsStore.tabCount,
+  handlers: {
+    newTab: () => {
+      tabsStore.openHomeTab()
+      applyActiveTabToUrl()
+    },
+    closeTab: () => {
+      tabsStore.close(tabsStore.activeTabId)
+      applyActiveTabToUrl()
+    },
+    reopenTab: () => {
+      tabsStore.reopenLastClosed()
+      applyActiveTabToUrl()
+    },
+    nextTab: () => {
+      tabsStore.next()
+      applyActiveTabToUrl()
+    },
+    previousTab: () => {
+      tabsStore.prev()
+      applyActiveTabToUrl()
+    },
+    selectTab: (index: number) => {
+      tabsStore.activateIndex(index - 1)
+      applyActiveTabToUrl()
+    },
+  },
+})
+
+onUnmounted(() => {
+  stopTabShortcuts()
+  tabsStore.disposeTitleFeed()
 })
 
 watch(
