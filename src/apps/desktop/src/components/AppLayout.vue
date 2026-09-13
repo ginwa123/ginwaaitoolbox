@@ -2309,7 +2309,6 @@ let tabsFunnelReady = false
 onMounted(() => {
   tabsFunnelReady = true
   syncFromRoute()
-  tabsStore.initTitleFeed()
 })
 
 /**
@@ -2349,9 +2348,10 @@ const stopTabShortcuts = useTabShortcuts({
   },
 })
 
+// The tab title feed is owned by App.vue (it installs the SSE bus), so nothing
+// to unregister here — only the shortcuts, which live in this component.
 onUnmounted(() => {
   stopTabShortcuts()
-  tabsStore.disposeTitleFeed()
 })
 
 watch(

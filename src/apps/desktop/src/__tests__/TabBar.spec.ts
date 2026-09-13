@@ -6,6 +6,7 @@ import { nextTick } from 'vue'
 import TabBar from '../components/shell/TabBar.vue'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { useTabsStore } from '../stores/tabs'
+import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
@@ -89,6 +90,44 @@ describe('TabBar', () => {
     expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('🤖')
     // and the resolved name is persisted for the next reload
     expect(store.tabs[1]?.title).toBe('AGENTIC BASIC')
+  })
+
+  it('shows the live name of the active chat even before the title feed catches up', async () => {
+    const store = useTabsStore()
+    const navigation = useNavigationStore()
+    // a chat tab created from the URL has no name yet (the funnel only ever
+    // receives a bare target)
+    const tab = store.open({ query: { view: 'chat', session: 'sa' } })
+    expect(tab.title).toBe('Chat')
+
+    store.activate(tab.id)
+    navigation.setActiveChat('sa', 'friendly-hello-greeting')
+    const wrapper = mount(TabBar)
+    await nextTick()
+
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('friendly-hello-greeting')
+
+    // a rename that the nav store learns about before any SSE arrives
+    navigation.setActiveChatName('renamed-again')
+    await nextTick()
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('renamed-again')
+  })
+
+  it('does not borrow another chat name for an inactive tab', async () => {
+    const store = useTabsStore()
+    const navigation = useNavigationStore()
+    const first = store.open({ query: { view: 'chat', session: 'sa' } })
+    const second = store.open({ query: { view: 'chat', session: 'sb' } })
+    store.activate(second.id)
+    navigation.setActiveChat('sb', 'Chat B')
+
+    const wrapper = mount(TabBar)
+    await nextTick()
+    const labels = wrapper.findAll('[role="tab"]').map((tab) => tab.text())
+    expect(labels[1]).toContain('Chat')
+    expect(labels[1]).not.toContain('Chat B')
+    expect(labels[2]).toContain('Chat B')
+    void first
   })
 
   it('uses the task name for standalone task-chat items, the item name for kanban', async () => {

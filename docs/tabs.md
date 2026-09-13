@@ -145,8 +145,11 @@ only lands after the API answers.
   glyph following the item type (▦ kanban, 🎨 design, 🤖 agent, ⏱ routine, 📁
   folder, 🧠 memory)
 * workspace item with a `/chat/task_X` suffix → that task's name
-* chat → the name published by the chats list and the `session` SSE channel
-  (renames included)
+* chat → three sources, in order: the live name of the **active** chat from the
+  navigation store (covers an auto-rename instantly), the name published by the
+  chats list and by the `session` SSE channel (`App.vue` subscribes the feed
+  right after installing the bus — a subscription from a child component runs
+  *before* the bus exists and would silently never attach)
 * chats list / settings / kanban settings → "Chats" / "Settings" / "Kanban
   settings"
 * anything still unknown → a kind fallback ("Workspace", "Chat")

@@ -17,9 +17,11 @@ import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vu
 import { fallbackTitle, taskChatRendersInItemTab, type Tab, type TabKind } from '../../helpers/tabTarget'
 import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
 import { useTabsStore } from '../../stores/tabs'
+import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 
 const tabsStore = useTabsStore()
+const navigationStore = useNavigationStore()
 const workspacesStore = useWorkspacesStore()
 
 const emit = defineEmits<{
@@ -69,6 +71,17 @@ function itemOf(tab: Tab): { chatTaskId: string | null; item: (typeof workspaces
  * persisted title is a real name too.
  */
 function titleOf(tab: Tab): string {
+  if (tab.kind === 'chat') {
+    // The chat flow always knows the ACTIVE chat's name (the sidebar / the
+    // session-rename handler write it to the navigation store), so prefer that
+    // while this tab is the active chat: a rename shows up immediately, even
+    // before the chats list or the SSE feed has caught up.
+    if (navigationStore.activeChatId === `chat-${tab.query.session ?? ''}`) {
+      const live = navigationStore.activeChatName
+      if (live && live !== fallbackTitle('chat')) return live
+    }
+    return tab.title || fallbackTitle(tab.kind)
+  }
   if (tab.kind === 'workspace') {
     const { chatTaskId, item } = itemOf(tab)
     if (item) {

@@ -442,4 +442,16 @@ and the python harness were correctly not run):
    clear the item, set the session) and `applyActiveTabToUrl` calls it before
    replacing the URL. Regression test: two workspace tabs clicked back and forth
    assert both the store state and *which view renders*.
+12. **Post-review correction 4 (user-reported): chat tab labels stayed "Chat".**
+   The `session` SSE title feed was subscribed from `AppLayout`'s `onMounted`,
+   which runs BEFORE `App.vue`'s (children mount first) — so `useSseBus()` threw
+   `useSseBus called before installSseBus`, the local try/catch swallowed it, and
+   the feed never attached. Subscribed from `App.vue` now, right after
+   `installSseBus()`, with the unsubscribe in `App.vue`'s `onUnmounted`. Plus a
+   second source for the common case: while a chat tab IS the active chat, the
+   strip prefers `navigationStore.activeChatName`, which the sidebar and the
+   session-rename handler already maintain — so an auto-rename shows up
+   immediately even before the list or the feed catches up. Verified in
+   `App.spec.ts` (dispatch a `session` rename → the tab title follows; unsubscribe
+   → it does not).
 

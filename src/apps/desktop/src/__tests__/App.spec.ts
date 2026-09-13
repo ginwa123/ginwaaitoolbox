@@ -15,6 +15,7 @@ import {
   __getSseBusGlobalClient,
 } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
+import { useTabsStore } from '../stores/tabs'
 import { makeLocalStorageStub } from './helpers'
 
 /**
@@ -107,6 +108,42 @@ describe('App', () => {
     // is provided here.
     const wrapper = mount(App)
     expect(wrapper.exists()).toBe(true)
+  })
+
+  it("App.vue wires the tab title feed: a session rename lands on the tab", async () => {
+    // Regression: the feed used to be subscribed from AppLayout's onMounted,
+    // which runs BEFORE App.vue's (children mount first) — so `useSseBus()` threw
+    // and the subscription silently never happened, leaving chat tabs labelled
+    // with the generic "Chat" after every auto-rename.
+    const tabs = useTabsStore()
+    const tab = tabs.open({ query: { view: 'chat', session: 'sess_w1' } })
+    expect(tab.title).toBe('Chat')
+
+    mount(App)
+    __dispatchSseBus('session', {
+      action: 'updated',
+      id: 'sess_w1',
+      name: 'renamed-live',
+    } as unknown as api.SessionEvent)
+    await nextTick()
+
+    expect(tabs.tabs.find((t) => t.key === 'chat:sess_w1')?.title).toBe('renamed-live')
+  })
+
+  it("App.vue unsubscribes the tab title feed on unmount", async () => {
+    const tabs = useTabsStore()
+    tabs.open({ query: { view: 'chat', session: 'sess_w2' } })
+    const wrapper = mount(App)
+    wrapper.unmount()
+
+    __dispatchSseBus('session', {
+      action: 'updated',
+      id: 'sess_w2',
+      name: 'after-unmount',
+    } as unknown as api.SessionEvent)
+    await nextTick()
+
+    expect(tabs.tabs.find((t) => t.key === 'chat:sess_w2')?.title).toBe('Chat')
   })
 
   it("App.vue subscribes to bus.on('worker'); handleWorkerEvent fires when the bus dispatches", async () => {
