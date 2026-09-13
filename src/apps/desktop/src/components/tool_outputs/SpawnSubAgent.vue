@@ -116,9 +116,9 @@ const toggleAgent = (idx: number) => {
 }
 
 const toggle = () => {
-  // In live-progress or starting-placeholder mode the body is already
-  // shown — toggle is a no-op.
-  if (inLiveMode.value || isStarting.value) return
+  // In live-progress, starting-placeholder, or pre-thread-failure
+  // mode the body is already shown — toggle is a no-op.
+  if (inLiveMode.value || isStarting.value || hasFailed.value) return
   if (agents.value.length > 0) {
     isExpanded.value = !isExpanded.value
   }
@@ -175,8 +175,22 @@ const liveSummary = computed(() => {
 // prints `<summary succeeded= failed= />`, so its absence means the
 // tool has NOT completed), and no live rows. The template renders a
 // pulsing "starting…" header + auto-shown body instead of "0".
+// Pre-thread failure: exec failed before any thread emitted (e.g. a
+// parse error), so there are no <agent> rows, no <summary>, and no
+// live rows — but the tool HAS completed. innerToolData falls back
+// to the full <tool> envelope in that case, which carries
+// <success>false</success> + <error>. Without this branch the card
+// renders the "starting…" placeholder forever and the error is
+// invisible.
+const hasFailed = computed(() => props.content.includes('<success>false</success>'))
+
+const startError = computed(() => {
+  const m = props.content.match(/<error>([\s\S]*?)<\/error>/)
+  return m?.[1]?.trim() || null
+})
+
 const isStarting = computed(
-  () => agents.value.length === 0 && summary.value === null && liveProgress.value.length === 0,
+  () => agents.value.length === 0 && summary.value === null && liveProgress.value.length === 0 && !hasFailed.value,
 )
 
 // Expected count from the assistant's `tool_calls_json` args (parsed by
@@ -247,7 +261,7 @@ function formatElapsed(ms: number): string {
 <template>
   <div 
     class="chat-tool-card font-mono text-xs"
-    :class="{ 'border-red-500/50 opacity-80': failedCount > 0 || liveSummary.failed > 0 }"
+    :class="{ 'border-red-500/50 opacity-80': failedCount > 0 || liveSummary.failed > 0 || hasFailed }"
   >
     <!-- Header -->
     <div 
@@ -293,6 +307,11 @@ function formatElapsed(ms: number): string {
         <span class="w-2 h-2 rounded-full shrink-0 bg-yellow-500 animate-pulse" data-testid="starting-dot"></span>
         <span class="text-[var(--semantic-text-muted)] font-semibold" data-testid="starting-badge">starting</span>
       </span>
+      <!-- Pre-thread failure summary — the tool completed with
+           <success>false</success> before any row existed -->
+      <span v-else-if="hasFailed" class="flex items-center gap-1.5">
+        <span class="text-red-500 font-semibold" data-testid="failed-badge">✗ failed</span>
+      </span>
       <!-- Final-envelope summary -->
       <span v-else-if="summary" class="flex items-center gap-1.5">
         <span v-if="summary.succeeded > 0" class="text-green-500 font-semibold">
@@ -309,7 +328,7 @@ function formatElapsed(ms: number): string {
     </div>
 
     <!-- Expanded content -->
-    <div v-if="isExpanded || inLiveMode || isStarting" class="border-t border-[var(--color-border)] bg-black/[0.02]">
+    <div v-if="isExpanded || inLiveMode || isStarting || hasFailed" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <div class="divide-y divide-[var(--color-border)]">
         <!-- STARTING placeholder (2026-09-04) — Phase 1 envelope with
              empty <data>, no <results>, no live rows yet (e.g. right
@@ -334,6 +353,24 @@ function formatElapsed(ms: number): string {
               >
                 • {{ arg.agent_name }}
               </div>
+            </div>
+          </div>
+        </template>
+        <!-- PRE-THREAD FAILURE — exec failed before any thread
+             emitted, so neither live rows nor the <results> envelope
+             exist. Show the envelope <error> text instead of the
+             starting placeholder. -->
+        <template v-if="hasFailed">
+          <div class="overflow-hidden">
+            <div class="flex items-center gap-1 px-2 py-1.5 select-none bg-red-500/5">
+              <span class="w-2 h-2 rounded-full shrink-0 bg-red-500" data-testid="start-error-dot"></span>
+              <span class="text-xs text-red-500 font-medium" data-testid="start-error-label">failed to spawn</span>
+            </div>
+            <div v-if="startError" class="px-3 py-2 bg-red-500/5">
+              <pre
+                class="whitespace-pre-wrap break-all text-xs leading-relaxed text-red-500 max-w-full min-w-0 overflow-x-auto"
+                data-testid="start-error-text"
+              >{{ startError }}</pre>
             </div>
           </div>
         </template>

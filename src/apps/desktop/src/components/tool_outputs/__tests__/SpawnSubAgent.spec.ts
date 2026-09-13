@@ -235,3 +235,26 @@ describe('SpawnSubAgent.vue — envelope precedence', () => {
     expect(wrapper.text()).toContain('✓ 1')
   })
 })
+
+// ────────────────────────────────────────────────────────────────────────
+// Pre-thread failure (starting-state error — task_1789301896347_4)
+// ────────────────────────────────────────────────────────────────────────
+
+describe('SpawnSubAgent.vue — pre-thread failure envelope', () => {
+  // What the card receives when exec fails before any thread emits:
+  // innerToolData falls back to the FULL envelope (data is null), which
+  // carries <success>false</success> + <error> but no <agent>/<summary>.
+  const failedEnvelope = `<tool><name>spawn_sub_agent</name><parameters>{}</parameters><success>false</success><error>spawn_sub_agent failed: AllToolsNotAllowed</error></tool>`
+
+  it('renders the error message instead of the starting placeholder', () => {
+    const wrapper = mountAt({ content: failedEnvelope, progress: [] })
+    expect(wrapper.text()).toContain('spawn_sub_agent failed: AllToolsNotAllowed')
+    expect(wrapper.text()).not.toContain('Spawning sub-agents')
+    expect(wrapper.text()).not.toContain('starting…')
+  })
+
+  it('shows a failed badge in the header', () => {
+    const wrapper = mountAt({ content: failedEnvelope, progress: [] })
+    expect(wrapper.find('[data-testid="failed-badge"]').exists()).toBe(true)
+  })
+})
