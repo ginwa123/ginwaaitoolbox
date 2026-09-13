@@ -91,6 +91,53 @@ they disappear with the colour fix.
   — verified by running those 4 specs against `main` unmodified.
 - `pnpm run lint:check` clean, `pnpm run type-check` clean.
 
+## Round 2 (same task, same PR): the payload's own light palette
+
+After round 1 shipped, the report screenshot showed the *same* message still
+bad: dark prose (round 1 working) but **washed-out code blocks**. The fix was
+half the story — the model authors the HTML blind, so it had written GitHub's
+light chip inline on every code block.
+
+Second real payload: `llm_history` row `1789313976387498377` (same session) —
+`<pre style="background:#f6f8fa;padding:10px;border-radius:6px;overflow-x:auto">`
+on three code blocks. An **inline** style beats the shell stylesheet, so the
+frame's theme ink (`#c5c9c5`) landed on the payload's own `#f6f8fa` chip.
+
+Measured in the frame (composited through rgba chains):
+
+| surface | before | after |
+|---|---|---|
+| `<pre>` chip | `rgb(246,248,250)` (luminance 0.936) | `rgb(40,39,39)` = `--color-bg-p1` |
+| `<pre>` ink | `rgb(197,201,197)` | `rgb(197,201,197)` |
+| **code contrast** | **1.57 : 1** (unreadable) | **8.89 : 1** |
+| inline `code` (aqua on chip) | — | 5.66 : 1 |
+| frame body | `rgb(29,28,25)` (round 1) | unchanged |
+
+Two coordinated changes:
+
+1. **Renderer guard (deterministic):** the srcdoc shell now forces the text
+   *surfaces* — `pre,code,th,td { background:<chip> !important; color:<fg>
+   !important }` (plus `pre code{background:transparent!important;color:<fg>}` and
+   aqua ink for inline `code`, mirroring `.markdown-content`). `!important` is
+   what wins against a payload's inline style; layout, spans and callout colours
+   in the payload are left alone.
+2. **Prompt (root cause):** `core.zig` `ResponseFormatting` now states the
+   transcript is DARK and tells the model not to set its own page/code colours
+   (with the token list as an alternative). Guarded by a new assertion in
+   `prompts_test.zig`. Without this, every future message keeps guessing "light
+   page" and only the guard saves it.
+
+Verification added (`tests/functional_ui/chatview_html_frame_layout_test.py`,
+test 4): seeds the light-authored payload, then requires — inside the frame —
+every surface dark (`bgLum < 0.35`), body dark, and WCAG AA contrast
+(`>= 4.5:1`) for every `pre/code/th/td/p/h*`. Fails 1/1 before the guard, passes
+after. Screenshot `light-authored-payload.png`.
+
+Gates (round 2): `zig build test --summary all` → 3272 pass / 8 skip / 0 fail
+(the new `prompts_test.zig` assertion included); full `vitest --run` → 3075
+pass, same 4 pre-existing failures as `main`; `lint:check` + `type-check` +
+`build` clean; both functional_ui suites green (4/4 layout + 5/5 html-tag).
+
 ## Out of scope
 
 - The `show_preview` iframe keeps its own (white) page styling — it is a

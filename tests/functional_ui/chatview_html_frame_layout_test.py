@@ -76,6 +76,59 @@ _REAL_HTML_REPORT = """No stray processes, the port-8081 server was never touche
 </html>"""
 
 
+# ─── Second real payload (llm_history 1789313976387498377) ────────────────
+#
+# Same session, the follow-up answer. This one is the "still bad" case from
+# the report: the model authored its HTML for a LIGHT page — GitHub's
+# `background:#f6f8fa` inline on every <pre>. An inline background beats the
+# frame's stylesheet, so the frame's theme ink (light) landed on the
+# payload's own light chip → washed-out code blocks.
+
+_LIGHT_AUTHORED_HTML_REPORT = """The follow-up bug is found, fixed, and proven — **PR #481** (new PR, because #479 got merged mid-session and couldn't carry the follow-up commit).
+
+<html>
+<div style="font-family:ui-sans-serif,system-ui,sans-serif;line-height:1.55">
+
+<h2>Why "the next prompt response not showup in TUI"</h2>
+
+<p><strong>Root cause (F7):</strong> <code>App.onMessages</code> decided <em>"this turn is over"</em> by scanning the <strong>whole</strong> polled array for <em>any</em> assistant row with <code>finish_reason="stop"</code>:</p>
+
+<pre style="background:#f6f8fa;padding:10px;border-radius:6px;overflow-x:auto"><code>if (self.is_streaming) {
+    while (idx &lt; arr.items.len) : (idx += 1) {
+        ... if (assistant row has finish_reason == "stop") { self.is_streaming = false; break; }
+    }
+}</code></pre>
+
+<p>But that array is <code>GET /api/llm/session/:id/messages?limit=100&amp;direction=asc</code> — the <strong>session window</strong>, so it always contains the <em>previous</em> turn's completed reply. The very first poll of turn 2 (~500&nbsp;ms after Enter) found <strong>turn 1's <code>stop</code></strong>, set <code>is_streaming = false</code>, and <code>handleTick</code> stopped returning <code>.poll_messages</code> — nothing else was ever fetched. Turn 1 only worked because the array had no earlier stop, so <strong>every later turn in a session was dead</strong>. It also explains the missing <em>user</em> message in your screenshot: the queued row is inserted by the backend worker, so that single (first and last) poll can predate the insert — it carried no news at all, and polling then stopped for good.</p>
+
+<h3>Fix</h3>
+<p>The turn-over decision now happens inside the same render pass and only rows <strong>new in this poll</strong> may end the turn (already-rendered rows are history); the flag is applied <em>after</em> the loop so the batch that contains the stop still renders. The <code>finish_reason</code>-less legacy fallback is scoped the same way. Same screenshot, cosmetic: <code>onSendOk</code> now writes the session id once in the right slot (it used to leave <code>new session</code> forever and stamp <code>session session-1789312667194</code> on the left).</p>
+
+<h3>Evidence — test written first, failed, then passed</h3>
+<pre style="background:#f6f8fa;padding:10px;border-radius:6px;overflow-x:auto"><code># tests/functional/tui_turn_streaming_test.py — fake backend, two turns in one session
+before:  test_second_turn_renders_after_the_previous_turn_finished FAILED
+         AssertionError: turn-2 reply never reached the viewport
+after:   2 passed</code></pre>
+
+<table style="border-collapse:collapse" border="1" cellpadding="6">
+<tr><th>gate</th><th>result</th></tr>
+<tr><td><code>zig build test:tui</code></td><td>169/169 (+4 new: prev-turn stop, raced poll, legacy rows, status bar)</td></tr>
+<tr><td><code>zig build test</code></td><td>3272 pass · 8 skip · 0 fail</td></tr>
+<tr><td>pty suites (<code>tui_perf_test</code> + <code>tui_turn_streaming_test</code>)</td><td>5 passed</td></tr>
+<tr><td>perf probe (leak/latency regression guard)</td><td>idle +1 KB/s · 0.76 KB/key · p50 2.8 ms · PASS</td></tr>
+</table>
+
+<p><strong>PR <a href="https://github.com/ginwa123/ginwaaitoolbox/pull/481">#481</a></strong> — <em>fix(tui): a finished previous turn no longer silences the next one</em> — open on branch <code>worktree/audit-tui-turn-scoping-1789301162387</code>, rebased on current <code>main</code> (I verified the TUI/test/doc files are byte-identical to the commit I measured). Card is back in <strong>in_review_task</strong>.</p>
+
+<p style="opacity:.85">Note: <strong>PR #479 was merged as <code>dc653788</code> while I was working</strong>, so a commit pushed to that branch after the merge would not have reached main — hence the fresh branch + cherry-pick. Your installed <code>~/.local/bin/nalar-tui</code> is from Sep&nbsp;2, so it has neither fix yet; to try both right now:</p>
+<pre style="background:#f6f8fa;padding:10px;border-radius:6px;overflow-x:auto"><code>cd ~/.config/nalar/.worktrees/audit-tui-app-1789301141999 &amp;&amp; zig build install-tui</code></pre>
+
+<p style="opacity:.85">Still open from the audit (documented in §7 of the report, not in this PR): the 500&nbsp;ms poll does a <em>blocking</em> HTTP GET on the UI thread (worst case 15&nbsp;s stall while streaming → the right fix is the already-written-but-dead <code>sse.zig</code>, or a worker thread); <code>onMessages</code> re-parses an unbounded body and strips thinking tags twice; <code>seen_ids</code> is never pruned; nothing stops the spinner if a turn never emits a stop row.</p>
+
+</div>
+</html>"""
+
+
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 
@@ -92,14 +145,85 @@ def _open_chatview(page, h: UIHarness, session_id: str) -> None:
 
 
 def _seed_report_session(h: UIHarness, session_id: str) -> None:
+    _seed_html_session(h, session_id, _REAL_HTML_REPORT)
+
+
+def _seed_html_session(h: UIHarness, session_id: str, content: str) -> None:
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "HTML frame layout")
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "run the audit", created_at=ts[0])
-        seed.seed_assistant_message(
-            conn, session_id, _REAL_HTML_REPORT, created_at=ts[1],
-        )
+        seed.seed_assistant_message(conn, session_id, content, created_at=ts[1])
+
+
+# ─── Computed-style sweep inside the frame ─────────────────────────────────
+#
+# Returns, per text-carrying surface, the COMPOSITED background (rgba chips
+# are flattened onto their ancestors) plus the text colour, so the caller can
+# require dark surfaces and light ink without re-implementing CSS compositing.
+_SURFACE_SWEEP_JS = """() => {
+  const parse = (c) => {
+    const m = (c || '').match(/[\\d.]+/g) || [];
+    return { r: +m[0] || 0, g: +m[1] || 0, b: +m[2] || 0, a: m.length > 3 ? +m[3] : 1 };
+  };
+  const lum = ({ r, g, b }) => {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+  };
+  const effectiveBg = (el) => {
+    const stack = [];
+    for (let n = el; n; n = n.parentElement) {
+      const p = parse(getComputedStyle(n).backgroundColor);
+      if (p.a > 0) stack.push(p);
+      if (p.a >= 1) break;
+    }
+    let out = { r: 30, g: 30, b: 30 };
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const p = stack[i];
+      out = {
+        r: p.r * p.a + out.r * (1 - p.a),
+        g: p.g * p.a + out.g * (1 - p.a),
+        b: p.b * p.a + out.b * (1 - p.a),
+      };
+    }
+    return out;
+  };
+  const out = [];
+  for (const el of document.querySelectorAll('pre, code, th, td, li, p, h1, h2, h3')) {
+    const cs = getComputedStyle(el);
+    const bg = effectiveBg(el);
+    const fg = parse(cs.color);
+    const l1 = lum(fg), l2 = lum(bg);
+    out.push({
+      tag: el.tagName.toLowerCase(),
+      sample: (el.textContent || '').trim().slice(0, 24),
+      bg: [Math.round(bg.r), Math.round(bg.g), Math.round(bg.b)],
+      fg: [fg.r, fg.g, fg.b],
+      bgLum: +l2.toFixed(3),
+      fgLum: +l1.toFixed(3),
+      contrast: +(((Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05))).toFixed(2),
+    });
+  }
+  return out;
+}"""
+
+
+def _rgb(hex_or_rgb: str) -> tuple[int, int, int]:
+    """Normalise '#RRGGBB' / 'rgb(r, g, b)' / 'rgba(...)' to an (r,g,b) tuple."""
+    s = hex_or_rgb.strip()
+    if s.startswith("#"):
+        s = s[1:]
+        if len(s) == 3:
+            s = "".join(c * 2 for c in s)
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    nums = [int(float(n)) for n in re.findall(r"[\d.]+", s)[:3]]
+    return (nums[0], nums[1], nums[2])
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    r, g, b = rgb
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
 
 
 def _frames_of(page):
@@ -118,23 +242,6 @@ def _srcdoc_frame(page, timeout_ms: int = 15000):
         page.wait_for_timeout(step)
         deadline -= step
     raise AssertionError("no about:srcdoc child frame appeared")
-
-
-def _rgb(hex_or_rgb: str) -> tuple[int, int, int]:
-    """Normalise '#RRGGBB' / 'rgb(r, g, b)' / 'rgba(...)' to an (r,g,b) tuple."""
-    s = hex_or_rgb.strip()
-    if s.startswith("#"):
-        s = s[1:]
-        if len(s) == 3:
-            s = "".join(c * 2 for c in s)
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-    nums = [int(float(n)) for n in re.findall(r"[\d.]+", s)[:3]]
-    return (nums[0], nums[1], nums[2])
-
-
-def _luminance(rgb: tuple[int, int, int]) -> float:
-    r, g, b = rgb
-    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
 
 
 # ─── Test 1: the frame follows the app's dark surface, not #fff ─────────────
@@ -275,3 +382,64 @@ def test_srcdoc_shell_carries_theme_and_resize_script(
     )
     # The LLM's payload is still rendered verbatim (no escaping regression).
     assert "nalar-tui" in srcdoc and "<h2>" in srcdoc
+
+
+# ─── Test 4: a payload authored for a LIGHT page stays legible ─────────────
+
+
+def test_light_authored_payload_surfaces_are_neutralised(
+    ui_harness: UIHarness, page, artifacts_dir: Path,
+) -> None:
+    """The LLM authors its HTML blind — it writes for a light page
+    (GitHub's ``background:#f6f8fa`` inline on every ``<pre>``, seen in
+    ``llm_history`` row 1789313976387498377). An inline style beats the
+    frame's stylesheet, so without an explicit guard the frame's theme ink
+    (light) lands on the payload's own light chip and the code is washed
+    out — the "why is the UI still bad" screenshot.
+
+    Contract asserted here: every text-carrying surface inside the frame is
+    DARK, the ink on it is LIGHT, and the pair clears WCAG AA (>= 4.5:1).
+    This fails both before the theme fix (body was #fff) and before this
+    guard (the payload's own #f6f8fa chip won).
+    """
+    h = ui_harness
+    session_id = "sess_html_frame_layout_004"
+    _seed_html_session(h, session_id, _LIGHT_AUTHORED_HTML_REPORT)
+
+    _open_chatview(page, h, session_id)
+    page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
+    frame_el = page.locator("iframe.chat-html-frame").first
+    frame_el.scroll_into_view_if_needed()
+    page.wait_for_timeout(500)
+    page.screenshot(path=str(artifacts_dir / "light-authored-payload.png"))
+
+    frame = _srcdoc_frame(page)
+    surfaces = frame.evaluate(_SURFACE_SWEEP_JS)
+    assert surfaces, "no text surfaces found inside the frame"
+
+    body_bg = frame.evaluate(
+        "() => getComputedStyle(document.body).backgroundColor"
+    )
+    assert _luminance(_rgb(body_bg)) < 0.35, (
+        f"frame body background is light ({body_bg!r}) — the payload "
+        f"renders as a white slab in the dark transcript."
+    )
+
+    light_surfaces = [s for s in surfaces if s["bgLum"] >= 0.35]
+    assert not light_surfaces, (
+        "the payload's own light page colours survived into the dark frame "
+        "(an inline style beat the shell stylesheet): "
+        + ", ".join(
+            f"<{s['tag']}> bg={s['bg']} on {s['sample']!r}" for s in light_surfaces
+        )
+    )
+
+    low_contrast = [s for s in surfaces if s["contrast"] < 4.5]
+    assert not low_contrast, (
+        "washed-out text inside the frame (WCAG AA needs >= 4.5:1): "
+        + ", ".join(
+            f"<{s['tag']}> {s['fg']} on {s['bg']} = {s['contrast']}:1 "
+            f"({s['sample']!r})"
+            for s in low_contrast
+        )
+    )

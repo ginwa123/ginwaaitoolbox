@@ -107,6 +107,7 @@ pub const ResponseFormatting =
     \\ </html>
     \\```
     \\Example: `<html> <div>hello</div> </html>` renders as a live HTML block. The UI renders this content directly — do NOT escape or fence the markup, emit it verbatim.
+    \\The transcript is DARK (dark background, light text). Do NOT set your own page or code colours — a light palette (`background:#fff`, `#f6f8fa`, `color:#111`) renders unreadable. Omit colours and the UI theme applies; or use: bg #1D1C19, text #c5c9c5, muted #a6a69c, border #282727, link #8ba4b0.
     \\
     \\**Thinking Process:** encapsulate reasoning inside XML thinking tags:
     \\```
