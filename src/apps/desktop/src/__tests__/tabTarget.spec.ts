@@ -198,9 +198,8 @@ describe('parseTabList', () => {
   })
 
   it('drops malformed entries and keeps the good ones in order', () => {
-    const list = parseTabList(
-      stored([chatTab('tab_a', 'sa'), { id: 42 }, { key: 'no-id' }, chatTab('tab_b', 'sb')], 'tab_b'),
-    )
+    const malformed = [chatTab('tab_a', 'sa'), { id: 42 }, { key: 'no-id' }, chatTab('tab_b', 'sb')]
+    const list = parseTabList(stored(malformed as unknown as Tab[], 'tab_b'))
     expect(list.tabs.map((t) => t.id)).toEqual(['tab_a', 'tab_b'])
     expect(list.active).toBe('tab_b')
   })

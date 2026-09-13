@@ -1,7 +1,10 @@
-# Tab Mode (Browser-Style Tabs) Implementation Plan (rev 1)
+# Tab Mode (Browser-Style Tabs) Implementation Plan (rev 2)
 
-> **Status: planning only.** No code has been written. This document is the
-> deliverable under review.
+> **Status: implemented.** Approved by the user ("okey execute the plan") and
+> built on branch `worktree/tab-mode-like-a-browser-1789300444735` (PR #476).
+> See `## Implementation status (rev 2)` at the bottom for what shipped, the
+> measured test baseline, and the deviations from this plan. The design
+> decisions below are unchanged. User-facing doc: `docs/tabs.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -347,4 +350,59 @@ Rules: handlers `preventDefault()` **only** when they actually act; all of them 
 - [x] Plan saved to `docs/superpowers/plans/2026-09-13-tab-mode-like-a-browser.md` (in the worktree, committed on the branch)
 - [x] Plan header includes Goal, Architecture, Tech Stack, Global Constraints
 - [x] Each task has bite-sized steps (test → implement → verify → commit)
-- [ ] User has reviewed the plan before execution begins
+- [x] User has reviewed the plan before execution begins (approved 2026-09-13: "okey execute the plan")
+
+---
+
+## Implementation status (rev 2)
+
+All nine tasks landed. Commits on the branch, in order:
+
+| Commit | Task |
+|---|---|
+| `b4a4fdf9` | 1 — pure contract (`tabTarget.ts`, `windowId.ts`) |
+| `ec0b0e31` | 2 + 3 — tabs store and `TabBar.vue` |
+| `42ec1952` | 4 — AppLayout route funnel + strip mount |
+| `f7c27de4` | 5 + 6 — composer drafts and keyboard shortcuts |
+| `b5119287` | 7 + 8 — settings toggle, live titles, open-in-background |
+| (final) | docs (`docs/tabs.md`), plan status, PR body |
+
+**Measured gates** (frontend only — no Zig file changed, so `zig build test`
+and the python harness were correctly not run):
+
+| Gate | Base `d540b617` | After |
+|---|---|---|
+| `pnpm test` (vitest) | 4 failed / 3057 passed, 356 files | 4 failed / **3164 passed**, 363 files |
+| failing files | `FilePickerDialog.windows`, `WorkspaceItemHideTasksForDesign`, `workspacesStoreNormalizeTaskDates`, `workspacesStoreNormalizeTaskImageUrls` | the same four — **zero new failures** |
+| `pnpm run build` (`vue-tsc --build` + `vite build`) | — | clean; no stray `.js` emitted (`git status` matches only intended files) |
+| new tests | — | +107 across 7 new spec files |
+| port 8081 | — | never touched; no live server was started |
+
+### Deviations from this plan (all deliberate, all smaller than planned)
+
+1. **Persistence is synchronous** (with a skip-if-unchanged guard) instead of a
+   200 ms debounce + `pagehide` flush. The payload is tiny and the debounce could
+   drop the last action on an immediate reload.
+2. **Navigation call sites were not touched at all.** The plan said
+   `handleNavigate`'s queries would also carry `tab=`. They don't: the route
+   funnel adds it via `router.replace` right after the navigation. That is why
+   the 15 pre-existing `AppLayout.*` specs (which assert exact `router.push`
+   payloads) needed **zero** changes.
+3. **The funnel runs synchronously in `onMounted`**, registered after the
+   existing restore hook (Vue fires hooks in registration order), instead of
+   deferring by `nextTick` — a deferral shifted mount timing and broke
+   `AppLayout.urlPersist.spec.ts`'s fixed tick counts.
+4. **Titles come from the `session` SSE channel + the chats list**, not from a
+   lazy `api.getSession()` fallback: every chat the strip can show is in the
+   list the user just loaded, and renames arrive over SSE.
+5. **Task 8 covers chat rows and workspace-item rows** (Ctrl/Cmd+click and
+   middle click). Kanban task *cards* keep their existing click behaviour —
+   they need the same emit threaded through `WorkspaceItemTaskRow`, left as a
+   follow-up rather than widening this diff.
+6. **`NalarSettings.spec.ts` gained `setActivePinia(createPinia())`** — the
+   settings orchestrator now reads the tabs store for the new toggle, which is
+   a real dependency of the component, not a test workaround.
+7. **TabBar has no `api` import at all**, so "closing a tab never stops an
+   agent" is structural rather than assertion-based (verified by grep); the
+   close tooltip states it in the UI.
+
