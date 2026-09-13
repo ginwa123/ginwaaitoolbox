@@ -2239,10 +2239,42 @@ watch(chatSessionCwd, (newCwd) => {
 // tab" rather than becoming a tab switcher. A normal navigation still uses
 // `push`, so history stays about navigation, not about tab switches.
 
+/**
+ * The store side of a navigation.
+ *
+ * The render chain reads the STORES (`workspacesStore.activeWorkspaceItem`,
+ * `navigationStore.activeChatId`) — not the URL — so a navigation that only
+ * rewrote the URL left the previous view on screen. A sidebar click set both
+ * (WorkspaceItem → Sidebar.handleSelectItem → emit), which is why this only
+ * showed up once tabs could be activated directly: switching between two
+ * workspace tabs kept rendering the same item.
+ */
+function mirrorTargetIntoStores(path: string, query: Record<string, string>, chatName?: string) {
+  if (path !== '/app') return
+  const view = query.view ?? 'chat'
+
+  if (view === 'workspace') {
+    const parsed = parseItemIdWithChat(query.itemId ?? '')
+    navigationStore.clearAll()
+    workspacesStore.setActiveTask(parsed.chatTaskId)
+    workspacesStore.setActiveWorkspaceItem(parsed.itemId || null)
+    if (query.pageId) workspacesStore.setActiveDesignPage(query.pageId)
+    return
+  }
+
+  // A chat (with or without a session) wins over any workspace item — the same
+  // sequence the sidebar's chat path performs.
+  workspacesStore.setActiveTask(null)
+  workspacesStore.setActiveWorkspaceItem(null)
+  if (query.session) navigationStore.setActiveChat(query.session, chatName ?? '')
+  else navigationStore.clearAll()
+}
+
 /** Navigate to the active tab's target. Called by the strip after it acts. */
 function applyActiveTabToUrl() {
   const tab = tabsStore.activeTab
   if (!tab) return
+  mirrorTargetIntoStores(tab.path, tab.query, tab.title)
   const query = withTabParam(tab.query, tab.id)
   if (route.path === tab.path && sameRouteQuery(route.query, query)) return
   router.replace({ path: tab.path, query })
@@ -2333,6 +2365,7 @@ defineExpose({
   handleDesignOpenChat,
   handleDesignCreateElement,
   applyActiveTabToUrl,
+  mirrorTargetIntoStores,
   syncFromRoute,
   handleUpdateChatId,
 })

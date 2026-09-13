@@ -431,4 +431,15 @@ and the python harness were correctly not run):
    place once the type arrives (`tabKeyVariants` + `findExisting`) instead of
    being duplicated. Covered by three new/rewritten specs at the pure, store and
    AppLayout level.
+11. **Post-review correction 3 (user-reported): activating a tab must mirror the
+   target into the STORES, not just rewrite the URL.** "Switch between 2
+   workspace not change": both workspace tabs rendered the same board. The render
+   chain reads `workspacesStore.activeWorkspaceItem` / `navigationStore.activeChatId`,
+   and only the sidebar set them (WorkspaceItem → Sidebar.handleSelectItem →
+   emit), so a URL-only tab activation left the previous view on screen.
+   `AppLayout.mirrorTargetIntoStores(path, query)` now performs the store half of
+   a navigation (workspace item + optional task chat + design page; for chats:
+   clear the item, set the session) and `applyActiveTabToUrl` calls it before
+   replacing the URL. Regression test: two workspace tabs clicked back and forth
+   assert both the store state and *which view renders*.
 

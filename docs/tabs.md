@@ -77,6 +77,12 @@ Rules worth knowing:
 * **Nothing in the render chain changed.** `route.fullPath →
   AppLayout.currentView` → the existing `v-if` / `v-else-if` chain still
   decides what renders. Activating a tab is a navigation.
+* **Activating a tab does the whole navigation, not just the URL.** The render
+  chain reads the *stores* (`workspacesStore.activeWorkspaceItem`,
+  `navigationStore.activeChatId`), and only the sidebar used to set them — so a
+  tab click mirrors the target into the stores first
+  (`AppLayout.mirrorTargetIntoStores`) and then replaces the URL. Without that,
+  switching between two workspace tabs kept the previous item on screen.
 * **A cold deep link still works.** `?view=chat&session=X` with no `tab=`
   opens one tab for it and normalises the URL; the rest of the restored
   tab list stays in the strip.

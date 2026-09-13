@@ -102,12 +102,12 @@ function mountApp(): VueWrapper {
         Chats: { template: '<div data-testid="chats-stub" />' },
         SettingsView: true,
         CodeEditor: true,
-        KanbanView: true,
+        KanbanView: { template: '<div data-testid="kanban-stub" />' },
         KanbanChatDialog: true,
         DesignChatDialog: true,
-        DesignView: true,
-        AgentView: true,
-        RoutineView: true,
+        DesignView: { template: '<div data-testid="design-stub" />' },
+        AgentView: { template: '<div data-testid="agent-stub" />' },
+        RoutineView: { template: '<div data-testid="routine-stub" />' },
         AgentChatView: true,
       },
     },
@@ -379,12 +379,24 @@ describe('AppLayout — tab mode', () => {
     expect(replaceCalls.length).toBe(replaces)
     expect(route.query.tab).toBe(activeBefore)
 
-    // and the tab is real: clicking it in the strip navigates there
+    // and the tab is real: clicking it in the strip navigates there. The item
+    // must exist in the tree, because activating a tab also mirrors the target
+    // into the stores (that is what makes the view actually change).
+    const workspaces = useWorkspacesStore()
+    workspaces.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        items: [{ id: 'item_7', name: 'Board', item_type: 'kanban', tasks: [] }],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ]
     const background = tabs.byKey('ws:ws_1:item_7')
     await wrapper.find(`[data-testid="tab-item-${background?.id}"]`).trigger('click')
     await settle()
     expect(tabs.activeTabId).toBe(background?.id)
     expect(route.query).toEqual({ view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7', tab: background?.id })
+    expect(workspaces.activeWorkspaceItemId).toBe('item_7')
   })
 
   it('follows a session-id change in place instead of leaving a dead tab', async () => {
@@ -411,6 +423,77 @@ describe('AppLayout — tab mode', () => {
     expect(tabs.byKey('chat:real-7')?.id).toBe(synthetic?.id)
     expect(tabs.byKey('chat:session-1789000000000')).toBeNull()
     expect(route.query.tab).toBe(synthetic?.id)
+  })
+
+  it('switching tabs changes the rendered view, not just the URL', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const workspaces = useWorkspacesStore()
+    workspaces.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        items: [
+          { id: 'item_kanban', name: 'AGENTIC_KANBAN', item_type: 'kanban', tasks: [] },
+          { id: 'item_agent', name: 'AGENTIC BASIC', item_type: 'agent', tasks: [] },
+        ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ]
+    const sidebar = wrapper.findComponent(Sidebar)
+
+    // a sidebar click sets the store AND navigates (WorkspaceItem → Sidebar)
+    workspaces.setActiveWorkspaceItem('item_kanban')
+    sidebar.vm.$emit('navigate', 'workspace', undefined, undefined, 'ws_1', 'item_kanban')
+    await settle()
+    expect(workspaces.activeWorkspaceItemId).toBe('item_kanban')
+    expect(wrapper.find('[data-testid="kanban-stub"]').exists()).toBe(true)
+
+    workspaces.setActiveWorkspaceItem('item_agent')
+    sidebar.vm.$emit('navigate', 'workspace', undefined, undefined, 'ws_1', 'item_agent')
+    await settle()
+    expect(workspaces.activeWorkspaceItemId).toBe('item_agent')
+    expect(wrapper.find('[data-testid="agent-stub"]').exists()).toBe(true)
+
+    // the regression: activating a tab only rewrote the URL, so the previous
+    // view stayed on screen
+    const kanbanTab = tabs.byKey('ws:ws_1:item_kanban')
+    await wrapper.find(`[data-testid="tab-item-${kanbanTab?.id}"]`).trigger('click')
+    await settle()
+    expect(tabs.activeTabId).toBe(kanbanTab?.id)
+    expect(workspaces.activeWorkspaceItemId).toBe('item_kanban')
+    expect(wrapper.find('[data-testid="kanban-stub"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="agent-stub"]').exists()).toBe(false)
+
+    // and back again, from the other tab
+    const agentTab = tabs.byKey('ws:ws_1:item_agent')
+    await wrapper.find(`[data-testid="tab-item-${agentTab?.id}"]`).trigger('click')
+    await settle()
+    expect(workspaces.activeWorkspaceItemId).toBe('item_agent')
+    expect(wrapper.find('[data-testid="agent-stub"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-stub"]').exists()).toBe(false)
+  })
+
+  it('switching to a chat tab retires the workspace item', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const workspaces = useWorkspacesStore()
+    const sidebar = wrapper.findComponent(Sidebar)
+
+    sidebar.vm.$emit('navigate', 'chat-sa', 'Chat A')
+    await settle()
+    sidebar.vm.$emit('navigate', 'workspace', undefined, undefined, 'ws_1', 'item_7')
+    await settle()
+    expect(tabs.byKey('ws:ws_1:item_7')).toBeTruthy()
+
+    const chatTab = tabs.byKey('chat:sa')
+    await wrapper.find(`[data-testid="tab-item-${chatTab?.id}"]`).trigger('click')
+    await settle()
+
+    expect(workspaces.activeWorkspaceItemId).toBeNull()
+    expect(wrapper.find('[data-testid="chatview-stub"]').exists()).toBe(true)
   })
 
   it('creates no tab, renders no strip and never adds ?tab= when tab mode is off', async () => {
