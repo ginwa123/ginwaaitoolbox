@@ -136,7 +136,7 @@ pub const view_tool_tool = AgentTool{
 pub const use_tool_system_prompt =
     \\## Use Tool — Behavior
     \\Use `use_tool` to ENABLE a catalog tool for the rest of this session.
-    \\- It takes effect on your NEXT turn — the current turn's tool list was already sent. The result includes the full parameter schema so you can write the call correctly right away.
+    \\- It takes effect on your NEXT turn — the current turn's tool list was already sent. You already saw the full parameter schema via `view_tool`, so the result is just the equip outcome.
     \\- It is idempotent: enabling an already-enabled tool writes nothing and reports inserted=false.
     \\- You cannot invent a name: unknown names are rejected with suggestions and nothing is written.
     \\- This only affects THIS session. It never changes the user's saved tool configuration.

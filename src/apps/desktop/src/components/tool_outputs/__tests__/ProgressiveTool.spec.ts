@@ -5,7 +5,7 @@
  * Verifies (same expandable ToolCardHeader pattern as McpTool):
  *  - search_tool header shows query + tool count, rows render on expand
  *  - view_tool header shows name, description + pretty parameters on expand
- *  - use_tool header shows enabled/already-enabled, parameters on expand
+ *  - use_tool header shows enabled/already-enabled with just the equip note
  *  - error envelopes render the red error block
  */
 import { mount } from '@vue/test-utils'
@@ -28,7 +28,6 @@ const VIEW_CONTENT =
 const USE_CONTENT =
   '<use_tool><name>kanban_list</name><kind>builtin</kind>' +
   '<equipped>true</equipped><inserted>true</inserted><wait_next_turn>true</wait_next_turn>' +
-  '<parameters><![CDATA[{"type":"object","properties":{},"required":[]}]]></parameters>' +
   '<note>Enabled for this session.</note></use_tool>'
 
 describe('ProgressiveTool', () => {
@@ -62,7 +61,7 @@ describe('ProgressiveTool', () => {
     expect(wrapper.text()).toContain('"type": "object"')
   })
 
-  it('renders use_tool enabled state + parameters on expand', () => {
+  it('renders use_tool enabled state with just the equip note (no repeated schema)', () => {
     const wrapper = mount(ProgressiveTool, {
       props: {
         content: USE_CONTENT,
@@ -74,6 +73,9 @@ describe('ProgressiveTool', () => {
     expect(wrapper.text()).toContain('use_tool')
     expect(wrapper.text()).toContain('kanban_list')
     expect(wrapper.text()).toContain('enabled')
+    expect(wrapper.text()).toContain('Enabled for this session.')
+    // No repeated parameter schema — view_tool already showed it.
+    expect(wrapper.find('[data-testid="progressive-tool-parameters"]').exists()).toBe(false)
   })
 
   it('renders the error envelope', () => {
