@@ -31,6 +31,8 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 const emit = defineEmits<{
   toggleWorkspace: [workspaceId: string]
   selectItem: [workspaceId: string, itemId: string]
+  /** Ctrl/Cmd+click / middle click on an item row — re-emitted verbatim by Sidebar. */
+  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string }]
   deleteWorkspace: [workspaceId: string]
   renameWorkspace: [workspaceId: string, currentName: string]
   deleteItem: [workspaceId: string, itemId: string]
@@ -651,6 +653,7 @@ const handleItemDragEnd = () => {
             :is-item-drag-over-insert-after="dragOverItemInsertAfter"
             class="first:mt-1.5"
             @click="handleItemClick(workspace.id, $event.id)"
+            @open-item-in-background="emit('openItemInBackground', $event)"
             @delete="handleDeleteItem(workspace.id, $event.id)"
             @add-task="handleAddTask(workspace.id, $event)"
             @select-task="handleSelectTask"

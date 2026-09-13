@@ -4,6 +4,7 @@ import {
   MAX_CLOSED,
   fallbackTitle,
   homeTab,
+  isBackgroundOpenEvent,
   kindOf,
   newTabId,
   parseTabList,
@@ -23,6 +24,16 @@ import { makeLocalStorageStub } from './helpers'
  * list is validated. These are pure functions on purpose — the store and
  * the strip are tested separately.
  */
+
+describe('isBackgroundOpenEvent', () => {
+  it('matches the browser gesture for "open in a background tab"', () => {
+    expect(isBackgroundOpenEvent({ ctrlKey: true })).toBe(true)
+    expect(isBackgroundOpenEvent({ metaKey: true })).toBe(true)
+    expect(isBackgroundOpenEvent({ button: 1 })).toBe(true)
+    expect(isBackgroundOpenEvent({})).toBe(false)
+    expect(isBackgroundOpenEvent({ ctrlKey: false, metaKey: false, button: 0 })).toBe(false)
+  })
+})
 
 describe('tabKeyOf', () => {
   it('keys a standalone chat by its session', () => {

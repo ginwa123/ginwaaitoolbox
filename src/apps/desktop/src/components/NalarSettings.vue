@@ -12,6 +12,8 @@ import {
   type SubAgent,
 } from '../api'
 import { useNalarConfig } from '../composables/useNalarConfig'
+import { useRoute, useRouter } from 'vue-router'
+import { useTabsStore } from '../stores/tabs'
 
 import NalarTabStrip from './nalar/NalarTabStrip.vue'
 import NalarSaveBar from './nalar/NalarSaveBar.vue'
@@ -53,6 +55,28 @@ const activeTab = ref<Tab>('general')
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
 const { config, loaded, dirty, unsavedCount, saving, setConfig, save, reset } = useNalarConfig()
+
+// ─── Tab mode ────────────────────────────────────────────────────────────
+// This one is an app preference, not part of the server config: the tab set
+// is client-side state (see docs/tabs.md), so it is deliberately NOT a field
+// in the config v-model.
+const tabsStore = useTabsStore()
+const router = useRouter()
+const route = useRoute()
+
+/**
+ * Turning tab mode off must leave no trace: TabBar gates on `enabled`, the
+ * route funnel stops creating/normalising tabs, and the now-meaningless
+ * `?tab=` is dropped from the URL. Guarded because this component also
+ * mounts in tests without a router installed.
+ */
+function onToggleBrowserTabs(value: boolean) {
+  tabsStore.setEnabled(value)
+  if (value || !router || !route) return
+  const query = { ...(route.query as Record<string, string>) }
+  delete query.tab
+  void router.replace({ path: route.path, query })
+}
 
 onMounted(async () => {
   // Plan 2026-08-24-config-simplify-remove-defaults: the legacy
@@ -578,6 +602,40 @@ const isLoading = computed(() => !loaded.value)
           @open-web="openWeb"
           @copy-web="copyWeb"
         />
+
+        <!-- Interface preferences — app-local (localStorage), not config.json -->
+        <div
+          v-if="activeTab === 'general'"
+          class="rounded-lg p-5 space-y-3"
+          style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
+        >
+          <div class="flex items-center gap-2">
+            <span class="text-base" aria-hidden="true">🗂️</span>
+            <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">Interface</h3>
+          </div>
+
+          <label class="flex items-start gap-3 cursor-pointer" data-testid="row-browser-tabs">
+            <input
+              type="checkbox"
+              data-testid="toggle-browser-tabs"
+              :checked="tabsStore.enabled"
+              @change="onToggleBrowserTabs(($event.target as HTMLInputElement).checked)"
+              class="mt-1 w-4 h-4 cursor-pointer"
+              style="accent-color: var(--color-violet);"
+            />
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium" style="color: var(--semantic-text);">
+                Browser-style tabs
+              </div>
+              <div class="text-xs mt-0.5" style="color: var(--semantic-text-dim);">
+                Keep several chats, boards and pages open at once in a tab strip
+                above the content area. Shortcuts: Shift+Alt+T (new),
+                Shift+Alt+W (close), Shift+Alt+Z (reopen),
+                Shift+Alt+←/→ (switch). Off restores the single-view layout.
+              </div>
+            </div>
+          </label>
+        </div>
 
         <ProfilesSection
           v-if="activeTab === 'profiles'"

@@ -159,9 +159,20 @@ export function tabKeyOf(path: string, query: Record<string, unknown> | null | u
   return `view:${view}`
 }
 
+/**
+ * `Ctrl/Cmd+click` or a middle click means "open this in a background
+ * tab" — the gesture users already have in their fingers from a browser.
+ */
+export function isBackgroundOpenEvent(event: {
+  ctrlKey?: boolean
+  metaKey?: boolean
+  button?: number
+}): boolean {
+  return event.ctrlKey === true || event.metaKey === true || event.button === 1
+}
+
 /** `false` means: leave the URL alone and render exactly as before. */
-export function shouldTabify(path: string, query: Record<string, unknown> | null | undefined): boolean {
-  const view = stripTabParam(query).view ?? ''
+export function shouldTabify(path: string, query: Record<string, unknown> | null | undefined): boolean {  const view = stripTabParam(query).view ?? ''
   if (OVERLAY_VIEWS.includes(view)) return false
   if (NON_VIEW.includes(view)) return false
   return true

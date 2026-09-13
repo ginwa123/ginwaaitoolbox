@@ -5,6 +5,7 @@ import { nextTick, reactive } from 'vue'
 
 import AppLayout from '../components/AppLayout.vue'
 import Sidebar from '../components/shell/Sidebar.vue'
+import WorkspaceList from '../components/workspace/WorkspaceList.vue'
 import { useTabsStore } from '../stores/tabs'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { makeLocalStorageStub } from './helpers'
@@ -323,6 +324,36 @@ describe('AppLayout — tab mode', () => {
     expect(tabs.tabCount).toBe(2)
     expect(tabs.activeTabId).toBe(sb?.id)
     expect(route.query.tab).toBe(sb?.id)
+  })
+
+  it('opens a workspace item in the background from the sidebar and stays put', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const replaces = replaceCalls.length
+    const pushes = pushCalls.length
+    const activeBefore = tabs.activeTabId
+
+    // The gesture arrives from a workspace row, through WorkspaceList.
+    wrapper
+      .findComponent(WorkspaceList)
+      .vm.$emit('openItemInBackground', { workspaceId: 'ws_1', itemId: 'item_7', name: 'Board' })
+    await settle()
+
+    // a tab was remembered, nothing navigated, the user stays on the same tab
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.byKey('ws:ws_1:item_7')?.title).toBe('Board')
+    expect(tabs.activeTabId).toBe(activeBefore)
+    expect(pushCalls.length).toBe(pushes)
+    expect(replaceCalls.length).toBe(replaces)
+    expect(route.query.tab).toBe(activeBefore)
+
+    // and the tab is real: clicking it in the strip navigates there
+    const background = tabs.byKey('ws:ws_1:item_7')
+    await wrapper.find(`[data-testid="tab-item-${background?.id}"]`).trigger('click')
+    await settle()
+    expect(tabs.activeTabId).toBe(background?.id)
+    expect(route.query).toEqual({ view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7', tab: background?.id })
   })
 
   it('creates no tab, renders no strip and never adds ?tab= when tab mode is off', async () => {
