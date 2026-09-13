@@ -111,6 +111,27 @@ Two navigations that mean the same target focus one tab:
 inside a board focuses the board's tab** — the dialog renders inside the
 same board view, so a second tab would be a duplicate of the same place.
 
+### Tab labels
+
+Labels are **resolved live from the stores**, not frozen when the tab opens:
+the route funnel only ever receives a bare target (a click, a deep link, a
+reload), so there is no name to store at that moment, and the workspace tree
+only lands after the API answers.
+
+* workspace item → the item's name (`AGENTIC BASIC`, not "Workspace"), with the
+  glyph following the item type (▦ kanban, 🎨 design, 🤖 agent, ⏱ routine, 📁
+  folder, 🧠 memory)
+* workspace item with a `/chat/task_X` suffix → that task's name
+* chat → the name published by the chats list and the `session` SSE channel
+  (renames included)
+* chats list / settings / kanban settings → "Chats" / "Settings" / "Kanban
+  settings"
+* anything still unknown → a kind fallback ("Workspace", "Chat")
+
+The resolved label is written back to the tab, so a reload (before the tree has
+loaded) shows the real name instead of the fallback. The fallback is only ever
+visible for the moment before the data arrives.
+
 ## Storage
 
 ```

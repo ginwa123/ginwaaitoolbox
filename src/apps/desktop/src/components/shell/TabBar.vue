@@ -12,12 +12,15 @@
  * is dimmed rather than hidden until hover) so behaviour is assertable
  * without simulating hover, and so a keyboard/touch user can reach it.
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 
 import { fallbackTitle, type Tab, type TabKind } from '../../helpers/tabTarget'
+import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
 import { useTabsStore } from '../../stores/tabs'
+import { useWorkspacesStore } from '../../stores/workspaces'
 
 const tabsStore = useTabsStore()
+const workspacesStore = useWorkspacesStore()
 
 const emit = defineEmits<{
   /** The active tab may have changed — re-apply the URL. */
@@ -39,12 +42,52 @@ const GLYPHS: Record<TabKind, string> = {
   other: '◻',
 }
 
-function glyph(kind: TabKind): string {
-  return GLYPHS[kind] ?? GLYPHS.other
+/** Item types get their own glyph so the coarse `workspace` kind still reads. */
+const ITEM_GLYPHS: Record<string, string> = {
+  kanban: '▦',
+  design: '🎨',
+  agent: '🤖',
+  routine: '⏱',
+  folder: '📁',
+  memory: '🧠',
+  chat: '💬',
 }
 
+/** The workspace item a tab points at, with any `/chat/<taskId>` suffix split off. */
+function itemOf(tab: Tab): { chatTaskId: string | null; item: (typeof workspacesStore.allWorkspaceItems)[number] | null } {
+  const parsed = parseItemIdWithChat(tab.query.itemId ?? '')
+  const item = workspacesStore.allWorkspaceItems.find((candidate) => candidate.id === parsed.itemId) ?? null
+  return { chatTaskId: parsed.chatTaskId, item }
+}
+
+/**
+ * Titles are resolved LIVE, not frozen when the tab opens. The route funnel
+ * has no name to give — a deep link, a reload or a plain click all arrive as
+ * a bare target — and the workspace tree only lands after the API answers.
+ * Reading the stores here means the strip corrects itself the moment the data
+ * exists, and the watcher below writes the resolved label back so the
+ * persisted title is a real name too.
+ */
 function titleOf(tab: Tab): string {
+  if (tab.kind === 'workspace') {
+    const { chatTaskId, item } = itemOf(tab)
+    if (item) {
+      if (chatTaskId) {
+        const task = item.tasks?.find((candidate) => candidate.id === chatTaskId)
+        if (task?.name) return task.name
+      }
+      if (item.name) return item.name
+    }
+  }
   return tab.title || fallbackTitle(tab.kind)
+}
+
+function glyph(tab: Tab): string {
+  if (tab.kind === 'workspace') {
+    const { item } = itemOf(tab)
+    return ITEM_GLYPHS[item?.item_type ?? ''] ?? GLYPHS.workspace
+  }
+  return GLYPHS[tab.kind] ?? GLYPHS.other
 }
 
 function isActive(tab: Tab): boolean {
@@ -163,6 +206,18 @@ watch(
   },
 )
 
+// Persist labels the stores could resolve, so a reload (before the workspace
+// tree has loaded) still shows the item's name instead of a generic fallback.
+// `setTabTitle` only writes when the value actually differs, so this settles
+// on the second pass.
+watchEffect(() => {
+  if (!tabsStore.enabled) return
+  for (const tab of tabsStore.tabs) {
+    const resolved = titleOf(tab)
+    if (resolved && resolved !== tab.title) tabsStore.setTabTitle(tab.id, resolved)
+  }
+})
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onWindowKeydown)
   window.removeEventListener('mousedown', onWindowPointerDown)
@@ -203,7 +258,7 @@ onBeforeUnmount(() => {
         @dragover.prevent
         @drop.prevent="onDrop(index)"
       >
-        <span aria-hidden="true" class="text-[11px] opacity-70">{{ glyph(tab.kind) }}</span>
+        <span aria-hidden="true" class="text-[11px] opacity-70">{{ glyph(tab) }}</span>
         <span class="flex-1 truncate text-xs">{{ titleOf(tab) }}</span>
         <button
           type="button"

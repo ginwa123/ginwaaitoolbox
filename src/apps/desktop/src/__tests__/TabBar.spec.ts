@@ -6,6 +6,7 @@ import { nextTick } from 'vue'
 import TabBar from '../components/shell/TabBar.vue'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { useTabsStore } from '../stores/tabs'
+import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
 /**
@@ -64,6 +65,80 @@ describe('TabBar', () => {
     const wrapper = mount(TabBar)
     const labels = wrapper.findAll('[role="tab"]').map((tab) => tab.text())
     expect(labels[1]).toContain('Workspace')
+  })
+
+  it('resolves a workspace tab label from the tree instead of the generic kind', async () => {
+    const store = useTabsStore()
+    const workspaces = useWorkspacesStore()
+    workspaces.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        items: [{ id: 'item_7', name: 'AGENTIC BASIC', item_type: 'agent', tasks: [] }],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ]
+
+    store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' } })
+    const wrapper = mount(TabBar)
+    await nextTick()
+
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('AGENTIC BASIC')
+    expect(wrapper.findAll('[role="tab"]')[1]?.attributes('title')).toBe('AGENTIC BASIC')
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('🤖')
+    // and the resolved name is persisted for the next reload
+    expect(store.tabs[1]?.title).toBe('AGENTIC BASIC')
+  })
+
+  it('uses the task name when the tab carries a chat suffix', async () => {
+    const store = useTabsStore()
+    const workspaces = useWorkspacesStore()
+    workspaces.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        items: [
+          {
+            id: 'item_7',
+            name: 'Sprint board',
+            item_type: 'kanban',
+            tasks: [{ id: 'task_9', name: 'Fix CI on macOS' }],
+          },
+        ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ]
+
+    store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' } })
+    const wrapper = mount(TabBar)
+    await nextTick()
+
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('Fix CI on macOS')
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('▦')
+  })
+
+  it('keeps the generic label while the tree has not loaded, then corrects itself', async () => {
+    const store = useTabsStore()
+    const workspaces = useWorkspacesStore()
+    const tab = store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' } })
+    const wrapper = mount(TabBar)
+    await nextTick()
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('Workspace')
+
+    // the tree arrives from the API after the tab was opened
+    workspaces.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        items: [{ id: 'item_7', name: 'Late arrival', item_type: 'design', tasks: [] }],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ]
+    await nextTick()
+    await nextTick()
+
+    expect(wrapper.findAll('[role="tab"]')[1]?.text()).toContain('Late arrival')
+    expect(store.tabs.find((t) => t.id === tab.id)?.title).toBe('Late arrival')
   })
 
   it('activates a tab on click and asks for a navigation', async () => {

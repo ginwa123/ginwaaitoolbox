@@ -442,13 +442,22 @@ export const useTabsStore = defineStore('tabs', () => {
 
   /** Live title feed (session SSE + the chats list). */
   function setChatTitle(sessionId: string, name: string): void {
-    if (!sessionId || !name) return
+    const tab = tabs.value.find((candidate) => candidate.kind === 'chat' && candidate.key === `chat:${sessionId}`)
+    if (tab) setTabTitle(tab.id, name)
+  }
+
+  /**
+   * Store a title the caller resolved from live state (the workspace tree,
+   * the chats list, a rename event). Used by the strip so the persisted
+   * label is a real name rather than the generic kind fallback.
+   */
+  function setTabTitle(id: string, title: string): void {
+    if (!id || !title) return
     let touched = false
     tabs.value = tabs.value.map((tab) => {
-      if (tab.kind !== 'chat' || tab.title === name) return tab
-      if (tab.key !== `chat:${sessionId}`) return tab
+      if (tab.id !== id || tab.title === title) return tab
       touched = true
-      return { ...tab, title: name }
+      return { ...tab, title }
     })
     if (touched) persist()
   }
@@ -516,6 +525,7 @@ export const useTabsStore = defineStore('tabs', () => {
     initTitleFeed,
     disposeTitleFeed,
     setChatTitle,
+    setTabTitle,
     getDraft,
     setDraft,
     clearDraft,
