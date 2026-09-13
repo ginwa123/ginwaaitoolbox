@@ -68,16 +68,52 @@ const OVERLAY_VIEWS = ['gitfile', 'skill', 'code-editor']
 /** `ChatsList` emits this as an event flag, not as a view. */
 const NON_VIEW = ['delete-chat']
 
+/** Order-sensitive comparison of two already-normalized query objects. */
+function sameNormalized(left: TabQuery, right: TabQuery): boolean {
+  const leftKeys = Object.keys(left)
+  if (leftKeys.length !== Object.keys(right).length) return false
+  for (const key of leftKeys) {
+    if (left[key] !== right[key]) return false
+  }
+  return true
+}
+
+/**
+ * Same target? Ignores `tab`, because the tab's stored target must not
+ * change just because it became active.
+ */
+export function sameTabTarget(
+  a: Record<string, unknown> | null | undefined,
+  b: Record<string, unknown> | null | undefined,
+): boolean {
+  return sameNormalized(stripTabParam(a ?? {}), stripTabParam(b ?? {}))
+}
+
+/**
+ * Same URL? Includes `tab` — used to decide whether a navigation is
+ * actually needed, so naming a different tab IS a difference.
+ */
+export function sameRouteQuery(
+  a: Record<string, unknown> | null | undefined,
+  b: Record<string, unknown> | null | undefined,
+): boolean {
+  return sameNormalized(normalizeQuery(a, true), normalizeQuery(b, true))
+}
+
 /**
  * The URL contract is flat strings. Values that are arrays/objects (or
  * empty) are dropped so two URLs that mean the same thing produce the
  * same key.
  */
 export function stripTabParam(query: Record<string, unknown> | null | undefined): TabQuery {
+  return normalizeQuery(query, false)
+}
+
+function normalizeQuery(query: Record<string, unknown> | null | undefined, keepTab: boolean): TabQuery {
   const out: TabQuery = {}
   if (!query) return out
   for (const [key, value] of Object.entries(query)) {
-    if (key === 'tab') continue
+    if (!keepTab && key === 'tab') continue
     if (value === null || value === undefined) continue
     let text = ''
     if (typeof value === 'string') text = value
