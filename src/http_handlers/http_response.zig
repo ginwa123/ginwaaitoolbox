@@ -683,6 +683,30 @@ pub fn makeGitPrCreateResponse(allocator: std.mem.Allocator, response: GitPrCrea
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git branches list types ──────────────────────────────────────────────
+// Wire shape for `GET /api/git/branches?path=<repo>`. Consumed by the
+// kanban "New task" dialog's base-branch picker so the user can choose
+// which ref a fresh worktree branches from (e.g. `origin/main`).
+pub const GitBranchEntry = struct {
+    /// Short ref name, e.g. `origin/main` (remote-tracking) or `main`
+    /// (local). This is the exact string the agent passes as the
+    /// `set_git_worktree` tool's `base` argument.
+    name: []const u8 = "",
+    is_remote: bool = false,
+    is_current: bool = false,
+    is_default: bool = false,
+};
+
+pub const GitBranchesResponse = struct {
+    is_git_repo: bool = false,
+    current_branch: []const u8 = "",
+    branches: []const GitBranchEntry = &.{},
+};
+
+pub fn makeGitBranchesResponse(allocator: std.mem.Allocator, response: GitBranchesResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // Profile types
 pub const LlmProfileResponse = struct {
     name: []const u8,

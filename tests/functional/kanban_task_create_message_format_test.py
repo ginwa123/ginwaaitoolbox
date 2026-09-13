@@ -9,6 +9,8 @@ formats the create_and_run `queue_message` as:
     #Notes UseGitWorktree         <- only when the worktree toggle is ON
     Path: <worktreePath>          <- only when the toggle is ON and a
                                      custom path was entered
+    Base: <baseBranch>            <- only when the toggle is ON and a base
+                                     ref was picked (e.g. origin/main)
 
 The backend passes `queue_message` through verbatim (emit_run_agent →
 insertQueueMessage → queue-drain → llm_history user row), so these tests
@@ -19,6 +21,11 @@ A 4th test locks the create_session scope limit: plain "Create task"
 still uses the server-side `name + "\\n\\n" + description` composition
 (frontend-only change — the card display shares the description field).
 
+The trailing tests cover `GET /api/git/branches` — the endpoint feeding
+the base-branch dropdown — against a throwaway repo created inside the
+harness tmpdir. They exist because route order + response JSON shape are
+exactly the class of bug a unit test cannot see.
+
 We use the plain `harness` fixture (no stub LLM needed): the worker
 drains the queue into the user-role llm_history row BEFORE any LLM
 call, so polling for that row works even though the subsequent LLM
@@ -27,7 +34,9 @@ turn fails against the isolated tmpdir HOME.
 
 from __future__ import annotations
 
+import subprocess
 import time
+from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
@@ -245,3 +254,169 @@ def test_create_and_run_appends_worktree_path_when_provided(
         "Task : Isolated work\nDescription: blablabla\n\n"
         "#Notes UseGitWorktree\nPath: ~/.config/nalar/.worktrees/isolated-work"
     )
+
+
+# ─── Test 6: toggle ON + path + base branch appends the Base line ─────────────
+
+
+def test_create_and_run_appends_worktree_base_branch_when_provided(
+    worker_harness: FunctionalHarness,
+) -> None:
+    """The base-branch picker lands as the `Base:` line after `Path:`.
+
+    This is the wire half of the feature: the agent only knows which ref to
+    branch the worktree FROM because this line reaches llm_history verbatim.
+    """
+    ws_id = _create_workspace(worker_harness)
+    kanban_id = _create_kanban(worker_harness, ws_id)
+
+    resp = _create_task(
+        worker_harness,
+        ws_id,
+        kanban_id,
+        name="Isolated work",
+        description="blablabla",
+        mode="create_and_run",
+        queue_message=(
+            "Task : Isolated work\nDescription: blablabla\n\n"
+            "#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x\n"
+            "Base: origin/main"
+        ),
+    )
+    task_id = resp["task"]["id"]
+
+    msgs = _wait_for_user_message(worker_harness, task_id)
+    assert msgs[0].get("content") == (
+        "Task : Isolated work\nDescription: blablabla\n\n"
+        "#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x\n"
+        "Base: origin/main"
+    )
+
+
+def test_create_and_run_without_base_keeps_the_old_message_shape(
+    worker_harness: FunctionalHarness,
+) -> None:
+    """Regression guard: no base ref ⇒ byte-identical to the pre-feature form."""
+    ws_id = _create_workspace(worker_harness)
+    kanban_id = _create_kanban(worker_harness, ws_id)
+
+    resp = _create_task(
+        worker_harness,
+        ws_id,
+        kanban_id,
+        name="Isolated work",
+        description="blablabla",
+        mode="create_and_run",
+        queue_message=(
+            "Task : Isolated work\nDescription: blablabla\n\n"
+            "#Notes UseGitWorktree\nPath: /tmp/wt/x"
+        ),
+    )
+    task_id = resp["task"]["id"]
+
+    msgs = _wait_for_user_message(worker_harness, task_id)
+    assert "Base:" not in msgs[0].get("content", "")
+
+
+# ─── GET /api/git/branches — the dropdown's data source ───────────────────────
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _make_repo_with_branches(root: Path) -> Path:
+    """Create a throwaway repo with one local branch, two remote-tracking
+    refs, and a symbolic `origin/HEAD` (the row the parser must drop)."""
+    repo = root / "branches-repo"
+    repo.mkdir()
+    _git(repo, "init", "--initial-branch=main", "--quiet")
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(repo, "add", "a.txt")
+    _git(
+        repo,
+        "-c",
+        "user.email=test@example.com",
+        "-c",
+        "user.name=Test",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        "init",
+    )
+    # Fabricate remote-tracking refs — no network, no `origin` remote needed.
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(repo, "update-ref", "refs/remotes/origin/feature-x", "HEAD")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(repo, "branch", "local-dev")
+    return repo
+
+
+def test_git_branches_lists_refs_in_picker_order(harness: FunctionalHarness) -> None:
+    """Default hoisted, then remotes, then locals; symbolic HEAD dropped."""
+    repo = _make_repo_with_branches(harness.temp_dir)
+
+    r = harness.http(
+        "GET", "/api/git/branches", params={"path": str(repo)}, expect=200
+    )
+    data = r.json()
+
+    assert data["is_git_repo"] is True
+    assert data["current_branch"] == "main"
+
+    names = [b["name"] for b in data["branches"]]
+    assert "origin/main" in names
+    assert "origin/feature-x" in names
+    assert "local-dev" in names
+    # The symbolic ref shortens to a bare `origin` — it must never surface
+    # as a selectable base branch.
+    assert "origin" not in names
+    assert "HEAD" not in names
+    # Detected default first, then the other remote-tracking ref, then the
+    # local branch.
+    assert names[0] == "origin/main"
+
+    by_name = {b["name"]: b for b in data["branches"]}
+    assert by_name["origin/main"] == {
+        "name": "origin/main",
+        "is_remote": True,
+        "is_current": False,
+        "is_default": True,
+    }
+    assert by_name["origin/feature-x"]["is_remote"] is True
+    assert by_name["origin/feature-x"]["is_default"] is False
+    assert by_name["local-dev"] == {
+        "name": "local-dev",
+        "is_remote": False,
+        "is_current": False,
+        "is_default": False,
+    }
+    assert by_name["main"]["is_current"] is True
+
+
+def test_git_branches_404_when_path_is_not_a_repo(harness: FunctionalHarness) -> None:
+    plain = harness.temp_dir / "not-a-repo"
+    plain.mkdir(parents=True, exist_ok=True)
+
+    r = harness.http("GET", "/api/git/branches", params={"path": str(plain)}, expect=404)
+    assert "not a git repository" in r.json().get("error", "")
+
+
+def test_git_branches_400_when_path_is_missing(harness: FunctionalHarness) -> None:
+    r = harness.http("GET", "/api/git/branches", expect=400)
+    assert "error" in r.json()
+
+
+def test_git_branches_400_when_path_is_not_absolute(harness: FunctionalHarness) -> None:
+    """`..` traversal and relative paths are rejected before git is spawned."""
+    r = harness.http(
+        "GET", "/api/git/branches", params={"path": "relative/repo"}, expect=400
+    )
+    assert "error" in r.json()

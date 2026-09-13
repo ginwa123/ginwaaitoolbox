@@ -72,4 +72,54 @@ describe('buildTaskCreateMessage', () => {
       buildTaskCreateMessage('My task', '', true, '  /home/you/.config/nalar/.worktrees/x  '),
     ).toBe('Task : My task\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/x')
   })
+
+  it('toggle on + path + base → Base line after Path', () => {
+    expect(
+      buildTaskCreateMessage(
+        'My task',
+        'blablabla',
+        true,
+        '/home/you/.config/nalar/.worktrees/my-task',
+        'origin/main',
+      ),
+    ).toBe(
+      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /home/you/.config/nalar/.worktrees/my-task\nBase: origin/main',
+    )
+  })
+
+  it('toggle on + base without a path → Base line still emitted', () => {
+    // The agent may derive the path itself from the task name, but the
+    // base ref is only knowable from this line.
+    expect(buildTaskCreateMessage('My task', '', true, '', 'origin/main')).toBe(
+      'Task : My task\n\n#Notes UseGitWorktree\nBase: origin/main',
+    )
+  })
+
+  it('trims a padded base ref', () => {
+    expect(
+      buildTaskCreateMessage('My task', '', true, '/tmp/wt/x', '  origin/main  '),
+    ).toBe('Task : My task\n\n#Notes UseGitWorktree\nPath: /tmp/wt/x\nBase: origin/main')
+  })
+
+  it('toggle on + whitespace-only base degrades to no Base line', () => {
+    expect(buildTaskCreateMessage('My task', '', true, '/tmp/wt/x', '   ')).toBe(
+      'Task : My task\n\n#Notes UseGitWorktree\nPath: /tmp/wt/x',
+    )
+  })
+
+  it('toggle off + base → base is ignored', () => {
+    expect(
+      buildTaskCreateMessage('My task', 'blablabla', false, '/tmp/wt/x', 'origin/main'),
+    ).toBe('Task : My task\nDescription: blablabla')
+  })
+
+  it('toggle on without a base keeps the pre-existing message shape', () => {
+    // Regression guard: existing tasks (no Base line) must produce the
+    // exact same bytes as before this option existed.
+    expect(
+      buildTaskCreateMessage('My task', 'blablabla', true, '/tmp/wt/x'),
+    ).toBe(
+      'Task : My task\nDescription: blablabla\n\n#Notes UseGitWorktree\nPath: /tmp/wt/x',
+    )
+  })
 })

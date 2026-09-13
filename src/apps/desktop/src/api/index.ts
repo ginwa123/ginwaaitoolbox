@@ -3018,6 +3018,56 @@ export async function createGitPr(
   })
 }
 
+// ─── Git branches (kanban worktree base-branch picker) ────────────────────
+// Wire shape for `GET /api/git/branches?path=<repo>`. Feeds the "New task"
+// dialog's base-branch dropdown so a fresh worktree can branch from e.g.
+// `origin/main` instead of whatever the repo's current HEAD is.
+
+export interface GitBranchEntry {
+  /** Short ref name, e.g. `origin/main` or `main`. This is the exact
+   *  string baked into the create-task message's `Base:` line. */
+  name: string
+  /** True for a remote-tracking ref (`origin/...`). */
+  is_remote: boolean
+  /** True for the repo's currently checked-out branch (`''` in a bare
+   *  repo / detached HEAD — no row is highlighted). */
+  is_current: boolean
+  /** True for the detected default base (`origin/main` → … ). The
+   *  component uses this to preselect a sensible value. */
+  is_default: boolean
+}
+
+export interface GitBranchesResponse {
+  is_git_repo: boolean
+  current_branch: string
+  branches: GitBranchEntry[]
+}
+
+/**
+ * List the local + remote-tracking branches of the repo at `repoPath`.
+ *
+ * Never throws and never rejects: a missing/unreachable repo path, a
+ * non-git directory (backend 404), or a backend that is down all degrade
+ * to the empty response so the picker gracefully falls back to a plain
+ * text input. The user can always type a ref by hand.
+ */
+export async function listGitBranches(repoPath: string): Promise<GitBranchesResponse> {
+  const empty: GitBranchesResponse = {
+    is_git_repo: false,
+    current_branch: '',
+    branches: [],
+  }
+  const path = (repoPath ?? '').trim()
+  if (path === '') return empty
+  try {
+    const params = new URLSearchParams({ path })
+    return await apiFetch<GitBranchesResponse>(`/git/branches?${params}`)
+  } catch (error) {
+    console.error('Failed to list git branches:', error)
+    return empty
+  }
+}
+
 // File listing for autocomplete
 export async function listFiles(cwd: string, dirPath?: string): Promise<string[]> {
   try {

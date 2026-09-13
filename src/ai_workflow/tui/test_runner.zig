@@ -99,6 +99,7 @@ _ = @import("../../http_handlers/task_pin.zig");
     _ = @import("../../http_handlers/design_elements_reparent.zig");
 _ = @import("../../http_handlers/tasks_reorder_pinned.zig");
 _ = @import("../../http_handlers/git_worktree_info.zig");
+_ = @import("../../http_handlers/git_branches_list.zig");
 _ = @import("../../http_handlers/git_pr_create.zig");
 _ = @import("../../http_handlers/git_status.zig");
 _ = @import("../../http_handlers/workspace_items_create_kanban.zig");

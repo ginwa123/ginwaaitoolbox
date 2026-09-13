@@ -559,6 +559,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.post("/api/git/stage", ai_mod.http_handlers.gitStageHandler);
     try gs.router.post("/api/git/unstage", ai_mod.http_handlers.gitUnstageHandler);
     try gs.router.get("/api/git/worktree/info", ai_mod.http_handlers.gitWorktreeInfoHandler);
+    try gs.router.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
     try gs.router.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     try gs.router.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);

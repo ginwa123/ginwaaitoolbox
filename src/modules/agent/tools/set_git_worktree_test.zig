@@ -61,6 +61,10 @@ test "set_git_worktree input struct has path + clear + branch fields" {
         std.debug.print("!! SetGitWorktreeInput is missing the 'branch' field !!\n", .{});
         return error.BranchFieldMissing;
     }
+    if (std.mem.indexOf(u8, source, "base: []const u8") == null) {
+        std.debug.print("!! SetGitWorktreeInput is missing the 'base' field !!\n", .{});
+        return error.BaseFieldMissing;
+    }
 }
 
 test "xmlError for add failure surfaces git stderr, not a generic literal" {
@@ -402,7 +406,7 @@ test "executeSetGitWorktreeToString calls classifyPath before runGitWorktreeAdd"
         std.debug.print("!! set_git_worktree.zig does not call classifyPath on worktree_path !!\n", .{});
         return error.ClassifyPathCallMissing;
     };
-    const add_idx = std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch)") orelse {
+    const add_idx = std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch, base)") orelse {
         std.debug.print("!! set_git_worktree.zig is missing the runGitWorktreeAdd call !!\n", .{});
         return error.RunGitWorktreeAddCallMissing;
     };
@@ -513,6 +517,7 @@ test "rewriteGitStderr rewrites 'already exists' to recovery advice" {
         "fatal: '/abs/.worktrees/foo' already exists",
         "/abs/.worktrees/foo",
         "worktree/foo",
+        "",
     );
     defer allocator.free(out);
     // The original "fatal: ... already exists" must be GONE (replaced),
@@ -534,6 +539,7 @@ test "rewriteGitStderr rewrites 'is already checked out' to branch advice" {
         "fatal: 'worktree/foo' is already checked out at '/abs/.worktrees/foo'",
         "/abs/.worktrees/new",
         "worktree/foo",
+        "",
     );
     defer allocator.free(out);
     if (std.mem.indexOf(u8, out, "auto-derived branch name") == null) {
@@ -549,6 +555,7 @@ test "rewriteGitStderr rewrites 'not a git repository'" {
         "fatal: not a git repository (or any parent up to mount point /)",
         "/abs/.worktrees/foo",
         "worktree/foo",
+        "",
     );
     defer allocator.free(out);
     if (std.mem.indexOf(u8, out, "set_git_worktree requires being called from within a git repo") == null) {
@@ -564,6 +571,7 @@ test "rewriteGitStderr rewrites 'invalid reference' to branch-name rules" {
         "fatal: invalid reference: bad..name",
         "/abs/.worktrees/foo",
         "bad..name",
+        "",
     );
     defer allocator.free(out);
     if (std.mem.indexOf(u8, out, "Valid branch names must not contain") == null) {
@@ -572,19 +580,136 @@ test "rewriteGitStderr rewrites 'invalid reference' to branch-name rules" {
     }
 }
 
+test "rewriteGitStderr blames the base ref when one was requested" {
+    const allocator = testing.allocator;
+    const out = try swt.rewriteGitStderr(
+        allocator,
+        "fatal: invalid reference: origin/nope",
+        "/abs/.worktrees/foo",
+        "worktree/foo",
+        "origin/nope",
+    );
+    defer allocator.free(out);
+    // The base ref is the likely culprit, so the message must name it and
+    // point at `git fetch` rather than at the new branch name.
+    if (std.mem.indexOf(u8, out, "origin/nope") == null) {
+        std.debug.print("!! rewriteGitStderr does not name the unresolvable base ref !!\n", .{});
+        return error.RewriteMissingBaseRefName;
+    }
+    if (std.mem.indexOf(u8, out, "git fetch origin") == null) {
+        std.debug.print("!! rewriteGitStderr does not suggest `git fetch origin` for an unresolved base !!\n", .{});
+        return error.RewriteMissingFetchSuggestion;
+    }
+}
+
 test "rewriteGitStderr passes through unknown stderr verbatim" {
     const allocator = testing.allocator;
     const unknown = "fatal: some weird edge-case error we did not anticipate\n";
-    const out = try swt.rewriteGitStderr(allocator, unknown, "/x", "worktree/x");
+    const out = try swt.rewriteGitStderr(allocator, unknown, "/x", "worktree/x", "");
     defer allocator.free(out);
     try testing.expectEqualStrings(unknown, out);
 }
 
 test "rewriteGitStderr returns empty for empty input" {
     const allocator = testing.allocator;
-    const out = try swt.rewriteGitStderr(allocator, "", "/x", "worktree/x");
+    const out = try swt.rewriteGitStderr(allocator, "", "/x", "worktree/x", "");
     defer allocator.free(out);
     try testing.expectEqualStrings("", out);
+}
+
+// ─── Base ref (kanban `Base:` line) ────────────────────────────────────
+
+test "validateBaseRef accepts refs the kanban dialog emits" {
+    const ok = [_][]const u8{
+        "",
+        "origin/main",
+        "origin/feat/some-branch",
+        "main",
+        "worktree/foo-1757792000000",
+        "v1.2.3",
+    };
+    for (ok) |ref| {
+        if (swt.validateBaseRef(ref)) |msg| {
+            std.debug.print("!! validateBaseRef rejected '{s}': {s} !!\n", .{ ref, msg });
+            return error.ValidBaseRefRejected;
+        }
+    }
+}
+
+test "validateBaseRef rejects flag-shaped and malformed refs" {
+    const bad = [_][]const u8{
+        "-b",
+        "--hard",
+        "origin/ main",
+        "origin/..main",
+        "origin//main",
+        "origin/main.lock",
+        "origin/main@{1}",
+        "origin/ma~in",
+        "origin/ma^in",
+        "origin/ma:in",
+        "origin/ma?in",
+        "origin/ma*in",
+        "origin/ma[in",
+        "origin/ma\\in",
+        "/origin/main",
+        "origin/main/",
+    };
+    for (bad) |ref| {
+        if (swt.validateBaseRef(ref) == null) {
+            std.debug.print("!! validateBaseRef accepted invalid ref '{s}' !!\n", .{ref});
+            return error.InvalidBaseRefAccepted;
+        }
+    }
+}
+
+test "buildWorktreeAddArgv omits the start-point when base is empty" {
+    const argv = try swt.buildWorktreeAddArgv(testing.allocator, "worktree/x", "/tmp/wt/x", "");
+    defer testing.allocator.free(argv);
+
+    const expected = [_][]const u8{ "git", "worktree", "add", "-b", "worktree/x", "/tmp/wt/x" };
+    try testing.expectEqual(expected.len, argv.len);
+    for (expected, argv) |want, got| try testing.expectEqualStrings(want, got);
+}
+
+test "buildWorktreeAddArgv appends the base as the start-point" {
+    const argv = try swt.buildWorktreeAddArgv(testing.allocator, "worktree/x", "/tmp/wt/x", "origin/main");
+    defer testing.allocator.free(argv);
+
+    const expected = [_][]const u8{ "git", "worktree", "add", "-b", "worktree/x", "/tmp/wt/x", "origin/main" };
+    try testing.expectEqual(expected.len, argv.len);
+    for (expected, argv) |want, got| try testing.expectEqualStrings(want, got);
+}
+
+test "runGitWorktreeAdd receives the base from executeSetGitWorktreeToString" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    // The base must flow into the git call, not just be parsed.
+    if (std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch, base)") == null) {
+        std.debug.print("!! set_git_worktree.zig does not pass `base` to runGitWorktreeAdd !!\n", .{});
+        return error.BaseNotForwardedToGit;
+    }
+    if (std.mem.indexOf(u8, source, "validateBaseRef(base)") == null) {
+        std.debug.print("!! set_git_worktree.zig does not validate `base` !!\n", .{});
+        return error.BaseNotValidated;
+    }
+}
+
+test "set_git_worktree tool schema exposes the base property" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, ".name = \"base\"") == null) {
+        std.debug.print("!! set_git_worktree tool schema is missing the `base` property !!\n", .{});
+        return error.BasePropertyMissing;
+    }
+    // The system prompt must teach the LLM where the value comes from,
+    // otherwise the kanban `Base:` line stays inert text.
+    if (std.mem.indexOf(u8, source, "`Base:` line") == null) {
+        std.debug.print("!! set_git_worktree system prompt does not mention the `Base:` line !!\n", .{});
+        return error.BaseNoteNotPrompted;
+    }
 }
 
 // ─── Chunk 4: tool description recovery guidance ───────────────────────

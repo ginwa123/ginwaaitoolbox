@@ -90,6 +90,7 @@ import FilePreviewModal from './FilePreviewModal.vue'
 import * as api from '../../api'
 import { getSystemFolder, listFolder, type FolderEntry } from '../../api'
 import FilePickerDialog from '../FilePickerDialog.vue'
+import GitBaseBranchSelect from './GitBaseBranchSelect.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -191,6 +192,11 @@ const emit = defineEmits<{
       // path itself; non-empty is baked as the `Path:` line after
       // `#Notes UseGitWorktree` in the queue_message.
       worktreePath: string
+      // Create-mode only. Base ref the new worktree branches FROM, e.g.
+      // `origin/main`. Visible when the worktree toggle is ON; empty
+      // string = no `Base:` line, so the agent branches from the repo's
+      // current HEAD (the pre-existing behavior).
+      worktreeBaseBranch: string
       // NEW (kanban task tags, Migration 067): array of free-form
       // tag strings. Empty array = no tags. Host forwards via
       // api.createTask's `tags` param; backend validates + persists.
@@ -242,6 +248,9 @@ const emit = defineEmits<{
       useGitWorktree: boolean
       // Mirror of `worktreePath` on the `create` emit (the `Path:` line).
       worktreePath: string
+      // Mirror of `worktreeBaseBranch` on the `create` emit (the
+      // `Base:` line).
+      worktreeBaseBranch: string
       tags: string[]
       // NEW (plan: 2026-08-06-kanban-task-profile-selector). See
       // note on the `create` emit above. Threaded through to
@@ -326,6 +335,12 @@ const expandWorktreePath = (raw: string): string => {
   return trimmed
 }
 const worktreePath = ref('')
+// Base ref the new worktree branches FROM (create mode only, visible when
+// the toggle is ON). Empty = no `Base:` line in the queue_message, so the
+// agent branches from the repo's current HEAD (the pre-existing behavior).
+// The dropdown lists the repo's real refs (`GitBaseBranchSelect`) and
+// lets the user name one the list does not show.
+const worktreeBaseBranch = ref('')
 const slugifyWorktreeName = (raw: string): string => {
   const slug = raw
     .trim()
@@ -622,6 +637,7 @@ watch(
       unattended.value = '1'
       useGitWorktree.value = false
       worktreePath.value = ''
+      worktreeBaseBranch.value = ''
       tags.value = []  // NEW: start with empty tags in create mode
       selectedProfile.value = ''  // NEW: profile selector defaults to backend default
       // NEW (plan: 2026-08-14-kanban-task-detail-edit-cwd). Sync
@@ -862,6 +878,7 @@ const handleSave = () => {
         // the agent's validatePath rejects non-absolute paths.
         useGitWorktree: useGitWorktree.value,
         worktreePath: expandWorktreePath(worktreePath.value),
+        worktreeBaseBranch: worktreeBaseBranch.value.trim(),
         // NEW (Migration 067 — kanban task tags): forward the
         // current tags array. The KanbanTagsInput already
         // validates + dedupes, so the array is ready to persist.
@@ -935,6 +952,7 @@ const handleRunAgent = () => {
     is_auto_retry_until_stop: unattended.value,
     useGitWorktree: useGitWorktree.value,
     worktreePath: expandWorktreePath(worktreePath.value),
+    worktreeBaseBranch: worktreeBaseBranch.value.trim(),
     tags: tags.value,
     // NEW (plan: 2026-08-06-kanban-task-profile-selector). Empty
     // string = backend default. Host threads through to
@@ -1755,6 +1773,27 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                 <div class="text-[11px]" style="color: var(--semantic-text-dim);">
                   Default: $HOME/.config/nalar/.worktrees/&lt;task-name&gt;-&lt;timestamp&gt;. Must be
                   absolute; the parent folder must exist.
+                </div>
+              </div>
+              <!-- Base-branch picker (create mode only, visible when the
+                   toggle is ON). Baked as the `Base:` line right after
+                   `Path:` in the queue_message, so the agent passes it to
+                   `set_git_worktree`'s `base` argument and the worktree is
+                   created FROM that ref. -->
+              <div
+                v-if="isCreateMode && useGitWorktree"
+                class="pt-2 flex flex-col gap-1 items-start"
+                data-testid="kanban-task-detail-use-git-worktree-base-wrap"
+              >
+                <GitBaseBranchSelect
+                  v-model="worktreeBaseBranch"
+                  :repo-path="cwdSession || cwd"
+                  data-testid="kanban-task-detail-use-git-worktree-base"
+                />
+                <div class="text-[11px]" style="color: var(--semantic-text-dim);">
+                  Optional but recommended. The new worktree's branch is created
+                  from this ref (e.g. origin/main). "HEAD (default)" branches
+                  from whatever the repo currently has checked out.
                 </div>
               </div>
             </div>
