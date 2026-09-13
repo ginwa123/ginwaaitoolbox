@@ -1402,6 +1402,11 @@ test "hook seam: no hook file proceeds without touching exec deps" {
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
     try env_map.put("HOME", path_buf[0..n]);
+    // %APPDATA% backs the config dir on Windows; without it the resolve
+    // path logs (harmlessly) instead of cleanly resolving to null.
+    const appdata_abs = try std.fs.path.join(allocator, &.{ path_buf[0..n], "appdata" });
+    defer allocator.free(appdata_abs);
+    try env_map.put("APPDATA", appdata_abs);
 
     const ctx = hookTestCtx(allocator, &lg, &env_map);
     const action = runPreHookAction(ctx, "bash", "{}");
@@ -1530,8 +1535,27 @@ fn hookDispatchCtx(
 }
 
 fn readFileCall(allocator: std.mem.Allocator, path: []const u8) !agent.ToolCall {
-    const args = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{path});
+    // JSON-escape: Windows paths contain backslashes (`C:\...`) which are
+    // JSON escape leaders — embedding them raw yields invalid JSON (`\U`)
+    // that the tool arg parser rejects. No-op on POSIX paths.
+    const escaped = try jsonEscapePath(allocator, path);
+    defer allocator.free(escaped);
+    const args = try std.fmt.allocPrint(allocator, "{{\"path\":\"{s}\"}}", .{escaped});
     return agent.ToolCall{ .id = "call_hook_dispatch", .function = .{ .name = "read_file", .arguments = args } };
+}
+
+/// Escape `\` and `"` for embedding a path in a JSON string value.
+fn jsonEscapePath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    var out = try std.ArrayList(u8).initCapacity(allocator, path.len);
+    errdefer out.deinit(allocator);
+    for (path) |c| {
+        switch (c) {
+            '\\' => try out.appendSlice(allocator, "\\\\"),
+            '"' => try out.appendSlice(allocator, "\\\""),
+            else => try out.append(allocator, c),
+        }
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 test "hook dispatch: no hook runs real read_file" {
@@ -1606,7 +1630,11 @@ test "hook dispatch: pre modify rewrites args seen by exec" {
     const n = try tmp.dir.realPath(std.testing.io, &path_buf);
     const other_abs = try std.fs.path.join(dispatch_alloc, &.{ path_buf[0..n], "other.txt" });
 
-    const lua_source = try std.fmt.allocPrint(dispatch_alloc, "function init(event, data) if event == 'pre_tool_use' then return {{ arguments = '{{\"path\":\"{s}\"}}' }} end return nil end\n", .{other_abs});
+    // JSON-escape the path (Windows backslashes) + Lua long brackets
+    // ([[...]] disables Lua escape processing, so the JSON arrives
+    // verbatim and `\\` stays valid JSON for the tool arg parser).
+    const escaped = try jsonEscapePath(dispatch_alloc, other_abs);
+    const lua_source = try std.fmt.allocPrint(dispatch_alloc, "function init(event, data) if event == 'pre_tool_use' then return {{ arguments = [[{{\"path\":\"{s}\"}}]] }} end return nil end\n", .{escaped});
     var fx = try hookFixture(dispatch_alloc, lua_source, &path_buf);
     defer fx.deinit();
 
@@ -1640,4 +1668,21 @@ test "hook dispatch: post replace swaps real output" {
     const result = try dispatchTool(ctx, tc);
     try std.testing.expectEqualStrings("REDACTED BY HOOK", result.output);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "TOP SECRET") == null);
+}
+
+test "jsonEscapePath escapes backslashes and quotes for JSON embedding" {
+    const allocator = std.testing.allocator;
+    // Windows-style path: every backslash must double, or the tool arg
+    // parser rejects the JSON (`\U` is not a valid escape).
+    const escaped = try jsonEscapePath(allocator, "C:\\Users\\x\\f.txt");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("C:\\\\Users\\\\x\\\\f.txt", escaped);
+    // POSIX paths pass through untouched.
+    const plain = try jsonEscapePath(allocator, "/tmp/foo.txt");
+    defer allocator.free(plain);
+    try std.testing.expectEqualStrings("/tmp/foo.txt", plain);
+    // Quotes are escaped too.
+    const quoted = try jsonEscapePath(allocator, "a\"b");
+    defer allocator.free(quoted);
+    try std.testing.expectEqualStrings("a\\\"b", quoted);
 }

@@ -784,3 +784,22 @@ test "hooks: empty cwd skips project tier" {
     defer post.deinit(allocator);
     try testing.expect(post == .keep);
 }
+
+test "hooks: long-bracket args with backslashes survive verbatim" {
+    // Windows paths (`C:\...`) inside Lua short strings break on escape
+    // processing (`\U` is invalid). Long brackets ([[...]]) disable it,
+    // so JSON-escaped backslashes (`\\`) arrive intact for the tool arg
+    // parser. This runs everywhere; on Windows CI it guards the real path.
+    const allocator = testing.allocator;
+    var lg = testLogger(allocator);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeHookFile(tmp.dir, testing.io, "brackets.lua", "function init(event, data) return { arguments = [[{\"path\":\"C:\\\\Users\\\\x\\\\f.txt\"}]] } end\n");
+    const path = try hookPath(allocator, tmp.dir, testing.io, "brackets.lua");
+    defer allocator.free(path);
+
+    const pre = try callPreHook(allocator, &lg, path, "read_file", "{}", .{});
+    defer pre.deinit(allocator);
+    try testing.expect(pre == .modify);
+    try testing.expectEqualStrings("{\"path\":\"C:\\\\Users\\\\x\\\\f.txt\"}", pre.modify);
+}
