@@ -639,7 +639,6 @@ pub const list_memory_tool = @import("modules/agent/tools/list_memory.zig");
 pub const memory = @import("modules/agent/tools/memory.zig");
 pub const save_memory = memory;
 pub const load_memory = memory;
-pub const delete_memory = memory;
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const search_history_tool = @import("modules/agent/tools/search_history.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");

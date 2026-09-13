@@ -1,7 +1,6 @@
-// Exec wrappers for the `save_memory` / `load_memory` / `delete_memory`
-// agent tools (merged 2026-09-11 memory-merge refactor — one file, three
-// exec fns; the public names `execSaveMemory` / `execLoadMemory` /
-// `execDeleteMemory` are unchanged).
+// Exec wrappers for the `save_memory` / `load_memory` agent tools
+// (append-only since 2026-09-12: `delete_memory` was removed per user
+// decision — "memory is always add, no need edit or delete").
 
 const std = @import("std");
 const testing = std.testing;
@@ -99,50 +98,7 @@ pub fn execLoadMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-// ─── delete_memory ───
-
-pub fn execDeleteMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    const parsed = std.json.parseFromSlice(
-        memory_mod.DeleteMemoryInput,
-        ctx.allocator,
-        tc.function.arguments,
-        .{ .allocate = .alloc_always, .ignore_unknown_fields = true },
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_memory failed to parse input: {s}", .{@errorName(err)});
-        defer ctx.allocator.free(err_msg);
-        const output = try wrapToolOutput(ctx.allocator, "delete_memory", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer parsed.deinit();
-
-    const inner = memory_mod.executeDeleteMemory(
-        ctx.allocator,
-        ctx.db,
-        parsed.value,
-    ) catch |err| {
-        const err_msg = try std.fmt.allocPrint(ctx.allocator, "delete_memory failed: {s}", .{@errorName(err)});
-        defer ctx.allocator.free(err_msg);
-        const output = try wrapToolOutput(ctx.allocator, "delete_memory", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    };
-    defer ctx.allocator.free(inner);
-
-    // Detect the <delete_memory><error>...</error></delete_memory> shape and
-    // surface it as a tool failure. The inner XML still rides in <data> so
-    // the LLM can see the per-tool detail.
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "delete_memory", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
-
-    const output = try wrapToolOutput(ctx.allocator, "delete_memory", tc.function.arguments, true, null, inner);
-    return ToolExecResult{ .output = output, .output_allocated = true };
-}
-
-// ─── tests (from tools_exec_delete_memory.zig) ───
+// ─── tests ───
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -194,51 +150,50 @@ fn fakeToolCall(name: []const u8, args: []const u8) agent.ToolCall {
     };
 }
 
-test "execDeleteMemory: happy path wraps success=true with deleted=true" {
+test "execSaveMemory: happy path wraps success=true and appends a new row" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const row = try agent_memories.saveMemory(alloc, &ctx.db, .{
-        .content = "row to delete via exec wrapper",
-        .tags = &.{"test"},
-        .id = "exec-target",
-    });
-    defer agent_memories.freeMemoryRow(alloc, row);
-
     const tcx = makeTestCtx(alloc, &ctx.db);
-    const tc = fakeToolCall("delete_memory", "{\"id\":\"exec-target\"}");
+    const tc = fakeToolCall("save_memory", "{\"content\":\"row saved via exec wrapper\",\"tags\":\"test\"}");
 
-    const result = try execDeleteMemory(tcx, tc);
+    const result = try execSaveMemory(tcx, tc);
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
     try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>delete_memory</name>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<name>save_memory</name>") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<id>exec-target</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<deleted>true</deleted>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "<save_memory>") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
 
-    const after = try agent_memories.getMemoryById(alloc, &ctx.db, "exec-target");
-    try testing.expect(after == null);
+    // Saving the same payload again appends a second row (append-only).
+    const result2 = try execSaveMemory(tcx, tc);
+    defer if (result2.output_allocated) alloc.free(result2.output);
+    try testing.expect(std.mem.indexOf(u8, result2.output, "<success>true</success>") != null);
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_memories", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
 }
 
-test "execDeleteMemory: empty id surfaces inner error as success=false" {
+test "execSaveMemory: empty content surfaces inner error as success=false" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
     const tcx = makeTestCtx(alloc, &ctx.db);
-    const tc = fakeToolCall("delete_memory", "{\"id\":\"\"}");
+    const tc = fakeToolCall("save_memory", "{\"content\":\"\"}");
 
-    const result = try execDeleteMemory(tcx, tc);
+    const result = try execSaveMemory(tcx, tc);
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
     try testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "id is required") != null);
 }

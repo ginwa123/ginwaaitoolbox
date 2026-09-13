@@ -63,7 +63,6 @@ const PARAMETERS_BRANCHES = [
   '<ListDirectory',
   '<SaveMemory',
   '<LoadMemory',
-  '<DeleteMemory',
   '<ShowPreview',
   '<GenerateImage',
   '<McpTool',

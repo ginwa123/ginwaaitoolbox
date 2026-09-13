@@ -59,16 +59,15 @@ pub const SearchHistoryToolRule =
 ;
 
 pub const MemoryToolRule =
-    \\## Memory Tools — save_memory + load_memory + delete_memory (FTS5, cross-session) — MANDATORY USE
+    \\## Memory Tools — save_memory + load_memory (append-only, FTS5, cross-session) — MANDATORY USE
     \\
     \\**These tools are NOT optional.** Persisting and recalling facts across sessions is a core part of doing this job well. Failing to call `load_memory` when prior context exists, or `save_memory` when a fact should persist, is a task failure.
     \\
     \\These are **AGENT-MANAGED notes** (SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`). Use `save_memory` for short structured facts you'd otherwise re-ask; use the `.md` surface for hand-curated insights (architecture notes, project conventions).
     \\
-    \\**THREE TOOLS:**
-    \\- `save_memory({ content, tags?, id? })` — UPSERT by `id`. Omit `id` (or pass `""`) to auto-generate `mem_<16-hex>`; pass a stable slug to UPDATE (e.g. `id="user-pref-theme"`). `content` must be 1 KiB – 1 MiB (empty/oversized rejected, no silent truncation).
-    \\- `load_memory({ query, tags?, limit?, offset?, with_content? })` — FTS5 phrase search over content AND tags. Ranked hits with `<snippet>`; `with_content=true` fetches full body (2 KiB/row cap); `limit` default 10, cap 50; paginate via `<total_count>` + `offset`.
-    \\- `delete_memory({ id })` — PERMANENTLY removes one row (no undo). Unknown id → `<deleted>false</deleted>` (idempotent); empty id → `<error>`. Prefer overwriting via `save_memory` over deleting; NEVER delete a user-preference memory unless the user explicitly asks.
+    \\**TWO TOOLS (append-only — no edit, no delete):**
+    \\- `save_memory({ content, tags? })` — APPENDS a new row with a fresh `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. `content` must be 1 KiB – 1 MiB (empty/oversized rejected, no silent truncation). To correct a fact, save a NEW memory — never try to overwrite; recency + rank surface the latest row.
+    \\- `load_memory({ query, tags?, limit?, offset?, with_content? })` — FTS5 phrase search over content AND tags. Ranked hits with `<snippet>`; `with_content=true` fetches full body (2 KiB/row cap); `limit` default 10, cap 50; paginate via `<total_count>` + `offset`. By-id lookup (`{ id }`) fetches one row's full body.
     \\
     \\**WIRE FORMAT:**
     \\- `tags` is **a single string** (`"dark-mode||preferences"`), NOT a JSON array. `||` preferred; `|`, `,`, space accepted.
