@@ -181,7 +181,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
       <div v-if="fileResults.length > 0">
         <div v-for="(file, idx) in fileResults" :key="idx" class="border-b border-dashed border-[var(--color-border)] last:border-b-0">
           <!-- File header -->
-          <div class="flex items-center gap-1 px-2 py-1 bg-black/[0.02] sticky top-0">
+          <div class="flex items-center gap-1 px-2 py-1 bg-black/[0.02]">
             <span class="flex-1 text-[var(--color-violet)] text-[0.7rem] truncate" :title="file.path">
               {{ file.path }}
             </span>

@@ -18,7 +18,6 @@ pub const execListSkills = @import("tools_exec_skills.zig").execListSkills;
 pub const execListMemory = @import("tools_exec_list_memory.zig").execListMemory;
 pub const execSaveMemory = @import("tools_exec_memory.zig").execSaveMemory;
 pub const execLoadMemory = @import("tools_exec_memory.zig").execLoadMemory;
-pub const execDeleteMemory = @import("tools_exec_memory.zig").execDeleteMemory;
 pub const execSearchHistory = @import("tools_exec_search_history.zig").execSearchHistory;
 pub const execUseSkill = @import("tools_exec_skills.zig").execUseSkill;
 pub const execRemoveSkill = @import("tools_exec_skills.zig").execRemoveSkill;

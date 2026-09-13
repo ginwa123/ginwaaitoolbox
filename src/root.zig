@@ -611,8 +611,8 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
 pub const agent = @import("modules/agent/Agent.zig");
 pub const llm_models = @import("modules/agent/LLMModels.zig");
 pub const prompt = @import("modules/agent/prompts.zig");
-// `databases` is the self-contained sqlite3 + libpq package — see
-// src/modules/databases/build.zig. Imported via the build-graph
+// `databases` is the self-contained sqlite3 + libpq package (ruangsql,
+// github.com/ginwa123/ruangsql). Imported via the build-graph
 // dependency declared in build.zig (mod.addImport("databases", databases_mod)).
 pub const sqlite = @import("databases").sqlite;
 // Unified interface — prefer this over `sqlite` in new code:
@@ -639,7 +639,6 @@ pub const list_memory_tool = @import("modules/agent/tools/list_memory.zig");
 pub const memory = @import("modules/agent/tools/memory.zig");
 pub const save_memory = memory;
 pub const load_memory = memory;
-pub const delete_memory = memory;
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const search_history_tool = @import("modules/agent/tools/search_history.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
@@ -901,11 +900,11 @@ test {
     // mcp_http above — the `pub const` re-export alone doesn't pull tests.
     _ = @import("agentic_loop/lua_bindings.zig");
     _ = @import("agentic_loop/hooks.zig");
-    // `databases` package tests run via its own `zig build test`
-    // (cd src/modules/databases && zig build test) — see the
-    // package's build.zig. The main test step doesn't import them
-    // here because the package already discovers its own tests via
-    // its root.zig's `test { ... }` block.
+    // `databases` package tests run in the ruangsql repo's own CI
+    // (github.com/ginwa123/ruangsql) — see the package's build.zig.
+    // The main test step doesn't import them here because the package
+    // already discovers its own tests via its root.zig's `test { ... }`
+    // block.
     _ = @import("modules/event_bus/src/test_runner.zig");
     _ = @import("modules/logger/test_runner.zig"); // needs Zig 0.16 API updates
     // kabelweb (server + client) is an external URL dependency — its

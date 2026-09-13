@@ -1081,6 +1081,9 @@ pub fn renderViewToolNotFound(
 
 /// `<use_tool>` result. `inserted` must come from the caller's real DB
 /// outcome (a `saveProgressiveTool` that returned true) — never guessed.
+///
+/// Deliberately minimal: the agent already saw the full spec via `view_tool`,
+/// so this only reports the equip outcome — no repeated description/schema.
 pub fn renderUseTool(
     allocator: std.mem.Allocator,
     entry: Entry,
@@ -1100,9 +1103,6 @@ pub fn renderUseTool(
 
     if (inserted) {
         try out.appendSlice(allocator, "<inserted>true</inserted><wait_next_turn>true</wait_next_turn>");
-        try out.appendSlice(allocator, "<parameters><![CDATA[");
-        try appendToolJsonSchema(&out, allocator, entry.tool);
-        try out.appendSlice(allocator, "]]></parameters>");
         try out.appendSlice(allocator,
             "<note>Enabled for this session. Call it directly from your next turn onward — the current turn's tool list was already sent.</note>",
         );
@@ -1364,7 +1364,7 @@ test "renderViewToolNotFound / renderUseToolNotFound: found=false + did-you-mean
     try testing.expect(std.mem.indexOf(u8, use, "<did_you_mean>") != null);
 }
 
-test "renderUseTool: inserted=true carries the schema; inserted=false does not claim a wait" {
+test "renderUseTool: inserted=true is just the equip signal, no repeated schema" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1375,7 +1375,9 @@ test "renderUseTool: inserted=true carries the schema; inserted=false does not c
     const inserted = try renderUseTool(a, entry, true);
     try testing.expect(std.mem.indexOf(u8, inserted, "<inserted>true</inserted>") != null);
     try testing.expect(std.mem.indexOf(u8, inserted, "<wait_next_turn>true</wait_next_turn>") != null);
-    try testing.expect(std.mem.indexOf(u8, inserted, "<parameters><![CDATA[") != null);
+    // The agent already saw the full spec via view_tool — no repeat here.
+    try testing.expect(std.mem.indexOf(u8, inserted, "<parameters>") == null);
+    try testing.expect(std.mem.indexOf(u8, inserted, "Find files.") == null);
 
     const already = try renderUseTool(a, entry, false);
     try testing.expect(std.mem.indexOf(u8, already, "<inserted>false</inserted>") != null);

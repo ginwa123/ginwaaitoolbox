@@ -17,7 +17,7 @@
 //! mirror that exact pattern here.
 //!
 //! The SqliteBackend's public API (see
-//! `src/modules/databases/sqlite/Sqlite.zig`) is: `init`, `exec`,
+//! `ruangsql src/sqlite/Sqlite.zig (github.com/ginwa123/ruangsql)`) is: `init`, `exec`,
 //! `query` (returns `Rows` with `next()` → `?Row` carrying
 //! `values: [][]u8`), `queryRow`, and `deinit`. There is no
 //! `prepare`/`step`/`columnText`/`columnInt`/`columnType`/`bindText`

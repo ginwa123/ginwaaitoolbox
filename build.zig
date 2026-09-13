@@ -473,38 +473,6 @@ fn webview2MissingPrereq(b: *std.Build) ?[]const u8 {
     return null;
 }
 
-/// Locate `bash.exe` on Windows hosts where Git for Windows is installed
-/// but its bin dir is not on PATH.
-///
-/// Git for Windows ships git.exe + bash.exe at `C:\Program Files\Git\bin`
-/// and `C:\Program Files\Git\usr\bin`, but does NOT add either directory
-/// to the system PATH automatically — only git.exe's parent (e.g.
-/// `C:\Program Files\Git\cmd`) is wired in by the installer. Calling
-/// `b.addSystemCommand(.{ "bash", ... })` then fails at spawn with
-/// "FileNotFound" because Windows CreateProcess only searches PATH, not
-/// Git's hard-coded install dir.
-///
-/// Linux/macOS hosts always have bash on PATH (POSIX-required), so this
-/// helper is a Windows-only escape hatch. Returns the absolute path of
-/// the first `bash.exe` found among the known Git install locations, or
-/// null when none exist — the caller is expected to fall back to a
-/// clear error message in that case.
-///
-/// Checked in priority order (newest Git release convention first):
-///   - `C:\Program Files\Git\bin\bash.exe`     — Git for Windows default
-///   - `C:\Program Files\Git\usr\bin\bash.exe` — Git for Windows MSYS2 sysroot
-///   - `C:\Program Files (x86)\Git\bin\bash.exe` — 32-bit Git on 64-bit Windows (rare)
-///   - `C:\Program Files (x86)\Git\usr\bin\bash.exe` — 32-bit Git MSYS2 sysroot
-fn findBashOnWindows() ?[]const u8 {
-    const candidates = [_][]const u8{
-        "C:/Program Files/Git/bin/bash.exe",
-        "C:/Program Files/Git/usr/bin/bash.exe",
-        "C:/Program Files (x86)/Git/bin/bash.exe",
-        "C:/Program Files (x86)/Git/usr/bin/bash.exe",
-    };
-    return pickFirstExisting(&candidates);
-}
-
 /// Link platform-specific system libraries + include paths for a Compile
 /// step based on the COMPILE'S OWN target (NOT the global default target).
 /// Every caller that produces a binary linked against nalarcore MUST
@@ -519,7 +487,8 @@ fn findBashOnWindows() ?[]const u8 {
 ///   - Windows:   bcrypt (for kabelweb repo src/server/security.zig)
 ///
 /// What used to live here: per-platform sqlite3 amalgamation/archives
-/// + brew paths. Those moved to src/modules/databases/build.zig, which
+/// + brew paths. Those moved to the ruangsql package's build.zig
+/// (github.com/ginwa123/ruangsql), which
 /// runs once per target the consumer passes via `b.dependency("databases",
 /// .{ .target = ... })` and emits the right sqlite3 deps for that target.
 fn linkPlatformDeps(
@@ -953,18 +922,13 @@ pub fn build(b: *std.Build) void {
     mod.addImport("nalarcore", mod);
 
     // === Self-contained `databases` package (sqlite3 + openssl + libpq) ===
-    // The package (at src/modules/databases/) carries its own build.zig
+    // The package (ruangsql, github.com/ginwa123/ruangsql, pinned by
+    // URL + hash in build.zig.zon) carries its own build.zig
     // that wires sqlite3 / openssl / libpq + the vendored sqlite3.c
     // amalgamation based on the TARGET passed in. Every Compile that
     // imports `mod` (and therefore the `databases` module via
     // mod.addImport below) inherits those deps — no per-Compile
     // linkPlatformDeps branch for sqlite3 anymore.
-    //
-    // The `vendor-dir` option passes through to the package's build.zig
-    // so the package can locate vendor/sqlite3/ relative to its own
-    // location. Default `../../vendor/sqlite3` resolves to the project
-    // root's vendor/sqlite3/ — works for the default layout. Override
-    // with `-Dvendor-dir=...` if you move either side.
     //
     // === Database backend list (APP-CONTROLLED) ===
     // The app decides here and forwards the list verbatim to the
@@ -1163,68 +1127,13 @@ pub fn build(b: *std.Build) void {
         .{ dbs_uses_system, curl_uses_system },
     );
 
-    // === Auto-fetch vendor/sqlite3 if missing ===
-    // The amalgamation (`src/modules/databases/vendor/sqlite3/sqlite3.c`
-    // ~10 MB + 2 headers) is gitignored (per .gitignore — the
-    // `src/modules/databases/vendor/` path is excluded). Fresh checkouts
-    // need the fetch to happen BEFORE any Compile step that links the
-    // amalgamation. The script (`src/modules/databases/scripts/fetch-vendor-sqlite3.sh`)
-    // downloads + verifies the SHA3-256 of the official amalgamation ZIP
-    // and writes it to the package's own vendor dir. Idempotent: skips
-    // if the files already exist.
-    //
-    // The `fetch-vendor-sqlite3` step is depended on by `test_step` (and
-    // every `install:*` cross-compile target) so a fresh checkout Just
-    // Works without a separate `bash bootstrap-vendor.sh` invocation.
-    //
-    // SKIP-WHEN-SYSTEM-PRESENT: when the probe above detects system
-    // sqlite3 (the typical Arch / Debian / Ubuntu / Fedora dev host),
-    // the fetch step is replaced with a no-op so `zig build` doesn't
-    // spend ~30 s downloading + verifying the amalgamation on a fresh
-    // checkout. The databases package's `build.zig` already uses
-    // `linkSystemLibrary("sqlite3")` instead of compiling the .c.
-    const vendor_sqlite3_step = b.step(
-        "fetch-vendor-sqlite3",
-        "Fetch the sqlite3 amalgamation into src/modules/databases/vendor/sqlite3/ (idempotent). Auto-runs before `zig build test` and every `install:*` target on a fresh checkout. SKIPPED when the host has system sqlite3 (see system-deps probe output).",
-    );
-    if (dbs_uses_system) {
-        // System sqlite3 present — emit a step that runs the literal
-        // `echo` builtin via the host shell so `zig build --verbose`
-        // shows WHY the fetch was skipped. The step still exists in
-        // --list-steps so external automation depending on it doesn't
-        // break.
-        //
-        // Shell selection (cross-platform fix): the previous revision
-        // hardcoded `sh -c "echo ..."` which silently failed on Windows
-        // dev boxes without bash/sh on PATH. We pick the shell by host
-        // OS: `cmd.exe /c` on Windows (always present), `sh -c` on
-        // Linux/macOS.
-        const skip_msg = b.addSystemCommand(switch (b.graph.host.result.os.tag) {
-            .windows => &.{ "cmd.exe", "/c", "echo [fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected)." },
-            else => &.{ "sh", "-c", "echo '[fetch-vendor-sqlite3] SKIPPED — host has system sqlite3 + libpq + openssl (probe detected).'" },
-        });
-        vendor_sqlite3_step.dependOn(&skip_msg.step);
-    } else {
-        // Windows: `bash` is not on PATH (Git for Windows ships it at
-        // `C:\Program Files\Git\bin\bash.exe` without adding that dir to
-        // PATH). `findBashOnWindows()` probes the canonical install
-        // locations and returns the absolute path; CreateProcess
-        // accepts absolute paths verbatim. Linux/macOS hosts keep the
-        // bare `"bash"` (always on PATH on POSIX). Falling through to
-        // the absolute path on Windows is required because
-        // `addSystemCommand(.{ "bash", ... })` would otherwise fail at
-        // spawn with "FileNotFound" — see the `findBashOnWindows` doc
-        // comment for the full rationale.
-        const bash_path: []const u8 = switch (b.graph.host.result.os.tag) {
-            .windows => findBashOnWindows() orelse "bash", // last-resort: PATH lookup
-            else => "bash",
-        };
-        const vendor_sqlite3_fetch = b.addSystemCommand(&.{
-            bash_path, "src/modules/databases/scripts/fetch-vendor-sqlite3.sh",
-        });
-        vendor_sqlite3_fetch.setCwd(b.path(""));
-        vendor_sqlite3_step.dependOn(&vendor_sqlite3_fetch.step);
-    }
+    // === sqlite3 amalgamation: owned by the external `databases` package ===
+    // The package (ruangsql, github.com/ginwa123/ruangsql) probes the host
+    // for system sqlite3 + libpq + openssl and falls back to its own
+    // vendored amalgamation (populated via its scripts/fetch-vendor-sqlite3.sh).
+    // There is no in-tree fetch step anymore — same as kabelweb's
+    // fetch-vendor-curl removal. Hosts without system libs must install
+    // them (apt/brew/vcpkg) or populate the package's vendor dir manually.
 
     // Platform-specific link libs (sqlite3/ssl/crypto on Linux,
     // vendored sqlite3.c on Windows/macOS) are added below in the
@@ -2633,8 +2542,8 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //
     // The fix: `mod` has NO platform-specific link libs (they live on each
     // Compile step via `linkPlatformDeps`). `mod` DOES need include paths
-    // for `@cImport("sqlite3.h")` in src/modules/databases/sqlite/Sqlite.zig
-    // — without an include path, the cimport fails with "'sqlite3.h' not
+    // for `@cImport("sqlite3.h")` in the ruangsql package's
+    // src/sqlite/Sqlite.zig — without an include path, the cimport fails with "'sqlite3.h' not
     // found" during semantic analysis.
     //
     // Include paths DON'T leak the same way link libs do: Zig's cimport
@@ -2649,7 +2558,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //      finds the .h there via the include path even though it doesn't
     //      look in /usr/include).
     // sqlite3 / openssl / libpq + vendor/sqlite3 amalgamation paths are
-    // NO LONGER on `mod` — they live in src/modules/databases/build.zig
+    // NO LONGER on `mod` — they live in the ruangsql package's build.zig
     // and propagate to `mod` via the `databases` module's addImport graph.
     // Adding them here would re-leak Linux native system libs into every
     // Compile that imports `mod` (including cross-compile artifacts) —
@@ -2720,31 +2629,12 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     prependVcpkgBinToPath(b, run_mod_tests);
 
     const test_step = b.step("test", "Run tests");
-    // Fresh checkouts need the sqlite3 amalgamation before any
-    // Compile step can compile it. Without this dep, `zig build test`
-    // on a clean checkout fails with "file not found" for
-    // vendor/sqlite3/sqlite3.c (databases package).
-    //
-    // (libcurl needs no fetch step: kabelweb is an external URL
-    // dependency now — its own package + CI own the vendored curl
-    // archive, and nalar builds link system curl/ssl/crypto via the
-    // module graph. See the kabelweb repo.)
-    //
-    // The dep MUST be on the COMPILE step (`mod_tests.step`), not
-    // just on `test_step` or on the wrap step (`run_mod_tests.step`).
-    // `addRunArtifact(mod_tests)` wraps the Compile step in a Run
-    // step; the Compile step and any deps we attach to the Run step
-    // become siblings under that Run step. Zig's build runner
-    // dispatches siblings of a parent step in parallel (see
-    // `compiler/build_runner.zig:1408-1410`), so attaching the fetch
-    // dep to `run_mod_tests.step` makes it parallel to the compile
-    // step. Attaching the dep
-    // to `mod_tests.step` (the Compile step itself) makes it an
-    // ordering constraint of the Compile step — the build runner's
-    // `pending_deps` counter (see compiler/build_runner.zig:1413-1418)
-    // gates the compile on fetch completion.
+    // sqlite3 comes from the external `databases` package (ruangsql) via
+    // the module graph — no in-tree fetch step needed. (libcurl likewise:
+    // kabelweb is an external URL dependency now — its own package + CI
+    // own the vendored curl archive, and nalar builds link system
+    // curl/ssl/crypto via the module graph. See the kabelweb repo.)
     test_step.dependOn(&run_mod_tests.step);
-    mod_tests.step.dependOn(vendor_sqlite3_step);
 
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
@@ -2760,14 +2650,9 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // PATH at test runtime — see `prependVcpkgBinToPath` doc comment.
     prependVcpkgBinToPath(b, run_ai_workflow_tui_tests);
     const test_ai_workflow_tui_step = b.step("test:ai_workflow:tui", "Run AI workflow TUI tests");
-    // Same race-condition fix as `test_step` above — the TUI test
-    // reuses `mod_tests_module` (which transitively imports sqlite3.c),
-    // so the COMPILE step (`ai_workflow_tui_test_mod.step`) must wait
-    // for the fetch step to complete. Attaching to the Run step (the
-    // wrap) is wrong — it would make the fetch a sibling of the
-    // compile, not a prerequisite.
+    // The TUI test reuses `mod_tests_module` (which transitively imports
+    // the external `databases` package) — no fetch wiring needed.
     test_ai_workflow_tui_step.dependOn(&run_ai_workflow_tui_tests.step);
-    ai_workflow_tui_test_mod.step.dependOn(vendor_sqlite3_step);
 
     const linux_step = b.step("install:linux", "Build for Linux x86_64");
     const linux_target = b.resolveTargetQuery(.{
@@ -2784,11 +2669,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // build.zig). No need to call linkSystemLibrary("curl", ...) or
     // linkCurlIncludePath here — the module graph handles it.
     linux_exe.root_module.link_libc = true;
-    // Race-condition fix: depend on the fetch steps from the COMPILE
-    // step (not just the parent step) so the build runner's
-    // pending_deps counter gates the compile on the fetch completion.
-    // Same rationale as the comment on `test_step` above.
-    linux_exe.step.dependOn(vendor_sqlite3_step);
     const install_linux = b.addInstallArtifact(linux_exe, .{});
     linux_step.dependOn(&install_linux.step);
 
@@ -2806,13 +2686,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // libcurl is linked via kabelweb_mod's transitive deps (kabelweb
     // package owns its Windows/vcpkg wiring).
     windows_exe.root_module.link_libc = true;
-    // Fresh checkout: src/modules/databases/vendor/sqlite3/ doesn't
-    // exist yet. Depend on the auto-fetch step so the cross-target
-    // linker sees sqlite3.c.
-    windows_step.dependOn(vendor_sqlite3_step);
-    // Race-condition fix: depend on the fetch steps from the COMPILE
-    // step. See the `test_step` comment for the full rationale.
-    windows_exe.step.dependOn(vendor_sqlite3_step);
     const install_windows = b.addInstallArtifact(windows_exe, .{});
     windows_step.dependOn(&install_windows.step);
 
@@ -2840,10 +2713,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const macos_exe = createPlatformExe(b, mod, helpers_mod, macos_target, optimize, "nalarcore-macos-x86_64");
     // libcurl is linked via kabelweb_mod's transitive deps.
     macos_exe.root_module.link_libc = true;
-    macos_step.dependOn(vendor_sqlite3_step);
-    // Race-condition fix: depend on the fetch steps from the COMPILE
-    // step. See the `test_step` comment for the full rationale.
-    macos_exe.step.dependOn(vendor_sqlite3_step);
     const install_macos = b.addInstallArtifact(macos_exe, .{});
     macos_step.dependOn(&install_macos.step);
 
@@ -2855,10 +2724,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     const macos_arm_exe = createPlatformExe(b, mod, helpers_mod, macos_arm_target, optimize, "nalarcore-macos-aarch64");
     // libcurl is linked via kabelweb_mod's transitive deps.
     macos_arm_exe.root_module.link_libc = true;
-    macos_arm_step.dependOn(vendor_sqlite3_step);
-    // Race-condition fix: depend on the fetch steps from the COMPILE
-    // step. See the `test_step` comment for the full rationale.
-    macos_arm_exe.step.dependOn(vendor_sqlite3_step);
     const install_macos_arm = b.addInstallArtifact(macos_arm_exe, .{});
     macos_arm_step.dependOn(&install_macos_arm.step);
     _ = is_native_macos;
@@ -2869,10 +2734,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     linux_system_exe.root_module.addIncludePath(.{ .cwd_relative = "/usr/include" });
     // libcurl is linked via kabelweb_mod's transitive deps.
     linux_system_exe.root_module.link_libc = true;
-    linux_system_step.dependOn(vendor_sqlite3_step);
-    // Race-condition fix: depend on the fetch steps from the COMPILE
-    // step. See the `test_step` comment for the full rationale.
-    linux_system_exe.step.dependOn(vendor_sqlite3_step);
     linux_system_step.dependOn(&linux_system_exe.step);
     const install_linux_system = b.addInstallArtifact(linux_system_exe, .{});
     linux_system_step.dependOn(&install_linux_system.step);
@@ -3028,9 +2889,6 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     dev_exe.root_module.linkSystemLibrary("c", .{});
     // libcurl is linked via kabelweb_mod's transitive deps.
     dev_exe.root_module.link_libc = true;
-    // Race-condition fix: depend on the fetch steps from the COMPILE
-    // step. See the `test_step` comment for the full rationale.
-    dev_exe.step.dependOn(vendor_sqlite3_step);
     linkPlatformDeps(b, dev_exe, target);
     if (target.result.os.tag == .windows) {
     }

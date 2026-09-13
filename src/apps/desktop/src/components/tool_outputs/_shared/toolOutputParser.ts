@@ -840,10 +840,11 @@ export function parseMcp(toolName: string, content: string): ParsedMcp {
 //     <view_tool><name>n</name><found>false</found><error>…</error>
 //       [<did_you_mean><name>…</name>…</did_you_mean>]
 //       <hint>…</hint></view_tool>
-//   use_tool found:
+//   use_tool found (minimal equip signal — no repeated schema, view_tool
+//   already showed it; the parser still tolerates a legacy <parameters>):
 //     <use_tool><name>n</name><kind>…</kind><equipped>true</equipped>
 //       <inserted>true|false</inserted>[<wait_next_turn>true</wait_next_turn>]
-//       [<source>session</source>][<parameters><![CDATA[…]]></parameters>]
+//       [<source>session</source>]
 //       <note>…</note></use_tool>
 //   use_tool miss:
 //     <use_tool><name>n</name><equipped>false</equipped><inserted>false</inserted>

@@ -298,7 +298,8 @@ const unattended = ref<'0' | '1'>('1')
 const useGitWorktree = ref(false)
 // Worktree path input (create mode only, visible when the toggle is
 // ON). Canonical root is $HOME/.config/nalar/.worktrees (Option A) —
-// prefilled on toggle-on from the task name so the user can accept or
+// prefilled on toggle-on as <slug>-<timestamp> from the task name plus
+// Date.now() so concurrent tasks never collide; the user can accept or
 // edit it. Empty = agent picks the path itself (bare `#Notes UseGitWorktree`).
 // The prefill is always an absolute path: validatePath in
 // set_git_worktree.zig rejects `~`-prefixed paths (not absolute), so a
@@ -996,7 +997,7 @@ const handleUseGitWorktreeToggle = (event: Event) => {
   const target = event.target as HTMLInputElement
   useGitWorktree.value = target.checked
   if (target.checked && worktreePath.value.trim() === '') {
-    worktreePath.value = `${resolveWorktreeDir()}/${slugifyWorktreeName(name.value)}`
+    worktreePath.value = `${resolveWorktreeDir()}/${slugifyWorktreeName(name.value)}-${Date.now()}`
   }
 }
 
@@ -1742,7 +1743,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   id="kanban-worktree-path-input"
                   type="text"
                   v-model="worktreePath"
-                  placeholder="/home/you/.config/nalar/.worktrees/my-task"
+                  placeholder="/home/you/.config/nalar/.worktrees/my-task-1757792000000"
                   class="w-full px-2 py-1.5 rounded-lg text-xs"
                   style="
                     background-color: var(--semantic-sidebar-bg);
@@ -1752,7 +1753,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                   data-testid="kanban-task-detail-use-git-worktree-path"
                 />
                 <div class="text-[11px]" style="color: var(--semantic-text-dim);">
-                  Default: $HOME/.config/nalar/.worktrees/&lt;task-name&gt;. Must be
+                  Default: $HOME/.config/nalar/.worktrees/&lt;task-name&gt;-&lt;timestamp&gt;. Must be
                   absolute; the parent folder must exist.
                 </div>
               </div>

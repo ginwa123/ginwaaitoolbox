@@ -3,7 +3,7 @@
  * to assert URL, method, body, and response parsing without hitting the
  * network. Mirrors `apiDeleteProfile.spec.ts`.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, assert, describe, expect, it, vi } from 'vitest'
 
 import { testLlmProfile } from '../api'
 
@@ -69,9 +69,7 @@ describe('api.testLlmProfile', () => {
 
     const result = await testLlmProfile(req)
 
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.error).toContain('HTTP 502')
-    }
+    assert(!result.ok, 'expected ok:false for non-JSON 502 response')
+    expect(result.error).toContain('HTTP 502')
   })
 })

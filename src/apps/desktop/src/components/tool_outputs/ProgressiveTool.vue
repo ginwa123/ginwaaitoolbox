@@ -17,7 +17,8 @@
       muted summary). Truncated hint or catalog hint below.
     view_tool: description + JSON-pretty parameters + note/hint +
       did-you-mean list. Error: red block.
-    use_tool: kind/equipped/inserted rows + JSON-pretty parameters + note.
+    use_tool: kind/equipped/inserted rows + note (no repeated schema —
+      view_tool already showed it).
       Error: red block + did-you-mean list.
     Non-empty JSON args render via shared ToolParameters below the output.
 
@@ -88,7 +89,7 @@ const rightMeta = computed(() => {
 const copyValue = computed(() => {
   if (isSearch.value) return search.value.tools.map((t) => t.name).join('\n')
   if (isView.value) return view.value.prettyParameters || view.value.description || view.value.name
-  if (isUse.value) return use.value.prettyParameters || use.value.name
+  if (isUse.value) return use.value.name
   return primary.value
 })
 
@@ -184,7 +185,7 @@ const handleToggle = (next: boolean) => {
           </div>
           <pre
             v-if="view.prettyParameters"
-            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
+            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
             data-testid="progressive-tool-parameters"
           >{{ view.prettyParameters }}</pre>
           <div v-if="view.note" class="text-[var(--semantic-text-muted)]">{{ view.note }}</div>
@@ -217,11 +218,6 @@ const handleToggle = (next: boolean) => {
             </span>
             <span v-if="use.waitNextTurn" class="text-[0.65rem] px-1 rounded bg-black/[0.04]">takes effect next turn</span>
           </div>
-          <pre
-            v-if="use.prettyParameters"
-            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
-            data-testid="progressive-tool-parameters"
-          >{{ use.prettyParameters }}</pre>
           <div v-if="use.note" class="text-[var(--semantic-text-muted)]">{{ use.note }}</div>
         </div>
         <div v-if="use.suggestions.length > 0 || (use.hint && !use.success)" class="px-2 pb-1.5">

@@ -1,23 +1,23 @@
-//! Agent memory tools: `save_memory` + `load_memory` + `delete_memory`.
+//! Agent memory tools: `save_memory` + `load_memory` (append-only).
 //!
-//! Merged from `save_memory.zig` + `load_memory.zig` + `delete_memory.zig`
-//! (2026-09-11 memory-merge refactor) — one file, three tools. The public
-//! surface is unchanged: `SaveMemoryInput` / `save_memory_tool` /
-//! `executeSaveMemory`, `LoadMemoryInput` / `load_memory_tool` /
-//! `executeLoadMemory`, `DeleteMemoryInput` / `delete_memory_tool` /
-//! `executeDeleteMemory`, plus the shared `splitTagsString` helper.
+//! Merged from `save_memory.zig` + `load_memory.zig`
+//! (2026-09-11 memory-merge refactor) — one file, two tools. The public
+//! surface: `SaveMemoryInput` / `save_memory_tool` / `executeSaveMemory`,
+//! `LoadMemoryInput` / `load_memory_tool` / `executeLoadMemory`, plus the
+//! shared `splitTagsString` helper.
 //!
-//! Wire shapes (unchanged):
-//!   save:   input { content, tags?, id? } →
+//! Append-only (2026-09-12): `save_memory` always inserts a new row with
+//! a fresh id — no update, no delete. (`delete_memory` was removed per
+//! user decision: "memory is always add, no need edit or delete".)
+//!
+//! Wire shapes:
+//!   save:   input { content, tags? } →
 //!           <save_memory><id/><created_at/><updated_at/></save_memory>
 //!           or <save_memory><error/></save_memory>
 //!   load:   input { query?, id?, tags?, limit?=10, offset?=0,
 //!                   with_content?=false } →
 //!           <load_memory ...><count/><total_count/><results/></load_memory>
 //!           or <load_memory><error/></load_memory>
-//!   delete: input { id } →
-//!           <delete_memory><id/><deleted>true|false</deleted></delete_memory>
-//!           or <delete_memory><error/></delete_memory>
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -53,27 +53,37 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
+/// Test helper: extract the `<id>...</id>` value from a `save_memory`
+/// success envelope. Returns an allocator-owned dupe the caller frees.
+fn extractSavedId(allocator: std.mem.Allocator, save_out: []const u8) ![]u8 {
+    const open = std.mem.indexOf(u8, save_out, "<id>") orelse return error.MissingId;
+    const close = std.mem.indexOf(u8, save_out, "</id>") orelse return error.MissingIdClose;
+    return allocator.dupe(u8, save_out[open + "<id>".len .. close]);
+}
+
 // ─── save_memory ───
 
-// Agent-callable tool: `save_memory` — UPSERT a short, structured note
+// Agent-callable tool: `save_memory` — append a short, structured note
 // that the agent can recall later via `load_memory`.
 //
 // Plan: docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md (Task 3)
 // Task: task_1785958319567
 //
 // Wire shape:
-//   input:  { content: string, tags?: string, id?: string }
+//   input:  { content: string, tags?: string }
 //   output: <save_memory><id>...</id><created_at>...</created_at>
 //            <updated_at>...</updated_at></save_memory>
 //   or:     <save_memory><error>...</error></save_memory>
 //
-// The actual INSERT OR REPLACE lives in `agent_memories.saveMemory`.
+// The actual INSERT lives in `agent_memories.saveMemory`.
 // This file is a thin XML wrapper around it (mirrors the
 // `kanban_list.zig` / `search_history.zig` pattern).
 //
 // Design choices:
-//   - Caller-provided `id` is optional. Empty → auto-generated
-//     `mem_<16-hex>` (collision-free for 10K rows, opaque token).
+//   - Every call inserts a NEW row with a fresh `mem_<16-hex>` id
+//     (append-only — no update, no delete; a correction is just
+//     another row, and FTS5 ranking surfaces the relevant one).
+//     Both timestamps are `CURRENT_TIMESTAMP` at insert time.
 //   - Per-row size cap is 1 MiB (rejects overflow, doesn't truncate).
 //   - Tags is a SINGLE STRING on the wire (matches the schema
 //     `type: "string"`). Multiple tags are joined with `||`
@@ -91,7 +101,9 @@ fn setupDb() !TestCtx {
 //   simpler to reason about and matches the documented contract
 //   "Joined with `||` in storage".
 
-/// Input for `save_memory`.
+/// Input for `save_memory`. Append-only — no `id`: the id is always
+/// auto-generated (`mem_<16-hex>`). (Stale `id` fields in incoming JSON
+/// are ignored via `ignore_unknown_fields` at the exec layer.)
 pub const SaveMemoryInput = struct {
     /// The note body. 1 KiB – 1 MiB (validated by `agent_memories.saveMemory`).
     content: []const u8 = "",
@@ -100,19 +112,16 @@ pub const SaveMemoryInput = struct {
     /// Split at the boundary into `[]const []const u8` before passing
     /// to `agent_memories.saveMemory` (which joins with `||` for storage).
     tags: []const u8 = "",
-    /// Caller-provided id slug for UPSERT. Empty → auto-generate
-    /// `mem_<16-hex>`.
-    id: []const u8 = "",
 };
 
 /// Top-level tool definition for the LLM. The description is the
 /// agent's primary signal for WHEN to use this tool — it explicitly
-/// tells the agent that memory entries are UPSERT, FTS5-indexed,
+/// tells the agent that memory entries are append-only, FTS5-indexed,
 /// global (cross-session / cross-workspace), and capped at 1 MiB.
 pub const save_memory_tool_system_prompt =
     \\## Save Memory Tool — Behavior
     \\Use `save_memory` to persist a fact across sessions (FTS5).
-    \\- Content must be 1 KiB–1 MiB. UPSERT by `id` (auto-generates `mem_<hex>` if omitted).
+    \\- Content must be 1 KiB–1 MiB. Every call APPENDS a new row with a fresh `mem_<hex>` id — there is no update and no delete. To correct a fact, save a new memory; the latest row wins by recency.
     \\- Use for user preferences, project conventions, decisions, and corrections. Call immediately when you learn a preference.
     \\
 ;
@@ -122,16 +131,15 @@ pub const save_memory_tool = AgentTool{
     .function = .{
         .name = "save_memory",
         .description =
-        \\Save (or update) a structured note that you can recall later via the `load_memory` tool. Use this to remember facts, preferences, decisions, or any short, structured context that you want to persist across sessions.
+        \\Append a structured note that you can recall later via the `load_memory` tool. Use this to remember facts, preferences, decisions, or any short, structured context that you want to persist across sessions.
         \\
-        \\This is a UPSERT: if you provide an `id` that already exists, the existing row's content and tags are replaced (the `updated_at` timestamp bumps). Omit `id` (or pass an empty string) to auto-generate a fresh `mem_<16-hex>` id.
+        \\This is APPEND-ONLY: every call inserts a new row with a fresh auto-generated `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. There is no update and no delete — to correct a stored fact, save a new memory (recency + FTS5 rank surface the latest one).
         \\
         \\Storage: the note is stored in a global SQLite table with a FTS5 index. Searches (`load_memory`) can find it via phrase matching on the content or tags.
         \\
         \\Constraints:
         \\- `content` must be 1 KiB – 1 MiB. Empty content is rejected; oversized is rejected (no silent truncation).
         \\- `tags` are joined with `||` in storage and split on `|` at read time.
-        \\- To remove an entry entirely (e.g. it is genuinely obsolete or the user asked to forget it), use `delete_memory({ id })` — but default to UPSERT-with-superseding-content unless the user explicitly asks to delete.
         \\- Global scope: memories are visible across all workspaces and sessions. There is no per-workspace filter.
         ,
         .parameters = .{
@@ -139,7 +147,6 @@ pub const save_memory_tool = AgentTool{
             .properties = &.{
                 .{ .name = "content", .type = "string", .description = "The note body. 1 KiB – 1 MiB. Required." },
                 .{ .name = "tags", .type = "string", .description = "Optional labels as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators for robustness. Empty string = no tags." },
-                .{ .name = "id", .type = "string", .description = "Optional caller-provided id slug for UPSERT. Empty string → auto-generated 'mem_<16-hex>'." },
             },
             .required = &.{"content"},
         },
@@ -163,7 +170,6 @@ pub fn executeSaveMemory(
     const row = agent_memories.saveMemory(allocator, db, .{
         .content = input.content,
         .tags = tags_array,
-        .id = input.id,
     }) catch |err| {
         const msg = switch (err) {
             error.InvalidContent => "content must be non-empty (1 KiB minimum)",
@@ -349,7 +355,7 @@ pub const MAX_LIMIT: u32 = 50;
 
 /// Top-level tool definition for the LLM.
 pub const load_memory_tool_system_prompt =
-    \\## Memory Tools — save_memory / load_memory / delete_memory
+    \\## Memory Tools — save_memory + load_memory (append-only)
     \\SQLite FTS5, cross-session. **Mandatory, not optional.** Skipping `load_memory`
     \\when prior context exists, or skipping `save_memory` when a fact should
     \\persist, counts as a task failure.
@@ -357,6 +363,8 @@ pub const load_memory_tool_system_prompt =
     \\These are AGENT-managed notes — distinct from the curated `.md` files in
     \\`~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`).
     \\- `save_memory` → short structured facts you'd otherwise re-ask or re-derive.
+    \\  Every call APPENDS a new timestamped row — there is no edit and no
+    \\  delete. To correct a fact, save a new memory.
     \\- `.md` files → hand-curated insights (architecture notes, conventions). Not
     \\  written by these tools; edit directly if that's the surface you need.
     \\
@@ -364,19 +372,15 @@ pub const load_memory_tool_system_prompt =
     \\
     \\| Tool | Signature | Behavior |
     \\|---|---|---|
-    \\| `save_memory` | `{ content, tags?, id? }` | UPSERT by `id`. No `id` (or `""`) → auto-generates `mem_<16-hex>`. Stable slug `id` → updates that row. `content`: 1 KiB–1 MiB (empty/oversized = rejected, never silently truncated). |
+    \\| `save_memory` | `{ content, tags? }` | APPENDS a new row with an auto-generated `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. `content`: 1 KiB–1 MiB (empty/oversized = rejected, never silently truncated). No update, no delete — corrections are new rows. |
     \\| `load_memory` | `{ query, tags?, limit?, offset?, with_content? }` | FTS5 phrase search over `content` + `tags`. Returns ranked hits with `<snippet>`. `with_content=true` → full body, capped 2 KiB/row. `limit` default 10, max 50. Paginate with `<total_count>` + `offset`. |
-    \\| `delete_memory` | `{ id }` | Permanent, no undo. Unknown `id` → `<deleted>false</deleted>` (idempotent, not an error). Empty `id` → `<error>`. |
-    \\
-    \\**Deletion policy:** prefer `save_memory` overwrite to `delete_memory`. Never
-    \\delete a user-preference memory unless the user explicitly asks for it.
     \\
     \\### Wire format
     \\- `tags`: **one string**, not an array. Separator preference order: `||` >
     \\  `|` > `,` > space. Example: `tags: "dark-mode||preferences"`.
-    \\- `id`: opaque. Either `mem_<16-hex>` (auto) or a caller-chosen slug (e.g.
-    \\  `"user-pref-theme"`). Never parse or construct it manually beyond passing a
-    \\  slug through.
+    \\- `id`: opaque auto-generated `mem_<16-hex>` (returned by `save_memory`,
+    \\  echoed in `load_memory` hits). Never parse or construct it — pass it
+    \\  through verbatim for by-id lookups.
     \\- FTS query: pass plain text. `.`, `-`, `:` etc. are auto-sanitized/stripped;
     \\  multi-word queries are OR-joined automatically. Do not pre-escape.
     \\
@@ -436,13 +440,13 @@ pub const load_memory_tool = AgentTool{
         \\Example: {"query": "preferred model", "tags": "user"} — finds memories about either preference OR model.
         \\Example: {"query": "AGENTS.md", "limit": 3}
         \\Example: {"query": "dark mode", "with_content": true}
-        \\Example: {"id": "user-dark-mode"} — fetch a specific memory's full body, no FTS.
+        \\Example: {"id": "mem_9f3c1a2b4d5e6f70"} — fetch a specific memory's full body, no FTS.
         ,
         .parameters = .{
             .type = "object",
             .properties = &.{
                 .{ .name = "query", .type = "string", .description = "FTS5 search keywords. Required when `id` is empty. Auto-sanitized (FTS5 operators stripped); multi-word queries are joined with OR for natural recall." },
-                .{ .name = "id", .type = "string", .description = "Look up a single memory by exact id (e.g. 'mem_aabbcc...' or a user-supplied slug). When non-empty, FTS5 is skipped and the full body is included (no 2 KiB cap). When set, `tags` is ignored." },
+                .{ .name = "id", .type = "string", .description = "Look up a single memory by exact id (e.g. 'mem_aabbcc...'). When non-empty, FTS5 is skipped and the full body is included (no 2 KiB cap). When set, `tags` is ignored." },
                 .{ .name = "tags", .type = "string", .description = "Optional AND filter as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators. Empty string = no filter. Ignored when `id` is set." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 10, hard cap 50." },
                 .{ .name = "offset", .type = "number", .description = "Skip the first N results. Default 0. Use <total_count> to know when to stop." },
@@ -694,106 +698,6 @@ fn loadErrorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "<load_memory><error>{s}</error></load_memory>", .{escaped});
 }
 
-// ─── delete_memory ───
-
-// Agent-callable tool: `delete_memory` — PERMANENTLY remove one row
-// from the agent_memories store by id.
-//
-// Plan: docs/superpowers/plans/2026-08-24-delete-memory-agent-tool.md (Task 2)
-// Task: task_1787546484030_8
-//
-// Wire shape:
-//   input:  { id: string }            (id is REQUIRED)
-//   output: <delete_memory><id>...</id><deleted>true|false</deleted></delete_memory>
-//   or:     <delete_memory><error>...</error></delete_memory>
-//
-// The actual DELETE lives in `agent_memories.deleteMemory`.
-// This section is a thin XML wrapper (mirrors the `save_memory`
-// section pattern).
-
-/// Input for `delete_memory`.
-pub const DeleteMemoryInput = struct {
-    /// Exact memory id (mem_<16-hex> or caller-provided slug).
-    /// Required. Empty string → error.
-    id: []const u8 = "",
-};
-
-/// Top-level tool definition for the LLM.
-pub const delete_memory_tool_system_prompt =
-    \\## Delete Memory Tool — Behavior
-    \\Use `delete_memory` to permanently delete a memory row by `id`.
-    \\- Never delete user-preference memories unless the user explicitly asks. Prefer UPSERT with superseding content.
-    \\- Unknown `id` returns `deleted=false` (idempotent).
-    \\
-;
-
-pub const delete_memory_tool = AgentTool{
-    .type = "function",
-    .function = .{
-        .name = "delete_memory",
-        .description =
-        \\Permanently delete ONE saved memory by its exact `id`. Use this when a note is genuinely obsolete (e.g. the user asks to forget it, or a correction invalidates the old entry entirely).
-        \\
-        \\**WARNING: deletion is permanent. There is no undo, no soft-delete, no recycle bin.** When in doubt, prefer overwriting the existing note via `save_memory` (UPSERT) over deleting.
-        \\
-        \\Wire: pass the exact `id` from a prior `save_memory`/`load_memory` call. If unsure which row to target, call `load_memory` first to find the id.
-        \\
-        \\Behavior:
-        \\- id matches a row → row is removed (FTS5 index updates automatically), `<deleted>true</deleted>`.
-        \\- id is unknown → no error, returns `<deleted>false</deleted>` (idempotent — safe to retry).
-        \\- id is empty → `<error>id is required</error>`.
-        \\
-        \\Scope: deleting a user-preference memory is generally the WRONG action unless the user explicitly asks — the load-first rule applies. Deleting your own scratch notes (e.g. things tagged `scratch` or `temp`) is fine when no longer needed.
-        ,
-        .parameters = .{
-            .type = "object",
-            .properties = &.{
-                .{ .name = "id", .type = "string", .description = "Exact memory id (mem_<16-hex> or caller-provided slug). Required." },
-            },
-            .required = &.{"id"},
-        },
-        .system_prompt = delete_memory_tool_system_prompt,
-    },
-};
-
-/// Execute delete_memory. Returns an XML string for the LLM.
-///
-/// Caller owns the returned slice and must free it with `allocator.free()`.
-pub fn executeDeleteMemory(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    input: DeleteMemoryInput,
-) ![]const u8 {
-    if (input.id.len == 0) {
-        return deleteErrorXml(allocator, "id is required");
-    }
-
-    const deleted = agent_memories.deleteMemory(allocator, db, input.id) catch |err| {
-        const msg = switch (err) {
-            error.InvalidId => "id is required",
-            else => @errorName(err),
-        };
-        return deleteErrorXml(allocator, msg);
-    };
-
-    return deleteSuccessXml(allocator, input.id, deleted);
-}
-
-fn deleteSuccessXml(allocator: std.mem.Allocator, id: []const u8, deleted: bool) ![]u8 {
-    const id_e = try xmlEscape(allocator, id);
-    defer allocator.free(id_e);
-    return std.fmt.allocPrint(allocator, "<delete_memory>" ++
-        "<id>{s}</id>" ++
-        "<deleted>{}</deleted>" ++
-        "</delete_memory>", .{ id_e, deleted });
-}
-
-fn deleteErrorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, "<delete_memory><error>{s}</error></delete_memory>", .{escaped});
-}
-
 // ─── tests: save_memory ───
 
 test "save_memory_tool: tool name is 'save_memory'" {
@@ -801,7 +705,7 @@ test "save_memory_tool: tool name is 'save_memory'" {
     try testing.expectEqualStrings("save_memory", tool.function.name);
 }
 
-test "save_memory_tool: parameters include content, tags, id" {
+test "save_memory_tool: parameters include content and tags (no id — append-only)" {
     const tool = save_memory_tool;
     var found_content = false;
     var found_tags = false;
@@ -813,7 +717,7 @@ test "save_memory_tool: parameters include content, tags, id" {
     }
     try testing.expect(found_content);
     try testing.expect(found_tags);
-    try testing.expect(found_id);
+    try testing.expect(!found_id);
 }
 
 test "save_memory_tool: returns success XML envelope on insert" {
@@ -825,7 +729,6 @@ test "save_memory_tool: returns success XML envelope on insert" {
     const input = SaveMemoryInput{
         .content = "user prefers dark mode",
         .tags = "preferences",
-        .id = "user-dark-mode",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
@@ -833,7 +736,11 @@ test "save_memory_tool: returns success XML envelope on insert" {
     // Returns <save_memory> envelope on success.
     try testing.expect(std.mem.indexOf(u8, out, "<save_memory>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "</save_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>user-dark-mode</id>") != null);
+    // Auto-generated mem_<16-hex> id.
+    const generated_id = try extractSavedId(alloc, out);
+    defer alloc.free(generated_id);
+    try testing.expectEqual(@as(usize, 4 + 16), generated_id.len);
+    try testing.expect(std.mem.startsWith(u8, generated_id, "mem_"));
     try testing.expect(std.mem.indexOf(u8, out, "<created_at>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<updated_at>") != null);
     // No error envelope.
@@ -849,7 +756,6 @@ test "save_memory_tool: returns error XML on empty content" {
     const input = SaveMemoryInput{
         .content = "",
         .tags = "",
-        .id = "should-not-save",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
@@ -873,7 +779,6 @@ test "save_memory_tool: returns error XML on content > 1 MiB" {
     const input = SaveMemoryInput{
         .content = oversize,
         .tags = "",
-        .id = "oversize-memory",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
@@ -881,7 +786,7 @@ test "save_memory_tool: returns error XML on content > 1 MiB" {
     try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
 }
 
-test "save_memory_tool: UPSERTs on second call with same id (updated_at bumps)" {
+test "save_memory_tool: saving twice appends two rows (never overwrites)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -890,42 +795,32 @@ test "save_memory_tool: UPSERTs on second call with same id (updated_at bumps)" 
     const input1 = SaveMemoryInput{
         .content = "original content",
         .tags = "preferences",
-        .id = "user-preference",
     };
     const out1 = try executeSaveMemory(alloc, &ctx.db, input1);
     defer alloc.free(out1);
-
-    // Extract updated_at from the first response.
-    const updated_at_open = std.mem.indexOf(u8, out1, "<updated_at>") orelse return error.MissingUpdatedAt;
-    const updated_at_close = std.mem.indexOf(u8, out1, "</updated_at>") orelse return error.MissingUpdatedAtClose;
-    const first_updated_at = out1[updated_at_open + "<updated_at>".len .. updated_at_close];
-    try testing.expect(first_updated_at.len > 0);
-
-    // Sleep 1 second so the UPDATE bumps the timestamp (DATETIME resolution).
-    // Use a portable helper because std.c.timespec is broken on Windows
-    // (Zig 0.16 — see ../../../agentic_loop/test_sleep.zig).
-    const test_sleep = @import("../../../agentic_loop/test_sleep.zig");
-    test_sleep.sleep(1, 0);
+    const id1 = try extractSavedId(alloc, out1);
+    defer alloc.free(id1);
+    try testing.expect(id1.len > 0);
 
     const input2 = SaveMemoryInput{
         .content = "updated content",
         .tags = "preferences||updated",
-        .id = "user-preference",
     };
     const out2 = try executeSaveMemory(alloc, &ctx.db, input2);
     defer alloc.free(out2);
+    const id2 = try extractSavedId(alloc, out2);
+    defer alloc.free(id2);
 
-    // Same id.
-    try testing.expect(std.mem.indexOf(u8, out2, "<id>user-preference</id>") != null);
-    // Content replaced.
+    // Different ids — the second save did NOT overwrite the first.
+    try testing.expect(!std.mem.eql(u8, id1, id2));
     try testing.expect(std.mem.indexOf(u8, out2, "<error>") == null);
 
-    // Only ONE row in the DB (UPSERT, not INSERT-OR-APPEND).
-    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_memories WHERE id = ?", &.{"user-preference"});
+    // TWO rows in the DB (append, not UPSERT).
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_memories", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
-    try testing.expectEqualStrings("1", row.values[0]);
+    try testing.expectEqualStrings("2", row.values[0]);
 }
 
 test "save_memory_tool: auto-generates mem_<16-hex> id when none provided" {
@@ -937,7 +832,6 @@ test "save_memory_tool: auto-generates mem_<16-hex> id when none provided" {
     const input = SaveMemoryInput{
         .content = "auto-generated memory",
         .tags = "",
-        .id = "",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
@@ -965,13 +859,14 @@ test "save_memory_tool: round-trips tag list through storage" {
     const input = SaveMemoryInput{
         .content = "memory with multiple tags",
         .tags = "alpha||beta||gamma",
-        .id = "tagged-memory",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
+    const saved_id = try extractSavedId(alloc, out);
+    defer alloc.free(saved_id);
 
     // Verify tags are stored as ||-joined string.
-    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{"tagged-memory"});
+    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{saved_id});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
@@ -995,7 +890,8 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     defer ctx.db.deinit();
 
     // EXACT shape the LLM produced in session-1785986173692 (the bug).
-    // tags is a STRING with `|` separator.
+    // tags is a STRING with `|` separator. The stale `id` field is
+    // ignored (append-only) via `ignore_unknown_fields`.
     const llm_arguments =
         \\{"content":"Demo note","tags":"demo|tool-test|nalar","id":"test-bug-string"}
     ;
@@ -1011,9 +907,9 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     };
     defer parsed.deinit();
 
-    // The parser must succeed without "UnexpectedToken".
+    // The parser must succeed without "UnexpectedToken" (and the stale
+    // `id` field is ignored — append-only always mints a fresh id).
     try testing.expect(parsed.value.content.len > 0);
-    try testing.expectEqualStrings("test-bug-string", parsed.value.id);
     try testing.expectEqualStrings("demo|tool-test|nalar", parsed.value.tags);
 
     // The string form must be passed through to storage correctly
@@ -1021,8 +917,10 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     const out = try executeSaveMemory(alloc, &ctx.db, parsed.value);
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    const saved_id = try extractSavedId(alloc, out);
+    defer alloc.free(saved_id);
 
-    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{"test-bug-string"});
+    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{saved_id});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
@@ -1040,13 +938,14 @@ test "save_memory_tool: single tag (no separator) round-trips" {
     const input = SaveMemoryInput{
         .content = "single tag",
         .tags = "demo",
-        .id = "single-tag-memory",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    const saved_id = try extractSavedId(alloc, out);
+    defer alloc.free(saved_id);
 
-    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{"single-tag-memory"});
+    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{saved_id});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
@@ -1062,13 +961,14 @@ test "save_memory_tool: empty tags string saves empty tags" {
     const input = SaveMemoryInput{
         .content = "no tags",
         .tags = "",
-        .id = "no-tags-memory",
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    const saved_id = try extractSavedId(alloc, out);
+    defer alloc.free(saved_id);
 
-    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{"no-tags-memory"});
+    var q = try ctx.db.query(alloc, "SELECT tags FROM agent_memories WHERE id = ?", &.{saved_id});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
@@ -1175,9 +1075,10 @@ test "load_memory_tool: returns success XML envelope" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode",
         .tags = "preferences",
-        .id = "user-dark-mode",
     });
     defer alloc.free(_out);
+    const seeded_id = try extractSavedId(alloc, _out);
+    defer alloc.free(seeded_id);
 
     const input = LoadMemoryInput{
         .query = "dark mode",
@@ -1191,7 +1092,9 @@ test "load_memory_tool: returns success XML envelope" {
 
     try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
     try testing.expect(std.mem.indexOf(u8, out, "</load_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>user-dark-mode</id>") != null);
+    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    defer alloc.free(expected_id);
+    try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
     try testing.expect(std.mem.indexOf(u8, out, "<snippet>") != null);
     try testing.expect(std.mem.indexOf(u8, out, "[") != null); // [match] marker
     try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
@@ -1226,12 +1129,9 @@ test "load_memory_tool: limits result count to MAX_LIMIT (50) when caller reques
     // Seed 60 memories that all match the query.
     var i: u32 = 0;
     while (i < 60) : (i += 1) {
-        const id = std.fmt.allocPrint(alloc, "mem-cap-{d}", .{i}) catch unreachable;
-        defer alloc.free(id);
         const _out = try executeSaveMemory(alloc, &ctx.db, .{
             .content = "shared memory content for cap test",
             .tags = "",
-            .id = id,
         });
         defer alloc.free(_out);
     }
@@ -1261,7 +1161,6 @@ test "load_memory_tool: snippets contain [match] markers (FTS5 convention)" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode for the editor",
         .tags = "",
-        .id = "mem-snippet",
     });
     defer alloc.free(_out);
 
@@ -1290,21 +1189,24 @@ test "load_memory_tool: AND-filters by tags" {
     const _out1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory one with model preference",
         .tags = "preferences||user",
-        .id = "mem-one",
     });
     defer alloc.free(_out1);
+    const id1 = try extractSavedId(alloc, _out1);
+    defer alloc.free(id1);
     const _out2 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory two with project context",
         .tags = "preferences||project",
-        .id = "mem-two",
     });
     defer alloc.free(_out2);
+    const id2 = try extractSavedId(alloc, _out2);
+    defer alloc.free(id2);
     const _out3 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory three with project context",
         .tags = "project",
-        .id = "mem-three",
     });
     defer alloc.free(_out3);
+    const id3 = try extractSavedId(alloc, _out3);
+    defer alloc.free(id3);
 
     const input = LoadMemoryInput{
         .query = "context",
@@ -1316,11 +1218,17 @@ test "load_memory_tool: AND-filters by tags" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // mem-two + mem-three match (both have "context" + "project" tag).
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-two</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-three</id>") != null);
-    // mem-one does NOT match (no "context" in content).
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-one</id>") == null);
+    // row two + row three match (both have "context" + "project" tag).
+    const needle2 = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{id2});
+    defer alloc.free(needle2);
+    try testing.expect(std.mem.indexOf(u8, out, needle2) != null);
+    const needle3 = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{id3});
+    defer alloc.free(needle3);
+    try testing.expect(std.mem.indexOf(u8, out, needle3) != null);
+    // row one does NOT match (no "context" in content).
+    const needle1 = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{id1});
+    defer alloc.free(needle1);
+    try testing.expect(std.mem.indexOf(u8, out, needle1) == null);
     try testing.expect(std.mem.indexOf(u8, out, "<count>2</count>") != null);
 }
 
@@ -1333,7 +1241,6 @@ test "load_memory_tool: without with_content, snippets only (no raw <content>)" 
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "short content for anti-bloat test",
         .tags = "",
-        .id = "mem-no-content",
     });
     defer alloc.free(_out);
 
@@ -1361,12 +1268,9 @@ test "load_memory_tool: paginates via limit + offset" {
     // Seed 5 memories that all match "pageword".
     var i: u32 = 0;
     while (i < 5) : (i += 1) {
-        const id = std.fmt.allocPrint(alloc, "mem-page-{d}", .{i}) catch unreachable;
-        defer alloc.free(id);
         const _out = try executeSaveMemory(alloc, &ctx.db, .{
             .content = "pageword row",
             .tags = "",
-            .id = id,
         });
         defer alloc.free(_out);
     }
@@ -1405,9 +1309,10 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "this row contains handle_tool.zig and AGENTS.md",
         .tags = "",
-        .id = "mem-special-chars",
     });
     defer alloc.free(_out);
+    const seeded_id = try extractSavedId(alloc, _out);
+    defer alloc.free(seeded_id);
 
     // Queries with FTS5-special chars must NOT crash (escapeFtsQuery
     // strips the operators and joins tokens with OR, so the FTS5 query
@@ -1428,7 +1333,9 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     // either `handle_tool` OR `zig` — both present in the row.
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
     try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-special-chars</id>") != null);
+    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    defer alloc.free(expected_id);
+    try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
 }
 
 // --- Regression tests for the strict-search bug (task_1787050039216_3) ---
@@ -1449,21 +1356,24 @@ test "load_memory_tool: multi-token query joins with OR (regression for strict-s
     const _o1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred model is claude-sonnet",
         .tags = "",
-        .id = "mem-coding-pref",
     });
     defer alloc.free(_o1);
+    const id1 = try extractSavedId(alloc, _o1);
+    defer alloc.free(id1);
     const _o2 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "user prefers claude-sonnet for writing tasks",
         .tags = "",
-        .id = "mem-writing-pref",
     });
     defer alloc.free(_o2);
+    const id2 = try extractSavedId(alloc, _o2);
+    defer alloc.free(id2);
     const _o3 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the project's database model is documented in spec",
         .tags = "",
-        .id = "mem-db-model",
     });
     defer alloc.free(_o3);
+    const id3 = try extractSavedId(alloc, _o3);
+    defer alloc.free(id3);
 
     // With the old phrase-wrap behavior, this query would return 0 hits
     // because no memory contains the literal substring "preferred model".
@@ -1483,9 +1393,11 @@ test "load_memory_tool: multi-token query joins with OR (regression for strict-s
 
     // All 3 memories should be found (each contains at least one of the
     // two tokens).
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-coding-pref</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-writing-pref</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-db-model</id>") != null);
+    for ([_][]u8{ id1, id2, id3 }) |saved_id| {
+        const needle = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{saved_id});
+        defer alloc.free(needle);
+        try testing.expect(std.mem.indexOf(u8, out, needle) != null);
+    }
     try testing.expect(std.mem.indexOf(u8, out, "<count>3</count>") != null);
 }
 
@@ -1498,9 +1410,10 @@ test "load_memory_tool: single-token query still works (regression guard)" {
     const _o1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode for the editor",
         .tags = "",
-        .id = "mem-dark-mode",
     });
     defer alloc.free(_o1);
+    const seeded_id = try extractSavedId(alloc, _o1);
+    defer alloc.free(seeded_id);
 
     const input = LoadMemoryInput{
         .query = "dark",
@@ -1513,7 +1426,9 @@ test "load_memory_tool: single-token query still works (regression guard)" {
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-dark-mode</id>") != null);
+    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    defer alloc.free(expected_id);
+    try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
     try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
 }
 
@@ -1527,9 +1442,10 @@ test "load_memory_tool: hyphenated date query returns sanitized recall (no crash
     const _o1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "log entry on 2026-08-06 says the build is green",
         .tags = "",
-        .id = "mem-date-row",
     });
     defer alloc.free(_o1);
+    const seeded_id = try extractSavedId(alloc, _o1);
+    defer alloc.free(seeded_id);
 
     // The old phrase-wrap behavior turned this into "2026 08 06" (phrase).
     // The new OR-join behavior turns it into "2026 OR 08 OR 06". Both
@@ -1546,7 +1462,9 @@ test "load_memory_tool: hyphenated date query returns sanitized recall (no crash
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-date-row</id>") != null);
+    const expected_date_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    defer alloc.free(expected_date_id);
+    try testing.expect(std.mem.indexOf(u8, out, expected_date_id) != null);
 }
 
 test "load_memory_tool: empty-after-sanitize query returns empty results (no crash)" {
@@ -1594,15 +1512,16 @@ test "load_memory_tool: by-id lookup returns single row with full content" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred model is claude-sonnet",
         .tags = "preferences||user",
-        .id = "mem-coding-pref",
     });
     defer alloc.free(_out);
+    const seeded_id = try extractSavedId(alloc, _out);
+    defer alloc.free(seeded_id);
 
     // id-only, with_content defaults to false — content still comes back
     // because the by-id path is targeted (not an FTS snippet).
     const input = LoadMemoryInput{
         .query = "",
-        .id = "mem-coding-pref",
+        .id = seeded_id,
         .tags = "",
         .limit = 10,
         .offset = 0,
@@ -1613,7 +1532,9 @@ test "load_memory_tool: by-id lookup returns single row with full content" {
 
     try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
     try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-coding-pref</id>") != null);
+    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    defer alloc.free(expected_id);
+    try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
     try testing.expect(std.mem.indexOf(u8, out, "<tags>preferences||user</tags>") != null);
     // Full body, not just a 10-token snippet.
     try testing.expect(std.mem.indexOf(u8, out, "preferred model is claude-sonnet") != null);
@@ -1644,13 +1565,14 @@ test "load_memory_tool: by-id lookup returns content beyond 2 KiB (no MAX_FULL_C
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = big.items,
         .tags = "",
-        .id = "mem-big-content",
     });
     defer alloc.free(_out);
+    const big_id = try extractSavedId(alloc, _out);
+    defer alloc.free(big_id);
 
     const input = LoadMemoryInput{
         .query = "",
-        .id = "mem-big-content",
+        .id = big_id,
         .tags = "",
         .limit = 10,
         .offset = 0,
@@ -1722,19 +1644,21 @@ test "load_memory_tool: by-id ignores tags (only one row can match anyway)" {
     const _a = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory alpha",
         .tags = "alpha",
-        .id = "mem-alpha",
     });
     defer alloc.free(_a);
+    const alpha_id = try extractSavedId(alloc, _a);
+    defer alloc.free(alpha_id);
     const _b = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory beta",
         .tags = "beta",
-        .id = "mem-beta",
     });
     defer alloc.free(_b);
+    const beta_id = try extractSavedId(alloc, _b);
+    defer alloc.free(beta_id);
 
     const input = LoadMemoryInput{
         .query = "",
-        .id = "mem-alpha",
+        .id = alpha_id,
         .tags = "beta", // intentionally wrong tag — must be ignored
         .limit = 10,
         .offset = 0,
@@ -1743,100 +1667,10 @@ test "load_memory_tool: by-id ignores tags (only one row can match anyway)" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-alpha</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<id>mem-beta</id>") == null);
-}
-
-// ─── tests: delete_memory ───
-
-test "delete_memory_tool: tool name is 'delete_memory'" {
-    const tool = delete_memory_tool;
-    try testing.expectEqualStrings("function", tool.type);
-    try testing.expectEqualStrings("delete_memory", tool.function.name);
-}
-
-test "delete_memory_tool: parameters include only id, which is required" {
-    const tool = delete_memory_tool;
-    const params = tool.function.parameters;
-    try testing.expectEqualStrings("object", params.type);
-    try testing.expectEqual(@as(usize, 1), params.properties.len);
-    try testing.expectEqualStrings("id", params.properties[0].name);
-    try testing.expectEqualStrings("string", params.properties[0].type);
-    try testing.expectEqual(@as(usize, 1), params.required.len);
-    try testing.expectEqualStrings("id", params.required[0]);
-}
-
-test "delete_memory_tool: returns success envelope with deleted=true on existing row" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const row = try agent_memories.saveMemory(alloc, &ctx.db, .{
-        .content = "row to be deleted",
-        .tags = &.{},
-        .id = "to-delete",
-    });
-    defer agent_memories.freeMemoryRow(alloc, row);
-
-    const xml = try executeDeleteMemory(alloc, &ctx.db, .{ .id = "to-delete" });
-    defer alloc.free(xml);
-
-    try testing.expect(std.mem.indexOf(u8, xml, "<delete_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>to-delete</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<deleted>true</deleted>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
-}
-
-test "delete_memory_tool: returns success envelope with deleted=false on unknown id" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const xml = try executeDeleteMemory(alloc, &ctx.db, .{ .id = "ghost" });
-    defer alloc.free(xml);
-
-    try testing.expect(std.mem.indexOf(u8, xml, "<delete_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>ghost</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<deleted>false</deleted>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
-}
-
-test "delete_memory_tool: returns error envelope on empty id" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const xml = try executeDeleteMemory(alloc, &ctx.db, .{ .id = "" });
-    defer alloc.free(xml);
-
-    try testing.expect(std.mem.indexOf(u8, xml, "<delete_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<deleted>") == null);
-}
-
-test "delete_memory_tool: round-trip — deleted row is gone from getMemoryById" {
-    const alloc = testing.allocator;
-    var ctx = try setupDb();
-    defer ctx.threaded.deinit();
-    defer ctx.db.deinit();
-
-    const row = try agent_memories.saveMemory(alloc, &ctx.db, .{
-        .content = "round-trip target",
-        .tags = &.{"test"},
-        .id = "rt-target",
-    });
-    defer agent_memories.freeMemoryRow(alloc, row);
-
-    const before = (try agent_memories.getMemoryById(alloc, &ctx.db, "rt-target")) orelse return error.RowMissingBeforeDelete;
-    defer agent_memories.freeMemoryRow(alloc, before);
-
-    const xml = try executeDeleteMemory(alloc, &ctx.db, .{ .id = "rt-target" });
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "<deleted>true</deleted>") != null);
-
-    const after = try agent_memories.getMemoryById(alloc, &ctx.db, "rt-target");
-    try testing.expect(after == null);
+    const needle_alpha = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{alpha_id});
+    defer alloc.free(needle_alpha);
+    try testing.expect(std.mem.indexOf(u8, out, needle_alpha) != null);
+    const needle_beta = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{beta_id});
+    defer alloc.free(needle_beta);
+    try testing.expect(std.mem.indexOf(u8, out, needle_beta) == null);
 }
