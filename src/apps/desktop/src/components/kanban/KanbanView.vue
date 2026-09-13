@@ -92,10 +92,11 @@ const route = useRoute()
 // though the seeded 3 default columns exist in the DB.
 const effectiveItemId = computed(() => props.itemId || props.item.id)
 
-// NOTE (kanban-chat-as-dialog plan): KanbanView no longer owns a
-// chat pane. The dialog is mounted at AppLayout level (KanbanChatDialog)
-// and the kanban renders only the full-width board. The
-// `workspacesStore.activeTask` getter is consumed by the dialog,
+// NOTE (kanban chat plan): KanbanView no longer owns a
+// chat pane. The chat is mounted at AppLayout level (KanbanChat,
+// inline view replacing the board) and the kanban renders only
+// the full-width board. The
+// `workspacesStore.activeTask` getter is consumed by the chat view,
 // not by this component.
 
 // Per-column initial fetch (Option B, 2026-08-06): KanbanView
@@ -291,12 +292,12 @@ watch(
 // ─── Horizontal scroll position preservation ──────────────────────────
 //
 // KanbanView renders the kanban board full-width. The chat task is
-// now in AppLayout's KanbanChatDialog (centered modal overlay, not
-// a side-by-side layout). When the user opens + closes the dialog,
-// the KanbanView instance stays mounted — the dialog teleports in
-// and out — so scroll position survives naturally. The composable
-// still persists scrollLeft to localStorage so refreshes keep the
-// column the user was looking at.
+// now in AppLayout's KanbanChat (inline view replacing the board,
+// not a side-by-side layout). When the user opens the chat,
+// KanbanView unmounts (v-else-if swap) and remounts on close — the
+// composable still persists scrollLeft to localStorage so the
+// column the user was looking at survives the round-trip and
+// refreshes keep it too.
 //
 // Plan: docs/superpowers/plans/2026-07-23-preserve-kanban-horizontal-scroll.md
 const kanbanColumnsContainer = ref<HTMLElement | null>(null)
@@ -1104,12 +1105,12 @@ const handleCreateTaskSave = async (payload: {
     data-kanban-host
   >
     <!--
-      Layout (kanban-chat-as-dialog plan, 2026-08-06): KanbanView now
+      Layout (kanban chat plan): KanbanView now
       renders ONLY the full-width board. The chat task is mounted at
-      AppLayout level as a centered modal dialog (KanbanChatDialog).
-      When the user clicks a task, the kanban stays rendered and the
-      dialog opens on top via Teleport — KanbanView is not unmounted,
-      so the kanban's horizontal scroll position survives naturally.
+      AppLayout level as an inline view (KanbanChat) that REPLACES
+      the board via v-else-if. When the user clicks a task, KanbanView
+      unmounts and the chat mounts; on close the board remounts and
+      restores its scroll position from localStorage.
     -->
     <!-- ─── Header ────────────────────────────────────────────────────── -->
     <header

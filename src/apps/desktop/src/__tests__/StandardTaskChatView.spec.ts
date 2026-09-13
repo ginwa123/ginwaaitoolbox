@@ -18,7 +18,7 @@
 //   5. Switching the `task` prop forces a fresh ChatView mount
 //      (the `:key` reactivity rule) — preserves
 //      useChatScrollRestore's scroll position across task
-//      switches (same as KanbanChatDialog's `:key="'task-' +
+//      switches (same as KanbanChat's `:key="'task-' +
 //      task.id"`).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

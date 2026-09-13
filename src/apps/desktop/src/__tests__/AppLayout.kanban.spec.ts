@@ -8,10 +8,11 @@
  *     activeWorkspaceItem.item_type === 'kanban' and no task is
  *     active
  *   - When an active task is set AND the task's parent is the
- *     active kanban, BOTH <KanbanView> and <ChatView> render
- *     simultaneously in the 3-column layout (sidebar | kanban |
- *     chatview). The ChatView's ✕ close button clears the active
- *     task and returns to the kanban-only view.
+ *     active kanban, <KanbanChat> renders INSTEAD of <KanbanView>
+ *     (inline chat replaces the board via v-else-if — same swap
+ *     semantics as AgentChatView replacing AgentView). The chat's
+ *     ✕ close button clears the active task and returns to the
+ *     kanban-only view.
  *   - When the active task's parent is NOT the active kanban
  *     (e.g. a folder task), only <ChatView> renders (the original
  *     single-column behavior is preserved).
@@ -260,7 +261,7 @@ describe('AppLayout — kanban main-content rendering', () => {
   })
 })
 
-describe('AppLayout — kanban task view (3-column layout)', () => {
+describe('AppLayout — kanban task view (inline chat replaces board)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     installBusForTests()
@@ -292,18 +293,19 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders BOTH <KanbanView> and <ChatView> when the active task\'s parent is the active kanban (3-column layout)', async () => {
-    // The "click a kanban card" flow now opens the task's chat
-    // view alongside the kanban (not in place of it). The user's
-    // kanban context is preserved while they chat, and a ✕ button
-    // in the chat header collapses the chat column back to the
-    // kanban-only view.
+  it('renders <KanbanChat> INSTEAD of <KanbanView> when the active task\'s parent is the active kanban (inline chat replaces board)', async () => {
+    // The "click a kanban card" flow opens the task's chat view
+    // INSTEAD of the board (v-else-if swap, same as AgentChatView
+    // replacing AgentView). The board unmounts while the chat is
+    // open; the chat's ✕ button clears the active task and the
+    // board remounts.
     //
     // Pre-2026-06-24, this test asserted the kanban unmounted
     // (`expect(view.exists()).toBe(false)`) because ChatView
-    // took priority over KanbanView. Post-3-column, both render
-    // in a flex row container. The 3-column branch's v-else-if
-    // condition requires:
+    // took priority over KanbanView. The 3-column era asserted
+    // both rendered side-by-side. The inline-chat refactor
+    // restores the swap: only the chat renders while a task is
+    // active. The KanbanChat branch's v-else-if condition requires:
     //   activeTask && activeWorkspaceItem.item_type === 'kanban'
     //   && activeTaskWorkspaceItemId === activeWorkspaceItem.id
     // The last clause is what distinguishes this case from a
@@ -334,15 +336,12 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     ws.setActiveWorkspaceItem(KANBAN_ID)
     ws.setActiveTask(TASK_ID)
     await nextTick()
-    // Both columns render side-by-side inside KanbanView's
-    // chat-pane branch (selector: data-kanban-with-chat). The
-    // 3-column block that used to live in AppLayout was moved
-    // into KanbanView as part of the kanban-embed-chatview plan.
+    // The board unmounts while the chat is open (v-else-if swap)
+    // and the inline <KanbanChat> mounts in its place.
     const view = wrapper.find('[data-kanban-view="stub"]')
-    expect(view.exists()).toBe(true)
-    expect(view.attributes('data-item-id')).toBe(KANBAN_ID)
-    const threeCol = wrapper.find('[data-kanban-with-chat]')
-    expect(threeCol.exists()).toBe(true)
+    expect(view.exists()).toBe(false)
+    const chat = wrapper.find('[data-testid="kanban-chat"]')
+    expect(chat.exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -389,9 +388,9 @@ describe('AppLayout — kanban task view (3-column layout)', () => {
     ws.setActiveTask('task_in_folder') // ...but the active task lives in the folder
     await nextTick()
     // activeTaskWorkspaceItemId === FOLDER_ID, not KANBAN_ID. The
-    // KanbanChatDialog branch's last condition
+    // KanbanChat branch's last condition
     // (`activeTaskWorkspaceItemId === activeWorkspaceItem.id`) is
-    // false — the dialog does NOT mount. The KanbanView mount does
+    // false — the chat does NOT mount. The KanbanView mount does
     // render (the kanban is the active workspace item) but without
     // the chat pane. This is the canonical "clicked a card whose
     // parent is a folder while viewing a kanban" edge case.

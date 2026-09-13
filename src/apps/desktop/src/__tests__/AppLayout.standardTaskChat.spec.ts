@@ -6,7 +6,7 @@
 // and the workspace item Y was NOT a kanban or design (e.g. a folder
 // item holding a "standard" chat task), AppLayout's v-else-if chain
 // had no matching branch:
-//   - KanbanView / KanbanChatDialog — gated on item_type === 'kanban'
+//   - KanbanView / KanbanChat — gated on item_type === 'kanban'
 //   - DesignView / DesignChatDialog — gated on item_type === 'design'
 //   - <ChatView v-else-if="activeChatId.startsWith('chat-')">
 //     — gated on activeChatId, which setActiveTask CLEARS
@@ -138,7 +138,7 @@ function mountApp(): VueWrapper {
         CodeEditor: true,
         KanbanView: true,
         DesignView: true,
-        KanbanChatDialog: true,
+        KanbanChat: true,
         DesignChatDialog: true,
       },
     },
@@ -266,9 +266,9 @@ describe('AppLayout — standard task chat (folder / memory / chat items)', () =
     wrapper.unmount()
   })
 
-  it('does NOT render <ChatView> via this branch when the active task belongs to a kanban (KanbanChatDialog wins)', async () => {
+  it('does NOT render <ChatView> via this branch when the active task belongs to a kanban (KanbanChat wins)', async () => {
     // The new branch is gated on `item_type !== 'kanban' && !== 'design'`,
-    // so a kanban task routes through KanbanChatDialog, not this
+    // so a kanban task routes through KanbanChat, not this
     // branch. Guards against an accidental double-mount.
     const ws = useWorkspacesStore()
     ws.workspaces = [
@@ -292,7 +292,7 @@ describe('AppLayout — standard task chat (folder / memory / chat items)', () =
     ws.setActiveTask(TASK_ID)
     const wrapper = mountApp()
     await nextTick()
-    // KanbanChatDialog is stubbed as true (default stub); ChatView
+    // KanbanChat is stubbed as true (default stub); ChatView
     // is NOT rendered via the new branch — the new branch's
     // item_type check filters kanban items.
     expect(wrapper.find('[data-testid="chatview-stub"]').exists()).toBe(false)

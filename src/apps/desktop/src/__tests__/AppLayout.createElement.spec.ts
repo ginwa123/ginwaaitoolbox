@@ -129,7 +129,7 @@ function mountAppLayout(): VueWrapper {
         // The dialog itself uses Teleport so document.querySelector
         // still works regardless of where DesignView mounts.
         Chats: true,
-        KanbanChatDialog: true,
+        KanbanChat: true,
         DesignChatDialog: true,
       },
     },

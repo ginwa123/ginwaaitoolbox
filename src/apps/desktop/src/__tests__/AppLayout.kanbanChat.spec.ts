@@ -1,27 +1,26 @@
-// AppLayout — kanban chat dialog mount wiring.
+// AppLayout — kanban chat inline-view mount wiring.
 //
 // When the user navigates to a kanban task (via URL
 // `?view=workspace&...&itemId=Y/chat/task_<id>` or by clicking a task
 // card), AppLayout's existing wiring sets
-// `workspacesStore.activeTask` + `activeTaskWorkspaceItemId`. The new
-// `<KanbanChatDialog>` mount reads those store refs and renders centered
-// on top of the kanban board.
+// `workspacesStore.activeTask` + `activeTaskWorkspaceItemId`. The
+// `<KanbanChat>` mount reads those store refs and renders INLINE,
+// REPLACING the kanban board (v-else-if BEFORE KanbanView — same swap
+// semantics as AgentChatView replacing AgentView).
 //
 // SIMPLIFY-URL-BROWSER (2026-08-15): the legacy `?view=task&task=<id>`
 // URL has been collapsed into the workspace URL with the chat task id
 // encoded as `/chat/<taskId>` on `itemId`. This spec drives the
 // `setActiveTask` path directly via the store, so the URL shape
-// doesn't matter for these assertions — the dialog mount is gated on
+// doesn't matter for these assertions — the chat mount is gated on
 // `activeWorkspaceItem.item_type === 'kanban' && activeTask`.
 //
 // This spec verifies the mount gates correctly:
-//   - No active task → dialog not rendered
-//   - Active task on a kanban item → dialog rendered
-//   - Active task on a non-kanban item (e.g. design) → dialog NOT rendered
+//   - No active task → chat not rendered, board rendered
+//   - Active task on a kanban item → chat rendered, board NOT rendered
+//     (the chat replaces the board via v-else-if)
+//   - Active task on a non-kanban item (e.g. design) → chat NOT rendered
 //     (design + routine have their own chat mounts)
-//
-// The test follows the established vue-teleport-vitest-document-queryselector
-// pattern (attachTo: document.body + document.querySelector).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -69,7 +68,6 @@ const DESIGN_ITEM_ID = 'item_design_1'
 const TASK_ID = 'task_1'
 
 function makeStubClient(): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -126,7 +124,7 @@ function mountAppLayout(): VueWrapper {
   })
 }
 
-describe('AppLayout — kanban chat dialog mount', () => {
+describe('AppLayout — kanban chat mount', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -158,14 +156,12 @@ describe('AppLayout — kanban chat dialog mount', () => {
       path: '/',
       absolute: '/',
       home: '/',
-     
     })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({
       messages: [],
       has_more: false,
-       
       next_cursor: null,
       total: 0,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -177,16 +173,13 @@ describe('AppLayout — kanban chat dialog mount', () => {
 
   // Mock the API calls in init() so they preserve the per-test fixture.
   // Each test calls this AFTER setting store.workspaces = [...] and
-   
   // BEFORE mount, so init() doesn't wipe the fixture.
   function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
     vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => {
-       
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { workspaces: store.workspaces as any }
     })
     vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
-       
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ws = store.workspaces.find((w: any) => w.id === wsId)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -212,15 +205,11 @@ describe('AppLayout — kanban chat dialog mount', () => {
     wrapper?.unmount()
     wrapper = null
     document
-      .querySelectorAll('[data-testid="kanban-chat-dialog"]')
-      .forEach((el) => el.remove())
-     
-    document
-      .querySelectorAll('[data-testid="kanban-chat-dialog-root"]')
+      .querySelectorAll('[data-testid="kanban-chat"]')
       .forEach((el) => el.remove())
   })
 
-  it('does NOT render KanbanChatDialog when no task is active', async () => {
+  it('does NOT render KanbanChat when no task is active', async () => {
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [makeKanbanItem()] },
@@ -230,15 +219,14 @@ describe('AppLayout — kanban chat dialog mount', () => {
     wrapper = mountAppLayout()
     await flushPromises()
     expect(
-      document.querySelector('[data-testid="kanban-chat-dialog"]'),
+      document.querySelector('[data-testid="kanban-chat"]'),
     ).toBeNull()
   })
 
-  it('renders KanbanChatDialog when active task belongs to a kanban item', async () => {
+  it('renders KanbanChat when active task belongs to a kanban item', async () => {
     const store = useWorkspacesStore()
     store.workspaces = [
       {
-         
         id: WS_ID,
         name: 'WS',
         items: [
@@ -257,13 +245,41 @@ describe('AppLayout — kanban chat dialog mount', () => {
     wrapper = mountAppLayout()
     await flushPromises()
     expect(
-      document.querySelector('[data-testid="kanban-chat-dialog"]'),
+      document.querySelector('[data-testid="kanban-chat"]'),
     ).not.toBeNull()
   })
 
-  it('does NOT render KanbanChatDialog when active task belongs to a non-kanban item', async () => {
+  it('replaces the board — KanbanView is NOT rendered while the chat is open', async () => {
     const store = useWorkspacesStore()
-     
+    store.workspaces = [
+      {
+        id: WS_ID,
+        name: 'WS',
+        items: [
+          {
+            ...makeKanbanItem(),
+            tasks: [{ id: TASK_ID, name: 'Hello Task' } as Task],
+          },
+          makeDesignItem(),
+        ],
+      },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any
+    store.setActiveWorkspaceItem(KANBAN_ITEM_ID)
+    store.setActiveTask(TASK_ID)
+    rewireApiForFixture(store)
+    wrapper = mountAppLayout()
+    await flushPromises()
+    expect(
+      document.querySelector('[data-testid="kanban-chat"]'),
+    ).not.toBeNull()
+    // KanbanView is stubbed — the stub tag must be absent while the
+    // chat branch wins the v-else-if chain.
+    expect(wrapper.find('kanban-view-stub').exists()).toBe(false)
+  })
+
+  it('does NOT render KanbanChat when active task belongs to a non-kanban item', async () => {
+    const store = useWorkspacesStore()
     store.workspaces = [
       {
         id: WS_ID,
@@ -283,13 +299,12 @@ describe('AppLayout — kanban chat dialog mount', () => {
     wrapper = mountAppLayout()
     await flushPromises()
     expect(
-      document.querySelector('[data-testid="kanban-chat-dialog"]'),
+      document.querySelector('[data-testid="kanban-chat"]'),
     ).toBeNull()
   })
 
-  it('renders dialog header with the active task name', async () => {
+  it('renders the chat header with the active task name', async () => {
     const store = useWorkspacesStore()
-     
     store.workspaces = [
       {
         id: WS_ID,
@@ -310,7 +325,7 @@ describe('AppLayout — kanban chat dialog mount', () => {
     wrapper = mountAppLayout()
     await flushPromises()
     const title = document.querySelector(
-      '[data-testid="kanban-chat-dialog-title"]',
+      '[data-testid="kanban-chat-title"]',
     )
     expect(title).not.toBeNull()
     expect(title?.textContent).toContain('My Important Task')

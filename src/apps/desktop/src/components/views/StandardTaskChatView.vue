@@ -8,7 +8,7 @@
   this component forwards a stable ChatView mount keyed by the task id.
 
   Why a wrapper at all?
-    - KanbanChatDialog and DesignChatDialog already wrap <ChatView>
+    - KanbanChat and DesignChatDialog already wrap <ChatView>
       for their host branches. Standard task chat is the third branch
       of the same v-else-if chain — extracting it into its own
       component keeps the layout's right-pane rendering rules in one
@@ -61,7 +61,7 @@ const emit = defineEmits<{
     the host switches tasks (different task.id) the :key changes and
     Vue remounts <ChatView> — preserving useChatScrollRestore's
     scroll-position contract across task switches (same as
-    KanbanChatDialog's `:key="'task-' + task.id"`).
+    KanbanChat's `:key="'task-' + task.id"`).
   -->
   <ChatView
     :key="`chat-${task.id}`"

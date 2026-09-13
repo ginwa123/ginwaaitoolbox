@@ -6,9 +6,9 @@
  *   Steps to reproduce:
  *     1. Create a kanban workspace item.
  *     2. Create a task on that kanban.
- *     3. Click the task — KanbanChatDialog opens, URL becomes
+ *     3. Click the task — KanbanChat opens, URL becomes
  *        `?view=workspace&workspaceId=X&itemId=Y/chat/task_Z`.
- *     4. Close the chat dialog — URL becomes
+ *     4. Close the chat — URL becomes
  *        `?view=workspace&workspaceId=X&itemId=Y` with
  *        activeWorkspaceItemId = Y and activeTask = null.
  *     5. Click any chat session in the sidebar.

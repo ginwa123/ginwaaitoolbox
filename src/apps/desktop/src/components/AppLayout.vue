@@ -13,7 +13,7 @@ import CodeEditor from './views/CodeEditor.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
-import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
+import KanbanChat from './kanban/KanbanChat.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
 import RoutineView from './views/RoutineView.vue'
@@ -953,24 +953,15 @@ const activeTask = computed(() => workspacesStore.activeTask)
 // tasks across all workspaces.
 const activeTaskWorkspaceItemId = computed(() => workspacesStore.activeTaskWorkspaceItemId)
 
-// ─── KanbanChatDialog open state (plan: 2026-08-06-kanban-chat-as-dialog) ────
+// ─── KanbanChat inline view (replaces 2026-08-06 KanbanChatDialog) ────
 //
-// The dialog uses `v-model:show` for two-way binding. We drive the
-// `show` ref from `activeTask` so the dialog opens whenever the user
-// navigates to a kanban task (via URL `?view=task&task=<id>` or by
-// clicking a card) and closes when `activeTask` is cleared (via
-// @close → handleCloseTaskView → setActiveTask(null)).
-//
-// The dialog also has its own `close` emit which we forward to
-// handleCloseTaskView for URL cleanup.
-const kanbanChatDialogOpen = ref(false)
-watch(
-  () => activeTask.value,
-  (t) => {
-    kanbanChatDialogOpen.value = !!t
-  },
-  { immediate: true },
-)
+// The kanban task chat is an inline view, not a modal dialog. <KanbanChat>
+// is mounted in the <main> v-else-if chain BEFORE <KanbanView> so the
+// chat REPLACES the board when a task is active (same swap semantics as
+// AgentChatView replacing AgentView). Closing the chat (@close →
+// handleCloseTaskView → setActiveTask(null)) falls back to KanbanView.
+// No show ref / watcher needed — the v-else-if gate on `activeTask`
+// owns the mount directly.
 
 // Captured from DesignView's `openChat` payload — the design page's
 // own name (NOT the workspace item name). The dialog's header uses
@@ -1044,7 +1035,7 @@ const activeDesignChatTask = computed<TaskType | null>(() => {
 
 // ─── DesignChatDialog open state (plan: 2026-08-06-design-chat-as-dialog) ────
 //
-// Same v-model:show pattern as KanbanChatDialog above. The design
+// Same v-model:show pattern as the former KanbanChatDialog. The design
 // dialog opens whenever activeDesignChatTaskId is set AND the
 // active item is a design — the gating happens in the template
 // (v-if), not here. We drive `show` from `activeDesignChatTaskId`
@@ -1056,7 +1047,7 @@ const activeDesignChatTask = computed<TaskType | null>(() => {
 // RIGHT-side column of a 3-column DesignView | resize-handle |
 // ChatView layout, with a floating collapse button to hide it. The
 // 3-column took ~40% of the canvas even when "minimised". Switching
-// to a centred modal dialog (mirrors KanbanChatDialog) reclaims the
+// to a centred modal dialog (mirrors the former KanbanChatDialog) reclaims the
 // full canvas width — the dialog opens on top of the canvas with a
 // dimmed backdrop. The collapse-state + design resize handle +
 // DESIGN_WIDTH_STORAGE_KEY localStorage are removed below.
@@ -2056,7 +2047,7 @@ const rightSidebarCwd = computed(() => {
 //      fetchChatSessionCwd for the `?view=chat&session=X` URL
 //      path. Reads the session's persisted cwd from the DB.
 //   2. activeWorkspaceItem.path — used for the workspace-item +
-//      chat-task paths (KanbanChatDialog, DesignChatDialog, and
+//      chat-task paths (KanbanChat, DesignChatDialog, and
 //      the new standard-task-chat branch added for task
 //      task_1787027750097). The chat runs in the workspace item's
 //      directory.
@@ -2367,6 +2358,29 @@ defineExpose({
         @rename-item="handleKanbanRenameItem"
         @copy-spec="handleOpenCopyKanbanSpec"
       />
+      <!-- Kanban task chat (inline, non-dialog): when a chat task is open
+           under a kanban item, the chat REPLACES the KanbanView board
+           below (same swap semantics as AgentChatView for agent items).
+           MUST be v-else-if in this chain and placed BEFORE KanbanView —
+           a standalone v-if would start a new chain and render BOTH
+           stacked (board on top, chat squeezed at the bottom). Closing
+           the chat (@close → handleCloseTaskView clears activeTask)
+           falls back to KanbanView. -->
+      <KanbanChat
+        v-else-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'kanban' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        :key="'kanban-chat-' + activeTask.id"
+        :task="activeTask"
+        :workspace-id="activeWorkspace?.id ?? ''"
+        :item-id="activeWorkspaceItem.id"
+        :project-name="activeWorkspaceItem.name ?? ''"
+        :cwd="activeWorkspaceItem.path ?? ''"
+        @close="handleCloseTaskView"
+      />
       <!-- Kanban view (kanban-embed-chatview plan, Task 5). The kanban
            now owns the chat pane + resize handle internally — the old
            3-column sibling-of-KanbanView branch (was at lines
@@ -2399,37 +2413,8 @@ defineExpose({
         @close-chat="handleCloseTaskView"
       />
       <!--
-        Kanban chat dialog (plan: 2026-08-06-kanban-chat-as-dialog).
-        Mounted at the AppLayout level (NOT inside KanbanView) so the
-        chat opens as a centered modal overlay rather than a side-by-
-        side layout. Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id`
-        so the dialog only opens for kanban items — design / routine
-        / standalone chat use their own mounts. `v-model:show` is
-        driven by the kanbanChatDialogOpen ref, kept in sync with
-        `activeTask` via a watcher so the dialog opens when the user
-        navigates to a kanban task and closes when they navigate away.
-        URL routing is handled by AppLayout's existing
-        handleCloseTaskView (re-used via @close).
-      -->
-      <KanbanChatDialog
-        v-if="
-          activeWorkspaceItem &&
-          activeWorkspaceItem.item_type === 'kanban' &&
-          activeTask &&
-          activeTaskWorkspaceItemId === activeWorkspaceItem.id
-        "
-        v-model:show="kanbanChatDialogOpen"
-        :task="activeTask"
-        :workspace-id="activeWorkspace?.id ?? ''"
-        :item-id="activeWorkspaceItem.id"
-        :project-name="activeWorkspaceItem.name ?? ''"
-        :cwd="activeWorkspaceItem.path ?? ''"
-        @close="handleCloseTaskView"
-      />
-      <!--
         Design chat dialog (plan: 2026-08-06-design-chat-as-dialog).
-        Mirrors the KanbanChatDialog mount above — same Teleport
-        pattern, same v-model:show binding driven by `activeTask`.
+        Same Teleport pattern, same v-model:show binding driven by `activeTask`.
         Mounted at the AppLayout level (NOT inside DesignView) so the
         chat opens as a centred modal overlay rather than a side-by-
         side column. Gated on `item_type === 'design'` so the dialog
@@ -2458,9 +2443,9 @@ defineExpose({
         SIMPLIFY-URL-BROWSER (2026-08-15): the legacy
         `<ChatView v-else-if="currentView === 'task' && activeTask">`
         branch has been removed. Under the new URL scheme the URL
-        never says `view=task` — the chat dialog is always a
+        never says `view=task` — the chat is always a
         sub-state of the workspace view. Kanban tasks open via
-        KanbanChatDialog (gated on
+        KanbanChat (gated on
         `activeTaskWorkspaceItemId === activeWorkspaceItem.id`),
         design tasks via DesignChatDialog (gated on
         `activeDesignChatTaskId`), and standard task chats
@@ -2635,7 +2620,7 @@ defineExpose({
         that isn't a kanban, design, OR agent). FIX for blank
         chatview (task_1787027750097, 2026-08-14): the
         simplify-url-browser plan (#246) wired kanban
-        (KanbanChatDialog) and design (DesignChatDialog) chat-open
+        (KanbanChat) and design (DesignChatDialog) chat-open
         paths but listed "folder tasks … out-of-scope edge case".
         A user with a chat task on a folder / memory / chat
         workspace item hit a dead zone: setActiveTask fires,

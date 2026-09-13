@@ -195,17 +195,14 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     vi.restoreAllMocks()
     __resetSseBus()
     document
-      .querySelectorAll('[data-testid="kanban-chat-dialog"]')
-      .forEach((el) => el.remove())
-    document
-      .querySelectorAll('[data-testid="kanban-chat-dialog-root"]')
+      .querySelectorAll('[data-testid="kanban-chat"]')
       .forEach((el) => el.remove())
    
   })
 
  
 
-  it('preserves ?sorts= when the user opens a kanban task and closes the chat dialog', async () => {
+  it('preserves ?sorts= when the user opens a kanban task and closes the chat view', async () => {
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [{
@@ -225,20 +222,20 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     const wrapper = mountAppLayout()
     await flushPromises()
 
-    // Simulate the active task state (the chat dialog mounts).
+    // Simulate the active task state (the chat view mounts).
     store.setActiveTask(TASK_ID)
     await nextTick()
     expect(
-      document.querySelector('[data-testid="kanban-chat-dialog"]'),
+      document.querySelector('[data-testid="kanban-chat"]'),
     ).not.toBeNull()
 
-    // Close the dialog. AppLayout's handleCloseTaskView must read
+    // Close the chat view. AppLayout's handleCloseTaskView must read
     // savedSortsParam, write sorts=col_a:name:asc back into the
     // URL, then clear the snapshot so a subsequent close doesn't
     // accidentally restore a stale sort.
-    const dialog = document.querySelector('[data-testid="kanban-chat-dialog"]')
+    const dialog = document.querySelector('[data-testid="kanban-chat"]')
     expect(dialog).not.toBeNull()
-    const closeBtn = dialog!.querySelector('[data-testid="kanban-chat-dialog-close"]')
+    const closeBtn = dialog!.querySelector('[data-testid="kanban-chat-close"]')
     expect(closeBtn).not.toBeNull()
     ;(closeBtn as HTMLButtonElement).click()
     await nextTick()
@@ -278,10 +275,10 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     store.setActiveTask(TASK_ID)
     await nextTick()
 
-    // Find + click the close button on the teleported dialog.
-    const dialog = document.querySelector('[data-testid="kanban-chat-dialog"]')
+    // Find + click the close button on the inline chat view.
+    const dialog = document.querySelector('[data-testid="kanban-chat"]')
     expect(dialog).not.toBeNull()
-    const closeBtn = dialog!.querySelector('[data-testid="kanban-chat-dialog-close"]')
+    const closeBtn = dialog!.querySelector('[data-testid="kanban-chat-close"]')
     expect(closeBtn).not.toBeNull()
     ;(closeBtn as HTMLButtonElement).click()
     await nextTick()
