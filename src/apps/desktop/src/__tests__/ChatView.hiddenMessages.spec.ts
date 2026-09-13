@@ -222,4 +222,29 @@ describe('HTML tag support — ChatView render branch (source contract)', () => 
     expect(source).toMatch(/class="chat-html-frame"/)
     expect(source).toMatch(/\.chat-html-frame \{/)
   })
+
+  // 2026-09-13 (task_1789312493325_7 "html render"): PR #309 shipped the
+  // iframe with a WHITE background and no height management, so an LLM that
+  // answered in HTML mode (the response-formatting prompt offers it) put a
+  // bright slab with its own scrollbar inside the dark transcript. These
+  // guard the two halves of the fix.
+  it('paints the frame with the app theme instead of a hardcoded white', async () => {
+    const source = await readChatViewSource()
+    // The frame element ...
+    expect(source).toMatch(/\.chat-html-frame \{[\s\S]*?background: var\(--semantic-card-bg/)
+    expect(source).toMatch(/\.chat-html-frame \{[\s\S]*?color-scheme: dark/)
+    // ... and the srcdoc shell it wraps fragments in.
+    expect(source).not.toMatch(/background:#fff/)
+    expect(source).toMatch(/:root\{color-scheme:dark\}/)
+    expect(source).toMatch(/resolveHtmlFramePalette/)
+  })
+
+  it('auto-sizes the frame from its own reported content height', async () => {
+    const source = await readChatViewSource()
+    expect(source).toMatch(/autoResizeScript\(CHAT_HTML_FRAME_RESIZE_SOURCE\)/)
+    expect(source).toMatch(/readAutoResizeHeight\(event, CHAT_HTML_FRAME_RESIZE_SOURCE\)/)
+    expect(source).toMatch(/findSenderFrame\(document, event, 'iframe\.chat-html-frame'\)/)
+    // The listener must be torn down with the view.
+    expect(source).toMatch(/window\.removeEventListener\('message', onHtmlFrameResize\)/)
+  })
 })

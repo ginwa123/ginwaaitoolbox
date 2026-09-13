@@ -23,4 +23,15 @@ export type {
 } from "./scrollLogger";
 export { isAutoStickActive, AUTO_STICK_GATE_MS } from "./autoStickGate";
 export { renderResponse } from "./renderResponse";
+export {
+  PREVIEW_AUTO_RESIZE_SOURCE,
+  CHAT_HTML_FRAME_RESIZE_SOURCE,
+  MIN_FRAME_HEIGHT,
+  MAX_FRAME_HEIGHT,
+  clampFrameHeight,
+  readAutoResizeHeight,
+  findSenderFrame,
+  autoResizeScript,
+  PREVIEW_AUTO_RESIZE_SCRIPT,
+} from "./iframeAutoResize";
 

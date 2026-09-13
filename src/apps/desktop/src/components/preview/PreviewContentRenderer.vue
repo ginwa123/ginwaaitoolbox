@@ -45,6 +45,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { marked } from 'marked'
+import {
+  PREVIEW_AUTO_RESIZE_SCRIPT,
+  PREVIEW_AUTO_RESIZE_SOURCE,
+  clampFrameHeight,
+  readAutoResizeHeight,
+} from '@/helpers'
 
 export interface PreviewArgs {
   content?: string
@@ -88,17 +94,13 @@ const MAX_IFRAME_HEIGHT = 2000
 
 function onIframeMessage(e: MessageEvent) {
   // Filter by source — only messages from our own auto-resize script.
-  if (
-    !e.data ||
-    typeof e.data !== 'object' ||
-    e.data.source !== 'show-preview-auto-resize' ||
-    typeof e.data.height !== 'number'
-  ) {
-    return
-  }
+  // The parser + clamp live in helpers/iframeAutoResize.ts so ChatView's
+  // `<html>` frames share the same protocol (with their own source tag).
+  const reported = readAutoResizeHeight(e, PREVIEW_AUTO_RESIZE_SOURCE)
+  if (reported === null) return
   const iframe = iframeRef.value
   if (!iframe) return
-  const clampedH = Math.max(MIN_IFRAME_HEIGHT, Math.min(MAX_IFRAME_HEIGHT, e.data.height))
+  const clampedH = clampFrameHeight(reported, MIN_IFRAME_HEIGHT, MAX_IFRAME_HEIGHT)
   iframe.style.height = `${clampedH}px`
 }
 
@@ -118,56 +120,11 @@ onUnmounted(() => {
 
 // ─── Auto-resize script (prepended to the iframe srcdoc) ────────────
 //
-// This script is injected at the start of the iframe's srcdoc so it runs
-// at parse time. It measures the iframe's content scrollHeight and
-// posts it back to the parent on every layout change (load, resize,
-// DOM mutation). The parent's `onIframeMessage` updates `iframe.style.height`
-// to match.
-//
-// Security note: the iframe has `sandbox="allow-scripts"`. The script
-// runs in a NULL-origin context (no cookies, no localStorage, no parent
-// DOM access). It only does `parent.postMessage(...)` — no network, no
-// eval, no escape. The parent only adjusts `iframe.style.height` — no
-// other side effects. The protocol is safe.
-const AUTO_RESIZE_SCRIPT = `<script>(function(){
-var REPORT_SOURCE = 'show-preview-auto-resize';
-function report(){
-  try {
-    var de = document.documentElement;
-    var body = document.body;
-    var h = Math.max(
-      de ? de.scrollHeight : 0,
-      body ? body.scrollHeight : 0,
-      de ? de.offsetHeight : 0,
-      body ? body.offsetHeight : 0
-    );
-    // 2026-08-29: also report scrollWidth so the parent can show a
-    // hint when the preview content is wider than the chat column.
-    var w = Math.max(
-      de ? de.scrollWidth : 0,
-      body ? body.scrollWidth : 0,
-      de ? de.offsetWidth : 0,
-      body ? body.offsetWidth : 0
-    );
-    parent.postMessage({ source: REPORT_SOURCE, height: h, width: w }, '*');
-  } catch(e) {}
-}
-function init(){
-  report();
-  window.addEventListener('load', report);
-  window.addEventListener('resize', report);
-  if (document.body && typeof MutationObserver !== 'undefined') {
-    try {
-      new MutationObserver(report).observe(document.body, { childList: true, subtree: true });
-    } catch(e) {}
-  }
-}
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
-}
-})();<` + `/script>`
+// The reporter script and its postMessage parser live in
+// helpers/iframeAutoResize.ts — shared with ChatView.vue's `<html>`
+// frames. Same security contract as before: the sandboxed (NULL-origin)
+// frame only reports its own scrollHeight/scrollWidth; the parent only
+// writes a clamped iframe.style.height.
 
 function escapeHtml(s: string): string {
   return s
@@ -235,7 +192,7 @@ const imageSrc = computed<string | null>(() => {
 const htmlSrcDoc = computed<string | null>(() => {
   if (props.contentType !== 'html') return null
   const raw = props.args.content ?? ''
-  return `${AUTO_RESIZE_SCRIPT}<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
+  return `${PREVIEW_AUTO_RESIZE_SCRIPT}<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
 })
 
 // ─── Open in new tab ───────────────────────────────────────────────
