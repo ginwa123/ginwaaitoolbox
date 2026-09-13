@@ -72,6 +72,28 @@ NALAR_BIN=./zig-out/bin/nalar pytest tests/functional/ -n auto
 # Each worker gets its own nalar process, its own port, its own tempdir.
 ```
 
+## TUI suites (pty-driven, no HTTP)
+
+`tui_perf_test.py` covers `nalar-tui`'s memory + input-latency behaviour. It is
+different in kind from the HTTP suites:
+
+* it drives the **TUI binary inside a pty** (`tui_perf_probe.py`) because the TUI
+  refuses to start without a TTY and its symptoms (RSS growth per redraw,
+  key-to-echo latency) only exist at the terminal layer;
+* it is **hermetic** — the TUI is pointed at an unreachable backend, so no port is
+  bound, no server boots and nothing is written to disk;
+* it **skips** (does not fail) when `nalar-tui` is missing, because CI's
+  functional-test step installs only the `nalar` binary.
+
+```bash
+zig build install:tui
+python3 tests/functional/tui_perf_probe.py --binary zig-out/bin/nalar-tui   # standalone report
+python3 -m pytest tests/functional/tui_perf_test.py -v                      # gate
+NALAR_TUI_BIN=/path/to/nalar-tui python3 -m pytest tests/functional/tui_perf_test.py -v
+```
+
+Background: `docs/superpowers/plans/2026-09-13-audit-nalar-tui-memory-and-latency.md`.
+
 ## Adding a new suite
 
 1. Create `tests/functional/<feature>_lifecycle_test.py` (or

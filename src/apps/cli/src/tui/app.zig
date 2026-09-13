@@ -301,24 +301,17 @@ pub const App = struct {
                 .reasoning_content = reasoning_content,
             };
             var iter_arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer iter_arena.deinit();
             const iter_allocator = iter_arena.allocator();
             const tmp_lines = render_msg.renderMessage(iter_allocator, msg_view) catch |err| switch (err) {
-                error.OutOfMemory => {
-                    iter_arena.deinit();
-                    return;
-                },
+                error.OutOfMemory => return,
             };
             for (tmp_lines) |line| {
                 const duped_text = try self.allocator.dupe(u8, line.text);
                 const owned = tui.widgets.Line{ .text = duped_text, .style = line.style };
                 try self.viewport.lines.append(self.allocator, owned);
-                if (self.viewport.lines.items.len > 10_000) {
-                    const old = self.viewport.lines.orderedRemove(0);
-                    self.allocator.free(old.text);
-                    if (self.viewport.scroll_from_bottom > 0) self.viewport.scroll_from_bottom -= 1;
-                }
+                self.viewport.enforceCap();
             }
-            iter_arena.deinit();
         }
     }
 

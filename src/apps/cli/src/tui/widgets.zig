@@ -17,11 +17,23 @@ pub const Line = struct {
 // Viewport — scrollable buffer of lines
 // ============================================================================
 
+/// Hard cap on retained scrollback lines. Past this the oldest lines are
+/// dropped — see `Viewport.enforceCap` for why they go in batches.
+pub const MAX_LINES: usize = 10_000;
+/// How many lines to drop once `MAX_LINES` is exceeded. Dropping one line at
+/// a time meant a `memmove` of the whole 10k-entry array (240 KB) for every
+/// single line that arrived after the cap, i.e. O(n) work per streamed row.
+/// Dropping a batch makes it amortized O(1).
+pub const TRIM_BATCH: usize = 512;
+
 pub const Viewport = struct {
     allocator: std.mem.Allocator,
     lines: std.ArrayList(Line) = .empty,
     /// Scroll offset in lines from the bottom (0 = pinned to bottom).
     scroll_from_bottom: usize = 0,
+    /// Scratch chunk list reused by `render` across lines AND frames, so
+    /// drawing a frame allocates nothing for word-wrapping.
+    wrap_scratch: std.ArrayList([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Viewport {
         return .{ .allocator = allocator };
@@ -30,6 +42,7 @@ pub const Viewport = struct {
     pub fn deinit(self: *Viewport) void {
         for (self.lines.items) |l| self.allocator.free(l.text);
         self.lines.deinit(self.allocator);
+        self.wrap_scratch.deinit(self.allocator);
     }
 
     /// Append a line (dupes `text`).
@@ -37,12 +50,21 @@ pub const Viewport = struct {
         const dup = try self.allocator.dupe(u8, text);
         errdefer self.allocator.free(dup);
         try self.lines.append(self.allocator, .{ .text = dup, .style = style });
-        // Keep memory bounded: cap at 10k lines, drop oldest.
-        if (self.lines.items.len > 10_000) {
-            const old = self.lines.orderedRemove(0);
-            self.allocator.free(old.text);
-            if (self.scroll_from_bottom > 0) self.scroll_from_bottom -= 1;
-        }
+        self.enforceCap();
+    }
+
+    /// Keep memory bounded: cap scrollback at `MAX_LINES`, dropping the
+    /// oldest lines in `TRIM_BATCH`-sized batches.
+    pub fn enforceCap(self: *Viewport) void {
+        if (self.lines.items.len <= MAX_LINES) return;
+        const drop = @min(TRIM_BATCH, self.lines.items.len);
+        for (self.lines.items[0..drop]) |l| self.allocator.free(l.text);
+        const keep = self.lines.items.len - drop;
+        std.mem.copyForwards(Line, self.lines.items[0..keep], self.lines.items[drop..]);
+        self.lines.shrinkRetainingCapacity(keep);
+        // The dropped rows disappeared above the window; keep the scroll
+        // anchor in range (mirrors the previous one-line-at-a-time rule).
+        self.scroll_from_bottom -|= drop;
     }
 
     pub fn scrollUp(self: *Viewport, n: usize) void {
@@ -77,7 +99,7 @@ pub const Viewport = struct {
     /// visual rows) and clipped the rest, leaving the LATEST lines
     /// invisible. The new code sums wrapped heights bottom-up so the
     /// newest content is always at the bottom.
-    pub fn render(self: *const Viewport, allocator: std.mem.Allocator, width: u16, height: u16) !frame_mod.Frame {
+    pub fn render(self: *Viewport, allocator: std.mem.Allocator, width: u16, height: u16) !frame_mod.Frame {
         var f = try frame_mod.Frame.init(allocator, width, height);
         errdefer f.deinit(allocator);
 
@@ -102,7 +124,7 @@ pub const Viewport = struct {
         var i: usize = end;
         while (i > 0) {
             i -= 1;
-            const h = try self.wrappedHeightOf(allocator, width, i);
+            const h = wrappedHeight(self.lines.items[i].text, width);
             if (visual_rows + h > height) {
                 // This line doesn't fit. If we have nothing yet, fall
                 // back to the old "logical line" behaviour — show its
@@ -120,38 +142,25 @@ pub const Viewport = struct {
 
         // Render top-down from start_idx. Lines whose chunks would
         // overflow the viewport are truncated by the inner loop.
+        //
+        // `wrap_scratch` is cleared and refilled per line and reused
+        // across frames, so drawing a frame performs no wrapping
+        // allocations at all (previously each line allocated a chunk
+        // list plus one dupe per chunk, every single frame). It belongs
+        // to the viewport, so it uses the viewport's own allocator —
+        // not the caller's (which only owns the returned frame).
         var row: u16 = 0;
         var j: usize = start_idx;
         while (j < total and row < height) : (j += 1) {
-            const text = self.lines.items[j].text;
-            const style = self.lines.items[j].style;
-            const chunks = try wrapText(allocator, text, width);
-            defer {
-                for (chunks) |c| allocator.free(c);
-                allocator.free(chunks);
-            }
-            for (chunks) |chunk| {
+            const line = self.lines.items[j];
+            try wrapInto(self.allocator, &self.wrap_scratch, line.text, width);
+            for (self.wrap_scratch.items) |chunk| {
                 if (row >= height) break;
-                _ = f.writeText(0, row, chunk, style);
+                _ = f.writeText(0, row, chunk, line.style);
                 row += 1;
             }
         }
         return f;
-    }
-
-    /// Returns the visual-row count that `line_idx` will occupy when
-    /// rendered at `width`. Used by the scroll bindings (Task 5) to
-    /// step `scroll_from_bottom` in visual rows rather than logical
-    /// lines — without this, wrapped text makes PgUp/PgDn feel
-    /// stuck. Caller-owned slice; free with `allocator.free`.
-    pub fn wrappedHeightOf(self: *const Viewport, allocator: std.mem.Allocator, width: u16, line_idx: usize) !usize {
-        const text = self.lines.items[line_idx].text;
-        const chunks = try wrapText(allocator, text, width);
-        defer {
-            for (chunks) |c| allocator.free(c);
-            allocator.free(chunks);
-        }
-        return chunks.len;
     }
 };
 
@@ -165,82 +174,121 @@ pub const Viewport = struct {
 // hard-splits at `width`. Trailing whitespace is trimmed from each
 // chunk so wrapped rows don't show ragged right-edges.
 //
-// Returns an owned `[]const []const u8`; caller frees both the outer
-// slice and each inner chunk via `allocator.free`. Caller frees the
-// outer slice LAST, after any work on the chunks is done.
+// IMPORTANT — ownership: the chunks are SUBSLICES OF `text`, not copies.
+// Callers free only the outer slice; the inner slices must NOT be freed,
+// and `text` must stay alive while they are used. (This is what makes the
+// per-frame render path allocation-free: it used to `dupe` every chunk on
+// every frame, which on the TUI's old arena allocator also leaked them,
+// since the arena only reclaims its most recent allocation.)
+//
+// The cut logic lives in `nextChunk` and is shared by `wrapInto` (collect)
+// and `wrappedHeight` (count), so the row count used for scrolling can never
+// disagree with the rows actually drawn.
 
+const ChunkStep = struct {
+    /// Next chunk — a subsclice of the text handed to `nextChunk`.
+    chunk: []const u8,
+    /// Remaining text after this chunk.
+    rest: []const u8,
+    /// True when the chunk is empty/whitespace-only and must not be drawn
+    /// as its own row.
+    skip: bool,
+};
+
+/// Computes the next wrapped chunk of `rest`. Returns null when `rest` is
+/// empty. Pure — never allocates, never copies.
+fn nextChunk(rest: []const u8, width: usize) ?ChunkStep {
+    if (rest.len == 0) return null;
+    if (rest.len > width) {
+        // Look for the last space in rest[0..width].
+        if (std.mem.lastIndexOfScalar(u8, rest[0..width], ' ')) |sp| {
+            const chunk = std.mem.trim(u8, rest[0..sp], &std.ascii.whitespace);
+            var tail = rest[sp + 1 ..];
+            // Skip any run of spaces at the start of the next chunk so
+            // continuation rows don't visually indent. The naive
+            // split-at-last-space leaves the separator on the wrong side —
+            // round-3 user screenshot showed "Hai~ 👋       kabarnya hari
+            // ini" with several spaces between 👋 and kabarnya.
+            while (tail.len > 0 and tail[0] == ' ') tail = tail[1..];
+            return .{ .chunk = chunk, .rest = tail, .skip = chunk.len == 0 };
+        }
+        // No space in window — hard split at width.
+        return .{ .chunk = rest[0..width], .rest = rest[width..], .skip = false };
+    }
+    // Whatever remains fits within width. Trim trailing whitespace and
+    // emit (unless it's all whitespace — then skip; otherwise the trailing
+    // space would survive into the final row).
+    const trimmed = std.mem.trim(u8, rest, &std.ascii.whitespace);
+    return .{ .chunk = trimmed, .rest = "", .skip = trimmed.len == 0 };
+}
+
+/// Wrap `text` into `out` (which is reset first). Reusing one `out` across
+/// lines and frames is what keeps the per-frame allocation count at zero.
+fn wrapInto(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), text: []const u8, width: u16) !void {
+    out.clearRetainingCapacity();
+    const w: usize = width;
+    if (w > 0) {
+        // Embedded newlines: split on \n first, then wrap each segment.
+        // This ensures a Line containing "a\nb" (legacy callers or a direct
+        // Viewport.appendLine) still renders as two visual rows, not one
+        // row with a literal \n char. renderMessage already splits on \n,
+        // so this is a safety net.
+        if (std.mem.indexOfScalar(u8, text, '\n') != null) {
+            var it = std.mem.splitScalar(u8, text, '\n');
+            while (it.next()) |segment| try wrapSegmentInto(allocator, out, segment, w);
+        } else {
+            try wrapSegmentInto(allocator, out, text, w);
+        }
+    }
+    // Defensive: the renderer relies on at-least-one-row-per-Line.
+    if (out.items.len == 0) try out.append(allocator, "");
+}
+
+fn wrapSegmentInto(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), segment: []const u8, width: usize) !void {
+    const before = out.items.len;
+    var rest = segment;
+    while (nextChunk(rest, width)) |step| {
+        rest = step.rest;
+        if (step.skip) continue;
+        try out.append(allocator, step.chunk);
+    }
+    // An empty (or whitespace-only) segment still occupies one row, so that
+    // "a\n\nb" renders as three rows.
+    if (out.items.len == before) try out.append(allocator, "");
+}
+
+/// Visual-row count `text` occupies at `width`. Allocation-free — used by
+/// the render loop's backward sweep, which used to allocate a chunk list
+/// (plus one dupe per chunk) per probed line, every frame.
+fn wrappedHeight(text: []const u8, width: u16) usize {
+    const w: usize = width;
+    if (w == 0) return 1;
+    var rows: usize = 0;
+    if (std.mem.indexOfScalar(u8, text, '\n') != null) {
+        var it = std.mem.splitScalar(u8, text, '\n');
+        while (it.next()) |segment| rows += segmentRows(segment, w);
+    } else {
+        rows = segmentRows(text, w);
+    }
+    return if (rows == 0) 1 else rows;
+}
+
+fn segmentRows(segment: []const u8, width: usize) usize {
+    var rows: usize = 0;
+    var rest = segment;
+    while (nextChunk(rest, width)) |step| {
+        rest = step.rest;
+        if (!step.skip) rows += 1;
+    }
+    return if (rows == 0) 1 else rows;
+}
+
+/// Wrap `text` into an owned slice of borrowed subslices. The caller frees
+/// the returned slice only — never its elements (see the ownership note above).
 fn wrapText(allocator: std.mem.Allocator, text: []const u8, width: u16) ![]const []const u8 {
     var chunks: std.ArrayList([]const u8) = .empty;
     defer chunks.deinit(allocator);
-
-    if (text.len == 0) {
-        // Single empty chunk keeps the renderer happy (always emits
-        // at least one row per Line). Caller still owns the slice.
-        try chunks.append(allocator, try allocator.dupe(u8, ""));
-        return chunks.toOwnedSlice(allocator);
-    }
-
-    // Handle embedded newlines: split on \n first, then wrap each
-    // segment. This ensures that a Line containing "a\nb" (from
-    // legacy callers or direct Viewport.appendLine) still renders
-    // as two visual rows, not one row with a literal \n char.
-    // The common path (renderMessage) already splits on \n, so this
-    // is a safety net for any remaining callers.
-    if (std.mem.indexOfScalar(u8, text, '\n')) |_| {
-        var it = std.mem.splitScalar(u8, text, '\n');
-        while (it.next()) |segment| {
-            const seg_chunks = try wrapText(allocator, segment, width);
-            defer {
-                for (seg_chunks) |c| allocator.free(c);
-                allocator.free(seg_chunks);
-            }
-            for (seg_chunks) |c| {
-                try chunks.append(allocator, try allocator.dupe(u8, c));
-            }
-        }
-        if (chunks.items.len == 0) {
-            try chunks.append(allocator, try allocator.dupe(u8, ""));
-        }
-        return chunks.toOwnedSlice(allocator);
-    }
-
-    var rest: []const u8 = text;
-    while (rest.len > width) {
-        // Look for the last space in rest[0..=width].
-        const window = rest[0..width];
-        const last_space = std.mem.lastIndexOfScalar(u8, window, ' ');
-        if (last_space) |sp| {
-            // Split at the space, trim trailing whitespace from the
-            // chunk, advance past the space.
-            const chunk = std.mem.trim(u8, rest[0..sp], &std.ascii.whitespace);
-            if (chunk.len > 0) try chunks.append(allocator, try allocator.dupe(u8, chunk));
-            rest = rest[sp + 1 ..];
-            // Skip any run of spaces at the start of the next chunk
-            // so continuation rows don't visually indent. The
-            // naive split-at-last-space leaves the separator on the
-            // wrong side — round-3 user screenshot showed
-            // "Hai~ 👋       kabarnya hari ini" with several spaces
-            // between 👋 and kabarnya.
-            while (rest.len > 0 and rest[0] == ' ') {
-                rest = rest[1..];
-            }
-        } else {
-            // No space in window — hard split at width.
-            try chunks.append(allocator, try allocator.dupe(u8, rest[0..width]));
-            rest = rest[width..];
-        }
-    }
-    // Whatever remains fits within width. Trim trailing whitespace
-    // and emit (unless it's all whitespace — then skip; otherwise the
-    // trailing space would survive into the final row).
-    const trimmed = std.mem.trim(u8, rest, &std.ascii.whitespace);
-    if (trimmed.len > 0) try chunks.append(allocator, try allocator.dupe(u8, trimmed));
-
-    // Defensive: empty input or all-whitespace input → single empty
-    // chunk. The renderer relies on at-least-one-row-per-Line.
-    if (chunks.items.len == 0) {
-        try chunks.append(allocator, try allocator.dupe(u8, ""));
-    }
+    try wrapInto(allocator, &chunks, text, width);
     return chunks.toOwnedSlice(allocator);
 }
 
@@ -650,10 +698,7 @@ test "wrapText: trims leading whitespace on continuation rows" {
     // spaces at the start of the NEXT chunk so the row doesn't
     // visually indent.
     const chunks = try wrapText(testing.allocator, "Hai~ 👋 kabarnya", 10);
-    defer {
-        for (chunks) |c| testing.allocator.free(c);
-        testing.allocator.free(chunks);
-    }
+    defer freeChunks(chunks);
     try testing.expectEqual(@as(usize, 2), chunks.len);
     try testing.expectEqualStrings("Hai~ 👋", chunks[0]);
     try testing.expectEqualStrings("kabarnya", chunks[1]);
@@ -663,10 +708,7 @@ test "wrapText: trims leading whitespace on continuation rows" {
 
 test "wrapText: short single word fits in one chunk (no whitespace handling needed)" {
     const chunks = try wrapText(testing.allocator, "hello", 10);
-    defer {
-        for (chunks) |c| testing.allocator.free(c);
-        testing.allocator.free(chunks);
-    }
+    defer freeChunks(chunks);
     try testing.expectEqual(@as(usize, 1), chunks.len);
     try testing.expectEqualStrings("hello", chunks[0]);
 }
@@ -723,13 +765,9 @@ test "StatusBar: left/right render at edges" {
     try testing.expectEqual(@as(u21, 'g'), f.get(29, 0).char);
 }
 
-
 test "wrapText: handles embedded newlines" {
     const chunks = try wrapText(testing.allocator, "line1\nline2\nline3", 20);
-    defer {
-        for (chunks) |c| testing.allocator.free(c);
-        testing.allocator.free(chunks);
-    }
+    defer freeChunks(chunks);
     try testing.expectEqual(@as(usize, 3), chunks.len);
     try testing.expectEqualStrings("line1", chunks[0]);
     try testing.expectEqualStrings("line2", chunks[1]);
@@ -739,10 +777,7 @@ test "wrapText: handles embedded newlines" {
 test "wrapText: handles newline with wrapping" {
     // "hello world\nfoo bar" at width 6 should wrap each segment
     const chunks = try wrapText(testing.allocator, "hello world\nfoo bar", 6);
-    defer {
-        for (chunks) |c| testing.allocator.free(c);
-        testing.allocator.free(chunks);
-    }
+    defer freeChunks(chunks);
     // "hello world" -> ["hello", "world"], "foo bar" -> ["foo", "bar"]
     try testing.expectEqual(@as(usize, 4), chunks.len);
     try testing.expectEqualStrings("hello", chunks[0]);
@@ -753,14 +788,144 @@ test "wrapText: handles newline with wrapping" {
 
 test "wrapText: handles empty segments from blank lines" {
     const chunks = try wrapText(testing.allocator, "a\n\nb", 10);
-    defer {
-        for (chunks) |c| testing.allocator.free(c);
-        testing.allocator.free(chunks);
-    }
+    defer freeChunks(chunks);
     try testing.expectEqual(@as(usize, 3), chunks.len);
     try testing.expectEqualStrings("a", chunks[0]);
     try testing.expectEqualStrings("", chunks[1]);
     try testing.expectEqualStrings("b", chunks[2]);
+}
+
+// ----------------------------------------------------------------------------
+// Regression tests for the frame-cost fixes (2026-09-13 memory/latency audit)
+// ----------------------------------------------------------------------------
+
+/// `wrapText` returns borrowed subslices of its input, so only the OUTER
+/// slice is owned by the caller. Freeing an inner slice is a bug — it is
+/// what crashed these tests when the wrap path switched from `dupe`-per-chunk
+/// to subslices.
+fn freeChunks(chunks: []const []const u8) void {
+    testing.allocator.free(chunks);
+}
+
+test "wrapText: chunks are subslices of the input (no copies)" {
+    const text = "alpha beta gamma delta epsilon";
+    const chunks = try wrapText(testing.allocator, text, 8);
+    defer freeChunks(chunks);
+
+    try testing.expect(chunks.len > 1);
+    const text_start = @intFromPtr(text.ptr);
+    const text_end = text_start + text.len;
+    for (chunks) |c| {
+        // Every chunk must point INTO the input buffer: that is what makes
+        // wrapping allocation-free apart from the outer slice.
+        const start = @intFromPtr(c.ptr);
+        try testing.expect(start >= text_start);
+        try testing.expect(start + c.len <= text_end);
+    }
+}
+
+test "wrappedHeight agrees with wrapText chunk count" {
+    // The render loop measures a line's height to decide the scroll window,
+    // then draws the wrapped chunks. If the two disagreed, the bottom of the
+    // chat would be clipped or rows would be left blank, so lock them
+    // together over a corpus of shapes (empty / short / long / hard-split /
+    // newline-embedded / whitespace-only).
+    const corpus = [_][]const u8{
+        "",
+        " ",
+        "   ",
+        "hi",
+        "exactly12chr",
+        "hello world",
+        "xx yy zzz",
+        "Hai~ 👋 kabarnya hari ini",
+        "a\nb",
+        "a\n\nb",
+        "line1\nline2\nline3",
+        "hello world\nfoo bar",
+        "supercalifragilisticexpialidocious",
+        "a b c d e f g h i j k l m n o p q r s t u v w x y z",
+        "\n",
+        "\n\n",
+    };
+    const widths = [_]u16{ 1, 2, 3, 5, 6, 8, 10, 20, 80 };
+    for (corpus) |text| {
+        for (widths) |w| {
+            const chunks = try wrapText(testing.allocator, text, w);
+            defer freeChunks(chunks);
+            try testing.expectEqual(chunks.len, wrappedHeight(text, w));
+        }
+    }
+}
+
+test "Viewport.render allocates nothing on subsequent frames" {
+    // The TUI redraws on every tick AND every keystroke. Before this fix each
+    // redraw allocated a fresh chunk list plus one dupe per wrapped chunk per
+    // line — and, under the old process-wide arena allocator, none of it was
+    // ever reclaimed (measured: ~0.3 MB leaked per keystroke). Reusing one
+    // scratch list across lines and frames means a warmed-up viewport must not
+    // grow the arena at all.
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    var i: usize = 0;
+    while (i < 40) : (i += 1) {
+        const line = try std.fmt.allocPrint(testing.allocator, "line {d} with a few words that wrap", .{i});
+        defer testing.allocator.free(line);
+        try vp.appendLine(line, .{});
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // First frame warms the scratch list.
+    var warm = try vp.render(a, 14, 8);
+    warm.deinit(a);
+    const cap_warm = arena.queryCapacity();
+
+    var round: usize = 0;
+    while (round < 25) : (round += 1) {
+        var f = try vp.render(a, 14, 8);
+        f.deinit(a);
+    }
+    // 25 more frames must not add a single byte of arena capacity.
+    try testing.expectEqual(cap_warm, arena.queryCapacity());
+}
+
+test "Viewport.enforceCap drops the oldest lines in batches" {
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    // Fill past the cap: 10_000 + a bit. The cap used to drop exactly one
+    // line per append (`orderedRemove(0)` = 10k-entry memmove per line);
+    // it now drops TRIM_BATCH at a time, so after a trim the list sits
+    // comfortably under the cap.
+    var i: usize = 0;
+    while (i < MAX_LINES + 1) : (i += 1) {
+        try vp.appendLine("x", .{});
+    }
+    try testing.expectEqual(MAX_LINES + 1 - TRIM_BATCH, vp.lines.items.len);
+    try testing.expect(vp.lines.items.len < MAX_LINES);
+
+    // Still capped, and the scroll anchor never underflows.
+    vp.scroll_from_bottom = 3;
+    try vp.appendLine("y", .{});
+    try testing.expect(vp.lines.items.len <= MAX_LINES);
+    try testing.expect(vp.scroll_from_bottom <= vp.lines.items.len);
+}
+
+test "Viewport: scroll bindings still see wrapped rows" {
+    // Sanity: scrolled-up rendering keeps using the (now allocation-free)
+    // height measurement, so the oldest lines are still reachable.
+    var vp = Viewport.init(testing.allocator);
+    defer vp.deinit();
+    try vp.appendLine("one", .{});
+    try vp.appendLine("two", .{});
+    try vp.appendLine("three", .{});
+    vp.scrollUp(2);
+
+    var f = try vp.render(testing.allocator, 20, 1);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(u21, 'o'), f.get(0, 0).char);
 }
 
 test "Viewport.render handles multiline assistant message" {

@@ -38,8 +38,19 @@ pub fn enterRawMode() !RawMode {
     raw.lflag.ISIG = false; // don't generate SIGINT on Ctrl-C (we handle it)
     raw.iflag.IXON = false; // don't intercept Ctrl-S/Ctrl-Q flow control
     raw.iflag.ICRNL = false; // don't map CR -> NL
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0; // non-blocking-ish read
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 1; // 0.1s inter-byte timeout
+    // VMIN=0/VTIME=1 — "return as soon as a byte is available; otherwise wait
+    // at most 0.1 s and return 0". The event loop waits in poll() (which
+    // supplies the real timeout) and then reads ONCE with `readVec`, so the
+    // VTIME fallback only ever fires if poll's readiness was stale — in which
+    // case a 0.1 s wait is harmless. It must NOT be VMIN=1/VTIME=0 (block
+    // forever): a single stale readiness would freeze the whole UI.
+    //
+    // Note the historical confusion: this mode was blamed for a ~100 ms
+    // keystroke latency floor, but the real culprit was `readSliceShort`,
+    // which loops until its destination buffer is completely full and so kept
+    // reading past the keystroke until VTIME expired (measured 108 ms).
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 1;
     try std.posix.tcsetattr(fd, .FLUSH, raw);
     return .{ .saved = saved, .fd = fd };
 }
