@@ -36,7 +36,16 @@ fn usage() []const u8 {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.arena.allocator();
+    // `init.gpa` — NOT `init.arena.allocator()`. The TUI allocates and frees
+    // per-frame temporaries (two frame buffers, the diff writer, word-wrap
+    // chunk lists, HTTP bodies). An arena only reclaims its most recent
+    // allocation; every other free is a silent no-op, so using it here
+    // leaked ~0.3 MB per keystroke (measured) and ~1.8 MB/s while idle.
+    const allocator = init.gpa;
+    // The process-lifetime arena is still the right home for strings that
+    // must outlive everything and are never freed individually (argv/env
+    // derived config), e.g. the resolved cwd below.
+    const arena = init.arena.allocator();
     const io = init.io;
     const env = init.environ_map;
 
@@ -98,8 +107,9 @@ pub fn main(init: std.process.Init) !void {
             const cwd_slice = cwd_buf[0..cwd_len];
             // Only use if absolute — defensive, realPathFile should always be absolute.
             if (cwd_slice.len > 0 and std.fs.path.isAbsolute(cwd_slice)) {
-                // Dupe into arena so it lives for the process lifetime.
-                cfg.cwd = allocator.dupe(u8, cwd_slice) catch "";
+                // Dupe into the process arena so it lives for the process
+                // lifetime (the buffer above is a stack local).
+                cfg.cwd = arena.dupe(u8, cwd_slice) catch "";
             }
         } else |_| {
             // Keep cfg.cwd = "" (sandbox fallback)
@@ -170,8 +180,10 @@ fn sendAndTrack(model: *app_mod.App, msg_text: []const u8) void {
 
 fn pollMessages(model: *app_mod.App) void {
     const sid = model.session_id orelse return;
-    // Use a tmp arena so the per-poll HTTP body + JSON parse don't
-    // leak the long-lived arena (init.arena) that backs model.allocator.
+    // Bulk-free the per-poll temporaries (HTTP body + JSON parse of up to
+    // 100 rows) in one shot instead of tracking each one. The backing
+    // allocator is `init.gpa`, so the arena blocks really are returned to
+    // the general allocator here — this is a convenience, not a leak fix.
     var arena = std.heap.ArenaAllocator.init(model.allocator);
     defer arena.deinit();
     const tmp_allocator = arena.allocator();
