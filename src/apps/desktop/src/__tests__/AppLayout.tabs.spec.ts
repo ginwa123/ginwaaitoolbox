@@ -1,0 +1,342 @@
+import { createPinia, setActivePinia } from 'pinia'
+import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick, reactive } from 'vue'
+
+import AppLayout from '../components/AppLayout.vue'
+import Sidebar from '../components/shell/Sidebar.vue'
+import { useTabsStore } from '../stores/tabs'
+import { __resetWindowIdForTests } from '../helpers/windowId'
+import { makeLocalStorageStub } from './helpers'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
+import type { SseClient } from '../helpers/sseClient'
+
+/**
+ * Task 4 of the tab-mode plan: AppLayout + the route funnel.
+ *
+ * The whole point of the design is that the strip is driven by the URL, so
+ * this spec drives the REAL navigation paths (a Sidebar emit, a deep-link
+ * route change, a click in the strip) and asserts both the store state and
+ * the URL. The router is faked with a reactive route so `router.replace` is
+ * observable exactly like a real navigation would be.
+ *
+ * Note on counting: `replace` calls are counted as DELTAS around an action.
+ * Mounting normalises the URL too (a cold boot on `/app` names the home
+ * tab), so absolute counts would conflate the two.
+ */
+
+const { useRouteMock, useRouterMock } = vi.hoisted(() => ({
+  useRouteMock: vi.fn(),
+  useRouterMock: vi.fn(),
+}))
+
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return {
+    ...actual,
+    useRouter: useRouterMock,
+    useRoute: useRouteMock,
+  }
+})
+
+import * as api from '../api'
+
+type Query = Record<string, string>
+type Target = { path?: string; query?: Query }
+
+const route = reactive({ path: '/app', query: {} as Query, fullPath: '/app' })
+const replaceCalls: Target[] = []
+const pushCalls: Target[] = []
+
+function queryString(query: Query): string {
+  const text = new URLSearchParams(query).toString()
+  return text ? `?${text}` : ''
+}
+
+function setRoute(path: string, query: Query = {}): void {
+  route.path = path
+  route.query = { ...query }
+  route.fullPath = path + queryString(query)
+}
+
+function applyTarget(target: Target): void {
+  setRoute(target.path || '/app', (target.query as Query) || {})
+}
+
+const replaceMock = vi.fn((target: Target) => {
+  replaceCalls.push(target)
+  applyTarget(target)
+  return Promise.resolve()
+})
+const pushMock = vi.fn((target: Target) => {
+  pushCalls.push(target)
+  applyTarget(target)
+  return Promise.resolve()
+})
+
+function makeStubClient(): SseClient {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stub: any = {
+    close: vi.fn(),
+    reconnect: vi.fn(),
+    getState: () => 'open',
+    onStateChange: () => () => {},
+  }
+  return stub as SseClient
+}
+
+let mounted: VueWrapper | null = null
+
+function mountApp(): VueWrapper {
+  mounted = mount(AppLayout, {
+    global: {
+      stubs: {
+        // Heavy children are stubbed; Sidebar and TabBar stay real because
+        // they are the two things this spec interacts with.
+        GitFileViewer: true,
+        SkillDetail: true,
+        ChatView: { template: '<div data-testid="chatview-stub" />', props: ['chatId', 'chatName', 'cwd'] },
+        StandardTaskChatView: true,
+        Chats: { template: '<div data-testid="chats-stub" />' },
+        SettingsView: true,
+        CodeEditor: true,
+        KanbanView: true,
+        KanbanChatDialog: true,
+        DesignChatDialog: true,
+        DesignView: true,
+        AgentView: true,
+        RoutineView: true,
+        AgentChatView: true,
+      },
+    },
+  })
+  return mounted
+}
+
+async function settle(): Promise<void> {
+  await flushPromises()
+  await nextTick()
+  await flushPromises()
+  await nextTick()
+}
+
+describe('AppLayout — tab mode', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    document.body.innerHTML = ''
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: Object.assign(makeLocalStorageStub(), { getItem: () => 'w_applayout' }),
+      writable: true,
+      configurable: true,
+    })
+    __resetWindowIdForTests()
+
+    __resetSseBus()
+    installSseBus()
+    __setSseBusGlobalClient(makeStubClient())
+
+    vi.spyOn(api, 'getChats').mockResolvedValue({
+      sessions: [],
+      has_more: false,
+      next_cursor: null,
+      total: 0,
+    } as never)
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({ entries: [], path: '/', absolute: '/', home: '/' } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
+
+    useRouteMock.mockReset()
+    useRouterMock.mockReset()
+    replaceCalls.length = 0
+    pushCalls.length = 0
+    replaceMock.mockClear()
+    pushMock.mockClear()
+    setRoute('/app', {})
+    useRouteMock.mockReturnValue(route)
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: pushMock, back: vi.fn() })
+  })
+
+  afterEach(() => {
+    // Unmount even when an assertion failed — a leaked AppLayout keeps its
+    // route watcher alive and would contaminate the next test through the
+    // shared reactive route.
+    mounted?.unmount()
+    mounted = null
+    __resetSseBus()
+    vi.restoreAllMocks()
+  })
+
+  it('renders the strip, names the home tab in the URL, and does not loop', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+
+    expect(wrapper.find('[data-testid="tab-bar"]').exists()).toBe(true)
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(1)
+    expect(tabs.activeTab?.key).toBe('home')
+    expect(route.query.tab).toBe(tabs.activeTabId)
+
+    const settles = replaceCalls.length
+    await settle()
+    expect(replaceCalls.length).toBe(settles)
+  })
+
+  it('names a deep-linked chat in a tab and keeps the URL shape', async () => {
+    setRoute('/app', { view: 'chat', session: 'sa' })
+    mountApp()
+    await settle()
+
+    const tabs = useTabsStore()
+    expect(tabs.tabs.map((t) => t.key)).toEqual(['home', 'chat:sa'])
+    expect(tabs.activeTab?.key).toBe('chat:sa')
+    expect(route.query).toEqual({ view: 'chat', session: 'sa', tab: tabs.activeTabId })
+    expect(route.path).toBe('/app')
+  })
+
+  it('creates a tab from a sidebar navigation, focuses it on the second visit, and never loops', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const sidebar = wrapper.findComponent(Sidebar)
+
+    let replaces = replaceCalls.length
+    let pushes = pushCalls.length
+    sidebar.vm.$emit('navigate', 'chat-sa', 'Chat A')
+    await settle()
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTab?.key).toBe('chat:sa')
+    expect(pushCalls.at(-1)?.query).toEqual({ view: 'chat', session: 'sa' })
+    expect(pushCalls.length).toBe(pushes + 1)
+    expect(replaceCalls.length).toBe(replaces + 1)
+    expect(route.query.tab).toBe(tabs.activeTabId)
+
+    replaces = replaceCalls.length
+    pushes = pushCalls.length
+    sidebar.vm.$emit('navigate', 'chat-sb', 'Chat B')
+    await settle()
+    expect(tabs.tabCount).toBe(3)
+    expect(pushCalls.length).toBe(pushes + 1)
+    expect(replaceCalls.length).toBe(replaces + 1)
+
+    const sa = tabs.tabs.find((t) => t.key === 'chat:sa')
+    replaces = replaceCalls.length
+    pushes = pushCalls.length
+    sidebar.vm.$emit('navigate', 'chat-sa', 'Chat A')
+    await settle()
+    expect(tabs.tabCount).toBe(3)
+    expect(tabs.activeTabId).toBe(sa?.id)
+    expect(pushCalls.length).toBe(pushes + 1)
+    expect(replaceCalls.length).toBe(replaces + 1)
+    expect(route.query.tab).toBe(sa?.id)
+
+    // the funnel settles: no further navigation happens on its own
+    const settled = replaceCalls.length
+    await settle()
+    expect(replaceCalls.length).toBe(settled)
+  })
+
+  it('treats a task chat inside a board as the board tab', async () => {
+    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
+    mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+
+    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' })
+    await settle()
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+    expect(route.query.tab).toBe(tabs.activeTabId)
+  })
+
+  it('repairs a ?tab= that names a different target', async () => {
+    setRoute('/app', { view: 'chat', session: 'sa', tab: 'tab_stale' })
+    mountApp()
+    await settle()
+
+    const tabs = useTabsStore()
+    expect(tabs.activeTab?.key).toBe('chat:sa')
+    expect(tabs.activeTabId).not.toBe('tab_stale')
+    expect(route.query.tab).toBe(tabs.activeTabId)
+  })
+
+  it('creates no tab and leaves the URL untouched for an overlay view', async () => {
+    setRoute('/app', { view: 'skill', skill: 'brainstorming' })
+    mountApp()
+    await settle()
+
+    expect(useTabsStore().tabCount).toBe(1)
+    expect(replaceCalls).toHaveLength(0)
+    expect(route.query).toEqual({ view: 'skill', skill: 'brainstorming' })
+  })
+
+  it('activates a tab when it is clicked in the strip and rewrites the URL', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const sidebar = wrapper.findComponent(Sidebar)
+    sidebar.vm.$emit('navigate', 'chat-sa', 'Chat A')
+    await settle()
+    sidebar.vm.$emit('navigate', 'chat-sb', 'Chat B')
+    await settle()
+
+    const sa = tabs.tabs.find((t) => t.key === 'chat:sa')
+    expect(sa).toBeTruthy()
+    const replaces = replaceCalls.length
+    const pushes = pushCalls.length
+
+    await wrapper.find(`[data-testid="tab-item-${sa?.id}"]`).trigger('click')
+    await settle()
+
+    expect(tabs.activeTabId).toBe(sa?.id)
+    expect(route.query).toEqual({ view: 'chat', session: 'sa', tab: sa?.id })
+    // switching tabs is a replace, never a push
+    expect(replaceCalls.length).toBe(replaces + 1)
+    expect(pushCalls.length).toBe(pushes)
+  })
+
+  it('closes the active tab from the strip and activates the right neighbour', async () => {
+    const wrapper = mountApp()
+    await settle()
+    const tabs = useTabsStore()
+    const sidebar = wrapper.findComponent(Sidebar)
+    sidebar.vm.$emit('navigate', 'chat-sa', 'Chat A')
+    await settle()
+    sidebar.vm.$emit('navigate', 'chat-sb', 'Chat B')
+    await settle()
+
+    const sa = tabs.tabs.find((t) => t.key === 'chat:sa')
+    const sb = tabs.tabs.find((t) => t.key === 'chat:sb')
+    await wrapper.find(`[data-testid="tab-close-${sa?.id}"]`).trigger('click')
+    await settle()
+
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTabId).toBe(sb?.id)
+    expect(route.query.tab).toBe(sb?.id)
+  })
+
+  it('creates no tab, renders no strip and never adds ?tab= when tab mode is off', async () => {
+    const tabs = useTabsStore()
+    tabs.setEnabled(false)
+    setRoute('/app', { view: 'chat', session: 'sa' })
+
+    const wrapper = mountApp()
+    await settle()
+
+    expect(wrapper.find('[data-testid="tab-bar"]').exists()).toBe(false)
+    expect(tabs.tabCount).toBe(1)
+    expect(replaceCalls.some((call) => call.query?.tab)).toBe(false)
+    // the URL is left exactly as the user (or a bookmark) provided it
+    expect(route.query).toEqual({ view: 'chat', session: 'sa' })
+  })
+})

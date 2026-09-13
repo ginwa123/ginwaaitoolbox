@@ -12,6 +12,7 @@ import SettingsView from './views/SettingsView.vue'
 import CodeEditor from './views/CodeEditor.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
+import TabBar from './shell/TabBar.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
@@ -26,6 +27,8 @@ import KanbanSettingsView from './views/KanbanSettingsView.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
+import { useTabsStore } from '../stores/tabs'
+import { sameRouteQuery, withTabParam } from '../helpers/tabTarget'
 import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
@@ -48,6 +51,7 @@ import {
 const router = useRouter()
 const route = useRoute()
 const navigationStore = useNavigationStore()
+const tabsStore = useTabsStore()
 const workspacesStore = useWorkspacesStore()
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const sidebarStore = useSidebarStore()
@@ -2218,9 +2222,62 @@ watch(chatSessionCwd, (newCwd) => {
 // addDesignElement wire invokes the handler directly because tests
 // stub the DesignView child. Keeping the seam tiny: just one more
 // named export.
+// ─── Tab mode ─────────────────────────────────────────────────────────────────
+//
+// Tabs are a view over the URL: the `currentView` chain above still decides
+// what renders, and activating a tab is just a navigation. Only two pieces
+// are needed here — push the active tab's target into the URL, and turn
+// every URL change into tab state (create / focus / normalise).
+//
+// `replace`, never `push`: Back must keep meaning "go back inside the active
+// tab" rather than becoming a tab switcher. A normal navigation still uses
+// `push`, so history stays about navigation, not about tab switches.
+
+/** Navigate to the active tab's target. Called by the strip after it acts. */
+function applyActiveTabToUrl() {
+  const tab = tabsStore.activeTab
+  if (!tab) return
+  const query = withTabParam(tab.query, tab.id)
+  if (route.path === tab.path && sameRouteQuery(route.query, query)) return
+  router.replace({ path: tab.path, query })
+}
+
+/**
+ * The funnel. Every navigation in the app lands here — sidebar clicks, the
+ * chats list, kanban/design chat dialogs, deep links, the Back button — so
+ * no call site has to know the tab strip exists, and a view type added
+ * later becomes tabbable for free.
+ *
+ * Gated on mount so it runs AFTER the restore block above: the deep link is
+ * resolved by the existing code first, then normalised with its `tab=` name.
+ */
+function syncFromRoute() {
+  const result = tabsStore.syncFromTarget(route.path, { ...route.query })
+  if (result.changed) router.replace({ path: result.path, query: result.query })
+}
+
+let tabsFunnelReady = false
+
+// Registered AFTER the restore block above, and Vue fires `onMounted` hooks
+// in registration order — so a cold boot is already resolved by the time
+// this runs, and it stays synchronous so it cannot shift mount timing.
+onMounted(() => {
+  tabsFunnelReady = true
+  syncFromRoute()
+})
+
+watch(
+  () => route.fullPath,
+  () => {
+    if (tabsFunnelReady) syncFromRoute()
+  },
+)
+
 defineExpose({
   handleDesignOpenChat,
   handleDesignCreateElement,
+  applyActiveTabToUrl,
+  syncFromRoute,
 })
 </script>
 
@@ -2235,6 +2292,7 @@ defineExpose({
       @resize="handleSidebarResize"
     />
     <main class="flex-1 flex flex-col overflow-hidden relative">
+      <TabBar @navigate="applyActiveTabToUrl" />
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"
