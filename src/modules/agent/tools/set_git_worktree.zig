@@ -22,6 +22,11 @@ pub const SetGitWorktreeInput = struct {
     /// Optional branch name override. Defaults to `worktree/<basename(path)>`.
     /// Rarely needed — the default is consistent and predictable.
     branch: []const u8 = "",
+    /// Optional base ref the new branch is created FROM, e.g. `origin/main`.
+    /// The kanban task note carries it as the `Base:` line right after
+    /// `#Notes UseGitWorktree` / `Path:`. Empty (the default) = branch
+    /// from the repo's current HEAD, which is the pre-existing behavior.
+    base: []const u8 = "",
     /// When true, remove the existing worktree binding for this session
     /// AND delete the worktree directory. `path` is ignored when true.
     clear: bool = false,
@@ -46,6 +51,10 @@ pub const set_git_worktree_tool_system_prompt =
     \\  task name.
     \\- If a `Path:` value starts with `~/`, expand `~` to `$HOME` first —
     \\  `validatePath` rejects non-absolute paths.
+    \\- The note may also carry a `Base: <ref>` line (e.g. `Base: origin/main`).
+    \\  Pass that value as the `base` argument so the worktree branches FROM
+    \\  that ref instead of the repo's current HEAD. Omit `base` when the note
+    \\  has no `Base:` line.
     \\- `path` MUST NOT contain `..`.
     \\- The parent directory MUST exist.
     \\- Once set, all subsequent `bash`/`read_file`/`write_file` operations run
@@ -58,7 +67,7 @@ pub const set_git_worktree_tool = AgentTool{
     .function = .{
         .name = "set_git_worktree",
         .description =
-            \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
+            \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Pass `base` (e.g. 'origin/main') to create the branch FROM that ref instead of the repo's current HEAD — the kanban note carries it as the `Base:` line. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
             \\
             \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
         ,
@@ -74,6 +83,11 @@ pub const set_git_worktree_tool = AgentTool{
                     .name = "branch",
                     .type = "string",
                     .description = "Optional branch name override. Defaults to 'worktree/<basename(path)>'. Rarely needed.",
+                },
+                .{
+                    .name = "base",
+                    .type = "string",
+                    .description = "Optional ref the new branch is created FROM, e.g. 'origin/main'. Take it verbatim from the `Base:` line after `#Notes UseGitWorktree` in the task note. Omit when there is no `Base:` line (the worktree then branches from the repo's current HEAD).",
                 },
                 .{
                     .name = "clear",
@@ -119,6 +133,52 @@ pub fn validateBasename(name: []const u8) ?[]const u8 {
         return "basename cannot be '.' or '..'";
     }
     return null;
+}
+
+/// Validate an optional `base` ref (e.g. `origin/main`). Empty is valid
+/// and means "branch from the repo's current HEAD". Returns null on
+/// success, or an error message. Pure — no IO.
+///
+/// The ref reaches `git` as an argv element (never as a shell string),
+/// so this is defence against a leading `-` being read as a flag, plus
+/// git's own `check-ref-format` rules for the cases that produce a
+/// confusing raw stderr otherwise.
+pub fn validateBaseRef(base: []const u8) ?[]const u8 {
+    if (base.len == 0) return null;
+    if (base.len > 255) return "base exceeds 255 characters";
+    if (base[0] == '-') return "base must not start with '-'";
+    if (base[0] == '/') return "base must not start with '/'";
+    if (base[base.len - 1] == '/') return "base must not end with '/'";
+    if (std.mem.indexOf(u8, base, "..") != null) return "base must not contain '..'";
+    if (std.mem.indexOf(u8, base, "//") != null) return "base must not contain '//'";
+    if (std.mem.indexOf(u8, base, "@{") != null) return "base must not contain '@{'";
+    if (std.mem.endsWith(u8, base, ".lock")) return "base must not end with '.lock'";
+    if (std.mem.eql(u8, base, "@")) return "base must not be '@'";
+    for (base) |c| {
+        const bad = c <= 0x20 or c == 0x7f or c == '~' or c == '^' or
+            c == ':' or c == '?' or c == '*' or c == '[' or c == '\\';
+        if (bad) return "base contains an invalid character (no spaces, '~', '^', ':', '?', '*', '[', '\\')";
+    }
+    return null;
+}
+
+/// Build the argv for `git worktree add`. With a non-empty `base` the new
+/// branch is created from that ref
+/// (`git worktree add -b <branch> <path> <base>`), otherwise from the
+/// repo's current HEAD (no trailing start-point). Pure — the caller owns
+/// the returned slice; the strings inside it are borrowed from the
+/// arguments.
+pub fn buildWorktreeAddArgv(
+    allocator: std.mem.Allocator,
+    branch: []const u8,
+    worktree_path: []const u8,
+    base: []const u8,
+) ![][]const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    errdefer argv.deinit(allocator);
+    try argv.appendSlice(allocator, &.{ "git", "worktree", "add", "-b", branch, worktree_path });
+    if (base.len > 0) try argv.append(allocator, base);
+    return argv.toOwnedSlice(allocator);
 }
 
 /// Pure helper: derive the default branch name from an absolute worktree
@@ -420,12 +480,18 @@ pub fn isCompatibleBranchFamily(a: []const u8, b: []const u8) bool {
 /// to return the raw stderr verbatim — we never lose information that
 /// git provided, we only ADD context for the common cases.
 ///
+/// `base` is the start-point the caller asked for (empty when the
+/// worktree branches from HEAD). It disambiguates the
+/// "invalid reference" case, where the unresolvable name is usually the
+/// base ref rather than the new branch.
+///
 /// Caller owns the returned slice.
 pub fn rewriteGitStderr(
     allocator: std.mem.Allocator,
     raw_stderr: []const u8,
     worktree_path: []const u8,
     branch: []const u8,
+    base: []const u8,
 ) ![]u8 {
     if (raw_stderr.len == 0) return try allocator.dupe(u8, "");
 
@@ -460,8 +526,19 @@ pub fn rewriteGitStderr(
             "(or a worktree of one).",
         );
     }
-    // 4. "fatal: invalid reference: X" — branch name has bad characters.
+    // 4. "fatal: invalid reference: X" — the branch name has bad
+    //    characters, or the start-point (`base`) does not resolve.
+    //    When a `base` was requested, that is the far more likely
+    //    culprit (typically an `origin/<branch>` that has not been
+    //    fetched yet), so point at it instead of at the new branch name.
     if (std.mem.indexOf(u8, raw_stderr, "invalid reference") != null) {
+        if (base.len > 0) {
+            return try std.fmt.allocPrint(allocator,
+                "the base ref '{s}' could not be resolved by git. " ++
+                "Run `git fetch origin` (the ref may not be fetched yet) or pick " ++
+                "a different base branch, then retry. git said: {s}",
+                .{ base, raw_stderr });
+        }
         return try std.fmt.allocPrint(allocator,
             "the branch name '{s}' is invalid (git refused it). " ++
             "Valid branch names must not contain spaces, '..', '~', '^', ':', " ++
@@ -491,8 +568,8 @@ fn readExistingWorktreeCwd(
     return try allocator.dupe(u8, "");
 }
 
-/// Run `git worktree add -b <branch> <worktree_path>` in the given
-/// repository root. On success, returns an empty string. On failure
+/// Run `git worktree add -b <branch> <worktree_path> [<base>]` in the
+/// given repository root. On success, returns an empty string. On failure
 /// (non-zero exit, spawn failure, wait failure, signal), returns a
 /// diagnostic string suitable for surfacing to the user — usually
 /// git's own stderr (e.g. "fatal: '/foo' already exists"), or a
@@ -504,11 +581,13 @@ fn runGitWorktreeAdd(
     repo_root: []const u8,
     worktree_path: []const u8,
     branch: []const u8,
+    base: []const u8,
 ) ![]u8 {
+    const argv = try buildWorktreeAddArgv(allocator, branch, worktree_path, base);
+    defer allocator.free(argv);
+
     var child = std.process.spawn(io, .{
-        .argv = &.{
-            "git", "worktree", "add", "-b", branch, worktree_path,
-        },
+        .argv = argv,
         .cwd = .{ .path = repo_root },
         .stdin = .ignore,
         .stdout = .pipe,
@@ -701,6 +780,14 @@ pub fn executeSetGitWorktreeToString(
     defer if (branch_owned) |b| allocator.free(b);
     const branch: []const u8 = if (input.branch.len > 0) input.branch else branch_owned.?;
 
+    // Optional base ref the new branch is created FROM (`origin/main`,
+    // …). Trim first so a padded LLM argument does not trip the
+    // character check, then validate before it reaches git's argv.
+    const base = std.mem.trim(u8, input.base, " \t\r\n");
+    if (validateBaseRef(base)) |err_msg| {
+        return xmlError(allocator, session_id, err_msg);
+    }
+
     // ── Precheck: classify the path before invoking git ──────────────────
     // Avoids the "fatal: '...' already exists" raw stderr the LLM has to
     // guess about. If the path is already a worktree on a compatible
@@ -731,7 +818,7 @@ pub fn executeSetGitWorktreeToString(
                         "set_git_worktree: auto-bound session {s} to existing worktree on branch {s}\n",
                         .{ session_id, rwt.branch },
                     );
-                    return successSetToXml(allocator, session_id, worktree_path, rwt.branch);
+                    return successSetToXml(allocator, session_id, worktree_path, rwt.branch, "");
                 }
                 return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
                     "path '{s}' is already a worktree on branch '{s}' (you requested '{s}'). " ++
@@ -760,7 +847,7 @@ pub fn executeSetGitWorktreeToString(
     // We surface this directly in the XML error so the user sees WHY git
     // refused (e.g. "fatal: '/foo' already exists") instead of the previous
     // generic "git worktree add failed" which left them guessing.
-    const git_detail = runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch) catch |err| {
+    const git_detail = runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch, base) catch |err| {
         // Alloc failure inside runGitWorktreeAdd — extremely rare.
         std.debug.print("set_git_worktree add dispatch failed: {s}\n", .{@errorName(err)});
         return xmlError(allocator, session_id, @errorName(err));
@@ -770,16 +857,16 @@ pub fn executeSetGitWorktreeToString(
         // Precheck may have let git run (race or precheck failure);
         // rewrite the raw stderr to add recovery guidance for the
         // common cases (path collision, branch conflict, non-repo cwd,
-        // invalid branch name). Unknown stderr patterns pass through
-        // unchanged.
-        const rewritten = rewriteGitStderr(allocator, git_detail, worktree_path, branch) catch |err| blk: {
+        // invalid branch name, unresolvable base ref). Unknown stderr
+        // patterns pass through unchanged.
+        const rewritten = rewriteGitStderr(allocator, git_detail, worktree_path, branch, base) catch |err| blk: {
             std.debug.print("set_git_worktree: rewriteGitStderr failed: {s}\n", .{@errorName(err)});
             break :blk git_detail;
         };
         defer if (rewritten.ptr != git_detail.ptr) allocator.free(rewritten);
         return xmlError(allocator, session_id, rewritten);
     }
-    return successSetToXml(allocator, session_id, worktree_path, branch);
+    return successSetToXml(allocator, session_id, worktree_path, branch, base);
 }
 
 /// Free the owned slices inside a `PathState`. Safe to call on any
@@ -798,8 +885,10 @@ pub fn freePathState(allocator: std.mem.Allocator, state: PathState) void {
     }
 }
 
-/// Generate success XML response for the SET path case.
-fn successSetToXml(allocator: std.mem.Allocator, session_id: []const u8, path: []const u8, branch: []const u8) []const u8 {
+/// Generate success XML response for the SET path case. `<base>` is
+/// emitted only when a base ref was requested, so the element's absence
+/// keeps meaning "branched from HEAD".
+fn successSetToXml(allocator: std.mem.Allocator, session_id: []const u8, path: []const u8, branch: []const u8, base: []const u8) []const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
@@ -809,7 +898,13 @@ fn successSetToXml(allocator: std.mem.Allocator, session_id: []const u8, path: [
     appendXmlContent(allocator, &result, path) catch return "";
     result.appendSlice(allocator, "</path>\n<branch>") catch return "";
     appendXmlContent(allocator, &result, branch) catch return "";
-    result.appendSlice(allocator, "</branch>\n</worktree>") catch return "";
+    result.appendSlice(allocator, "</branch>\n") catch return "";
+    if (base.len > 0) {
+        result.appendSlice(allocator, "<base>") catch return "";
+        appendXmlContent(allocator, &result, base) catch return "";
+        result.appendSlice(allocator, "</base>\n") catch return "";
+    }
+    result.appendSlice(allocator, "</worktree>") catch return "";
 
     return result.toOwnedSlice(allocator) catch "";
 }

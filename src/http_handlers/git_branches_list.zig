@@ -1,0 +1,494 @@
+const std = @import("std");
+const http_response = @import("http_response.zig");
+const nalar_core = @import("nalarcore");
+const gserverz = nalar_core.gserverz;
+
+/// Domain error set for the branch-list use case. The handler maps
+/// `NotARepository` to HTTP 404; the use case only propagates the
+/// unexpected error union (alloc failures) for the GinwaServer to turn
+/// into a generic 500.
+const BranchListError = error{NotARepository};
+
+/// One branch row, HTTP-layer free. `name` is the short ref name —
+/// exactly the string the agent passes as `set_git_worktree`'s `base`
+/// argument and exactly what the kanban dialog bakes into the
+/// `Base:` line of the create-task message.
+pub const BranchEntry = struct {
+    name: []const u8,
+    is_remote: bool,
+    is_current: bool,
+    is_default: bool,
+};
+
+const BranchListResult = struct {
+    /// Empty in a bare repo or on a detached HEAD — the picker then has
+    /// no highlighted row.
+    current_branch: []const u8,
+    branches: []const BranchEntry,
+};
+
+/// A row parsed out of `git for-each-ref`'s tab-separated output.
+pub const RawRef = struct {
+    name: []const u8,
+    is_remote: bool,
+};
+
+/// Validate the `path` query param before it is handed to `git -C`.
+/// Pure — no IO. Returns null on success, or an error message.
+///
+/// The path reaches `git` as an argv element (never as a shell string),
+/// so this is defence against a leading `-` being read as a flag, and
+/// against control characters polluting the process arguments.
+pub fn validateRepoPath(path: []const u8) ?[]const u8 {
+    if (path.len == 0) return "path is required";
+    if (path.len > 4096) return "path exceeds 4096 characters";
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return "path contains a null byte";
+    if (!std.fs.path.isAbsolute(path)) return "path must be absolute";
+    if (path[0] == '-') return "path must not start with '-'";
+    if (std.mem.indexOf(u8, path, "..") != null) return "path must not contain '..' segments";
+    for (path) |c| {
+        if (c < 0x20 or c == 0x7f) return "path contains a control character";
+    }
+    return null;
+}
+
+/// Parse the tab-separated
+/// `%(refname)\t%(refname:short)\t%(symref)` output of
+/// `git for-each-ref refs/heads refs/remotes` into short-name rows.
+///
+/// Symbolic refs are dropped by two independent guards, because their
+/// short name (`origin`) is not a usable base branch:
+///   - a non-empty `%(symref)` field (the real git output for
+///     `refs/remotes/origin/HEAD` is `refs/remotes/origin/main`), and
+///   - a full refname ending in `/HEAD` (defensive: covers a build of
+///     git that reports the symref field as whitespace).
+/// Blank lines and malformed rows (fewer than two tab fields, empty
+/// short name) are skipped too.
+///
+/// `is_remote` is derived from the FULL refname living under
+/// `refs/remotes/`. Pure — no IO. The caller owns the returned slice and
+/// the duplicated names (release with `freeRawRefs`).
+pub fn parseRefRows(allocator: std.mem.Allocator, raw: []const u8) ![]RawRef {
+    var out: std.ArrayList(RawRef) = .empty;
+    errdefer {
+        for (out.items) |r| allocator.free(r.name);
+        out.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line| {
+        const trimmed_line = std.mem.trim(u8, line, " \r\t");
+        if (trimmed_line.len == 0) continue;
+
+        var fields = std.mem.splitScalar(u8, trimmed_line, '\t');
+        const full = fields.next() orelse continue;
+        const short = fields.next() orelse continue;
+        const symref = fields.next() orelse "";
+
+        if (std.mem.trim(u8, symref, " \r\t").len > 0) continue;
+        if (std.mem.endsWith(u8, full, "/HEAD")) continue;
+        if (std.mem.trim(u8, short, " ").len == 0) continue;
+
+        try out.append(allocator, .{
+            .name = try allocator.dupe(u8, std.mem.trim(u8, short, " ")),
+            .is_remote = std.mem.startsWith(u8, full, "refs/remotes/"),
+        });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Release a slice returned by `parseRefRows`.
+pub fn freeRawRefs(allocator: std.mem.Allocator, refs: []const RawRef) void {
+    for (refs) |r| allocator.free(r.name);
+    allocator.free(refs);
+}
+
+/// Pick the default base ref name from parsed rows. Prefers
+/// `origin/<main|master|develop>`, then a local `<main|master|develop>`,
+/// then the first remote-tracking ref, then "" when there are no rows.
+/// Pure — the returned slice borrows from `refs`.
+pub fn pickDefaultRef(refs: []const RawRef) []const u8 {
+    const preferred = [_][]const u8{ "main", "master", "develop" };
+    for (preferred) |name| {
+        var buf: [64]u8 = undefined;
+        const remote_name = std.fmt.bufPrint(buf[0..], "origin/{s}", .{name}) catch continue;
+        for (refs) |r| {
+            if (std.mem.eql(u8, r.name, remote_name)) return r.name;
+        }
+    }
+    for (preferred) |name| {
+        for (refs) |r| {
+            if (std.mem.eql(u8, r.name, name)) return r.name;
+        }
+    }
+    for (refs) |r| {
+        if (r.is_remote) return r.name;
+    }
+    return "";
+}
+
+/// Stable ordering for the picker: `default_name` first (when present),
+/// then every remote-tracking ref, then every local branch. Within each
+/// group the input order is preserved — `git for-each-ref` emits
+/// refnames in lexicographic order, so both groups come out alphabetical
+/// without a comparator. Pure — the returned structs borrow the names
+/// owned by `refs`; the caller frees only the returned slice.
+pub fn orderRefs(
+    allocator: std.mem.Allocator,
+    refs: []const RawRef,
+    default_name: []const u8,
+) ![]RawRef {
+    var out: std.ArrayList(RawRef) = .empty;
+    errdefer out.deinit(allocator);
+
+    if (default_name.len > 0) {
+        for (refs) |r| {
+            if (std.mem.eql(u8, r.name, default_name)) {
+                try out.append(allocator, r);
+                break;
+            }
+        }
+    }
+    for (refs) |r| {
+        if (r.is_remote and !std.mem.eql(u8, r.name, default_name)) {
+            try out.append(allocator, r);
+        }
+    }
+    for (refs) |r| {
+        if (!r.is_remote and !std.mem.eql(u8, r.name, default_name)) {
+            try out.append(allocator, r);
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Use case — ask git for the repo's branches at `path`.
+///
+/// Takes primitives, returns a domain struct. No HTTP types. Returns
+/// `error.NotARepository` when `path` is not inside a git repo (a bare
+/// repo counts as one: `rev-parse --git-dir` prints "." and exits 0).
+///
+/// All allocations come from the per-request arena the handler passes
+/// in; this function never frees (see the
+/// custom-http-server-per-request-arena memory).
+fn listBranchesUseCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) !BranchListResult {
+    // 1) Confirm it's a git repo.
+    const git_dir_check = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", path, "rev-parse", "--git-dir" },
+    }) catch return error.NotARepository;
+    if (git_dir_check.term.exited != 0) return error.NotARepository;
+
+    // 2) Current branch. Empty in a bare repo / detached HEAD.
+    const current_result = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", path, "branch", "--show-current" },
+    }) catch return error.NotARepository;
+    const current_branch = std.mem.trim(u8, current_result.stdout, " \n\r\t");
+
+    // 3) Every local + remote-tracking ref, with symbolic refs flagged
+    //    in the third column so parseRefRows can drop them.
+    const refs_result = std.process.run(allocator, io, .{
+        .argv = &.{
+            "git",          "-C",                                                 path,
+            "for-each-ref", "--format=%(refname)%09%(refname:short)%09%(symref)", "refs/heads",
+            "refs/remotes",
+        },
+    }) catch return error.NotARepository;
+    if (refs_result.term.exited != 0) return error.NotARepository;
+
+    const parsed = try parseRefRows(allocator, refs_result.stdout);
+    const default_name = pickDefaultRef(parsed);
+    const ordered = try orderRefs(allocator, parsed, default_name);
+
+    const entries = try allocator.alloc(BranchEntry, ordered.len);
+    for (ordered, 0..) |r, i| {
+        entries[i] = .{
+            .name = r.name,
+            .is_remote = r.is_remote,
+            .is_current = current_branch.len > 0 and std.mem.eql(u8, r.name, current_branch),
+            .is_default = default_name.len > 0 and std.mem.eql(u8, r.name, default_name),
+        };
+    }
+
+    return BranchListResult{
+        .current_branch = current_branch,
+        .branches = entries,
+    };
+}
+
+/// HTTP handler for `GET /api/git/branches?path=<repo>`.
+///
+/// Response 200:
+/// `{ "is_git_repo": true, "current_branch": "main", "branches": [
+///      { "name": "origin/main", "is_remote": true,
+///        "is_current": false, "is_default": true }, ... ] }`
+///
+/// 400 when `path` is missing or fails `validateRepoPath`; 404 when the
+/// path is not a git repository.
+///
+/// This handler is a thin wrapper: it parses + validates the query
+/// param, delegates to `listBranchesUseCase`, then maps the domain
+/// result to an HTTP response. All git CLI knowledge lives in the use
+/// case.
+pub fn gitBranchesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const path_param = req.query.get("path") orelse {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing path parameter" }) });
+    };
+    if (validateRepoPath(path_param)) |err_msg| {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
+    }
+
+    const result = listBranchesUseCase(allocator, ctx.io, path_param) catch |err| switch (err) {
+        error.NotARepository => {
+            return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "not a git repository" }) });
+        },
+        // Allocator failures (OOM) fall through to the server's generic 500.
+        // The explicit `else` is required: the use case's error set is
+        // inferred and includes `std.mem.Allocator.Error`.
+        else => return err,
+    };
+
+    const entries = try allocator.alloc(http_response.GitBranchEntry, result.branches.len);
+    for (result.branches, 0..) |b, i| {
+        entries[i] = .{
+            .name = b.name,
+            .is_remote = b.is_remote,
+            .is_current = b.is_current,
+            .is_default = b.is_default,
+        };
+    }
+
+    const response = http_response.GitBranchesResponse{
+        .is_git_repo = true,
+        .current_branch = result.current_branch,
+        .branches = entries,
+    };
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeGitBranchesResponse(allocator, response) });
+}
+
+// ===== Tests =====
+const testing = std.testing;
+const text_normalize = @import("helpers").text_normalize;
+
+const HANDLER_PATH = "src/http_handlers/git_branches_list.zig";
+const MOD_PATH = "src/http_handlers/mod.zig";
+const MAIN_PATH = "src/main.zig";
+const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
+const TEST_RUNNER_PATH = "src/ai_workflow/tui/test_runner.zig";
+
+/// Read a source file from disk, relative to the project root. Mirrors
+/// the pattern from `git_worktree_info.zig` / `set_git_worktree_test.zig`
+/// — the project does not have behavioural handler-test infrastructure,
+/// so the wiring checks static-grep for required substrings.
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+// ─── validateRepoPath ─────────────────────────────────────────────────────
+
+test "validateRepoPath accepts an absolute path" {
+    try testing.expect(validateRepoPath("/home/you/repo") == null);
+    try testing.expect(validateRepoPath("/home/you/repo with spaces") == null);
+}
+
+test "validateRepoPath rejects empty, relative, dash-prefixed, and traversal paths" {
+    try testing.expect(validateRepoPath("") != null);
+    try testing.expect(validateRepoPath("relative/repo") != null);
+    try testing.expect(validateRepoPath("-C/etc/passwd") != null);
+    try testing.expect(validateRepoPath("/home/you/../etc") != null);
+}
+
+test "validateRepoPath rejects control characters and oversized paths" {
+    try testing.expect(validateRepoPath("/home/you/re\npo") != null);
+    var big: [4097]u8 = undefined;
+    @memset(big[0..], 'a');
+    big[0] = '/';
+    try testing.expect(validateRepoPath(big[0..]) != null);
+}
+
+// ─── parseRefRows ─────────────────────────────────────────────────────────
+
+test "parseRefRows drops symbolic HEAD refs and keeps short names" {
+    const raw =
+        "refs/heads/main\tmain\t\n" ++
+        "refs/remotes/origin/HEAD\torigin\trefs/remotes/origin/main\n" ++
+        "refs/remotes/origin/main\torigin/main\t\n" ++
+        "refs/heads/fix/x\tfix/x\t\n";
+
+    const rows = try parseRefRows(testing.allocator, raw);
+    defer freeRawRefs(testing.allocator, rows);
+
+    try testing.expectEqual(@as(usize, 3), rows.len);
+    try testing.expectEqualStrings("main", rows[0].name);
+    try testing.expect(!rows[0].is_remote);
+    try testing.expectEqualStrings("origin/main", rows[1].name);
+    try testing.expect(rows[1].is_remote);
+    try testing.expectEqualStrings("fix/x", rows[2].name);
+    try testing.expect(!rows[2].is_remote);
+}
+
+test "parseRefRows skips blank lines, malformed rows, and whitespace symrefs" {
+    const raw =
+        "\n" ++
+        "refs/heads/only-one-field\n" ++
+        // The /HEAD full-refname guard catches this row even though the
+        // symref column is whitespace-only (a build of git that did not
+        // report the symref target would otherwise surface a bogus
+        // branch named `origin`).
+        "refs/remotes/origin/HEAD\torigin\t   \n" ++
+        "refs/heads/main\tmain\t\n" ++
+        "\n";
+
+    const rows = try parseRefRows(testing.allocator, raw);
+    defer freeRawRefs(testing.allocator, rows);
+
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("main", rows[0].name);
+}
+
+test "parseRefRows on empty output returns an empty slice" {
+    const rows = try parseRefRows(testing.allocator, "");
+    defer freeRawRefs(testing.allocator, rows);
+    try testing.expectEqual(@as(usize, 0), rows.len);
+}
+
+// ─── pickDefaultRef ───────────────────────────────────────────────────────
+
+test "pickDefaultRef prefers origin/main over locals and other remotes" {
+    const rows = [_]RawRef{
+        .{ .name = "main", .is_remote = false },
+        .{ .name = "origin/dev", .is_remote = true },
+        .{ .name = "origin/main", .is_remote = true },
+    };
+    try testing.expectEqualStrings("origin/main", pickDefaultRef(&rows));
+}
+
+test "pickDefaultRef falls back to a local main, then to the first remote" {
+    const local_only = [_]RawRef{
+        .{ .name = "feature/x", .is_remote = false },
+        .{ .name = "main", .is_remote = false },
+    };
+    try testing.expectEqualStrings("main", pickDefaultRef(&local_only));
+
+    const remote_only = [_]RawRef{
+        .{ .name = "release", .is_remote = false },
+        .{ .name = "origin/trunk", .is_remote = true },
+    };
+    try testing.expectEqualStrings("origin/trunk", pickDefaultRef(&remote_only));
+
+    const none = [_]RawRef{};
+    try testing.expectEqualStrings("", pickDefaultRef(&none));
+}
+
+// ─── orderRefs ────────────────────────────────────────────────────────────
+
+test "orderRefs hoists the default, then remotes, then locals" {
+    const rows = [_]RawRef{
+        .{ .name = "fix/x", .is_remote = false },
+        .{ .name = "main", .is_remote = false },
+        .{ .name = "origin/dev", .is_remote = true },
+        .{ .name = "origin/main", .is_remote = true },
+    };
+    const ordered = try orderRefs(testing.allocator, &rows, "origin/main");
+    defer testing.allocator.free(ordered);
+
+    try testing.expectEqual(@as(usize, 4), ordered.len);
+    try testing.expectEqualStrings("origin/main", ordered[0].name);
+    try testing.expectEqualStrings("origin/dev", ordered[1].name);
+    try testing.expectEqualStrings("fix/x", ordered[2].name);
+    try testing.expectEqualStrings("main", ordered[3].name);
+}
+
+test "orderRefs keeps every row when the default name matches nothing" {
+    const rows = [_]RawRef{
+        .{ .name = "a", .is_remote = false },
+        .{ .name = "origin/b", .is_remote = true },
+    };
+    const ordered = try orderRefs(testing.allocator, &rows, "origin/missing");
+    defer testing.allocator.free(ordered);
+
+    try testing.expectEqual(@as(usize, 2), ordered.len);
+    try testing.expectEqualStrings("origin/b", ordered[0].name);
+    try testing.expectEqualStrings("a", ordered[1].name);
+}
+
+// ─── Static wiring ────────────────────────────────────────────────────────
+
+test "git_branches_list handler is exported from mod.zig" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, MOD_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub const gitBranchesListHandler") == null) {
+        std.debug.print("!! mod.zig does not export gitBranchesListHandler !!\n", .{});
+        return error.GitBranchesListExportMissing;
+    }
+    if (std.mem.indexOf(u8, source, "@import(\"git_branches_list.zig\")") == null) {
+        std.debug.print("!! mod.zig does not @import git_branches_list.zig !!\n", .{});
+        return error.GitBranchesListImportMissing;
+    }
+}
+
+test "git branches route is registered in main.zig" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, MAIN_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "/api/git/branches") == null) {
+        std.debug.print("!! main.zig does not register /api/git/branches !!\n", .{});
+        return error.GitBranchesRouteMissing;
+    }
+    if (std.mem.indexOf(u8, source, "gitBranchesListHandler") == null) {
+        std.debug.print("!! main.zig does not reference gitBranchesListHandler !!\n", .{});
+        return error.GitBranchesHandlerRefMissing;
+    }
+}
+
+test "http_response.zig defines GitBranchesResponse struct + helper" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HTTP_RESP_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "GitBranchesResponse") == null) {
+        std.debug.print("!! http_response.zig does not define GitBranchesResponse !!\n", .{});
+        return error.GitBranchesResponseTypeMissing;
+    }
+    if (std.mem.indexOf(u8, source, "makeGitBranchesResponse") == null) {
+        std.debug.print("!! http_response.zig does not define makeGitBranchesResponse !!\n", .{});
+        return error.GitBranchesResponseHelperMissing;
+    }
+}
+
+test "git_branches_list handler requires an absolute ?path= param" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "req.query.get(\"path\")") == null) {
+        std.debug.print("!! git_branches_list.zig does not read the ?path= query param !!\n", .{});
+        return error.GitBranchesPathParamMissing;
+    }
+    if (std.mem.indexOf(u8, source, "validateRepoPath(path_param)") == null) {
+        std.debug.print("!! git_branches_list.zig does not validate ?path= before spawning git !!\n", .{});
+        return error.GitBranchesPathNotValidated;
+    }
+}
+
+test "test_runner.zig registers git_branches_list.zig" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TEST_RUNNER_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "@import(\"../../http_handlers/git_branches_list.zig\")") == null) {
+        std.debug.print("!! test_runner.zig does not import git_branches_list.zig !!\n", .{});
+        return error.GitBranchesListNotRegistered;
+    }
+}

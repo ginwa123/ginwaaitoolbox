@@ -246,4 +246,156 @@ describe('KanbanTaskDetailDialog — Use git worktree toggle', () => {
       '/tmp/custom-wt/my-task',
     )
   })
+
+  // ─── Base branch (the `Base:` line) ───────────────────────────────────
+
+  function findItemByText(text: string): HTMLButtonElement | null {
+    return (
+      findAllInDom<HTMLButtonElement>(
+        '[data-testid="git-base-branch-select-item"]',
+      ).find((el) => (el.textContent ?? '').includes(text)) ?? null
+    )
+  }
+
+  async function openBaseBranchPicker() {
+    findInDom<HTMLButtonElement>(
+      '[data-testid="git-base-branch-select-trigger"]',
+    )?.click()
+    await flushPromises()
+  }
+
+  it('renders the base-branch picker only while the worktree toggle is ON', async () => {
+    mountDialog()
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="git-base-branch-select-trigger"]'),
+    ).toBeNull()
+
+    setWorktreeToggle(true)
+    await flushPromises()
+    expect(
+      findInDom('[data-testid="git-base-branch-select-trigger"]'),
+    ).not.toBeNull()
+    // Not the same as the path input — both live in the worktree block.
+    expect(
+      findInDom('[data-testid="kanban-task-detail-use-git-worktree-path"]'),
+    ).not.toBeNull()
+  })
+
+  it('create-and-run emit carries an empty worktreeBaseBranch by default', async () => {
+    mountDialog()
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect(
+      (emitted![0]![0] as { worktreeBaseBranch: string }).worktreeBaseBranch,
+    ).toBe('')
+  })
+
+  it('a picked base branch flows into the create-and-run emit', async () => {
+    vi.spyOn(api, 'listGitBranches').mockResolvedValue({
+      is_git_repo: true,
+      current_branch: 'main',
+      branches: [
+        { name: 'origin/main', is_remote: true, is_current: false, is_default: true },
+        { name: 'main', is_remote: false, is_current: true, is_default: false },
+      ],
+    })
+    mountDialog({ cwd: '/home/you/repo' })
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+
+    await openBaseBranchPicker()
+    findItemByText('origin/main')?.click()
+    await flushPromises()
+
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(emitted).toBeTruthy()
+    expect(
+      (emitted![0]![0] as { worktreeBaseBranch: string }).worktreeBaseBranch,
+    ).toBe('origin/main')
+  })
+
+  it('a picked base branch also flows into the plain create emit', async () => {
+    vi.spyOn(api, 'listGitBranches').mockResolvedValue({
+      is_git_repo: true,
+      current_branch: 'main',
+      branches: [
+        { name: 'origin/main', is_remote: true, is_current: false, is_default: true },
+      ],
+    })
+    mountDialog({ cwd: '/home/you/repo' })
+    await flushPromises()
+    setName('My task')
+    await flushPromises()
+    setWorktreeToggle(true)
+    await flushPromises()
+
+    await openBaseBranchPicker()
+    findItemByText('origin/main')?.click()
+    await flushPromises()
+
+    findInDom<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')?.click()
+    await flushPromises()
+
+    const emitted = wrapper!.emitted('create')
+    expect(emitted).toBeTruthy()
+    expect(
+      (emitted![0]![0] as { worktreeBaseBranch: string }).worktreeBaseBranch,
+    ).toBe('origin/main')
+  })
+
+  it('the picked base branch is reset when the dialog reopens', async () => {
+    vi.spyOn(api, 'listGitBranches').mockResolvedValue({
+      is_git_repo: true,
+      current_branch: 'main',
+      branches: [
+        { name: 'origin/main', is_remote: true, is_current: false, is_default: true },
+      ],
+    })
+    mountDialog({ cwd: '/home/you/repo' })
+    await flushPromises()
+    setName('My task')
+    setWorktreeToggle(true)
+    await flushPromises()
+    await openBaseBranchPicker()
+    findItemByText('origin/main')?.click()
+    await flushPromises()
+
+    // Close + reopen (the watcher resets create-mode state on open).
+    await wrapper!.setProps({ show: false })
+    await flushPromises()
+    await wrapper!.setProps({ show: true })
+    await flushPromises()
+
+    // The name was reset too, so re-enter it before the commit buttons
+    // become clickable again.
+    setName('My task')
+    setWorktreeToggle(true)
+    await flushPromises()
+    findInDom<HTMLButtonElement>(
+      '[data-testid="kanban-task-detail-create-and-run"]',
+    )?.click()
+    await flushPromises()
+    const emitted = wrapper!.emitted('create-and-run')
+    expect(
+      (emitted![0]![0] as { worktreeBaseBranch: string }).worktreeBaseBranch,
+    ).toBe('')
+  })
 })

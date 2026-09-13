@@ -117,6 +117,8 @@ describe('KanbanTaskDetailDialog — Create task & run agent', () => {
         // Default OFF — the dialog's worktree toggle was not flipped.
         useGitWorktree: false,
         worktreePath: '',
+        // No base ref — no `Base:` line in the queue_message.
+        worktreeBaseBranch: '',
         tags: [],
         // NEW (plan: 2026-08-06-kanban-task-profile-selector)
         selectedProfile: '',
