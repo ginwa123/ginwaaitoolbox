@@ -427,6 +427,11 @@ test "hooks: missing file resolves to null (disabled)" {
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(testing.io, &path_buf);
     try env_map.put("HOME", path_buf[0..n]);
+    // %APPDATA% backs the config dir on Windows: without it resolveHookFile
+    // errors instead of resolving to null.
+    const appdata_abs = try std.fs.path.join(allocator, &.{ path_buf[0..n], "appdata" });
+    defer allocator.free(appdata_abs);
+    try env_map.put("APPDATA", appdata_abs);
 
     const resolved = try resolveHookFile(allocator, &env_map);
     try testing.expect(resolved == null);
@@ -434,21 +439,12 @@ test "hooks: missing file resolves to null (disabled)" {
 
 test "hooks: existing register_hook.lua resolves" {
     const allocator = testing.allocator;
-    var env_map = std.process.Environ.Map.init(allocator);
-    defer env_map.deinit();
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(testing.io, &path_buf);
-    const home = path_buf[0..n];
-    try env_map.put("HOME", home);
-
-    // <HOME>/.config/nalar/hooks/register_hook.lua
-    try tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
-    var hooks_dir = try tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
-    // openDir returns Dir directly (not optional) in this Zig version; close when done.
-    defer hooks_dir.close(testing.io);
-    try writeHookFile(hooks_dir, testing.io, HOOK_FILENAME, "function init(event, data) return nil end\n");
+    var env_map = try globalHookEnvForTest(allocator, testing.io, tmp.dir, path_buf[0..n], "function init(event, data) return nil end\n");
+    defer env_map.deinit();
 
     const resolved = try resolveHookFile(allocator, &env_map);
     defer if (resolved) |p| allocator.free(p);
@@ -624,9 +620,50 @@ fn writeProjectHook(allocator: std.mem.Allocator, proj: std.Io.Dir, io: std.Io, 
 fn emptyHomeEnv(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir) !std.process.Environ.Map {
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const home = path_buf[0..n];
     var env_map = std.process.Environ.Map.init(allocator);
     errdefer env_map.deinit();
-    try env_map.put("HOME", path_buf[0..n]);
+    try env_map.put("HOME", home);
+    // %APPDATA% backs the config dir on Windows; point it inside the tmp
+    // home so tests stay hermetic there too (unused on POSIX/macOS).
+    const appdata = try std.fs.path.join(allocator, &.{ home, "appdata" });
+    defer allocator.free(appdata);
+    try env_map.put("APPDATA", appdata);
+    return env_map;
+}
+
+/// Test helper: fake-HOME env map with the REAL global hooks dir populated.
+///
+/// Resolves the dir via getHooksDir (not a hardcoded suffix), so it is
+/// platform-correct: `~/.config` on Linux, `~/Library/...` on macOS,
+/// `%APPDATA%` on Windows. The caller passes the home tmpdir + its
+/// absolute path; the helper creates an `appdata` subdir backing
+/// %APPDATA% and puts both vars. Returns the env map (caller deinits).
+pub fn globalHookEnvForTest(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    home_tmp: std.Io.Dir,
+    home_abs: []const u8,
+    lua_source: []const u8,
+) !std.process.Environ.Map {
+    const appdata_abs = try std.fs.path.join(allocator, &.{ home_abs, "appdata" });
+    defer allocator.free(appdata_abs);
+    try home_tmp.createDirPath(io, "appdata");
+    var env_map = std.process.Environ.Map.init(allocator);
+    errdefer env_map.deinit();
+    try env_map.put("HOME", home_abs);
+    try env_map.put("APPDATA", appdata_abs);
+    const dir = try getHooksDir(allocator, &env_map) orelse return error.TestNoHome;
+    defer allocator.free(dir);
+    // dir is always under home_abs here (APPDATA itself lives there).
+    if (dir.len <= home_abs.len or !std.mem.startsWith(u8, dir, home_abs)) return error.TestHookDirOutsideTmp;
+    var rel = dir[home_abs.len..];
+    if (rel.len > 0 and (rel[0] == '/' or rel[0] == '\\')) rel = rel[1..];
+    if (rel.len == 0) return error.TestHookDirOutsideTmp;
+    try home_tmp.createDirPath(io, rel);
+    var d = try home_tmp.openDir(io, rel, .{});
+    defer d.close(io);
+    try d.writeFile(io, .{ .sub_path = HOOK_FILENAME, .data = lua_source });
     return env_map;
 }
 
@@ -656,14 +693,8 @@ test "hooks: global modify chains into project" {
     defer home_tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try home_tmp.dir.realPath(testing.io, &path_buf);
-    const home = path_buf[0..n];
-    var env_map = std.process.Environ.Map.init(allocator);
+    var env_map = try globalHookEnvForTest(allocator, testing.io, home_tmp.dir, path_buf[0..n], "function init(event, data) return { arguments = '{\"v\":\"global\"}' } end\n");
     defer env_map.deinit();
-    try env_map.put("HOME", home);
-    try home_tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
-    var global_dir = try home_tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
-    defer global_dir.close(testing.io);
-    try writeHookFile(global_dir, testing.io, HOOK_FILENAME, "function init(event, data) return { arguments = '{\"v\":\"global\"}' } end\n");
 
     var proj_tmp = testing.tmpDir(.{});
     defer proj_tmp.cleanup();
@@ -684,13 +715,8 @@ test "hooks: global deny stops project" {
     defer home_tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try home_tmp.dir.realPath(testing.io, &path_buf);
-    var env_map = std.process.Environ.Map.init(allocator);
+    var env_map = try globalHookEnvForTest(allocator, testing.io, home_tmp.dir, path_buf[0..n], "function init(event, data) return { deny = 'global block' } end\n");
     defer env_map.deinit();
-    try env_map.put("HOME", path_buf[0..n]);
-    try home_tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
-    var global_dir = try home_tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
-    defer global_dir.close(testing.io);
-    try writeHookFile(global_dir, testing.io, HOOK_FILENAME, "function init(event, data) return { deny = 'global block' } end\n");
 
     var proj_tmp = testing.tmpDir(.{});
     defer proj_tmp.cleanup();
@@ -729,13 +755,8 @@ test "hooks: post replace chains, project wins" {
     defer home_tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const n = try home_tmp.dir.realPath(testing.io, &path_buf);
-    var env_map = std.process.Environ.Map.init(allocator);
+    var env_map = try globalHookEnvForTest(allocator, testing.io, home_tmp.dir, path_buf[0..n], "function init(event, data) if event == 'post_tool_use' then return { output = 'GLOBAL' } end return nil end\n");
     defer env_map.deinit();
-    try env_map.put("HOME", path_buf[0..n]);
-    try home_tmp.dir.createDirPath(testing.io, ".config/nalar/hooks");
-    var global_dir = try home_tmp.dir.openDir(testing.io, ".config/nalar/hooks", .{});
-    defer global_dir.close(testing.io);
-    try writeHookFile(global_dir, testing.io, HOOK_FILENAME, "function init(event, data) if event == 'post_tool_use' then return { output = 'GLOBAL' } end return nil end\n");
 
     var proj_tmp = testing.tmpDir(.{});
     defer proj_tmp.cleanup();

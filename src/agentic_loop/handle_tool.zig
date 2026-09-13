@@ -1356,7 +1356,9 @@ fn hookTestCtx(
         .logger = logger,
         .session_id = "sess_hook_test",
         .model = "test-model",
-        .cwd = "/tmp",
+        // Nonexistent cwd isolates the project-hook tier: no stray
+        // <cwd>/.nalar/hooks/register_hook.lua can interfere.
+        .cwd = "/tmp/nalar-hook-test-no-such-dir-xyz",
         .api_key = "",
         .base_url = "",
         .config = undefined,
@@ -1385,13 +1387,8 @@ fn hookFixture(allocator: std.mem.Allocator, lua_source: []const u8, path_buf: *
     errdefer tmp.cleanup();
     const n = try tmp.dir.realPath(std.testing.io, path_buf);
     const home = path_buf[0..n];
-    try tmp.dir.createDirPath(std.testing.io, ".config/nalar/hooks");
-    var hooks_dir = try tmp.dir.openDir(std.testing.io, ".config/nalar/hooks", .{});
-    defer hooks_dir.close(std.testing.io);
-    try hooks_dir.writeFile(std.testing.io, .{ .sub_path = hooks.HOOK_FILENAME, .data = lua_source });
-    var env_map = std.process.Environ.Map.init(allocator);
+    var env_map = try hooks.globalHookEnvForTest(allocator, std.testing.io, tmp.dir, home, lua_source);
     errdefer env_map.deinit();
-    try env_map.put("HOME", home);
     return HookFixture{ .env_map = env_map, .tmp = tmp, .home = home };
 }
 
@@ -1519,7 +1516,9 @@ fn hookDispatchCtx(
         .logger = logger,
         .session_id = "sess_hook_dispatch",
         .model = "test-model",
-        .cwd = "/tmp",
+        // Nonexistent cwd isolates the project-hook tier: no stray
+        // <cwd>/.nalar/hooks/register_hook.lua can interfere.
+        .cwd = "/tmp/nalar-hook-test-no-such-dir-xyz",
         .api_key = "",
         .base_url = "",
         .config = undefined,
@@ -1558,6 +1557,10 @@ test "hook dispatch: no hook runs real read_file" {
     var env_map = std.process.Environ.Map.init(dispatch_alloc);
     defer env_map.deinit();
     try env_map.put("HOME", home_buf[0..hn]);
+    // %APPDATA% backs the config dir on Windows; keep the test hermetic
+    // there too (unused on POSIX/macOS, resolve path stays clean).
+    const appdata_abs = try std.fs.path.join(dispatch_alloc, &.{ home_buf[0..hn], "appdata" });
+    try env_map.put("APPDATA", appdata_abs);
 
     const ctx = hookDispatchCtx(dispatch_alloc, &setup, &lg, &env_map);
     const tc = try readFileCall(dispatch_alloc, abs);

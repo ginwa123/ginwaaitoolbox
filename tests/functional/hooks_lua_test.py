@@ -54,8 +54,21 @@ end
 BROKEN_HOOK = "function init(((\n"
 
 
+def _config_dir(harness: FunctionalHarness) -> Path:
+    """Mirror the binary's getDefaultConfigDir per OS (see
+    config_simplify_test.py::_platform_config_dir)."""
+    import sys
+
+    td = harness.temp_dir
+    if sys.platform == "darwin":
+        return td / "Library" / "Application Support" / "nalar"
+    if sys.platform == "win32":
+        return td / "AppData" / "Roaming" / "nalar"
+    return td / ".config" / "nalar"
+
+
 def _hooks_dir(harness: FunctionalHarness) -> Path:
-    d = harness.temp_dir / ".config" / "nalar" / "hooks"
+    d = _config_dir(harness) / "hooks"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
