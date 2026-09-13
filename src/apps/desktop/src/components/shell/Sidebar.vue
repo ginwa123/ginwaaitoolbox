@@ -371,12 +371,18 @@ const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWor
  * target as a background tab and stay where the user is. The click never
  * navigates, so nothing in the render chain has to know about it.
  */
-const handleOpenItemInBackground = (payload: { workspaceId: string; itemId: string; name: string }) => {
+const handleOpenItemInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  name: string
+  itemType?: string
+}) => {
   tabsStore.openInBackground({
     path: '/app',
     query: { view: 'workspace', workspaceId: payload.workspaceId, itemId: payload.itemId },
     title: payload.name,
     kind: 'workspace',
+    itemType: payload.itemType,
   })
 }
 

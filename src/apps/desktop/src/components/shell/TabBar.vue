@@ -14,7 +14,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 
-import { fallbackTitle, type Tab, type TabKind } from '../../helpers/tabTarget'
+import { fallbackTitle, taskChatRendersInItemTab, type Tab, type TabKind } from '../../helpers/tabTarget'
 import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
 import { useTabsStore } from '../../stores/tabs'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -72,7 +72,10 @@ function titleOf(tab: Tab): string {
   if (tab.kind === 'workspace') {
     const { chatTaskId, item } = itemOf(tab)
     if (item) {
-      if (chatTaskId) {
+      // kanban/design keep ONE tab whose content is the item + its dialog, so
+      // the tab is named after the item; other item types show the task chat,
+      // so the task's name is the honest label.
+      if (chatTaskId && !taskChatRendersInItemTab(item.item_type)) {
         const task = item.tasks?.find((candidate) => candidate.id === chatTaskId)
         if (task?.name) return task.name
       }

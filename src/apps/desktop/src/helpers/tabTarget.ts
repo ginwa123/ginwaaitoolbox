@@ -35,6 +35,13 @@ export interface Tab {
   path: string
   query: TabQuery
   createdAt: number
+  /**
+   * True when the tab's identity was decided without knowing the workspace
+   * item's type (a cold-boot deep link, before the tree loaded). Such a tab
+   * may be adopted — i.e. re-keyed — once the real type arrives, so the
+   * strip does not end up with two tabs for one target.
+   */
+  provisional?: boolean
 }
 
 export interface ClosedTab extends Tab {
@@ -137,11 +144,14 @@ export function withTabParam(query: Record<string, unknown> | null | undefined, 
  * rather than a target, the second is per-column kanban UI state that
  * changes without the user going anywhere.
  *
- * The `/chat/<taskId>` suffix on `itemId` is stripped so opening a task
- * chat inside a board focuses the board's tab instead of opening a
- * second tab for the same board.
+ * `itemType` (when known) decides whether a task chat belongs to the item's
+ * tab or gets one of its own — see `taskChatRendersInItemTab`.
  */
-export function tabKeyOf(path: string, query: Record<string, unknown> | null | undefined): string {
+export function tabKeyOf(
+  path: string,
+  query: Record<string, unknown> | null | undefined,
+  itemType?: string | null,
+): string {
   const q = stripTabParam(query)
   const kanbanSettings = KANBAN_SETTINGS_RE.exec(path)
   if (kanbanSettings && kanbanSettings[1]) return `ks:${kanbanSettings[1]}`
@@ -154,14 +164,47 @@ export function tabKeyOf(path: string, query: Record<string, unknown> | null | u
     const parsed = parseItemIdWithChat(q.itemId ?? '')
     const parts = ['ws', q.workspaceId ?? '', parsed.itemId]
     if (q.pageId) parts.push(q.pageId)
-    // A task chat IS a session (task.id == session.id, migration 052) and its
-    // own view, so it gets its own tab. Keying it onto the item's tab made
-    // selecting another task reuse — i.e. visibly replace — the tab the user
-    // was reading.
-    if (parsed.chatTaskId) parts.push(`chat:${parsed.chatTaskId}`)
+    // A task chat is its own session, but WHERE it renders decides whether it
+    // gets its own tab: kanban/design open it as a dialog INSIDE the item's
+    // view (one tab total), every other item type renders it as its own view.
+    if (parsed.chatTaskId && !taskChatRendersInItemTab(itemType)) {
+      parts.push(`chat:${parsed.chatTaskId}`)
+    }
     return parts.join(':')
   }
   return `view:${view}`
+}
+
+/**
+ * Item types whose task chat renders as a dialog *inside* the item's view
+ * (`KanbanChatDialog` / `DesignChatDialog`) — those items keep ONE tab no
+ * matter how many cards you open.
+ */
+const DIALOG_ITEM_TYPES = ['kanban', 'design', 'kanban-settings']
+
+export function taskChatRendersInItemTab(itemType?: string | null): boolean {
+  return typeof itemType === 'string' && DIALOG_ITEM_TYPES.includes(itemType)
+}
+
+/**
+ * The identities the same workspace URL can have: the canonical one for the
+ * known item type, plus the reading it would have had if the type were the
+ * opposite. The store uses the pair to ADOPT *provisional* tabs (created
+ * before the item type was known) instead of opening a duplicate — never to
+ * merge two tabs that were both created with a known type.
+ */
+export function tabKeyVariants(
+  path: string,
+  query: Record<string, unknown> | null | undefined,
+  itemType?: string | null,
+): string[] {
+  const canonical = tabKeyOf(path, query, itemType)
+  if (taskChatRendersInItemTab(itemType)) {
+    const other = tabKeyOf(path, query, 'agent')
+    return canonical === other ? [canonical] : [canonical, other]
+  }
+  const other = tabKeyOf(path, query, 'kanban')
+  return canonical === other ? [canonical] : [canonical, other]
 }
 
 /**
@@ -198,7 +241,7 @@ export function kindOf(path: string, query: Record<string, unknown> | null | und
 export function fallbackTitle(kind: TabKind): string {
   switch (kind) {
     case 'home':
-      return 'Chats'
+      return 'Nalar'
     case 'chat':
       return 'Chat'
     case 'workspace':
@@ -268,6 +311,7 @@ function coerceTab(value: unknown): Tab | null {
     path,
     query,
     createdAt,
+    ...(entry.provisional === true ? { provisional: true } : {}),
   }
 }
 

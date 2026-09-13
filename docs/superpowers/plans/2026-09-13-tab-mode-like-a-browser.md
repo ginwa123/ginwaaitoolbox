@@ -419,4 +419,16 @@ and the python harness were correctly not run):
    funnel opened a second tab for the real session id — i.e. two tabs for one
    chat. Ids are preserved across the rename; if the real chat is already open,
    the dead pointer is dropped and the live tab focused.
+10. **Post-review correction 2 (user-reported): kanban/design keep one tab, and
+   identity is item-type aware.** Item 8 gave every task chat its own tab, which
+   is right for `agent` / `folder` / `routine` / `memory` items (the task chat
+   *is* the view) but wrong for kanban/design, where the chat is a dialog inside
+   the board — the user reported a strip full of duplicate `AGENTIC_KANBAN` tabs
+   (one per card opened). `tabKeyOf(path, query, itemType?)` now decides per item
+   type (`taskChatRendersInItemTab`), the route funnel passes
+   `workspacesStore.activeWorkspaceItem.item_type` when it matches the URL, and a
+   tab created without that knowledge is marked `provisional` and re-keyed in
+   place once the type arrives (`tabKeyVariants` + `findExisting`) instead of
+   being duplicated. Covered by three new/rewritten specs at the pure, store and
+   AppLayout level.
 

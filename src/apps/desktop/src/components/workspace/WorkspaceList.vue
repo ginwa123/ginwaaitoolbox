@@ -32,7 +32,7 @@ const emit = defineEmits<{
   toggleWorkspace: [workspaceId: string]
   selectItem: [workspaceId: string, itemId: string]
   /** Ctrl/Cmd+click / middle click on an item row — re-emitted verbatim by Sidebar. */
-  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string }]
+  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string; itemType?: string }]
   deleteWorkspace: [workspaceId: string]
   renameWorkspace: [workspaceId: string, currentName: string]
   deleteItem: [workspaceId: string, itemId: string]

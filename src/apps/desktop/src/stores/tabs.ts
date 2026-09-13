@@ -34,6 +34,7 @@ import {
   shouldTabify,
   stripTabParam,
   tabKeyOf,
+  tabKeyVariants,
   withTabParam,
   type ClosedTab,
   type Tab,
@@ -41,6 +42,7 @@ import {
   type TabQuery,
 } from '../helpers/tabTarget'
 import { getWindowId } from '../helpers/windowId'
+import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 import { useSseBus } from '../helpers/sseBus'
 
 const ENABLED_KEY = 'nalar-tabs-enabled'
@@ -51,6 +53,8 @@ export interface OpenTabInput {
   query: Record<string, unknown>
   title?: string
   kind?: TabKind
+  /** The workspace item's type, when the caller knows it — decides the tab identity. */
+  itemType?: string | null
 }
 
 export interface SyncResult {
@@ -170,15 +174,55 @@ export const useTabsStore = defineStore('tabs', () => {
     const path = input.path || '/app'
     const query = tabQueryOf(input.query)
     const kind = input.kind ?? kindOf(path, query)
+    const hasChatSuffix = !!parseItemIdWithChat(query.itemId ?? '').chatTaskId
     return {
       id: newTabId(),
-      key: tabKeyOf(path, query),
+      key: tabKeyOf(path, query, input.itemType),
       kind,
       title: input.title || fallbackTitle(kind),
       path,
       query,
       createdAt: Date.now(),
+      // Identity decided without knowing the item type (cold boot): the tab may
+      // be adopted once the type arrives, instead of being duplicated.
+      ...(hasChatSuffix && !input.itemType ? { provisional: true } : {}),
     }
+  }
+
+  /**
+   * Re-key a tab in place. Used when the same target turns out to have a
+   * different canonical identity than the one it was created with (the item
+   * type was not known yet, or a session id was renamed).
+   */
+  function rekeyTab(id: string, key: string, query: TabQuery): void {
+    let touched = false
+    tabs.value = tabs.value.map((tab) => {
+      if (tab.id !== id || tab.key === key) return tab
+      touched = true
+      const { provisional: _provisional, ...rest } = tab
+      void _provisional
+      return { ...rest, key, query }
+    })
+    if (touched) persist()
+  }
+
+  /**
+   * Find the tab this target already has: the canonical key first, then — only
+   * for a tab whose identity was provisional — the other reading of the same
+   * URL. Without the provisional guard, two legitimately distinct tabs (an item
+   * and one of its task chats on a standalone item type) would be merged.
+   */
+  function findExisting(variants: string[]): Tab | null {
+    const canonical = variants[0]
+    if (canonical) {
+      const exact = byKey(canonical)
+      if (exact) return exact
+    }
+    for (const variant of variants.slice(1)) {
+      const candidate = byKey(variant)
+      if (candidate?.provisional) return candidate
+    }
+    return null
   }
 
   function refreshFromInput(tab: Tab, input: OpenTabInput): void {
@@ -199,9 +243,12 @@ export const useTabsStore = defineStore('tabs', () => {
   function open(input: OpenTabInput): Tab {
     const path = input.path || '/app'
     const query = tabQueryOf(input.query)
-    const existing = byKey(tabKeyOf(path, query))
+    const variants = tabKeyVariants(path, query, input.itemType)
+    const canonical = variants[0] ?? ''
+    const existing = findExisting(variants)
     if (existing) {
       refreshFromInput(existing, input)
+      rekeyTab(existing.id, canonical, query)
       activeTabId.value = existing.id
       persist()
       return byId(existing.id) ?? existing
@@ -221,8 +268,13 @@ export const useTabsStore = defineStore('tabs', () => {
   function openInBackground(input: OpenTabInput): Tab {
     const path = input.path || '/app'
     const query = tabQueryOf(input.query)
-    const existing = byKey(tabKeyOf(path, query))
-    if (existing) return existing
+    const variants = tabKeyVariants(path, query, input.itemType)
+    const canonical = variants[0] ?? ''
+    const existing = findExisting(variants)
+    if (existing) {
+      rekeyTab(existing.id, canonical, query)
+      return existing
+    }
     const tab = createTab(input)
     tabs.value = [...tabs.value, tab]
     enforceLimit()
@@ -368,7 +420,11 @@ export const useTabsStore = defineStore('tabs', () => {
    * exactly this target, or (when disabled / an overlay) leave the
    * target alone.
    */
-  function syncFromTarget(path: string, query: Record<string, unknown>): SyncResult {
+  function syncFromTarget(
+    path: string,
+    query: Record<string, unknown>,
+    itemType?: string | null,
+  ): SyncResult {
     const plain = tabQueryOf(query)
     const urlTabId = typeof query.tab === 'string' ? query.tab : ''
 
@@ -380,24 +436,27 @@ export const useTabsStore = defineStore('tabs', () => {
       return { path, query: plain, changed: !sameRouteQuery(plain, query) }
     }
 
-    const key = tabKeyOf(path, query)
+    const variants = tabKeyVariants(path, query, itemType)
+    const canonical = variants[0] ?? ''
     const named = urlTabId ? byId(urlTabId) : null
-    if (named && named.key === key) {
+    if (named && variants.includes(named.key)) {
       const desired = withTabParam(plain, named.id)
       refreshFromInput(named, { path, query: plain })
+      rekeyTab(named.id, canonical, plain)
       activate(named.id)
       return { path, query: desired, changed: !sameRouteQuery(desired, query) }
     }
 
-    const existing = byKey(key)
+    const existing = findExisting(variants)
     if (existing) {
       const desired = withTabParam(plain, existing.id)
       refreshFromInput(existing, { path, query: plain })
+      rekeyTab(existing.id, canonical, plain)
       activate(existing.id)
       return { path, query: desired, changed: !sameRouteQuery(desired, query) }
     }
 
-    const created = open({ path, query: plain })
+    const created = open({ path, query: plain, itemType })
     const desired = withTabParam(plain, created.id)
     return { path, query: desired, changed: !sameRouteQuery(desired, query) }
   }

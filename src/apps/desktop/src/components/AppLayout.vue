@@ -2258,7 +2258,14 @@ function applyActiveTabToUrl() {
  * resolved by the existing code first, then normalised with its `tab=` name.
  */
 function syncFromRoute() {
-  const result = tabsStore.syncFromTarget(route.path, { ...route.query })
+  // The item's type decides whether a task chat belongs to the item's tab
+  // (kanban/design open it as a dialog inside that view) or gets its own.
+  // Only trust it when it describes the item this URL points at — on a cold
+  // boot the tree may not be loaded yet, and the store adopts the tab later.
+  const active = workspacesStore.activeWorkspaceItem
+  const urlItemId = parseItemIdWithChat((route.query.itemId as string) ?? '').itemId
+  const itemType = active && active.id === urlItemId ? (active.item_type ?? null) : null
+  const result = tabsStore.syncFromTarget(route.path, { ...route.query }, itemType)
   if (result.changed) router.replace({ path: result.path, query: result.query })
 }
 

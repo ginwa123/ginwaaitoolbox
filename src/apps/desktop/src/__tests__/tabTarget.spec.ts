@@ -11,6 +11,8 @@ import {
   shouldTabify,
   stripTabParam,
   tabKeyOf,
+  tabKeyVariants,
+  taskChatRendersInItemTab,
   withTabParam,
   type Tab,
   type TabKind,
@@ -53,23 +55,31 @@ describe('tabKeyOf', () => {
     ).toBe('ws:ws_1:item_7:page_2')
   })
 
-  it('gives a task chat its own tab instead of reusing the item tab', () => {
-    // A task chat is a session (task.id == session.id) with its own view, so
-    // selecting another task must not replace the tab the user was reading.
-    const withTask = tabKeyOf('/app', {
-      view: 'workspace',
-      workspaceId: 'ws_1',
-      itemId: 'item_7/chat/task_9',
-    })
-    const otherTask = tabKeyOf('/app', {
-      view: 'workspace',
-      workspaceId: 'ws_1',
-      itemId: 'item_7/chat/task_10',
-    })
+  it('keys a task chat by its item type, not unconditionally', () => {
+    const url = { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' }
     const bareBoard = tabKeyOf('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
-    expect(withTask).toBe('ws:ws_1:item_7:chat:task_9')
-    expect(withTask).not.toBe(otherTask)
-    expect(withTask).not.toBe(bareBoard)
+    // kanban/design open the chat as a dialog INSIDE the item's view
+    expect(tabKeyOf('/app', url, 'kanban')).toBe('ws:ws_1:item_7')
+    expect(tabKeyOf('/app', url, 'kanban')).toBe(bareBoard)
+    expect(tabKeyOf('/app', url, 'design')).toBe('ws:ws_1:item_7')
+    // every other item type renders the task chat as its own view
+    expect(tabKeyOf('/app', url, 'agent')).toBe('ws:ws_1:item_7:chat:task_9')
+    expect(tabKeyOf('/app', url, 'folder')).toBe('ws:ws_1:item_7:chat:task_9')
+    // unknown type (cold boot, tree not loaded yet) leans to its own tab, and
+    // `tabKeyVariants` lets the store adopt whichever tab already exists
+    expect(tabKeyOf('/app', url)).toBe('ws:ws_1:item_7:chat:task_9')
+    expect(tabKeyVariants('/app', url, 'kanban')).toEqual(['ws:ws_1:item_7', 'ws:ws_1:item_7:chat:task_9'])
+    expect(tabKeyVariants('/app', url, 'agent')).toEqual(['ws:ws_1:item_7:chat:task_9', 'ws:ws_1:item_7'])
+    expect(tabKeyVariants('/app', { view: 'chat', session: 'sa' }, 'kanban')).toEqual(['chat:sa'])
+  })
+
+  it('reports which item types keep a task chat inside the item tab', () => {
+    expect(taskChatRendersInItemTab('kanban')).toBe(true)
+    expect(taskChatRendersInItemTab('design')).toBe(true)
+    expect(taskChatRendersInItemTab('agent')).toBe(false)
+    expect(taskChatRendersInItemTab('folder')).toBe(false)
+    expect(taskChatRendersInItemTab(null)).toBe(false)
+    expect(taskChatRendersInItemTab(undefined)).toBe(false)
   })
 
   it('keys the legacy view=task shape as a chat', () => {

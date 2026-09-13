@@ -105,13 +105,23 @@ Two navigations that mean the same target focus one tab:
 | `view=chat` with no session (the chats list) | `home` |
 | `view=chat&session=X` | `chat:X` |
 | `view=workspace&workspaceId=W&itemId=I[&pageId=P]` | `ws:W:<bare I>[:P]` |
-| `view=workspace&itemId=I/chat/T` (a task chat) | `ws:W:<bare I>:chat:T` |
+| `view=workspace&itemId=I/chat/T` — a task chat on a **kanban / design** item | `ws:W:<bare I>[:P]` (the item's tab — the chat is a dialog *inside* that view) |
+| `view=workspace&itemId=I/chat/T` — a task chat on any other item type | `ws:W:<bare I>:chat:T` (its own tab) |
 | legacy `view=task&task=T` | `chat:T` |
 
-**A task chat is a session** (`task.id == session.id`, migration 052) and a view
-of its own, so it gets **its own tab**: selecting another task in the same item
-opens (or focuses) a second tab instead of replacing the one you were reading.
-Going back to the item itself focuses the item's tab again.
+**A task is a session** (`task.id == session.id`, migration 052), but where it
+renders decides its tab:
+
+* **kanban / design** open the chat as a dialog **inside** the item's view
+  (`KanbanChatDialog` / `DesignChatDialog`), so the item keeps **one** tab no
+  matter how many cards you open — otherwise every card click would spawn a tab.
+* **agent / folder / routine / memory / chat** items render the task chat as its
+  own view (`StandardTaskChatView`), so each task session gets its own tab.
+
+When the item type is not known yet (a cold-boot deep link, before the workspace
+tree has loaded), the tab is created **provisionally** and re-keyed in place the
+moment the type arrives — so the strip never ends up with two tabs for one
+target.
 
 A brand-new chat starts life with a synthetic `session-<timestamp>` id and
 receives the backend's real id on the first message. The tab follows that change

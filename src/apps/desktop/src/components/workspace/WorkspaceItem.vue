@@ -48,7 +48,7 @@ const emit = defineEmits<{
    * Ctrl/Cmd+click / middle click on the row: the parent opens (or focuses) a
    * background tab for this item instead of navigating.
    */
-  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string }]
+  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string; itemType?: string }]
   delete: [item: WorkspaceItem]
   addTask: [item: WorkspaceItem]
   // The three task-level events are emitted by the child
@@ -139,6 +139,7 @@ const handleClick = (event?: MouseEvent) => {
       workspaceId: props.workspaceId,
       itemId: props.item.id,
       name: props.item.name,
+      itemType: props.item.item_type,
     })
     return
   }

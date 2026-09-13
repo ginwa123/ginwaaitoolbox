@@ -7,6 +7,7 @@ import AppLayout from '../components/AppLayout.vue'
 import Sidebar from '../components/shell/Sidebar.vue'
 import WorkspaceList from '../components/workspace/WorkspaceList.vue'
 import { useTabsStore } from '../stores/tabs'
+import { useWorkspacesStore } from '../stores/workspaces'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { makeLocalStorageStub } from './helpers'
 import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
@@ -245,25 +246,49 @@ describe('AppLayout — tab mode', () => {
     expect(replaceCalls.length).toBe(settled)
   })
 
-  it('opens a separate tab for a task chat inside an item', async () => {
+  it('keeps one tab when opening task chats inside a kanban item', async () => {
     setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
     mountApp()
     await settle()
     const tabs = useTabsStore()
+    const workspaces = useWorkspacesStore()
+    workspaces.workspaces = [
+      {
+        id: 'ws_1',
+        name: 'WS',
+        items: [
+          {
+            id: 'item_7',
+            name: 'AGENTIC_KANBAN',
+            item_type: 'kanban',
+            tasks: [{ id: 'task_9', name: 'fix-husky-vue-build' }],
+          },
+        ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ]
+    workspaces.setActiveWorkspaceItem('item_7')
+    await settle()
+    // precondition for the whole test: the item type must be resolvable, which
+    // is what tells the funnel a task chat belongs to this tab
+    expect(workspaces.activeWorkspaceItem?.item_type).toBe('kanban')
     expect(tabs.tabCount).toBe(2)
     expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
 
-    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' })
-    await settle()
-    expect(tabs.tabCount).toBe(3)
-    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+    // opening a card must NOT spawn a tab per card
+    for (const taskId of ['task_9', 'task_10', 'task_11']) {
+      setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: `item_7/chat/${taskId}` })
+      await settle()
+    }
+    expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+    expect(tabs.activeTab?.query.itemId).toBe('item_7/chat/task_11')
     expect(route.query.tab).toBe(tabs.activeTabId)
 
-    // going back to the item focuses its own tab again
+    // going back to the bare board keeps the same tab
     setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
     await settle()
-    expect(tabs.tabCount).toBe(3)
-    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+    expect(tabs.tabCount).toBe(2)
   })
 
   it('repairs a ?tab= that names a different target', async () => {

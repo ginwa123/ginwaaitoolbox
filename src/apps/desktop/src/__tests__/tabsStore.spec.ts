@@ -391,27 +391,54 @@ describe('tabs store', () => {
       expect(tabs.activeTabId).toBe(a.id)
     })
 
-    it('opens a separate tab for a task chat', () => {
+    it('keeps ONE tab for a kanban item, however many task chats are opened', () => {
       const tabs = useTabsStore()
-      const board1 = tabs.open({ query: board('item_7') })
-      const result = tabs.syncFromTarget('/app', {
-        view: 'workspace',
-        workspaceId: 'ws_1',
-        itemId: 'item_7/chat/task_9',
-      })
-      expect(result.query.tab).not.toBe(board1.id)
+      const boardTab = tabs.open({ query: board('item_7'), itemType: 'kanban' })
+      const withTask = { ...board('item_7'), itemId: 'item_7/chat/task_9' }
+
+      const result = tabs.syncFromTarget('/app', withTask, 'kanban')
+      expect(result.query.tab).toBe(boardTab.id)
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTabId).toBe(boardTab.id)
+      // the tab's stored target follows the dialog, so a reload restores it
+      expect(tabs.tabs.find((t) => t.id === boardTab.id)?.query).toEqual(withTask)
+
+      tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_10' }, 'kanban')
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTabId).toBe(boardTab.id)
+    })
+
+    it('opens a separate tab for a task chat on item types that render it standalone', () => {
+      const tabs = useTabsStore()
+      const itemTab = tabs.open({ query: board('item_7'), itemType: 'agent' })
+      const result = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' }, 'agent')
+      expect(result.query.tab).not.toBe(itemTab.id)
       expect(result.changed).toBe(true)
       expect(tabs.tabCount).toBe(3)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
-      // and re-selecting the same task focuses it rather than adding another
-      const again = tabs.syncFromTarget('/app', {
-        view: 'workspace',
-        workspaceId: 'ws_1',
-        itemId: 'item_7/chat/task_9',
-        tab: String(result.query.tab),
-      })
+      // re-selecting the same task focuses it rather than adding another
+      const again = tabs.syncFromTarget(
+        '/app',
+        { ...board('item_7'), itemId: 'item_7/chat/task_9', tab: String(result.query.tab) },
+        'agent',
+      )
       expect(again.changed).toBe(false)
       expect(tabs.tabCount).toBe(3)
+    })
+
+    it('adopts a tab created before the item type was known (cold-boot deep link)', () => {
+      const tabs = useTabsStore()
+      // the tree has not loaded yet → the type is unknown → task-level identity
+      const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+
+      // once the type is known the SAME tab is re-keyed — never duplicated
+      const second = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' }, 'kanban')
+      expect(second.query.tab).toBe(first.query.tab)
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+      expect(tabs.tabs.some((t) => t.key === 'ws:ws_1:item_7:chat:task_9')).toBe(false)
     })
 
     it('never touches the URL of an overlay view and creates no tab', () => {
@@ -504,7 +531,7 @@ describe('tabs store', () => {
       tabs.setChatTitle('nope', 'X')
       expect(tabs.tabs.find((t) => t.id === a.id)?.title).toBe('Renamed')
       expect(tabs.tabs.find((t) => t.id === b.id)?.title).toBe('Other')
-      expect(tabs.tabs[0]?.title).toBe('Chats')
+      expect(tabs.tabs[0]?.title).toBe('Nalar')
     })
 
     it('keeps drafts per key and survives closing the tab', () => {
