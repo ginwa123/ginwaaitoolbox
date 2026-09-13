@@ -196,9 +196,14 @@ pub const App = struct {
     pub fn onSendOk(self: *App, session_id: []const u8) !void {
         if (self.session_id == null) {
             self.session_id = try self.allocator.dupe(u8, session_id);
-            const left = try std.fmt.allocPrint(self.allocator, "session {s}", .{session_id});
-            defer self.allocator.free(left);
-            self.status.setLeft(left);
+            // The right slot is the session label. It used to be written
+            // exactly once in `init` (to "new session"), so a session created
+            // by this first send showed "new session" in the status bar for
+            // the rest of the run. The left slot keeps the app name — it was
+            // being overwritten with `"session {s}"` against a session id that
+            // already starts with "session-", rendering
+            // "session session-1789...".
+            self.status.setRight(session_id);
         }
     }
 
@@ -207,6 +212,14 @@ pub const App = struct {
     /// via `renderMessage` and append the styled `[]Line`s to the
     /// viewport. Dedupe is by message id (not by array index), so
     /// re-polls don't re-render the same rows.
+    ///
+    /// "Is this turn over?" is decided in the SAME pass, and only rows that
+    /// are NEW in this poll may end it. The poll returns the session's last
+    /// 100 messages, so it always contains the *previous* turn's completed
+    /// reply: scanning the whole array for any `finish_reason="stop"` (which
+    /// is what this used to do) found turn 1's stop on the very first poll of
+    /// turn 2, stopped polling, and the second answer never appeared — the
+    /// reported "next prompt response not shown in TUI".
     pub fn onMessages(self: *App, body: []const u8) !void {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
@@ -221,47 +234,21 @@ pub const App = struct {
         const root = parsed.value.object.get("messages") orelse return;
         if (root != .array) return;
         const arr = root.array;
+        const last_idx: usize = arr.items.len -| 1;
 
-        // Heuristic: the turn is over once we see an assistant
-        // message with `finish_reason="stop"`. Previously this only
-        // checked the LAST message's role — but when the agent emits
-        // tool calls, the last DB row is the tool result, not the
-        // assistant's final response, so the heuristic flipped back
-        // to "not streaming" too late (the spinner kept spinning even
-        // though the agent had finished its final reply). Round-3
-        // fix: scan ALL assistant messages and flip when ANY has
-        // finish_reason="stop". Fall back to the legacy heuristic
-        // (last message is assistant) when finish_reason is missing,
-        // so old conversations without the field still work.
-        if (self.is_streaming) {
-            var idx: usize = 0;
-            while (idx < arr.items.len) : (idx += 1) {
-                const item = arr.items[idx];
-                if (item != .object) continue;
-                const obj = item.object;
-                const role = obj.get("role") orelse continue;
-                if (role != .string or !asciiEqIgnoreCase(role.string, "assistant")) continue;
-                const fr = obj.get("finish_reason");
-                if (fr) |fr_val| {
-                    if (fr_val == .string and std.mem.eql(u8, fr_val.string, "stop")) {
-                        self.is_streaming = false;
-                        break;
-                    }
-                    // finish_reason="tool_calls" or anything else →
-                    // agent will continue. Keep spinning.
-                } else {
-                    // No finish_reason field (legacy). Fall back to:
-                    // the LAST message is assistant → done.
-                    if (idx == arr.items.len - 1) {
-                        self.is_streaming = false;
-                        break;
-                    }
-                }
-            }
-        }
+        // Whether an assistant row first seen in THIS poll finished. Set
+        // while rendering below, applied after the loop so the decision can
+        // never cut the render of the rows that arrived together with it.
+        //
+        // The previous-turn heuristic — "any assistant row with
+        // finish_reason=stop, else the last row being assistant" — is kept,
+        // but only for new rows: rows we have already rendered are history,
+        // including their stop. That is also what makes the 10k scrollback
+        // cap and `seen_ids` agree on what "new" means.
+        var turn_finished = false;
 
         // Render every message we haven't seen yet.
-        for (arr.items) |item| {
+        for (arr.items, 0..) |item, idx| {
             if (item != .object) continue;
             const obj = item.object;
 
@@ -288,6 +275,18 @@ pub const App = struct {
             const tool_name = if (obj.get("tool_name")) |c| (if (c == .string) c.string else "") else "";
             const reasoning_content = if (obj.get("reasoning_content")) |c| (if (c == .string) c.string else "") else "";
 
+            // Only rows new in this poll can end the turn (see above): the
+            // agent emits tool calls, so the last DB row of a finished turn is
+            // usually the tool result, not the assistant's final reply. The
+            // `finish_reason`-less fallback keeps old conversations working.
+            if (asciiEqIgnoreCase(role, "assistant")) {
+                if (obj.get("finish_reason")) |fr_val| {
+                    if (fr_val == .string and std.mem.eql(u8, fr_val.string, "stop")) turn_finished = true;
+                } else if (idx == last_idx) {
+                    turn_finished = true;
+                }
+            }
+
             // Skip messages with no renderable content AND no role
             // (defensive — a row like {"id":"x"} shouldn't render as
             // a blank line). Tool rows with `<tool>` envelopes ARE
@@ -313,6 +312,8 @@ pub const App = struct {
                 self.viewport.enforceCap();
             }
         }
+
+        if (self.is_streaming and turn_finished) self.is_streaming = false;
     }
 
     pub fn view(self: *App, allocator: std.mem.Allocator, width: u16, height: u16) !tui.Frame {
@@ -445,6 +446,114 @@ test "App: onMessages flips is_streaming=false when assistant finish_reason=stop
     ;
     try app.onMessages(body);
     try testing.expect(!app.is_streaming);
+}
+
+test "App: a previous turn's finish_reason=stop does not end the next turn" {
+    // User-reported (2026-09-13): "next prompt response not showup in tui".
+    // The poll returns the session's last 100 messages, so it contains the
+    // PREVIOUS turn's completed reply. The old code scanned the whole array
+    // for any `finish_reason="stop"`, found turn 1's, stopped polling on the
+    // first poll of turn 2, and the second answer never rendered.
+    var app = try testApp();
+    defer app.deinit();
+
+    // Turn 1 runs to completion.
+    app.is_streaming = true;
+    try app.onMessages(
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"first"},
+        \\ {"id":"a1","role":"assistant","content":"FIRST-REPLY","finish_reason":"stop"}
+        \\]}
+    );
+    try testing.expect(!app.is_streaming);
+
+    // Turn 2: the same array plus the newly queued user row. Nothing in here
+    // is new except the user row, so the turn must keep going.
+    app.is_streaming = true;
+    try app.onMessages(
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"first"},
+        \\ {"id":"a1","role":"assistant","content":"FIRST-REPLY","finish_reason":"stop"},
+        \\ {"id":"u2","role":"user","content":"second"}
+        \\]}
+    );
+    try testing.expect(app.is_streaming); // ← the regression
+
+    // Turn 2's reply is a NEW stop row → now the turn is over.
+    try app.onMessages(
+        \\{"messages":[
+        \\ {"id":"u1","role":"user","content":"first"},
+        \\ {"id":"a1","role":"assistant","content":"FIRST-REPLY","finish_reason":"stop"},
+        \\ {"id":"u2","role":"user","content":"second"},
+        \\ {"id":"a2","role":"assistant","content":"SECOND-REPLY","finish_reason":"stop"}
+        \\]}
+    );
+    try testing.expect(!app.is_streaming);
+}
+
+test "App: turn 2 renders when the first poll of the turn predates the user row" {
+    // The queued user row is inserted by the backend worker, so the first
+    // poll after Enter can return the previous snapshot unchanged. Polling
+    // must continue (pre-fix it stopped here, which is why the user's own
+    // second message was missing from the transcript too).
+    var app = try testApp();
+    defer app.deinit();
+    const turn1 =
+        \\{"messages":[{"id":"a1","role":"assistant","content":"FIRST","finish_reason":"stop"}]}
+    ;
+    try app.onMessages(turn1);
+    app.is_streaming = true;
+
+    // Poll that raced ahead of the insert: not a single new row.
+    try app.onMessages(turn1);
+    try testing.expect(app.is_streaming);
+
+    // Next poll carries the user row; the turn is still in flight.
+    try app.onMessages(
+        \\{"messages":[
+        \\ {"id":"a1","role":"assistant","content":"FIRST","finish_reason":"stop"},
+        \\ {"id":"u2","role":"user","content":"second"}
+        \\]}
+    );
+    try testing.expect(app.is_streaming);
+    const rendered = app.viewport.lines.items[app.viewport.lines.items.len - 1].text;
+    try testing.expect(std.mem.indexOf(u8, rendered, "second") != null);
+}
+
+test "App: legacy rows without finish_reason only end the turn when they are new" {
+    // Same shape, but no `finish_reason` field at all: the fallback
+    // ("the last row is an assistant row") must also be scoped to new rows.
+    var app = try testApp();
+    defer app.deinit();
+    const legacy_turn1 =
+        \\{"messages":[{"id":"a1","role":"assistant","content":"FIRST"}]}
+    ;
+    try app.onMessages(legacy_turn1); // (rendered while not streaming)
+
+    app.is_streaming = true;
+    try app.onMessages(legacy_turn1); // identical snapshot: no news, no stop
+    try testing.expect(app.is_streaming);
+
+    try app.onMessages(
+        \\{"messages":[
+        \\ {"id":"a1","role":"assistant","content":"FIRST"},
+        \\ {"id":"a2","role":"assistant","content":"SECOND"}
+        \\]}
+    );
+    try testing.expect(!app.is_streaming);
+}
+
+test "App: status bar shows the session id once, and only in the right slot" {
+    var app = try testApp();
+    defer app.deinit();
+    try testing.expectEqualStrings("nalar-tui", app.status.left[0..app.status.left_len]);
+    try testing.expectEqualStrings("new session", app.status.right[0..app.status.right_len]);
+
+    try app.onSendOk("session-1789312894544");
+    try testing.expectEqualStrings("nalar-tui", app.status.left[0..app.status.left_len]);
+    // Was stuck at "new session"; the left slot used to render
+    // "session session-1789..." because the id already contains "session-".
+    try testing.expectEqualStrings("session-1789312894544", app.status.right[0..app.status.right_len]);
 }
 
 test "App: onMessages keeps is_streaming=true when no assistant stop seen yet" {
