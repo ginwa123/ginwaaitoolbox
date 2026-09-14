@@ -29,6 +29,7 @@ import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import { isBackgroundCommandOutput, parseBackgroundCommandOutput, backgroundToShellXml } from '@/helpers/isBackgroundCommandOutput'
+import { openExternal } from '../../helpers/openExternal'
 import {
   applyProgressEvent,
   applySnapshotRows,
@@ -884,7 +885,7 @@ const onPrCreated = (url: string) => {
   showCreatePrDialog.value = false
   // Show a brief toast (use the existing notification pattern)
   // For v1, just open the PR URL in a new tab
-  window.open(url, '_blank')
+  openExternal(url)
 }
 
 const onPrError = (message: string) => {

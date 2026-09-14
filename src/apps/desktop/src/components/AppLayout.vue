@@ -23,6 +23,7 @@ import AgentSystemPromptDialog from './dialogs/AgentSystemPromptDialog.vue'
 import AgentKnowledgeDetailDialog from './dialogs/AgentKnowledgeDetailDialog.vue'
 import KanbanColumnEditor from './kanban/KanbanColumnEditor.vue'
 import KanbanSettingsView from './views/KanbanSettingsView.vue'
+import BrowserTabView from './browser/BrowserTabView.vue'
 import CopyKanbanSpecDialog from './dialogs/CopyKanbanSpecDialog.vue'
 import DesignView from './design/DesignView.vue'
 import { useNavigationStore } from '../stores/navigation'
@@ -2339,7 +2340,7 @@ const stopTabShortcuts = useTabShortcuts({
   tabCount: () => tabsStore.tabCount,
   handlers: {
     newTab: () => {
-      tabsStore.openHomeTab()
+      tabsStore.openBrowserTab()
       applyActiveTabToUrl()
     },
     closeTab: () => {
@@ -2523,6 +2524,7 @@ defineExpose({
            The :key forces a fresh mount when the user navigates from
            one kanban's settings to another's (the page re-reads
            route.params.itemId on mount). -->
+      <BrowserTabView v-else-if="currentView === 'browser'" @navigate="applyActiveTabToUrl" />
       <KanbanSettingsView
         v-else-if="currentView === 'kanban-settings'"
         :key="'kanban-settings-' + (route.params.itemId as string)"

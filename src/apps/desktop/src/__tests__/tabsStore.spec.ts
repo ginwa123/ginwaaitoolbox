@@ -426,7 +426,11 @@ describe('tabs store', () => {
     it('opens a separate tab for a task chat on item types that render it standalone', () => {
       const tabs = useTabsStore()
       const itemTab = tabs.open({ query: board('item_7'), itemType: 'agent' })
-      const result = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' }, 'agent')
+      const result = tabs.syncFromTarget(
+        '/app',
+        { ...board('item_7'), itemId: 'item_7/chat/task_9' },
+        'agent',
+      )
       expect(result.query.tab).not.toBe(itemTab.id)
       expect(result.changed).toBe(true)
       expect(tabs.tabCount).toBe(3)
@@ -444,7 +448,10 @@ describe('tabs store', () => {
     it('needs no adoption for a kanban task chat — the cold-boot key is canonical', () => {
       const tabs = useTabsStore()
       // the tree has not loaded yet → the type is unknown → task-level identity
-      const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
+      const first = tabs.syncFromTarget('/app', {
+        ...board('item_7'),
+        itemId: 'item_7/chat/task_9',
+      })
       expect(tabs.tabCount).toBe(2)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
 
@@ -462,7 +469,10 @@ describe('tabs store', () => {
     it('adopts a cold-boot tab once the type is known (design still shares the item tab)', () => {
       const tabs = useTabsStore()
       // the tree has not loaded yet → the type is unknown → task-level identity
-      const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
+      const first = tabs.syncFromTarget('/app', {
+        ...board('item_7'),
+        itemId: 'item_7/chat/task_9',
+      })
       expect(tabs.tabCount).toBe(2)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
 
@@ -629,6 +639,74 @@ describe('tabs store', () => {
       __dispatchSseBus('session', { action: 'updated', id: 'sa', name: 'After dispose' } as never)
       expect(tabs.tabs.find((t) => t.id === a.id)?.title).toBe('Renamed live')
       __resetSseBus()
+    })
+  })
+
+  describe('browser tabs', () => {
+    it('opens and activates a blank browser tab keyed browser:new', () => {
+      const tabs = useTabsStore()
+      const tab = tabs.openBrowserTab()
+      expect(tab.kind).toBe('browser')
+      expect(tab.key).toBe('browser:new')
+      expect(tab.query).toEqual({ view: 'browser' })
+      expect(tabs.activeTabId).toBe(tab.id)
+    })
+
+    it('keys a browser tab by url and dedupes on a second call', () => {
+      const tabs = useTabsStore()
+      const first = tabs.openBrowserTab('https://example.com')
+      expect(first.key).toBe('browser:https://example.com')
+      expect(tabs.activeTabId).toBe(first.id)
+      const second = tabs.openBrowserTab('https://example.com')
+      expect(second.id).toBe(first.id)
+      expect(tabs.tabCount).toBe(2)
+    })
+
+    it('rewrites query.url and the key in place without adding a tab', () => {
+      const tabs = useTabsStore()
+      const tab = tabs.openBrowserTab()
+      const count = tabs.tabCount
+      tabs.navigateBrowserTab(tab.id, 'https://example.com')
+      expect(tabs.tabCount).toBe(count)
+      const updated = tabs.tabs.find((t) => t.id === tab.id)
+      expect(updated?.query.url).toBe('https://example.com')
+      expect(updated?.key).toBe('browser:https://example.com')
+    })
+
+    it('ignores navigate for an unknown tab id', () => {
+      const tabs = useTabsStore()
+      const count = tabs.tabCount
+      expect(() => tabs.navigateBrowserTab('tab_nope', 'https://example.com')).not.toThrow()
+      expect(tabs.tabCount).toBe(count)
+    })
+
+    it('asks the bridge to close the window when a browser tab closes', async () => {
+      const { __setBrowserBridgeForTests } = await import('../helpers/browserBridge')
+      const closed: string[] = []
+      __setBrowserBridgeForTests({
+        open: async () => ({ ok: true, alive: 1 }),
+        status: async () => ({ alive: 0 }),
+        close: async (tabId: string) => {
+          closed.push(tabId)
+          return { ok: true }
+        },
+      })
+      try {
+        const tabs = useTabsStore()
+        const tab = tabs.openBrowserTab('https://example.com')
+        tabs.close(tab.id)
+        await Promise.resolve()
+        expect(closed).toEqual([tab.id])
+      } finally {
+        __setBrowserBridgeForTests(null)
+      }
+    })
+
+    it('keeps TABS_VERSION at 1 after a browser tab exists', () => {
+      const tabs = useTabsStore()
+      tabs.openBrowserTab('https://example.com')
+      const stored = rawList()
+      expect(stored?.v).toBe(1)
     })
   })
 })

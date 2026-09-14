@@ -201,6 +201,11 @@ const htmlSrcDoc = computed<string | null>(() => {
 // URL from the raw HTML and opens it via window.open. The iframe
 // stays sandboxed (NULL origin); the new tab gets the full viewport
 // width for wide content.
+//
+// Deliberately NOT routed through `openExternal` (in-app browser tab
+// plan, decision table): the target is a `blob:` URL, and
+// openExternal only takes http(s) — everything else falls through to
+// `window.open` unchanged, which is exactly what this needs.
 function openInNewTab() {
   if (typeof window === 'undefined' || typeof URL === 'undefined') return
   try {
