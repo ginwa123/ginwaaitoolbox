@@ -40,10 +40,7 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
  * those are covered by SseStatusBadge for SSE, and a global offline
  * toast is out of scope for v1.
  */
-export async function apiFetch<T = unknown>(
-  url: string,
-  opts: ApiFetchOptions = {},
-): Promise<T> {
+export async function apiFetch<T = unknown>(url: string, opts: ApiFetchOptions = {}): Promise<T> {
   const { body, silent, timeoutMs = 15_000, ...init } = opts
 
   // Idle-freeze fix: hung backend must not park the UI forever.
@@ -78,25 +75,25 @@ export async function apiFetch<T = unknown>(
   try {
     const response = await fetch(`${API_BASE}${url}`, fetchInit)
 
-  if (!response.ok) {
-    const responseBody = await response.text().catch(() => '')
+    if (!response.ok) {
+      const responseBody = await response.text().catch(() => '')
 
-    if (!silent) {
-      const parsedError = tryParseJsonErrorField(responseBody)
-      const message = parsedError ?? `HTTP ${response.status} ${response.statusText}`
-      const details = parsedError ? responseBody : responseBody || undefined
-      useNotificationStore().notifyError(message, details)
+      if (!silent) {
+        const parsedError = tryParseJsonErrorField(responseBody)
+        const message = parsedError ?? `HTTP ${response.status} ${response.statusText}`
+        const details = parsedError ? responseBody : responseBody || undefined
+        useNotificationStore().notifyError(message, details)
+      }
+
+      throw new ApiError(response.status, response.statusText, responseBody)
     }
 
-    throw new ApiError(response.status, response.statusText, responseBody)
-  }
+    // 204 No Content — return undefined cast to T
+    if (response.status === 204) {
+      return undefined as T
+    }
 
-  // 204 No Content — return undefined cast to T
-  if (response.status === 204) {
-    return undefined as T
-  }
-
-  return (await response.json()) as T
+    return (await response.json()) as T
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId)
   }
@@ -232,18 +229,11 @@ export const normalizeDesignElementType = <
 >(
   e: T,
 ): T & { type: DesignElementType } => {
-  const fallback: DesignElementType =
-    (e.elem_type as DesignElementType) ?? 'rectangle'
+  const fallback: DesignElementType = (e.elem_type as DesignElementType) ?? 'rectangle'
   return { ...e, type: e.type ?? fallback }
 }
 
-export type DesignElementType =
-  | 'rectangle'
-  | 'ellipse'
-  | 'text'
-  | 'image'
-  | 'frame'
-  | 'group'
+export type DesignElementType = 'rectangle' | 'ellipse' | 'text' | 'image' | 'frame' | 'group'
 
 /**
  * Wire shape for design elements (the rows in
@@ -449,9 +439,7 @@ export async function getSystemFolder(): Promise<FolderInfo> {
 }
 
 export async function listFolder(path: string): Promise<FolderInfo> {
-  return await apiFetch<FolderInfo>(
-    `/system/folder?path=${encodeURIComponent(path)}&action=list`,
-  )
+  return await apiFetch<FolderInfo>(`/system/folder?path=${encodeURIComponent(path)}&action=list`)
 }
 
 /**
@@ -907,10 +895,7 @@ export interface KanbanCreateResponse {
 export async function createKanbanTask(
   workspaceId: string,
   itemId: string,
-  payload:
-    | KanbanCreateTaskPayload
-    | KanbanCreateSessionOnlyPayload
-    | KanbanCreateAndRunPayload,
+  payload: KanbanCreateTaskPayload | KanbanCreateSessionOnlyPayload | KanbanCreateAndRunPayload,
 ): Promise<KanbanCreateResponse> {
   const body: Record<string, unknown> = {
     mode: payload.mode,
@@ -944,13 +929,10 @@ export async function createKanbanTask(
       body.selected_profile_model = payload.selected_profile_model
     }
   }
-  return apiFetch<KanbanCreateResponse>(
-    `/workspaces/${workspaceId}/items/${itemId}/kanban/tasks`,
-    {
-      method: 'POST',
-      body,
-    },
-  )
+  return apiFetch<KanbanCreateResponse>(`/workspaces/${workspaceId}/items/${itemId}/kanban/tasks`, {
+    method: 'POST',
+    body,
+  })
 }
 
 export async function updateTask(
@@ -1048,13 +1030,15 @@ export async function pinTask(
   taskId: string,
   isPinned: boolean,
 ): Promise<{ success: boolean; id: string; is_pinned: boolean; pinned_position: number }> {
-  return await apiFetch<{ success: boolean; id: string; is_pinned: boolean; pinned_position: number }>(
-    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/pin`,
-    {
-      method: 'POST',
-      body: { is_pinned: isPinned },
-    },
-  )
+  return await apiFetch<{
+    success: boolean
+    id: string
+    is_pinned: boolean
+    pinned_position: number
+  }>(`/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/pin`, {
+    method: 'POST',
+    body: { is_pinned: isPinned },
+  })
 }
 
 /**
@@ -1202,9 +1186,9 @@ export interface Message {
   image_url?: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   tool_calls_json?: any
-  finish_reason?: string,
-  is_input?: boolean,
-  is_output?: boolean,
+  finish_reason?: string
+  is_input?: boolean
+  is_output?: boolean
   /**
    * 2026-08-23 hidden-messages fix — thinking models' chain-of-thought.
    * Already returned by the backend REST endpoint (http_response.zig
@@ -1372,24 +1356,21 @@ export async function sendChatMessage(
     // silent: true — ChatView already surfaces these failures inline
     // (e.g. the LLM-not-configured banner) and the new global
     // notification system would duplicate the message.
-    return await apiFetch<{ status: string }>(
-      '/llm/session',
-      {
-        method: 'POST',
-        body: {
-          session_id: sessionId,
-          queue_message: message,
-          allowed_tools: DEFAULT_CHAT_TOOLS,
-          cwd_session: cwdSession,
-          image_urls: imageUrlsStr,
-          selected_profile_model: selectedProfile || '',
-          // Migration 063 — pass through to POST /api/session. Empty
-          // / undefined => the backend's default ("0" = off).
-          is_auto_retry_until_stop: isAutoRetryUntilStop ?? '',
-        },
-        silent: true,
+    return await apiFetch<{ status: string }>('/llm/session', {
+      method: 'POST',
+      body: {
+        session_id: sessionId,
+        queue_message: message,
+        allowed_tools: DEFAULT_CHAT_TOOLS,
+        cwd_session: cwdSession,
+        image_urls: imageUrlsStr,
+        selected_profile_model: selectedProfile || '',
+        // Migration 063 — pass through to POST /api/session. Empty
+        // / undefined => the backend's default ("0" = off).
+        is_auto_retry_until_stop: isAutoRetryUntilStop ?? '',
       },
-    )
+      silent: true,
+    })
   } catch (err) {
     // Preserve the original return-shape semantics so ChatView can
     // branch on `status` for user-facing messages:
@@ -1419,24 +1400,27 @@ export async function updateSession(
     name?: string
     isAutoRetryUntilStop?: string
   },
-): Promise<{ id: string; name: string; status: string; selected_profile_model: string; is_auto_retry_until_stop: string }> {
+): Promise<{
+  id: string
+  name: string
+  status: string
+  selected_profile_model: string
+  is_auto_retry_until_stop: string
+}> {
   return await apiFetch<{
     id: string
     name: string
     status: string
     selected_profile_model: string
     is_auto_retry_until_stop: string
-  }>(
-    `/llm/session/${sessionId}`,
-    {
-      method: 'PUT',
-      body: {
-        selected_profile_model: updates.selectedProfile ?? '',
-        name: updates.name ?? '',
-        is_auto_retry_until_stop: updates.isAutoRetryUntilStop ?? '',
-      },
+  }>(`/llm/session/${sessionId}`, {
+    method: 'PUT',
+    body: {
+      selected_profile_model: updates.selectedProfile ?? '',
+      name: updates.name ?? '',
+      is_auto_retry_until_stop: updates.isAutoRetryUntilStop ?? '',
     },
-  )
+  })
 }
 
 // POST /api/llm/session/:session_id/touched — stamp the human-touch
@@ -1483,8 +1467,8 @@ export interface SseEvent {
   loop_index?: number
   temperature?: number
   is_thinking?: boolean
-  is_input?: boolean,
-  is_output?: boolean,
+  is_input?: boolean
+  is_output?: boolean
   parent_session_id?: string
   parent_id?: string
   // 2026-09-04 subagent-peek fix: progress events (role="subagent_progress")
@@ -1681,10 +1665,9 @@ export async function compactSession(
   sessionId: string,
 ): Promise<{ success: boolean; message?: string }> {
   try {
-    return await apiFetch<{ success: boolean; message?: string }>(
-      `/session/${sessionId}/compact`,
-      { method: 'POST' },
-    )
+    return await apiFetch<{ success: boolean; message?: string }>(`/session/${sessionId}/compact`, {
+      method: 'POST',
+    })
   } catch (error) {
     console.error('Failed to compact session:', error)
     return { success: false, message: 'Failed to compact session' }
@@ -1784,23 +1767,19 @@ export async function createDesign(
   name: string,
   path: string,
 ): Promise<WorkspaceItem> {
-  return await apiFetch<WorkspaceItem>(
-    `/workspaces/${workspaceId}/items/design`,
-    {
-      method: 'POST',
-      body: { name, path },
-    },
-  )
+  return await apiFetch<WorkspaceItem>(`/workspaces/${workspaceId}/items/design`, {
+    method: 'POST',
+    body: { name, path },
+  })
 }
 
 export async function deleteWorkspaceItem(
   workspaceId: string,
   itemId: string,
 ): Promise<{ success: boolean }> {
-  return await apiFetch<{ success: boolean }>(
-    `/workspaces/${workspaceId}/items/${itemId}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<{ success: boolean }>(`/workspaces/${workspaceId}/items/${itemId}`, {
+    method: 'DELETE',
+  })
 }
 
 // Kanban API
@@ -1870,13 +1849,10 @@ export async function updateWorkspaceItem(
     name?: string
   },
 ): Promise<WorkspaceItem> {
-  return await apiFetch<WorkspaceItem>(
-    `/workspaces/${workspaceId}/items/${itemId}`,
-    {
-      method: 'PUT',
-      body: data,
-    },
-  )
+  return await apiFetch<WorkspaceItem>(`/workspaces/${workspaceId}/items/${itemId}`, {
+    method: 'PUT',
+    body: data,
+  })
 }
 
 /**
@@ -1909,13 +1885,10 @@ export async function addKanbanColumn(
   description?: string,
   position?: number,
 ): Promise<KanbanColumn> {
-  return await apiFetch<KanbanColumn>(
-    `/workspaces/${workspaceId}/items/${itemId}/kanban/columns`,
-    {
-      method: 'POST',
-      body: { name, description: description ?? '', position },
-    },
-  )
+  return await apiFetch<KanbanColumn>(`/workspaces/${workspaceId}/items/${itemId}/kanban/columns`, {
+    method: 'POST',
+    body: { name, description: description ?? '', position },
+  })
 }
 
 /**
@@ -2019,13 +1992,10 @@ export async function moveTask(
   columnId: string,
   position: number,
 ): Promise<Task> {
-  return await apiFetch<Task>(
-    `/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/move`,
-    {
-      method: 'PATCH',
-      body: { column_id: columnId, position },
-    },
-  )
+  return await apiFetch<Task>(`/workspaces/${workspaceId}/items/${itemId}/tasks/${taskId}/move`, {
+    method: 'PATCH',
+    body: { column_id: columnId, position },
+  })
 }
 
 /** Plan: docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md */
@@ -2119,10 +2089,10 @@ export async function createDesignPage(
   itemId: string,
   name: string,
 ): Promise<DesignPage> {
-  return await apiFetch<DesignPage>(
-    `/workspaces/${workspaceId}/items/${itemId}/design/pages`,
-    { method: 'POST', body: { name } },
-  )
+  return await apiFetch<DesignPage>(`/workspaces/${workspaceId}/items/${itemId}/design/pages`, {
+    method: 'POST',
+    body: { name },
+  })
 }
 
 /**
@@ -2762,9 +2732,7 @@ export async function getMemories(): Promise<{ memories: Memory[] }> {
 
 export async function getMemoryDetail(name: string): Promise<MemoryDetailResponse> {
   try {
-    return await apiFetch<MemoryDetailResponse>(
-      `/memories/${encodeURIComponent(name)}`,
-    )
+    return await apiFetch<MemoryDetailResponse>(`/memories/${encodeURIComponent(name)}`)
   } catch (err) {
     // Preserve the "404 = not found" semantics — the caller uses the
     // returned shape to decide whether to show a "create new memory"
@@ -2786,20 +2754,16 @@ export async function createMemory(name: string, content: string): Promise<{ mem
 }
 
 export async function updateMemory(name: string, content: string): Promise<{ memory: Memory }> {
-  return await apiFetch<{ memory: Memory }>(
-    `/memories/${encodeURIComponent(name)}`,
-    {
-      method: 'PUT',
-      body: { content },
-    },
-  )
+  return await apiFetch<{ memory: Memory }>(`/memories/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    body: { content },
+  })
 }
 
 export async function deleteMemory(name: string): Promise<MemoryDeleteResponse> {
-  return await apiFetch<MemoryDeleteResponse>(
-    `/memories/${encodeURIComponent(name)}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<MemoryDeleteResponse>(`/memories/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  })
 }
 
 // Local Memories API (per-cwd memories at `<cwd>/.nalar/memories/`).
@@ -2873,10 +2837,7 @@ export async function updateLocalMemory(
   )
 }
 
-export async function deleteLocalMemory(
-  name: string,
-  cwd?: string,
-): Promise<MemoryDeleteResponse> {
+export async function deleteLocalMemory(name: string, cwd?: string): Promise<MemoryDeleteResponse> {
   return await apiFetch<MemoryDeleteResponse>(
     `/local-memories/${encodeURIComponent(name)}${cwdQuery(cwd)}`,
     { method: 'DELETE' },
@@ -2928,9 +2889,7 @@ export async function getGitStatus(cwd: string): Promise<GitStatus> {
 
 export async function getGitChanges(cwd: string): Promise<GitChangesResponse> {
   try {
-    return await apiFetch<GitChangesResponse>(
-      `/git/changes?path=${encodeURIComponent(cwd)}`,
-    )
+    return await apiFetch<GitChangesResponse>(`/git/changes?path=${encodeURIComponent(cwd)}`)
   } catch {
     // Return non-repo status on error (apiFetch also fires a toast
     // notification on non-2xx; the empty status fallback ensures the
@@ -3328,7 +3287,10 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   // "SSE never receives data" when the real cause is "no EventSource
   // was ever created because channels was empty".
   if (tokens.length === 0) {
-    console.error('[unifiedSSE] createUnifiedSseConnection: opts.channels is empty — no EventSource will be created', opts.channels)
+    console.error(
+      '[unifiedSSE] createUnifiedSseConnection: opts.channels is empty — no EventSource will be created',
+      opts.channels,
+    )
     throw new Error('createUnifiedSseConnection: opts.channels is empty')
   }
 
@@ -3639,10 +3601,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
             } catch (err) {
               console.error('[unifiedSSE] worker channel subscriber threw:', err)
             }
-          } else if (
-            opts.channels.llm &&
-            (obj.type === 'chunk' || obj.type === 'full')
-          ) {
+          } else if (opts.channels.llm && (obj.type === 'chunk' || obj.type === 'full')) {
             try {
               opts.channels.llm.onEvent(obj as unknown as SseEvent)
             } catch (err) {
@@ -4098,6 +4057,24 @@ export async function readFileContent(cwd: string, filePath: string): Promise<Re
   )
 }
 
+// File download URL builders for the `present_files` agent tool card
+// (PresentFiles.vue). Cookie-based auth like every other /api route,
+// so plain `<a href>` (download) and `<img src>` (thumbnail preview)
+// carry credentials — no fetch/blob/objectURL dance needed (unlike
+// the kanban thumbnail rehydrate in KanbanDescriptionEditor, which
+// needs File objects, not navigation).
+//
+// NOT via apiFetch: apiFetch only speaks JSON (`response.json()` +
+// 15s timeout + auto-toast). These return URL strings the template
+// binds directly.
+export function fileDownloadUrl(
+  sessionId: string,
+  filePath: string,
+  disposition: 'inline' | 'attachment' = 'attachment',
+): string {
+  return `${API_BASE}/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(filePath)}&disposition=${disposition}`
+}
+
 // Write file content API (for CodeEditor save)
 export async function writeFileContent(
   cwd: string,
@@ -4246,10 +4223,10 @@ export async function updateAgent(
   itemId: string,
   description: string,
 ): Promise<{ agent: Agent }> {
-  return await apiFetch<{ agent: Agent }>(
-    `/workspaces/${workspaceId}/items/${itemId}/agent`,
-    { method: 'PATCH', body: { description } },
-  )
+  return await apiFetch<{ agent: Agent }>(`/workspaces/${workspaceId}/items/${itemId}/agent`, {
+    method: 'PATCH',
+    body: { description },
+  })
 }
 
 // =====================================================================
@@ -4368,30 +4345,29 @@ export async function updateAgentKnowledge(
   knowledgeId: string,
   updates: { file_path?: string; label?: string; content?: string },
 ): Promise<AgentKnowledgeRow> {
-  return await apiFetch<AgentKnowledgeRow>(
-    `/agents/${agentId}/knowledge/${knowledgeId}`,
-    { method: 'PATCH', body: updates },
-  )
+  return await apiFetch<AgentKnowledgeRow>(`/agents/${agentId}/knowledge/${knowledgeId}`, {
+    method: 'PATCH',
+    body: updates,
+  })
 }
 
 export async function deleteAgentKnowledge(
   agentId: string,
   knowledgeId: string,
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agents/${agentId}/knowledge/${knowledgeId}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<{ ok: true }>(`/agents/${agentId}/knowledge/${knowledgeId}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function reorderAgentKnowledge(
   agentId: string,
   orderedIds: string[],
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agents/${agentId}/knowledge/reorder`,
-    { method: 'PATCH', body: { ordered_ids: orderedIds } },
-  )
+  return await apiFetch<{ ok: true }>(`/agents/${agentId}/knowledge/reorder`, {
+    method: 'PATCH',
+    body: { ordered_ids: orderedIds },
+  })
 }
 
 // ─── Agent System Prompt (Migration 080) ────────────────────────────────
@@ -4417,10 +4393,10 @@ export async function addAgentSystemPrompt(
   title: string,
   content: string,
 ): Promise<AgentSystemPromptRow> {
-  return await apiFetch<AgentSystemPromptRow>(
-    `/agents/${agentId}/system_prompt`,
-    { method: 'POST', body: { title, content } },
-  )
+  return await apiFetch<AgentSystemPromptRow>(`/agents/${agentId}/system_prompt`, {
+    method: 'POST',
+    body: { title, content },
+  })
 }
 
 export async function updateAgentSystemPrompt(
@@ -4428,30 +4404,29 @@ export async function updateAgentSystemPrompt(
   promptId: string,
   updates: { title?: string; content?: string },
 ): Promise<AgentSystemPromptRow> {
-  return await apiFetch<AgentSystemPromptRow>(
-    `/agents/${agentId}/system_prompt/${promptId}`,
-    { method: 'PATCH', body: updates },
-  )
+  return await apiFetch<AgentSystemPromptRow>(`/agents/${agentId}/system_prompt/${promptId}`, {
+    method: 'PATCH',
+    body: updates,
+  })
 }
 
 export async function deleteAgentSystemPrompt(
   agentId: string,
   promptId: string,
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agents/${agentId}/system_prompt/${promptId}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<{ ok: true }>(`/agents/${agentId}/system_prompt/${promptId}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function reorderAgentSystemPrompts(
   agentId: string,
   orderedIds: string[],
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agents/${agentId}/system_prompt/reorder`,
-    { method: 'PATCH', body: { ordered_ids: orderedIds } },
-  )
+  return await apiFetch<{ ok: true }>(`/agents/${agentId}/system_prompt/reorder`, {
+    method: 'PATCH',
+    body: { ordered_ids: orderedIds },
+  })
 }
 
 /**
@@ -4480,10 +4455,7 @@ export async function getAgentTools(agentId: string): Promise<{ tools: string[] 
  *
  * POST /api/agents/:agentId/tools
  */
-export async function enableAgentTool(
-  agentId: string,
-  toolName: string,
-): Promise<AgentToolRow> {
+export async function enableAgentTool(agentId: string, toolName: string): Promise<AgentToolRow> {
   return await apiFetch<AgentToolRow>(`/agents/${agentId}/tools`, {
     method: 'POST',
     body: { tool_name: toolName },
@@ -4498,14 +4470,8 @@ export async function enableAgentTool(
  *
  * DELETE /api/agents/:agentId/tools/:toolName
  */
-export async function disableAgentTool(
-  agentId: string,
-  toolName: string,
-): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agents/${agentId}/tools/${toolName}`,
-    { method: 'DELETE' },
-  )
+export async function disableAgentTool(agentId: string, toolName: string): Promise<{ ok: true }> {
+  return await apiFetch<{ ok: true }>(`/agents/${agentId}/tools/${toolName}`, { method: 'DELETE' })
 }
 
 // ─── Agent-Kanbans Mirror (Migration 081) ───────────────────────────────
@@ -4608,13 +4574,10 @@ export async function addAgentKanbanKnowledge(
   label?: string,
   content?: string,
 ): Promise<AgentKanbanKnowledgeRow> {
-  return await apiFetch<AgentKanbanKnowledgeRow>(
-    `/agent-kanbans/${kanbanId}/knowledge`,
-    {
-      method: 'POST',
-      body: { file_path: filePath, label: label ?? '', content: content ?? '' },
-    },
-  )
+  return await apiFetch<AgentKanbanKnowledgeRow>(`/agent-kanbans/${kanbanId}/knowledge`, {
+    method: 'POST',
+    body: { file_path: filePath, label: label ?? '', content: content ?? '' },
+  })
 }
 
 export async function updateAgentKanbanKnowledge(
@@ -4632,20 +4595,19 @@ export async function deleteAgentKanbanKnowledge(
   kanbanId: string,
   knowledgeId: string,
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agent-kanbans/${kanbanId}/knowledge/${knowledgeId}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<{ ok: true }>(`/agent-kanbans/${kanbanId}/knowledge/${knowledgeId}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function reorderAgentKanbanKnowledge(
   kanbanId: string,
   orderedIds: string[],
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agent-kanbans/${kanbanId}/knowledge/reorder`,
-    { method: 'PATCH', body: { ordered_ids: orderedIds } },
-  )
+  return await apiFetch<{ ok: true }>(`/agent-kanbans/${kanbanId}/knowledge/reorder`, {
+    method: 'PATCH',
+    body: { ordered_ids: orderedIds },
+  })
 }
 
 /**
@@ -4659,10 +4621,10 @@ export async function addAgentKanbanSystemPrompt(
   title: string,
   content: string,
 ): Promise<AgentKanbanSystemPromptRow> {
-  return await apiFetch<AgentKanbanSystemPromptRow>(
-    `/agent-kanbans/${kanbanId}/system_prompt`,
-    { method: 'POST', body: { title, content } },
-  )
+  return await apiFetch<AgentKanbanSystemPromptRow>(`/agent-kanbans/${kanbanId}/system_prompt`, {
+    method: 'POST',
+    body: { title, content },
+  })
 }
 
 export async function updateAgentKanbanSystemPrompt(
@@ -4680,20 +4642,19 @@ export async function deleteAgentKanbanSystemPrompt(
   kanbanId: string,
   promptId: string,
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agent-kanbans/${kanbanId}/system_prompt/${promptId}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<{ ok: true }>(`/agent-kanbans/${kanbanId}/system_prompt/${promptId}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function reorderAgentKanbanSystemPrompts(
   kanbanId: string,
   orderedIds: string[],
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agent-kanbans/${kanbanId}/system_prompt/reorder`,
-    { method: 'PATCH', body: { ordered_ids: orderedIds } },
-  )
+  return await apiFetch<{ ok: true }>(`/agent-kanbans/${kanbanId}/system_prompt/reorder`, {
+    method: 'PATCH',
+    body: { ordered_ids: orderedIds },
+  })
 }
 
 /**
@@ -4731,10 +4692,9 @@ export async function disableAgentKanbanTool(
   kanbanId: string,
   toolName: string,
 ): Promise<{ ok: true }> {
-  return await apiFetch<{ ok: true }>(
-    `/agent-kanbans/${kanbanId}/tools/${toolName}`,
-    { method: 'DELETE' },
-  )
+  return await apiFetch<{ ok: true }>(`/agent-kanbans/${kanbanId}/tools/${toolName}`, {
+    method: 'DELETE',
+  })
 }
 
 // ─── Session background processes (bg-completion) ────────────────────────────

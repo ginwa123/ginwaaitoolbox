@@ -16,6 +16,7 @@ pub const on_event_sent_kanban = @import("../../agentic_loop/on_event_sent_kanba
 pub const on_event_design = @import("../../agentic_loop/on_event_design.zig");
 pub const on_event_sent_design = @import("../../agentic_loop/on_event_sent_design.zig");
 pub const show_preview = @import("../../modules/agent/tools/show_preview.zig");
+pub const present_files = @import("../../modules/agent/tools/present_files.zig");
 pub const generate_image = @import("../../modules/agent/tools/generate_image.zig");
 pub const get_design_context = @import("../../modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("../../modules/agent/tools/preview_design_page.zig");

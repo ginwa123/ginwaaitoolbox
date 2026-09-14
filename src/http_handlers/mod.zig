@@ -37,6 +37,7 @@ pub const sseDisconnectHandler = @import("sse_disconnect.zig").sseDisconnectHand
 pub const pingHandler = @import("ping.zig").pingHandler;
 pub const sessionCompactHandler = @import("session_compact.zig").sessionCompactHandler;
 pub const systemFolderHandler = @import("system_folder.zig").systemFolderHandler;
+pub const filesDownloadHandler = @import("files_download.zig").filesDownloadHandler;
 pub const healthHandler = @import("health.zig").healthHandler;
 pub const shutdownHandler = @import("shutdown.zig").shutdownHandler;
 

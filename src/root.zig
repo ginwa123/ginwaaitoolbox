@@ -793,6 +793,7 @@ pub const move_design_element = @import("modules/agent/tools/move_design_element
 pub const move_element_to_page = @import("modules/agent/tools/move_element_to_page.zig");
 pub const get_design_context = @import("modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("modules/agent/tools/preview_design_page.zig");
+pub const present_files = @import("modules/agent/tools/present_files.zig");
 
 pub const config = @import("modules/config/Config.zig");
 pub const parse_thinking = @import("modules/config/parse_thinking.zig");
