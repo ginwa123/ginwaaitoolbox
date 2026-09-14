@@ -112,6 +112,22 @@ test "parseArgs: --x11 defaults to false" {
     try testing.expect(!cfg.force_x11);
 }
 
+test "parseArgs: --browser opens in default browser instead of webview" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--browser" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.browser);
+}
+
+test "parseArgs: browser defaults to false" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{"nalar-desktop"};
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(!cfg.browser);
+}
+
 test "parseArgs: --help prints usage and signals help" {
     const allocator = testing.allocator;
     const args = [_][]const u8{ "nalar-desktop", "--help" };

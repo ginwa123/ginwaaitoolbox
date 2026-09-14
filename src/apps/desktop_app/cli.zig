@@ -66,6 +66,10 @@ pub const Config = struct {
     /// `--x11` when they hit the symptom and are happy to pay the
     /// XWayland translation cost.
     force_x11: bool = false,
+    /// Browser-tab mode: open the resolved URL in the OS default
+    /// browser (new tab) instead of a native webview window, then
+    /// exit. Same attach/auto-spawn flow, no webview involved.
+    browser: bool = false,
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         if (self.nalar_path) |p| allocator.free(p);
@@ -122,6 +126,9 @@ const usage =
     \\                            WebKitGPUProcess silently fails to start and
     \\                            the web-process eats 1 CPU core doing software
     \\                            rasterization. No-op on macOS/Windows.
+    \\  --browser                Open the resolved URL in the OS default
+    \\                            browser (new tab) instead of a webview
+    \\                            window, then exit. Same attach flow.
     \\  --help, -h               Show this help
     \\
 ;
@@ -192,6 +199,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             // normally. The opt-in keeps the AMD/Intel+Wayland happy
             // path unchanged for users who don't need the workaround.
             cfg.force_x11 = true;
+        } else if (std.mem.eql(u8, arg, "--browser")) {
+            cfg.browser = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             // std.debug.print writes to stderr by default. Zig 0.16 removed
             // std.fs.File.stderr() in favor of std.Io.File.stderr() which
