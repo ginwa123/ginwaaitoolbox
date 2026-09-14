@@ -291,6 +291,12 @@ interface HtmlFramePalette {
   muted: string
   border: string
   link: string
+  /** Chip behind `code`/`pre`/table cells — matches the app's
+   *  `.markdown-content pre` (`--color-bg-p1`). */
+  chip: string
+  /** Inline `code` ink — matches the app's `.markdown-content code`
+   *  (`--color-aqua`). */
+  codeInk: string
 }
 
 const HTML_FRAME_PALETTE_FALLBACK: HtmlFramePalette = {
@@ -299,6 +305,8 @@ const HTML_FRAME_PALETTE_FALLBACK: HtmlFramePalette = {
   muted: '#a6a69c', // --semantic-text-muted
   border: '#282727', // --color-border
   link: '#8ba4b0', // --semantic-link
+  chip: '#282727', // --color-bg-p1
+  codeInk: '#8ea4a2', // --color-aqua
 }
 
 let htmlFramePalette: HtmlFramePalette | null = null
@@ -320,6 +328,8 @@ const resolveHtmlFramePalette = (): HtmlFramePalette => {
     muted: readCssVar('--semantic-text-muted', fallback.muted),
     border: readCssVar('--color-border', fallback.border),
     link: readCssVar('--semantic-link', fallback.link),
+    chip: readCssVar('--color-bg-p1', fallback.chip),
+    codeInk: readCssVar('--color-aqua', fallback.codeInk),
   }
   return htmlFramePalette
 }
@@ -338,6 +348,15 @@ const resolveHtmlFramePalette = (): HtmlFramePalette => {
  *   3. The auto-resize reporter (helpers/iframeAutoResize.ts) — the parent
  *      grows the frame to its content instead of clipping it behind an
  *      inner scrollbar at the browser's 150 px default height.
+ *
+ * Text SURFACES are forced with `!important`. The model authors this HTML
+ * blind — it has no idea the transcript is dark, so it writes for a light
+ * page (real payload: `style="background:#f6f8fa"` on every `<pre>`, GitHub's
+ * light code chip). An inline style beats this stylesheet, which left the
+ * frame's light ink on the payload's own light chip: measured 1.57:1
+ * contrast, i.e. washed out. Forcing the chip + ink keeps every block
+ * readable while leaving the rest of the payload's styling (layout, spans,
+ * callout colours) alone.
  */
 const buildHtmlSrcdoc = (block: string): string => {
   const trimmed = block.trim()
@@ -353,11 +372,15 @@ const buildHtmlSrcdoc = (block: string): string => {
     `body{font-family:system-ui,sans-serif;background:${p.bg};color:${p.fg};margin:8px}` +
     `a{color:${p.link}}` +
     'img{max-width:100%}' +
-    'code,pre{font-family:ui-monospace,"SF Mono",Menlo,monospace;' +
-    'background:rgba(255,255,255,.07);border-radius:3px}' +
-    'code{padding:.1em .3em}' +
-    'pre{padding:.6em .8em;overflow-x:auto}' +
-    `table{border-collapse:collapse}th,td{border:1px solid ${p.border};padding:4px 8px}` +
+    `pre,code,th,td{background:${p.chip}!important;color:${p.fg}!important}` +
+    'code{font-family:ui-monospace,"SF Mono",Menlo,monospace;padding:.1em .3em;border-radius:3px}' +
+    `code{color:${p.codeInk}!important}` +
+    'pre{font-family:ui-monospace,"SF Mono",Menlo,monospace;padding:.6em .8em;' +
+    'border-radius:4px;overflow-x:auto}' +
+    'pre code{background:transparent!important;padding:0}' +
+    `pre code{color:${p.fg}!important}` +
+    'table{border-collapse:collapse}' +
+    `th,td{border:1px solid ${p.border};padding:4px 8px}` +
     `hr{border:none;border-top:1px solid ${p.border}}` +
     `blockquote{margin:.6em 0;padding-left:.8em;border-left:3px solid ${p.border};color:${p.muted}}` +
     '</style>' +
