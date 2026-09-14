@@ -6,7 +6,6 @@ import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useNotificationStore } from '../../stores/notifications'
-import { useTabsStore } from '../../stores/tabs'
 import WorkspaceList from '../workspace/WorkspaceList.vue'
 import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
@@ -141,7 +140,6 @@ const openTaskPicker = (workspaceId: string, itemId: string) => {
 
 const workspacesStore = useWorkspacesStore()
 const sidebarStore = useSidebarStore()
-const tabsStore = useTabsStore()
 
 // State
 const isCollapsed = computed(() => props.collapsed ?? false)
@@ -367,9 +365,9 @@ const handleDeleteConfirm = () => {
 const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWorkspace(workspaceId)
 
 /**
- * Ctrl/Cmd+click (or middle click) on a workspace item: remember the
- * target as a background tab and stay where the user is. The click never
- * navigates, so nothing in the render chain has to know about it.
+ * Ctrl/Cmd+click (or middle click) on a workspace item: open a real
+ * browser tab and stay where the user is. The click never navigates,
+ * so nothing in the render chain has to know about it.
  */
 const handleOpenItemInBackground = (payload: {
   workspaceId: string
@@ -377,13 +375,11 @@ const handleOpenItemInBackground = (payload: {
   name: string
   itemType?: string
 }) => {
-  tabsStore.openInBackground({
+  const href = router.resolve({
     path: '/app',
     query: { view: 'workspace', workspaceId: payload.workspaceId, itemId: payload.itemId },
-    title: payload.name,
-    kind: 'workspace',
-    itemType: payload.itemType,
-  })
+  }).href
+  window.open(href, '_blank', 'noopener')
 }
 
 const handleSelectItem = async (workspaceId: string, itemId: string) => {

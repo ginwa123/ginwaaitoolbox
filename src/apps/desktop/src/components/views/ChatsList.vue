@@ -5,7 +5,6 @@ import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
-import { useTabsStore } from '../../stores/tabs'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
@@ -74,10 +73,10 @@ const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
 const chatsTotal = ref(0)
 
-// Right-click context menu for a chat row. Mirrors TabBar's tab-menu
-// pattern but offers "Open in new tab" (tabsStore.openInBackground)
-// since list rows are not open tabs yet. Positioned fixed via
-// Teleport to body so VirtualScroller overflow never clips it.
+// Right-click context menu for a chat row. Offers "Open in new tab",
+// which opens a real browser tab (window.open) and stays put.
+// Positioned fixed via Teleport to body so VirtualScroller overflow
+// never clips it.
 const contextMenu = ref<{ id: string; name: string; x: number; y: number } | null>(null)
 
 const onChatRowContextMenu = (event: MouseEvent, item: { id: string; name: string }) => {
@@ -103,10 +102,7 @@ const onContextMenuPointerDown = (event: MouseEvent) => {
 const openContextMenuInBackground = () => {
   const menu = contextMenu.value
   if (!menu) return
-  // Tab mode defaults to OFF, so a background open would be invisible
-  // (strip hidden). An explicit "Open in new tab" opts into tab mode.
-  if (!tabsStore.enabled) tabsStore.setEnabled(true)
-  openChatInBackground({ id: menu.id, name: menu.name })
+  openChatInNewTab({ id: menu.id, name: menu.name })
   closeContextMenu()
 }
 
@@ -315,7 +311,6 @@ const loadChats = async () => {
     console.error('Failed to load chats:', err)
     navItems.value = []
   } finally {
-    publishChatTitles()
     console.log(
       '[ChatsList] loadChats finished, chatsLoading:',
       chatsLoading.value,
@@ -381,34 +376,19 @@ const createChat = () => {
   emit('navigate', `chat-${newChatId}`, name)
 }
 
-const tabsStore = useTabsStore()
-
 /**
- * The tab strip shows chats the user may never have navigated to, so it
- * cannot rely on the open-time title alone — publish whatever the list just
- * loaded. Only already-open tabs are touched.
+ * Ctrl/Cmd+click, middle click and the context menu open a chat in a
+ * real browser tab (window.open) instead of navigating — the browser
+ * gesture. A plain click keeps the previous behaviour.
  */
-const publishChatTitles = () => {
-  for (const entry of navItems.value) tabsStore.setChatTitle(entry.id, entry.name)
-}
-
-/**
- * Ctrl/Cmd+click and middle click open a chat in a background tab instead
- * of navigating — the browser gesture, and the reason the strip exists. A
- * plain click keeps the previous behaviour.
- */
-const openChatInBackground = (item: { id: string; name: string }) => {
-  tabsStore.openInBackground({
-    path: '/app',
-    query: { view: 'chat', session: item.id },
-    title: item.name,
-    kind: 'chat',
-  })
+const openChatInNewTab = (item: { id: string; name: string }) => {
+  const href = router.resolve({ path: '/app', query: { view: 'chat', session: item.id } }).href
+  window.open(href, '_blank', 'noopener')
 }
 
 const onChatRowClick = (event: MouseEvent, item: { id: string; name: string }) => {
   if (isBackgroundOpenEvent(event)) {
-    openChatInBackground(item)
+    openChatInNewTab(item)
     return
   }
   void setActive(item.id)
@@ -417,7 +397,7 @@ const onChatRowClick = (event: MouseEvent, item: { id: string; name: string }) =
 const onChatRowAuxClick = (event: MouseEvent, item: { id: string; name: string }) => {
   if (event.button !== 1) return
   event.preventDefault()
-  openChatInBackground(item)
+  openChatInNewTab(item)
 }
 
 const setActive = async (id: string) => {
