@@ -14,7 +14,6 @@ import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
 import TabBar from './shell/TabBar.vue'
 import KanbanView from './kanban/KanbanView.vue'
-import KanbanChatDialog from './kanban/KanbanChatDialog.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
 import RoutineView from './views/RoutineView.vue'
@@ -44,10 +43,7 @@ import {
 } from '../composables/useCodeEditor'
 import { useDesignHandlers } from '../composables/useDesignHandlers'
 import { buildTaskUrlQuery } from '../helpers/buildTaskUrlQuery'
-import {
-  buildItemIdWithChat,
-  parseItemIdWithChat,
-} from '../helpers/buildItemIdWithChat'
+import { buildItemIdWithChat, parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 
 const router = useRouter()
 const route = useRoute()
@@ -65,8 +61,12 @@ const sidebarRef = ref<InstanceType<typeof Sidebar> | null>(null)
 // handler, Windows resize coalescing) in the running app. mount() is a
 // no-op in prod builds; unmount on teardown keeps HMR clean.
 import { mount as mountFpsOverlay, unmount as unmountFpsOverlay } from '../helpers/fpsOverlay'
-onMounted(() => { mountFpsOverlay() })
-onUnmounted(() => { unmountFpsOverlay() })
+onMounted(() => {
+  mountFpsOverlay()
+})
+onUnmounted(() => {
+  unmountFpsOverlay()
+})
 
 // Settings overlay state (now driven by route)
 
@@ -552,7 +552,6 @@ const handleNavigate = (
     router.push({ path: '/app/settings' })
   }
 }
- 
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const _handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) => {
@@ -632,7 +631,6 @@ const closeGitViewer = () => {
 
 // Skill viewer state
 const skillViewerSkill = ref<api.Skill | null>(null)
- 
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const _handleRightSidebarSkillClick = (skill: api.Skill) => {
@@ -776,7 +774,6 @@ const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOption
     codeEditorLoading.value = false
   }
 }
- 
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const _handleCodeEditorFileClick = (file: api.FolderEntry) => {
@@ -963,24 +960,15 @@ const activeTask = computed(() => workspacesStore.activeTask)
 // tasks across all workspaces.
 const activeTaskWorkspaceItemId = computed(() => workspacesStore.activeTaskWorkspaceItemId)
 
-// ─── KanbanChatDialog open state (plan: 2026-08-06-kanban-chat-as-dialog) ────
+// ─── Kanban task chat ────────────────────────────────────────────────────────
 //
-// The dialog uses `v-model:show` for two-way binding. We drive the
-// `show` ref from `activeTask` so the dialog opens whenever the user
-// navigates to a kanban task (via URL `?view=task&task=<id>` or by
-// clicking a card) and closes when `activeTask` is cleared (via
-// @close → handleCloseTaskView → setActiveTask(null)).
-//
-// The dialog also has its own `close` emit which we forward to
-// handleCloseTaskView for URL cleanup.
-const kanbanChatDialogOpen = ref(false)
-watch(
-  () => activeTask.value,
-  (t) => {
-    kanbanChatDialogOpen.value = !!t
-  },
-  { immediate: true },
-)
+// The kanban task chat is a normal view in the <main> chain (see the
+// `activeWorkspaceItem.item_type === 'kanban'` branch, which sits BEFORE
+// the KanbanView branch), not a modal. There is therefore no open-state
+// ref or watcher here: the chain's `activeTask` gate IS the state, and the
+// board tab and the chat tab are two different tab keys pointing at the
+// same item. Closing is handled by handleCloseTaskView, which closes the
+// owning tab when tab mode gives the chat one.
 
 // Captured from DesignView's `openChat` payload — the design page's
 // own name (NOT the workspace item name). The dialog's header uses
@@ -1054,8 +1042,8 @@ const activeDesignChatTask = computed<TaskType | null>(() => {
 
 // ─── DesignChatDialog open state (plan: 2026-08-06-design-chat-as-dialog) ────
 //
-// Same v-model:show pattern as KanbanChatDialog above. The design
-// dialog opens whenever activeDesignChatTaskId is set AND the
+// Same v-model:show pattern the kanban chat modal used to have. The
+// design dialog opens whenever activeDesignChatTaskId is set AND the
 // active item is a design — the gating happens in the template
 // (v-if), not here. We drive `show` from `activeDesignChatTaskId`
 // (NOT from `activeTask` like the kanban version) because the
@@ -1066,7 +1054,7 @@ const activeDesignChatTask = computed<TaskType | null>(() => {
 // RIGHT-side column of a 3-column DesignView | resize-handle |
 // ChatView layout, with a floating collapse button to hide it. The
 // 3-column took ~40% of the canvas even when "minimised". Switching
-// to a centred modal dialog (mirrors KanbanChatDialog) reclaims the
+// to a centred modal dialog reclaims the
 // full canvas width — the dialog opens on top of the canvas with a
 // dimmed backdrop. The collapse-state + design resize handle +
 // DESIGN_WIDTH_STORAGE_KEY localStorage are removed below.
@@ -1177,8 +1165,7 @@ async function handleAgentKnowledgeCreate(filePath: string, label: string, conte
     agentKnowledge.value = [...agentKnowledge.value, newRow]
     closeAgentKnowledgeDialog()
   } catch (e) {
-    agentKnowledgeError.value =
-      e instanceof Error ? e.message : 'Failed to add knowledge'
+    agentKnowledgeError.value = e instanceof Error ? e.message : 'Failed to add knowledge'
     // Keep the dialog open so the user can see + retry.
   } finally {
     agentKnowledgeBusy.value = false
@@ -1236,9 +1223,7 @@ async function handleAgentKnowledgeSave(
     // one of them '') so a File↔Text mode switch flips the row cleanly.
     const updated = await api.updateAgentKnowledge(itemId, knowledgeId, updates)
     // Replace in place so list order is preserved.
-    agentKnowledge.value = agentKnowledge.value.map((k) =>
-      k.id === knowledgeId ? updated : k,
-    )
+    agentKnowledge.value = agentKnowledge.value.map((k) => (k.id === knowledgeId ? updated : k))
     closeAgentKnowledgeDetailDialog()
   } catch (e) {
     // ApiError carries the backend's JSON body (e.g. {"error":"..."}).
@@ -1246,8 +1231,10 @@ async function handleAgentKnowledgeSave(
     // Request" — the user needs to know WHAT was rejected.
     agentKnowledgeDetailError.value =
       e instanceof api.ApiError && e.body
-        ? tryParseErrorBody(e.body) ?? e.message
-        : e instanceof Error ? e.message : 'Failed to update knowledge'
+        ? (tryParseErrorBody(e.body) ?? e.message)
+        : e instanceof Error
+          ? e.message
+          : 'Failed to update knowledge'
     // Keep the dialog open so the user can see + retry.
   } finally {
     agentKnowledgeDetailBusy.value = false
@@ -1282,7 +1269,9 @@ function handleAgentAddSystemPrompt() {
   agentSystemPromptDialogOpen.value = true
 }
 
-function handleAgentEditSystemPrompt(row: api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow) {
+function handleAgentEditSystemPrompt(
+  row: api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow,
+) {
   if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
   agentSystemPromptRow.value = row as api.AgentSystemPromptRow
   agentSystemPromptError.value = null
@@ -1310,8 +1299,10 @@ async function handleAgentSystemPromptCreate(title: string, content: string) {
     // Surface the backend's specific error message when available.
     agentSystemPromptError.value =
       e instanceof api.ApiError && e.body
-        ? tryParseErrorBody(e.body) ?? e.message
-        : e instanceof Error ? e.message : 'Failed to add system prompt'
+        ? (tryParseErrorBody(e.body) ?? e.message)
+        : e instanceof Error
+          ? e.message
+          : 'Failed to add system prompt'
     // Keep the dialog open so the user can see + retry.
   } finally {
     agentSystemPromptBusy.value = false
@@ -1337,8 +1328,10 @@ async function handleAgentSystemPromptSave(
   } catch (e) {
     agentSystemPromptError.value =
       e instanceof api.ApiError && e.body
-        ? tryParseErrorBody(e.body) ?? e.message
-        : e instanceof Error ? e.message : 'Failed to update system prompt'
+        ? (tryParseErrorBody(e.body) ?? e.message)
+        : e instanceof Error
+          ? e.message
+          : 'Failed to update system prompt'
   } finally {
     agentSystemPromptBusy.value = false
   }
@@ -1363,17 +1356,14 @@ async function handleAgentRemoveSystemPrompt(promptId: string) {
 async function handleAgentToggleTool(toolName: string, enabled: boolean) {
   if (!activeWorkspaceItem.value) return
   const agentId = activeWorkspaceItem.value.id
-  const { nextLocal, serverPromise } = buildToggle(
-    agentTools.value, toolName, enabled, agentId,
-    {
-      enableAgentTool: api.enableAgentTool,
-      disableAgentTool: api.disableAgentTool,
-      refetchAgentTools: async (id) => {
-        const data = await api.getAgentTools(id)
-        return data.tools
-      },
+  const { nextLocal, serverPromise } = buildToggle(agentTools.value, toolName, enabled, agentId, {
+    enableAgentTool: api.enableAgentTool,
+    disableAgentTool: api.disableAgentTool,
+    refetchAgentTools: async (id) => {
+      const data = await api.getAgentTools(id)
+      return data.tools
     },
-  )
+  })
   // Optimistic update.
   agentTools.value = nextLocal
   const out = await serverPromise
@@ -1458,6 +1448,35 @@ async function handleAgentToggleToolsBulk(toolNames: string[], enabled: boolean)
 // list's active row (a kanban task has its own session, not a
 // chat-row session). Clearing activeTask is sufficient.
 const handleCloseTaskView = () => {
+  // Tab mode: a kanban task chat owns its own tab, so "close the chat" means
+  // "close that tab". Falling through to the router.replace below would rewrite
+  // the CHAT tab's target to the bare board key instead — the funnel would then
+  // focus the existing board tab and leave the chat tab behind as an orphaned
+  // stale pointer.
+  //
+  // Scoped to kanban on purpose: design opens its chat as a dialog INSIDE the
+  // canvas tab (closing it must keep that tab), and agent items are out of
+  // scope for this change.
+  const closingTab = tabsStore.activeTab
+  const closingChatTaskId = closingTab
+    ? parseItemIdWithChat(closingTab.query.itemId ?? '').chatTaskId
+    : null
+  if (
+    tabsStore.enabled &&
+    activeWorkspaceItem.value?.item_type === 'kanban' &&
+    closingTab?.kind === 'workspace' &&
+    closingChatTaskId
+  ) {
+    workspacesStore.setActiveTask(null)
+    navigationStore.clearActiveChat()
+    // close() activates the right neighbour, else the left. The chat tab was
+    // inserted directly after the board tab, so this lands back on the board.
+    // When the chat tab is the ONLY tab, close() opens a fresh home tab — the
+    // browser-like fallback, deliberately not special-cased.
+    tabsStore.close(closingTab.id)
+    applyActiveTabToUrl()
+    return
+  }
   // CHATVIEW-BUG (fix): setActiveTask(null) does NOT clear the
   // navigation store's active chat anymore (the unconditional clear
   // broke the chat-nav paths in Sidebar.vue:316-322 and
@@ -2027,13 +2046,11 @@ const handleDesignDeleteElement = async (elementId: string): Promise<void> => {
  * into `item.design_elements[]` so the canvas re-renders without a
  * manual refresh. Errors surface as a notification toast.
  */
-const handleDesignCreateElement = async (
-  body: {
-    name: string
-    type: DesignElementApi['type']
-    html: string
-  },
-): Promise<void> => {
+const handleDesignCreateElement = async (body: {
+  name: string
+  type: DesignElementApi['type']
+  html: string
+}): Promise<void> => {
   const ws = activeWorkspace.value
   const item = activeWorkspaceItem.value
   if (!ws || !item) return
@@ -2066,8 +2083,8 @@ const rightSidebarCwd = computed(() => {
 //      fetchChatSessionCwd for the `?view=chat&session=X` URL
 //      path. Reads the session's persisted cwd from the DB.
 //   2. activeWorkspaceItem.path — used for the workspace-item +
-//      chat-task paths (KanbanChatDialog, DesignChatDialog, and
-//      the new standard-task-chat branch added for task
+//      chat-task paths (the kanban chat branch, DesignChatDialog,
+//      and the standard-task-chat branch added for task
 //      task_1787027750097). The chat runs in the workspace item's
 //      directory.
 //   3. '' — empty fallback. Should not happen in practice because
@@ -2515,12 +2532,44 @@ defineExpose({
         @rename-item="handleKanbanRenameItem"
         @copy-spec="handleOpenCopyKanbanSpec"
       />
+      <!-- Kanban task chat (inline view, own tab). When a chat task that
+           belongs to THIS kanban item is active, the chat is the main
+           surface. It MUST be a v-else-if in this chain and placed BEFORE
+           the KanbanView branch below — the KanbanView branch only tests
+           `item_type === 'kanban'`, so it would otherwise win the chain and
+           the chat would never render; and a standalone v-if here would
+           start a NEW chain and stack board + chat.
+
+           The chat tab (URL `itemId=I/chat/<taskId>`) and the board tab
+           (bare `itemId=I`) carry different tab keys, so this one branch
+           gives each tab its own body with no extra state. `:key` forces a
+           fresh mount per task, preserving useChatScrollRestore's
+           per-session scroll contract when the user switches cards.
+           `:show-header` renders ChatView's own header (task name + ✕) so
+           the chat stays closable with tab mode off; the ✕ routes through
+           handleCloseTaskView, which closes the tab when one owns the chat. -->
+      <ChatView
+        v-else-if="
+          activeWorkspaceItem &&
+          activeWorkspaceItem.item_type === 'kanban' &&
+          activeTask &&
+          activeTaskWorkspaceItemId === activeWorkspaceItem.id
+        "
+        :key="'kanban-chat-' + activeTask.id"
+        :chat-id="activeTask.id"
+        :chat-name="activeTask.name ?? ''"
+        :type="'task'"
+        :cwd="effectiveChatCwd"
+        :show-header="true"
+        @update-chat-id="handleUpdateChatId"
+        @close="handleCloseTaskView"
+      />
       <!-- Kanban view (kanban-embed-chatview plan, Task 5). The kanban
            now owns the chat pane + resize handle internally — the old
            3-column sibling-of-KanbanView branch (was at lines
            1716-1814) is GONE. KanbanView renders the full-width board
-           when no task is active, or the board+chat side-by-side when
-           a task belonging to this kanban is selected. The :key on
+           when no task is active (the kanban chat branch above claims the
+           task-active case). The :key on
            KanbanView forces a fresh mount when the user navigates
            from one kanban to another (KanbanView fetches columns on
            mount). `@close-chat` fires when ChatView's close button is
@@ -2547,37 +2596,12 @@ defineExpose({
         @close-chat="handleCloseTaskView"
       />
       <!--
-        Kanban chat dialog (plan: 2026-08-06-kanban-chat-as-dialog).
-        Mounted at the AppLayout level (NOT inside KanbanView) so the
-        chat opens as a centered modal overlay rather than a side-by-
-        side layout. Gated on `activeTaskWorkspaceItemId === activeWorkspaceItem.id`
-        so the dialog only opens for kanban items — design / routine
-        / standalone chat use their own mounts. `v-model:show` is
-        driven by the kanbanChatDialogOpen ref, kept in sync with
-        `activeTask` via a watcher so the dialog opens when the user
-        navigates to a kanban task and closes when they navigate away.
-        URL routing is handled by AppLayout's existing
-        handleCloseTaskView (re-used via @close).
-      -->
-      <KanbanChatDialog
-        v-if="
-          activeWorkspaceItem &&
-          activeWorkspaceItem.item_type === 'kanban' &&
-          activeTask &&
-          activeTaskWorkspaceItemId === activeWorkspaceItem.id
-        "
-        v-model:show="kanbanChatDialogOpen"
-        :task="activeTask"
-        :workspace-id="activeWorkspace?.id ?? ''"
-        :item-id="activeWorkspaceItem.id"
-        :project-name="activeWorkspaceItem.name ?? ''"
-        :cwd="activeWorkspaceItem.path ?? ''"
-        @close="handleCloseTaskView"
-      />
-      <!--
         Design chat dialog (plan: 2026-08-06-design-chat-as-dialog).
-        Mirrors the KanbanChatDialog mount above — same Teleport
-        pattern, same v-model:show binding driven by `activeTask`.
+        Same Teleport pattern as the kanban task chat used to have, and
+        the same v-model:show binding driven by `activeDesignChatTaskId`.
+        This `v-if` (not `v-else-if`) starts its own chain — that is
+        deliberate and pre-existing: DesignView's `v-else-if` below
+        attaches to THIS element, not to the kanban chain above.
         Mounted at the AppLayout level (NOT inside DesignView) so the
         chat opens as a centred modal overlay rather than a side-by-
         side column. Gated on `item_type === 'design'` so the dialog
@@ -2606,22 +2630,24 @@ defineExpose({
         SIMPLIFY-URL-BROWSER (2026-08-15): the legacy
         `<ChatView v-else-if="currentView === 'task' && activeTask">`
         branch has been removed. Under the new URL scheme the URL
-        never says `view=task` — the chat dialog is always a
-        sub-state of the workspace view. Kanban tasks open via
-        KanbanChatDialog (gated on
+        never says `view=task` — the chat is always a
+        sub-state of the workspace view. Kanban tasks open via the
+        inline <ChatView> branch (gated on
         `activeTaskWorkspaceItemId === activeWorkspaceItem.id`),
         design tasks via DesignChatDialog (gated on
         `activeDesignChatTaskId`), and standard task chats
         (folder / memory / chat items) via the inline <ChatView>
         branch below. The pre-fix "out-of-scope" gap for non-
         kanban / non-design items is closed by that branch.
+        (2026-09-14: the kanban branch is no longer a modal — see the
+        comment on the kanban chat branch itself.)
       -->
       <!--
         STALE MOUNT removed (kanban-chat-as-dialog plan, 2026-08-06).
         This <KanbanView> mount was a v-else-if continuation of the
-        chain that started with the <KanbanChatDialog v-if> at line 1691.
+        chain that started with the kanban chat dialog's v-if.
         Vue evaluates v-if / v-else-if / v-else within one chain,
-        but KanbanChatDialog's `v-if` (not `v-else-if`) started a
+        but that dialog's `v-if` (not `v-else-if`) started a
         NEW chain — so this mount and the correct mount at line 1655
         (also a v-else-if but in a different outer chain) both fired
         when activeWorkspaceItem.item_type === 'kanban' and no chat
@@ -2782,8 +2808,8 @@ defineExpose({
         Standard task chat (folder / memory / chat items — anything
         that isn't a kanban, design, OR agent). FIX for blank
         chatview (task_1787027750097, 2026-08-14): the
-        simplify-url-browser plan (#246) wired kanban
-        (KanbanChatDialog) and design (DesignChatDialog) chat-open
+        simplify-url-browser plan (#246) wired the kanban chat
+        and design (DesignChatDialog) chat-open
         paths but listed "folder tasks … out-of-scope edge case".
         A user with a chat task on a folder / memory / chat
         workspace item hit a dead zone: setActiveTask fires,

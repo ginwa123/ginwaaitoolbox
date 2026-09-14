@@ -6,7 +6,7 @@
 // and the workspace item Y was NOT a kanban or design (e.g. a folder
 // item holding a "standard" chat task), AppLayout's v-else-if chain
 // had no matching branch:
-//   - KanbanView / KanbanChatDialog — gated on item_type === 'kanban'
+//   - KanbanView / the kanban chat branch — gated on item_type === 'kanban'
 //   - DesignView / DesignChatDialog — gated on item_type === 'design'
 //   - <ChatView v-else-if="activeChatId.startsWith('chat-')">
 //     — gated on activeChatId, which setActiveTask CLEARS
@@ -138,7 +138,6 @@ function mountApp(): VueWrapper {
         CodeEditor: true,
         KanbanView: true,
         DesignView: true,
-        KanbanChatDialog: true,
         DesignChatDialog: true,
       },
     },
@@ -266,10 +265,12 @@ describe('AppLayout — standard task chat (folder / memory / chat items)', () =
     wrapper.unmount()
   })
 
-  it('does NOT render <ChatView> via this branch when the active task belongs to a kanban (KanbanChatDialog wins)', async () => {
-    // The new branch is gated on `item_type !== 'kanban' && !== 'design'`,
-    // so a kanban task routes through KanbanChatDialog, not this
-    // branch. Guards against an accidental double-mount.
+  it('does NOT route a kanban task through this branch (its chat is the kanban view)', async () => {
+    // This branch is gated on `item_type !== 'kanban' && !== 'design'`, so a
+    // kanban task is claimed by the kanban chat branch instead. Guards against
+    // an accidental double-mount. Both branches mount a <ChatView>, so the
+    // discriminator is the chat id: THIS branch passes `chat-${task.id}` while
+    // the kanban branch passes the bare task id (migration 052).
     const ws = useWorkspacesStore()
     ws.workspaces = [
       {
@@ -292,10 +293,10 @@ describe('AppLayout — standard task chat (folder / memory / chat items)', () =
     ws.setActiveTask(TASK_ID)
     const wrapper = mountApp()
     await nextTick()
-    // KanbanChatDialog is stubbed as true (default stub); ChatView
-    // is NOT rendered via the new branch — the new branch's
-    // item_type check filters kanban items.
-    expect(wrapper.find('[data-testid="chatview-stub"]').exists()).toBe(false)
+    const stub = wrapper.find('[data-testid="chatview-stub"]')
+    expect(stub.exists()).toBe(true)
+    expect(stub.attributes('data-chat-id')).toBe(TASK_ID)
+    expect(stub.attributes('data-chat-id')).not.toBe(`chat-${TASK_ID}`)
     wrapper.unmount()
   })
 

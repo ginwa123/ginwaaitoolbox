@@ -391,20 +391,35 @@ describe('tabs store', () => {
       expect(tabs.activeTabId).toBe(a.id)
     })
 
-    it('keeps ONE tab for a kanban item, however many task chats are opened', () => {
+    it('gives every kanban task chat its own tab, leaving the board tab open', () => {
       const tabs = useTabsStore()
       const boardTab = tabs.open({ query: board('item_7'), itemType: 'kanban' })
       const withTask = { ...board('item_7'), itemId: 'item_7/chat/task_9' }
 
+      // a card click lands on its own tab — never the board's
       const result = tabs.syncFromTarget('/app', withTask, 'kanban')
-      expect(result.query.tab).toBe(boardTab.id)
-      expect(tabs.tabCount).toBe(2)
-      expect(tabs.activeTabId).toBe(boardTab.id)
-      // the tab's stored target follows the dialog, so a reload restores it
-      expect(tabs.tabs.find((t) => t.id === boardTab.id)?.query).toEqual(withTask)
+      expect(result.query.tab).not.toBe(boardTab.id)
+      expect(tabs.tabCount).toBe(3)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+      // the tab's stored target is the chat, so a reload restores the chat
+      expect(tabs.activeTab?.query).toEqual(withTask)
+      // ...and the board tab is untouched and still open
+      expect(tabs.tabs.find((t) => t.id === boardTab.id)?.query).toEqual(board('item_7'))
 
+      // a second card is a second tab
       tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_10' }, 'kanban')
-      expect(tabs.tabCount).toBe(2)
+      expect(tabs.tabCount).toBe(4)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_10')
+
+      // re-selecting one of them focuses that tab rather than adding another
+      tabs.syncFromTarget('/app', withTask, 'kanban')
+      expect(tabs.tabCount).toBe(4)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+
+      // going back to the bare board focuses the board tab again
+      const backToBoard = tabs.syncFromTarget('/app', board('item_7'), 'kanban')
+      expect(backToBoard.query.tab).toBe(boardTab.id)
+      expect(tabs.tabCount).toBe(4)
       expect(tabs.activeTabId).toBe(boardTab.id)
     })
 
@@ -426,15 +441,38 @@ describe('tabs store', () => {
       expect(tabs.tabCount).toBe(3)
     })
 
-    it('adopts a tab created before the item type was known (cold-boot deep link)', () => {
+    it('needs no adoption for a kanban task chat — the cold-boot key is canonical', () => {
       const tabs = useTabsStore()
       // the tree has not loaded yet → the type is unknown → task-level identity
       const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
       expect(tabs.tabCount).toBe(2)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
 
-      // once the type is known the SAME tab is re-keyed — never duplicated
-      const second = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' }, 'kanban')
+      // learning the type is a no-op: same tab, same key, no re-key, no duplicate
+      const second = tabs.syncFromTarget(
+        '/app',
+        { ...board('item_7'), itemId: 'item_7/chat/task_9' },
+        'kanban',
+      )
+      expect(second.query.tab).toBe(first.query.tab)
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+    })
+
+    it('adopts a cold-boot tab once the type is known (design still shares the item tab)', () => {
+      const tabs = useTabsStore()
+      // the tree has not loaded yet → the type is unknown → task-level identity
+      const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
+      expect(tabs.tabCount).toBe(2)
+      expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+
+      // design renders its chat INSIDE the canvas tab, so the provisional tab is
+      // re-keyed onto the item's identity in place — never duplicated
+      const second = tabs.syncFromTarget(
+        '/app',
+        { ...board('item_7'), itemId: 'item_7/chat/task_9' },
+        'design',
+      )
       expect(second.query.tab).toBe(first.query.tab)
       expect(tabs.tabCount).toBe(2)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')

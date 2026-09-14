@@ -1,5 +1,11 @@
 # Kanban Chat — Convert Side-by-Side Pane into Centered Modal Dialog — Design
 
+> **SUPERSEDED (2026-09-14).** The modal this spec designs was replaced by a
+> normal view so the kanban chat could live in its own browser-style tab. See
+> `docs/superpowers/plans/2026-09-14-kanban-task-opens-its-own-tab.md` and
+> `docs/SPEC.md` §3.7.7.1. Kept for the rationale at the time, not as current
+> behaviour — `KanbanChatDialog.vue` no longer exists.
+
 > **For agentic workers:** This is a design spec. After the user approves, the next step is to invoke the `superpowers:writing-plans` skill to create a bite-sized implementation plan.
 
 **Goal:** Replace the current side-by-side `[kanban board] [resize-handle] [ChatView]` layout (kanban-embed-chatview, 2026-08-06) with a centered modal dialog that opens **on top of** the kanban board. The kanban board stays full-width and interactive behind a dimmed+blurred backdrop while the chat is open. Click the backdrop, press Esc, or click the dialog's ✕ to close.

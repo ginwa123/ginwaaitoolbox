@@ -27,7 +27,7 @@
 //   - No design chat task set → dialog not rendered
 //   - handleDesignOpenChat on a design item → dialog rendered
 //   - handleDesignOpenChat on a non-design item (e.g. kanban) →
-//     dialog NOT rendered (kanban has its own KanbanChatDialog)
+//     dialog NOT rendered (kanban renders its chat as its own view)
 //   - The design dialog does NOT depend on the store's `activeTask`
 //     computed (the bug) — verified by NOT populating tasks on
 //     the design item, simulating the production state where init()
@@ -139,9 +139,9 @@ function mountAppLayout(): VueWrapper {
         KanbanView: true,
         DesignView: true,
         Chats: true,
-        // NOTE: do NOT stub KanbanChatDialog / DesignChatDialog — we
-        // want the real <Teleport to="body"> content to render so
-        // document.querySelector can find the dialog testids.
+        // NOTE: do NOT stub DesignChatDialog — we want the real
+        // <Teleport to="body"> content to render so document.querySelector
+        // can find the dialog testids.
       },
     },
   })

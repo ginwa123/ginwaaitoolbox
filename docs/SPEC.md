@@ -260,7 +260,7 @@ Chat skills badge: live source = SSE `llm_full.session_skills`; initial load = R
 | `2026-07-30-kanban-task-tags-autocomplete.md` | ⏳ | Plan landed but **not yet implemented**. Backend endpoint + `listKanbanDistinctTags` model + `KanbanTagsInput` autocomplete dropdown are designed. See §3.7.4 below. |
 | `2026-08-06-kanban-create-task-run-agent.md` | ✅ | "Create task & run agent" button: primary flow collapses create-task + queue-first-message + navigate into one click. See §3.7.5 below. |
 | `2026-08-06-kanban-task-profile-selector.md` | ✅ | Profile-model picker in the New Task dialog (create mode). See §3.7.6 below. |
-| `2026-08-06-kanban-chat-as-dialog.md` | ✅ | Kanban chat converted from side-by-side pane to centered modal dialog. See §3.7.7 below. |
+| `2026-08-06-kanban-chat-as-dialog.md` | ✅ | Kanban chat converted from side-by-side pane to centered modal dialog. See §3.7.7 below — **superseded by §3.7.7.1**: the kanban chat is now its own tab, not a dialog. |
 | `2026-08-06-kanban-sort-by.md` | ✅ | Per-column sort: each column's ⋮ menu has "Sort tasks…" opening a centered modal with 7 sort modes (Manual / Created / Updated / Name × asc/desc). State is per-column (no URL persistence, no store). See §3.7.8 below. |
 | `2026-08-06-kanban-per-column-pagination.md` | ✅ | Per-column pagination: backend `?column_id=` filter; frontend `WorkspaceItem.columnPagination: Record<col, {cursor, hasMore, isLoading}>`; new `loadMoreTasksForColumn(ws, item, columnId)` action; each kanban column paginates independently. See §3.7.9 below. |
 | `2026-08-06-kanban-task-git-branch.md` | ✅ | Each kanban task card displays a GitHub-style fork/branch icon + branch name in the meta row. Backend computes `git -C <cwd> symbolic-ref --short HEAD` on-demand per request (cwd = `session.git_worktree_cwd` or `workspace_item.path`); frontend reads `task.git_branch` and renders the badge. No DB column, no migration. See §3.7.10 below. |
@@ -438,7 +438,13 @@ The New Task dialog (create mode) gains a profile-model picker. Loads profiles v
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-task-profile-selector.md`
 
-#### 3.7.7 Kanban chat — side-by-side pane → centered modal dialog (2026-08-06)
+#### 3.7.7 Kanban chat — side-by-side pane → centered modal dialog (2026-08-06) — SUPERSEDED
+
+> **SUPERSEDED (2026-09-14)** by §3.7.7.1. The modal described below was
+> replaced by a normal view so the chat could live in its own browser-style
+> tab. Kept for the history of why the side-by-side pane was dropped —
+> **not** a description of current behaviour. `KanbanChatDialog.vue` no
+> longer exists.
 
 The kanban chat is no longer a side-by-side pane. It opens as a centered modal dialog on top of the full-width kanban board.
 
@@ -481,6 +487,68 @@ The kanban chat is no longer a side-by-side pane. It opens as a centered modal d
 **Files.** 7 (2 NEW, 4 EDIT, 1 DELETE). Frontend-only — no backend, no migration, no Zig changes.
 
 **Plan:** `docs/superpowers/plans/2026-08-06-kanban-chat-as-dialog.md`
+
+#### 3.7.7.1 Kanban chat — its own browser-style tab (2026-09-14)
+
+Clicking a kanban task card opens that task's chat in **its own tab** in the
+tab strip, activated, with the board tab left open beside it. There is no
+modal dialog any more.
+
+**Layout.**
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│ [⬛ Nalar] [▦ AGENTIC_KANBAN] [▦ fix-husky-vue-build ✕]   ← strip │
+├────────────────────────────────────────────────────────────────┤
+│ fix-husky-vue-build                                        [✕] │
+├────────────────────────────────────────────────────────────────┤
+│  <ChatView: history + composer>                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**Why the modal had to go.** A tab holds a view. The chat was a
+`<Teleport to="body">` modal sitting *above* the `<main>` render chain, so it
+could not be a tab body. It is now a `v-else-if` branch in that chain,
+**placed before the `KanbanView` branch** — the `KanbanView` branch only tests
+`item_type === 'kanban'`, so a branch ordered after it would render the board
+and the chat at once (a standalone `v-if` would do the same by starting a new
+chain).
+
+**Two tabs, two bodies.** Tab identity is item-type aware
+(`helpers/tabTarget.ts`): `itemId=I` keys `ws:W:I` (board) and
+`itemId=I/chat/T` keys `ws:W:I:chat:T` (chat), so one render branch gives each
+tab its own body with no extra state. `design` is the only remaining item type
+whose chat shares the item's tab.
+
+**Close affordances.**
+
+| Action | Behaviour |
+|---|---|
+| `✕` in the chat header | The chat **tab closes**; the strip activates the board tab (its left neighbour) |
+| `×` on the chat tab in the strip | Same — the owning tab closes |
+| Reload with the chat tab active | Both tabs restored; the chat re-renders and the stream resumes |
+| Click the board tab | Board (`KanbanView`) |
+| Click a different card | A second chat tab (not a content swap) |
+| `Esc` | **No longer closes the chat** — the modal owned that handler |
+
+**Closing is tab-aware.** `AppLayout.handleCloseTaskView` — shared with
+`DesignChatDialog` and `AgentChatView` — takes an early branch when tab mode is
+on **and** the active item is a kanban **and** the active tab's URL carries a
+`/chat/<taskId>` suffix: it clears `activeTask`, closes that tab and re-applies
+the newly active tab. Without it, the old `router.replace` would re-key the
+chat tab's target onto the board tab and strand the chat tab as a stale
+pointer. Design and agent are unaffected (the guard is item-type scoped).
+
+**With tab mode off.** The chat replaces the board in the single view, with its
+own header + `✕` — the same shape as an agent or folder task chat. The modal is
+gone in both modes; see `docs/tabs.md` → "Turning it off".
+
+**Files.** `helpers/tabTarget.ts`, `components/AppLayout.vue`,
+`components/kanban/KanbanView.vue`, `components/views/StandardTaskChatView.vue`
+(comments) — plus **DELETE** `components/kanban/KanbanChatDialog.vue`.
+Frontend-only: no backend, no migration, no Zig changes.
+
+**Plan:** `docs/superpowers/plans/2026-09-14-kanban-task-opens-its-own-tab.md`
 
 #### 3.7.8 Kanban per-column sort-by (2026-08-06)
 

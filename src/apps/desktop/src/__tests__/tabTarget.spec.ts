@@ -50,32 +50,46 @@ describe('tabKeyOf', () => {
   })
 
   it('keys a workspace item by workspace, item and page', () => {
-    expect(tabKeyOf('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })).toBe('ws:ws_1:item_7')
+    expect(tabKeyOf('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })).toBe(
+      'ws:ws_1:item_7',
+    )
     expect(
-      tabKeyOf('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7', pageId: 'page_2' }),
+      tabKeyOf('/app', {
+        view: 'workspace',
+        workspaceId: 'ws_1',
+        itemId: 'item_7',
+        pageId: 'page_2',
+      }),
     ).toBe('ws:ws_1:item_7:page_2')
   })
 
-  it('keys a task chat by its item type, not unconditionally', () => {
+  it('gives a task chat its own tab, except for dialog item types', () => {
     const url = { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' }
     const bareBoard = tabKeyOf('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
-    // kanban/design open the chat as a dialog INSIDE the item's view
-    expect(tabKeyOf('/app', url, 'kanban')).toBe('ws:ws_1:item_7')
-    expect(tabKeyOf('/app', url, 'kanban')).toBe(bareBoard)
+    // design opens the chat as a dialog INSIDE the item's view → one tab
     expect(tabKeyOf('/app', url, 'design')).toBe('ws:ws_1:item_7')
-    // every other item type renders the task chat as its own view
+    expect(tabKeyOf('/app', url, 'design')).toBe(bareBoard)
+    // kanban and every other type render the chat as its own view → own tab
+    expect(tabKeyOf('/app', url, 'kanban')).toBe('ws:ws_1:item_7:chat:task_9')
     expect(tabKeyOf('/app', url, 'agent')).toBe('ws:ws_1:item_7:chat:task_9')
     expect(tabKeyOf('/app', url, 'folder')).toBe('ws:ws_1:item_7:chat:task_9')
-    // unknown type (cold boot, tree not loaded yet) leans to its own tab, and
-    // `tabKeyVariants` lets the store adopt whichever tab already exists
+    // unknown type (cold boot, tree not loaded yet) leans to its own tab
     expect(tabKeyOf('/app', url)).toBe('ws:ws_1:item_7:chat:task_9')
-    expect(tabKeyVariants('/app', url, 'kanban')).toEqual(['ws:ws_1:item_7', 'ws:ws_1:item_7:chat:task_9'])
-    expect(tabKeyVariants('/app', url, 'agent')).toEqual(['ws:ws_1:item_7:chat:task_9', 'ws:ws_1:item_7'])
+    // only design still has two readings to reconcile
+    expect(tabKeyVariants('/app', url, 'design')).toEqual([
+      'ws:ws_1:item_7',
+      'ws:ws_1:item_7:chat:task_9',
+    ])
+    // every other type (known or unknown) collapses to ONE reading — the
+    // cold-boot key is already canonical, so nothing has to be adopted
+    expect(tabKeyVariants('/app', url, 'agent')).toEqual(['ws:ws_1:item_7:chat:task_9'])
+    expect(tabKeyVariants('/app', url, 'kanban')).toEqual(['ws:ws_1:item_7:chat:task_9'])
+    expect(tabKeyVariants('/app', url)).toEqual(['ws:ws_1:item_7:chat:task_9'])
     expect(tabKeyVariants('/app', { view: 'chat', session: 'sa' }, 'kanban')).toEqual(['chat:sa'])
   })
 
   it('reports which item types keep a task chat inside the item tab', () => {
-    expect(taskChatRendersInItemTab('kanban')).toBe(true)
+    expect(taskChatRendersInItemTab('kanban')).toBe(false)
     expect(taskChatRendersInItemTab('design')).toBe(true)
     expect(taskChatRendersInItemTab('agent')).toBe(false)
     expect(taskChatRendersInItemTab('folder')).toBe(false)
@@ -205,7 +219,17 @@ describe('parseTabList', () => {
   })
 
   it('starts over for every unusable input', () => {
-    for (const raw of [null, '', '{', '{}', '[]', '"x"', '{"v":99,"tabs":[]}', '{"v":1}', '{"v":1,"tabs":{}}']) {
+    for (const raw of [
+      null,
+      '',
+      '{',
+      '{}',
+      '[]',
+      '"x"',
+      '{"v":99,"tabs":[]}',
+      '{"v":1}',
+      '{"v":1,"tabs":{}}',
+    ]) {
       const list = parseTabList(raw)
       expect(list.tabs).toHaveLength(1)
       expect(list.tabs[0]?.key).toBe('home')
@@ -228,7 +252,9 @@ describe('parseTabList', () => {
   })
 
   it('falls back to the first tab when active is unknown, and de-dupes by key', () => {
-    const list = parseTabList(stored([chatTab('tab_a', 'sa'), chatTab('tab_b', 'sa')], 'tab_missing'))
+    const list = parseTabList(
+      stored([chatTab('tab_a', 'sa'), chatTab('tab_b', 'sa')], 'tab_missing'),
+    )
     expect(list.tabs.map((t) => t.id)).toEqual(['tab_a'])
     expect(list.active).toBe('tab_a')
   })
@@ -281,7 +307,11 @@ describe('getWindowId', () => {
 
   it('creates once and then reuses the stored id', () => {
     const storage = makeLocalStorageStub()
-    Object.defineProperty(globalThis, 'sessionStorage', { value: storage, writable: true, configurable: true })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: storage,
+      writable: true,
+      configurable: true,
+    })
 
     const first = getWindowId()
     expect(first).toMatch(/^w_[a-z0-9]+$/)
@@ -296,7 +326,11 @@ describe('getWindowId', () => {
     storage.getItem = () => {
       throw new Error('denied')
     }
-    Object.defineProperty(globalThis, 'sessionStorage', { value: storage, writable: true, configurable: true })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: storage,
+      writable: true,
+      configurable: true,
+    })
 
     const first = getWindowId()
     expect(first).toMatch(/^w_/)
@@ -304,7 +338,11 @@ describe('getWindowId', () => {
   })
 
   it('still works without sessionStorage at all', () => {
-    Object.defineProperty(globalThis, 'sessionStorage', { value: undefined, writable: true, configurable: true })
+    Object.defineProperty(globalThis, 'sessionStorage', {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    })
     const first = getWindowId()
     expect(first).toMatch(/^w_/)
     expect(getWindowId()).toBe(first)
@@ -352,17 +390,16 @@ describe('migrateLegacySettingsTab', () => {
   })
 
   it('prefers an explicit ?section= over legacy ?tab=', () => {
-    expect(
-      migrateLegacySettingsTab(KS, { section: 'agent', tab: 'tab_abc' }),
-    ).toEqual({ section: 'agent', tab: 'tab_abc' })
+    expect(migrateLegacySettingsTab(KS, { section: 'agent', tab: 'tab_abc' })).toEqual({
+      section: 'agent',
+      tab: 'tab_abc',
+    })
   })
 
   it('ignores non-settings paths', () => {
     expect(migrateLegacySettingsTab('/app', { tab: 'memories' })).toEqual({
       tab: 'memories',
     })
-    expect(
-      migrateLegacySettingsTab('/app/settings', { tab: 'agent' }),
-    ).toEqual({ tab: 'agent' })
+    expect(migrateLegacySettingsTab('/app/settings', { tab: 'agent' })).toEqual({ tab: 'agent' })
   })
 })

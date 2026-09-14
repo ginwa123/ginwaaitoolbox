@@ -152,6 +152,10 @@ export function withTabParam(
  *
  * `itemType` (when known) decides whether a task chat belongs to the item's
  * tab or gets one of its own — see `taskChatRendersInItemTab`.
+ *
+ * Most item types give each task chat its own tab. Today `design` is the only
+ * exception: it opens its chat as a dialog inside the canvas view, so the item
+ * keeps one tab however many chats you open.
  */
 export function tabKeyOf(
   path: string,
@@ -170,9 +174,10 @@ export function tabKeyOf(
     const parsed = parseItemIdWithChat(q.itemId ?? '')
     const parts = ['ws', q.workspaceId ?? '', parsed.itemId]
     if (q.pageId) parts.push(q.pageId)
-    // A task chat is its own session, but WHERE it renders decides whether it
-    // gets its own tab: kanban/design open it as a dialog INSIDE the item's
-    // view (one tab total), every other item type renders it as its own view.
+    // A task chat is its own session, and WHERE it renders decides whether it
+    // gets its own tab. A kanban card click opens the chat as its own view, so
+    // it gets its own tab; design opens it as a dialog INSIDE the canvas view,
+    // so that item keeps one tab total.
     if (parsed.chatTaskId && !taskChatRendersInItemTab(itemType)) {
       parts.push(`chat:${parsed.chatTaskId}`)
     }
@@ -183,10 +188,15 @@ export function tabKeyOf(
 
 /**
  * Item types whose task chat renders as a dialog *inside* the item's view
- * (`KanbanChatDialog` / `DesignChatDialog`) — those items keep ONE tab no
- * matter how many cards you open.
+ * (`DesignChatDialog`) — those items keep ONE tab no matter how many chats you
+ * open. Every other type — kanban included — renders the chat as its own view,
+ * so each chat is a tab of its own.
+ *
+ * `kanban-settings` is inert here (this predicate is only ever called with an
+ * item type, never with the synthetic settings key) and is kept only so the
+ * list reads as a whitelist of "chat is not its own view" cases.
  */
-const DIALOG_ITEM_TYPES = ['kanban', 'design', 'kanban-settings']
+const DIALOG_ITEM_TYPES = ['design', 'kanban-settings']
 
 export function taskChatRendersInItemTab(itemType?: string | null): boolean {
   return typeof itemType === 'string' && DIALOG_ITEM_TYPES.includes(itemType)
@@ -198,6 +208,11 @@ export function taskChatRendersInItemTab(itemType?: string | null): boolean {
  * opposite. The store uses the pair to ADOPT *provisional* tabs (created
  * before the item type was known) instead of opening a duplicate — never to
  * merge two tabs that were both created with a known type.
+ *
+ * Only a dialog item type (see `taskChatRendersInItemTab`) has two readings:
+ * it names the BARE item, while an unknown type names the task's own tab. For
+ * every other type the URL has a single identity — known or unknown — so the
+ * pair is a single element and there is nothing to adopt.
  */
 export function tabKeyVariants(
   path: string,
@@ -205,11 +220,8 @@ export function tabKeyVariants(
   itemType?: string | null,
 ): string[] {
   const canonical = tabKeyOf(path, query, itemType)
-  if (taskChatRendersInItemTab(itemType)) {
-    const other = tabKeyOf(path, query, 'agent')
-    return canonical === other ? [canonical] : [canonical, other]
-  }
-  const other = tabKeyOf(path, query, 'kanban')
+  if (!taskChatRendersInItemTab(itemType)) return [canonical]
+  const other = tabKeyOf(path, query, 'agent')
   return canonical === other ? [canonical] : [canonical, other]
 }
 

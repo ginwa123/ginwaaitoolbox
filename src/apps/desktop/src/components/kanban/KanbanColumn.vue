@@ -45,28 +45,43 @@ import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import KanbanCard from './KanbanCard.vue'
 import KanbanSortMenu from './KanbanSortMenu.vue'
 import { VirtualScroller } from '@/helpers'
+import { useKanbanColumnScrollRestore } from '../../composables/useKanbanColumnScrollRestore'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { KanbanColumn, Task } from '../../stores/workspaces'
 
-const props = withDefaults(defineProps<{
-  column: KanbanColumn
-  tasks: Task[]
-  workspaceId: string
-  itemId: string
-  // Absolute path used as the root for `@`-trigger file pickers /
-  // file-path resolution in descendant cards. Threaded from
-  // <KanbanView> via `props.item.path`.
-  cwd?: string
-  // NEW (plan: 2026-09-09-run-all-agents-by-column, Task 3, Option C).
-  // In-flight state for the column's bulk "Run all agents" action.
-  // The host (KanbanView) sets this while its per-column
-  // `handleRunAllAgents` POST is in flight; the menu item is disabled
-  // while true.
-  runAllBusy?: boolean
-}>(), {
-  cwd: '',
-  runAllBusy: false,
-})
+/**
+ * Minimal view of <VirtualScroller>'s `defineExpose` surface.
+ *
+ * Local on purpose: the component does not export its exposed type, and this
+ * component needs exactly one member of it. `containerRef` arrives as the
+ * HTMLElement itself, not a ref — `defineExpose` auto-unwraps.
+ */
+interface ColumnScrollerExposed {
+  containerRef: HTMLElement | null
+}
+
+const props = withDefaults(
+  defineProps<{
+    column: KanbanColumn
+    tasks: Task[]
+    workspaceId: string
+    itemId: string
+    // Absolute path used as the root for `@`-trigger file pickers /
+    // file-path resolution in descendant cards. Threaded from
+    // <KanbanView> via `props.item.path`.
+    cwd?: string
+    // NEW (plan: 2026-09-09-run-all-agents-by-column, Task 3, Option C).
+    // In-flight state for the column's bulk "Run all agents" action.
+    // The host (KanbanView) sets this while its per-column
+    // `handleRunAllAgents` POST is in flight; the menu item is disabled
+    // while true.
+    runAllBusy?: boolean
+  }>(),
+  {
+    cwd: '',
+    runAllBusy: false,
+  },
+)
 
 const emit = defineEmits<{
   moveTask: [{ taskId: string; columnId: string; position: number }]
@@ -93,7 +108,9 @@ const emit = defineEmits<{
   // Per-column sort independence is achieved at the wire level —
   // each column's fetchKanbanTasks carries ITS OWN sort, so other
   // columns' data is untouched.
-  sortChange: [{ sortBy: 'position' | 'created_at' | 'updated_at' | 'name'; direction: 'asc' | 'desc' }]
+  sortChange: [
+    { sortBy: 'position' | 'created_at' | 'updated_at' | 'name'; direction: 'asc' | 'desc' },
+  ]
   // Column drag-and-drop reorder. Emitted when a column's header
   // is dragged onto another column's header (the dropped-on column
   // becomes the new "slot" for the dragged column; the host's
@@ -164,9 +181,7 @@ defineExpose({ setSortMode })
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 const cardsInColumn = computed<Task[]>(() => {
-  return props.tasks
-    .filter((t) => t.kanban_column_id === props.column.id)
-    .slice()
+  return props.tasks.filter((t) => t.kanban_column_id === props.column.id).slice()
 })
 
 // ─── Virtual scrolling + lazy load (kanban-virtual-scroll, 2026-08-06) ───
@@ -232,22 +247,14 @@ const handleScrollabilityChange = (scrollable: boolean) => {
 const handleScrollerLoadMore = () => {
   if (!moreTasksAvailable.value) return
   if (loadingMoreTasks.value) return
-  void workspacesStore.loadMoreTasksForColumn(
-    props.workspaceId,
-    props.itemId,
-    props.column.id,
-  )
+  void workspacesStore.loadMoreTasksForColumn(props.workspaceId, props.itemId, props.column.id)
 }
 
 // Manual fallback (button click). Same code path as the scroller's
 // `@load-more` — both routes go through `loadMoreTasksForColumn`,
 // which is idempotent under the store's `isLoading` guard.
 const handleManualLoadMore = () => {
-  void workspacesStore.loadMoreTasksForColumn(
-    props.workspaceId,
-    props.itemId,
-    props.column.id,
-  )
+  void workspacesStore.loadMoreTasksForColumn(props.workspaceId, props.itemId, props.column.id)
 }
 
 // ─── Auto-fetch when the viewport fits the page (kanban-virtual-scroll) ───
@@ -300,11 +307,7 @@ watch(
     // page's cards arrive (cardsInColumn.length changes).
     if (hasAutoFetched.value) return
     hasAutoFetched.value = true
-    void workspacesStore.loadMoreTasksForColumn(
-      props.workspaceId,
-      props.itemId,
-      props.column.id,
-    )
+    void workspacesStore.loadMoreTasksForColumn(props.workspaceId, props.itemId, props.column.id)
   },
   { immediate: true },
 )
@@ -339,6 +342,27 @@ const commitInlineRename = () => {
   emit('renameColumn', { columnId: props.column.id, name: trimmed })
   renameValue.value = ''
 }
+
+// ─── Per-column vertical scroll persistence ────────────────────────────────
+//
+// The card list lives in a <VirtualScroller> with its own overflow-y-auto
+// container. That container is torn down and rebuilt whenever the view around
+// the board unmounts — switching to a task-chat tab and back, or (tab mode
+// off) opening a task at all, since the chat replaces the board. Without this
+// the rebuilt column starts at `scrollTop = 0` and the user loses their place
+// in a long column.
+//
+// The key is item-scoped as well as column-scoped: column ids are globally
+// unique today, but a key that can only ever describe one board's one column
+// keeps that from becoming a silent cross-board collision later.
+const virtualScrollerRef = ref<ColumnScrollerExposed | null>(null)
+const scrollerContainerRef = computed<HTMLElement | null>(
+  () => virtualScrollerRef.value?.containerRef ?? null,
+)
+const columnScrollStorageKey = computed(
+  () => `kanban-col-scroll-${props.itemId}:${props.column.id}`,
+)
+useKanbanColumnScrollRestore(scrollerContainerRef, columnScrollStorageKey)
 
 // ─── "⋮" menu state ────────────────────────────────────────────────────────
 
@@ -473,9 +497,7 @@ const handleDragOver = (event: DragEvent) => {
   // so the cursor shows "no entry" — preventing accidental drops
   // from the pinned-tasks region or the item-reorder handler.
   if (!event.dataTransfer) return
-  if (
-    !event.dataTransfer.types.includes('application/x-kanban-task-id')
-  ) {
+  if (!event.dataTransfer.types.includes('application/x-kanban-task-id')) {
     return
   }
   event.preventDefault()
@@ -640,7 +662,7 @@ const handleColumnDrop = (event: DragEvent) => {
         v-else
         type="button"
         class="flex-1 text-left text-sm font-medium truncate hover:opacity-80"
-        style="color: var(--semantic-text);"
+        style="color: var(--semantic-text)"
         :data-testid="`kanban-column-${column.id}-name`"
         @click="startInlineRename"
       >
@@ -649,7 +671,7 @@ const handleColumnDrop = (event: DragEvent) => {
       <!-- Count badge -->
       <span
         class="text-xs px-1.5 py-0.5 rounded-full shrink-0"
-        style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim);"
+        style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-count`"
       >
         {{ cardsInColumn.length }}
@@ -659,7 +681,7 @@ const handleColumnDrop = (event: DragEvent) => {
         <button
           type="button"
           class="w-6 h-6 flex items-center justify-center rounded hover:opacity-80"
-          style="color: var(--semantic-text-dim);"
+          style="color: var(--semantic-text-dim)"
           :data-testid="`kanban-column-${column.id}-menu-trigger`"
           @click.stop="toggleMenu"
         >
@@ -668,17 +690,14 @@ const handleColumnDrop = (event: DragEvent) => {
         <ul
           v-if="menuOpen"
           class="absolute right-0 top-full mt-1 py-1 rounded-md shadow-lg z-10 min-w-[120px]"
-          style="
-            background-color: var(--semantic-card-bg);
-            border: 1px solid var(--color-border);
-          "
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
           :data-testid="`kanban-column-${column.id}-menu`"
         >
           <li>
             <button
               type="button"
               class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
-              style="color: var(--semantic-text);"
+              style="color: var(--semantic-text)"
               :data-testid="`kanban-column-${column.id}-menu-rename`"
               @click="handleMenuRename"
             >
@@ -695,7 +714,7 @@ const handleColumnDrop = (event: DragEvent) => {
             <button
               type="button"
               class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
-              style="color: var(--semantic-text);"
+              style="color: var(--semantic-text)"
               :data-testid="`kanban-column-${column.id}-menu-sort`"
               @click="handleMenuSort"
             >
@@ -706,7 +725,7 @@ const handleColumnDrop = (event: DragEvent) => {
             <button
               type="button"
               class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
-              style="color: #ef4444;"
+              style="color: #ef4444"
               :data-testid="`kanban-column-${column.id}-menu-delete`"
               @click="handleMenuDelete"
             >
@@ -724,7 +743,7 @@ const handleColumnDrop = (event: DragEvent) => {
             <button
               type="button"
               class="w-full px-3 py-2 text-left text-sm hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
-              style="color: var(--semantic-text);"
+              style="color: var(--semantic-text)"
               :data-testid="`kanban-column-${column.id}-menu-run-all`"
               :disabled="runAllBusy"
               @click="handleMenuRunAll"
@@ -745,14 +764,14 @@ const handleColumnDrop = (event: DragEvent) => {
     <p
       v-if="column.description"
       class="text-[11px] px-3 pt-0.5 pb-1.5 truncate"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       :title="column.description"
       :data-testid="`kanban-column-${column.id}-description`"
     >
       {{ column.description }}
     </p>
 
-  <!-- ─── Cards (drop zone + virtual scroller) ────────────────────── -->
+    <!-- ─── Cards (drop zone + virtual scroller) ────────────────────── -->
     <!-- The wrapper <div> is the drop zone (receives dragover/drop for
          card moves between columns) AND the flex parent for the
          VirtualScroller below. VirtualScroller owns its own
@@ -768,9 +787,11 @@ const handleColumnDrop = (event: DragEvent) => {
          slot via `pb-1` on each row's wrapper (see below). -->
     <div
       class="flex-1 min-h-0 flex flex-col p-2"
-      :style="isDragOver
-        ? 'background-color: var(--semantic-active-bg); outline: 2px dashed var(--color-violet); outline-offset: -4px;'
-        : ''"
+      :style="
+        isDragOver
+          ? 'background-color: var(--semantic-active-bg); outline: 2px dashed var(--color-violet); outline-offset: -4px;'
+          : ''
+      "
       :data-kanban-drop-zone="column.id"
       :data-testid="`kanban-column-${column.id}-cards`"
       @dragover="handleDragOver"
@@ -797,6 +818,7 @@ const handleColumnDrop = (event: DragEvent) => {
       -->
       <VirtualScroller
         v-if="cardsInColumn.length > 0"
+        ref="virtualScrollerRef"
         :items="cardsInColumn"
         :default-item-height="100"
         :buffer="5"
@@ -827,7 +849,7 @@ const handleColumnDrop = (event: DragEvent) => {
       <div
         v-if="cardsInColumn.length === 0"
         class="text-xs text-center py-6"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-empty`"
       >
         No tasks yet
@@ -845,7 +867,7 @@ const handleColumnDrop = (event: DragEvent) => {
         :disabled="loadingMoreTasks"
         @click="handleManualLoadMore"
         class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-load-more`"
       >
         <span v-if="loadingMoreTasks" class="w-3 h-3">
@@ -871,17 +893,14 @@ const handleColumnDrop = (event: DragEvent) => {
     <div
       v-if="sortModalOpen"
       class="fixed inset-0 z-50 flex items-center justify-center"
-      style="background-color: rgba(0, 0, 0, 0.5);"
+      style="background-color: rgba(0, 0, 0, 0.5)"
       :data-testid="`kanban-column-${column.id}-sort-modal`"
       :key="`sort-modal-${column.id}-${sortModalKey}`"
       @click.self="handleSortModalBackdrop"
     >
       <div
         class="rounded-lg shadow-2xl p-2 min-w-[240px] max-w-[90vw]"
-        style="
-          background-color: var(--semantic-card-bg);
-          border: 1px solid var(--color-border);
-        "
+        style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       >
         <KanbanSortMenu
           v-model:sort-by="sortBy"

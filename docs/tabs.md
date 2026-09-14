@@ -111,18 +111,22 @@ Two navigations that mean the same target focus one tab:
 | `view=chat` with no session (the chats list) | `home` |
 | `view=chat&session=X` | `chat:X` |
 | `view=workspace&workspaceId=W&itemId=I[&pageId=P]` | `ws:W:<bare I>[:P]` |
-| `view=workspace&itemId=I/chat/T` — a task chat on a **kanban / design** item | `ws:W:<bare I>[:P]` (the item's tab — the chat is a dialog *inside* that view) |
-| `view=workspace&itemId=I/chat/T` — a task chat on any other item type | `ws:W:<bare I>:chat:T` (its own tab) |
+| `view=workspace&itemId=I/chat/T` — a task chat on a **design** item | `ws:W:<bare I>[:P]` (the item's tab — the chat is a dialog *inside* that view) |
+| `view=workspace&itemId=I/chat/T` — a task chat on any other item type, **kanban included** | `ws:W:<bare I>:chat:T` (its own tab) |
 | legacy `view=task&task=T` | `chat:T` |
 
 **A task is a session** (`task.id == session.id`, migration 052), but where it
 renders decides its tab:
 
-* **kanban / design** open the chat as a dialog **inside** the item's view
-  (`KanbanChatDialog` / `DesignChatDialog`), so the item keeps **one** tab no
-  matter how many cards you open — otherwise every card click would spawn a tab.
+* **kanban** renders the task chat as its own view (the render chain's kanban
+  chat branch, which sits before `KanbanView`), so **every card you open gets
+  its own tab** and the board tab stays open beside it.
 * **agent / folder / routine / memory / chat** items render the task chat as its
-  own view (`StandardTaskChatView`), so each task session gets its own tab.
+  own view too (`AgentChatView` / `StandardTaskChatView`), so each task session
+  gets its own tab.
+* **design** is the one remaining exception: its chat is a dialog **inside** the
+  canvas view (`DesignChatDialog`), so a design item keeps **one** tab no matter
+  how many chats you open.
 
 When the item type is not known yet (a cold-boot deep link, before the workspace
 tree has loaded), the tab is created **provisionally** and re-keyed in place the
@@ -189,10 +193,16 @@ localStorage.removeItem('nalar-tabs:v1:' + sessionStorage.getItem('nalar-window-
 
 ## Turning it off
 
-Settings → General → **Browser-style tabs**. Off is a complete rollback:
-the strip is not rendered, the route funnel stops creating or normalising
-tabs, and the `?tab=` param is dropped from the URL. The tab list is kept,
-so switching it back on restores the strip.
+Settings → General → **Browser-style tabs**. Off removes the strip: the
+route funnel stops creating or normalising tabs, and the `?tab=` param is
+dropped from the URL. The tab list is kept, so switching it back on
+restores the strip.
+
+One thing the toggle does *not* roll back: the kanban task chat. It used to
+be a modal dialog and is now a normal view (which is what lets it live in a
+tab), so with tabs **off** a card click shows the chat in place of the board
+— exactly how agent and folder task chats already behaved. Reverting the
+modal itself is a `git revert`, not a setting.
 
 ## Rendering model (and why it is not `KeepAlive`)
 
