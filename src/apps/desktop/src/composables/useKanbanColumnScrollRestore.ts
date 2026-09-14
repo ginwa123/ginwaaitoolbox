@@ -33,7 +33,10 @@ import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
  *   - **On the ref becoming non-null**: attaches `scroll` (passive) and, when
  *     supported, `scrollend`; then restores after two `requestAnimationFrame`
  *     ticks (the scroller needs a paint to size its spacers before an absolute
- *     `scrollTop` can land anywhere but 0), clamping to
+ *     `scrollTop` can land anywhere but 0), waiting up to 500 ms for the
+ *     column to become scrollable (`scrollHeight > clientHeight`). An
+ *     immediate `max <= 0` bail would silently drop the restore for any column
+ *     whose cards are not laid out by the second frame. Clamped to
  *     `scrollHeight - clientHeight`.
  *   - **On `scroll`**: captures `scrollTop` synchronously (cheap) and schedules
  *     a debounced 250 ms write.
@@ -138,12 +141,23 @@ export function useKanbanColumnScrollRestore(
     // isn't enough for `scrollHeight` to reflect the measured items.
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
-    if (containerRef.value !== el) return // swapped out while waiting
+
+    // Then wait for the column to actually become scrollable (up to 500 ms).
+    // Bailing out on `max <= 0` alone would silently DROP the restore for any
+    // column whose cards have not been laid out by the second frame: the user
+    // would come back to a column sitting at the top, which is the bug.
+    const start = Date.now()
+    while (Date.now() - start < 500) {
+      if (containerRef.value !== el) return // swapped out while waiting
+      if (el.scrollHeight > el.clientHeight) break
+      await new Promise<void>((r) => setTimeout(r, 16))
+    }
+    if (containerRef.value !== el) return
 
     const saved = readSaved()
     if (saved <= 0) return // nothing saved (first visit)
     const max = el.scrollHeight - el.clientHeight
-    if (max <= 0) return // not scrollable yet — nothing to restore
+    if (max <= 0) return // genuinely not scrollable — nothing to restore
     const clamped = Math.min(saved, max)
     el.scrollTop = clamped
     lastKnownScrollTop = clamped

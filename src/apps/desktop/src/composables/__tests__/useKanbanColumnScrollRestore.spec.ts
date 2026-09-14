@@ -229,6 +229,28 @@ describe('useKanbanColumnScrollRestore', () => {
     harness.wrapper.unmount()
   })
 
+  it('waits for the column to become scrollable before giving up', async () => {
+    // The cards may not be laid out by the second animation frame. Bailing out
+    // on `max <= 0` immediately would silently drop the restore — the user
+    // would come back to a column sitting at the top, which is the bug.
+    localStorage.setItem(KEY, '640')
+    const harness = mountHarness()
+    setGeometry(harness.container, { scrollHeight: 400, clientHeight: 800 })
+
+    // …the cards land a few frames later…
+    setTimeout(() => {
+      setGeometry(harness.container, { scrollHeight: 5000, clientHeight: 800 })
+    }, 40)
+
+    await waitForRestore()
+    // …and the composable picks them up on its next poll.
+    await new Promise<void>((r) => setTimeout(r, 60))
+    await flushPromises()
+
+    expect(harness.container.scrollTop).toBe(640)
+    harness.wrapper.unmount()
+  })
+
   it('wires up when the container appears LATE (the v-if card list)', async () => {
     // The regression this composable exists for: a kanban column renders
     // its VirtualScroller under `v-if="cardsInColumn.length > 0"`, so on a
