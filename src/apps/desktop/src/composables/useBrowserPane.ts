@@ -113,18 +113,28 @@ export function useBrowserPane(): BrowserPaneApi {
     if (!el) return null
     try {
       const box = el.getBoundingClientRect()
+      // The app's `<main>` starts at the WINDOW TOP: the 36px tab strip is its
+      // first child. Reporting `<main>` as-is put the pane over the strip itself
+      // (the pane's own chrome bar landed where the tabs should be — "why does it
+      // take the tab's space"). Start BELOW the strip so tabs stay visible and
+      // clickable; with the strip hidden/absent, fall back to `<main>`'s top.
+      const strip = document.querySelector('[data-testid="tab-bar"]')
+      const stripBox = strip ? strip.getBoundingClientRect() : null
+      const top =
+        stripBox && stripBox.height > 0 && stripBox.bottom <= box.bottom ? stripBox.bottom : box.top
+      const height = Math.max(0, box.bottom - top)
       // A collapsed/hidden element measures 0: that is "no numbers yet", not a
       // rect. Reporting zeros is how the pane once covered the WHOLE app (tab
       // strip included, so the user could not switch back): the shell then has
       // nothing to allocate, and GtkOverlay's default is the full window.
-      if (box.width < 1 || box.height < 1) return null
+      if (box.width < 1 || height < 1) return null
       // Integers: the shell works in whole CSS px, and rounding keeps a
       // sub-pixel layout jitter from looking like a move.
       return {
         x: Math.round(box.x),
-        y: Math.round(box.y),
+        y: Math.round(top),
         width: Math.round(box.width),
-        height: Math.round(box.height),
+        height: Math.round(height),
       }
     } catch {
       return null
