@@ -96,7 +96,9 @@ function removeStorage(key: string): void {
 
 function readEnabled(): boolean {
   const raw = readStorage(ENABLED_KEY)
-  return raw === null ? true : raw !== 'false'
+  // Tab mode defaults to OFF — users found the strip confusing.
+  // Opt-in via Settings → General → "Browser-style tabs".
+  return raw === null ? false : raw === 'true'
 }
 
 function tabQueryOf(query: Record<string, unknown>): TabQuery {
@@ -341,7 +343,10 @@ export const useTabsStore = defineStore('tabs', () => {
     tabs.value = [keep]
     activeTabId.value = keep.id
     closedStack.value = [
-      ...dropped.slice().reverse().map((tab) => ({ ...tab, closedAt: Date.now() })),
+      ...dropped
+        .slice()
+        .reverse()
+        .map((tab) => ({ ...tab, closedAt: Date.now() })),
       ...closedStack.value,
     ]
     persistClosed()
@@ -355,7 +360,10 @@ export const useTabsStore = defineStore('tabs', () => {
     if (dropped.length === 0) return
     tabs.value = tabs.value.slice(0, index + 1)
     closedStack.value = [
-      ...dropped.slice().reverse().map((tab) => ({ ...tab, closedAt: Date.now() })),
+      ...dropped
+        .slice()
+        .reverse()
+        .map((tab) => ({ ...tab, closedAt: Date.now() })),
       ...closedStack.value,
     ]
     persistClosed()
@@ -379,7 +387,7 @@ export const useTabsStore = defineStore('tabs', () => {
     const current = tabs.value.findIndex((tab) => tab.id === activeTabId.value)
     const size = tabs.value.length
     const base = current === -1 ? 0 : current
-    const index = ((base + step) % size + size) % size
+    const index = (((base + step) % size) + size) % size
     const tab = tabs.value[index]
     if (!tab) return null
     activate(tab.id)
@@ -474,7 +482,12 @@ export const useTabsStore = defineStore('tabs', () => {
 
   /** The `+` button and `Shift+Alt+T`: open (or focus) the chats-list tab. */
   function openHomeTab(): Tab {
-    return open({ path: '/app', query: { view: 'chat' }, title: fallbackTitle('home'), kind: 'home' })
+    return open({
+      path: '/app',
+      query: { view: 'chat' },
+      title: fallbackTitle('home'),
+      kind: 'home',
+    })
   }
 
   /**
@@ -539,7 +552,9 @@ export const useTabsStore = defineStore('tabs', () => {
 
   /** Live title feed (session SSE + the chats list). */
   function setChatTitle(sessionId: string, name: string): void {
-    const tab = tabs.value.find((candidate) => candidate.kind === 'chat' && candidate.key === `chat:${sessionId}`)
+    const tab = tabs.value.find(
+      (candidate) => candidate.kind === 'chat' && candidate.key === `chat:${sessionId}`,
+    )
     if (tab) setTabTitle(tab.id, name)
   }
 

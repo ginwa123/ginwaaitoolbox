@@ -55,11 +55,11 @@ describe('NalarSettings — Browser-style tabs toggle', () => {
     mockWebStatus.mockResolvedValue(null)
   })
 
-  it('renders the toggle in the General tab, on by default', async () => {
+  it('renders the toggle in the General tab, off by default', async () => {
     const wrapper = await mountSettings()
     const toggle = wrapper.find('[data-testid="toggle-browser-tabs"]')
     expect(wrapper.find('[data-testid="row-browser-tabs"]').exists()).toBe(true)
-    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
   })
 
   it('persists the preference and never writes it to the server config', async () => {
@@ -68,15 +68,16 @@ describe('NalarSettings — Browser-style tabs toggle', () => {
     const mockSave = api.saveNalarConfig as unknown as ReturnType<typeof vi.fn>
     mockSave.mockReset()
 
-    await wrapper.find('[data-testid="toggle-browser-tabs"]').setValue(false)
-
-    expect(tabs.enabled).toBe(false)
-    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('false')
-    expect(mockSave).not.toHaveBeenCalled()
-
+    // Default is OFF — opt in first so the change event fires both ways.
     await wrapper.find('[data-testid="toggle-browser-tabs"]').setValue(true)
+
     expect(tabs.enabled).toBe(true)
     expect(localStorage.getItem('nalar-tabs-enabled')).toBe('true')
+    expect(mockSave).not.toHaveBeenCalled()
+
+    await wrapper.find('[data-testid="toggle-browser-tabs"]').setValue(false)
+    expect(tabs.enabled).toBe(false)
+    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('false')
   })
 
   it('survives a remount with the pref off and can be turned back on', async () => {
@@ -84,7 +85,9 @@ describe('NalarSettings — Browser-style tabs toggle', () => {
     tabs.setEnabled(false)
 
     const wrapper = await mountSettings()
-    expect((wrapper.find('[data-testid="toggle-browser-tabs"]').element as HTMLInputElement).checked).toBe(false)
+    expect(
+      (wrapper.find('[data-testid="toggle-browser-tabs"]').element as HTMLInputElement).checked,
+    ).toBe(false)
 
     await wrapper.find('[data-testid="toggle-browser-tabs"]').setValue(true)
     expect(useTabsStore().enabled).toBe(true)

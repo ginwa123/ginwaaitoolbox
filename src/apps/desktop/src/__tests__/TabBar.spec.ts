@@ -37,6 +37,8 @@ describe('TabBar', () => {
     installStorage()
     __resetWindowIdForTests()
     setActivePinia(createPinia())
+    // Tab mode defaults to OFF — opt in for strip tests (the off-case disables explicitly).
+    useTabsStore().setEnabled(true)
   })
 
   it('renders one tab per open tab, marking only the active one', async () => {

@@ -141,6 +141,14 @@ describe('AppLayout — tab mode', () => {
       writable: true,
       configurable: true,
     })
+    // Tab mode defaults to OFF — opt in so the funnel/strip tests exercise tab mode.
+    // The dedicated off-test disables explicitly.
+    try {
+      localStorage.setItem('nalar-tabs-enabled', 'true')
+    } catch {}
+    try {
+      useTabsStore().setEnabled(true)
+    } catch {}
     __resetWindowIdForTests()
 
     __resetSseBus()

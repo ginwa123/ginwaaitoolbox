@@ -59,12 +59,12 @@ describe('tabs store', () => {
     setActivePinia(createPinia())
   })
 
-  it('boots with exactly one home tab, active, tab mode on', () => {
+  it('boots with exactly one home tab, active, tab mode off by default', () => {
     const tabs = useTabsStore()
     expect(tabs.tabCount).toBe(1)
     expect(tabs.tabs[0]?.key).toBe('home')
     expect(tabs.activeTabId).toBe(tabs.tabs[0]?.id)
-    expect(tabs.enabled).toBe(true)
+    expect(tabs.enabled).toBe(false)
     expect(tabs.activeTab?.query).toEqual({ view: 'chat' })
     expect(tabs.windowId).toBe(WINDOW_ID)
   })
@@ -320,12 +320,13 @@ describe('tabs store', () => {
 
   it('persists the enabled preference globally', () => {
     const tabs = useTabsStore()
-    tabs.setEnabled(false)
-    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('false')
+    expect(tabs.enabled).toBe(false)
     tabs.setEnabled(true)
     expect(localStorage.getItem('nalar-tabs-enabled')).toBe('true')
+    tabs.setEnabled(false)
+    expect(localStorage.getItem('nalar-tabs-enabled')).toBe('false')
     setActivePinia(createPinia())
-    expect(useTabsStore().enabled).toBe(true)
+    expect(useTabsStore().enabled).toBe(false)
   })
 
   it('resets to a single home tab and drops the stored list', () => {
@@ -340,6 +341,9 @@ describe('tabs store', () => {
   })
 
   describe('syncFromTarget (the route funnel)', () => {
+    beforeEach(() => {
+      useTabsStore().setEnabled(true)
+    })
     it('creates a tab for a fresh target and names it in the URL', () => {
       const tabs = useTabsStore()
       const result = tabs.syncFromTarget('/app', chat('sa'))
@@ -426,7 +430,11 @@ describe('tabs store', () => {
     it('opens a separate tab for a task chat on item types that render it standalone', () => {
       const tabs = useTabsStore()
       const itemTab = tabs.open({ query: board('item_7'), itemType: 'agent' })
-      const result = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' }, 'agent')
+      const result = tabs.syncFromTarget(
+        '/app',
+        { ...board('item_7'), itemId: 'item_7/chat/task_9' },
+        'agent',
+      )
       expect(result.query.tab).not.toBe(itemTab.id)
       expect(result.changed).toBe(true)
       expect(tabs.tabCount).toBe(3)
@@ -444,7 +452,10 @@ describe('tabs store', () => {
     it('needs no adoption for a kanban task chat — the cold-boot key is canonical', () => {
       const tabs = useTabsStore()
       // the tree has not loaded yet → the type is unknown → task-level identity
-      const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
+      const first = tabs.syncFromTarget('/app', {
+        ...board('item_7'),
+        itemId: 'item_7/chat/task_9',
+      })
       expect(tabs.tabCount).toBe(2)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
 
@@ -462,7 +473,10 @@ describe('tabs store', () => {
     it('adopts a cold-boot tab once the type is known (design still shares the item tab)', () => {
       const tabs = useTabsStore()
       // the tree has not loaded yet → the type is unknown → task-level identity
-      const first = tabs.syncFromTarget('/app', { ...board('item_7'), itemId: 'item_7/chat/task_9' })
+      const first = tabs.syncFromTarget('/app', {
+        ...board('item_7'),
+        itemId: 'item_7/chat/task_9',
+      })
       expect(tabs.tabCount).toBe(2)
       expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
 
