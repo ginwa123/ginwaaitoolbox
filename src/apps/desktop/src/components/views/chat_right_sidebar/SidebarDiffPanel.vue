@@ -10,6 +10,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'submit-review': [message: string]
+  refresh: []
 }>()
 
 const isGitRepo = ref(false)
@@ -60,6 +61,16 @@ function displayStatus(file: api.GitFileChange): { icon: string; text: string } 
   if (worktreeStatus)
     return { icon: icons[worktreeStatus] ?? '📄', text: texts[worktreeStatus] ?? 'Changed' }
   return { icon: '📄', text: 'Changed' }
+}
+
+const onRefreshClick = () => {
+  // Tell ChatView to re-sync the worktree binding first (it may have
+  // changed since mount); then reload this panel. ChatView also calls
+  // back into loadGitStatus via the exposed refresh() when the binding
+  // changed, so a stale-cwd click self-heals instead of re-showing
+  // the old branch.
+  emit('refresh')
+  void loadGitStatus()
 }
 
 const loadGitStatus = async () => {
@@ -247,7 +258,7 @@ defineExpose({ loadGitStatus, loadDiff, changeCount })
         style="color: var(--semantic-text-dim)"
         title="Refresh git status"
         data-testid="sidebar-diff-refresh"
-        @click="loadGitStatus"
+        @click="onRefreshClick"
       >
         ↻
       </button>

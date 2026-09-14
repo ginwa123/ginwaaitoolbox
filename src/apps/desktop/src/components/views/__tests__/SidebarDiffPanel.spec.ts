@@ -83,6 +83,14 @@ describe('SidebarDiffPanel', () => {
     expect(wrapper.find('[data-testid="sidebar-diff-retry"]').exists()).toBe(true)
   })
 
+  it('emits refresh on ↻ click so ChatView re-syncs the worktree binding', async () => {
+    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
+    await flushPromises()
+    await wrapper.get('[data-testid="sidebar-diff-refresh"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('refresh')).toHaveLength(1)
+  })
+
   it('stages a file and reloads', async () => {
     const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
     await flushPromises()

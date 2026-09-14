@@ -14,6 +14,7 @@ const emit = defineEmits<{
   'update:open': [open: boolean]
   'update:width': [width: number]
   'submit-review': [message: string]
+  refresh: []
 }>()
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
@@ -94,6 +95,7 @@ defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
         ref="panelRef"
         :cwd="cwd"
         @submit-review="(msg) => emit('submit-review', msg)"
+        @refresh="() => emit('refresh')"
       />
     </div>
   </aside>
