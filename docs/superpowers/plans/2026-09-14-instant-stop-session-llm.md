@@ -1,7 +1,8 @@
 # Instant Stop — cancel an in-flight LLM turn without the ~1 s tail
 
-> **Status: PLAN ONLY — not executed.** Awaiting the go-ahead at
-> `in_review_planning`.
+> **Status: PHASES A + B IMPLEMENTED — Phase C still pending.**
+> Implemented on this branch; see `## Implementation status` at the bottom for
+> what shipped, the test baselines, and what was deferred.
 
 > **For agentic workers:** this is a *planning* artefact. Before implementing, use
 > subagent-driven-development / executing-plans. Steps use checkbox (`- [ ]`)
@@ -542,3 +543,50 @@ functional harness (`tests/functional/harness.py`) — it picks a free port in
 6. **The non-blocking teardown** for stalls (reaper or XFERINFO) — only if
    profiling shows stop-during-pause is common enough to matter (§9 Q1).
 7. **§7 tool-execution cancellation** as its own card.
+
+---
+
+## Implementation status
+
+Executed 2026-09-14 on `worktree/instant-stop-session-llm-1789383350471`.
+
+**Shipped**
+
+| Phase | Where | What |
+|---|---|---|
+| B1 | kabelweb `src/client/stream.zig` | `writeCallback` samples `cancelled` **on entry** — abort on the next chunk, not after ~64. |
+| B2 | kabelweb `src/client/stream.zig` | `cancel()` bumps `signal_gen` + `futexWake`; `next()` returns a **distinct `error.Cancelled`** (checked before the queue drain). |
+| B4 | kabelweb `src/client/streaming_test.zig` | Two regression tests + a `/stall` route (4 s, no body bytes). |
+| — | `build.zig.zon` | kabelweb pin → `75c06980` (ginwa123/kabelweb#1). |
+| A1–A2 | `Agent.zig` | `AgentCall.cancel_fn`, polled per chunk and before each read; calls `stream.cancel()`. |
+| A3 | `Agent.zig` | Cancel classified **first** in the scanner `catch` and after loop exit, so it can never surface as a retryable `StreamInterrupted`. |
+| A4 | `workflow.zig` | `llm_cancel_thunk` (mirrors the MCP thunk): polls `isWorkerCancelled`, throttled to 50 ms, latched positive. |
+| A5 | `call_streaming_test.zig` | `callStreaming reports a mid-stream cancel as error.Cancelled, never as a retryable error`. |
+
+**Test baselines**
+
+- kabelweb `zig build test-client`: **244 passed; 2 skipped; 0 failed.**
+- ginwaaitoolbox `zig build test`: **3327 passed; 8 skipped; 0 failed.**
+
+**Falsification (both suites were checked against the un-fixed code)**
+
+- kabelweb buffered-chunk test → `expected error.Cancelled, found { 70, 70, … }` (a queued `'F'` chunk).
+- ginwaaitoolbox test with `cancel_fn` nulled → `expected error.Cancelled, found error.StreamInterrupted` — exactly the retry-misclassification risk from §10.
+
+**Not done**
+
+- **Phase C** (C1–C3): a stop still emits only `worker_deleted`, so the
+  `streaming-*` row and `isStreaming` linger and the partial text is not
+  persisted. Latency is fixed; this is the remaining work.
+- **A6 / functional latency test** — §8's `POST /stop` → last `llm_chunk`
+  measurement was not written. (The Zig test deliberately uses a stalled server
+  and therefore measures classification + a bounded return, not instantness;
+  the "one chunk instead of 64" property is pinned by the kabelweb tests.)
+- **B3** and the byte-silent-stall teardown (§9 Q1) — deferred as planned.
+- **§7 tool-execution cancellation** — still its own card.
+
+**Latent bug found (not fixed, out of scope):** `call_streaming_test.zig:398`
+does `try agent.Agent.init_with_options(...)`, but that function returns
+`Agent`, not an error union. It compiles only because its call sites sit after
+`if (true) return error.SkipZigTest;`, so the helper is never analysed. Fix it
+before re-enabling those watchdog tests.
