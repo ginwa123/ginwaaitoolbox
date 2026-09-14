@@ -1,0 +1,18 @@
+Vendored Lua 5.4.9 (library only)
+====================================
+
+Source: https://www.lua.org/ftp/lua-5.4.9.tar.gz
+License: MIT (see lua.org/license.html — the sources carry no separate
+LICENSE file; the MIT terms are stated on lua.org and in doc/readme.html
+of the upstream tarball).
+
+Contents: the full src/*.c + src/*.h library set, EXCLUDING the two
+standalone mains lua.c and luac.c (interpreter/compiler frontends we
+never build — nalar only embeds the library).
+
+Why vendored: hooks embed Lua on every target (Linux/macOS/Windows).
+System Lua lives in different places per OS (or nowhere), so compiling
+from source removes all probing. Built with -std=c99 -O2 and NO
+platform -D defines: the core language + the stdlib subset hooks need
+is define-free. (Dynamic C-module loading via require() is unavailable;
+hooks are plain scripts and never need it.)
