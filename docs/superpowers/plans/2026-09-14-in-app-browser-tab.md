@@ -519,6 +519,11 @@ a browser" arguably means most literally — is **not** a v1 option; it is the n
 (§10.2), because it needs the vendored container patched per OS. The tab-kind work
 (Task 2) is unchanged by that future step.
 
+> **Update (2026-09-14):** the human asked for exactly that pane, so it now has its
+> own plan — `2026-09-14-in-app-browser-pane.md`. Q6 is superseded **for the pane
+> question only**: this plan's window mode stays, as the fallback and the
+> multi-monitor path.
+
 ---
 
 ## 10. What rev 4 deleted, and the follow-up cards
@@ -561,6 +566,15 @@ create/close/activate/**geometry** (the pane's rectangle, reported by the SPA), 
 non-blocking shell loop, and a decision about the Vue strip becoming shell-drawn.
 Note that rev 7 already builds the SPA→shell half of that bridge (`webview_bind`,
 §3.2), so this card inherits a working call path. Multi-week, per-OS — its own card.
+
+> **Now planned (2026-09-14):** `2026-09-14-in-app-browser-pane.md` (rev 1), at
+> the human's request. A spike **corrects the estimate above**: on GTK3 the
+> vendored parent call needs ~5 lines (the `GTK_WINDOW()` cast is the blocker, not
+> the container call — `gtk_container_add` already works for a box), and the real
+> constraint is that a `WebKitWebView`'s natural height (measured: ~1398px) cannot
+> be squeezed into a strip without a paned/scrolled-window slot. The explicit
+> geometry bridge and "who draws the strip" questions are still open there
+> (Q1/Q4). This card is what that plan implements.
 
 ### 10.3 Follow-up card 2 — agent driving (Cursor's actual headline)
 
