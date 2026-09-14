@@ -43,11 +43,11 @@ address/←/→/↻ bar. Any site works (GitHub, Google, `localhost:5173`), and
 cookies and sign-in persist in the engine's store.
 
 **Window re-use rule:** at most ONE auto-managed window per tab — a repeat
-open focuses/keeps it. The primary button is always enabled and its label
-follows the state (`Open browser window` / `Open another window`), because
-we cannot raise another process's window: clicking the label is the explicit
-opt-in for a second view. Spawned windows **survive quitting the app** (they
-are independent windows and need no `nalar` server).
+open keeps it and does not spawn a second one. The primary button is always
+enabled and its label follows the state (`Open browser window` / `Open another
+window`), because we cannot raise another process's window: clicking the label
+is the explicit opt-in for a second view. Spawned windows **survive quitting
+the app** (they are independent windows and need no `nalar` server).
 
 The bar is part of the page's document, so a page can cover or strip it:
 removal is recovered by a MutationObserver with a bounded budget (5
