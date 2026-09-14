@@ -3,11 +3,14 @@
 
 Boots the real engine in connect mode so the probe page plays the SPA, then:
 
-  * asks for the pane (`nalarBrowserPaneShow`) and asserts the SPA's own viewport
-    SHRINKS to the strip slot — the split really happened in the widget tree;
-  * asserts the pane status agrees, and that the page target was loaded;
-  * hides the pane and asserts the SPA gets the whole window back;
-  * asserts the process spawned **no** child window (that is the whole point).
+  * asks for the pane at an explicit rect (where a browser tab's body would be)
+    and asserts the SPA's own viewport is NOT shrunk — the pane must sit BESIDE
+    the app, not eat the window (the report that prompted rev 2);
+  * asserts the pane really loaded the page (the shell reports the pane view's
+    URI length) and that a rect-only update moves it;
+  * hides it (leaving a tab: the page survives) and then CLOSES it (closing the
+    tab: the view is destroyed, so nothing keeps running in the background);
+  * asserts the process spawned no window (that is the whole point).
 
 Needs a display, so it is NOT a CI gate — run it by hand after touching
 `browser_pane.zig`, the vendored parent call, or the layout:
@@ -38,7 +41,10 @@ PORT_RANGE = range(18090, 18111)
 PROBE_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>pane probe</title></head>
 <body style="margin:0;background:#1d1c19;color:#c5c9c5;font:12px sans-serif">
-<div style="height:36px;display:flex;align-items:center">&lt;the tab strip is this 36px row&gt;</div>
+<div style="height:36px;background:#242320">the tab strip</div>
+<div style="position:absolute;left:0;top:36px;width:340px;height:100%;background:#20201d">
+  the sidebar (the pane must NOT cover this)
+</div>
 <script>
 ;(async function () {
   var report = function (m) { return fetch('/report?data=' + encodeURIComponent(m)).catch(function () {}) }
@@ -46,14 +52,27 @@ PROBE_HTML = """<!doctype html>
   var before = window.innerHeight
   report('inner_before=' + before)
   if (typeof window.nalarBrowserPaneShow !== 'function') { report('DONE no-pane-bindings'); return }
+  // Where a browser tab's body is: right of the sidebar, below the strip.
+  var x = 360
+  var y = 90
+  var w = Math.max(120, window.innerWidth - x - 40)
+  var h = Math.max(120, window.innerHeight - y - 40)
+  report('rect_sent=' + [x, y, w, h].join(','))
   try {
-    report('show=' + JSON.stringify(await window.nalarBrowserPaneShow('tab_probe', '__TARGET__')))
-    await wait(700)
+    report('show=' + JSON.stringify(await window.nalarBrowserPaneShow('tab_probe', '__TARGET__', x, y, w, h)))
+    await wait(900)
     report('inner_shown=' + window.innerHeight)
     report('status_shown=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
+    report('rect_update=' + JSON.stringify(
+      await window.nalarBrowserPaneRect(x, y + 20, w, Math.max(120, h - 20))))
+    await wait(300)
+    report('status_after_rect=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
     report('hide=' + JSON.stringify(await window.nalarBrowserPaneHide()))
-    await wait(600)
-    report('inner_hidden=' + window.innerHeight)
+    await wait(400)
+    report('status_hidden=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
+    report('close=' + JSON.stringify(await window.nalarBrowserPaneClose()))
+    await wait(400)
+    report('status_closed=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
   } catch (e) { report('ERR ' + e) }
   report('DONE')
 })()
@@ -78,8 +97,8 @@ def has_display() -> bool:
 
 
 def children(pid: int) -> list[tuple[int, str]]:
-    """(pid, cmdline) for each child — WebKit spawns its own helpers, so the
-    assertion below looks for a *browser window*, not for any child at all."""
+    """(pid, cmdline) per child: WebKit spawns its own helpers, so the assertion
+    below looks for a *browser window*, not for any child at all."""
     try:
         out = subprocess.run(
             ["pgrep", "-P", str(pid)], capture_output=True, text=True, check=False
@@ -154,9 +173,9 @@ def main() -> int:
             print(f"FAIL: no free port in {PORT_RANGE}")
             return 1
 
+        target = f"http://127.0.0.1:{port}/target.html"
         (serve_dir / "probe.html").write_text(
-            PROBE_HTML.replace("__TARGET__", f"http://127.0.0.1:{port}/target.html"),
-            encoding="utf-8",
+            PROBE_HTML.replace("__TARGET__", target), encoding="utf-8"
         )
         threading.Thread(target=server.serve_forever, daemon=True).start()
 
@@ -167,7 +186,7 @@ def main() -> int:
                 "--nalar-url",
                 f"http://127.0.0.1:{port}/probe.html",
                 "--window-size",
-                "900x600",
+                "1100x700",
                 "--title",
                 "pane probe",
             ],
@@ -181,9 +200,11 @@ def main() -> int:
 
         finished = done.wait(timeout=45)
         spawned = children(app.pid)
-        # A pane must NOT spawn a window: the only children an app window has are
-        # WebKit's own helpers (WebKitWebProcess / WebKitNetworkProcess).
-        windows = [(pid, cmd) for pid, cmd in spawned if "--browser" in cmd or "nalar-desktop" in cmd]
+        windows = [
+            (pid, cmd)
+            for pid, cmd in spawned
+            if "--browser" in cmd or "nalar-desktop" in cmd
+        ]
         app.terminate()
         try:
             app.wait(timeout=5)
@@ -206,12 +227,6 @@ def main() -> int:
                 return line.split("=", 1)[1]
         return None
 
-    problems: list[str] = []
-    if not finished:
-        problems.append("timed out")
-    if any(r.startswith("ERR ") for r in reports) or value("DONE") == "no-pane-bindings":
-        problems.append("the pane bindings are missing in the app window")
-
     def as_int(key: str) -> int | None:
         raw = value(key)
         try:
@@ -219,22 +234,56 @@ def main() -> int:
         except ValueError:
             return None
 
+    def rect_of(reply: str) -> list[int] | None:
+        try:
+            start = reply.index("[")
+            end = reply.index("]")
+            return [int(part) for part in reply[start + 1 : end].split(",")]
+        except (ValueError, TypeError):
+            return None
+
+    problems: list[str] = []
+    if not finished:
+        problems.append("timed out")
+    if any(r.startswith("ERR ") for r in reports) or value("DONE") == "no-pane-bindings":
+        problems.append("the pane bindings are missing in the app window")
+
     before = as_int("inner_before")
     shown = as_int("inner_shown")
-    hidden = as_int("inner_hidden")
+    sent = value("rect_sent")
+    sent_rect = [int(p) for p in sent.split(",")] if sent else None
     show_reply = value("show") or ""
-    status_reply = value("status_shown") or ""
+    status_shown = value("status_shown") or ""
+    status_after_rect = value("status_after_rect") or ""
+    status_hidden = value("status_hidden") or ""
+    status_closed = value("status_closed") or ""
 
     if '"ok":true' not in show_reply:
         problems.append(f"show was refused: {show_reply!r}")
-    if shown is None or not 30 <= shown <= 60:
-        problems.append(f"the SPA viewport did not shrink to the strip: {shown!r}")
-    if before is None or shown is None or shown >= before:
-        problems.append(f"no measurable split (before={before!r} shown={shown!r})")
-    if '"visible":true' not in status_reply or '"supported":true' not in status_reply:
-        problems.append(f"status does not report a visible, supported pane: {status_reply!r}")
-    if hidden is None or before is None or hidden < before - 60:
-        problems.append(f"hiding did not give the SPA the window back: {hidden!r}")
+    if rect_of(show_reply) != sent_rect:
+        problems.append(f"show did not echo the rect: {show_reply!r} vs {sent_rect}")
+    # The whole point of rev 2: the app keeps its window.
+    if before is None or shown is None or shown != before:
+        problems.append(f"the SPA was resized ({before} -> {shown}); the pane must sit beside it")
+    if '"supported":true' not in status_shown or '"visible":true' not in status_shown:
+        problems.append(f"status does not report a visible, supported pane: {status_shown!r}")
+    if '"uri_len":0' in status_shown:
+        problems.append(f"the pane never loaded the page: {status_shown!r}")
+    if rect_of(status_after_rect) != [
+        sent_rect[0],
+        sent_rect[1] + 20,
+        sent_rect[2],
+        max(120, sent_rect[3] - 20),
+    ]:
+        problems.append(f"a rect-only update was not applied: {status_after_rect!r}")
+    if '"visible":true' not in status_hidden and '"visible":false' not in status_hidden:
+        problems.append(f"hide replied without a visible flag: {status_hidden!r}")
+    if '"visible":false' not in status_hidden:
+        problems.append(f"hide left the pane visible: {status_hidden!r}")
+    if '"uri_len":0' in status_hidden:
+        problems.append(f"hiding destroyed the page (state must survive): {status_hidden!r}")
+    if '"uri_len":0' not in status_closed:
+        problems.append(f"closing the tab left the page running: {status_closed!r}")
     if windows:
         problems.append(f"the pane spawned a browser window: {windows}")
 
@@ -242,8 +291,8 @@ def main() -> int:
         print("\nFAIL: " + "; ".join(problems))
         return 1
     print(
-        f"\nPASS: pane inside the app window — SPA viewport {before} -> {shown} (strip) -> "
-        f"{hidden} (restored), no window, no child process."
+        f"\nPASS: pane beside the app — SPA viewport unchanged ({before}px), pane at "
+        f"{sent_rect}, page loaded, hide keeps it, close stops it, no window."
     )
     return 0
 

@@ -448,6 +448,33 @@ window, tab switching without a reload, resize/maximise, `window.nalarBrowserOpe
 absent in the pane's devtools, no GTK criticals on quit) — the live probe covers the
 mechanism, not the look. macOS and Windows need their parent-call work first.
 
+### rev 2 — the human's second look (both fixed the same day)
+
+Two reports from actually using it:
+
+1. *"it eat entire space? cannot side by side?"* — rev 1 shrank the SPA's view to
+   the 36px strip and gave the page the whole window. **Fixed** by making the pane
+   an overlay child of a `GtkOverlay` while the SPA view stays the (unchanged)
+   main child: the app keeps the whole window and the pane is placed at the rect
+   the SPA reports for the browser tab's body. The SPA-side chrome-hiding
+   (`data-pane-mode`) is deleted — the app is meant to stay visible. Verified:
+   *"SPA viewport unchanged (1398px)"* in the live probe.
+2. *"after click the close button the webkit still there and still running
+   background"* — rev 1 only hid the pane, so the page kept running after the
+   tab's ✕. **Fixed** with a fourth binding, `nalarBrowserPaneClose`, that
+   destroys the view (called from `stores/tabs.ts` only when a browser tab is
+   actually closed — never on a switch, a reorder or quit). Verified:
+   `uri_len 34 → 0` on close, and `uri_len` stays > 0 across a *hide*, so
+   switching tabs still keeps the page's state.
+
+Two implementation notes worth keeping: GTK would size an overlay child by its
+natural size (a `WebKitWebView`'s is ~1398px), so the placement is an explicit
+`gtk_widget_size_allocate` in the overlay's `size-allocate` handler connected
+`G_CONNECT_AFTER` (clamped to the window); and `status` now reports the pane
+view's URI *length* (via `webkit_web_view_get_uri`) so the live probe can prove
+the page really rendered without adding a binding inside the pane — a full
+escaped URI is the follow-up "live URL in the tab" (§10.4 of the previous plan).
+
 ### Follow-ups
 
 macOS (`addSubview:` in the non-owning Cocoa path — `webview.h:2632`) and Windows

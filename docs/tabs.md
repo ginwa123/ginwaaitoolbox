@@ -36,17 +36,19 @@ content, queued messages and your unsent composer text all survive that.
 
 ### The browser pane
 
-A browser tab's page renders **inside the app window**, below the tab strip —
-one window, one process, no second OS window. The strip stays visible and
-clickable (the shell pins the app's own view to those 36px), and the page fills
-everything below it, with the same injected address/←/→/↻ bar as the window
-mode. Any site works (GitHub, YouTube, Google, `localhost:5173`) because it is a
-real top-level webview, not an iframe — and cookies/sign-in persist in the
-engine's store.
+A browser tab's page renders **inside the app window**, in the tab's own body —
+one window, one process, no second OS window. The app stays fully visible beside
+it: the sidebar, the tab strip and every other tab keep rendering normally, and
+the page fills just the body area of the browser tab, with the same injected
+address/←/→/↻ bar as the window mode. Any site works (GitHub, YouTube, Google,
+`localhost:5173`) because it is a real top-level webview, not an iframe — and
+cookies/sign-in persist in the engine's store.
 
 The pane is created on the first browser tab and then **hidden, not closed**,
 when you switch away: coming back is instant and the page keeps its state
-(scroll, forms, a playing video). Closing the tab or the app closes it.
+(scroll, forms, a playing video). **Closing** the tab is different — that
+destroys the view, so the page stops and nothing keeps running in the
+background. Closing the app closes it too.
 
 Linux (GTK3) today. On macOS and Windows the pane is not built yet, so the same
 tab uses the window mode below — automatically, with no separate button for it.
