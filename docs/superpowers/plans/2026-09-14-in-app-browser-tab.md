@@ -591,6 +591,9 @@ search term in it opens the page in a real **Nalar-owned webview window**
 the launcher and record, the window owns history and cookies. The SPA reaches
 the shell through `webview_bind` — no HTTP route, no port, no token.
 
+**PR:** [#489](https://github.com/ginwa123/ginwaaitoolbox/pull/489) (branch
+`worktree/task-1789376475404`, base `main` @ `b7c2d39e`).
+
 | Plan task | Status | Notes |
 |---|---|---|
 | 1 — shell: `--browser`, `runBrowserWindow`, chrome bar, bridge | ✅ | `cli.zig` (`browser_url`, http(s)-only at parse time), `main.zig` (browser branch returns before attach/extraction), `webview_lib.zig` (`runBrowserWindow` + the bridge installed in `runWindow`), NEW `browser_bridge.zig`, NEW `browser_chrome.js` (`@embedFile`) |
