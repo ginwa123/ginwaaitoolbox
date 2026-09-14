@@ -1404,35 +1404,22 @@ const handleCreateTaskSave = async (payload: {
       </div>
     </section>
     <!--
-    Centered inline task panel (replaces the former right-docked
-    side panel AND the old KanbanTaskDetailDialog modal). Renders
-    as an overlay centered over the board — the board stays mounted
-    underneath. Backdrop click closes (same as Cancel). Opening
-    appends ?detail=<taskId> via router.push, so browser Back drops
-    the param and the watcher below closes the panel back to the
-    plain board. Edit + create are mutually exclusive.
+    Full-cover task view (replaces the former centered card AND the
+    old KanbanTaskDetailDialog modal). Covers the whole kanban view
+    area like the task chat does — the board stays mounted
+    underneath but is fully hidden. Opening appends
+    ?detail=<taskId> via router.push, so browser Back drops the
+    param and the watcher below returns to the plain board. Close
+    via the panel's X / Cancel / Esc, Save, or Back. Edit + create
+    are mutually exclusive.
   -->
     <div
       v-if="showTaskDetail || showCreateDialog"
-      class="absolute inset-0 z-30 flex items-center justify-center p-4"
+      class="absolute inset-0 z-30 overflow-y-auto"
+      style="background-color: var(--semantic-content-bg)"
       data-testid="kanban-detail-panel"
     >
-      <div
-        class="absolute inset-0"
-        style="background: rgba(0, 0, 0, 0.55)"
-        data-testid="kanban-detail-backdrop"
-        @click="showTaskDetail ? closeTaskDetail() : (showCreateDialog = false)"
-      />
-      <div
-        class="relative w-full max-w-2xl max-h-full overflow-y-auto rounded-xl"
-        style="
-          background-color: var(--semantic-card-bg);
-          border: 1px solid var(--color-border);
-          box-shadow:
-            0 1px 2px rgba(0, 0, 0, 0.4),
-            0 8px 24px rgba(0, 0, 0, 0.35);
-        "
-      >
+      <div class="w-full max-w-3xl mx-auto p-4 sm:p-6">
         <KanbanTaskDetail
           v-if="showTaskDetail"
           v-model:show="showTaskDetail"
