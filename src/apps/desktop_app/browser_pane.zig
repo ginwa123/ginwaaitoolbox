@@ -82,6 +82,8 @@ extern "c" fn gtk_widget_show(widget: *GtkWidget) void;
 extern "c" fn gtk_widget_hide(widget: *GtkWidget) void;
 extern "c" fn gtk_widget_get_visible(widget: *GtkWidget) c_int;
 extern "c" fn gtk_widget_set_size_request(widget: *GtkWidget, width: c_int, height: c_int) void;
+extern "c" fn gtk_widget_get_allocated_width(widget: *GtkWidget) c_int;
+extern "c" fn gtk_widget_get_allocated_height(widget: *GtkWidget) c_int;
 extern "c" fn gtk_widget_size_allocate(widget: *GtkWidget, allocation: *Rect) void;
 extern "c" fn gtk_widget_queue_resize(widget: *GtkWidget) void;
 /// `WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER` — the WebKitWebView itself,
@@ -249,6 +251,21 @@ pub const Pane = struct {
         return gtk_widget_get_visible(host) != 0;
     }
 
+    /// The widget's REAL allocated size — the thing that decides which part of
+    /// the window receives clicks. Reported in `status` so a mis-sized pane is
+    /// visible in a log instead of guessed at.
+    pub fn allocWidth(self: *const Pane) c_int {
+        if (!supported) return 0;
+        const host = self.host orelse return 0;
+        return gtk_widget_get_allocated_width(host);
+    }
+
+    pub fn allocHeight(self: *const Pane) c_int {
+        if (!supported) return 0;
+        const host = self.host orelse return 0;
+        return gtk_widget_get_allocated_height(host);
+    }
+
     /// Length of the URL the pane has actually loaded (0 when there is no view).
     /// The live probe uses it to prove the page really rendered; a full
     /// escaped URI would be the follow-up "live URL in the tab" (§10.4).
@@ -371,7 +388,7 @@ fn handleInner(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]cons
         },
         .status => return browser_bridge.reply(
             out,
-            "{{\"supported\":{s},\"visible\":{s},\"uri_len\":{d},\"rect\":[{d},{d},{d},{d}]}}",
+            "{{\"supported\":{s},\"visible\":{s},\"uri_len\":{d},\"rect\":[{d},{d},{d},{d}],\"alloc\":[{d},{d}]}}",
             .{
                 boolLit(supported),
                 boolLit(pane.isVisible()),
@@ -380,6 +397,8 @@ fn handleInner(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]cons
                 pane.rect.y,
                 pane.rect.width,
                 pane.rect.height,
+                pane.allocWidth(),
+                pane.allocHeight(),
             },
         ),
         .rect => {
