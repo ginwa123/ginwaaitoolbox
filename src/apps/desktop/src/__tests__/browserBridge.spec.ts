@@ -9,9 +9,11 @@ import {
   browserPaneAvailable,
   browserPaneStatus,
   browserStatus,
+  closeBrowserPane,
   closeBrowserWindow,
   hideBrowserPane,
   openBrowserWindow,
+  rectBrowserPane,
   showBrowserPane,
   type NalarBrowserLike,
   type NalarBrowserPaneLike,
@@ -350,5 +352,133 @@ describe('browserPane', () => {
       ok: false,
       visible: false,
     })
+  })
+
+  it('forwards the rect on show when the caller has one', async () => {
+    const seen: unknown[] = []
+    __setBrowserPaneForTests({
+      show: async (...args: unknown[]) => {
+        seen.push(args)
+        return { ok: true, visible: true }
+      },
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+    })
+    await expect(
+      showBrowserPane('tab_1', 'https://example.com', { x: 10, y: 20, width: 300, height: 200 }),
+    ).resolves.toEqual({ available: true, ok: true, visible: true, error: undefined })
+    expect(seen).toEqual([['tab_1', 'https://example.com', 10, 20, 300, 200]])
+  })
+
+  it('moves/resizes the pane without navigating', async () => {
+    const seen: unknown[] = []
+    __setBrowserPaneForTests({
+      show: async () => ({ ok: true, visible: true }),
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+      rect: async (x: number, y: number, width: number, height: number) => {
+        seen.push([x, y, width, height])
+        return { ok: true, visible: true }
+      },
+    })
+    await expect(rectBrowserPane({ x: 12, y: 34, width: 500, height: 400 })).resolves.toEqual({
+      available: true,
+      ok: true,
+    })
+    expect(seen).toEqual([[12, 34, 500, 400]])
+  })
+
+  it('destroys the pane view on close', async () => {
+    let closed = 0
+    __setBrowserPaneForTests({
+      show: async () => ({ ok: true, visible: true }),
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+      close: async () => {
+        closed += 1
+        return { ok: true, visible: false }
+      },
+    })
+    await expect(closeBrowserPane()).resolves.toEqual({ available: true, ok: true })
+    expect(closed).toBe(1)
+  })
+
+  it('degrades rect/close when the pane is absent and never throws', async () => {
+    __setBrowserPaneForTests(null)
+    await expect(rectBrowserPane({ x: 0, y: 0, width: 10, height: 10 })).resolves.toEqual({
+      available: false,
+      ok: false,
+    })
+    await expect(closeBrowserPane()).resolves.toEqual({ available: false, ok: false })
+  })
+
+  it('degrades rect/close on an older shell whose triple has neither', async () => {
+    // The pre-rect shell: show/hide/status exist, rect/close do not. The
+    // pane still counts as present; only the new calls report ok:false.
+    __setBrowserPaneForTests({
+      show: async () => ({ ok: true, visible: true }),
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+    })
+    expect(browserPaneAvailable()).toBe(true)
+    await expect(rectBrowserPane({ x: 0, y: 0, width: 10, height: 10 })).resolves.toEqual({
+      available: true,
+      ok: false,
+    })
+    await expect(closeBrowserPane()).resolves.toEqual({ available: true, ok: false })
+  })
+
+  it('degrades when rect/close reject, with no unhandled rejection', async () => {
+    __setBrowserPaneForTests({
+      show: async () => ({ ok: true, visible: true }),
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+      rect: async () => {
+        throw new Error('shell gone')
+      },
+      close: async () => {
+        throw new Error('shell gone')
+      },
+    })
+    await expect(rectBrowserPane({ x: 0, y: 0, width: 10, height: 10 })).resolves.toEqual({
+      available: true,
+      ok: false,
+    })
+    await expect(closeBrowserPane()).resolves.toEqual({ available: true, ok: false })
+  })
+
+  it('reads the flat rect/close pane globals the shell actually binds', async () => {
+    const scope = globalThis as unknown as Record<string, unknown>
+    const calls: unknown[] = []
+    __resetBrowserPaneForTests()
+    scope.nalarBrowserPaneShow = async () => ({ ok: true, visible: true })
+    scope.nalarBrowserPaneHide = async () => ({ ok: true, visible: false })
+    scope.nalarBrowserPaneStatus = async () => ({ supported: true, visible: true })
+    scope.nalarBrowserPaneRect = async (x: unknown, y: unknown, width: unknown, height: unknown) => {
+      calls.push(['rect', x, y, width, height])
+      return { ok: true, visible: true }
+    }
+    scope.nalarBrowserPaneClose = async () => {
+      calls.push(['close'])
+      return { ok: true, visible: false }
+    }
+    try {
+      expect(browserPaneAvailable()).toBe(true)
+      await expect(rectBrowserPane({ x: 1, y: 2, width: 3, height: 4 })).resolves.toEqual({
+        available: true,
+        ok: true,
+      })
+      await expect(closeBrowserPane()).resolves.toEqual({ available: true, ok: true })
+      expect(calls).toEqual([
+        ['rect', 1, 2, 3, 4],
+        ['close'],
+      ])
+    } finally {
+      delete scope.nalarBrowserPaneShow
+      delete scope.nalarBrowserPaneHide
+      delete scope.nalarBrowserPaneStatus
+      delete scope.nalarBrowserPaneRect
+      delete scope.nalarBrowserPaneClose
+    }
   })
 })

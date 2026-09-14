@@ -16,7 +16,7 @@
  * Pane/window status is fetched on demand only (mount, active-tab change,
  * after an action) — never polled.
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { normalizeAddressInput } from '../../helpers/browserUrl'
 import {
@@ -28,6 +28,7 @@ import {
   showBrowserPane,
 } from '../../helpers/browserBridge'
 import { useTabsStore } from '../../stores/tabs'
+import { BrowserPaneKey, type BrowserPaneApi } from '../../composables/useBrowserPane'
 
 const emit = defineEmits<{
   (e: 'navigate'): void
@@ -46,14 +47,39 @@ const copied = ref(false)
 const bridgeReady = ref(browserBridgeAvailable())
 /** True when the shell offers the in-app pane (Linux only for now). */
 const paneReady = ref(browserPaneAvailable())
-const paneVisible = ref(false)
+/** What the last pane-status reply reported (the standalone fallback below). */
+const paneStatusVisible = ref(false)
+
+/**
+ * The layout-owned pane api: the single owner of show/hide + rect reporting
+ * (see composables/useBrowserPane). In the app this is provided by AppLayout;
+ * standalone (tests, plain browser) there is no provider, so visibility falls
+ * back to the status reply above and the host handoff is a no-op.
+ */
+const paneApi = inject<BrowserPaneApi | null>(BrowserPaneKey, null)
+/** The native view covers this element — the shell reports its rect. */
+const paneHost = ref<HTMLElement | null>(null)
+/** The card hides while the native view covers it. */
+const paneVisible = computed(() => paneApi?.paneVisible.value ?? paneStatusVisible.value)
+
+watch(
+  paneHost,
+  (el) => {
+    paneApi?.setPaneHost(el)
+  },
+  { immediate: true },
+)
+
+onUnmounted(() => {
+  paneApi?.setPaneHost(null)
+})
 
 async function refreshStatus(): Promise<void> {
   const current = tab.value
   const currentUrl = url.value
   if (!current) {
     alive.value = false
-    paneVisible.value = false
+    paneStatusVisible.value = false
     return
   }
   try {
@@ -63,13 +89,13 @@ async function refreshStatus(): Promise<void> {
     bridgeReady.value = st.available
     alive.value = st.alive
     paneReady.value = pane.available && pane.supported
-    paneVisible.value = pane.visible
+    paneStatusVisible.value = pane.visible
   } catch {
     if (tab.value?.id !== current.id || url.value !== currentUrl) return
     bridgeReady.value = browserBridgeAvailable()
     alive.value = false
     paneReady.value = browserPaneAvailable()
-    paneVisible.value = false
+    paneStatusVisible.value = false
   }
 }
 
@@ -220,69 +246,76 @@ async function copyUrl(): Promise<void> {
       </p>
     </div>
 
-    <div v-else class="w-full max-w-xl flex flex-col gap-4">
-      <div class="flex items-center gap-2">
-        <span
-          data-testid="browser-url"
-          class="flex-1 truncate rounded-lg px-3 py-2 text-sm"
-          :style="{ border: '1px solid var(--color-border)' }"
+    <div
+      v-else
+      data-testid="browser-pane-body"
+      ref="paneHost"
+      class="flex-1 flex flex-col items-center justify-start overflow-hidden"
+    >
+      <div v-if="!paneVisible" class="w-full max-w-xl flex flex-col gap-4 px-6 py-10 overflow-auto">
+        <div class="flex items-center gap-2">
+          <span
+            data-testid="browser-url"
+            class="flex-1 truncate rounded-lg px-3 py-2 text-sm"
+            :style="{ border: '1px solid var(--color-border)' }"
+          >
+            {{ url }}
+          </span>
+          <button
+            type="button"
+            data-testid="browser-copy-url"
+            class="rounded-lg px-3 py-2 text-sm"
+            :style="{ border: '1px solid var(--color-border)' }"
+            @click="copyUrl"
+          >
+            {{ copied ? 'Copied' : 'Copy' }}
+          </button>
+        </div>
+        <p
+          data-testid="browser-window-status"
+          class="text-sm"
+          :style="{ color: 'var(--semantic-text-muted)' }"
         >
-          {{ url }}
-        </span>
-        <button
-          type="button"
-          data-testid="browser-copy-url"
-          class="rounded-lg px-3 py-2 text-sm"
-          :style="{ border: '1px solid var(--color-border)' }"
-          @click="copyUrl"
+          {{ statusText }}
+        </p>
+        <p
+          v-if="paneReady"
+          data-testid="browser-pane-note"
+          class="text-sm"
+          :style="{ color: 'var(--semantic-text-muted)' }"
         >
-          {{ copied ? 'Copied' : 'Copy' }}
-        </button>
-      </div>
-      <p
-        data-testid="browser-window-status"
-        class="text-sm"
-        :style="{ color: 'var(--semantic-text-muted)' }"
-      >
-        {{ statusText }}
-      </p>
-      <p
-        v-if="paneReady"
-        data-testid="browser-pane-note"
-        class="text-sm"
-        :style="{ color: 'var(--semantic-text-muted)' }"
-      >
-        Showing in the pane below.
-      </p>
-      <p
-        v-if="!paneReady && !bridgeReady"
-        data-testid="browser-bridge-missing"
-        class="text-sm"
-        :style="{ color: 'var(--semantic-text-muted)' }"
-      >
-        This page has no shell bridge, so a Nalar browser window cannot be opened from here —
-        opening in your system browser instead. Use the Nalar desktop app for an in-app window.
-      </p>
-      <div class="flex gap-2">
-        <button
-          v-if="!paneReady && bridgeReady"
-          type="button"
-          data-testid="browser-open-fallback"
-          class="rounded-lg px-4 py-2 text-sm font-medium"
-          :style="{ backgroundColor: 'var(--color-violet)', color: '#fff' }"
-          @click="openFallbackWindow"
+          Showing in the pane below.
+        </p>
+        <p
+          v-if="!paneReady && !bridgeReady"
+          data-testid="browser-bridge-missing"
+          class="text-sm"
+          :style="{ color: 'var(--semantic-text-muted)' }"
         >
-          Open browser window
-        </button>
-        <button
-          type="button"
-          data-testid="browser-open-system"
-          class="rounded-lg px-4 py-2 text-sm"
-          :style="{ border: '1px solid var(--color-border)' }"
-          @click="openInSystem"
-        >
-          Open in system browser
-        </button>
+          This page has no shell bridge, so a Nalar browser window cannot be opened from here —
+          opening in your system browser instead. Use the Nalar desktop app for an in-app window.
+        </p>
+        <div class="flex gap-2">
+          <button
+            v-if="!paneReady && bridgeReady"
+            type="button"
+            data-testid="browser-open-fallback"
+            class="rounded-lg px-4 py-2 text-sm font-medium"
+            :style="{ backgroundColor: 'var(--color-violet)', color: '#fff' }"
+            @click="openFallbackWindow"
+          >
+            Open browser window
+          </button>
+          <button
+            type="button"
+            data-testid="browser-open-system"
+            class="rounded-lg px-4 py-2 text-sm"
+            :style="{ border: '1px solid var(--color-border)' }"
+            @click="openInSystem"
+          >
+            Open in system browser
+          </button>
+        </div>
       </div>
     </div>
   </div>
