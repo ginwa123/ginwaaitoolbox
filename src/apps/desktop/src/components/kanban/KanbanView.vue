@@ -1419,7 +1419,7 @@ const handleCreateTaskSave = async (payload: {
       style="background-color: var(--semantic-content-bg)"
       data-testid="kanban-detail-panel"
     >
-      <div class="w-full max-w-3xl mx-auto p-4 sm:p-6">
+      <div class="w-full max-w-6xl mx-auto p-4 sm:p-6">
         <KanbanTaskDetail
           v-if="showTaskDetail"
           v-model:show="showTaskDetail"
