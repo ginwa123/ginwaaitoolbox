@@ -1364,6 +1364,48 @@ async function handleAgentToggleToolsBulk(toolNames: string[], enabled: boolean)
   }
 }
 
+// ─── Browser Back/forward ↔ task chat sync (non-tab mode) ─────
+//
+// Opening a task chat PUSHes `/app?...&itemId=<id>/chat/<taskId>`
+// (Sidebar.handleSelectTask), so browser Back pops the URL back to
+// the board URL — but nothing synced the STORE from the URL on
+// popstate (the chat restore only ran onMounted), leaving the chat
+// open on a board URL. This watcher closes that gap in both
+// directions:
+//   - Back (suffix gone, chat open) → clear activeTask +
+//     activeChat so the board re-renders. No router call — the URL
+//     is already the board URL.
+//   - Forward (suffix back, chat closed) → re-open that task.
+// Tab mode owns its own URL contract (tabs drive the URL via
+// applyActiveTabToUrl), so this watcher stays out of its way there.
+watch(
+  () => {
+    try {
+      return route.query.itemId as string | undefined
+    } catch {
+      return undefined
+    }
+  },
+  (rawItemId) => {
+    try {
+      if (tabsStore.enabled) return
+      if (workspacesStore.isNavigatingToTask) return
+      const parsed = parseItemIdWithChat(rawItemId ?? '')
+      const urlTaskId = parsed.chatTaskId ?? null
+      const activeTaskId = workspacesStore.activeTaskId ?? null
+      if (urlTaskId === activeTaskId) return
+      if (urlTaskId) {
+        workspacesStore.setActiveTask(urlTaskId)
+      } else if (activeTaskId) {
+        workspacesStore.setActiveTask(null)
+        navigationStore.clearActiveChat()
+      }
+    } catch {
+      // Router/store absent in unit tests — nothing to sync.
+    }
+  },
+)
+
 // Close the chatview column (the 3-column layout's right pane).
 // Triggered by the ChatView's ✕ header button. Clears the active
 // task and navigates to `view=workspace` so the URL remains the
@@ -2876,7 +2918,6 @@ defineExpose({
 
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
-
 
     <!-- Global error notification stack -->
     <NotificationContainer />
