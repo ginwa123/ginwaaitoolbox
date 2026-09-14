@@ -103,7 +103,11 @@ onMounted(() => {
     }
   ).__nalarLogCtx
   if (logCtx) {
-    logCtx.getRoutePath = () => `${route.path}${route.fullPath}`
+    // route.fullPath already includes path + query + hash — concatenating
+    // route.path in front duplicates the path ("/app" + "/app?view=..." =
+    // "/app/app?view=..."). Use fullPath alone so logged route_path matches
+    // the browser address bar.
+    logCtx.getRoutePath = () => route.fullPath
     logCtx.getSessionId = () => navigationStore.sessionId || null
   }
 
