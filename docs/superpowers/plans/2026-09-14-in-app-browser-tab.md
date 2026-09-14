@@ -1,12 +1,21 @@
 # In-app browser tab (a new tab that is literally a browser)
 
-> **Status: PLAN ONLY — not executed.** Rev 1 (2026-09-14). Awaiting the
-> go-ahead at `in_review_planning`. Nothing in this document has been
-> implemented; every line number below was verified by reading `main` at
-> `b7c2d39e`.
+> **Status: PLAN ONLY — not executed.** Rev 2 (2026-09-14) — the reviewer's
+> answers are locked in §1.3. Awaiting the final go-ahead at
+> `in_review_planning`. Nothing in this document has been implemented; every line
+> number below was verified by reading `main` at `b7c2d39e`.
 >
 > **Plan PR:** #489, branch `worktree/task-1789376475404` (docs only — merging it
 > lands this plan, not the feature).
+>
+> **Reviewer answers, locked 2026-09-14 (task owner):**
+> * **Q1 → a blank browser tab.** `+` / `Shift+Alt+T` opens the browser new-tab
+>   page (§1.2 is therefore the intended change, not a pending question).
+> * **Q2 → keep the fallback path.** "I want the in-app browser to browse like a
+>   regular browser — search Google, open GitHub." That is exactly what the two
+>   render paths deliver for *reading* the web; §1.3 states plainly what a regular
+>   browser does that this cannot (sign-in), and §7.1 is the route that closes it.
+> * **Q3 → Google.** The omnibox search provider is Google.
 
 > **For agentic workers:** this is a *planning* artefact. Before implementing, use
 > subagent-driven-development / executing-plans. Steps use checkbox (`- [ ]`)
@@ -19,8 +28,8 @@ but literally a browser"*.
 page** — its own address bar, back / forward / reload, and the page rendered
 inside the app — so that:
 
-1. `+` (and `Shift+Alt+B`) opens a **blank browser tab** with the address bar
-   focused, not the chats list;
+1. `+` (and the existing `Shift+Alt+T`) opens a **blank browser tab** with the
+   address bar focused, not the chats list;
 2. an `http(s)` URL clicked anywhere in the app (a created PR URL, the "Open web"
    button, "Open in new tab" on an HTML preview) opens **in a new in-app browser
    tab** instead of the OS browser;
@@ -37,20 +46,21 @@ Generated 2026-09-14 against `main` @ `b7c2d39e`.
 |---|---|---|
 | What "a browser" renders in | **An `<iframe>` inside the one existing native webview** | The desktop shell is a *single* `webview_t` window: `desktop_app/main.zig:300-306` calls `webview_lib.runWindow(...)`, which does `webview_create → webview_navigate → webview_run` and **blocks in `webview_run`** (`webview_lib.zig:119-126`). There is no second-view primitive wired up (no Electron `BrowserView`, no Tauri `WebviewWindow` — neither dependency exists in the repo). A real second browsing context means reworking window lifetime + the blocking event loop across Linux/macOS/Windows (§7, out of scope). |
 | Primary render path | **Direct `<iframe src="<url>">`, no proxy** | Full fidelity: relative URLs, the site's own JS, its own origin and storage — it is exactly what a browser does, minus chrome. Also means we do **not** become a mini web-proxy for the common case. |
-| Fallback render path | **Server-proxied HTML into `<iframe srcdoc>`** — only when the probe says the site refuses framing | `X-Frame-Options: DENY` / `frame-ancestors` is the single most common reason an in-app browser looks broken (github.com, google.com, most banks). A framing-hostile site is exactly the case where "open a browser tab" must still show *something*. |
+| Fallback render path | **Server-proxied HTML into `<iframe srcdoc>`** — used when the probe says the site refuses framing. **Confirmed by the reviewer** | `X-Frame-Options: DENY` / `frame-ancestors` is the single most common reason an in-app browser looks broken — google.com, github.com and most banks all send it. Without this fallback those sites do not open at all; with it they open as readable pages. **A plain-language answer to Q2 is in §1.3** — the reviewer asked what the question even meant, and it is the difference between "GitHub opens" and "GitHub is an error page". |
 | Who decides which path | **The Zig backend, from the real response headers** | The parent page cannot read a cross-origin frame's `contentDocument`, so a block is undetectable client-side. The backend can read `X-Frame-Options` + every `Content-Security-Policy` header on the **final** response and evaluate `frame-ancestors` against our **exact** origin (`http://127.0.0.1:<port>`). Deterministic, testable, no guessing. |
 | New tab kind | `'browser'` added to `TabKind` (`helpers/tabTarget.ts:26`) | `TabKind` is the existing closed union; `GLYPHS` in `TabBar.vue:38-45` is an exhaustive `Record<TabKind, string>`, so the compiler forces every switch to be handled. |
 | Tab URL shape | `path: '/app'`, `query: { view: 'browser', url: <absolute-url> }`; `url` **absent** = the blank new-tab page | Mirrors the existing query-only views (`view=workspace`, `view=chat`). No router change: `/app` already matches (`router/index.ts:12-15`) and the catch-all stays last (`:47-50`). A path route (`/app/browser`) was rejected — it would need a new `currentView` regex *and* a new router entry for zero benefit, and `tabTarget.ts` already has two path-based special cases (`SETTINGS_PATH`, `KANBAN_SETTINGS_RE`) that are pure debt. |
 | Tab identity | `tabKeyOf` returns `browser:<url>` (blank ⇒ `browser:new`) | Key-based dedupe is the strip's contract. Consequence: **opening the same URL twice focuses the existing tab** instead of making a second one — a deliberate deviation from Chrome (§8 #1). A unique-per-tab key would need the tab id inside the key, which breaks the pure-function/adoption design (`tabTarget.ts:160-187`). |
-| Page title | `title` from the proxied HTML when we have it, else the **hostname**, else `New tab` | We cannot read `<title>` out of a cross-origin frame. Honest label beats a stale one. Follow-up (§7) fixes this properly with a native webview. |
+| Page title | `title` from the proxied HTML when we have it, else the **hostname**, else `New tab` | We cannot read `<title>` out of a cross-origin frame. Honest label beats a stale one. §7.1 is what fixes this properly, with a shell-owned browser view. |
 | Per-tab history | Back / forward stacks in a **separate** localStorage key, not inside `Tab` | `TABS_VERSION` stays `1`. Bumping it makes `parseTabList` (`tabTarget.ts:399-437`) throw every existing user's strip away — unacceptable for an additive feature. Separate key also means old code ignores it. |
-| Address-bar input with no scheme | `https://duckduckgo.com/?q=<encoded>` | A browser's omnibox searches; a URL bar that errors on `hello world` feels broken. One constant, trivially swappable. |
+| Address-bar input with no scheme | **`https://www.google.com/search?q=<encoded>`** (Q3) | A browser's omnibox searches — the reviewer confirmed Google. One exported constant, so a region where Google serves its cookie-consent interstitial can be swapped in one line (§9). |
+| Search-box Enter inside a **proxied** page | The relay intercepts `method="GET"` form submits and navigates the tab to the resolved URL | Without it, pressing Enter in the site's own search box does nothing (the frame's own submit cannot reach the network under a NULL origin). This is what makes "search Google" work whether the query is typed in our omnibox or in the page's box. `method="POST"` forms are refused with a visible banner instead of failing silently. |
 | Allowed schemes | `http:` and `https:` **only** | `javascript:`, `data:`, `blob:`, `file:`, `about:` are refused in the address bar *and* in the handler. `file:` in particular would turn a UI field into arbitrary local-file read. |
-| Proxy credentials | **None.** No cookies, no `Authorization`, no client certs forwarded | The endpoint is anonymous-fetch only. Logged-in pages therefore do not work through the proxied path — stated in the UI (§4.3), and the escape hatch is "Open in system browser". |
-| `+` / `Shift+Alt+T` | **Opens the blank browser tab** (a change to today's behaviour) | The card asks for it: "open a new tab, but literally a browser". A browser's `+` gives a blank page with a focused omnibox, not a bookmarks list. The chats list is not lost: it is still the boot tab and the last-tab-closed fallback (`homeTab()`, `tabTarget.ts:328-342`), still one click away in the sidebar, and linked from the blank page. §11 Q1 is the one-line alternative. |
+| Proxy credentials | **None.** No cookies, no `Authorization`, no client certs forwarded | The endpoint is anonymous-fetch only. **This is the one ceiling of the whole feature:** signing in to Google/GitHub inside the proxied path does not work. Stated in the UI (§4.5), in the expectations table (§1.3), and closed properly only by §7.1. |
+| `+` / `Shift+Alt+T` | **Opens the blank browser tab** (a change to today's behaviour) — **confirmed by the reviewer (Q1)** | The card asks for it: "open a new tab, but literally a browser". A browser's `+` gives a blank page with a focused omnibox, not a bookmarks list. The chats list is not lost: it is still the boot tab and the last-tab-closed fallback (`homeTab()`, `tabTarget.ts:328-342`), still one click away in the sidebar, and linked from the blank page. |
 | Tab mode toggle off | The browser tab **still works as a plain view**; only the strip disappears | `syncFromTarget` already returns the raw target when `enabled === false` (`stores/tabs.ts:437-440`) and `currentView` is independent of the toggle, so `?view=browser&url=…` renders with no strip. `openBrowserTab()` degrades to `window.open(url, '_blank', 'noopener')` so the click-to-open call sites (§4.4) keep working. |
 | Toolbar extras | Back, Forward, Reload, **Open in system browser**, and (proxied only) a "Force direct / Force proxied" toggle | Reload alone is not enough when a page renders badly: the user needs one click out. The force toggle is the escape hatch for a wrong `frameable` verdict. |
-| Not in v1 | Downloads, form POSTs through the proxied path, `target=_blank` popups from the direct path, login/OAuth, favicons, DevTools, per-tab zoom, tab pinning/muting | Each is a separate feature. §7 records them so they do not need re-research. |
+| Not in v1 | Downloads, **`method="POST"` forms** (GET forms are relayed — see above), `target=_blank` popups from the direct path, sign-in/OAuth, favicons, DevTools, per-tab zoom, tab pinning/muting | Each is a separate feature. §7 records them so they do not need re-research; §7.1 is the one that turns this into a *fully* regular browser. |
 
 ### 1.1 This reverses no prior decision
 
@@ -65,7 +75,42 @@ for the *chrome*; the only new server code is one read-only GET handler.
 existing tests assert the old behaviour and are flipped deliberately:
 `TabBar.spec.ts:260` *"opens a chats tab from the + button"* and the `openHomeTab`
 cases in `tabsStore.spec.ts`. `openHomeTab()` itself is **not deleted** — it remains
-the boot tab and the last-tab-close fallback. §11 Q1 covers the alternative.
+the boot tab and the last-tab-close fallback.
+
+### 1.3 "Like a regular browser" — what works, and where it stops
+
+Q2 in rev 1 was poorly worded, so here it is without jargon. **A web page can end
+up inside our tab in one of two ways, and the *site itself* decides which:**
+
+* **Way A — we hand the URL straight to the browser engine.** The page is a real,
+  normal page: its own cookies, its own scripts, its own logins. We are allowed to
+  do this only for sites that do not forbid being embedded. Many sites do forbid
+  it (Google and GitHub both do — that is a header they send, not our limitation).
+* **Way B — our backend downloads the page and we show it.** This is the fallback
+  that makes Google and GitHub open at all. The page's text, images, styles and
+  its own JavaScript still load; what does not work is anything that needs to be
+  *signed in* or that calls the site's private API, because for security we send
+  no cookies and store nothing.
+
+Concretely, for the two sites the reviewer named:
+
+| What you do | Result |
+|---|---|
+| `github.com` → a repo page | **Works** (way B): it renders with its layout and images, links work, Back/Forward work, opening a link in a new tab works |
+| `github.com` → sign in, open a PR, comment | **Does not work** (way B): no cookies, and the sign-in form is a POST |
+| `github.com` → the dynamic bits (notifications dropdown, live file tree actions) | Partly works: the scripts load, but their background requests are blocked |
+| `google.com/search?q=…` from our omnibox | **Works** (way B) in most regions — Google sometimes answers a cookie-less request with its consent interstitial instead of results (§9) |
+| Pressing Enter in Google's own search box | **Works** (way B): the relay forwards GET form submits (Task 1/5) |
+| Opening a site that *allows* embedding (docs sites, blogs, wikis, most `*.github.io`, example.com) | **Works fully** (way A): real cookies, real scripts, real sign-in where the site offers it |
+| Downloading a file, uploading a file | **Does not work** in either way (v1) |
+| Logging in anywhere on a way-B page | **Does not work** — the single hard ceiling of this design |
+
+So: **reading the web, searching, following links, multiple tabs, history and
+restore — yes.** Being signed in everywhere — **no**, and no amount of frontend
+work changes it, because the limit is the engine's own iframe policy. The only
+thing that removes that ceiling is a browser view owned by the desktop shell
+itself instead of by the page (§7.1, a multi-week per-OS project, deliberately not
+part of this plan).
 
 ---
 
@@ -303,8 +348,8 @@ sites keep working for users who turned the strip off.
 | **Address bar** | Enter → normalize (allowlist → omnibox search) → `tabsStore.navigateBrowserTab(tabId, url)` → `applyActiveTabToUrl()`; focus selects all (browser behaviour); a refused scheme shows an inline error **under** the bar and navigates nowhere |
 | **Frame** | `<iframe :key="frameKey">` where `frameKey` = `url + ':' + mode + ':' + reloadNonce` so a mode switch or reload genuinely re-navigates |
 | **Loading / error** | Cancellable via a monotonic request token: a late response for a URL the user already left must never paint (edge case §8 #13) |
-| **Blank tab** (`url` absent) | Small new-tab page: the app name, a "Chats" shortcut (focus the home tab), the recent browser history list, and one hint line — no borrowed content |
-| **Proxied badge** | One honest line: *"Proxied — scripts and sign-in may not work"* + the system-browser button. Without it the degraded path looks like a bug (precedent: the `show_preview` white-page exception is documented at `docs/superpowers/plans/2026-09-13-html-frame-theme-and-height.md:141-145`) |
+| **Blank tab** (`url` absent) | Small new-tab page: the app name, a **"Search Google" box** (the omnibox's sibling, same code path — typing here and pressing Enter runs a Google search), a "Chats" shortcut (focus the home tab), the recent browser history list, and one hint line — no borrowed content |
+| **Proxied badge** | One honest line: *"Limited view — sign-in and some actions are unavailable"* + the system-browser button. Without it the degraded path looks like a bug (precedent: the `show_preview` white-page exception is documented at `docs/superpowers/plans/2026-09-13-html-frame-theme-and-height.md:141-145`) |
 | **Error page** | Status + plain-English reason + "Open in system browser" + "Try the proxied view" when it was a direct-path failure |
 
 The frame is styled `w-full h-full border-0` inside the chain, i.e. it fills the
@@ -325,12 +370,27 @@ proxied body gets a small injected script (same shape as
 * `target="_blank"` links: post `{ source: 'browser-frame-nav', url, newTab: true }`
   → the parent calls `openBrowserTab(url)`, i.e. a real new tab, like a browser.
 * pure-fragment links (`#x` on the same URL): not intercepted — the frame scrolls.
+* **`submit` on a `method="GET"` form** (capture phase): resolve the form's action
+  against the document base, append the serialized fields as a query string, then
+  `preventDefault()` + post `{ source: 'browser-frame-nav', url }`. This is what
+  makes the site's *own* search box work — including Google's, which is a plain
+  `GET /search?q=…` form — instead of silently doing nothing under a NULL origin.
+* **`submit` on a `method="POST"` form**: `preventDefault()` + post
+  `{ source: 'browser-frame-nav', blocked: 'post' }` → the parent shows a one-line
+  banner ("This form cannot be submitted in the in-app browser") plus the
+  system-browser button. Failing loudly beats failing silently.
+* `GET` submits work because a query-string navigation is an ordinary page load we
+  can re-probe and re-fetch; a `POST` body cannot be replayed by the parent.
 
 The parent listens for source tag `browser-frame-nav` only (never the two
 existing tags), resolves the sender by `contentWindow === event.source`
 (`findSenderFrame`), records history and re-runs the probe+fetch for the new URL.
 The listener is registered/unregistered in `onMounted`/`onUnmounted` — the same
 paired lifetime as `PreviewContentRenderer.vue:109-119`.
+
+On the **direct** path none of this runs: the frame is a normal document with its
+own origin, so links, forms, cookies and logins are the engine's business, exactly
+as in a browser.
 
 ---
 
@@ -396,8 +456,8 @@ paired lifetime as `PreviewContentRenderer.vue:109-119`.
   * `normalizeAddressInput(raw: string): { ok: true; url: string } | { ok: false; reason: string }`
     — absolute `http(s)` passes through; a bare host (`example.com`, `example.com:3000/x`)
     gains `https://`; anything else becomes the omnibox search URL
-    (`SEARCH_URL_TEMPLATE = 'https://duckduckgo.com/?q='`, exported so a test and a
-    future setting can both see it);
+    (`SEARCH_URL_TEMPLATE = 'https://www.google.com/search?q='`, exported so a test
+    and a future setting can both see it — Q3);
     explicit non-http schemes are refused with a reason, never searched.
   * `hostOf(url: string): string`
   * `browserTabTitle(url: string | null | undefined): string` — page title is
@@ -408,14 +468,21 @@ paired lifetime as `PreviewContentRenderer.vue:109-119`.
     `navigationRelayScript()` before `</body>` when present, else at the end.
   * `navigationRelayScript(): string` — mirrors
     `autoResizeScript`'s escaping discipline (`</script>` emitted as `<\/script>`).
+    Intercepts (a) link clicks, (b) `method="GET"` form submits (resolve action
+    against the base, append `URLSearchParams` of the fields → post the URL),
+    (c) `method="POST"` form submits (post `blocked: 'post'`, no navigation).
+  * `resolveGetFormTarget(action: string, base: string, fields: Array<[string, string]>): string`
+    — the pure half of (b), so the form logic is unit-testable without a DOM.
   * `frameAncestorsAllows(cspHeaderValue: string, appOrigin: string): boolean | null`
     — `null` when the directive is absent, used by tests to pin the matrix.
 - [ ] **1.2** NEW `src/apps/desktop/src/__tests__/browserUrl.spec.ts` — table-driven
   specs for every branch above, including: `javascript:`/`data:`/`file:` refused;
   `example.com` → `https://example.com`; `example.com:3000/a?b=c` keeps its port;
-  `hello world` → search; `injectBaseHref` leaves an existing base; the relay
-  script escapes its own closing tag; `frameAncestorsAllows` matrix (`*`,
-  `'none'`, exact origin, other origin, `'self'`, two directives, absent).
+  `hello world` → the **Google** search URL; `injectBaseHref` leaves an existing
+  base; the relay script escapes its own closing tag; `resolveGetFormTarget`
+  (relative action, absolute action, empty action, special chars in a field, an
+  existing query on the action); `frameAncestorsAllows` matrix (`*`, `'none'`,
+  exact origin, other origin, `'self'`, two directives, absent).
 - [ ] **1.3** `src/apps/desktop/src/helpers/index.ts` — re-export the module
   (same style as the `iframeAutoResize` block at `:26-36`).
 
@@ -536,10 +603,12 @@ strictly greater than the baseline.
 - [ ] **4.5** `+` wiring: `newTab()` in `TabBar.vue:143-146` becomes
   `tabsStore.openBrowserTab()` (no url). Keep `openHomeTab()` — it stays the boot
   tab and the last-tab-close fallback (`enforceLimit`/`close` are untouched).
-- [ ] **4.6** Add `Shift+Alt+B` → `openBrowserTab()` to
-  `composables/useTabShortcuts.ts` (the guaranteed `Shift+Alt` namespace,
-  `docs/tabs.md:38-55`) and to the `AppLayout.vue:2337-2366` handler map, with a
-  unit test for `resolveTabShortcut`.
+- [ ] **4.6** **No new shortcut.** `Shift+Alt+T` already maps to `newTab`
+  (`composables/useTabShortcuts.ts`, the guaranteed `Shift+Alt` namespace —
+  `docs/tabs.md:38-55`) and the handler map lives at `AppLayout.vue:2337-2366`;
+  once Task 4.5 lands, that shortcut opens the browser tab with no change at all.
+  Add a `resolveTabShortcut` test asserting `Shift+Alt+T` still resolves to
+  `newTab` (so a future refactor cannot silently repoint it).
 - [ ] **4.7** `stores/tabs.spec.ts` — NEW cases: open focuses an existing tab for
   the same URL; two different URLs ⇒ two tabs; navigate re-keys in place;
   history push/back/forward semantics incl. forward-truncation and the 50 cap;
@@ -571,8 +640,13 @@ a pre-feature `localStorage` payload keeps its tabs.
   * a comment block stating the sandbox rule (§3.3) so nobody "fixes" the
     asymmetry later;
   * `frameKey = url + '|' + mode + '|' + reloadNonce`;
-  * blank page: app name, "Chats" button (focus the home tab via
+  * blank page: app name, a **"Search Google" input** (same
+    `normalizeAddressInput` + `navigateBrowserTab` path as the omnibox, so there is
+    one search implementation), a "Chats" button (focus the home tab via
     `tabsStore.openHomeTab()` + emit navigate), recent history list, one hint;
+  * the proxied banner hosts the `blocked: 'post'` message ("This form cannot be
+    submitted in the in-app browser" + system-browser button) — a DOM banner,
+    not an `alert`;
   * error page: status, reason, "Open in system browser", "Try the proxied view";
   * a `data-testid="browser-frame"` and `data-browser-mode="direct|proxied"` for tests.
 - [ ] **5.3** `components/AppLayout.vue` — add the branch to the **existing**
@@ -600,8 +674,10 @@ a pre-feature `localStorage` payload keeps its tabs.
   that `sandbox` does **not** contain `allow-same-origin`); the 415/413/403/504
   error paths render the error page; a stale response for an abandoned URL does
   not paint (token); the `browser-frame-nav` message navigates the tab; a
-  fragment-only message does not; unmount removes the listener (spy on
-  `removeEventListener`); Reload bumps the key.
+  fragment-only message does not; a `blocked: 'post'` message renders the banner
+  and does not navigate; the blank page's Search Google box navigates a Google
+  search URL; unmount removes the listener (spy on `removeEventListener`); Reload
+  bumps the key.
 
 **Acceptance:** `pnpm exec vitest run BrowserChrome.spec.ts BrowserView.spec.ts` green.
 
@@ -680,8 +756,9 @@ production hits, both inside `openExternal.ts` and `PreviewContentRenderer.vue`.
 - [ ] **9.1** `docs/tabs.md` — extend: the kind table (`:107-134`) with the
   `browser` key shape; the tab-labels section (`:141-163`) with the
   title-source rule; the storage section (`:165-184`) with
-  `nalar-browser-history:v1:<windowId>`; the gestures table (`:14-25`) with
-  `Shift+Alt+B`; the "Turning it off" paragraph (`:194-205`) with "a browser tab
+  `nalar-browser-history:v1:<windowId>`; the gestures table (`:14-25`) with the
+  new meaning of `+` / `Shift+Alt+T` and the blank tab's Search Google box; the
+  "Turning it off" paragraph (`:194-205`) with "a browser tab
   still renders as a plain view with the strip off"; the Files table (`:221-235`)
   with the two new components and the three new helpers/tests.
 - [ ] **9.2** `docs/SPEC.md` — add `§3.7.12 In-app browser tab` (goal, the two
@@ -722,27 +799,55 @@ production hits, both inside `openExternal.ts` and `PreviewContentRenderer.vue`.
 
 ## 7. Follow-up (explicitly NOT in this plan)
 
-Fully specified here so it can be picked up without re-research:
+Fully specified here so it can be picked up without re-research.
 
-1. **Real page titles + full fidelity for every site: a second native webview.**
-   The vendored `webview/webview` C API is already bound for `set_html`, `eval`,
-   `bind`, `get_window` (`webview_lib.zig:69-73`) but unused, and `runWindow`
-   owns `create → navigate → run` in one blocking call (`:119-126`). A second
-   browsing context means: a non-blocking event loop, one `webview_t` per browser
-   tab, per-OS window parenting (GTK/WKWebView/WebView2), and a Zig↔JS bridge for
-   the address bar. That is a multi-week, per-OS project — and it is the only way
-   to get real page titles, working logins, downloads and DevTools.
-2. **Downloads, uploads, form POST through the proxied path, `target=_blank` from
-   the direct path** (needs `allow-popups` + a shell-level "new window" handler,
-   which does not exist).
-3. **Favicons** in the strip (needs a fetch + cache; the host glyph is honest
+### 7.1 The only route to a *fully* regular browser: a shell-owned browser view
+
+This is the honest answer to "browse like a regular browser" in the strong sense
+(Google/GitHub **signed in**, downloads, any site, no proxy). It is not a
+frontend change — it moves browser-tab ownership out of the SPA and into the
+desktop shell:
+
+* **What blocks it today.** The shell opens exactly one `webview_t` and blocks in
+  `webview_run` (`desktop_app/main.zig:300-306`, `webview_lib.zig:119-126`). The
+  engine *can* host more views, and the C API is already bound
+  (`webview_set_html`, `webview_eval`, `webview_bind`, `webview_get_window` —
+  `webview_lib.zig:69-73`, all unused), but the shell never creates a second one
+  and has no frame that the Vue tab strip could host it in (a native widget cannot
+  be positioned inside DOM content — the strip is HTML).
+* **The shape of the work.** A shell-owned chrome: a native container (GTK
+  `GtkNotebook` / macOS `NSTabView`+`WKWebView` / Windows `WebView2` in a child
+  HWND) holding one engine view per browser tab, with the SPA's own webview as
+  just another page. That implies (a) a non-blocking event loop in the Zig shell,
+  (b) per-OS view parenting and teardown, (c) a JS↔Zig bridge (`webview_bind`) so
+  the SPA can ask the shell to open/close/activate a browser page and receive its
+  title and URL back, (d) deciding what happens to the *existing* Vue tab strip —
+  two strips (native browser tabs + app tabs) would be incoherent, so the strip
+  most likely has to become shell-owned entirely, which retires
+  `helpers/tabTarget.ts`, `stores/tabs.ts`, `TabBar.vue` and their tests as the
+  source of truth.
+* **Effort and risk.** Multi-week, cross-platform, and it touches the shell every
+  release ships. Its own plan and its own card — it should **not** be folded into
+  this one, because it is a rewrite of the tab model rather than a new tab kind.
+* **Recommendation.** Ship this plan first (it delivers search + GitHub + tabs +
+  history in days, and the whole renderer/SSRF/relay layer is throw-away-free if
+  7.1 later lands: the probe/guard work stays useful as the "open a link" path).
+  Then decide on 7.1 as a separate card if sign-in matters.
+
+### 7.2 Everything else
+
+1. **Downloads, uploads, `method="POST"` forms through the proxied path,
+   `target=_blank` from the direct path** (the last two need `allow-popups` + a
+   shell-level "new window" handler, which does not exist).
+2. **Favicons** in the strip (needs a fetch + cache; the host glyph is honest
    today).
-4. **Per-tab proxy mode as a setting** (`always proxy` for privacy) rather than
+3. **Per-tab proxy mode as a setting** (`always proxy` for privacy) rather than
    the per-tab force toggle.
-5. **A downloads/logins story for the proxied path** — a cookie jar + a session
-   isolation model. Deliberately absent: forwarding the user's cookies to an
-   arbitrary host from a loopback endpoint is a security decision, not a feature.
-6. **Tab duplicate / pin / mute** — the strip has no concept of these yet.
+4. **A cookie/session model for the proxied path** — the reviewer did not ask for
+   sign-in, and forwarding the user's cookies to an arbitrary host from a loopback
+   endpoint is a security decision, not a feature. If it is ever wanted, it must be
+   an isolated jar with an explicit UI warning, not the app's own session.
+5. **Tab duplicate / pin / mute** — the strip has no concept of these yet.
 
 ---
 
@@ -776,6 +881,11 @@ Fully specified here so it can be picked up without re-research:
 | 24 | Proxied page with a relative `<img src>` | Resolves against the real origin (base injected) | 1.2 |
 | 25 | `target="_blank"` link in a proxied page | Opens a **new in-app browser tab** | 5.7 |
 | 26 | 50-tab cap reached with browser tabs open | Oldest non-active evicted; the active browser tab never evicted | 4.7 (existing `enforceLimit`) |
+| 27 | Enter in a site's own **GET** search box (Google's) | The relay resolves the form against the base and navigates the tab to `…/search?q=…`; results render | 1.2, 5.7 |
+| 28 | Submit a **POST** form (GitHub sign-in) | Nothing navigates; a banner explains it and offers the system browser (no silent no-op) | 5.7 |
+| 29 | Google answers a cookie-less proxied request with its consent interstitial | The page renders as-is (it is just a page); the user can click through it via the relay; §9 records the one-line provider swap | manual (§11) |
+| 30 | A site that needs its own API calls to render at all (Google's JS-only paths) | Layout/scripts load, data calls fail ⇒ visibly partial page + the badge; system browser is the escape hatch | manual (§11) |
+| 31 | Upstream ignores our `Range: bytes=0-0` probe header | One discarded download; the probe still returns metadata and the client picks the path | 2.8 |
 
 ---
 
@@ -786,13 +896,16 @@ Fully specified here so it can be picked up without re-research:
 | The proxy becomes a mini web-proxy that rots as sites change | Broken pages on the fallback path | The proxy is a **fallback**, never the primary path; the direct iframe carries the common case; the badge + system-browser button set expectations |
 | SSRF from the new outbound-fetch endpoint | Local API / metadata read from the renderer | Scheme allowlist + private-range blocklist + final-URL revalidation + no credentials + cap + timeout; pinned over the real wire in 10.1 |
 | Third-party cookies / storage blocked in WebKitGTK | Logged-in sites stay signed out inside the app | Direct path keeps the site's own origin; document the limit; system-browser escape hatch |
-| Proxied pages' JS breaks (NULL origin ⇒ `fetch`/XHR blocked by CORS) | Some sites look partly broken | Badge states it; force-direct toggle; out of scope in §7.5 |
+| Proxied pages' JS breaks (NULL origin ⇒ `fetch`/XHR blocked by CORS) | Some sites look partly broken | Badge states it; force-direct toggle; §7.2 item 1 / §7.1 |
 | `frameable` prediction disagrees with the engine | Blank/failed frame with no explanation | Force-proxy toggle + error page with both escape hatches |
 | Engine differences (WebKitGTK vs WKWebView vs WebView2) in `sandbox` handling | Inconsistent behaviour across OSes | Capability-independent design (no engine APIs), honest banner, and a documented fallback: "if this page looks wrong, open it in your browser" |
 | Proxy returns hostile HTML into our own document | XSS in the app | The proxied body only ever enters a `srcdoc` frame **without** `allow-same-origin` — NULL origin, no parent access (the `PreviewContentRenderer` contract, `:37-42`) |
 | A future CSP on the app shell would block our own frames | Feature dies silently | Noted in Task 3's comment; §7 does not add one; if a CSP ever lands it must allow `frame-src http: https:` |
 | Buffered bodies + 50 ports of tabs | Memory | 2 MiB cap, `probe` downloads no body, history entries are capped strings |
-| Changing `+` surprises existing users | Small UX regression | §11 Q1 (one-line flip); `openHomeTab()` retained and linked from the blank page |
+| Changing `+` surprises existing users | Small UX regression | **Confirmed by the reviewer (Q1)**; `openHomeTab()` retained and linked from the blank page |
+| **User-expectation gap: "regular browser" vs. no sign-in on the proxied path** | The reviewer's words were "browse like a regular browser" — a way-B page cannot sign in, and that is not fixable in the frontend | §1.3 states it in plain language up front; the badge says "Limited view"; the system-browser button is one click; §7.1 is the only real fix and is called out as its own project |
+| Google serves its cookie-consent / "enable JS" page to a proxy request in some regions | "Search Google" looks broken for those users | Google is a one-line constant (`SEARCH_URL_TEMPLATE`); §11's manual checklist verifies the region you are in and the fallback is DuckDuckGo/Bing; the omnibox itself is not affected — only the *proxied* Google page is |
+| Sites whose UI depends on authenticated API calls (GitHub notifications, Google account chrome) | Partially-rendered pages on the proxied path | Badge + banner; way A sites (the majority of docs/blogs/wikis) are unaffected |
 
 ---
 
@@ -829,12 +942,20 @@ with `VITE_API_PROXY_TARGET=http://localhost:8080`. Tab mode on (default):
   labelled `New tab` / 🌐; the previous tab stays open beside it.
 - [ ] Type `example.com` → the page loads **directly** (no proxy badge), the tab
   label becomes `example.com`, Back is enabled.
-- [ ] Type `github.com` → proxied badge appears, the page renders with its
-  layout/images; click a link inside it → the tab's URL updates and the new page
-  loads (relay works); Back returns to the previous one.
+- [ ] **GitHub (the reviewer's case):** type `github.com` → the limited-view badge
+  appears, the page renders with its layout/images; open a repo (e.g.
+  `github.com/ginwa123/ginwaaitoolbox`) and confirm the README + file list render;
+  click a link inside the page → the tab URL updates and the next page loads;
+  Back returns.
+- [ ] **Google (the reviewer's case):** type `hello world` and `q=zig lang` into the
+  omnibox → Google results render; then do the same from the **blank tab's Search
+  Google box**; then press Enter in Google's *own* search box inside the page →
+  the relay navigates the tab and results render.
+- [ ] Confirm the known ceiling is *visible, not silent*: on a proxied page, a
+  sign-in or POST form shows the banner and offers the system browser; nothing
+  silently does nothing.
 - [ ] Type `127.0.0.1:8081` → 403 error page, not the app inside itself.
 - [ ] Type `javascript:alert(1)` → inline error under the bar, nothing navigates.
-- [ ] Type `hello world` → DuckDuckGo search results.
 - [ ] Reload on an unchanged URL genuinely re-fetches (watch the request).
 - [ ] Close the browser tab → the right neighbour activates; `Shift+Alt+Z` reopens
   it with Back history intact; the full app reload restores it and reloads the page.
@@ -847,25 +968,32 @@ with `VITE_API_PROXY_TARGET=http://localhost:8080`. Tab mode on (default):
 - [ ] Non-goal sanity: "Open in new tab" on an HTML chat preview still uses the
   system browser (documented).
 
-### Open questions for the reviewer (neither blocks the plan)
+### Reviewer answers (locked 2026-09-14)
 
-**Q1 — `+` opens a blank browser tab (locked default) vs. keeping `+` for the
-chats list.** The plan locks the change because the card asks for it. The
-alternative is a one-line flip: keep `newTab()` = `openHomeTab()` and add a
-separate 🌐 button (or a `Shift+Alt+B`-only affordance) for the browser tab. Say
-the word and Task 4.5/Task 7.3 change; nothing else in the plan moves.
+**A1 — `+` opens the blank browser tab.** Confirmed. No change to the plan.
 
-**Q2 — the proxied path's honesty.** A proxied page is not a normal browser page:
-no sign-in, no `fetch` from the page's own JS. The plan shows a badge. The
-stricter alternative is to **refuse** to render framing-hostile sites at all
-(error page + "open in your browser"), i.e. drop Tasks 2.5's proxy body and the
-relay script. That would roughly halve the backend work and remove the SSRF
-surface entirely — at the cost of "the browser tab doesn't open github.com".
-Recommendation: keep the proxy (a browser that cannot open github is not a
-browser), but this is a genuine product call.
+**A2 — keep the fallback path / browsing must feel like a browser.** Confirmed, and
+rev 2 of the plan does more than rev 1 did to earn that: the omnibox *and* the
+blank tab search with Google, and the relay now forwards the site's own **GET**
+form submits, so searching from inside a proxied page works too. The one thing
+that cannot be delivered inside an iframe is **sign-in**, because the site itself
+forbids being embedded and we refuse to forward your cookies to a third party from
+a local endpoint. §1.3 is the plain-language statement of exactly what works and
+what does not, and §7.1 is the (separate, multi-week, shell-level) project that
+removes the ceiling. **If "signed in everywhere" is a requirement, say so and I
+will write that plan as its own card before implementation starts** — it changes
+who owns the tab strip, so it should not be smuggled into this one.
 
-**Q3 — omnibox search provider.** DuckDuckGo is the default; a settings field is
-out of scope. Confirm the provider or name a different constant.
+**A3 — Google.** Locked as `SEARCH_URL_TEMPLATE`. §9 records the one region caveat
+(Google's consent/JS-only page for cookie-less requests) and the one-line fallback.
+
+### Still open (non-blocking)
+
+**Q4 — do you want the §7.1 shell-owned browser planned as its own card now?** It
+is the only route to sign-in/downloads/any-site fidelity, and it is a rewrite of
+the tab model rather than a new tab kind. Default if unanswered: **no** — this plan
+ships first, and 7.1 is picked up only if the limited view proves insufficient in
+daily use.
 
 ---
 
