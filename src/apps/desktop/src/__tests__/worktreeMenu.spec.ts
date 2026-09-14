@@ -4,22 +4,16 @@
  * The menu shows different actions based on the `hasWorktree` prop:
  *
  * - `hasWorktree=true`  → "Create a PR", "View in folder", "Clear worktree"
- * - `hasWorktree=false` → "Open in folder", "Refresh status"
+ *   (all three currently DISABLED via frontend-only)
+ * - `hasWorktree=false` → "Open in folder" (disabled), "Refresh status"
  *
- * Each action emits its own event AND a `close` event so the parent can
- * tear down the `v-if`-bound dropdown. The "Clear worktree" action
- * additionally gates on `window.confirm(...)` so a misclick doesn't nuke
- * the worktree.
- *
- * The component is purely presentational (no API calls), so no mocks are
- * needed. Mounting via `@vue/test-utils` and asserting on `.emitted('...')`
- * is sufficient.
+ * Disabled items stay in the DOM with the `disabled` attribute so the
+ * layout is preserved, but they must NOT emit their action event.
  *
  * Guards:
  *   - All worktree-bound menu items render with the correct `data-testid`s
  *   - All no-worktree menu items render with the correct `data-testid`s
- *   - Each item emits the right event pair (action + `close`)
- *   - The confirm dialog gates the "Clear" action
+ *   - Disabled items carry the `disabled` attribute and emit nothing on click
  *   - Clicking outside the menu (anywhere not inside `menuRef`)
  *     emits `close` so the parent can collapse the dropdown
  */
@@ -58,53 +52,32 @@ describe('WorktreeMenu — worktree-bound (hasWorktree=true)', () => {
     expect(wrapper.find('[data-testid="worktree-menu-refresh"]').exists()).toBe(false)
   })
 
-  it('clicking "Create a PR" emits create-pr and close', async () => {
+  it('"Create a PR" is disabled and emits nothing on click', async () => {
     wrapper = mountMenu(true)
-    await wrapper.find('[data-testid="worktree-menu-create-pr"]').trigger('click')
-    expect(wrapper.emitted('create-pr')).toBeTruthy()
-    expect(wrapper.emitted('create-pr')!.length).toBe(1)
-    expect(wrapper.emitted('close')).toBeTruthy()
-    expect(wrapper.emitted('close')!.length).toBe(1)
+    const btn = wrapper.find('[data-testid="worktree-menu-create-pr"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(wrapper.emitted('create-pr')).toBeFalsy()
+    expect(wrapper.emitted('close')).toBeFalsy()
   })
 
-  it('clicking "View in folder" emits view-folder and close', async () => {
+  it('"View in folder" is disabled and emits nothing on click', async () => {
     wrapper = mountMenu(true)
-    await wrapper.find('[data-testid="worktree-menu-view-folder"]').trigger('click')
-    expect(wrapper.emitted('view-folder')).toBeTruthy()
-    expect(wrapper.emitted('view-folder')!.length).toBe(1)
-    expect(wrapper.emitted('close')).toBeTruthy()
-    expect(wrapper.emitted('close')!.length).toBe(1)
+    const btn = wrapper.find('[data-testid="worktree-menu-view-folder"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(wrapper.emitted('view-folder')).toBeFalsy()
+    expect(wrapper.emitted('close')).toBeFalsy()
   })
 
-  it('clicking "Clear worktree" shows a confirm dialog; on accept, emits clear and close', async () => {
+  it('"Clear worktree" is disabled and emits nothing on click', async () => {
     wrapper = mountMenu(true)
-    // The component uses `window.confirm(...)` (a bare global). Stub it
-    // so the test does not block on a modal dialog.
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-
-    await wrapper.find('[data-testid="worktree-menu-clear"]').trigger('click')
-
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
-    // The confirm message should warn the user about the destructive
-    // nature of the action — this guards against an accidental refactor
-    // that drops the warning text.
-    expect(confirmSpy.mock.calls[0]![0]).toMatch(/clear.*worktree|remove/i)
-    expect(wrapper.emitted('clear')).toBeTruthy()
-    expect(wrapper.emitted('clear')!.length).toBe(1)
-    expect(wrapper.emitted('close')).toBeTruthy()
-    expect(wrapper.emitted('close')!.length).toBe(1)
-  })
-
-  it('clicking "Clear worktree" with confirm=false does NOT emit clear', async () => {
-    // Belt-and-suspenders: if the user clicks Cancel in the confirm
-    // dialog, neither `clear` nor `close` should fire (the menu stays
-    // open so they can pick a different action). The plan only listed
-    // the accept=true case; this is the rejection counterpart.
-    wrapper = mountMenu(true)
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-
-    await wrapper.find('[data-testid="worktree-menu-clear"]').trigger('click')
-
+    const btn = wrapper.find('[data-testid="worktree-menu-clear"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    // Disabled button must not reach the confirm dialog nor emit.
+    expect(confirmSpy).not.toHaveBeenCalled()
     expect(wrapper.emitted('clear')).toBeFalsy()
     expect(wrapper.emitted('close')).toBeFalsy()
   })
@@ -152,17 +125,13 @@ describe('WorktreeMenu — no-worktree (hasWorktree=false)', () => {
     expect(wrapper.find('[data-testid="worktree-menu-clear"]').exists()).toBe(false)
   })
 
-  it('clicking "Open in folder" emits view-folder and close', async () => {
+  it('"Open in folder" is disabled and emits nothing on click', async () => {
     wrapper = mountMenu(false)
-    await wrapper.find('[data-testid="worktree-menu-view-folder"]').trigger('click')
-    // The same emit is used for both cases — the parent decides whether
-    // to copy the worktree path or the session cwd based on its own
-    // gitWorktreeCwd ref. Keeping a single event name avoids forcing
-    // ChatView to swap handlers per menu mount.
-    expect(wrapper.emitted('view-folder')).toBeTruthy()
-    expect(wrapper.emitted('view-folder')!.length).toBe(1)
-    expect(wrapper.emitted('close')).toBeTruthy()
-    expect(wrapper.emitted('close')!.length).toBe(1)
+    const btn = wrapper.find('[data-testid="worktree-menu-view-folder"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    await btn.trigger('click')
+    expect(wrapper.emitted('view-folder')).toBeFalsy()
+    expect(wrapper.emitted('close')).toBeFalsy()
   })
 
   it('clicking "Refresh status" emits refresh and close', async () => {
