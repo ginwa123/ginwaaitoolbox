@@ -30,6 +30,7 @@ import { useNavigationStore } from '../stores/navigation'
 import { useTabsStore } from '../stores/tabs'
 import { sameRouteQuery, withTabParam } from '../helpers/tabTarget'
 import { useTabShortcuts } from '../composables/useTabShortcuts'
+import { useBrowserPane } from '../composables/useBrowserPane'
 import { useWorkspacesStore, type Task as TaskType } from '../stores/workspaces'
 import { useSidebarStore } from '../stores/sidebar'
 import { useKanbanSseStore } from '../stores/kanbanSse'
@@ -2372,6 +2373,11 @@ onUnmounted(() => {
   stopTabShortcuts()
 })
 
+// The in-app browser pane: one watcher owns the show/hide intent for the
+// whole layout (see composables/useBrowserPane). `paneVisible` also marks the
+// root element so the style block below can hide the app chrome.
+const { paneVisible } = useBrowserPane()
+
 watch(
   () => route.fullPath,
   () => {
@@ -2390,7 +2396,11 @@ defineExpose({
 </script>
 
 <template>
-  <div class="flex h-screen" style="background-color: var(--semantic-content-bg)">
+  <div
+    class="flex h-screen"
+    style="background-color: var(--semantic-content-bg)"
+    :data-pane-mode="paneVisible ? 'true' : 'false'"
+  >
     <Sidebar
       ref="sidebarRef"
       @navigate="handleNavigate"
@@ -2977,3 +2987,18 @@ defineExpose({
     />
   </div>
 </template>
+
+<style>
+/* Browser pane mode: the shell hosts the page in the rest of the window and
+   pins this document to the 36px strip slot, so only the tab strip may show.
+   Hide the root's direct children except <main>, and inside <main> hide every
+   child except the strip ([data-testid="tab-bar"]). Non-scoped on purpose:
+   the marker lives on this component's root but the rule must beat the
+   utility classes on the children. Inert unless the marker is 'true'. */
+[data-pane-mode='true'] > :not(main) {
+  display: none !important;
+}
+[data-pane-mode='true'] > main > :not([data-testid='tab-bar']) {
+  display: none !important;
+}
+</style>

@@ -2,7 +2,7 @@ import { flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __setBrowserBridgeForTests } from '../helpers/browserBridge'
+import { __setBrowserBridgeForTests, __setBrowserPaneForTests } from '../helpers/browserBridge'
 import { openExternal } from '../helpers/openExternal'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { useTabsStore } from '../stores/tabs'
@@ -27,11 +27,44 @@ describe('openExternal', () => {
     __resetWindowIdForTests()
     setActivePinia(createPinia())
     __setBrowserBridgeForTests(null)
+    __setBrowserPaneForTests(null)
   })
 
   afterEach(() => {
     __setBrowserBridgeForTests(null)
+    __setBrowserPaneForTests(null)
     vi.restoreAllMocks()
+  })
+
+  it('lands in the browser tab with the pane — no window, no window.open — when the pane is available', async () => {
+    const shown: unknown[] = []
+    const opened: unknown[] = []
+    __setBrowserPaneForTests({
+      show: async (tabId: string, url: string) => {
+        shown.push([tabId, url])
+        return { ok: true, visible: true }
+      },
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+    })
+    __setBrowserBridgeForTests({
+      open: async (tabId: string, url: string) => {
+        opened.push([tabId, url])
+        return { ok: true, alive: 1 }
+      },
+      status: async () => ({ alive: 0 }),
+      close: async () => ({ ok: true }),
+    })
+    const spy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const tabs = useTabsStore()
+    openExternal('https://example.com')
+    await flushPromises()
+
+    expect(tabs.activeTab?.kind).toBe('browser')
+    expect(tabs.activeTab?.query.url).toBe('https://example.com')
+    expect(shown).toEqual([[tabs.activeTab?.id, 'https://example.com']])
+    expect(opened).toHaveLength(0)
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it('creates and activates a browser tab and opens the window once', async () => {
