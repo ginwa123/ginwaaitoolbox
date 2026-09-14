@@ -3196,8 +3196,8 @@ const compactSession = async () => {
                      estimated scroll model from the real DOM and blanks
                      the whole chat on scrollToBottom. -->
                 <div
-                  class="min-w-0 flex-1 w-full"
-                  :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'max-w-[90%]' : 'max-w-full'"
+                  class="min-w-0"
+                  :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'max-w-[90%] w-fit ml-auto' : 'flex-1 w-full max-w-full'"
                 >
                   <div
                     v-if="hasBubbleContent(group, groupIndex)"
