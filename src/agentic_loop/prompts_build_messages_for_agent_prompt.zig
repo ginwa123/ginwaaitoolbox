@@ -17,7 +17,6 @@ const tool_models = nalarcore.tool_models;
 // `build_agent_prompt` rendering assembly as of the 2026-08-23 move.
 const prompts_const = @import("../modules/agent/prompts/prompts.zig");
 const memory_prompts = @import("../modules/agent/prompts/memory.zig");
-const tool_list_skills_mod = @import("../modules/agent/tools/skill_tools.zig");
 const tool_memories_mod = @import("../modules/agent/tools/memories.zig");
 
 // Per-file tool system prompts are now stored directly in each tool's
@@ -96,9 +95,6 @@ pub fn buildMessages(
 
     // 1. Static prompts — inlined (no PROMPT_SECTIONS constant), gated on hasTool where needed
     try final_system.appendSlice(allocator, prompts_const.UniversalRules);
-    if (hasTool(filtered_tools, "search")) {
-        try final_system.appendSlice(allocator, prompts_const.SearchToolRule);
-    }
     try final_system.appendSlice(allocator, prompts_const.Agent);
     if (hasTool(filtered_tools, "command")) {
         try final_system.appendSlice(allocator, prompts_const.GitPrompt);
@@ -115,12 +111,6 @@ pub fn buildMessages(
             \\current state explicitly.
             \\
         );
-    }
-    if (hasTool(filtered_tools, "list_skills")) {
-        try final_system.appendSlice(allocator, prompts_const.memory.skills_system_prompt);
-    }
-    if (hasTool(filtered_tools, "search_tool")) {
-        try final_system.appendSlice(allocator, prompts_const.ProgressiveToolRule);
     }
     _ = activeAgentContent;
 
@@ -215,20 +205,6 @@ pub fn buildMessages(
     defer allocator.free(designStatusContent);
     if (designStatusContent.len > 0) {
         try final_system.appendSlice(allocator, designStatusContent);
-    }
-
-    // 7. Tool Behaviors + Available Skills + Available Sub-Agents
-    try appendToolBehaviorSection(allocator, &final_system, filtered_tools);
-
-    // Available Skills listing — gated on list_skills tool, best-effort
-    try appendSkillsListing(allocator, &final_system, filtered_tools, cwd, io, environment);
-
-    // Available Sub-Agents listing — from LlmConfig (profile-aware)
-    const sub_agents_listing = try BuildSubAgentsListing(allocator, db, session_id);
-    defer allocator.free(sub_agents_listing);
-    if (sub_agents_listing.len > 0) {
-        try final_system.appendSlice(allocator, "\n\n");
-        try final_system.appendSlice(allocator, sub_agents_listing);
     }
 
     // 8. inherited_context → Current Plan
@@ -1097,104 +1073,6 @@ pub fn BuildDynamicAgentContent(
     return result;
 }
 
-/// Maximum length (in chars) of the sub-agent's `system_prompt`
-/// preview to embed in the listing. Truncated beyond this to
-/// keep the prompt lean — the LLM doesn't need a 2KB persona to
-/// decide which sub-agent to dispatch to.
-const SUB_AGENT_DESCRIPTION_MAX: usize = 80;
-
-/// Build the "Available Sub-Agents" listing for the current
-/// session. Reads `selected_profile_model` from the `sessions`
-/// table, then uses that profile's OWN `sub_agents` list
-/// (plan 2026-09-04-subagents-per-profile: no global list).
-///
-/// Returns an empty string when:
-///   - the session doesn't exist or has empty profile / no profile
-///   - the profile has no sub_agents
-///   - the LlmConfig singleton is unreachable (graceful fallback)
-///
-/// The returned slice is freshly allocated on `allocator`; caller
-/// owns it and must `defer allocator.free(...)`.
-fn BuildSubAgentsListing(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    session_id: []const u8,
-) ![]const u8 {
-    if (session_id.len == 0) return allocator.dupe(u8, "");
-
-    // 1. Look up the active session's `selected_profile_model`.
-    //    `getSession` returns `!?SessionTableInfo` (error union of
-    //    optional). Unwrap both: a hard error propagates; a null
-    //    optional (row doesn't exist) is treated as "no profile
-    //    selected" (no sub-agents listing).
-    const maybe_session = llm_history.getSession(allocator, db, session_id) catch
-        return allocator.dupe(u8, "");
-    var session_info = maybe_session orelse return allocator.dupe(u8, "");
-    defer session_info.deinit(allocator);
-
-    // 2. Get the LlmConfig from the singleton. Graceful fallback
-    // when the singleton is unreachable (e.g. tests that
-    // don't initialize it).
-    const di = nalarcore.getSingleton() catch return allocator.dupe(u8, "");
-    const config = nalarcore.getLlmConfig(di);
-
-    // 3. Resolve which list to render. Per-profile ONLY (plan
-    // 2026-09-04-subagents-per-profile): each profile owns its
-    // subagents, there is no global list. Empty profile name or
-    // missing profile → empty listing.
-    const profile_name: []const u8 = session_info.selected_profile_model;
-    const rows: []const config_mod.LlmConfig.SubAgentConfig = if (profile_name.len > 0) blk: {
-        if (config.getProfile(profile_name)) |profile| {
-            break :blk profile.sub_agents;
-        }
-        break :blk &.{};
-    } else &.{};
-    const source_label: []const u8 = profile_name;
-
-    if (rows.len == 0) return allocator.dupe(u8, "");
-
-    // 4. Build the listing rows. Borrowed slices from the
-    // SubAgentConfig (lives as long as the LlmConfig singleton).
-    var row_buf = std.ArrayList(SubAgentListingRow).empty;
-    errdefer row_buf.deinit(allocator);
-
-    for (rows) |sa| {
-        if (sa.name.len == 0) continue; // defensive
-
-        // Truncate the system_prompt to SUB_AGENT_DESCRIPTION_MAX
-        // chars (with an ellipsis if truncated) for a one-line
-        // description in the listing. Use a local stack buffer
-        // to avoid allocating per-row.
-        const sp = sa.system_prompt;
-        var desc_buf: [SUB_AGENT_DESCRIPTION_MAX + 3]u8 = undefined;
-        const desc: []const u8 = if (sp.len <= SUB_AGENT_DESCRIPTION_MAX)
-            sp
-        else blk: {
-            @memcpy(desc_buf[0..SUB_AGENT_DESCRIPTION_MAX], sp[0..SUB_AGENT_DESCRIPTION_MAX]);
-            @memcpy(desc_buf[SUB_AGENT_DESCRIPTION_MAX..][0..3], "...");
-            break :blk desc_buf[0 .. SUB_AGENT_DESCRIPTION_MAX + 3];
-        };
-
-        try row_buf.append(allocator, .{
-            .name = sa.name,
-            .model = sa.model,
-            .description = desc,
-            .source = source_label,
-        });
-    }
-
-    if (row_buf.items.len == 0) return allocator.dupe(u8, "");
-
-    // 5. Render the section. Match the `appendToolListing` /
-    //    `appendSkillsListing` pattern: pass a `*ArrayList(u8)`
-    //    directly (no writer needed — ArrayList owns its
-    //    memory). Caller can toOwnedSlice to extract.
-    var listing = std.ArrayList(u8).empty;
-    defer listing.deinit(allocator);
-    try appendSubAgentsListing(allocator, &listing, row_buf.items);
-    return try listing.toOwnedSlice(allocator);
-}
-
 // Cap for how many design pages to enumerate in the Design Canvas status
 // prompt. Pages beyond the cap are listed as a count footer. Small enough
 // to keep the prompt compact, large enough to cover most multi-page designs.
@@ -1598,122 +1476,6 @@ fn appendToolListing(allocator: std.mem.Allocator, result: *std.ArrayList(u8), t
         try result.appendSlice(allocator, "**: ");
         try result.appendSlice(allocator, desc);
         try result.appendSlice(allocator, "\n");
-    }
-}
-
-/// Get the behavioral prompt for a tool directly from its own
-/// `AgentTool.function.system_prompt` field — no hardcoded name mapping.
-/// Each tool file sets `.system_prompt = <tool>_system_prompt` in its
-/// `AgentTool` definition, so the prompt travels with `filtered_tools`
-/// and is read here via `tool.function.system_prompt`.
-fn toolBehaviorFromTool(tool: tool_models.AgentTool) ?[]const u8 {
-    const prompt = tool.function.system_prompt;
-    if (prompt.len > 0) return prompt;
-    // Dynamic MCP tools are named mcp_<server>_<tool> — they are not in the
-    // static registry but are still callable. Provide a generic behavior.
-    if (std.mem.startsWith(u8, tool.function.name, "mcp_")) return "MCP tool from an external server. Call it with the parameters defined in its JSON schema. The server is already connected; just invoke the tool.";
-    return null;
-}
-
-/// Append a behavioral tool section to the result ArrayList.
-///
-/// Unlike appendToolListing (which copies tool.description), this renders
-/// *how to behave* with each tool. The LLM already receives the JSON schema
-/// via the API; this prompt tells it when and how to use each tool.
-fn appendToolBehaviorSection(allocator: std.mem.Allocator, result: *std.ArrayList(u8), tools: []const tool_models.AgentTool) !void {
-    if (tools.len == 0) return;
-
-    // Count how many tools have a known behavior — skip the section if none.
-    var known_count: usize = 0;
-    for (tools) |tool| {
-        if (toolBehaviorFromTool(tool) != null) known_count += 1;
-    }
-    if (known_count == 0) return;
-
-    try result.appendSlice(allocator, "\n\n## Tool Behaviors\n\n");
-    try result.appendSlice(allocator, "You have access to the following tools. Use them according to these behaviors:\n\n");
-
-    for (tools) |tool| {
-        const name = tool.function.name;
-        if (name.len == 0) continue;
-        const behavior = toolBehaviorFromTool(tool) orelse continue;
-        try result.appendSlice(allocator, "- **");
-        try result.appendSlice(allocator, name);
-        try result.appendSlice(allocator, "**: ");
-        try result.appendSlice(allocator, behavior);
-        try result.appendSlice(allocator, "\n");
-    }
-}
-
-/// Append a "## Available Skills" section listing every installed skill
-/// (global + local) by name and description. Mirrors `appendToolListing`'s
-/// bullet-list style for visual consistency.
-///
-/// Behavior:
-///   - **Gated on `list_skills` tool** — if the tool isn't in the runtime
-///     tool list, the model has no way to refresh the list anyway, so we
-///     skip the section. Matches the `requires_tool` pattern used by the
-///     static `SkillsUsage` / `SkillsTriggers` sections.
-///   - **Best-effort** — any failure inside `listAllSkills` (missing env,
-///     IO error, alloc failure) silently omits the section, matching the
-///     graceful-degradation spirit of `loadGlobalKnowledge` above.
-///   - **Empty case omitted** — if both lists are empty, the section header
-///     is not emitted at all (avoids an empty `## Available Skills` block).
-///   - **Empty `cwd`** is mapped to `null` so the local lookup falls back to
-///     `io`'s cwd instead of resolving a path for the filesystem root.
-fn appendSkillsListing(
-    allocator: std.mem.Allocator,
-    result: *std.ArrayList(u8),
-    tools: []const tool_models.AgentTool,
-    cwd: []const u8,
-    io: std.Io,
-    environment: ?*const std.process.Environ.Map,
-) !void {
-    if (!hasTool(tools, "list_skills")) return;
-
-    const cwd_param: ?[]const u8 = if (cwd.len > 0) cwd else null;
-
-    const data = tool_list_skills_mod.listAllSkills(allocator, io, cwd_param, environment) catch return;
-    defer tool_list_skills_mod.freeSkillsListData(allocator, data);
-
-    if (data.global_skills.len == 0 and data.local_skills.len == 0) return;
-
-    try result.appendSlice(allocator, "\n\n## Available Skills\n\n");
-    try result.appendSlice(allocator,
-        \\The following skills are installed and available for this session.
-        \\Use `list_skills` to refresh this view, or `use_skill`
-        \\to load a skill's full instructions. Each entry includes the
-        \\**exact file path** — pass it to `use_skill` verbatim as the `path`
-        \\argument. Do NOT construct the path from the skill name: Linux is
-        \\case-sensitive and the file lives at `<name>/SKILL.MD`, not
-        \\`<name>.md`, and `~` is not expanded by the tool.
-        \\
-    );
-
-    if (data.global_skills.len > 0) {
-        try result.appendSlice(allocator, "\n### Global skills (~/.config/nalar/skills/)\n\n");
-        for (data.global_skills) |s| {
-            try result.appendSlice(allocator, "- **");
-            try result.appendSlice(allocator, s.name);
-            try result.appendSlice(allocator, "**: ");
-            try result.appendSlice(allocator, s.description);
-            try result.appendSlice(allocator, " — `");
-            try result.appendSlice(allocator, s.path);
-            try result.appendSlice(allocator, "`\n");
-        }
-    }
-
-    if (data.local_skills.len > 0) {
-        try result.appendSlice(allocator, "\n### Local skills (.nalar/skills/)\n\n");
-        for (data.local_skills) |s| {
-            try result.appendSlice(allocator, "- **");
-            try result.appendSlice(allocator, s.name);
-            try result.appendSlice(allocator, "**: ");
-            try result.appendSlice(allocator, s.description);
-            try result.appendSlice(allocator, " — `");
-            try result.appendSlice(allocator, s.path);
-            try result.appendSlice(allocator, "`\n");
-        }
     }
 }
 
