@@ -113,13 +113,57 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // 1c. Browser-window mode (--browser <url>): a standalone Nalar webview
+    // window showing an arbitrary http(s) page. No nalar attach, no
+    // auto-spawn, no asset extraction — this is what the in-app browser tab
+    // spawns, and it is deliberately independent of any server (the window
+    // keeps browsing with nalar stopped).
+    //
+    // Placed BEFORE the extraction/attach work so browser mode costs nothing
+    // but a window.
+    if (cfg.browser_url) |browser_url| {
+        // Default the OS window title to the host so a window list reads
+        // "github.com" instead of "Nalar" (mirrors --title when given).
+        const title = if (std.mem.eql(u8, cfg.title, "Nalar"))
+            try cli.hostOf(allocator, browser_url)
+        else
+            try allocator.dupe(u8, cfg.title);
+        defer allocator.free(title);
+
+        const title_z = try allocator.dupeZ(u8, title);
+        defer allocator.free(title_z);
+        const url_z = try allocator.dupeZ(u8, browser_url);
+        defer allocator.free(url_z);
+
+        if (comptime builtin.os.tag == .windows) {
+            const self_exe_browser = path_resolve.selfExePath(allocator) catch ".";
+            defer if (!std.mem.eql(u8, self_exe_browser, ".")) allocator.free(self_exe_browser);
+            pointWebView2AtBundledRuntime(allocator, self_exe_browser);
+        }
+
+        std.log.info("Browser mode: opening {s} in a Nalar window", .{browser_url});
+        webview_lib.runBrowserWindow(
+            title_z.ptr,
+            url_z.ptr,
+            @intCast(cfg.window_width),
+            @intCast(cfg.window_height),
+            cfg.enable_devtools,
+            cfg.force_x11,
+        ) catch |err| {
+            std.log.err("Browser window error: {s}", .{@errorName(err)});
+            return err;
+        };
+        std.log.info("Window closed. Exiting.", .{});
+        return;
+    }
+
     // 1b. Connect mode (--nalar-url): skip the entire spawn path. The
     // user has their own nalar running and we just point the webview at
     // it. --port and --nalar-path are ignored. Asset extraction is also
     // skipped (the external nalar is responsible for serving the webapp).
     if (cfg.nalar_url) |url| {
         std.log.info("Connect mode: connecting to {s} (no spawn)", .{url});
-        try runWebview(allocator, cfg, url);
+        try runWebview(allocator, io, cfg, url);
         return;
     }
 
@@ -238,7 +282,7 @@ pub fn main(init: std.process.Init) !void {
     if (comptime builtin.os.tag == .windows) {
         pointWebView2AtBundledRuntime(allocator, self_exe_owned);
     }
-    try runWebview(allocator, cfg, url);
+    try runWebview(allocator, io, cfg, url);
 }
 
 /// Open the webview window and run the platform event loop (blocks
@@ -287,6 +331,7 @@ fn pointWebView2AtBundledRuntime(allocator: std.mem.Allocator, self_exe_path: []
 }
 fn runWebview(
     allocator: std.mem.Allocator,
+    io: std.Io,
     cfg: cli.Config,
     url: []const u8,
 ) !void {
@@ -298,6 +343,8 @@ fn runWebview(
 
     std.log.info("Opening webview at {s}", .{url});
     webview_lib.runWindow(
+        allocator,
+        io,
         title_z.ptr,
         url_z.ptr,
         @intCast(cfg.window_width),

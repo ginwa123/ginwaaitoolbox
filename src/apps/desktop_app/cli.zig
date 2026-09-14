@@ -1,7 +1,7 @@
 // src/apps/desktop_app/cli.zig
 //
 // Command-line parser for nalar-desktop. Parses --port, --nalar-path,
-// --nalar-url, --window-size, --title, --user-agent, --icon,
+// --nalar-url, --browser, --window-size, --title, --user-agent, --icon,
 // --smoke-test, --help / -h.
 // Returns a Config struct with all the parameters. The caller is responsible
 // for calling `cfg.deinit(allocator)` to free heap-allocated strings.
@@ -27,6 +27,15 @@ pub const Config = struct {
     /// nalar you started by hand). `--port` and `--nalar-path` are ignored
     /// in this mode.
     nalar_url: ?[]const u8 = null,
+    /// If set, run as a standalone BROWSER window: open this http(s) URL in a
+    /// top-level webview of our own (with the injected chrome bar) and skip
+    /// attach / auto-spawn / asset extraction entirely. This is what the
+    /// in-app browser tab spawns (`nalar-desktop --browser <url>`); the flag is
+    /// also useful on its own as a minimal browser window.
+    ///
+    /// Only `http://` / `https://` are accepted (validated at parse time) — a
+    /// `javascript:` / `data:` / `file:` URL must never reach a window.
+    browser_url: ?[]const u8 = null,
     /// Decoupled-service mode (added in 2026-07): when no `nalar` daemon
     /// is running, refuse to auto-spawn one and surface an actionable
     /// error instead. Default: false (auto-spawn is the default).
@@ -70,6 +79,7 @@ pub const Config = struct {
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         if (self.nalar_path) |p| allocator.free(p);
         if (self.nalar_url) |u| allocator.free(u);
+        if (self.browser_url) |u| allocator.free(u);
         // title: free only if heap-allocated (i.e. user set --title with
         // a value different from the default literal). If the user passed
         // `--title "Nalar"`, we treat the title as still the literal and
@@ -87,6 +97,8 @@ pub const CliError = error{
     InvalidSize,
     MissingValue,
     UnknownArg,
+    /// `--browser` got something that is not an absolute http(s) URL.
+    InvalidBrowserUrl,
     /// allocator.dupe() failure — Zig 0.16 requires this in the error set
     /// since `try` propagates OutOfMemory as a distinct error.
     OutOfMemory,
@@ -109,6 +121,11 @@ const usage =
     \\  --nalar-url URL          Connect mode: point webview at this URL
     \\                            (e.g. http://127.0.0.1:8081) instead of
     \\                            spawning a new nalar
+    \\  --browser URL            Browser-window mode: open this http(s) URL in
+    \\                            a real Nalar-owned webview window (with an
+    \\                            injected address/reload bar). Skips the nalar
+    \\                            attach/spawn path entirely. http(s) only.
+    \\                            This is what the in-app browser tab spawns.
     \\  --window-size WxH        Window size in pixels (default: 1280x800)
     \\  --title TITLE            Window title (default: "Nalar")
     \\  --user-agent UA          User-Agent string for the webview
@@ -125,6 +142,32 @@ const usage =
     \\  --help, -h               Show this help
     \\
 ;
+
+/// True when `raw` is an absolute `http://` / `https://` URL.
+///
+/// A prefix check rather than a URL parse, on purpose: the invariant the shell
+/// must hold is narrower than "a valid URL" — a `javascript:` / `data:` /
+/// `file:` string must never reach a window or a spawn. The frontend does the
+/// real address normalization (`helpers/browserUrl.ts`); this is the second,
+/// independent check (the bridge re-validates before spawning — see
+/// `browser_bridge.zig`).
+pub fn isHttpUrl(raw: []const u8) bool {
+    const http = "http://";
+    const https = "https://";
+    if (raw.len > http.len and std.ascii.startsWithIgnoreCase(raw, http)) return true;
+    if (raw.len > https.len and std.ascii.startsWithIgnoreCase(raw, https)) return true;
+    return false;
+}
+
+/// The host (with port, when present) of an absolute http(s) URL — used as the
+/// OS window title so a window list reads "github.com", not "Nalar". Returns an
+/// owned slice; never fails on a URL `isHttpUrl` already accepted.
+pub fn hostOf(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    const scheme_len: usize = if (std.ascii.startsWithIgnoreCase(url, "https://")) 8 else 7;
+    const rest = if (url.len > scheme_len) url[scheme_len..] else "";
+    const end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
+    return allocator.dupe(u8, rest[0..end]);
+}
 
 pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Config {
     var cfg: Config = .{};
@@ -145,6 +188,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) CliError!Co
             i += 1;
             if (i >= args.len) return error.MissingValue;
             cfg.nalar_url = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--browser")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            // Validate at parse time: this URL will be handed to a webview
+            // *and* re-used as the spawn argument by the app window's bridge,
+            // so it must be http(s) before it goes anywhere.
+            if (!isHttpUrl(args[i])) return error.InvalidBrowserUrl;
+            cfg.browser_url = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--window-size")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;

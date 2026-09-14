@@ -20,6 +20,14 @@
 // treat the process as done when it returns.
 
 const std = @import("std");
+const browser_bridge = @import("browser_bridge.zig");
+
+/// The browser window's chrome bar, embedded as the exact bytes that ship.
+/// It sits inside this module's root (`src/apps/desktop_app/`), which is why a
+/// plain `@embedFile` works here — unlike the webapp's `dist/` assets, which
+/// need the generated `embedded/webapp_assets.zig` table because they live
+/// outside the module tree.
+const browser_chrome_js = @embedFile("browser_chrome.js");
 
 /// Opaque webview instance (webview_t).
 pub const Webview = opaque {};
@@ -87,6 +95,8 @@ pub extern "c" fn webview_return(w: *Webview, id: [*:0]const u8, status: c_int, 
 /// Returns error.WebviewCreateFailed when the library can't create the
 /// instance (missing WebKitGTK, display server unavailable, ...).
 pub fn runWindow(
+    allocator: std.mem.Allocator,
+    io: std.Io,
     title: [*:0]const u8,
     url: [*:0]const u8,
     width: c_int,
@@ -120,8 +130,48 @@ pub fn runWindow(
         return error.WebviewCreateFailed;
     defer _ = webview_destroy(w);
 
+    // The SPA↔shell bridge. This window's only document is our own SPA, which
+    // is exactly why it — and NOT the browser window — is the one that gets
+    // bindings (see the invariant in browser_bridge.zig).
+    var bridge = browser_bridge.Bridge.init(allocator, io);
+    bridge.installBindings(w);
+
     _ = webview_set_title(w, title);
     _ = webview_set_size(w, width, height, .none);
+    _ = webview_navigate(w, url);
+    _ = webview_run(w);
+}
+
+/// Cursor's "separate window" mode (plan Q6): a real top-level webview of our
+/// own, pointed at an arbitrary http(s) URL, with the chrome bar injected.
+///
+/// INVARIANT: no bindings here. This window renders third-party content, so the
+/// one door into the shell — `webview_bind` — must not exist in it. The chrome
+/// bar navigates with `location.href`, so it needs none.
+pub fn runBrowserWindow(
+    title: [*:0]const u8,
+    url: [*:0]const u8,
+    width: c_int,
+    height: c_int,
+    debug: bool,
+    force_x11: bool,
+) !void {
+    // Same env pins as runWindow, and for the same reasons (they must be set
+    // before WebKit initialises, i.e. before webview_create).
+    _ = setEnvIfUnset("WEBKIT_FORCE_COMPOSITING_MODE", "1");
+    if (force_x11) {
+        _ = setEnvIfUnset("GDK_BACKEND", "x11");
+    }
+
+    const w = webview_create(if (debug) 1 else 0, null) orelse
+        return error.WebviewCreateFailed;
+    defer _ = webview_destroy(w);
+
+    _ = webview_set_title(w, title);
+    _ = webview_set_size(w, width, height, .none);
+    // Injected before the first navigation, so the bar is there from the
+    // document's first script onwards and re-runs on every later page load.
+    _ = webview_init(w, browser_chrome_js);
     _ = webview_navigate(w, url);
     _ = webview_run(w);
 }
@@ -385,5 +435,84 @@ test "runWindow wires force_x11 to GDK_BACKEND before webview_create" {
     if (pin_idx >= create_idx) {
         std.debug.print("!! GDK_BACKEND pin appears AFTER webview_create — must be set BEFORE !!\n", .{});
         return error.GdkBackendPinOrderWrong;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The browser window (browser-chrome plan, rev 7).
+//
+// Two invariants that must not drift:
+//  1. the SPA bridge is installed on the APP window (runWindow) and NEVER on
+//     the browser window — the browser window renders third-party content, so
+//     it must have no door into the shell;
+//  2. the chrome bar is the embedded asset, injected before the first
+//     navigation, so it exists from the document's first script.
+// ---------------------------------------------------------------------------
+
+test "runWindow installs the SPA bridge and runBrowserWindow installs none" {
+    const allocator = testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/apps/desktop_app/webview_lib.zig",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(source);
+
+    const app_idx = std.mem.indexOf(u8, source, "bridge.installBindings(w);") orelse {
+        std.debug.print("!! runWindow does not install the SPA bridge !!\n", .{});
+        return error.SpaBridgeMissing;
+    };
+    const browser_idx = std.mem.indexOf(u8, source, "pub fn runBrowserWindow(") orelse {
+        std.debug.print("!! webview_lib.zig has no runBrowserWindow !!\n", .{});
+        return error.BrowserWindowMissing;
+    };
+    if (app_idx >= browser_idx) {
+        std.debug.print("!! installBindings is not inside runWindow !!\n", .{});
+        return error.SpaBridgeInstalledOutsideRunWindow;
+    }
+
+    // runBrowserWindow's body ends where the test section starts.
+    const tests_idx = std.mem.indexOf(u8, source, "const testing = std.testing;") orelse source.len;
+    const browser_body = source[browser_idx..tests_idx];
+    if (std.mem.indexOf(u8, browser_body, "installBindings") != null or
+        std.mem.indexOf(u8, browser_body, "webview_bind") != null)
+    {
+        std.debug.print(
+            "!! runBrowserWindow binds into the shell — untrusted page content would reach it !!\n",
+            .{},
+        );
+        return error.BrowserWindowHasBindings;
+    }
+}
+
+test "runBrowserWindow injects the embedded chrome bar before navigating" {
+    const allocator = testing.allocator;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/apps/desktop_app/webview_lib.zig",
+        allocator,
+        .limited(256 * 1024),
+    );
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "@embedFile(\"browser_chrome.js\")") == null) {
+        std.debug.print("!! the chrome bar is not embedded via @embedFile !!\n", .{});
+        return error.ChromeBarNotEmbedded;
+    }
+    // The embedded asset must be the real bar, not a placeholder.
+    try testing.expect(browser_chrome_js.len > 1000);
+
+    const init_idx = std.mem.indexOf(u8, source, "webview_init(w, browser_chrome_js)") orelse {
+        std.debug.print("!! runBrowserWindow does not inject the chrome bar !!\n", .{});
+        return error.ChromeBarNotInjected;
+    };
+    const nav_idx = std.mem.indexOfPos(u8, source, init_idx, "webview_navigate(w, url)") orelse {
+        std.debug.print("!! runBrowserWindow does not navigate !!\n", .{});
+        return error.BrowserNavigateMissing;
+    };
+    if (init_idx >= nav_idx) {
+        std.debug.print("!! the chrome bar is injected AFTER the first navigation !!\n", .{});
+        return error.ChromeBarInjectedTooLate;
     }
 }

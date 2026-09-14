@@ -16,6 +16,7 @@ test {
     _ = @import("subprocess_test.zig");
     _ = @import("extraction_test.zig");
     _ = @import("webview_lib.zig");
+    _ = @import("browser_bridge.zig");
     _ = @import("platform/linux_test.zig");
     _ = @import("attach_test.zig");
 }

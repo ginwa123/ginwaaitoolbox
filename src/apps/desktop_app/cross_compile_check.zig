@@ -38,6 +38,7 @@
 const std = @import("std");
 const extraction = @import("extraction.zig");
 const subprocess = @import("subprocess.zig");
+const browser_bridge = @import("browser_bridge.zig");
 
 const assets = [_]extraction.AssetEntry{
     .{ .path = "/index.html", .content = "<html></html>", .mime = "text/html" },
@@ -67,4 +68,12 @@ export fn nalar_desktop_cross_compile_check() callconv(.c) void {
     if (subprocess.probeHealth(1)) return;
     if (subprocess.probeWebapp(1)) return;
     if (subprocess.waitForHealth(1, 1, 1)) |_| {} else |_| {}
+
+    // The in-app browser tab's shell half: the per-OS liveness probe
+    // (`waitpid(WNOHANG)` vs `NtWaitForSingleObject` + `CloseHandle`), the
+    // binding install, and the JSON request/reply path. Never executed — the
+    // call exists so a foreign-target type error fails here, on any runner.
+    var browser_child: std.process.Child = undefined;
+    browser_child.id = null;
+    if (browser_bridge.crossCompileCheckChildHandle(&browser_child)) return;
 }

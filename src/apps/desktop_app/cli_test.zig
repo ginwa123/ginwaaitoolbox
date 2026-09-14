@@ -132,3 +132,78 @@ test "parseArgs: --window-size without x returns InvalidSize" {
     const result = cli.parse(allocator, &args);
     try testing.expectError(error.InvalidSize, result);
 }
+
+// ---------------------------------------------------------------------------
+// --browser (browser-window mode): the flag the in-app browser tab spawns.
+// ---------------------------------------------------------------------------
+
+test "parseArgs: --browser takes an http(s) URL" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--browser", "https://example.com/a?b=1" };
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.browser_url != null);
+    try testing.expectEqualStrings("https://example.com/a?b=1", cfg.browser_url.?);
+    // Browser mode is independent of the attach flags.
+    try testing.expect(cfg.nalar_url == null);
+    try testing.expectEqual(@as(u16, 0), cfg.port);
+}
+
+test "parseArgs: --browser with no value returns MissingValue" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{ "nalar-desktop", "--browser" };
+    const result = cli.parse(allocator, &args);
+    try testing.expectError(error.MissingValue, result);
+}
+
+test "parseArgs: --browser rejects every non-http scheme" {
+    const allocator = testing.allocator;
+    const rejected = [_][]const u8{
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "data:text/html,<h1>x</h1>",
+        "about:blank",
+        "ftp://example.com",
+        // Not absolute — a bare host is resolved in the address bar, never here.
+        "example.com",
+        "",
+    };
+    for (rejected) |url| {
+        const args = [_][]const u8{ "nalar-desktop", "--browser", url };
+        const result = cli.parse(allocator, &args);
+        try testing.expectError(error.InvalidBrowserUrl, result);
+    }
+}
+
+test "parseArgs: --browser defaults to null" {
+    const allocator = testing.allocator;
+    const args = [_][]const u8{"nalar-desktop"};
+    const cfg = try cli.parse(allocator, &args);
+    defer cfg.deinit(allocator);
+    try testing.expect(cfg.browser_url == null);
+}
+
+test "isHttpUrl accepts only absolute http(s)" {
+    try testing.expect(cli.isHttpUrl("http://127.0.0.1:5173/"));
+    try testing.expect(cli.isHttpUrl("https://github.com/foo/bar"));
+    try testing.expect(cli.isHttpUrl("HTTPS://EXAMPLE.COM"));
+    try testing.expect(!cli.isHttpUrl("http://")); // no host
+    try testing.expect(!cli.isHttpUrl("example.com"));
+    try testing.expect(!cli.isHttpUrl("javascript:alert(1)"));
+    try testing.expect(!cli.isHttpUrl(""));
+}
+
+test "hostOf strips the scheme and the path" {
+    const allocator = testing.allocator;
+    const host = try cli.hostOf(allocator, "https://github.com/foo/bar?x=1");
+    defer allocator.free(host);
+    try testing.expectEqualStrings("github.com", host);
+
+    const with_port = try cli.hostOf(allocator, "http://localhost:5173/app");
+    defer allocator.free(with_port);
+    try testing.expectEqualStrings("localhost:5173", with_port);
+
+    const bare = try cli.hostOf(allocator, "https://example.com");
+    defer allocator.free(bare);
+    try testing.expectEqualStrings("example.com", bare);
+}
