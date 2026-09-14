@@ -684,9 +684,12 @@ const handleViewTaskDetail = (taskId: string) => {
   activeTaskDetailId.value = taskId
   showTaskDetail.value = true
   // Deep-link the inline panel so "Open details in new tab" +
-  // refresh/share round-trip. Preserves existing query (sorts etc).
+  // refresh/share round-trip. PUSH (not replace) preserves the
+  // board URL in history so browser Back drops the param and the
+  // watcher below closes the panel back to the plain board.
+  // Preserves existing query (sorts etc).
   try {
-    void router.replace({ query: { ...route.query, detail: taskId } })
+    void router.push({ query: { ...route.query, detail: taskId } })
   } catch {
     // Router may be absent in unit tests — panel still opens locally.
   }
@@ -771,8 +774,16 @@ watch(
       return undefined
     }
   },
-  () => {
-    openDetailFromRoute()
+  (detail) => {
+    if (typeof detail === 'string' && detail.trim() !== '') {
+      openDetailFromRoute()
+    } else if (showTaskDetail.value) {
+      // Browser Back/forward dropped ?detail= — close the panel
+      // locally WITHOUT touching the router (the URL is already
+      // the board URL). This is what makes Back return to kanban.
+      showTaskDetail.value = false
+      activeTaskDetailId.value = null
+    }
   },
 )
 
@@ -1176,44 +1187,44 @@ const handleCreateTaskSave = async (payload: {
 
 <template>
   <div
-    class="kanban-view-wrap flex flex-row h-full min-h-0"
+    class="kanban-view-wrap relative flex flex-row h-full min-h-0"
     :data-kanban-item-id="item.id"
     data-kanban-host-wrap
   >
-  <section
-    class="kanban-view flex flex-col flex-1 min-w-0 h-full min-h-0"
-    :data-kanban-item-id="item.id"
-    :data-kanban-view="item.id"
-    data-kanban-host
-  >
-    <!--
+    <section
+      class="kanban-view flex flex-col flex-1 min-w-0 h-full min-h-0"
+      :data-kanban-item-id="item.id"
+      :data-kanban-view="item.id"
+      data-kanban-host
+    >
+      <!--
       Layout: KanbanView renders ONLY the full-width board. The chat
       task is an AppLayout branch that replaces this view when a task
       belonging to this kanban is active. Clicking a task therefore
       unmounts KanbanView; the horizontal scroll position survives via
       the localStorage persistence in the composable above.
     -->
-    <!-- ─── Header ────────────────────────────────────────────────────── -->
-    <header
-      class="flex items-center gap-3 px-3 py-2 shrink-0"
-      style="border-bottom: 1px solid var(--color-border)"
-    >
-      <h3
-        class="text-sm font-semibold truncate flex-1"
-        style="color: var(--semantic-text)"
-        :data-testid="`kanban-view-${item.id}-title`"
+      <!-- ─── Header ────────────────────────────────────────────────────── -->
+      <header
+        class="flex items-center gap-3 px-3 py-2 shrink-0"
+        style="border-bottom: 1px solid var(--color-border)"
       >
-        <InlineEditableText
-          :value="item.name"
-          :placeholder="'unnamed kanban'"
-          :ariaLabel="'kanban name'"
-          :testId="`kanban-view-${item.id}-rename`"
-          display-class="text-sm font-semibold"
-          @save="(newName) => emit('renameItem', newName)"
-        />
-      </h3>
+        <h3
+          class="text-sm font-semibold truncate flex-1"
+          style="color: var(--semantic-text)"
+          :data-testid="`kanban-view-${item.id}-title`"
+        >
+          <InlineEditableText
+            :value="item.name"
+            :placeholder="'unnamed kanban'"
+            :ariaLabel="'kanban name'"
+            :testId="`kanban-view-${item.id}-rename`"
+            display-class="text-sm font-semibold"
+            @save="(newName) => emit('renameItem', newName)"
+          />
+        </h3>
 
-      <!--
+        <!--
         "Set project root" banner — surfaces only when the kanban
         has `path = null` (i.e. it was created before the path field
         existed on the create endpoint). Without a path, every chat
@@ -1226,91 +1237,91 @@ const handleCreateTaskSave = async (payload: {
         `path: null` for unset kanbans; we treat null AND undefined
         AND empty-string as "needs backfill" defensively).
       -->
-      <button
-        v-if="!item.path"
-        type="button"
-        @click="showPathPicker = true"
-        :disabled="pathPickerBusy"
-        class="shrink-0 px-2 py-1 rounded text-xs font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        style="
-          background-color: rgba(234, 179, 8, 0.18);
-          color: rgb(202, 138, 4);
-          border: 1px solid rgba(234, 179, 8, 0.4);
-        "
-        :data-testid="`kanban-view-${item.id}-set-project-root`"
-        title="Set a project root so chat sessions have a working directory"
-      >
-        <span aria-hidden="true">⚠️</span>
-        <span class="ml-1">{{ pathPickerBusy ? 'Setting…' : 'Set project root' }}</span>
-      </button>
-      <KanbanSearchInput v-model="searchQuery" />
+        <button
+          v-if="!item.path"
+          type="button"
+          @click="showPathPicker = true"
+          :disabled="pathPickerBusy"
+          class="shrink-0 px-2 py-1 rounded text-xs font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          style="
+            background-color: rgba(234, 179, 8, 0.18);
+            color: rgb(202, 138, 4);
+            border: 1px solid rgba(234, 179, 8, 0.4);
+          "
+          :data-testid="`kanban-view-${item.id}-set-project-root`"
+          title="Set a project root so chat sessions have a working directory"
+        >
+          <span aria-hidden="true">⚠️</span>
+          <span class="ml-1">{{ pathPickerBusy ? 'Setting…' : 'Set project root' }}</span>
+        </button>
+        <KanbanSearchInput v-model="searchQuery" />
 
-      <!-- NEW (plan: 2026-08-06-kanban-add-task-button-placement). One
+        <!-- NEW (plan: 2026-08-06-kanban-add-task-button-placement). One
            global + Add task button (replaces per-column footer add
            buttons — see KanbanColumn.vue cleanup). Opens the create
            dialog with the first column pre-selected; the dialog's
            column dropdown lets the user pick a different column.
            Disabled when the kanban has zero columns; the `title`
            attribute explains the disabled state. -->
-      <button
-        type="button"
-        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-        style="
-          background-color: var(--semantic-sidebar-bg);
-          border: 1px solid var(--color-border);
-          color: var(--semantic-text-muted);
-        "
-        data-testid="kanban-add-task-button"
-        :disabled="sortedColumns.length === 0"
-        :title="
-          sortedColumns.length ? 'Add a task to this kanban' : 'Add columns first in Settings'
-        "
-        @click="handleOpenCreateDialog"
-      >
-        <span aria-hidden="true">➕</span>
-        <span class="ml-1">Add task</span>
-      </button>
+        <button
+          type="button"
+          class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          style="
+            background-color: var(--semantic-sidebar-bg);
+            border: 1px solid var(--color-border);
+            color: var(--semantic-text-muted);
+          "
+          data-testid="kanban-add-task-button"
+          :disabled="sortedColumns.length === 0"
+          :title="
+            sortedColumns.length ? 'Add a task to this kanban' : 'Add columns first in Settings'
+          "
+          @click="handleOpenCreateDialog"
+        >
+          <span aria-hidden="true">➕</span>
+          <span class="ml-1">Add task</span>
+        </button>
 
-      <button
-        type="button"
-        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
-        style="
-          background-color: var(--semantic-sidebar-bg);
-          border: 1px solid var(--color-border);
-          color: var(--semantic-text-muted);
-        "
-        :data-testid="`kanban-view-${item.id}-open-settings`"
-        @click="handleOpenSettings"
-        title="Open board settings (add columns, edit descriptions)"
-      >
-        <span aria-hidden="true">⚙️</span>
-        <span class="ml-1">Settings</span>
-      </button>
+        <button
+          type="button"
+          class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+          style="
+            background-color: var(--semantic-sidebar-bg);
+            border: 1px solid var(--color-border);
+            color: var(--semantic-text-muted);
+          "
+          :data-testid="`kanban-view-${item.id}-open-settings`"
+          @click="handleOpenSettings"
+          title="Open board settings (add columns, edit descriptions)"
+        >
+          <span aria-hidden="true">⚙️</span>
+          <span class="ml-1">Settings</span>
+        </button>
 
-      <!-- Agent config (Migration 081, agent-kanbans mirror).
+        <!-- Agent config (Migration 081, agent-kanbans mirror).
            Navigates to /app/kanban/:itemId/settings?tab=tools — the
            Tools allowlist is mounted there as a tab body
            (KanbanToolsPanel inside KanbanSettingsView). User can
            also visit ?tab=knowledge for the Knowledge + System
            Prompt persona-content panel (KanbanKnowledgePanel). -->
-      <button
-        type="button"
-        class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
-        style="
-          background-color: var(--semantic-sidebar-bg);
-          border: 1px solid var(--color-border);
-          color: var(--semantic-text-muted);
-        "
-        :data-testid="`kanban-view-${item.id}-open-agent-settings`"
-        @click="handleOpenAgentSettings"
-        title="Open agent config in board settings"
-      >
-        <span aria-hidden="true">🤖</span>
-        <span class="ml-1">Agent</span>
-      </button>
-    </header>
+        <button
+          type="button"
+          class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+          style="
+            background-color: var(--semantic-sidebar-bg);
+            border: 1px solid var(--color-border);
+            color: var(--semantic-text-muted);
+          "
+          :data-testid="`kanban-view-${item.id}-open-agent-settings`"
+          @click="handleOpenAgentSettings"
+          title="Open agent config in board settings"
+        >
+          <span aria-hidden="true">🤖</span>
+          <span class="ml-1">Agent</span>
+        </button>
+      </header>
 
-    <!--
+      <!--
       Search "no matches" banner (kanban task search, Chunk 6). Renders
       only when the backend returned an empty task list AND the user
       has a non-empty search query. Empty-string query is excluded so
@@ -1318,35 +1329,35 @@ const handleCreateTaskSave = async (payload: {
       Dismissed automatically when the search is cleared or any task
       matches.
     -->
-    <div
-      v-if="tasks.length === 0 && searchQuery.trim() !== ''"
-      class="px-3 py-2 text-xs shrink-0"
-      style="color: var(--semantic-text-dim)"
-      :data-testid="`kanban-view-${item.id}-no-search-matches`"
-    >
-      No tasks match "{{ searchQuery }}"
-    </div>
+      <div
+        v-if="tasks.length === 0 && searchQuery.trim() !== ''"
+        class="px-3 py-2 text-xs shrink-0"
+        style="color: var(--semantic-text-dim)"
+        :data-testid="`kanban-view-${item.id}-no-search-matches`"
+      >
+        No tasks match "{{ searchQuery }}"
+      </div>
 
-    <!--
+      <!--
       NEW (plan: 2026-09-09-run-all-agents-by-column, Task 4, Option C).
       Bulk "Run all agents" summary banner. Rendered after
       `handleRunAllAgents` resolves with the server's
       `{started, skipped, failed}` counts. Run-state visuals stay
       with the existing processingState/SessionSlider SSE flow.
     -->
-    <div
-      v-if="runAllSummary"
-      class="px-3 py-2 text-xs shrink-0"
-      style="color: var(--semantic-text)"
-      :data-testid="`kanban-view-${item.id}-run-all-summary`"
-      role="status"
-      aria-live="polite"
-    >
-      {{ runAllSummary }}
-    </div>
+      <div
+        v-if="runAllSummary"
+        class="px-3 py-2 text-xs shrink-0"
+        style="color: var(--semantic-text)"
+        :data-testid="`kanban-view-${item.id}-run-all-summary`"
+        role="status"
+        aria-live="polite"
+      >
+        {{ runAllSummary }}
+      </div>
 
-    <!-- ─── Columns row (horizontal scroll) ──────────────────────────── -->
-    <!--
+      <!-- ─── Columns row (horizontal scroll) ──────────────────────────── -->
+      <!--
       Horizontal scroll position is persisted to localStorage so the
       kanban stays where the user scrolled it across the standalone
       <-> 3-column layout transition in AppLayout. See
@@ -1354,83 +1365,106 @@ const handleCreateTaskSave = async (payload: {
       <script setup>. Do NOT remove `ref="kanbanColumnsContainer"`
       without also removing the composable call — the two are paired.
     -->
+      <div
+        ref="kanbanColumnsContainer"
+        class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
+        style="scrollbar-width: thin"
+        :data-testid="`kanban-view-${item.id}-columns`"
+      >
+        <div class="flex gap-3 p-3 h-full items-stretch">
+          <KanbanColumn
+            v-for="column in sortedColumns"
+            :key="column.id"
+            :ref="setColumnRef(column.id)"
+            :column="column"
+            :tasks="tasks"
+            :workspace-id="workspaceId"
+            :item-id="itemId || item.id"
+            :cwd="item.path || ''"
+            @move-task="(payload) => emit('moveTask', payload)"
+            @rename-column="(payload) => emit('renameColumn', payload)"
+            @delete-column="(columnId) => emit('deleteColumn', columnId)"
+            @reorder-column="(payload) => emit('reorderColumn', payload)"
+            @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
+            @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
+            @request-run-all-agents="handleRunAllAgents"
+            :run-all-busy="!!runAllBusyByColumn[column.id]"
+            @select-task="(id) => emit('selectTask', id)"
+            @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
+            @open-task-detail-in-background="
+              (payload) => emit('openTaskDetailInBackground', payload)
+            "
+            @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
+            @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
+            @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+            @view-task-detail="handleViewTaskDetail"
+            @sort-change="(payload) => handleColumnSortChange(column.id, payload)"
+          />
+        </div>
+      </div>
+    </section>
+    <!--
+    Centered inline task panel (replaces the former right-docked
+    side panel AND the old KanbanTaskDetailDialog modal). Renders
+    as an overlay centered over the board — the board stays mounted
+    underneath. Backdrop click closes (same as Cancel). Opening
+    appends ?detail=<taskId> via router.push, so browser Back drops
+    the param and the watcher below closes the panel back to the
+    plain board. Edit + create are mutually exclusive.
+  -->
     <div
-      ref="kanbanColumnsContainer"
-      class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
-      style="scrollbar-width: thin"
-      :data-testid="`kanban-view-${item.id}-columns`"
+      v-if="showTaskDetail || showCreateDialog"
+      class="absolute inset-0 z-30 flex items-center justify-center p-4"
+      data-testid="kanban-detail-panel"
     >
-      <div class="flex gap-3 p-3 h-full items-stretch">
-        <KanbanColumn
-          v-for="column in sortedColumns"
-          :key="column.id"
-          :ref="setColumnRef(column.id)"
-          :column="column"
-          :tasks="tasks"
-          :workspace-id="workspaceId"
-          :item-id="itemId || item.id"
+      <div
+        class="absolute inset-0"
+        style="background: rgba(0, 0, 0, 0.55)"
+        data-testid="kanban-detail-backdrop"
+        @click="showTaskDetail ? closeTaskDetail() : (showCreateDialog = false)"
+      />
+      <div
+        class="relative w-full max-w-2xl max-h-full overflow-y-auto rounded-xl"
+        style="
+          background-color: var(--semantic-card-bg);
+          border: 1px solid var(--color-border);
+          box-shadow:
+            0 1px 2px rgba(0, 0, 0, 0.4),
+            0 8px 24px rgba(0, 0, 0, 0.35);
+        "
+      >
+        <KanbanTaskDetail
+          v-if="showTaskDetail"
+          v-model:show="showTaskDetail"
+          :task="activeTaskDetail"
+          :column="activeTaskDetailColumn"
           :cwd="item.path || ''"
-          @move-task="(payload) => emit('moveTask', payload)"
-          @rename-column="(payload) => emit('renameColumn', payload)"
-          @delete-column="(columnId) => emit('deleteColumn', columnId)"
-          @reorder-column="(payload) => emit('reorderColumn', payload)"
-          @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
-          @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
-          @request-run-all-agents="handleRunAllAgents"
-          :run-all-busy="!!runAllBusyByColumn[column.id]"
-          @select-task="(id) => emit('selectTask', id)"
-          @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
-          @open-task-detail-in-background="(payload) => emit('openTaskDetailInBackground', payload)"
-          @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
-          @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
-          @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
-          @view-task-detail="handleViewTaskDetail"
-          @sort-change="(payload) => handleColumnSortChange(column.id, payload)"
+          :workspace-id="workspaceId"
+          :error-message="startAgentError"
+          @save="handleTaskDetailSave"
+          @update-unattended="handleUnattendedToggle"
+          @update-cwd="handleUpdateCwd"
+          @start-agent="handleStartAgent"
+        />
+        <KanbanTaskDetail
+          v-if="showCreateDialog"
+          v-model:show="showCreateDialog"
+          mode="create"
+          :task="null"
+          :column="activeCreateColumn"
+          :available-columns="sortedColumns"
+          :cwd="item.path || ''"
+          :workspace-id="workspaceId"
+          :error-message="createError"
+          :creating="createBusy"
+          @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
+          @create-and-run="
+            (payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })
+          "
+          @column-change="(columnId) => (activeCreateColumnId = columnId)"
         />
       </div>
     </div>
-  </section>
-  <!--
-    Inline task-detail side panel (replaces the former
-    KanbanTaskDetailDialog modal). Renders next to the board so
-    the columns stay visible while the user edits. Edit + create
-    are mutually exclusive — only one panel shows at a time.
-  -->
-  <aside
-    v-if="showTaskDetail || showCreateDialog"
-    class="kanban-detail-panel w-[420px] max-w-[42vw] shrink-0 min-h-0 overflow-y-auto p-3"
-    style="border-left: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
-    data-testid="kanban-detail-panel"
-  >
-    <KanbanTaskDetail
-      v-if="showTaskDetail"
-      v-model:show="showTaskDetail"
-      :task="activeTaskDetail"
-      :column="activeTaskDetailColumn"
-      :cwd="item.path || ''"
-      :workspace-id="workspaceId"
-      :error-message="startAgentError"
-      @save="handleTaskDetailSave"
-      @update-unattended="handleUnattendedToggle"
-      @update-cwd="handleUpdateCwd"
-      @start-agent="handleStartAgent"
-    />
-    <KanbanTaskDetail
-      v-if="showCreateDialog"
-      v-model:show="showCreateDialog"
-      mode="create"
-      :task="null"
-      :column="activeCreateColumn"
-      :available-columns="sortedColumns"
-      :cwd="item.path || ''"
-      :workspace-id="workspaceId"
-      :error-message="createError"
-      :creating="createBusy"
-      @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
-      @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
-      @column-change="(columnId) => (activeCreateColumnId = columnId)"
-    />
-  </aside>
   </div>
   <!--
     FilePickerDialog for the "Set project root" banner. Mounted at the
