@@ -412,6 +412,64 @@ fn fetchMcpToolsFresh(
     });
 }
 
+/// Cancel thunk handed to `Agent.callStreaming` for the in-flight turn.
+///
+/// `Agent.zig` must not depend on sqlite/config, so it takes a plain
+/// `?*const fn () bool` and the workflow supplies this one. Same
+/// `threadlocal` shape as the MCP tools thunk in `fetchMcpToolsFresh` — the
+/// workflow runs one agentic loop per thread.
+///
+/// The DB read is throttled. The agent polls this once per SSE chunk (tens to
+/// hundreds of times a second on a fast stream) and a `SELECT` per chunk is
+/// pure overhead. Caching the answer for `LLM_CANCEL_POLL_INTERVAL_NS` bounds
+/// the added stop latency to that interval — negligible next to the
+/// second-or-so delay it replaces — while a positive answer is latched so a
+/// observed cancel can never be un-observed.
+const LlmCancelCtx = struct {
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    io: std.Io,
+};
+
+const LLM_CANCEL_POLL_INTERVAL_NS: i96 = 50 * std.time.ns_per_ms;
+
+const llm_cancel_thunk = struct {
+    threadlocal var state: ?LlmCancelCtx = null;
+    threadlocal var last_poll_ns: i96 = 0;
+    threadlocal var latched: bool = false;
+
+    fn call() bool {
+        if (latched) return true;
+        const s = state orelse return false;
+
+        const now_ns = std.Io.Clock.now(.real, s.io).nanoseconds;
+        if (last_poll_ns != 0 and now_ns - last_poll_ns < LLM_CANCEL_POLL_INTERVAL_NS) {
+            return false;
+        }
+        last_poll_ns = now_ns;
+
+        const cancelled = isWorkerCancelled(IsWorkerCancelledInput{
+            .allocator = std.heap.page_allocator,
+            .db = s.db,
+            .session_id = s.session_id,
+        });
+        if (cancelled) latched = true;
+        return cancelled;
+    }
+
+    fn register(ctx: LlmCancelCtx) void {
+        state = ctx;
+        last_poll_ns = 0;
+        latched = false;
+    }
+
+    fn unregister() void {
+        state = null;
+        last_poll_ns = 0;
+        latched = false;
+    }
+};
+
 pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
@@ -1097,7 +1155,14 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         );
 
         var last_dynamic_agent_error_message: ?[]const u8 = null;
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, eff.thinking_budget_tokens, eff.thinking_adaptive, eff.reasoning_effort, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
+        // Make this turn cancellable. The agent polls `llm_cancel_thunk`
+        // between SSE chunks so a user Stop aborts the in-flight call instead of
+        // waiting for the response to finish. Registered per iteration and
+        // cleared on the way out, so a stale context can never leak into the
+        // next turn.
+        llm_cancel_thunk.register(.{ .db = db, .session_id = copy_session_id, .io = io });
+        defer llm_cancel_thunk.unregister();
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, eff.thinking_budget_tokens, eff.thinking_adaptive, eff.reasoning_effort, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, merged_tools, &llm_cancel_thunk.call, &last_dynamic_agent_error_message) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
                 break;
@@ -1634,6 +1699,11 @@ fn callDynamicAgentNew(
     url_style: []const u8,
     session_id: []const u8,
     equip_tools: []const agent.AgentTool,
+    /// Polled by the agent's SSE chunk-read loop between chunks so a
+    /// user-initiated Stop aborts the in-flight turn immediately instead of
+    /// waiting for the response to finish (see `Agent.callStreaming`).
+    /// Null = the turn is not cancellable.
+    cancel_fn: ?*const fn () bool,
     /// On error, the underlying server/transporter detail (drained HTTP
     /// error body, scanner error name, chunk count) so the retry-catch
     /// block can log the actual reason instead of just `error.ApiError` /
@@ -1657,7 +1727,7 @@ fn callDynamicAgentNew(
     // `messages_list.items` is `[]agent.AgentMessage`; the local
     // `agent.AgentCall.messages` wants the same type — direct assignment.
     const messages_for_agent: []const agent.AgentMessage = messages_list.items;
-    const dynamic_agent_call_params = agent.AgentCall{ .tools = equip_tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+    const dynamic_agent_call_params = agent.AgentCall{ .tools = equip_tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens, .cancel_fn = cancel_fn };
     dynamic_agent.thinkingEnabled = isThinking;
     // === Model-thinking (plan 2026-08-23-model-thinking) =============
     // The new fields are no-ops when the URL style isn't a match:

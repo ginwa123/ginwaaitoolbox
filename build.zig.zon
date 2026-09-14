@@ -16,8 +16,8 @@
         // single `kabelweb` module — consumers `@import("kabelweb")`
         // and reach `kabelweb.server` / `kabelweb.client`.
         .kabelweb = .{
-            .url = "https://github.com/ginwa123/kabelweb/archive/519f42b0e654af4e58b1c13c8fa1a55e74bf5aef.tar.gz",
-            .hash = "kabelweb-0.0.0-vhZam9nLGADq96sxxBxtio-9Da_vjlwWh_wvpxcfMoP-",
+            .url = "https://github.com/ginwa123/kabelweb/archive/75c069808abbddb285344b8c6ba230500fac0909.tar.gz",
+            .hash = "kabelweb-0.0.0-vhZam6ENGQCvkcFv8wlwjB2Dfeays6yAynFUGCeGUApx",
         },
         // Cross-platform portable helpers (sleep, fileExists,
         // unixTimestampNanos, etc.) used by every module. Promoted

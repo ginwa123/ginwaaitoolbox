@@ -1119,6 +1119,16 @@ pub const AgentCall = struct {
     messages: []const AgentMessage,
     temperature: ?f32 = null,
     max_tokens: ?usize = null,
+    /// Polled between SSE chunks so a caller can abort an in-flight turn.
+    /// When it returns true, `callStreaming` cancels the HTTP transfer and
+    /// returns `error.Cancelled` instead of reading the response to
+    /// completion — see the cancel check in the chunk-read loop.
+    ///
+    /// A function pointer (rather than a flag or a DB handle) keeps the
+    /// dependency direction caller → agent: the agent module must not import
+    /// the workflow's config/sqlite helpers. Same shape as the existing
+    /// `cancel_fn` used for the MCP tools fetch.
+    cancel_fn: ?*const fn () bool = null,
 };
 
 pub const HttpOptions = struct {
@@ -2962,7 +2972,39 @@ pub const Agent = struct {
         //     the next chunk or the libcurl timeout.
         var scanner_null_count: u32 = 0;
         while (true) {
+            // Cancellation check — the only place a MID-stream stop can be
+            // observed. The workflow's loop-top check
+            // (`runAgenticMultiStepnew`) runs after this function returns, so
+            // without this the cancel is not noticed until the response has
+            // finished; that delay is the "Stop still waits ~1s" symptom.
+            //
+            // `stream.cancel()` is essential, not belt-and-braces: the
+            // `defer stream.deinit()` below joins the libcurl worker, and the
+            // worker only samples the cancelled flag while it is being handed
+            // body bytes. Cancelling here makes the worker abort on the very
+            // next chunk instead of after the 64-slot response queue fills.
+            if (params.cancel_fn) |should_cancel| {
+                if (should_cancel()) {
+                    stream.cancel();
+                    self.log_fmt(.info, "[STREAM] cancelled by caller after {} chunk(s)", .{chunk_count});
+                    return error.Cancelled;
+                }
+            }
             const next_result = scanner.next() catch |err| {
+                // Classify cancellation BEFORE anything else. A cancel aborts
+                // the transfer, which libcurl reports as a transport error
+                // (CURLE_WRITE_ERROR → WriteError → StreamInterrupted). The
+                // workflow's generic catch turns every non-Cancelled error into
+                // a RETRY with a fresh request — silently re-running a turn the
+                // user explicitly stopped is far worse than the latency being
+                // fixed here.
+                if (err == error.Cancelled) return error.Cancelled;
+                if (params.cancel_fn) |should_cancel| {
+                    if (should_cancel()) {
+                        stream.cancel();
+                        return error.Cancelled;
+                    }
+                }
                 self.log_fmt(.err, "[STREAM] scanner.next failed: {s}", .{@errorName(err)});
                 // Surface the underlying scanner error name to the workflow
                 // catch block so it can tell apart a parse failure from a
@@ -3039,6 +3081,17 @@ pub const Agent = struct {
             // definitely finished.
             scanner_null_count += 1;
             if (scanner_null_count >= 2) break;
+        }
+
+        // A cancel can also land in the window between the final chunk and the
+        // loop exit above. Classify it before the "ended without
+        // finish_reason" diagnostics below, which would otherwise turn a
+        // user-initiated stop into a StreamEmpty/StreamInterrupted retry.
+        if (params.cancel_fn) |should_cancel| {
+            if (should_cancel()) {
+                stream.cancel();
+                return error.Cancelled;
+            }
         }
 
         // 10. The scanner returned null twice in a row, which means

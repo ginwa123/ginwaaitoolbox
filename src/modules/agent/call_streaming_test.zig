@@ -474,6 +474,60 @@ test "callStreaming returns StreamIdleTimeout within idle window when server sta
     try expectError(error.StreamIdleTimeout, outcome.result);
 }
 
+test "callStreaming reports a mid-stream cancel as error.Cancelled, never as a retryable error" {
+    // The workflow treats EVERY non-Cancelled error as a transient failure:
+    // it increments retry_count, saves a retry diagnostic to history, sleeps,
+    // and re-issues the request (workflow.zig, the callDynamicAgentNew catch).
+    // So the single most damaging way to get this wrong is for a user's Stop
+    // to arrive as StreamInterrupted/StreamEmpty — the turn the user just
+    // cancelled would silently re-run.
+    //
+    // This test pins that classification. `cancel_fn` returns true on the very
+    // first poll, i.e. before any chunk is consumed, so the loop must bail via
+    // the cancel path rather than by exhausting the stream.
+    //
+    // Note the server stalls for 60s after its single chunk, and the transfer
+    // itself cannot observe `cancelled` while no bytes are arriving (the
+    // deferred `stream.deinit()` join waits for the curl timeout — see the
+    // kabelweb `openStream` comment). `read_timeout_ms` is therefore set small
+    // so the call returns via that timeout+classification instead of the full
+    // stall; the elapsed assertion only guards against waiting out the 60s.
+    var server = try FakeServer.start(.one_chunk_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const CancelState = struct {
+        var always: bool = false;
+        fn should() bool {
+            return always;
+        }
+    };
+    CancelState.always = true;
+
+    var a = agent.Agent.init_with_options(testing_allocator, std.testing.io, .{
+        .idle_timeout_ms = 60_000,
+        .read_timeout_ms = 1_500,
+    });
+    defer a.deinit();
+
+    const base_url = try makeBaseUrl(testing_allocator, server.port);
+    defer testing_allocator.free(base_url);
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    var call = makeCall();
+    call.cancel_fn = &CancelState.should;
+
+    const start_ms = nowMs();
+    const result = a.callStreaming(call, null, noopCallback);
+    const elapsed_ms = nowMs() - start_ms;
+
+    try expectError(error.Cancelled, result);
+    // The 60s stall is the thing we must not be waiting on.
+    try expect(elapsed_ms < 10_000);
+}
+
 // Note: the original third skipped test ("head_then_close") was a pre-existing
 // flaky test unrelated to the watchdog (its skip comment said "the std.testing.io
 // event loop scheduling is not deterministic in this environment"). The watchdog
