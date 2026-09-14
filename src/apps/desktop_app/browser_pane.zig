@@ -88,9 +88,6 @@ pub const Pane = struct {
     /// The pane view; created lazily on the first `show`.
     view: ?*Webview = null,
     paned: ?*GtkWidget = null,
-    /// The window, so the divider can be placed from its real width.
-    win: ?*GtkWidget = null,
-    positioned: bool = false,
     /// The scrolled window the pane view lives in — what GTK lays out.
     panel: ?*GtkWidget = null,
     /// The scrolled window holding the SPA's view (the left/top half).
@@ -115,6 +112,9 @@ pub const Pane = struct {
         // Left: the SPA (the app). resize=true → it absorbs window resizes.
         const spa_slot = scrolledSlot();
         gtk_container_add(spa_slot, spa_widget);
+        // A floor on the app's side: the pane's width is fixed, so a narrow window
+        // must not squeeze the app out of existence.
+        gtk_widget_set_size_request(spa_slot, 360, -1);
         gtk_paned_pack1(paned, spa_slot, TRUE, TRUE);
 
         // Right: the pane, at a fixed width. resize=false → it keeps its width
@@ -123,15 +123,18 @@ pub const Pane = struct {
         gtk_widget_set_size_request(panel, PANE_WIDTH, -1);
         gtk_paned_pack2(paned, panel, FALSE, TRUE);
 
-        // The divider sits left of the pane; it stays user-draggable.
-        gtk_paned_set_position(paned, 1100 - PANE_WIDTH);
+        // NO gtk_paned_set_position: with pack2 resize=false, GTK gives the pane
+        // exactly its size request and the app everything else — automatically,
+        // and correctly for whatever the window's real size turns out to be.
+        // (Setting a position from a guessed width is what left the pane a
+        // 60px sliver: the width at that moment was not the final one.)
+        // The divider stays user-draggable on top of that.
 
         gtk_widget_show(paned);
         gtk_widget_show(spa_slot);
         // `panel` stays hidden until the first show(): with one visible child the
         // SPA gets the whole window, i.e. the app looks exactly as it does today.
 
-        self.win = win_widget;
         self.paned = paned;
         self.spa_slot = spa_slot;
         self.panel = panel;
@@ -166,18 +169,6 @@ pub const Pane = struct {
             self.url_hash = hash;
         }
 
-        // Place the divider once the window has a real width: `size_request` on the
-        // panel only sets a MINIMUM, and the paned position is what actually
-        // decides the split. Without this the pane took most of the window.
-        if (!self.positioned) {
-            if (self.paned) |paned| {
-                const win_w = if (self.win) |win| gtk_widget_get_allocated_width(win) else 0;
-                if (win_w > PANE_WIDTH + 240) {
-                    gtk_paned_set_position(paned, win_w - PANE_WIDTH);
-                    self.positioned = true;
-                }
-            }
-        }
         gtk_widget_show_all(panel);
         if (self.paned) |paned| gtk_widget_show(paned);
         self.visible = true;
