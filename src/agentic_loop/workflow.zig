@@ -412,6 +412,157 @@ fn fetchMcpToolsFresh(
     });
 }
 
+/// Cancel thunk handed to `Agent.callStreaming` for the in-flight turn.
+///
+/// `Agent.zig` must not depend on sqlite/config, so it takes a plain
+/// `?*const fn () bool` and the workflow supplies this one. Same
+/// `threadlocal` shape as the MCP tools thunk in `fetchMcpToolsFresh` — the
+/// workflow runs one agentic loop per thread.
+///
+/// The DB read is throttled. The agent polls this once per SSE chunk (tens to
+/// hundreds of times a second on a fast stream) and a `SELECT` per chunk is
+/// pure overhead. Caching the answer for `LLM_CANCEL_POLL_INTERVAL_NS` bounds
+/// the added stop latency to that interval — negligible next to the
+/// second-or-so delay it replaces — while a positive answer is latched so a
+/// observed cancel can never be un-observed.
+const LlmCancelCtx = struct {
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    io: std.Io,
+};
+
+const LLM_CANCEL_POLL_INTERVAL_NS: i96 = 50 * std.time.ns_per_ms;
+
+const llm_cancel_thunk = struct {
+    threadlocal var state: ?LlmCancelCtx = null;
+    threadlocal var last_poll_ns: i96 = 0;
+    threadlocal var latched: bool = false;
+
+    fn call() bool {
+        if (latched) return true;
+        const s = state orelse return false;
+
+        const now_ns = std.Io.Clock.now(.real, s.io).nanoseconds;
+        if (last_poll_ns != 0 and now_ns - last_poll_ns < LLM_CANCEL_POLL_INTERVAL_NS) {
+            return false;
+        }
+        last_poll_ns = now_ns;
+
+        const cancelled = isWorkerCancelled(IsWorkerCancelledInput{
+            .allocator = std.heap.page_allocator,
+            .db = s.db,
+            .session_id = s.session_id,
+        });
+        if (cancelled) latched = true;
+        return cancelled;
+    }
+
+    fn register(ctx: LlmCancelCtx) void {
+        state = ctx;
+        last_poll_ns = 0;
+        latched = false;
+    }
+
+    fn unregister() void {
+        state = null;
+        last_poll_ns = 0;
+        latched = false;
+    }
+};
+
+const FlushCancelledInput = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    logger: *logger_mod.Logger,
+    event_bus: *event_bus_mod.EventBus,
+    cwd: []const u8,
+    session_id: []const u8,
+    parent_session_id: []const u8,
+    model: []const u8,
+    agent_name: []const u8,
+    temperature: f32,
+    is_thinking: bool,
+    loop_counter: u32,
+};
+
+/// Publish + persist the text streamed so far when a turn is cancelled
+/// mid-stream.
+///
+/// Before this, the cancel path's only terminal signal was `worker_deleted`
+/// (from `deleteWorker`'s defer). The frontend clears its `streaming-*`
+/// placeholder row and its `isStreaming` flag ONLY on a `full` event
+/// (`ChatView.vue`), so a stopped turn left a permanently "still streaming"
+/// client row that had no `llm_history` counterpart — it survived until the
+/// user switched sessions, and a reload lost the partial text entirely.
+///
+/// Emitting the canonical assistant row fixes both halves at once:
+/// `is_emit_sse = true` publishes the `llm_full` event the view already knows
+/// how to settle on, and the INSERT makes the stopped turn part of history.
+/// `finish_reason` is `"cancelled"` rather than `"stop"` so nothing downstream
+/// renders it as a completed turn (the frontend's green check marks key off
+/// `'stop'`).
+///
+/// Deliberately does NOT emit `chunk_final`: its payload is a usage report,
+/// which an aborted transfer cannot produce, and a zero-usage marker would
+/// clobber the token counter the view mirrors from it. The `full` event alone
+/// is sufficient to clear the streaming row.
+fn flushCancelledPartial(input: FlushCancelledInput) void {
+    const allocator = input.allocator;
+
+    // The snapshot outlives the abort: `callDynamicAgentNew` only calls
+    // `endStream` when the terminal `done` chunk arrives, which a cancelled
+    // stream never delivers. So this holds exactly the text the user saw.
+    const snapshot = stream_snapshot.getSnapshot(allocator, input.session_id) catch return;
+    // Nothing streamed (cancelled before the first token): there is no row to
+    // write and an empty `full` would fail the frontend's renderable gate
+    // anyway, so the streaming placeholder is best cleared by the ordinary
+    // session-reload path.
+    if (snapshot.content.len == 0) return;
+
+    const now_ns = std.Io.Timestamp.now(input.io, .real).nanoseconds;
+    const id = std.fmt.allocPrint(allocator, "{}", .{now_ns}) catch return;
+    const created_at = std.fmt.allocPrint(allocator, "{}", .{now_ns}) catch return;
+
+    _ = insertLLMHistories(.{
+        .allocator = allocator,
+        .io = input.io,
+        .db = input.db,
+        .logger = input.logger,
+        .event_bus = input.event_bus,
+        .is_emit_sse = true,
+        .cwd = input.cwd,
+        .entity = .{
+            .id = id,
+            .session_id = input.session_id,
+            .model = input.model,
+            .created_at = created_at,
+            .response_content = snapshot.content,
+            .finish_reason = "cancelled",
+            .role = agent.Role.assistant.to_str(),
+            .tool_calls_json = "",
+            .agent = input.agent_name,
+            .loop_index = input.loop_counter,
+            .temperature = input.temperature,
+            .is_thinking = input.is_thinking,
+            .parent_id = input.parent_session_id,
+            .parent_session_id = input.parent_session_id,
+            .is_input = false,
+            .is_output = true,
+        },
+    }) catch |err| {
+        input.logger.errFmt(
+            "Failed to persist the cancelled partial response session_id={s}: {s}",
+            .{ input.session_id, @errorName(err) },
+        );
+        return;
+    };
+
+    // Leave the snapshot inactive: the turn is over, so a stream-resume poll
+    // must not resurrect a placeholder for it.
+    stream_snapshot.endStream(allocator, input.session_id);
+}
+
 pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew) !void {
     var parent_arena_allocator = std.heap.ArenaAllocator.init(di.allocator);
     defer parent_arena_allocator.deinit();
@@ -1097,9 +1248,34 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         );
 
         var last_dynamic_agent_error_message: ?[]const u8 = null;
-        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, eff.thinking_budget_tokens, eff.thinking_adaptive, eff.reasoning_effort, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, merged_tools, &last_dynamic_agent_error_message) catch |err| {
+        // Make this turn cancellable. The agent polls `llm_cancel_thunk`
+        // between SSE chunks so a user Stop aborts the in-flight call instead of
+        // waiting for the response to finish. Registered per iteration and
+        // cleared on the way out, so a stale context can never leak into the
+        // next turn.
+        llm_cancel_thunk.register(.{ .db = db, .session_id = copy_session_id, .io = io });
+        defer llm_cancel_thunk.unregister();
+        const res_dynamic_agent = callDynamicAgentNew(allocator, io, messagesLists, agent_temperature, current_max_tokens, isThinking, eff.thinking_budget_tokens, eff.thinking_adaptive, eff.reasoning_effort, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, merged_tools, &llm_cancel_thunk.call, &last_dynamic_agent_error_message) catch |err| {
             if (err == error.Cancelled) {
                 logger.infoFmt("WORKFLOW CANCELLED during streaming: session_id={s}", .{copy_session_id});
+                // Keep the partial text and settle the transcript — without
+                // this the only signal is `worker_deleted`, which clears the
+                // Stop button but leaves the streaming row behind forever.
+                flushCancelledPartial(.{
+                    .allocator = allocator,
+                    .io = io,
+                    .db = db,
+                    .logger = logger,
+                    .event_bus = event_bus,
+                    .cwd = copy_cwd,
+                    .session_id = copy_session_id,
+                    .parent_session_id = copy_parent_session_id,
+                    .model = eff.model,
+                    .agent_name = effective_agent_name,
+                    .temperature = agent_temperature,
+                    .is_thinking = isThinking,
+                    .loop_counter = loop_counter,
+                });
                 break;
             }
             retry_count += 1;
@@ -1634,6 +1810,11 @@ fn callDynamicAgentNew(
     url_style: []const u8,
     session_id: []const u8,
     equip_tools: []const agent.AgentTool,
+    /// Polled by the agent's SSE chunk-read loop between chunks so a
+    /// user-initiated Stop aborts the in-flight turn immediately instead of
+    /// waiting for the response to finish (see `Agent.callStreaming`).
+    /// Null = the turn is not cancellable.
+    cancel_fn: ?*const fn () bool,
     /// On error, the underlying server/transporter detail (drained HTTP
     /// error body, scanner error name, chunk count) so the retry-catch
     /// block can log the actual reason instead of just `error.ApiError` /
@@ -1657,7 +1838,7 @@ fn callDynamicAgentNew(
     // `messages_list.items` is `[]agent.AgentMessage`; the local
     // `agent.AgentCall.messages` wants the same type — direct assignment.
     const messages_for_agent: []const agent.AgentMessage = messages_list.items;
-    const dynamic_agent_call_params = agent.AgentCall{ .tools = equip_tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens };
+    const dynamic_agent_call_params = agent.AgentCall{ .tools = equip_tools, .messages = messages_for_agent, .temperature = agent_temperature, .max_tokens = current_max_tokens, .cancel_fn = cancel_fn };
     dynamic_agent.thinkingEnabled = isThinking;
     // === Model-thinking (plan 2026-08-23-model-thinking) =============
     // The new fields are no-ops when the URL style isn't a match:
@@ -2914,4 +3095,92 @@ test "re_read_selected_profile_model: subsequent reads see UPDATEd value (live r
 
     const second = re_read_selected_profile_model(alloc, &ctx.db, "s_live", "snapshot");
     try testing.expectEqualStrings("gamma", second);
+}
+
+test "flushCancelledPartial persists the streamed partial as a cancelled turn" {
+    // Phase C contract: a Stop mid-stream must leave the transcript settled.
+    // The cancel path used to emit only `worker_deleted`, so the frontend kept
+    // its `streaming-*` row forever (it clears that row only on a `full`
+    // event) and the partial text was nowhere in history. This pins BOTH
+    // halves: a real `llm_history` row carrying the partial with
+    // `finish_reason = "cancelled"`, and the snapshot released.
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Run the REAL migrations rather than hand-rolling `llm_history`:
+    // `insertLLMHistories` binds ~30 columns plus an `UPDATE sessions`, and a
+    // hand-written CREATE TABLE would silently drift from the real schema.
+    var mgr = migration_mod.MigrationManager.init(alloc, &db);
+    // `registerAllMigrations` grows this list; the manager does not own its
+    // teardown.
+    defer mgr.migrations.deinit(alloc);
+    try migration_mod.registerAllMigrations(&mgr);
+    try mgr.runMigrations();
+
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+    var bus = event_bus_mod.EventBus.init("cancel-partial-test", alloc, std.testing.io);
+
+    // The flush path is arena-scoped BY CONTRACT — production passes the
+    // per-iteration arena, and `insertLLMHistories` hands several allocations
+    // to the SSE emit path without freeing them itself. Mirroring that here
+    // (rather than handing it `testing.allocator`) keeps the test faithful to
+    // production ownership instead of reporting a phantom leak.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const session_id = "sess_cancel_partial";
+
+    // Exactly what the agent loop leaves behind when a stream is aborted: the
+    // accumulated content sits in the snapshot registry, and the terminal
+    // `done` chunk never arrived so `endStream` was never called.
+    stream_snapshot.beginStream(alloc, session_id);
+    stream_snapshot.appendContent(alloc, session_id, "hello ");
+    stream_snapshot.appendContent(alloc, session_id, "wor");
+
+    flushCancelledPartial(.{
+        .allocator = a,
+        .io = io,
+        .db = &db,
+        .logger = &lg,
+        .event_bus = &bus,
+        .cwd = "/tmp",
+        .session_id = session_id,
+        .parent_session_id = session_id,
+        .model = "test-model",
+        .agent_name = "Agent",
+        .temperature = 0.2,
+        .is_thinking = false,
+        .loop_counter = 1,
+    });
+
+    var rows = try db.query(
+        a,
+        "SELECT response_content, finish_reason, role, is_output FROM llm_history WHERE session_id = ?",
+        &.{session_id},
+    );
+    defer rows.deinit();
+    const row = (try rows.next()) orelse return error.NoRowInserted;
+    defer row.deinit(a);
+
+    // The text the user already saw is preserved...
+    try testing.expectEqualStrings("hello wor", row.values[0]);
+    // ...flagged as cancelled, NOT "stop" — the frontend's completed-turn
+    // affordances key off "stop", and an aborted turn must not claim them.
+    try testing.expectEqualStrings("cancelled", row.values[1]);
+    try testing.expectEqualStrings("assistant", row.values[2]);
+    // `is_output` is what makes the row render as an assistant bubble.
+    try testing.expectEqualStrings("1", row.values[3]);
+
+    // Snapshot released: a stream-resume poll must not resurrect a
+    // placeholder for a turn that is no longer running.
+    const snap = try stream_snapshot.getSnapshot(a, session_id);
+    try testing.expect(!snap.active);
 }

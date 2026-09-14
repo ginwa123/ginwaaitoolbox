@@ -474,6 +474,149 @@ test "callStreaming returns StreamIdleTimeout within idle window when server sta
     try expectError(error.StreamIdleTimeout, outcome.result);
 }
 
+/// Portable fixture for the cancellation test: a listener that accepts ONE
+/// connection, answers with an HTTP/1.1 SSE head plus a single `data:` chunk,
+/// then holds the connection open without sending anything else.
+///
+/// Deliberately NOT the `FakeServer` the other tests in this file use: that one
+/// is built on raw `std.os.linux` syscalls (socket/bind/listen/accept/write) and
+/// is therefore Linux-only. This uses `std.Io.net`, which works on Linux, macOS
+/// and Windows alike, so the cancel contract is covered on every platform we
+/// ship instead of being skipped on two of them.
+const StallServer = struct {
+    allocator: std.mem.Allocator,
+    listener: std.Io.net.Server,
+    thread: std.Thread,
+    port: u16,
+    stop: std.atomic.Value(bool),
+
+    fn start(allocator: std.mem.Allocator) !*StallServer {
+        const io = std.testing.io;
+        const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
+        const listener = address.listen(io, .{}) catch return error.AddressInUse;
+
+        const self = try allocator.create(StallServer);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .listener = listener,
+            // Port 0 above means "OS picks"; the resolved value only lands in
+            // the socket AFTER listen() runs.
+            .port = listener.socket.address.getPort(),
+            .thread = undefined,
+            .stop = std.atomic.Value(bool).init(false),
+        };
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        return self;
+    }
+
+    fn run(self: *StallServer) void {
+        const io = std.testing.io;
+        // One-shot: the test opens exactly one connection.
+        const conn = self.listener.accept(io) catch return;
+        defer conn.socket.close(io);
+
+        const head =
+            "HTTP/1.1 200 OK\r\n" ++
+            "Content-Type: text/event-stream\r\n" ++
+            "Transfer-Encoding: chunked\r\n" ++
+            "Connection: close\r\n" ++
+            "\r\n";
+        const body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        var framed_buf: [160]u8 = undefined;
+        const framed = std.fmt.bufPrint(&framed_buf, "{x}\r\n{s}\r\n", .{ body.len, body }) catch return;
+
+        // Written BEFORE the client can cancel, so this never races a closed
+        // peer (no SIGPIPE on POSIX).
+        var writer = conn.writer(io, &.{});
+        writer.interface.writeAll(head) catch return;
+        writer.interface.writeAll(framed) catch return;
+        writer.interface.flush() catch return;
+
+        // Hold the connection open with no further bytes — exactly the state a
+        // user is in when they press Stop mid-stream.
+        while (!self.stop.load(.acquire)) {
+            std.Io.sleep(io, .{ .nanoseconds = 20 * std.time.ns_per_ms }, .real) catch return;
+        }
+    }
+
+    fn deinit(self: *StallServer) void {
+        const io = std.testing.io;
+        self.stop.store(true, .release);
+        self.thread.join();
+        self.listener.deinit(io);
+        self.allocator.destroy(self);
+    }
+};
+
+test "callStreaming reports a mid-stream cancel as error.Cancelled, never as a retryable error" {
+    // The workflow treats EVERY non-Cancelled error as a transient failure: it
+    // increments retry_count, saves a retry diagnostic to history, sleeps, and
+    // re-issues the request (workflow.zig, the callDynamicAgentNew catch). So
+    // the most damaging way to get this wrong is for a user's Stop to arrive as
+    // StreamInterrupted/StreamEmpty — the turn the user just cancelled would
+    // silently re-run.
+    //
+    // `cancel_fn` answers false on its FIRST poll and true afterwards, which
+    // walks the real sequence: the loop enters the read (and the stream
+    // genuinely delivers one chunk), the transfer then fails, and only THEN is
+    // the cancel consulted. That reaches the classification branch in the
+    // scanner `catch` — returning true immediately would only ever exercise the
+    // pre-read check and would leave the branch below untested.
+    var server = try StallServer.start(testing_allocator);
+    defer server.deinit();
+
+    // `callStreaming` is arena-scoped BY CONTRACT: `StreamingAggregator.deinit`
+    // is a documented no-op because production hands it the per-iteration
+    // arena (see `workflow.zig`'s loop), so its buffers are reclaimed wholesale.
+    // Using `testing.allocator` here would report the aggregator's own
+    // content buffer as a leak — a property of the contract, not a bug.
+    var arena = std.heap.ArenaAllocator.init(testing_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const CancelState = struct {
+        var polls: u32 = 0;
+        fn should() bool {
+            polls += 1;
+            return polls > 1;
+        }
+    };
+    CancelState.polls = 0;
+
+    var a = agent.Agent.init_with_options(alloc, std.testing.io, .{
+        // Large, so a correct implementation cannot be "saved" by the idle
+        // watchdog firing first.
+        .idle_timeout_ms = 60_000,
+        // Small: after the cancel the deferred `stream.deinit()` join still
+        // waits for the parked worker (no bytes are arriving — see the
+        // kabelweb `openStream` comment on XFERINFOFUNCTION), and this bounds
+        // that wait.
+        .read_timeout_ms = 1_500,
+    });
+    defer a.deinit();
+
+    const base_url = try makeBaseUrl(alloc, server.port);
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    var call = makeCall();
+    call.cancel_fn = &CancelState.should;
+
+    const start_ms = nowMs();
+    const result = a.callStreaming(call, null, noopCallback);
+    const elapsed_ms = nowMs() - start_ms;
+
+    // The transport error from the aborted request must not leak out.
+    try expectError(error.Cancelled, result);
+    // Bounded by read_timeout_ms, not by the 60s idle window.
+    try expect(elapsed_ms < 10_000);
+    // The thunk must actually have been consulted — guards against a
+    // `cancel_fn` that is silently never called.
+    try expect(CancelState.polls >= 2);
+}
+
 // Note: the original third skipped test ("head_then_close") was a pre-existing
 // flaky test unrelated to the watchdog (its skip comment said "the std.testing.io
 // event loop scheduling is not deterministic in this environment"). The watchdog
