@@ -131,9 +131,9 @@ const firstProcessingTaskId = computed<string | null>(() => {
 })
 
 const handleClick = (event?: MouseEvent) => {
-  // Ctrl/Cmd+click and middle click mean "open in a background tab" — the
-  // gesture users bring from a browser. Handle it before the expand/navigate
-  // behaviour so nothing is activated behind their back.
+  // Ctrl/Cmd+click and middle click mean "open in a new browser tab" —
+  // the gesture users bring from a browser. Handle it before the
+  // expand/navigate behaviour so nothing is activated behind their back.
   if (event && isBackgroundOpenEvent(event)) {
     emit('openItemInBackground', {
       workspaceId: props.workspaceId,
