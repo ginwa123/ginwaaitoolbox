@@ -103,6 +103,9 @@ const onContextMenuPointerDown = (event: MouseEvent) => {
 const openContextMenuInBackground = () => {
   const menu = contextMenu.value
   if (!menu) return
+  // Tab mode defaults to OFF, so a background open would be invisible
+  // (strip hidden). An explicit "Open in new tab" opts into tab mode.
+  if (!tabsStore.enabled) tabsStore.setEnabled(true)
   openChatInBackground({ id: menu.id, name: menu.name })
   closeContextMenu()
 }
@@ -794,7 +797,7 @@ defineExpose({
         class="block w-full text-left px-3 py-1.5 hover:opacity-80"
         @click="openContextMenuInBackground"
       >
-        Open in new tab
+        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open in new tab
       </button>
     </div>
   </Teleport>

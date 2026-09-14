@@ -5,11 +5,15 @@ import * as api from './api'
 import { installSseBus, useSseBus } from './helpers/sseBus'
 import { useTabsStore } from './stores/tabs'
 import { useNavigationStore } from './stores/navigation'
+import { useDocumentTitle } from './composables/useDocumentTitle'
 
 // LLM processing state - provided to child components
 // Object mapping sessionId to processing status (using object instead of Set for better reactivity)
 const processingState = ref<Record<string, boolean>>({})
 provide('processingState', processingState)
+
+// Browser tab title follows the active session / task name.
+useDocumentTitle()
 
 // Handle worker event from the SSE bus. Migrated from an App.vue-owned
 // SseClient (Chunk 5 of the unify-SSE plan): the bus now owns the
