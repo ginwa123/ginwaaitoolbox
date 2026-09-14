@@ -12,7 +12,6 @@ import SettingsView from './views/SettingsView.vue'
 import CodeEditor from './views/CodeEditor.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
-import TabBar from './shell/TabBar.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
@@ -2399,7 +2398,6 @@ defineExpose({
       @resize="handleSidebarResize"
     />
     <main class="flex-1 flex flex-col overflow-hidden relative">
-      <TabBar @navigate="applyActiveTabToUrl" />
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
         v-if="currentView === 'gitfile' && gitViewerFile && rightSidebarCwd"

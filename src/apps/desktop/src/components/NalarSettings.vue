@@ -65,10 +65,10 @@ const router = useRouter()
 const route = useRoute()
 
 /**
- * Turning tab mode off must leave no trace: TabBar gates on `enabled`, the
- * route funnel stops creating/normalising tabs, and the now-meaningless
- * `?tab=` is dropped from the URL. Guarded because this component also
- * mounts in tests without a router installed.
+ * Turning tab mode off must leave no trace: the route funnel stops
+ * creating/normalising tabs, and the now-meaningless `?tab=` is dropped
+ * from the URL. Guarded because this component also mounts in tests
+ * without a router installed.
  */
 function onToggleBrowserTabs(value: boolean) {
   tabsStore.setEnabled(value)
