@@ -1,13 +1,15 @@
 # In-app browser tab — simplified (Cursor-shaped)
 
-> **Status: PLAN ONLY — not executed.** Rev 4 (2026-09-14), replacing the
-> iframe + proxy design of revs 1–3 at the reviewer's request:
-> *"i think we need to simplify the in app browser, maybe we can mirror this"* —
-> <https://cursor.com/docs/agent/tools/browser>.
+> **Status: PLAN ONLY — not executed.** Rev 5 (2026-09-14). Rev 4 simplified the
+> design to Cursor's model at the reviewer's request — *"i think we need to
+> simplify the in app browser, maybe we can mirror this"*,
+> <https://cursor.com/docs/agent/tools/browser> — and rev 5 locks the reviewer's
+> final answer (**Q6 → separate-window mode**). Every question in this plan is now
+> answered; it is implementation-ready and awaiting the go-ahead at
+> `in_review_planning`.
 >
 > **Plan PR:** #489, branch `worktree/task-1789376475404` (revs 1–3 are kept in the
-> branch history; §10 records what rev 4 removed and why). Awaiting the go-ahead at
-> `in_review_planning`.
+> branch history; §10 records what rev 4 removed and why).
 >
 > **For agentic workers:** this is a *planning* artefact. Before implementing, use
 > subagent-driven-development / executing-plans. Steps use checkbox (`- [ ]`)
@@ -17,9 +19,9 @@
 but literally a browser"*.
 
 **Goal:** `+` opens a browser tab; type `github.com` or a Google search; the page
-opens **in a real webview** where links, sign-in and dev servers work — with a new
-Zig work path that is one CLI flag and one injected chrome bar, and **no proxy, no
-iframe, no SSRF surface, no frame-policy matrix.**
+opens **in a real webview — a Nalar-owned window, Q6 locked** — where links, sign-in
+and dev servers work, with a new Zig work path that is one CLI flag and one injected
+chrome bar, and **no proxy, no iframe, no SSRF surface, no frame-policy matrix.**
 
 Generated 2026-09-14 against `main` @ `b7c2d39e`.
 
@@ -44,7 +46,7 @@ Read from the live page on 2026-09-14. The load-bearing sentences:
 |---|---|---|---|
 | Navigate anywhere (any site, links, back/forward, refresh) | The page is a **real top-level webview inside Electron** — no `X-Frame-Options` problem exists | ✔ A real webview in a Nalar-owned window | in-window pane (§10) |
 | Session persistence (cookies / localStorage / IndexedDB) | A real browser context with a persistent store | ✔ the engine's default store, already persistent (`webview.h:1870` uses `webkit_web_view_new()` → the default context) | isolated per-workspace store |
-| "separate window **or** inline pane" | Electron can parent a `WebContentsView` anywhere | ✔ **separate window** (the cheap half) | inline pane (the expensive half — §2) |
+| "separate window **or** inline pane" | Electron can parent a `WebContentsView` anywhere | ✔ **separate window** — **locked by the reviewer (Q6)** | inline pane (the expensive half — §10.2) |
 | Screenshot / console / network / click / type — agent-driven | An MCP server + approval modes + allow/deny lists | ✖ not in v1: the tab is *user*-driven | §10 — our `agent-browser` CLI and the in-tree `nalar_browser` Bun service already do snapshot/click/fill/press |
 | Security: approval per action, allow/block lists, origin allowlist | Agent actions need gating | ✖ nothing to gate: no agent control in v1 | §10 |
 | Dev-server awareness (find the running port instead of guessing) | Prompt + tooling integration | ✔ partially, for free: type `localhost:<port>` and it works, because **dev servers send no framing headers** | — |
@@ -88,7 +90,7 @@ reference product itself ships.
 
 | Decision | Value | Why |
 |---|---|---|
-| How the page renders | **A real webview in a Nalar-owned window** (`webview_create(0, NULL)` + `navigate`), spawned as its own process | §2. Real top-level context: any site, links, cookies, sign-in, dev servers, JS-heavy apps — the same fidelity as Cursor's browser |
+| How the page renders | **A real webview in a Nalar-owned window** (`webview_create(0, NULL)` + `navigate`), spawned as its own process — **locked by the reviewer (Q6: Cursor's "separate window" mode)** | §2. Real top-level context: any site, links, cookies, sign-in, dev servers, JS-heavy apps — the same fidelity as Cursor's browser. The inline pane is deferred to its own card because it needs a per-OS vendor patch (§10.2) |
 | What the tab *is* | A **launcher + record** for that window: `?view=browser&url=…`, 1:1 with a window | The tab is the strip-integrated handle; the window owns history (native engine history) so the tab needs none |
 | Window chrome (address bar, back, forward, reload) | **An injected overlay bar** via `webview_init` (`webview_lib.zig:71`) + plain JS/CSS: `location.href` to navigate, `history.back/forward()`, `location.reload()`, `location.href` to display the URL | One code path for Linux/macOS/Windows, ~120 lines, no vendor patch, no per-OS widget code. Deliberate wart: the bar lives in the page document, so a page can cover or hide it (documented in §6/§7); a *native* bar is the inline-pane card's job |
 | Renderer alternatives | **Deleted from this plan**: iframe, `X-Frame-Options` preflight, Zig proxy, SSRF guard, srcdoc base injection, `postMessage` nav relay, GET-form relay, per-tab history storage, sandbox asymmetry | All of it existed only to work around being inside an iframe (§10 keeps the measured evidence) |
@@ -139,6 +141,11 @@ Cross-process control is deliberately absent in v1: the app records the URL, the
 window browses. The pane card (§10) adds the bridge that lets the tab drive it.
 
 ## 5. Tasks
+
+**Order matters:** Task 1 first — it is independently useful and testable straight
+from the CLI (`nalar-desktop --browser https://example.com`) before any frontend work
+exists, and it is the only shell-touching part. Then Tasks 2–3 (tab kind, then tab
+body + spawning), then 4–5 (docs, gates).
 
 ### Task 1 — Shell: `--browser <url>` mode
 
@@ -360,13 +367,21 @@ with `VITE_API_PROXY_TARGET=http://localhost:8080`:
 - [ ] Repeat the window checks on macOS and Windows (the chrome script is the only
   platform-sensitive part).
 
-### Open question (non-blocking)
+### Reviewer answers (all locked 2026-09-14)
 
-**Q6 — lock v1 as Cursor's "separate window" mode?** Default yes. The alternative is
-to jump straight to the **inline pane** — the page inside the app window, which is
-what "open a new tab, but literally a browser" most literally means — at the cost of
-patching the vendored container per OS (§10). Say the word and the plan becomes the
-pane card instead; the tab-kind work (Tasks 2–3) is 100% shared either way.
+| # | Question | Answer |
+|---|---|---|
+| Q1 | `+` = blank browser tab, or keep it for the chats list? | **Blank browser tab** |
+| Q2 | Drop the framing-hostile fallback, or keep it so GitHub/Google open? | **Keep real browsing power** — and rev 4 delivers it the *right* way (a real webview, so no proxy is needed at all) |
+| Q3 | Search provider? | **Google** |
+| Q6 | Cursor's "separate window" mode, or jump straight to the inline pane? | **Separate window** |
+
+**Q6 is the shape of v1:** `nalar-desktop --browser <url>` opens the page in a
+Nalar-owned webview window, and the browser tab is its launcher and record. The
+**inline pane** — the page inside the app window, which "open a new tab, but
+literally a browser" arguably means most literally — is **not** a v1 option; it is
+the next card (§10.2), because it needs the vendored container patched per OS. The
+tab-kind and tab-body work (Tasks 2–3) is unchanged by that future step.
 
 ---
 
@@ -399,7 +414,7 @@ top-level view:
   localStorage key (the engine owns history now);
 * the "limited view" badge and the system-browser escape hatch as the primary path.
 
-### 10.2 Follow-up card 1 — the inline pane (the literal "browser tab")
+### 10.2 Follow-up card 1 — the inline pane (the literal "browser tab", deferred by Q6)
 
 The page rendered **inside** the app window, next to the strip: patch the vendored
 container so a second view can live in the same window — Linux: wrap the window's
