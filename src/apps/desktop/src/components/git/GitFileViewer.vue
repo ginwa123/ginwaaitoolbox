@@ -3,6 +3,11 @@ import { ref, onMounted, watch } from 'vue'
 import * as api from '../../api'
 import type { GitFileDiff } from '../../api'
 import FileInput from '../file/FileInput.vue'
+import {
+  escapeDiffHtml,
+  parseUnifiedDiff,
+  type ParsedDiffLine as DiffLine,
+} from '../views/chat_right_sidebar/parseUnifiedDiff'
 
 interface Props {
   cwd: string
@@ -38,15 +43,7 @@ const miniChatEndLine = ref(0)
 // Stats
 const stats = ref({ added: 0, removed: 0 })
 
-// Parsed diff lines for GitHub-style rendering
-interface DiffLine {
-  type: 'add' | 'remove' | 'context' | 'header' | 'hunk' | 'empty'
-  content: string
-  oldLineNum?: number
-  newLineNum?: number
-  lineIndex: number
-}
-
+// DiffLine is the shared ParsedDiffLine (see parseUnifiedDiff module).
 const diffLines = ref<DiffLine[]>([])
 
 // Mini chat functions
@@ -108,129 +105,16 @@ const submitMiniChat = (message: string) => {
   closeMiniChat()
 }
 
-// Parse unified diff format from git diff command
-const parseUnifiedDiff = (diffText: string) => {
-  const lines = diffText.split('\n')
-  const parsed: DiffLine[] = []
-  
-  let added = 0
-  let removed = 0
-  let lineIndex = 0
-  
-  // Current hunk state
-  let oldLine = 0
-  let newLine = 0
-  let inHunk = false
-  
-  for (const line of lines) {
-    // Skip the "diff --git" header line at the very start
-    if (line.startsWith('diff --git') || line.startsWith('index ')) {
-      continue
-    }
-    
-    // Hunk header: @@ -oldStart,oldCount +newStart,newCount @@
-    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)?$/)
-    if (hunkMatch) {
-      inHunk = true
-      oldLine = tryParseInt(hunkMatch[1] ?? '') ?? 1
-      newLine = tryParseInt(hunkMatch[2] ?? '') ?? 1
-      
-      parsed.push({
-        type: 'hunk',
-        content: line,
-        lineIndex: lineIndex++,
-      })
-      continue
-    }
-    
-    if (!inHunk) {
-      // Before any hunk, this might be a new file indicator
-      if (line.startsWith('---') || line.startsWith('+++')) {
-        continue  // Skip file headers
-      }
-      continue
-    }
-    
-    if (line.length === 0) {
-      // Empty line - preserve alignment
-      parsed.push({
-        type: 'empty',
-        content: '',
-        oldLineNum: oldLine,
-        newLineNum: newLine,
-        lineIndex: lineIndex++,
-      })
-      continue
-    }
-    
-    const firstChar = line[0]
-    
-    if (firstChar === '+') {
-      // Added line
-      parsed.push({
-        type: 'add',
-        content: line.substring(1),
-        newLineNum: newLine,
-        lineIndex: lineIndex++,
-      })
-      added++
-      newLine++
-    } else if (firstChar === '-') {
-      // Removed line
-      parsed.push({
-        type: 'remove',
-        content: line.substring(1),
-        oldLineNum: oldLine,
-        lineIndex: lineIndex++,
-      })
-      removed++
-      oldLine++
-    } else if (firstChar === ' ') {
-      // Context line
-      parsed.push({
-        type: 'context',
-        content: line.substring(1),
-        oldLineNum: oldLine,
-        newLineNum: newLine,
-        lineIndex: lineIndex++,
-      })
-      oldLine++
-      newLine++
-    } else {
-      // Line without prefix (shouldn't happen in valid diff, but handle it)
-      parsed.push({
-        type: 'context',
-        content: line,
-        oldLineNum: oldLine,
-        newLineNum: newLine,
-        lineIndex: lineIndex++,
-      })
-      oldLine++
-      newLine++
-    }
-  }
-  
-  diffLines.value = parsed
-  stats.value = { added, removed }
+// Diff parsing delegates to the shared pure module (also used by the
+// ChatView-embedded sidebar) — behaviour unchanged.
+const applyParsedDiff = (diffText: string) => {
+  const parsed = parseUnifiedDiff(diffText)
+  diffLines.value = parsed.lines
+  stats.value = { added: parsed.added, removed: parsed.removed }
 }
 
-// Helper to safely parse int
-const tryParseInt = (s: string): number | null => {
-  const n = parseInt(s, 10)
-  return isNaN(n) ? null : n
-}
-
-// Syntax highlighting for a line (simple HTML escaping)
-const highlightLine = (line: string): string => {
-  if (!line) return '&nbsp;'
-  
-  // Escape HTML
-  return line
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
-
+// tryParseInt/highlightLine now live in the shared module
+// (escapeDiffHtml); the template below calls escapeDiffHtml directly.
 // Load diff data
 const loadDiff = async () => {
   if (!props.cwd || !props.filePath) return
@@ -249,7 +133,7 @@ const loadDiff = async () => {
     })
     
     // Parse the unified diff
-    parseUnifiedDiff(diff.value.diff_content)
+    applyParsedDiff(diff.value.diff_content)
     
     console.log('[GitFileViewer] Parsed lines:', diffLines.value.length, 'stats:', stats.value)
   } catch (err) {
@@ -417,7 +301,7 @@ onMounted(() => {
                 style="border-left: 3px solid var(--color-green); background: rgba(135, 169, 135, 0.15); color: var(--semantic-text);"
               >
                 <span style="color: var(--color-green); font-weight: bold;">+</span>
-                <span v-html="highlightLine(line.content)"></span>
+                <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
             
@@ -444,7 +328,7 @@ onMounted(() => {
                 style="border-left: 3px solid var(--color-red); background: rgba(196, 116, 110, 0.15); color: var(--semantic-text);"
               >
                 <span style="color: var(--color-red); font-weight: bold;">-</span>
-                <span v-html="highlightLine(line.content)"></span>
+                <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
             
@@ -470,7 +354,7 @@ onMounted(() => {
                 style="border-left: 3px solid transparent; color: var(--semantic-text);"
               >
                 <span style="color: var(--semantic-text-dim);"> </span>
-                <span v-html="highlightLine(line.content)"></span>
+                <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
           </template>
