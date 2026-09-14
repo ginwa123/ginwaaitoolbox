@@ -248,28 +248,16 @@ export function useBrowserPane(): BrowserPaneApi {
     }
     lastShownKey = key
     lastShownTabId = target.tabId
-    // The tab body mounts in the SAME Vue flush as the tab switch, so wait for
-    // that flush (a bare microtask can beat it) and then, if the host still is
-    // not registered, hold the show: the shell cannot place the pane without
-    // numbers, and a 2-arg show is refused (the bug the human hit — the pane
-    // stayed hidden with no error).
+    // Wait for the Vue flush so the tab body (and the app's chrome) is laid out,
+    // then ask for the pane. The shell owns the geometry now (a fixed-width split),
+    // so a rect is NOT required to place it — a missing rect must not hold the
+    // show (that once left the pane invisible with no error).
     await nextTick()
     if (myGeneration !== generation) return
     const rect = readRect()
-    if (!rect) {
-      // Keep `lastShownKey` unset so the host registration retries us, and retry
-      // a bounded number of frames ourselves: the tab becoming active, the
-      // layout giving `<main>` a box, and the pane being requested are three
-      // async steps, so a single attempt can lose the race. Bounded, not a poll.
-      lastShownKey = ''
-      pendingShow = true
-      schedulePendingRetry()
-      return
-    }
-    pendingRetries = 0
     let visible = false
     try {
-      const result = await showBrowserPane(target.tabId, target.url, rect)
+      const result = await showBrowserPane(target.tabId, target.url, rect ?? undefined)
       visible = result.visible === true
     } catch {
       visible = false

@@ -1,35 +1,31 @@
 // src/apps/desktop_app/browser_pane.zig
 //
-// The in-app browser PANE: the page renders in a *second webview* that sits
-// INSIDE the app window, over the browser tab's body — so the app's own chrome
-// (sidebar, tab strip, other tabs) stays visible beside it. One window, one
-// process, no spawned `nalar-desktop`.
-// Plan: docs/superpowers/plans/2026-09-14-in-app-browser-pane.md (rev 2).
+// The in-app browser PANE: the page renders in a *second webview* inside the app
+// window, BESIDE the app's own content — one window, one process, no spawned
+// `nalar-desktop`, no separate window.
+// Plan: docs/superpowers/plans/2026-09-14-in-app-browser-pane.md (rev 3).
 //
-// Layout (rev 2 — the first cut shrank the SPA to a 36px strip and gave the page
-// the whole window, which is not "side by side"):
+// Layout (rev 3 — GTK owns the geometry, on purpose):
 //
-//     window → GtkOverlay
-//                ├─ main child: the SPA view (fills the window, unchanged)
-//                └─ overlay child: the pane host (a scrolled window) — placed at
-//                   the rect the SPA reports for the browser tab's BODY
+//     window → GtkPaned(HORIZONTAL)
+//                ├─ pack1 (resize=true):  the SPA's view  → the app, left
+//                └─ pack2 (resize=false): the pane host   → the page, right
+//                     with a HARDCODED width (PANE_WIDTH)
 //
-//   * the SPA view is never resized or hidden: the app looks exactly as it does
-//     without a pane, and the pane floats over the tab's body only;
-//   * GTK would size an overlay child by its natural size (a `WebKitWebView`'s is
-//     huge — ~1398px measured), so the placement is an explicit allocation in the
-//     overlay's `size-allocate` handler, which runs after the default one. That
-//     also makes window resizes and sidebar drags free: the SPA reports a new
-//     rect and the next allocation uses it;
-//   * the pane view gets **no bindings** — it renders third-party content, and
-//     the invariant from browser_bridge.zig applies to it exactly as it does to
-//     the separate window;
-//   * the injected chrome bar (`browser_chrome.js`) is the pane's address bar /
-//     ← / → / ↻ — already shipped and jsdom-tested, so nothing new navigates.
+// Why a paned and not an overlay with a computed rect (rev 1/2): an overlay child
+// placed by hand had paint and INPUT disagree — the app painted correctly while
+// clicks meant for the sidebar never landed there, and a mapped-but-unplaced
+// child fell back to the overlay's default full-window allocation and swallowed
+// every click. With a paned, GTK lays out and hit-tests the same rectangles: the
+// two views cannot overlap, so the app stays fully clickable, and the divider is
+// even draggable for free.
+//
+// The trade-off is honest and visible: while a browser tab is up the app's own
+// content is narrower (the pane takes PANE_WIDTH on the right). The strip and the
+// sidebar stay in the left half, fully interactive.
 //
 // PLATFORM: Linux/GTK3 only for now. Off Linux `supported` is false, nothing is
-// installed, and the SPA falls back to the window mode (which is why that mode is
-// kept, invisibly).
+// installed, and the SPA falls back to the window mode.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -42,17 +38,21 @@ const Webview = webview_lib.Webview;
 /// True where the pane can be built at all. Linux-first (GTK3).
 pub const supported = builtin.os.tag == .linux;
 
+/// The pane's width in logical px. Hardcoded on purpose: GTK keeps it, so the
+/// page never covers the app and the geometry is not something the SPA can get
+/// wrong. The divider is draggable, so the user can adjust it live.
+pub const PANE_WIDTH: c_int = 560;
+
 /// `webview_native_handle_kind_t` (vendor/webview/webview.h:143-153).
 const HANDLE_UI_WINDOW: c_int = 0;
 const HANDLE_UI_WIDGET: c_int = 1;
 const HANDLE_BROWSER_CONTROLLER: c_int = 2;
 
-/// Mirror of GTK3's enum values this file uses, named rather than sprinkled.
+/// Mirror of the GTK3 enum values this file uses, named rather than sprinkled.
 const GTK_POLICY_NEVER: c_int = 0;
+const GTK_ORIENTATION_HORIZONTAL: c_int = 0;
 const FALSE: c_int = 0;
 const TRUE: c_int = 1;
-/// `GConnectFlags.G_CONNECT_AFTER` — run our handler after the default one.
-const G_CONNECT_AFTER: c_int = 1;
 
 // ---------------------------------------------------------------------------
 // GTK3 C API. Declared, not linked specially: build.zig already links gtk-3 +
@@ -63,64 +63,43 @@ const G_CONNECT_AFTER: c_int = 1;
 
 const GtkWidget = opaque {};
 
-/// `GtkAllocation` — x, y, width, height in logical pixels (which is what
-/// WebKitGTK's CSS pixels are, so the SPA's `getBoundingClientRect` maps 1:1).
-pub const Rect = extern struct {
-    x: c_int = 0,
-    y: c_int = 0,
-    width: c_int = 0,
-    height: c_int = 0,
-};
-
-extern "c" fn gtk_overlay_new() *GtkWidget;
-extern "c" fn gtk_overlay_add_overlay(overlay: *GtkWidget, widget: *GtkWidget) void;
+extern "c" fn gtk_paned_new(orientation: c_int) *GtkWidget;
+extern "c" fn gtk_paned_pack1(paned: *GtkWidget, child: *GtkWidget, resize: c_int, shrink: c_int) void;
+extern "c" fn gtk_paned_pack2(paned: *GtkWidget, child: *GtkWidget, resize: c_int, shrink: c_int) void;
+extern "c" fn gtk_paned_set_position(paned: *GtkWidget, position: c_int) void;
 extern "c" fn gtk_scrolled_window_new(h: ?*anyopaque, v: ?*anyopaque) *GtkWidget;
 extern "c" fn gtk_scrolled_window_set_policy(widget: *GtkWidget, h: c_int, v: c_int) void;
 extern "c" fn gtk_container_add(container: *GtkWidget, widget: *GtkWidget) void;
 extern "c" fn gtk_container_remove(container: *GtkWidget, widget: *GtkWidget) void;
 extern "c" fn gtk_widget_show(widget: *GtkWidget) void;
+extern "c" fn gtk_widget_show_all(widget: *GtkWidget) void;
 extern "c" fn gtk_widget_hide(widget: *GtkWidget) void;
 extern "c" fn gtk_widget_get_visible(widget: *GtkWidget) c_int;
 extern "c" fn gtk_widget_set_size_request(widget: *GtkWidget, width: c_int, height: c_int) void;
 extern "c" fn gtk_widget_get_allocated_width(widget: *GtkWidget) c_int;
 extern "c" fn gtk_widget_get_allocated_height(widget: *GtkWidget) c_int;
-extern "c" fn gtk_widget_size_allocate(widget: *GtkWidget, allocation: *Rect) void;
-extern "c" fn gtk_widget_queue_resize(widget: *GtkWidget) void;
 /// `WEBVIEW_NATIVE_HANDLE_KIND_BROWSER_CONTROLLER` — the WebKitWebView itself,
 /// which is how the shell can see what the pane actually loaded.
 extern "c" fn webkit_web_view_get_uri(view: *anyopaque) ?[*:0]const u8;
-extern "c" fn g_signal_connect_data(
-    instance: *GtkWidget,
-    detailed_signal: [*:0]const u8,
-    handler: *const fn (*GtkWidget, *Rect, ?*anyopaque) callconv(.c) void,
-    data: ?*anyopaque,
-    destroy_data: ?*const fn (?*anyopaque, ?*anyopaque) callconv(.c) void,
-    flags: c_int,
-) c_ulong;
 
 /// One pane per app window (plan §3): the SPA shows it for the active browser
-/// tab, positions it at that tab body's rect, and hides it otherwise. Hide, never
-/// destroy — switching tabs must not pay a WebKit cold start, and the page keeps
-/// its state.
+/// tab and hides it otherwise. Hide, never destroy, when merely leaving a tab.
 pub const Pane = struct {
     /// The pane view; created lazily on the first `show`.
     view: ?*Webview = null,
-    overlay: ?*GtkWidget = null,
-    /// The scrolled window the pane view lives in — the widget we place.
-    host: ?*GtkWidget = null,
+    paned: ?*GtkWidget = null,
+    /// The window, so the divider can be placed from its real width.
+    win: ?*GtkWidget = null,
+    positioned: bool = false,
+    /// The scrolled window the pane view lives in — what GTK lays out.
+    panel: ?*GtkWidget = null,
+    /// The scrolled window holding the SPA's view (the left/top half).
+    spa_slot: ?*GtkWidget = null,
     visible: bool = false,
-    /// The SPA asked for the pane. The host is MAPPED only once a usable rect
-    /// exists: a mapped-but-unplaced overlay child takes GtkOverlay's default
-    /// allocation (the WHOLE window) and, painting nothing, swallows every click
-    /// — that is how the app became unusable. Mapping is therefore gated on real
-    /// numbers, and `visible` is derived from that gate.
-    wants_visible: bool = false,
-    /// Where the SPA says the browser tab's body is, in window coordinates.
-    rect: Rect = .{},
     /// Hash of the loaded URL, so re-activating a tab does not reload the page.
     url_hash: u64 = 0,
 
-    /// Build the overlay. Called once, before `webview_run`.
+    /// Build the split inside the app window. Called once, before `webview_run`.
     pub fn install(self: *Pane, app: *Webview) void {
         if (!supported) return;
         const win = webview_lib.webview_get_native_handle(app, HANDLE_UI_WINDOW) orelse return;
@@ -128,51 +107,49 @@ pub const Pane = struct {
         const win_widget: *GtkWidget = @ptrCast(win);
         const spa_widget: *GtkWidget = @ptrCast(spa_view);
 
-        // The window's single child leaves it; the overlay takes its place and
-        // the SPA view becomes the overlay's main child — same geometry as before,
-        // so the app renders exactly as it did without a pane.
+        // The window's single child leaves it; the split takes its place.
         gtk_container_remove(win_widget, spa_widget);
-        const overlay = gtk_overlay_new();
-        gtk_container_add(win_widget, overlay);
-        gtk_container_add(overlay, spa_widget);
+        const paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
+        gtk_container_add(win_widget, paned);
 
-        const host = gtk_scrolled_window_new(null, null);
-        gtk_scrolled_window_set_policy(host, GTK_POLICY_NEVER, GTK_POLICY_NEVER);
-        gtk_overlay_add_overlay(overlay, host);
+        // Left: the SPA (the app). resize=true → it absorbs window resizes.
+        const spa_slot = scrolledSlot();
+        gtk_container_add(spa_slot, spa_widget);
+        gtk_paned_pack1(paned, spa_slot, TRUE, TRUE);
 
-        // Placed by hand: an overlay child would otherwise be sized by its natural
-        // size, which for a webview is enormous.
-        _ = g_signal_connect_data(
-            overlay,
-            "size-allocate",
-            onSizeAllocate,
-            @ptrCast(self),
-            null,
-            G_CONNECT_AFTER,
-        );
+        // Right: the pane, at a fixed width. resize=false → it keeps its width
+        // while the window resizes, so the page never grows over the app.
+        const panel = scrolledSlot();
+        gtk_widget_set_size_request(panel, PANE_WIDTH, -1);
+        gtk_paned_pack2(paned, panel, FALSE, TRUE);
 
-        gtk_widget_show(overlay);
-        gtk_widget_show(spa_widget);
-        // host stays hidden until the first show().
+        // The divider sits left of the pane; it stays user-draggable.
+        gtk_paned_set_position(paned, 1100 - PANE_WIDTH);
 
-        self.overlay = overlay;
-        self.host = host;
-        std.log.info("browser pane: overlay installed", .{});
+        gtk_widget_show(paned);
+        gtk_widget_show(spa_slot);
+        // `panel` stays hidden until the first show(): with one visible child the
+        // SPA gets the whole window, i.e. the app looks exactly as it does today.
+
+        self.win = win_widget;
+        self.paned = paned;
+        self.spa_slot = spa_slot;
+        self.panel = panel;
+        std.log.info("browser pane: split installed ({d}px panel)", .{PANE_WIDTH});
     }
 
-    /// Show the pane and navigate it (only when the URL changed). `rect` is the
-    /// tab body the SPA reports; it may be null when the SPA's layout has not
-    /// settled yet — then the pane is shown and waits for a `nalarBrowserPaneRect`
-    /// (never a refusal: a rect-less show used to be rejected outright, which
-    /// left the pane invisible with no error — the bug the human hit).
+    /// Show the pane and navigate it (only when the URL changed). The `rect` the
+    /// SPA may send is deliberately IGNORED now (GTK owns the geometry); the
+    /// parameter stays so the binding contract is unchanged.
     pub fn show(self: *Pane, url: []const u8, rect: ?Rect) bool {
         if (!supported) return false;
-        const host = self.host orelse return false;
+        const panel = self.panel orelse return false;
+        _ = rect;
 
         if (self.view == null) {
-            // Created INTO our host: the vendored ctor's container-safe parent
+            // Created INTO our panel: the vendored ctor's container-safe parent
             // path puts the new view in the scrolled window (see the header).
-            const created = webview_lib.webview_create(0, host) orelse return false;
+            const created = webview_lib.webview_create(0, panel) orelse return false;
             // The bar is injected before the first navigation, so it exists from
             // the document's first script (the window mode's contract).
             _ = webview_lib.webview_init(created, webview_lib.browser_chrome_js);
@@ -189,46 +166,42 @@ pub const Pane = struct {
             self.url_hash = hash;
         }
 
-        self.wants_visible = true;
-        if (rect) |value| self.rect = value;
-        self.syncMapping();
+        // Place the divider once the window has a real width: `size_request` on the
+        // panel only sets a MINIMUM, and the paned position is what actually
+        // decides the split. Without this the pane took most of the window.
+        if (!self.positioned) {
+            if (self.paned) |paned| {
+                const win_w = if (self.win) |win| gtk_widget_get_allocated_width(win) else 0;
+                if (win_w > PANE_WIDTH + 240) {
+                    gtk_paned_set_position(paned, win_w - PANE_WIDTH);
+                    self.positioned = true;
+                }
+            }
+        }
+        gtk_widget_show_all(panel);
+        if (self.paned) |paned| gtk_widget_show(paned);
+        self.visible = true;
         return true;
     }
 
-    /// Map the host only when there is something to show AND a rect to show it
-    /// in. Anything else keeps it unmapped: an unmapped widget takes no space and
-    /// receives no events, so it cannot cover the app or eat its clicks.
-    fn syncMapping(self: *Pane) void {
-        const host = self.host orelse return;
-        const usable = self.wants_visible and self.rect.width > 0 and self.rect.height > 0;
-        if (usable) {
-            gtk_widget_show(host);
-        } else {
-            gtk_widget_hide(host);
-        }
-        self.visible = usable;
-        if (self.overlay) |overlay| gtk_widget_queue_resize(overlay);
-    }
-
-    /// Move/resize the pane (window resize, sidebar drag, tab body changes).
+    /// Kept for the binding contract: the geometry is GTK's, so there is nothing
+    /// to move. A no-op is the point — that is what removed the whole class of
+    /// "the pane covered the app / ate its clicks" bugs.
     pub fn setRect(self: *Pane, rect: Rect) void {
         if (!supported) return;
-        self.rect = rect;
-        self.syncMapping();
+        _ = rect;
+        _ = self;
     }
 
-    /// Hide the pane (the view and the page survive). Safe before any show.
-    /// This is the "left the tab" path — state is kept on purpose.
+    /// Hide the pane (the view and the page survive; the app gets the window back).
     pub fn hide(self: *Pane) void {
         if (!supported) return;
-        self.wants_visible = false;
-        self.syncMapping();
+        if (self.panel) |panel| gtk_widget_hide(panel);
+        self.visible = false;
     }
 
     /// Destroy the pane view so **nothing keeps running**. Used when the browser
-    /// tab is *closed* (leaving it is `hide`): WebKit would otherwise keep the
-    /// page's web process alive in the background — which is exactly what the
-    /// human reported after pressing the tab's close button.
+    /// tab is *closed* (leaving it is `hide`).
     pub fn close(self: *Pane) bool {
         if (!supported) return false;
         if (self.view) |view| {
@@ -237,8 +210,8 @@ pub const Pane = struct {
             _ = webview_lib.webview_destroy(view);
             self.view = null;
         }
-        self.wants_visible = false;
-        self.syncMapping();
+        if (self.panel) |panel| gtk_widget_hide(panel);
+        self.visible = false;
         self.url_hash = 0;
         std.log.info("browser pane: view destroyed (nothing running)", .{});
         return true;
@@ -247,28 +220,25 @@ pub const Pane = struct {
     /// Read the live widget state, not our own flag: the GTK call is the truth.
     pub fn isVisible(self: *const Pane) bool {
         if (!supported) return false;
-        const host = self.host orelse return false;
-        return gtk_widget_get_visible(host) != 0;
+        const panel = self.panel orelse return false;
+        return gtk_widget_get_visible(panel) != 0;
     }
 
-    /// The widget's REAL allocated size — the thing that decides which part of
-    /// the window receives clicks. Reported in `status` so a mis-sized pane is
-    /// visible in a log instead of guessed at.
+    /// The panel's REAL allocated size — reported in `status` so a mis-sized pane
+    /// is readable in one log line instead of guessed at.
     pub fn allocWidth(self: *const Pane) c_int {
         if (!supported) return 0;
-        const host = self.host orelse return 0;
-        return gtk_widget_get_allocated_width(host);
+        const panel = self.panel orelse return 0;
+        return gtk_widget_get_allocated_width(panel);
     }
 
     pub fn allocHeight(self: *const Pane) c_int {
         if (!supported) return 0;
-        const host = self.host orelse return 0;
-        return gtk_widget_get_allocated_height(host);
+        const panel = self.panel orelse return 0;
+        return gtk_widget_get_allocated_height(panel);
     }
 
     /// Length of the URL the pane has actually loaded (0 when there is no view).
-    /// The live probe uses it to prove the page really rendered; a full
-    /// escaped URI would be the follow-up "live URL in the tab" (§10.4).
     pub fn uriLen(self: *const Pane) usize {
         if (!supported) return 0;
         const view = self.view orelse return 0;
@@ -276,62 +246,22 @@ pub const Pane = struct {
         const uri = webkit_web_view_get_uri(raw) orelse return 0;
         return std.mem.span(uri).len;
     }
+
+    fn scrolledSlot() *GtkWidget {
+        const slot = gtk_scrolled_window_new(null, null);
+        gtk_scrolled_window_set_policy(slot, GTK_POLICY_NEVER, GTK_POLICY_NEVER);
+        return slot;
+    }
 };
 
-/// JSON array → strings, accepting numbers as well as strings. The SPA sends
-/// numbers for the rect (natural in JS); a hand-written probe may send strings.
-/// `browser_bridge.parseParams` is string-only, hence this sibling.
-fn parseLoose(fba: *std.heap.FixedBufferAllocator, req: []const u8, out: *[8][]const u8) ?usize {
-    const parsed = std.json.parseFromSlice(std.json.Value, fba.allocator(), req, .{}) catch return null;
-    const items = switch (parsed.value) {
-        .array => |array| array.items,
-        else => return null,
-    };
-    if (items.len > out.len) return null;
-    for (items, 0..) |item, index| {
-        out[index] = switch (item) {
-            .string => |text| text,
-            .number_string => |text| text,
-            .integer => |number| std.fmt.allocPrint(fba.allocator(), "{d}", .{number}) catch return null,
-            .float => |number| std.fmt.allocPrint(
-                fba.allocator(),
-                "{d}",
-                .{@as(i64, @intFromFloat(number))},
-            ) catch return null,
-            else => return null,
-        };
-    }
-    return items.len;
-}
-
-/// Runs after GtkOverlay's own allocation (G_CONNECT_AFTER) and overrides the
-/// pane host's geometry with the rect the SPA reported.
-fn onSizeAllocate(widget: *GtkWidget, alloc: *Rect, data: ?*anyopaque) callconv(.c) void {
-    _ = widget; // the handler is on the overlay itself; the rect is what matters
-    const self: *Pane = @ptrCast(@alignCast(data orelse return));
-    const host = self.host orelse return;
-    // An unmapped host gets NO allocation from us: never interfere with a hidden
-    // widget (that is how a transparent pane once ate every click).
-    if (gtk_widget_get_visible(host) == 0) return;
-    // Clamp to the window so a stale/large rect can never cover the whole app.
-    var rect = self.rect;
-    if (rect.x < 0) rect.x = 0;
-    if (rect.y < 0) rect.y = 0;
-    if (rect.width < 0) rect.width = 0;
-    if (rect.height < 0) rect.height = 0;
-    if (rect.x + rect.width > alloc.width) rect.width = @max(0, alloc.width - rect.x);
-    if (rect.y + rect.height > alloc.height) rect.height = @max(0, alloc.height - rect.y);
-    if (rect.width == 0 or rect.height == 0) {
-        // No usable numbers (the SPA has not measured the body yet, or the element
-        // collapsed). Allocate NOTHING: returning early would leave the host with
-        // GtkOverlay's default full-window allocation, which covers the whole app
-        // — tab strip included — so the user cannot switch back to another tab.
-        var hidden = Rect{ .x = 0, .y = 0, .width = 0, .height = 0 };
-        gtk_widget_size_allocate(host, &hidden);
-        return;
-    }
-    gtk_widget_size_allocate(host, &rect);
-}
+/// The rect the SPA may send. Ignored by the layout (rev 3) but kept in the
+/// binding contract so the frontend did not have to change.
+pub const Rect = extern struct {
+    x: c_int = 0,
+    y: c_int = 0,
+    width: c_int = 0,
+    height: c_int = 0,
+};
 
 // ---------------------------------------------------------------------------
 // Bindings — flat names, app window only, same reply shape as browser_bridge.
@@ -353,20 +283,12 @@ pub const Method = enum { show, rect, hide, close, status };
 
 /// Drive one bound call (webview-independent, so the contract is testable).
 /// Logs one line per call: these are user-driven events (never a loop), and the
-/// line is what makes "the pane did not appear" diagnosable from the app's own
-/// output — the missing log is itself the answer.
+/// line is what makes "the pane did not appear" diagnosable from the app's output.
 pub fn handle(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]const u8 {
     const result = handleInner(pane, method, req, out);
     std.log.info(
-        "browser pane: {s} rect=[{d},{d},{d},{d}] reply={s}",
-        .{
-            @tagName(method),
-            pane.rect.x,
-            pane.rect.y,
-            pane.rect.width,
-            pane.rect.height,
-            result,
-        },
+        "browser pane: {s} alloc=[{d},{d}] reply={s}",
+        .{ @tagName(method), pane.allocWidth(), pane.allocHeight(), result },
     );
     return result;
 }
@@ -386,27 +308,22 @@ fn handleInner(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]cons
             _ = pane.close();
             return okReply(pane, out);
         },
+        .rect => {
+            // Accepted and ignored: the geometry is GTK's (see the file header).
+            return okReply(pane, out);
+        },
         .status => return browser_bridge.reply(
             out,
-            "{{\"supported\":{s},\"visible\":{s},\"uri_len\":{d},\"rect\":[{d},{d},{d},{d}],\"alloc\":[{d},{d}]}}",
+            "{{\"supported\":{s},\"visible\":{s},\"uri_len\":{d},\"panel_width\":{d},\"alloc\":[{d},{d}]}}",
             .{
                 boolLit(supported),
                 boolLit(pane.isVisible()),
                 pane.uriLen(),
-                pane.rect.x,
-                pane.rect.y,
-                pane.rect.width,
-                pane.rect.height,
+                PANE_WIDTH,
                 pane.allocWidth(),
                 pane.allocHeight(),
             },
         ),
-        .rect => {
-            const rect = rectFromParams(params[0..count]) orelse
-                return browser_bridge.reply(out, "{{\"ok\":false,\"error\":\"rect expects (x, y, width, height)\"}}", .{});
-            pane.setRect(rect);
-            return okReply(pane, out);
-        },
         .show => {
             if (count < 2) {
                 return browser_bridge.reply(
@@ -428,14 +345,7 @@ fn handleInner(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]cons
                     .{},
                 );
             }
-            // The rect is optional: the SPA may not have laid the tab body out
-            // yet. 4 numbers = the rect; anything else = "wait for a Rect call".
-            var rect: ?Rect = null;
-            if (count >= 6) {
-                rect = rectFromParams(params[2..count]) orelse
-                    return browser_bridge.reply(out, "{{\"ok\":false,\"error\":\"bad rect\"}}", .{});
-            }
-            if (!pane.show(url, rect)) {
+            if (!pane.show(url, null)) {
                 return browser_bridge.reply(
                     out,
                     "{{\"ok\":false,\"error\":\"the pane is unavailable\"}}",
@@ -450,32 +360,43 @@ fn handleInner(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]cons
 fn okReply(pane: *Pane, out: []u8) [:0]const u8 {
     return browser_bridge.reply(
         out,
-        "{{\"ok\":true,\"visible\":{s},\"rect\":[{d},{d},{d},{d}]}}",
+        "{{\"ok\":true,\"visible\":{s},\"panel_width\":{d},\"alloc\":[{d},{d}]}}",
         .{
             boolLit(pane.isVisible()),
-            pane.rect.x,
-            pane.rect.y,
-            pane.rect.width,
-            pane.rect.height,
+            PANE_WIDTH,
+            pane.allocWidth(),
+            pane.allocHeight(),
         },
     );
 }
 
-/// Four integers, accepted as JSON numbers or numeric strings (the SPA sends
-/// numbers; strings keep a hand-written probe easy).
-fn rectFromParams(params: [][]const u8) ?Rect {
-    if (params.len < 4) return null;
-    var values: [4]c_int = undefined;
-    for (params[0..4], 0..) |raw, index| {
-        const trimmed = std.mem.trim(u8, raw, " ");
-        const parsed = std.fmt.parseInt(i32, trimmed, 10) catch return null;
-        values[index] = parsed;
-    }
-    return .{ .x = values[0], .y = values[1], .width = values[2], .height = values[3] };
-}
-
 fn boolLit(value: bool) []const u8 {
     return if (value) "true" else "false";
+}
+
+/// JSON array → strings, accepting numbers as well as strings (the SPA may send
+/// either; `browser_bridge.parseParams` is string-only).
+fn parseLoose(fba: *std.heap.FixedBufferAllocator, req: []const u8, out: *[8][]const u8) ?usize {
+    const parsed = std.json.parseFromSlice(std.json.Value, fba.allocator(), req, .{}) catch return null;
+    const items = switch (parsed.value) {
+        .array => |array| array.items,
+        else => return null,
+    };
+    if (items.len > out.len) return null;
+    for (items, 0..) |item, index| {
+        out[index] = switch (item) {
+            .string => |text| text,
+            .number_string => |text| text,
+            .integer => |number| std.fmt.allocPrint(fba.allocator(), "{d}", .{number}) catch return null,
+            .float => |number| std.fmt.allocPrint(
+                fba.allocator(),
+                "{d}",
+                .{@as(i64, @intFromFloat(number))},
+            ) catch return null,
+            else => return null,
+        };
+    }
+    return items.len;
 }
 
 /// The app window `webview_return` answers on. One app window per process.
@@ -520,7 +441,7 @@ const testing = std.testing;
 test "browser pane: show refuses a non-http URL without touching the widgets" {
     var pane = Pane{};
     var out: [browser_bridge.REPLY_BUF]u8 = undefined;
-    const result = handle(&pane, .show, "[\"tab_1\",\"javascript:alert(1)\",\"0\",\"0\",\"100\",\"100\"]", &out);
+    const result = handle(&pane, .show, "[\"tab_1\",\"javascript:alert(1)\"]", &out);
     try testing.expect(std.mem.indexOf(u8, result, "\"ok\":false") != null);
     try testing.expect(std.mem.indexOf(u8, result, "only http(s)") != null);
     try testing.expect(pane.view == null);
@@ -533,8 +454,7 @@ test "browser pane: a malformed request is refused, never half-applied" {
     for ([_][]const u8{
         "not json",
         "[\"tab_1\"]",
-        "[\"bad id!\",\"https://example.com\",\"0\",\"0\",\"10\",\"10\"]",
-        "[\"tab_1\",\"https://example.com\",\"0\",\"0\",\"10\"]", // half a rect
+        "[\"bad id!\",\"https://example.com\"]",
     }) |req| {
         const result = handle(&pane, .show, req, &out);
         try testing.expect(std.mem.indexOf(u8, result, "\"ok\":false") != null);
@@ -542,58 +462,30 @@ test "browser pane: a malformed request is refused, never half-applied" {
     try testing.expect(pane.view == null);
 }
 
-test "browser pane: a show without a rect is not refused for its shape" {
-    // The SPA may ask before its layout has settled. That request must reach the
-    // widget layer (it used to be rejected outright, which left the pane
-    // invisible with no error — the bug the human hit); creating the view needs a
-    // display, so here it reports the pane as unavailable instead.
-    var pane = Pane{};
-    var out: [browser_bridge.REPLY_BUF]u8 = undefined;
-    const result = handle(&pane, .show, "[\"tab_1\",\"https://example.com\"]", &out);
-    try testing.expect(std.mem.indexOf(u8, result, "expects (tabId, url") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "bad rect") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "only http(s)") == null);
-}
-
-test "browser pane: rect-only updates are validated and stored" {
-    var pane = Pane{};
-    var out: [browser_bridge.REPLY_BUF]u8 = undefined;
-    const bad = handle(&pane, .rect, "[\"1\",\"2\"]", &out);
-    try testing.expect(std.mem.indexOf(u8, bad, "\"ok\":false") != null);
-
-    const good = handle(&pane, .rect, "[\"120\",\"36\",\"900\",\"600\"]", &out);
-    try testing.expect(std.mem.indexOf(u8, good, "\"ok\":true") != null);
-    try testing.expectEqual(@as(c_int, 120), pane.rect.x);
-    try testing.expectEqual(@as(c_int, 36), pane.rect.y);
-    try testing.expectEqual(@as(c_int, 900), pane.rect.width);
-    try testing.expectEqual(@as(c_int, 600), pane.rect.height);
-}
-
-test "browser pane: hide and status are safe before anything was shown" {
+test "browser pane: hide, close and status are safe before anything was shown" {
     var pane = Pane{};
     var out: [browser_bridge.REPLY_BUF]u8 = undefined;
     const hidden = handle(&pane, .hide, "[]", &out);
     try testing.expect(std.mem.indexOf(u8, hidden, "\"ok\":true") != null);
     try testing.expect(std.mem.indexOf(u8, hidden, "\"visible\":false") != null);
-    const status = handle(&pane, .status, "[]", &out);
-    try testing.expect(std.mem.indexOf(u8, status, "\"visible\":false") != null);
-    try testing.expect(std.mem.indexOf(u8, status, "\"supported\":") != null);
-    try testing.expect(std.mem.indexOf(u8, status, "\"rect\":[") != null);
-}
 
-test "browser pane: close destroys the view state so nothing keeps running" {
-    var pane = Pane{};
-    var out: [browser_bridge.REPLY_BUF]u8 = undefined;
-    // Close is safe before anything was shown …
-    const first = handle(&pane, .close, "[]", &out);
-    try testing.expect(std.mem.indexOf(u8, first, "\"ok\":true") != null);
-    try testing.expect(std.mem.indexOf(u8, first, "\"visible\":false") != null);
-    // … and it clears the remembered URL, so a later show navigates again.
     pane.url_hash = 0xdeadbeef;
     _ = handle(&pane, .close, "[]", &out);
     try testing.expectEqual(@as(u64, 0), pane.url_hash);
+
     const status = handle(&pane, .status, "[]", &out);
-    try testing.expect(std.mem.indexOf(u8, status, "\"uri_len\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"visible\":false") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"supported\":") != null);
+    try testing.expect(std.mem.indexOf(u8, status, "\"panel_width\":") != null);
+}
+
+test "browser pane: the geometry is GTK's, so a rect is accepted and ignored" {
+    // The whole point of rev 3: the SPA cannot influence the placement, so a
+    // wrong/absent rect can no longer cover the app or its clicks.
+    var pane = Pane{};
+    var out: [browser_bridge.REPLY_BUF]u8 = undefined;
+    const result = handle(&pane, .rect, "[\"0\",\"0\",\"99999\",\"99999\"]", &out);
+    try testing.expect(std.mem.indexOf(u8, result, "\"ok\":true") != null);
 }
 
 test "browser pane: the platform gate is explicit" {
@@ -604,13 +496,14 @@ test "browser pane: the platform gate is explicit" {
     }
 }
 
-test "browser pane: the four binding names are flat" {
+test "browser pane: the five binding names are flat" {
     // Same rule as the process bridge: the vendored glue writes `window[name]`
-    // verbatim, so a dotted name would be unreachable — locked here too.
+    // verbatim, so a dotted name would be unreachable.
     const names = [_][]const u8{
         "nalarBrowserPaneShow",
         "nalarBrowserPaneRect",
         "nalarBrowserPaneHide",
+        "nalarBrowserPaneClose",
         "nalarBrowserPaneStatus",
     };
     for (names) |name| {

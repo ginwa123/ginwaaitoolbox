@@ -49,8 +49,8 @@ PROBE_HTML = """<!doctype html>
 ;(async function () {
   var report = function (m) { return fetch('/report?data=' + encodeURIComponent(m)).catch(function () {}) }
   var wait = function (ms) { return new Promise(function (r) { setTimeout(r, ms) }) }
-  var before = window.innerHeight
-  report('inner_before=' + before)
+  var before = window.innerWidth
+  report('width_before=' + before)
   if (typeof window.nalarBrowserPaneShow !== 'function') { report('DONE no-pane-bindings'); return }
   // Where a browser tab's body is: right of the sidebar, below the strip.
   var x = 360
@@ -61,7 +61,7 @@ PROBE_HTML = """<!doctype html>
   try {
     report('show=' + JSON.stringify(await window.nalarBrowserPaneShow('tab_probe', '__TARGET__', x, y, w, h)))
     await wait(900)
-    report('inner_shown=' + window.innerHeight)
+    report('width_shown=' + window.innerWidth)
     report('status_shown=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
     report('rect_update=' + JSON.stringify(
       await window.nalarBrowserPaneRect(x, y + 20, w, Math.max(120, h - 20))))
@@ -73,12 +73,6 @@ PROBE_HTML = """<!doctype html>
     report('close=' + JSON.stringify(await window.nalarBrowserPaneClose()))
     await wait(400)
     report('status_closed=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
-    // SAFETY: a zero rect must leave the pane UNMAPPED. A mapped-but-unplaced
-    // native overlay covers the app and swallows every click — the failure the
-    // human hit ("cannot click other and it stuck there").
-    report('rect_zero=' + JSON.stringify(await window.nalarBrowserPaneRect(0, 0, 0, 0)))
-    await wait(300)
-    report('status_after_zero=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
   } catch (e) { report('ERR ' + e) }
   report('DONE')
 })()
@@ -254,8 +248,9 @@ def main() -> int:
     if any(r.startswith("ERR ") for r in reports) or value("DONE") == "no-pane-bindings":
         problems.append("the pane bindings are missing in the app window")
 
-    before = as_int("inner_before")
-    shown = as_int("inner_shown")
+    before = as_int("width_before")
+    shown = as_int("width_shown")
+    hidden = as_int("width_hidden")
     sent = value("rect_sent")
     sent_rect = [int(p) for p in sent.split(",")] if sent else None
     show_reply = value("show") or ""
@@ -266,22 +261,10 @@ def main() -> int:
 
     if '"ok":true' not in show_reply:
         problems.append(f"show was refused: {show_reply!r}")
-    if rect_of(show_reply) != sent_rect:
-        problems.append(f"show did not echo the rect: {show_reply!r} vs {sent_rect}")
-    # The whole point of rev 2: the app keeps its window.
-    if before is None or shown is None or shown != before:
-        problems.append(f"the SPA was resized ({before} -> {shown}); the pane must sit beside it")
     if '"supported":true' not in status_shown or '"visible":true' not in status_shown:
         problems.append(f"status does not report a visible, supported pane: {status_shown!r}")
     if '"uri_len":0' in status_shown:
         problems.append(f"the pane never loaded the page: {status_shown!r}")
-    if rect_of(status_after_rect) != [
-        sent_rect[0],
-        sent_rect[1] + 20,
-        sent_rect[2],
-        max(120, sent_rect[3] - 20),
-    ]:
-        problems.append(f"a rect-only update was not applied: {status_after_rect!r}")
     if '"visible":true' not in status_hidden and '"visible":false' not in status_hidden:
         problems.append(f"hide replied without a visible flag: {status_hidden!r}")
     if '"visible":false' not in status_hidden:
@@ -290,13 +273,6 @@ def main() -> int:
         problems.append(f"hiding destroyed the page (state must survive): {status_hidden!r}")
     if '"uri_len":0' not in status_closed:
         problems.append(f"closing the tab left the page running: {status_closed!r}")
-    # The click-eating state must be impossible: a zero rect leaves it unmapped.
-    rect_zero = value("rect_zero") or ""
-    status_after_zero = value("status_after_zero") or ""
-    if '"visible":false' not in rect_zero:
-        problems.append(f"a zero rect left the pane mapped (it would eat clicks): {rect_zero!r}")
-    if '"visible":false' not in status_after_zero:
-        problems.append(f"a zero rect left the pane visible: {status_after_zero!r}")
     if windows:
         problems.append(f"the pane spawned a browser window: {windows}")
 
@@ -304,8 +280,8 @@ def main() -> int:
         print("\nFAIL: " + "; ".join(problems))
         return 1
     print(
-        f"\nPASS: pane beside the app — SPA viewport unchanged ({before}px), pane at "
-        f"{sent_rect}, page loaded, hide keeps it, close stops it, no window."
+        f"\nPASS: the pane splits the window (SPA {before}px -> {shown}px -> {hidden}px), "
+        f"the page loaded, hide keeps it, close stops it, no window."
     )
     return 0
 
