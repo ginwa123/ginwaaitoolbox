@@ -70,6 +70,8 @@ import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
+import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
+import { useChatRightSidebar } from './chat_right_sidebar/useChatRightSidebar'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
 import type { AgentErrorEntry } from '../../stores/agentError'
@@ -455,6 +457,18 @@ const PAGE_SIZE = 100
 //      the main chat view to the sub-agent's session.
 const nav = useNavigationStore()
 const router = useRouter()
+
+// Chat-owned git-diff sidebar (git-diff-only scope). ChatView passes
+// its already-owned effectiveCwd + sessionId down, so each chat shows
+// its own working tree without AppLayout-level cwd plumbing. Hidden in
+// embedded/peek mode — the peek panel owns the right edge there.
+const chatSidebar = useChatRightSidebar(props.type ?? 'chat')
+const chatSidebarRef = ref<InstanceType<typeof ChatRightSidebar> | null>(null)
+
+async function onChatSidebarSubmitReview(message: string) {
+  if (!sessionId.value || !effectiveCwd.value) return
+  await api.sendChatMessage(sessionId.value, message, effectiveCwd.value)
+}
 
 // 2026-09-04 subagent-peek P1 fix: the peek lifecycle lives in
 // SubAgentPeekHost (setup scope, keyed by sessionId). Never call
@@ -3031,6 +3045,18 @@ const compactSession = async () => {
           {{ chatName }}
         </span>
         <button
+          v-if="!embedded"
+          type="button"
+          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
+          style="color: var(--semantic-text-dim)"
+          title="Toggle changes sidebar (Cmd/Ctrl+B)"
+          aria-label="Toggle changes sidebar"
+          :data-testid="`chat-sidebar-toggle-${chatId}`"
+          @click="chatSidebar.toggle()"
+        >
+          ◫
+        </button>
+        <button
           type="button"
           class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
           style="color: var(--semantic-text-dim);"
@@ -3054,6 +3080,19 @@ const compactSession = async () => {
         "no scroll, bubbles overlap input" bug.
       -->
       <div ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
+        <!-- Changes-sidebar toggle for the headerless standalone layout
+             (the kanban layout has its toggle button in the header above). -->
+        <button
+          v-if="!showHeader && !embedded && !chatSidebar.isOpen.value"
+          type="button"
+          class="absolute top-2 right-2 z-10 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
+          style="color: var(--semantic-text-dim); background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          title="Show changes sidebar (Cmd/Ctrl+B)"
+          aria-label="Show changes sidebar"
+          @click="chatSidebar.open()"
+        >
+          ◫
+        </button>
         <!-- Loading More indicator (floats above the scroller during pagination) -->
         <!-- temporary disable -->
         <!-- <div -->
@@ -3933,6 +3972,23 @@ const compactSession = async () => {
         </div>
       </div>
     </div>
+
+    <!-- Chat-owned git-diff sidebar. Mounted beside (not inside) the
+         main chat column so messages keep their flex-1 min-w-0 layout.
+         Hidden in embedded/peek mode — the peek panel owns the right
+         edge there. -->
+    <ChatRightSidebar
+      v-if="!embedded"
+      ref="chatSidebarRef"
+      :cwd="effectiveCwd"
+      :open="chatSidebar.isOpen.value"
+      :width="chatSidebar.width.value"
+      :min-width="chatSidebar.MIN_WIDTH"
+      :max-width="chatSidebar.MAX_WIDTH"
+      @update:open="(v) => (v ? chatSidebar.open() : chatSidebar.close())"
+      @update:width="(w) => chatSidebar.setWidth(w)"
+      @submit-review="onChatSidebarSubmitReview"
+    />
 
     <!-- Skills Popup Modal -->
     <SkillsPopup

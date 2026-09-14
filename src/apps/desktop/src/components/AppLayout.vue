@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onUnmounted, watch, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Sidebar from './shell/Sidebar.vue'
-// DISABLED: import RightSidebar from './shell/RightSidebar.vue'   // 2026-06-29 — task disable-rightsidebar-vue
 import GitFileViewer from './git/GitFileViewer.vue'
 import SkillDetail from './shell/SkillDetail.vue'
 import ChatView from './views/ChatView.vue'
@@ -553,36 +552,6 @@ const handleNavigate = (
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-const _handleRightSidebarFileClick = (file: api.GitFileChange, staged: boolean) => {
-  console.log('[_handleRightSidebarFileClick] file:', file.path, 'staged:', staged)
-  // Clear other overlays to prevent priority conflicts
-  skillViewerSkill.value = null
-  codeEditorFile.value = null
-  codeEditorContent.value = ''
-  codeEditorError.value = null
-
-  // Store file info first (synchronously)
-  gitViewerFile.value = file
-  gitViewerStaged.value = staged
-  console.log(
-    '[_handleRightSidebarFileClick] gitViewerFile.value after set:',
-    gitViewerFile.value?.path,
-  )
-
-  // Encode the file path for URL (base64 to handle special chars)
-  const encodedPath = btoa(file.path)
-  router.replace({
-    path: '/app',
-    query: {
-      view: 'gitfile',
-      file: encodedPath,
-      staged: staged ? '1' : '0',
-      cwd: rightSidebarCwd.value,
-    },
-  })
-}
-
 const closeGitViewer = () => {
   gitViewerFile.value = null
   gitViewerStaged.value = false
@@ -631,45 +600,6 @@ const closeGitViewer = () => {
 
 // Skill viewer state
 const skillViewerSkill = ref<api.Skill | null>(null)
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-const _handleRightSidebarSkillClick = (skill: api.Skill) => {
-  console.log('[_handleRightSidebarSkillClick] skill:', skill.name)
-  // Clear other overlays to prevent priority conflicts
-  gitViewerFile.value = null
-  gitViewerStaged.value = false
-  skillViewerSkill.value = skill
-  console.log(
-    '[_handleRightSidebarSkillClick] skillViewerSkill.value after set:',
-    skillViewerSkill.value?.name,
-  )
-
-  console.log('[_handleRightSidebarSkillClick] current route:', route.fullPath)
-  console.log('[_handleRightSidebarSkillClick] activeChatId:', activeChatId.value)
-  console.log('[_handleRightSidebarSkillClick] activeTask:', activeTask.value)
-
-  // Navigate to skill view
-  router.replace({
-    path: '/app',
-    query: {
-      view: 'skill',
-      skill: skill.name,
-    },
-  })
-
-  // Check state after route change
-  setTimeout(() => {
-    console.log(
-      '[_handleRightSidebarSkillClick] AFTER route change - skillViewerSkill:',
-      skillViewerSkill.value?.name,
-    )
-    console.log('[_handleRightSidebarSkillClick] AFTER route change - route:', route.fullPath)
-    console.log(
-      '[_handleRightSidebarSkillClick] AFTER route change - currentView:',
-      currentView.value,
-    )
-  }, 100)
-}
 
 const closeSkillViewer = () => {
   skillViewerSkill.value = null
@@ -2900,17 +2830,6 @@ defineExpose({
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
 
-    <!-- Right Sidebar (Explorer + Git tabs) — DISABLED 2026-06-29 (task disable-rightsidebar-vue)
-    <RightSidebar
-      v-if="rightSidebarCwd"
-      :cwd="rightSidebarCwd"
-      :width="rightSidebarWidth"
-      @file-click="_handleRightSidebarFileClick"
-      @skill-click="_handleRightSidebarSkillClick"
-      @code-editor-file-click="_handleCodeEditorFileClick"
-      @resize="handleRightSidebarResize"
-    />
-    -->
 
     <!-- Global error notification stack -->
     <NotificationContainer />
