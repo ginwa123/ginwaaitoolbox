@@ -470,6 +470,39 @@ async function onChatSidebarSubmitReview(message: string) {
   await api.sendChatMessage(sessionId.value, message, effectiveCwd.value)
 }
 
+// Re-read the session's worktree binding from the backend. The binding
+// is created/removed mid-chat by the LLM's set_git_worktree tool, so
+// the mount-time value from loadChatHistory() goes stale — the sidebar
+// (and git chip) would keep showing the session's original cwd (e.g.
+// main) instead of the bound worktree. limit=1 keeps it cheap: we only
+// need the session-level fields, not messages.
+async function refreshWorktreeBinding() {
+  if (!sessionId.value || isPendingSession.value) return
+  try {
+    const data = await api.getChatHistory(sessionId.value, 1)
+    if (data.git_worktree_cwd !== undefined) gitWorktreeCwd.value = data.git_worktree_cwd
+    if (data.cwd) sessionCwd.value = data.cwd
+  } catch (err) {
+    console.warn('[ChatView] worktree binding refresh failed:', err)
+  }
+}
+
+// SSE hook: a completed set_git_worktree tool call means the binding
+// just changed (bound or cleared) — re-sync so effectiveCwd (and the
+// sidebar's cwd prop) follows the worktree immediately.
+function maybeRefreshWorktreeBinding(role: string, toolName?: string) {
+  if (role === 'tool' && toolName === 'set_git_worktree') void refreshWorktreeBinding()
+}
+
+async function onChatSidebarRefresh() {
+  // Sidebar ↻ clicked: re-sync the binding FIRST (it may have changed
+  // since mount), then reload the panel. The panel's cwd watcher
+  // reloads automatically when the binding actually changed; the
+  // explicit refresh covers the unchanged-cwd case.
+  await refreshWorktreeBinding()
+  chatSidebarRef.value?.refresh()
+}
+
 // 2026-09-04 subagent-peek P1 fix: the peek lifecycle lives in
 // SubAgentPeekHost (setup scope, keyed by sessionId). Never call
 // useSubAgentPeek inside a computed — lifecycle hooks registered during
@@ -2486,6 +2519,7 @@ const connectSse = () => {
           // Scoped by the event.session_id !== sid filter at handler entry.
           if (Array.isArray(event.session_skills))
             sessionSkills.value = event.session_skills as api.SkillInfo[]
+          maybeRefreshWorktreeBinding(role, event.tool_name)
           return
         }
       }
@@ -2616,6 +2650,7 @@ const connectSse = () => {
       // Scoped by the event.session_id !== sid filter at handler entry.
       if (Array.isArray(event.session_skills))
         sessionSkills.value = event.session_skills as api.SkillInfo[]
+      maybeRefreshWorktreeBinding(role, event.tool_name)
 
       return
     }
@@ -3988,6 +4023,7 @@ const compactSession = async () => {
       @update:open="(v) => (v ? chatSidebar.open() : chatSidebar.close())"
       @update:width="(w) => chatSidebar.setWidth(w)"
       @submit-review="onChatSidebarSubmitReview"
+      @refresh="onChatSidebarRefresh"
     />
 
     <!-- Skills Popup Modal -->
