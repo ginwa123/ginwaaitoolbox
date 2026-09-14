@@ -44,7 +44,7 @@ describe('ChatsList — right-click context menu', () => {
     } as any)
   })
 
-  it('right-click opens menu with Open in new tab, click opens a real browser tab', async () => {
+  it('right-click opens menu with Open chat in new tab, click opens a real browser tab', async () => {
     const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
     const wrapper = mount(ChatsList, {
       attachTo: document.body,
@@ -60,7 +60,7 @@ describe('ChatsList — right-click context menu', () => {
     const menu = document.body.querySelector('[data-testid="open-new-tab-menu"]')
     expect(menu).toBeTruthy()
     const item = document.body.querySelector('[data-testid="open-new-tab-item"]') as HTMLButtonElement
-    expect(item?.textContent).toContain('Open in new tab')
+    expect(item?.textContent).toContain('Open chat in new tab')
     expect(item?.querySelector('span[aria-hidden="true"]')).toBeTruthy()
     item.click()
     await nextTick()

@@ -58,7 +58,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanSearchInput from './KanbanSearchInput.vue'
-import KanbanTaskDetailDialog from './KanbanTaskDetailDialog.vue'
+import KanbanTaskDetail from './KanbanTaskDetail.vue'
 import { buildTaskCreateMessage } from './buildTaskCreateMessage'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -321,6 +321,7 @@ const emit = defineEmits<{
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
   openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
+  openTaskDetailInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
@@ -682,17 +683,119 @@ const activeTaskDetailColumn = computed<KanbanColumnType | null>(() => {
 const handleViewTaskDetail = (taskId: string) => {
   activeTaskDetailId.value = taskId
   showTaskDetail.value = true
-  // Refetch the task list so the dialog shows server-truth on open.
-  // The KanbanTaskDetailDialog reads props.task.is_auto_retry_until_stop
+  // Deep-link the inline panel so "Open details in new tab" +
+  // refresh/share round-trip. Preserves existing query (sorts etc).
+  try {
+    void router.replace({ query: { ...route.query, detail: taskId } })
+  } catch {
+    // Router may be absent in unit tests — panel still opens locally.
+  }
+  // Refetch the task list so the panel shows server-truth on open.
+  // The KanbanTaskDetail reads props.task.is_auto_retry_until_stop
   // to render the unattended-mode toggle, and that field can drift
   // out of sync across clients (e.g. another nalar instance
   // toggled the flag, or a sub-agent PUT ran unattended on a
   // shared session). The workspaces store re-fetches the whole
   // task list for the parent item, plucks this task, and patches
   // the cached copy in place. Best-effort — a failure is logged
-  // and the dialog still opens with the cached value.
+  // and the panel still opens with the cached value.
   void workspacesStore.refreshTask(props.workspaceId, props.itemId || props.item.id, taskId)
 }
+
+// Copy the current URL query as a flat string map (dropping
+// non-string values) so it satisfies vue-router's LocationQueryRaw.
+const flatQuery = (): Record<string, string> => {
+  const out: Record<string, string> = {}
+  let src: Record<string, unknown> = {}
+  try {
+    src = (route.query as Record<string, unknown> | undefined) ?? {}
+  } catch {
+    src = {}
+  }
+  for (const [k, v] of Object.entries(src)) {
+    if (typeof v === 'string') out[k] = v
+    else if (Array.isArray(v)) {
+      const first = v.find((x): x is string => typeof x === 'string')
+      if (first !== undefined) out[k] = first
+    }
+  }
+  return out
+}
+
+// Close the inline detail panel + drop the ?detail= param so the
+// URL reflects the board-only state. Used by save-success,
+// start-agent-success, and the panel's close/cancel affordance.
+const closeTaskDetail = () => {
+  showTaskDetail.value = false
+  activeTaskDetailId.value = null
+  try {
+    const next = flatQuery()
+    delete next.detail
+    void router.replace({ query: next })
+  } catch {
+    // Router may be absent in unit tests — local state already cleared.
+  }
+}
+
+// Open the inline panel when the URL carries ?detail=<taskId>
+// (deep-link from "Open details in new tab", refresh, or shared
+// link). Runs on mount + whenever the query changes while this
+// kanban stays mounted. Unknown ids are ignored so a stale link
+// renders the plain board instead of an empty panel.
+const openDetailFromRoute = () => {
+  let detailId: string | null = null
+  try {
+    const raw = (route.query as Record<string, unknown> | undefined)?.detail
+    detailId = typeof raw === 'string' && raw.trim() !== '' ? raw : null
+  } catch {
+    detailId = null
+  }
+  if (!detailId) return
+  if (activeTaskDetailId.value === detailId && showTaskDetail.value) return
+  const exists = (props.item.tasks ?? []).some((t) => t.id === detailId)
+  if (!exists) return
+  activeTaskDetailId.value = detailId
+  showTaskDetail.value = true
+  void workspacesStore.refreshTask(props.workspaceId, props.itemId || props.item.id, detailId)
+}
+
+onMounted(() => {
+  openDetailFromRoute()
+})
+
+watch(
+  () => {
+    try {
+      return (route.query as Record<string, unknown> | undefined)?.detail
+    } catch {
+      return undefined
+    }
+  },
+  () => {
+    openDetailFromRoute()
+  },
+)
+
+// When the panel closes via v-model (X / Cancel / Esc inside the
+// panel), also drop the ?detail= param so the URL stays truthful.
+watch(showTaskDetail, (open) => {
+  if (open) return
+  try {
+    const raw = (route.query as Record<string, unknown> | undefined)?.detail
+    if (typeof raw === 'string' && raw !== '') {
+      const next = flatQuery()
+      delete next.detail
+      void router.replace({ query: next })
+    }
+  } catch {
+    // Router absent in tests — nothing to sync.
+  }
+  if (activeTaskDetailId.value !== null && !open) {
+    // Keep the id clear so a re-open always goes through
+    // handleViewTaskDetail's refresh path.
+    activeTaskDetailId.value = null
+  }
+})
 
 // Dialog save handler — delegates to the store action which runs the
 // optimistic update + API call + rollback-on-error. We close the
@@ -711,8 +814,7 @@ const handleTaskDetailSave = async (payload: {
       activeTaskDetailId.value,
       payload,
     )
-    showTaskDetail.value = false
-    activeTaskDetailId.value = null
+    closeTaskDetail()
   } catch (err) {
     console.error('Failed to save task details:', err)
     // Keep the dialog open so the user can retry / fix
@@ -741,11 +843,10 @@ const handleStartAgent = async (payload: { taskId: string }) => {
       payload.taskId,
     )
     if (result && result.success && result.status === 'triggered') {
-      // Background worker started successfully. Close the dialog
+      // Background worker started successfully. Close the panel
       // and stay on the kanban — the user can click the task card
       // to open the chat view if they want to watch the agent work.
-      showTaskDetail.value = false
-      activeTaskDetailId.value = null
+      closeTaskDetail()
     } else if (result && result.success === false) {
       startAgentError.value = "Agent didn't start — server reported failure."
     } else if (result === undefined) {
@@ -1074,8 +1175,13 @@ const handleCreateTaskSave = async (payload: {
 </script>
 
 <template>
+  <div
+    class="kanban-view-wrap flex flex-row h-full min-h-0"
+    :data-kanban-item-id="item.id"
+    data-kanban-host-wrap
+  >
   <section
-    class="kanban-view flex flex-col h-full min-h-0"
+    class="kanban-view flex flex-col flex-1 min-w-0 h-full min-h-0"
     :data-kanban-item-id="item.id"
     :data-kanban-view="item.id"
     data-kanban-host
@@ -1274,6 +1380,7 @@ const handleCreateTaskSave = async (payload: {
           :run-all-busy="!!runAllBusyByColumn[column.id]"
           @select-task="(id) => emit('selectTask', id)"
           @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
+          @open-task-detail-in-background="(payload) => emit('openTaskDetailInBackground', payload)"
           @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
           @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
@@ -1283,6 +1390,48 @@ const handleCreateTaskSave = async (payload: {
       </div>
     </div>
   </section>
+  <!--
+    Inline task-detail side panel (replaces the former
+    KanbanTaskDetailDialog modal). Renders next to the board so
+    the columns stay visible while the user edits. Edit + create
+    are mutually exclusive — only one panel shows at a time.
+  -->
+  <aside
+    v-if="showTaskDetail || showCreateDialog"
+    class="kanban-detail-panel w-[420px] max-w-[42vw] shrink-0 min-h-0 overflow-y-auto p-3"
+    style="border-left: 1px solid var(--color-border); background-color: var(--semantic-sidebar-bg);"
+    data-testid="kanban-detail-panel"
+  >
+    <KanbanTaskDetail
+      v-if="showTaskDetail"
+      v-model:show="showTaskDetail"
+      :task="activeTaskDetail"
+      :column="activeTaskDetailColumn"
+      :cwd="item.path || ''"
+      :workspace-id="workspaceId"
+      :error-message="startAgentError"
+      @save="handleTaskDetailSave"
+      @update-unattended="handleUnattendedToggle"
+      @update-cwd="handleUpdateCwd"
+      @start-agent="handleStartAgent"
+    />
+    <KanbanTaskDetail
+      v-if="showCreateDialog"
+      v-model:show="showCreateDialog"
+      mode="create"
+      :task="null"
+      :column="activeCreateColumn"
+      :available-columns="sortedColumns"
+      :cwd="item.path || ''"
+      :workspace-id="workspaceId"
+      :error-message="createError"
+      :creating="createBusy"
+      @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
+      @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
+      @column-change="(columnId) => (activeCreateColumnId = columnId)"
+    />
+  </aside>
+  </div>
   <!--
     FilePickerDialog for the "Set project root" banner. Mounted at the
     bottom of the template so it sits in the same Teleport target as
@@ -1302,47 +1451,6 @@ const handleCreateTaskSave = async (payload: {
     :enable-recent-history="true"
     title="Select Project Root for this Kanban"
     @select="handleProjectRootSelected"
-  />
-  <!--
-    KanbanTaskDetailDialog (kanban-task-detail-dialog feature). Mounted
-    at the kanban level (not in AppLayout) because resolving the
-    matching column for the active task needs the kanban's column list
-    that's already in scope here. The dialog itself teleports its DOM
-    to <body> internally; this mount only controls its v-model:show.
-  -->
-  <KanbanTaskDetailDialog
-    v-model:show="showTaskDetail"
-    :task="activeTaskDetail"
-    :column="activeTaskDetailColumn"
-    :cwd="item.path || ''"
-    :workspace-id="workspaceId"
-    :error-message="startAgentError"
-    @save="handleTaskDetailSave"
-    @update-unattended="handleUnattendedToggle"
-    @update-cwd="handleUpdateCwd"
-    @start-agent="handleStartAgent"
-  />
-  <!--
-    Second KanbanTaskDetailDialog mount for the "+ Add" → create flow.
-    Same component, mode="create" + task=null makes it render the
-    blank form with a "New task" header and "Create task" button.
-    errorMessage is bound to `createError` so a failed create shows
-    a red banner inside the dialog (the dialog stays open so the user
-    can retry without re-typing the name + description).
-  -->
-  <KanbanTaskDetailDialog
-    v-model:show="showCreateDialog"
-    mode="create"
-    :task="null"
-    :column="activeCreateColumn"
-    :available-columns="sortedColumns"
-    :cwd="item.path || ''"
-    :workspace-id="workspaceId"
-    :error-message="createError"
-    :creating="createBusy"
-    @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
-    @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
-    @column-change="(columnId) => (activeCreateColumnId = columnId)"
   />
 </template>
 

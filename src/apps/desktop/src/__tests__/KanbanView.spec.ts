@@ -56,7 +56,12 @@ function mountView(
   workspaceId = WS_ID,
 ) {
   const processingState: Ref<Record<string, boolean>> = ref({})
+  // attachTo: document.body — the detail panel is INLINE (no
+  // Teleport since the Dialog → Detail refactor), so
+  // document.querySelector only sees it when the mount is attached.
+  document.body.innerHTML = ''
   return mount(KanbanView, {
+    attachTo: document.body,
     props: { item, workspaceId },
     global: {
       provide: { processingState },

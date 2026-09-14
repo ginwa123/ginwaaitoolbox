@@ -1780,6 +1780,33 @@ const handleKanbanOpenTaskInBackground = (payload: {
   openInNewTab(router, { path: '/app', query })
 }
 
+// Right-click "Open details in new tab" on a kanban card. Builds
+// the BOARD url (no /chat/ suffix) + ?detail=<taskId> so the new
+// tab loads the kanban with the inline detail panel pre-opened.
+// Preserves sorts/pageId breadcrumb via currentQuery.
+const handleKanbanOpenTaskDetailInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  taskId: string
+}) => {
+  const wsId =
+    payload.workspaceId || activeWorkspace?.value?.id || (route.query.workspaceId as string) || ''
+  const bareItemId =
+    payload.itemId || (route.query.itemId as string) || activeWorkspaceItem?.value?.id || ''
+  const query: Record<string, string> = { view: 'workspace' }
+  if (wsId) query.workspaceId = wsId
+  if (bareItemId) {
+    // Strip any existing /chat/ suffix — the detail tab is the
+    // board, not the chat.
+    const bare = bareItemId.split('/chat/')[0] ?? bareItemId
+    query.itemId = bare
+  }
+  const sorts = route.query.sorts
+  if (typeof sorts === 'string' && sorts !== '') query.sorts = sorts
+  query.detail = payload.taskId
+  openInNewTab(router, { path: '/app', query })
+}
+
 const handleKanbanDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
   sidebarRef.value?.deleteTask(workspaceId, itemId, taskId)
 }
@@ -2537,6 +2564,7 @@ defineExpose({
         @request-delete-column="handleKanbanRequestDeleteColumn"
         @select-task="handleKanbanSelectTask"
         @open-task-in-background="handleKanbanOpenTaskInBackground"
+        @open-task-detail-in-background="handleKanbanOpenTaskDetailInBackground"
         @delete-task="handleKanbanDeleteTask"
         @rename-task="handleKanbanRenameTask"
         @pin-task="handleKanbanPinTask"

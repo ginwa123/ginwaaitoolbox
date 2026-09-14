@@ -1,18 +1,26 @@
 <script setup lang="ts">
 /**
- * Shared right-click menu with a single "Open in new tab" item.
+ * Shared right-click menu for kanban task cards.
  * Teleported to body so overflow ancestors (virtual scrollers,
  * kanban columns) never clip it. Hosts own the payload and wire
- * `@open` to their window.open call; visibility is `v-if` on the
- * host's menu state.
+ * `@open` (chat) + `@open-details` (task detail) to their
+ * window.open calls; visibility is `v-if` on the host's menu state.
+ *
+ * The details item is opt-in via `showDetails` so sidebar rows
+ * (WorkspaceItemTaskRow) keep the single chat item while kanban
+ * cards (WorkspaceItemTaskCard) offer both.
  */
 defineProps<{
   x: number
   y: number
+  showDetails?: boolean
+  showStop?: boolean
 }>()
 
 const emit = defineEmits<{
   open: []
+  openDetails: []
+  stop: []
 }>()
 </script>
 
@@ -38,7 +46,28 @@ const emit = defineEmits<{
         class="block w-full text-left px-3 py-1.5 hover:opacity-80"
         @click="emit('open')"
       >
-        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open in new tab
+        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open chat in new tab
+      </button>
+      <button
+        v-if="showDetails"
+        type="button"
+        role="menuitem"
+        data-testid="open-details-new-tab-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="emit('openDetails')"
+      >
+        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open details in new tab
+      </button>
+      <button
+        v-if="showStop"
+        type="button"
+        role="menuitem"
+        data-testid="stop-agent-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        style="color: var(--color-red);"
+        @click="emit('stop')"
+      >
+        <span aria-hidden="true" class="mr-2 opacity-70">&#9632;</span>Stop agent
       </button>
     </div>
   </Teleport>
