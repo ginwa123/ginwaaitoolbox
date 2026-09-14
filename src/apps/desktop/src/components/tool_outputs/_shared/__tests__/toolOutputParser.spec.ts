@@ -30,6 +30,10 @@ import {
   parseGenerateImage,
   parseListDirectory,
   parseWriteFile,
+  parsePresentFiles,
+  isPreviewableImage,
+  basenameOfPath,
+  formatBytes,
 } from '../toolOutputParser'
 
 describe('extractTag', () => {
@@ -37,9 +41,7 @@ describe('extractTag', () => {
     expect(extractTag('<path>/foo/bar</path>', 'path')).toBe('/foo/bar')
   })
   it('returns inner text for multiline tags (default)', () => {
-    expect(extractTag('<content>\nfoo\nbar\n</content>', 'content')).toBe(
-      '\nfoo\nbar\n',
-    )
+    expect(extractTag('<content>\nfoo\nbar\n</content>', 'content')).toBe('\nfoo\nbar\n')
   })
   it('returns null for missing tag', () => {
     expect(extractTag('<path>/x</path>', 'other')).toBeNull()
@@ -48,9 +50,9 @@ describe('extractTag', () => {
     expect(extractTag('<path>/x', 'path')).toBeNull()
   })
   it('handles content with HTML-like chars inside the tag', () => {
-    expect(
-      extractTag('<content>if (a < b && c > d) { x = 1 }</content>', 'content'),
-    ).toBe('if (a < b && c > d) { x = 1 }')
+    expect(extractTag('<content>if (a < b && c > d) { x = 1 }</content>', 'content')).toBe(
+      'if (a < b && c > d) { x = 1 }',
+    )
   })
   it('decodes XML entities in inner text (&lt;, &gt;, &quot;, &apos;, &amp;)', () => {
     // The backend's `toXmlSuccess` / `xmlError` helpers escape these 5
@@ -61,10 +63,7 @@ describe('extractTag', () => {
     // diff). This test pins the un-escape contract so the
     // `&quot;`-instead-of-`"` rendering bug doesn't regress.
     expect(
-      extractTag(
-        '<before>const x = &quot;hello &amp; world &lt;3&quot;;</before>',
-        'before',
-      ),
+      extractTag('<before>const x = &quot;hello &amp; world &lt;3&quot;;</before>', 'before'),
     ).toBe('const x = "hello & world <3";')
     expect(extractTag('<a>&lt;tag&gt;</a>', 'a')).toBe('<tag>')
     expect(extractTag('<a>it&apos;s fine</a>', 'a')).toBe("it's fine")
@@ -140,7 +139,9 @@ describe('parseTextReplace', () => {
   })
   it('extracts the unified diff when present', () => {
     const unified = '--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new'
-    const r = parseTextReplace(`<success>true</success><path>/x</path><unified>${unified}</unified>`)
+    const r = parseTextReplace(
+      `<success>true</success><path>/x</path><unified>${unified}</unified>`,
+    )
     expect(r.unified).toBe(unified)
   })
 })
@@ -185,16 +186,12 @@ describe('parseWriteFile', () => {
 
 describe('parseRemoveFile', () => {
   it('parses deleted=true', () => {
-    const r = parseRemoveFile(
-      '<path>/x</path><deleted>true</deleted>',
-    )
+    const r = parseRemoveFile('<path>/x</path><deleted>true</deleted>')
     expect(r.deleted).toBe(true)
     expect(r.success).toBe(true)
   })
   it('parses recursive flag', () => {
-    const r = parseRemoveFile(
-      '<path>/x</path><deleted>true</deleted><recursive>true</recursive>',
-    )
+    const r = parseRemoveFile('<path>/x</path><deleted>true</deleted><recursive>true</recursive>')
     expect(r.recursive).toBe(true)
   })
   it('handles failure', () => {
@@ -227,9 +224,7 @@ describe('parseAddSkill', () => {
 
 describe('parseRemoveSkill', () => {
   it('parses <skill_name> and removed', () => {
-    const r = parseRemoveSkill(
-      '<skill_name>foo</skill_name><removed>true</removed><path>/x</path>',
-    )
+    const r = parseRemoveSkill('<skill_name>foo</skill_name><removed>true</removed><path>/x</path>')
     expect(r.skillName).toBe('foo')
     expect(r.removed).toBe(true)
   })
@@ -401,11 +396,9 @@ describe('parseGenerateImage', () => {
   })
   it('returns the error message and null fields on error', () => {
     const r = parseGenerateImage(
-      '<generate_image><error>HTTP 400: size \'512x512\' is not valid for model \'dall-e-3\'.</error></generate_image>',
+      "<generate_image><error>HTTP 400: size '512x512' is not valid for model 'dall-e-3'.</error></generate_image>",
     )
-    expect(r.error).toBe(
-      "HTTP 400: size '512x512' is not valid for model 'dall-e-3'.",
-    )
+    expect(r.error).toBe("HTTP 400: size '512x512' is not valid for model 'dall-e-3'.")
     expect(r.status).toBeNull()
     expect(r.images).toEqual([])
     expect(r.count).toBeNull()
@@ -595,7 +588,7 @@ describe('parseCommand', () => {
     expect(parseShell('command', envelope)).toEqual(parseBash(envelope))
   })
 
-  it("parseShell still dispatches legacy names (bash/pwsh/run_command)", () => {
+  it('parseShell still dispatches legacy names (bash/pwsh/run_command)', () => {
     expect(parseShell('bash', envelope)).toEqual(parseBash(envelope))
     expect(parseShell('pwsh', envelope)).toEqual(parseBash(envelope))
     expect(parseShell('run_command', envelope)).toEqual(parseBash(envelope))
@@ -642,5 +635,77 @@ describe('parseMcp', () => {
     const r = parseMcp('mcp_db_query', envelope)
     expect(r.success).toBe(true)
     expect(r.output).toBe('row1')
+  })
+})
+describe('parsePresentFiles', () => {
+  it('parses a txt + jpg success envelope', () => {
+    const r = parsePresentFiles(
+      '<present_files>' +
+        '<status>presented</status>' +
+        '<count>2</count>' +
+        '<files>' +
+        '<file path="/tmp/notes.txt" bytes="11" mime="text/plain; charset=utf-8" label="notes"/>' +
+        '<file path="/tmp/photo.jpg" bytes="48211" mime="image/jpeg" label="photo.jpg"/>' +
+        '</files>' +
+        '</present_files>',
+    )
+    expect(r.error).toBeNull()
+    expect(r.status).toBe('presented')
+    expect(r.count).toBe(2)
+    expect(r.files).toHaveLength(2)
+    expect(r.files[0]).toMatchObject({
+      path: '/tmp/notes.txt',
+      bytes: 11,
+      mime: 'text/plain; charset=utf-8',
+      label: 'notes',
+    })
+    expect(r.files[1]).toMatchObject({
+      path: '/tmp/photo.jpg',
+      bytes: 48211,
+      mime: 'image/jpeg',
+      label: 'photo.jpg',
+    })
+  })
+  it('returns the error message and empty files on error', () => {
+    const r = parsePresentFiles(
+      '<present_files><error>present_files: file not found (or is a directory): "/tmp/nope.txt".</error></present_files>',
+    )
+    expect(r.error).toContain('file not found')
+    expect(r.status).toBeNull()
+    expect(r.files).toEqual([])
+    expect(r.count).toBeNull()
+  })
+  it('handles empty content gracefully', () => {
+    const r = parsePresentFiles('')
+    expect(r.error).toBeNull()
+    expect(r.status).toBeNull()
+    expect(r.files).toEqual([])
+  })
+  it('unescapes XML entities in attribute values', () => {
+    const r = parsePresentFiles(
+      '<present_files><status>presented</status><count>1</count><files>' +
+        '<file path="/tmp/a&amp;b.txt" bytes="3" mime="text/plain; charset=utf-8" label="a&amp;b"/>' +
+        '</files></present_files>',
+    )
+    expect(r.files[0]?.path).toBe('/tmp/a&b.txt')
+    expect(r.files[0]?.label).toBe('a&b')
+  })
+})
+
+describe('present files helpers', () => {
+  it('isPreviewableImage matches image/* case-insensitively', () => {
+    expect(isPreviewableImage('image/jpeg')).toBe(true)
+    expect(isPreviewableImage('IMAGE/PNG')).toBe(true)
+    expect(isPreviewableImage('text/plain; charset=utf-8')).toBe(false)
+    expect(isPreviewableImage('application/pdf')).toBe(false)
+  })
+  it('basenameOfPath takes the last segment', () => {
+    expect(basenameOfPath('/a/b/c.jpg')).toBe('c.jpg')
+    expect(basenameOfPath('c.jpg')).toBe('c.jpg')
+  })
+  it('formatBytes renders B/KB/MB', () => {
+    expect(formatBytes(11)).toBe('11 B')
+    expect(formatBytes(48211)).toBe('47.1 KB')
+    expect(formatBytes(50 * 1024 * 1024)).toBe('50.0 MB')
   })
 })

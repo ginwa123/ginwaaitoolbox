@@ -28,7 +28,11 @@ import FileInput from '../file/FileInput.vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
-import { isBackgroundCommandOutput, parseBackgroundCommandOutput, backgroundToShellXml } from '@/helpers/isBackgroundCommandOutput'
+import {
+  isBackgroundCommandOutput,
+  parseBackgroundCommandOutput,
+  backgroundToShellXml,
+} from '@/helpers/isBackgroundCommandOutput'
 import {
   applyProgressEvent,
   applySnapshotRows,
@@ -66,6 +70,7 @@ import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
 import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
 import ShowPreview from '../tool_outputs/ShowPreview.vue'
+import PresentFiles from '../tool_outputs/PresentFiles.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
@@ -167,9 +172,9 @@ interface Message {
    * `unwrappedByMessageId`. Used by `ShowPreview` to render
    * rich previews without re-fetching.
    */
-  parameters?: string,
-  is_input?: boolean,
-  is_output?: boolean,
+  parameters?: string
+  is_input?: boolean
+  is_output?: boolean
   /**
    * 2026-08-23 hidden-messages fix — thinking models' chain-of-thought
    * returned by the LLM and stored in `llm_history.reasoning_content`.
@@ -177,7 +182,7 @@ interface Message {
    * Rendered as a collapsible section in the assistant bubble; also
    * keeps reasoning-only turns alive in filteredMessages.
    */
-  reasoning_content?: string,
+  reasoning_content?: string
 }
 
 // Copy code content to clipboard
@@ -679,13 +684,27 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
         ...ctx,
         caller: 'onContentShift',
         origin: 'programmatic',
-        extra: { delta, lastObservedScrollHeight: newScrollHeight, skipped: 'user-scrolled-up', isAtBottom: isAtBottom.value, distanceFromBottom: ctx.distanceFromBottom, scrollTop: ctx.scrollTop },
+        extra: {
+          delta,
+          lastObservedScrollHeight: newScrollHeight,
+          skipped: 'user-scrolled-up',
+          isAtBottom: isAtBottom.value,
+          distanceFromBottom: ctx.distanceFromBottom,
+          scrollTop: ctx.scrollTop,
+        },
       })
       scrollLogger.info({
         ...ctx,
         caller: 'onContentShift',
         reason: 'spacer-resize-skip',
-        extra: { delta, lastObservedScrollHeight: newScrollHeight, isAtBottom: isAtBottom.value, distanceFromBottom: ctx.distanceFromBottom, scrollTop: ctx.scrollTop, shift },
+        extra: {
+          delta,
+          lastObservedScrollHeight: newScrollHeight,
+          isAtBottom: isAtBottom.value,
+          distanceFromBottom: ctx.distanceFromBottom,
+          scrollTop: ctx.scrollTop,
+          shift,
+        },
       })
       return
     }
@@ -713,7 +732,15 @@ const onContentShift = (shift: { topSpacer: number; bottomSpacer: number; total:
       ...ctx,
       caller: 'onContentShift',
       reason: 'spacer-resize-stick',
-      extra: { delta, lastObservedScrollHeight: newScrollHeight, isAtBottom: isAtBottom.value, distanceFromBottom: ctx.distanceFromBottom, scrollTop: ctx.scrollTop, shift, willStick: true },
+      extra: {
+        delta,
+        lastObservedScrollHeight: newScrollHeight,
+        isAtBottom: isAtBottom.value,
+        distanceFromBottom: ctx.distanceFromBottom,
+        scrollTop: ctx.scrollTop,
+        shift,
+        willStick: true,
+      },
     })
   })
 }
@@ -1172,7 +1199,8 @@ interface MessageGroup {
  * describing the wrong rows → phantom gaps → blank stick-to-bottom).
  * The first message's DB id is stable across regrouping.
  */
-const groupKey = (group: MessageGroup): string => group.messages[0]?.id ?? `empty-${group.timestamp.getTime()}`
+const groupKey = (group: MessageGroup): string =>
+  group.messages[0]?.id ?? `empty-${group.timestamp.getTime()}`
 
 const messageGroups = computed((): MessageGroup[] => {
   const groups: MessageGroup[] = []
@@ -1311,14 +1339,18 @@ const getParametersForMessage = (m: Message): string => {
   return unwrappedByMessageId.value.get(m.id)?.parameters ?? '{}'
 }
 
-const isBgUserMsg = (m: { content?: string }): boolean => !!m.content && isBackgroundCommandOutput(m.content);
-const bgShellContent = (m: { content?: string }): string => { const pr = m.content ? parseBackgroundCommandOutput(m.content) : null; return pr ? backgroundToShellXml(pr) : (m.content ?? ''); };
+const isBgUserMsg = (m: { content?: string }): boolean =>
+  !!m.content && isBackgroundCommandOutput(m.content)
+const bgShellContent = (m: { content?: string }): string => {
+  const pr = m.content ? parseBackgroundCommandOutput(m.content) : null
+  return pr ? backgroundToShellXml(pr) : (m.content ?? '')
+}
 // A user group made ONLY of background completions renders as a
 // transparent left-aligned tool card, not the blue right bubble
 // (background completions are role=user on the wire, tool-styled
 // in pixels — see helpers/isBackgroundCommandOutput).
 const isBgOnlyGroup = (group: { role: string; messages: { content?: string }[] }): boolean =>
-  group.role === 'user' && group.messages.length > 0 && group.messages.every(isBgUserMsg);
+  group.role === 'user' && group.messages.length > 0 && group.messages.every(isBgUserMsg)
 
 // ─── FIX: Compute tool call names per assistant group ─────────────────────────
 // For each group index, returns the tool names string if the group is an
@@ -1998,7 +2030,12 @@ let previousScrollTop = -1
 let previousScrollHeight = -1
 let previousDirection: 'up' | 'down' | null = null
 
-const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic = false) => {
+const handleVirtualScroll = (
+  scrollTop: number,
+  direction: 'up' | 'down',
+  target: HTMLElement,
+  isProgrammatic = false,
+) => {
   // Prefer the event target — it's the actual DOM element that
   // dispatched the scroll event, so the browser guarantees it
   // exists for the lifetime of this handler. The ref chain
@@ -2274,7 +2311,8 @@ const handleVirtualScroll = (scrollTop: number, direction: 'up' | 'down', target
   // Previously retained even with bottom=1730px gap, keeping
   // isAtBottom=true forever and causing every contentShift to stick
   // even when user is far from bottom. Only retain when gap is small.
-  const retainedThroughGrowth = previousIsAtBottom && contentGrew && !userScrolledUp && distanceFromBottom < 100
+  const retainedThroughGrowth =
+    previousIsAtBottom && contentGrew && !userScrolledUp && distanceFromBottom < 100
   const nextIsAtBottom = newIsAtBottom || retainedThroughGrowth
   // ── Deep-dive: isAtBottom decision (2026-09-02) ────────────────────
   // Log every time the retained path changes the outcome, or when
@@ -2399,7 +2437,6 @@ const connectSse = () => {
       return
     }
 
-
     if (event.type === 'chunk' && event.content) {
       // 2026-08-23 llm-chunk-streaming: the backend sends RAW DELTAS
       // (choices[0].delta.content per provider SSE), so APPEND here —
@@ -2438,14 +2475,13 @@ const connectSse = () => {
     // of those are renderable now (filteredMessages exemptions +
     // reasoning section), so accept any event that has a finish_reason
     // and at least ONE renderable field.
-    const hasRenderableFullPayload =
-      !!(
-        event.content ||
-        event.reasoning_content ||
-        event.tool_call_id ||
-        event.tool_name ||
-        (event.image_url && event.image_url.length > 0)
-      )
+    const hasRenderableFullPayload = !!(
+      event.content ||
+      event.reasoning_content ||
+      event.tool_call_id ||
+      event.tool_name ||
+      (event.image_url && event.image_url.length > 0)
+    )
     if (event.type === 'full' && event.finish_reason && hasRenderableFullPayload) {
       // 2026-08-25 task_1787668954023_2: any non-error `full` event that
       // passes the renderable gate means the agent is alive and
@@ -2584,7 +2620,7 @@ const connectSse = () => {
         is_output: event.is_output,
         // 2026-08-23 hidden-messages fix — carry reasoning through so
         // thinking-only turns render their collapsible section.
-        reasoning_content: event.reasoning_content || undefined
+        reasoning_content: event.reasoning_content || undefined,
       })
       // 2026-09-06 virtual-scroller shrink fix: move the streaming
       // group's measured height onto the canonical row's key so the
@@ -2635,10 +2671,7 @@ const connectSse = () => {
         event.tool_call_id &&
         subAgentProgressMap.value[event.tool_call_id]
       ) {
-        subAgentProgressMap.value = clearProgressFor(
-          subAgentProgressMap.value,
-          event.tool_call_id,
-        )
+        subAgentProgressMap.value = clearProgressFor(subAgentProgressMap.value, event.tool_call_id)
       }
 
       if (event.total_tokens) {
@@ -2665,7 +2698,8 @@ const connectSse = () => {
         (m) => m.role === 'assistant' && m.id.startsWith('streaming-'),
       )
       if (existingMsg) {
-        existingMsg.reasoning_content = (existingMsg.reasoning_content || '') + event.reasoning_content
+        existingMsg.reasoning_content =
+          (existingMsg.reasoning_content || '') + event.reasoning_content
       } else {
         messages.value.push({
           id: `streaming-${Date.now()}`,
@@ -2692,10 +2726,11 @@ const connectSse = () => {
   // Stale-on-wake (cross-tab sharing): if this window just took over the shared
   // connection, or slept through a long hidden period, llm/queue events may have
   // been missed entirely — re-read the history so the visible chat is correct.
-  offResync = bus.onResync?.(() => {
-    if (sessionId.value !== sid) return
-    void loadChatHistory()
-  }) ?? null
+  offResync =
+    bus.onResync?.(() => {
+      if (sessionId.value !== sid) return
+      void loadChatHistory()
+    }) ?? null
   // Set isStreaming LAST so external observers (tests, UI) can poll
   // it as a "listeners are wired up" signal — flipping it before
   // would race with test assertions that fire events into the bus
@@ -3012,7 +3047,6 @@ const handleStopSession = async () => {
     console.error('Failed to stop session:', err)
   }
 }
- 
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const formatTime = (date: Date) => {
@@ -3074,7 +3108,7 @@ const compactSession = async () => {
       >
         <span
           class="text-sm font-semibold truncate flex-1"
-          style="color: var(--semantic-text);"
+          style="color: var(--semantic-text)"
           :data-testid="`chat-header-name-${chatId}`"
         >
           {{ chatName }}
@@ -3094,7 +3128,7 @@ const compactSession = async () => {
         <button
           type="button"
           class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim);"
+          style="color: var(--semantic-text-dim)"
           title="Close chat (return to kanban)"
           aria-label="Close chat"
           :data-testid="`chat-header-close-${chatId}`"
@@ -3252,7 +3286,9 @@ const compactSession = async () => {
             >
               <div
                 class="flex"
-                :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'flex-row-reverse' : 'flex-row'"
+                :class="
+                  group.role === 'user' && !isBgOnlyGroup(group) ? 'flex-row-reverse' : 'flex-row'
+                "
               >
                 <!-- Bubble / paragraph container.
                      2026-08-23 paragraph-mode: the AI (assistant) side no
@@ -3271,7 +3307,11 @@ const compactSession = async () => {
                      the whole chat on scrollToBottom. -->
                 <div
                   class="min-w-0"
-                  :class="group.role === 'user' && !isBgOnlyGroup(group) ? 'max-w-[90%] w-fit ml-auto' : 'flex-1 w-full max-w-full'"
+                  :class="
+                    group.role === 'user' && !isBgOnlyGroup(group)
+                      ? 'max-w-[90%] w-fit ml-auto'
+                      : 'flex-1 w-full max-w-full'
+                  "
                 >
                   <div
                     v-if="hasBubbleContent(group, groupIndex)"
@@ -3308,7 +3348,11 @@ const compactSession = async () => {
                             class="tool-item"
                             :class="bgIdx < group.messages.length - 1 ? 'tool-item-border' : ''"
                           >
-                            <ShellTool tool-name="command" :content="bgShellContent(bgMsg)" :parameters="'{}'" />
+                            <ShellTool
+                              tool-name="command"
+                              :content="bgShellContent(bgMsg)"
+                              :parameters="'{}'"
+                            />
                           </div>
                         </div>
                       </template>
@@ -3326,9 +3370,7 @@ const compactSession = async () => {
                           :key="userMsg.id || `u-${userMsgIdx}`"
                         >
                           <div
-                            v-if="
-                              userMsg.image_urls && userMsg.image_urls.length > 0
-                            "
+                            v-if="userMsg.image_urls && userMsg.image_urls.length > 0"
                             class="mb-2"
                           >
                             <div class="flex flex-wrap gap-2">
@@ -3348,7 +3390,14 @@ const compactSession = async () => {
                               </div>
                             </div>
                           </div>
-                          <template v-if="isBgUserMsg(userMsg)"><ShellTool tool-name="command" :content="bgShellContent(userMsg)" :parameters="'{}'" /></template><template v-else><span v-if="userMsg.content">{{ userMsg.content }}</span></template>
+                          <template v-if="isBgUserMsg(userMsg)"
+                            ><ShellTool
+                              tool-name="command"
+                              :content="bgShellContent(userMsg)"
+                              :parameters="'{}'" /></template
+                          ><template v-else
+                            ><span v-if="userMsg.content">{{ userMsg.content }}</span></template
+                          >
                         </template>
                       </template>
                     </template>
@@ -3411,8 +3460,19 @@ const compactSession = async () => {
                             :parameters="getParametersForMessage(msg)"
                           />
                           <ShellTool
-                            v-else-if="msg.tool_name === 'bash' || msg.tool_name === 'pwsh' || msg.tool_name === 'run_command' || msg.tool_name === 'command'"
-                            :tool-name="msg.tool_name === 'pwsh' ? 'pwsh' : msg.tool_name === 'command' ? 'command' : 'bash'"
+                            v-else-if="
+                              msg.tool_name === 'bash' ||
+                              msg.tool_name === 'pwsh' ||
+                              msg.tool_name === 'run_command' ||
+                              msg.tool_name === 'command'
+                            "
+                            :tool-name="
+                              msg.tool_name === 'pwsh'
+                                ? 'pwsh'
+                                : msg.tool_name === 'command'
+                                  ? 'command'
+                                  : 'bash'
+                            "
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"
@@ -3458,8 +3518,16 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'spawn_sub_agent'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
-                            :sub-agent-args="findSubAgentArgsForToolGroup(msg.tool_call_id, messageGroups, groupIndex)"
-                            :progress="msg.tool_call_id ? subAgentProgressMap[msg.tool_call_id] : null"
+                            :sub-agent-args="
+                              findSubAgentArgsForToolGroup(
+                                msg.tool_call_id,
+                                messageGroups,
+                                groupIndex,
+                              )
+                            "
+                            :progress="
+                              msg.tool_call_id ? subAgentProgressMap[msg.tool_call_id] : null
+                            "
                             :parameters="getParametersForMessage(msg)"
                             @peek="nav.openPeek($event)"
                           />
@@ -3516,14 +3584,8 @@ const compactSession = async () => {
                             Self-contained (no `expanded` from the dispatcher
                             — local toggle is enough for an optional UI).
                           -->
-                          <UpdatePlan
-                            v-else-if="msg.tool_name === 'update_plan'"
-                            :message="msg"
-                          />
-                          <GetPlan
-                            v-else-if="msg.tool_name === 'get_plan'"
-                            :message="msg"
-                          />
+                          <UpdatePlan v-else-if="msg.tool_name === 'update_plan'" :message="msg" />
+                          <GetPlan v-else-if="msg.tool_name === 'get_plan'" :message="msg" />
                           <ListSubAgent
                             v-else-if="msg.tool_name === 'list_sub_agent'"
                             :message="msg"
@@ -3541,6 +3603,20 @@ const compactSession = async () => {
                             :content="innerToolData(msg)"
                             :message-id="msg.id"
                             :parameters="getParametersForMessage(msg)"
+                          />
+                          <!--
+                            `present_files` renders one downloadable row
+                            per file (images get a thumbnail preview
+                            before download). Cookie-based auth, so plain
+                            `<a href>` / `<img src>` carry credentials.
+                          -->
+                          <PresentFiles
+                            v-else-if="msg.tool_name === 'present_files'"
+                            :content="innerToolData(msg)"
+                            :session-id="sessionId || chatId"
+                            :cwd="sessionCwd"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <!--
                             `generate_image` is expandable (not side-panel
@@ -3578,7 +3654,11 @@ const compactSession = async () => {
                             ToolCardHeader pattern as McpTool/ListDirectory.
                           -->
                           <ProgressiveTool
-                            v-else-if="msg.tool_name === 'search_tool' || msg.tool_name === 'view_tool' || msg.tool_name === 'use_tool'"
+                            v-else-if="
+                              msg.tool_name === 'search_tool' ||
+                              msg.tool_name === 'view_tool' ||
+                              msg.tool_name === 'use_tool'
+                            "
                             :content="innerToolData(msg)"
                             :tool-name="msg.tool_name ?? 'search_tool'"
                             :parameters="getParametersForMessage(msg)"
@@ -3652,7 +3732,10 @@ const compactSession = async () => {
                                outside the tags still renders as markdown.
                                Legacy messages take the v-else path unchanged. -->
                           <template v-if="msg.role === 'assistant' && msgHasHtml(msg.content)">
-                            <template v-for="(seg, sIdx) in extractHtmlBlocks(msg.content || '')" :key="sIdx">
+                            <template
+                              v-for="(seg, sIdx) in extractHtmlBlocks(msg.content || '')"
+                              :key="sIdx"
+                            >
                               <!-- eslint-disable-next-line vue/no-v-html -->
                               <span
                                 v-if="seg.before"
@@ -3709,8 +3792,9 @@ const compactSession = async () => {
                               color: 'var(--semantic-text-dim)',
                               'border-color': 'var(--color-border)',
                             }"
-                            >{{ msg.reasoning_content }}</div
                           >
+                            {{ msg.reasoning_content }}
+                          </div>
                         </details>
                       </div>
                     </template>
@@ -3755,11 +3839,7 @@ const compactSession = async () => {
              live-only diagnostics (backend is_skip_db=true), so pinning
              them at the bottom of the transcript area is correct UX too:
              the newest error is always visible without scrolling. -->
-        <div
-          v-if="agentError"
-          class="px-4 max-w-4xl mx-auto pb-2"
-          data-testid="agent-error-list"
-        >
+        <div v-if="agentError" class="px-4 max-w-4xl mx-auto pb-2" data-testid="agent-error-list">
           <AgentErrorCard :key="agentError.id" :content="agentError.content" />
         </div>
       </div>
@@ -3893,7 +3973,8 @@ const compactSession = async () => {
                         class="text-[10px] ml-1 px-1 py-0.5 rounded"
                         :style="{ backgroundColor: 'var(--color-violet)', color: '#181616' }"
                         data-testid="profile-picker-active-badge"
-                      >(active)</span>
+                        >(active)</span
+                      >
                     </span>
                     <span v-if="effectiveProfile === p.name">✓</span>
                   </div>
@@ -3959,7 +4040,9 @@ const compactSession = async () => {
                 :title="
                   gitWorktreeCwd
                     ? `Worktree: ${gitWorktreeCwd}\n${gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'}`
-                    : (gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes')
+                    : gitStatus.status === 'clean'
+                      ? 'Working tree clean'
+                      : 'Working tree has changes'
                 "
               >
                 <span>🌿</span>
@@ -4086,7 +4169,6 @@ const compactSession = async () => {
       @close="nav.closePeek()"
       @open-full="onPeekOpenFull"
     />
-
   </div>
 </template>
 
@@ -4342,7 +4424,7 @@ const compactSession = async () => {
   min-height: 120px;
   border: 1px solid var(--color-border, #ddd);
   border-radius: 8px;
-  background: var(--semantic-card-bg, #1D1C19);
+  background: var(--semantic-card-bg, #1d1c19);
   color-scheme: dark;
 }
 
@@ -4368,7 +4450,9 @@ const compactSession = async () => {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  transition: background-color 0.15s ease, border-left-color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    border-left-color 0.15s ease;
 }
 
 :deep(.chat-tool-card pre) {

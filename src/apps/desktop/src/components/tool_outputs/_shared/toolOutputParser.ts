@@ -1043,3 +1043,98 @@ export function parseUseTool(content: string): ParsedUseTool {
 
 // Re-export shared param helper (single source of truth in helpers/).
 export { extractParam } from '../../../helpers/extractParam'
+// ─── present_files ─────────────────────────────────────────────────────────
+//
+// Parses the XML envelope produced by `executePresentFilesToString` in
+// `src/modules/agent/tools/present_files.zig`:
+//
+//   <present_files>
+//     <status>presented</status>
+//     <count>2</count>
+//     <files>
+//       <file path="/abs/a.txt" bytes="12" mime="text/plain; charset=utf-8" label="notes"/>
+//       <file path="/abs/b.jpg" bytes="48211" mime="image/jpeg" label="b.jpg"/>
+//     </files>
+//   </present_files>
+//
+// Error shape: <present_files><error>...</error></present_files>
+
+export interface ParsedPresentFile {
+  path: string
+  bytes: number
+  mime: string
+  label: string
+}
+
+export interface ParsedPresentFiles {
+  status: string | null
+  count: number | null
+  files: ParsedPresentFile[]
+  /** null on success, populated on <error>...</error>. */
+  error: string | null
+}
+
+function parsePresentFileAttrs(attrs: string): ParsedPresentFile {
+  const path = /path="([^"]*)"/.exec(attrs)?.[1] ?? ''
+  const bytesRaw = /bytes="([^"]*)"/.exec(attrs)?.[1] ?? '0'
+  const mime = /mime="([^"]*)"/.exec(attrs)?.[1] ?? 'application/octet-stream'
+  const label = /label="([^"]*)"/.exec(attrs)?.[1] ?? ''
+  const bytes = Number.parseInt(bytesRaw, 10)
+  return {
+    path: unescapeXml(path),
+    bytes: Number.isFinite(bytes) ? bytes : 0,
+    mime: unescapeXml(mime),
+    label: unescapeXml(label),
+  }
+}
+
+export function parsePresentFiles(content: string): ParsedPresentFiles {
+  const error = extractTag(content, 'error')
+  if (error !== null) {
+    return { status: null, count: null, files: [], error }
+  }
+  const status = extractTag(content, 'status')
+  const countRaw = extractTag(content, 'count')
+  const count =
+    countRaw === null
+      ? null
+      : Number.isFinite(Number.parseInt(countRaw.trim(), 10))
+        ? Number.parseInt(countRaw.trim(), 10)
+        : null
+  // Self-closing `<file path="..." bytes="..." mime="..." label="..." />`
+  // — attribute values are XML-escaped on the backend (quotes in paths
+  // become &quot;), so unescape after extraction. Paths can contain `/`,
+  // so the lazy match must allow any char: `[\s\S]+?` up to `/>`.
+  const files: ParsedPresentFile[] = []
+  const fileRegex = /<file\s+([\s\S]+?)\s*\/>/g
+  let m
+  while ((m = fileRegex.exec(content)) !== null) {
+    files.push(parsePresentFileAttrs(m[1] ?? ''))
+  }
+  return { status, count, files, error: null }
+}
+
+/** True for renderable image mimes (thumbnail preview before download). */
+export function isPreviewableImage(mime: string): boolean {
+  return mime.toLowerCase().startsWith('image/')
+}
+
+/** Basename of an absolute path (`/a/b/c.jpg` → `c.jpg`). */
+export function basenameOfPath(path: string): string {
+  const idx = path.lastIndexOf('/')
+  return idx === -1 ? path : path.slice(idx + 1)
+}
+
+/** Human-readable byte size (`48211` → `47.1 KB`). */
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0 B'
+  if (n < 1024) return `${n} B`
+  const units = ['KB', 'MB', 'GB']
+  let v = n / 1024
+  let u = 0
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024
+    u += 1
+  }
+  return `${v.toFixed(1)} ${units[u]}`
+}

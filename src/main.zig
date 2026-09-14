@@ -562,6 +562,12 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
     try gs.router.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
+    // File download for the `present_files` agent tool card
+    // (PresentFiles.vue). Literal path under a fresh `/api/files/`
+    // prefix — no `:param` siblings exist under it, so no matchRoute
+    // shadowing risk (router walks registration order). Plan:
+    // docs/plans/2026-09-14-agent-tool-present-files.md
+    try gs.router.get("/api/files/download", ai_mod.http_handlers.filesDownloadHandler);
     try gs.router.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);
     try gs.router.post("/api/workspaces", ai_mod.http_handlers.workspacesCreateHandler);
     try gs.router.post("/api/workspaces/reorder", ai_mod.http_handlers.workspacesReorderHandler);

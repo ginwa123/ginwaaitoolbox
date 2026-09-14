@@ -31,6 +31,7 @@ const set_element_parent_mod = nalarcore.set_element_parent;
 const move_design_element_mod = nalarcore.move_design_element;
 const move_element_to_page_mod = nalarcore.move_element_to_page;
 const show_preview_mod = nalarcore.ai_mod.show_preview;
+const present_files_mod = nalarcore.ai_mod.present_files;
 const get_design_context_mod = nalarcore.get_design_context;
 const preview_design_page_mod = nalarcore.preview_design_page;
 const remove_agent_mod = nalarcore.remove_agent;
@@ -101,6 +102,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
         show_preview_mod.show_preview_tool,
+        present_files_mod.present_files_tool,
 
         // kanban only
         kanban_list_mod.kanban_list_tool,
@@ -238,6 +240,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 
         // === PREVIEW TOOLS ===
         .{ .name = "show_preview", .exec = tools.execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
+        .{ .name = "present_files", .exec = tools.execPresentFiles, .tool_def = present_files_mod.present_files_tool },
 
         // === IMAGE GENERATION TOOLS ===
         // generate_image calls OpenAI's /v1/images/generations endpoint
@@ -281,6 +284,7 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     write_file_mod.write_file_tool.function.name,
     text_replace_mod.text_replace_tool.function.name,
     remove_file_mod.remove_file_tool.function.name,
+    present_files_mod.present_files_tool.function.name,
     list_directory_mod.list_directory_tool.function.name,
     search_tool_mod.search_tool.function.name,
     glob_tool_mod.glob_tool.function.name,
