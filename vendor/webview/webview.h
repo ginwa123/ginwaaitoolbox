@@ -1736,6 +1736,41 @@ public:
 #endif
   }
 
+  // The pointer a view is created with may be ANY container, not just a window:
+  // an in-app browser pane is a second view living in a box/paned inside the
+  // app's window (docs/superpowers/plans/2026-09-14-in-app-browser-pane.md).
+  // Casting a non-window to GtkWindow is a GLib-CRITICAL and leaves the widget
+  // UNPARENTED, so these two take the parent as a GtkWidget and pick the right
+  // call. The GtkWindow path is exactly what window_set_child/remove_child did.
+  static void widget_set_parent(GtkWidget *parent, GtkWidget *widget) {
+#if GTK_MAJOR_VERSION >= 4
+    if (GTK_IS_WINDOW(parent)) {
+      gtk_window_set_child(GTK_WINDOW(parent), widget);
+    } else {
+      gtk_widget_set_parent(widget, parent);
+    }
+#else
+    gtk_container_add(GTK_CONTAINER(parent), widget);
+#endif
+  }
+
+  static void widget_unset_parent(GtkWidget *parent, GtkWidget *widget) {
+    // Guarded: a view that has been moved into a container is no longer the
+    // window's child, and removing a non-child is a GTK critical.
+    if (gtk_widget_get_parent(widget) != parent) {
+      return;
+    }
+#if GTK_MAJOR_VERSION >= 4
+    if (GTK_IS_WINDOW(parent)) {
+      gtk_window_set_child(GTK_WINDOW(parent), nullptr);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+#else
+    gtk_container_remove(GTK_CONTAINER(parent), widget);
+#endif
+  }
+
   static void widget_set_visible(GtkWidget *widget, bool visible) {
 #if GTK_MAJOR_VERSION >= 4
     gtk_widget_set_visible(widget, visible ? TRUE : FALSE);
@@ -1882,7 +1917,8 @@ public:
   return window.webkit.messageHandlers.__webview__.postMessage(message);\n\
 }");
 
-    gtk_compat::window_set_child(GTK_WINDOW(m_window), GTK_WIDGET(m_webview));
+    // Container-safe: m_window may be a box/paned when this view is a pane.
+    gtk_compat::widget_set_parent(m_window, GTK_WIDGET(m_webview));
     gtk_compat::widget_set_visible(GTK_WIDGET(m_webview), true);
 
     WebKitSettings *settings =
@@ -1913,8 +1949,7 @@ public:
         gtk_window_close(GTK_WINDOW(m_window));
         on_window_destroyed(true);
       } else {
-        gtk_compat::window_remove_child(GTK_WINDOW(m_window),
-                                        GTK_WIDGET(m_webview));
+        gtk_compat::widget_unset_parent(m_window, GTK_WIDGET(m_webview));
       }
     }
     if (m_webview) {

@@ -21,13 +21,14 @@
 
 const std = @import("std");
 const browser_bridge = @import("browser_bridge.zig");
+const browser_pane = @import("browser_pane.zig");
 
 /// The browser window's chrome bar, embedded as the exact bytes that ship.
 /// It sits inside this module's root (`src/apps/desktop_app/`), which is why a
 /// plain `@embedFile` works here — unlike the webapp's `dist/` assets, which
 /// need the generated `embedded/webapp_assets.zig` table because they live
 /// outside the module tree.
-const browser_chrome_js = @embedFile("browser_chrome.js");
+pub const browser_chrome_js = @embedFile("browser_chrome.js");
 
 /// Opaque webview instance (webview_t).
 pub const Webview = opaque {};
@@ -135,6 +136,16 @@ pub fn runWindow(
     // bindings (see the invariant in browser_bridge.zig).
     var bridge = browser_bridge.Bridge.init(allocator, io);
     bridge.installBindings(w);
+
+    // The in-app browser pane (Linux/GTK3 today): a second view inside this same
+    // window, split off below the strip by `install`. Off Linux nothing is
+    // installed, the SPA's pane bindings read as absent, and it falls back to the
+    // window mode — which is why that mode is kept, invisibly.
+    var pane = browser_pane.Pane{};
+    if (browser_pane.supported) {
+        pane.install(w);
+        browser_pane.installBindings(w, &pane);
+    }
 
     _ = webview_set_title(w, title);
     _ = webview_set_size(w, width, height, .none);

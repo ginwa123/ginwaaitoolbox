@@ -49,7 +49,7 @@ pub const MAX_TAB_ID = 64;
 /// Stack buffer for the parsed request (`{"id","method","params"}` → params).
 const PARAMS_BUF = 4096;
 /// Stack buffer for a reply. Every reply this module builds is a small object.
-const REPLY_BUF = 512;
+pub const REPLY_BUF = 512;
 
 /// Injectable spawn, so a unit test can drive `open` without launching a real
 /// window. Production uses `defaultSpawn`.
@@ -313,7 +313,7 @@ fn defaultSpawn(
 
 /// Tab ids are only ever used as a lookup key, but keep them to the shape the
 /// frontend mints (`tab_…`) so a malformed request cannot store arbitrary bytes.
-fn isSafeTabId(tab_id: []const u8) bool {
+pub fn isSafeTabId(tab_id: []const u8) bool {
     if (tab_id.len == 0 or tab_id.len > MAX_TAB_ID - 1) return false;
     for (tab_id) |c| {
         const ok = std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == ':';
@@ -327,7 +327,7 @@ fn isSafeTabId(tab_id: []const u8) bool {
 ///
 /// The tree is parsed into a STACK buffer and deliberately not freed: the
 /// returned slices point into that buffer, which lives until this call returns.
-fn parseParams(fba: *std.heap.FixedBufferAllocator, req: []const u8, out: *[4][]const u8) ?usize {
+pub fn parseParams(fba: *std.heap.FixedBufferAllocator, req: []const u8, out: *[4][]const u8) ?usize {
     const parsed = std.json.parseFromSlice(std.json.Value, fba.allocator(), req, .{}) catch return null;
     const items = switch (parsed.value) {
         .array => |array| array.items,
@@ -343,7 +343,7 @@ fn parseParams(fba: *std.heap.FixedBufferAllocator, req: []const u8, out: *[4][]
     return items.len;
 }
 
-fn reply(out: []u8, comptime fmt: []const u8, args: anytype) [:0]const u8 {
+pub fn reply(out: []u8, comptime fmt: []const u8, args: anytype) [:0]const u8 {
     return std.fmt.bufPrintZ(out, fmt, args) catch out[0..0 :0];
 }
 

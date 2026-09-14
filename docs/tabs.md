@@ -34,13 +34,30 @@ Switching tabs re-mounts the view (one view is live at a time — see
 "Rendering model" below). Chat history, scroll position, in-flight stream
 content, queued messages and your unsent composer text all survive that.
 
-### The browser window
+### The browser pane
 
-A browser tab's page does not render inside the app. It renders in a real
-top-level webview in its own OS window, opened by `nalar-desktop --browser
-<url>` — not an iframe, not the app window — with an injected
-address/←/→/↻ bar. Any site works (GitHub, Google, `localhost:5173`), and
-cookies and sign-in persist in the engine's store.
+A browser tab's page renders **inside the app window**, below the tab strip —
+one window, one process, no second OS window. The strip stays visible and
+clickable (the shell pins the app's own view to those 36px), and the page fills
+everything below it, with the same injected address/←/→/↻ bar as the window
+mode. Any site works (GitHub, YouTube, Google, `localhost:5173`) because it is a
+real top-level webview, not an iframe — and cookies/sign-in persist in the
+engine's store.
+
+The pane is created on the first browser tab and then **hidden, not closed**,
+when you switch away: coming back is instant and the page keeps its state
+(scroll, forms, a playing video). Closing the tab or the app closes it.
+
+Linux (GTK3) today. On macOS and Windows the pane is not built yet, so the same
+tab uses the window mode below — automatically, with no separate button for it.
+
+### The browser window (fallback)
+
+Where the pane cannot be built — macOS/Windows until their patch, an older
+shell — a browser tab's page renders in a real top-level webview in its own OS
+window, opened by `nalar-desktop --browser <url>`, with the same injected
+address/←/→/↻ bar. Any site works, and cookies and sign-in persist in the
+engine's store.
 
 **Window re-use rule:** at most ONE auto-managed window per tab — a repeat
 open keeps it and does not spawn a second one. The primary button is always

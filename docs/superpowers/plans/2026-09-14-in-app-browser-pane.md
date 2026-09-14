@@ -362,6 +362,95 @@ the only platform-specific parts are the parent call (1.1/1.2) and the layout.
 `webview_bind` bridge (flat names), its injected chrome bar, its address
 normalization, its tab kind and its store actions. The only thing this plan
 changes about the delivered experience is **where the page renders by default** —
-and the escape hatches (`Open in a separate window`, `Open in system browser`)
-stay, because a pane that cannot be created (an older shell, a platform before
-its patch) must degrade visibly, never silently.
+and `Open in system browser` stays as the escape hatch. The window mode is now an
+**automatic** fallback (no UI affordance — the human's Q3), used only where the
+pane cannot be built (macOS/Windows until their patch, an older shell).
+
+---
+
+## Implementation status (executed 2026-09-14)
+
+**Shipped (Linux/GTK3).** A browser tab renders the page **inside the app
+window**, below the 36px strip: one window, one process, no `nalar-desktop` child.
+The pane is created on the first browser tab, hidden (never destroyed) when you
+leave it, so coming back keeps the page's state; `show` with an unchanged URL does
+not reload. On macOS/Windows the pane bindings are absent and the SPA falls back to
+the window mode — automatically, with no separate-window affordance in the UI.
+
+**PR:** [#489](https://github.com/ginwa123/ginwaaitoolbox/pull/489) (same branch as
+the window mode it supersedes; base `main`).
+
+### Reviewer answers that shaped this
+
+| # | Answer | Effect |
+|---|---|---|
+| Q1 | **Yes** — strip + page filling everything below it | No second row; the SPA slot is exactly the strip height |
+| Q3 | **No separate window** | The window button is gone; the window mode survives only as an invisible fallback |
+| Q5 | **Linux first** | macOS/Windows are follow-ups (different parent call: `addSubview:` / child HWND) |
+| Q2, Q4, Q6 | not answered → the §3 recommendations were taken | pane hidden-not-destroyed; fixed 36px slot (not draggable); chat/Settings links land in the pane |
+
+### Deviations from the plan
+
+1. **The estimate was corrected by measurement, twice over.** §2 of the previous
+   plan expected "multi-week, per-OS". The first spike showed the GTK3 blocker is a
+   single `GTK_WINDOW()` cast — the parent call was *already*
+   `gtk_container_add(GTK_CONTAINER(window), widget)`, which is generic for a box.
+   The fix is `widget_set_parent`/`widget_unset_parent` (`GTK_IS_WINDOW` picks the
+   old call, so the app's own window path is unchanged), with the removal path
+   guarded because a moved view is no longer the window's child.
+2. **The scrolled-window wrappers are not cosmetic.** The first spike FAILED with
+   `spa slot 1398px, pane 0px`: a `WebKitWebView` reports a ~1398px natural height,
+   so a bare box slot cannot be 36px. `GtkPaned(position=36)` plus a
+   `GtkScrolledWindow` per view (policy NEVER/NEVER) fixes it — measured
+   `spa_slot=36 / pane_slot=1361`.
+3. **The strip slot reports ~46px, not 36**, because a `GtkPaned` allocates its
+   ~10px handle even with one child hidden. Harmless; asserted as a range.
+4. **`nalarBrowserPaneStatus` also reports `supported`**, so the SPA can tell "this
+   shell has no pane" from "the pane exists but is hidden" — the difference between
+   falling back and doing nothing.
+5. **macOS/Windows are compile-gated out, not half-built.**
+   `browser_pane.supported` is `builtin.os.tag == .linux` and `installBindings` is a
+   no-op elsewhere, so an untested Cocoa path (where `setContentView:` would replace
+   the SPA's view) never ships.
+6. **The SPA hides its own chrome while the pane is visible** (`data-pane-mode` on
+   the AppLayout root hides every child except the tab strip). Without it the 36px
+   slot would show the sidebar's top band next to the strip.
+
+### Gates
+
+* `zig build test:desktop-app --summary all` — **67/67** (62 + 5 pane contract
+  tests: scheme refusal, malformed request, hide/status before any show, the
+  platform gate, flat binding names).
+* `zig build check:desktop-cross --summary all` — windows + macOS + linux compile.
+* **Live engine gate:** `python3 scripts/browser-pane-probe.py` — **PASS**:
+
+```
+inner_before=1398   show={"ok":true,"visible":true}
+inner_shown=46      status_shown={"supported":true,"visible":true}
+hide={"ok":true,"visible":false}   inner_hidden=1398
+PASS: pane inside the app window — SPA viewport 1398 -> 46 (strip) -> 1398
+      (restored), no window, no child process.
+```
+
+  It also asserts no `--browser` child, so a regression that turned the pane into a
+  spawn would fail it.
+* `scripts/browser-bridge-probe.py` — the window mode still passes (the bridge is
+  untouched; the pane is additive).
+* `vitest` full suite: **374 files / 3326 tests, 4 failed** — the same pre-existing
+  four (`FilePickerDialog.windows`, `WorkspaceItemHideTasksForDesign`,
+  `workspacesStoreNormalizeTaskDates`, `workspacesStoreNormalizeTaskImageUrls`),
+  **+16 new passes, 0 regressions**; `vue-tsc` and `lint:check` clean.
+
+### Not verified here
+
+The §9 manual checklist on Linux (the look of the strip + a real page in one
+window, tab switching without a reload, resize/maximise, `window.nalarBrowserOpen`
+absent in the pane's devtools, no GTK criticals on quit) — the live probe covers the
+mechanism, not the look. macOS and Windows need their parent-call work first.
+
+### Follow-ups
+
+macOS (`addSubview:` in the non-owning Cocoa path — `webview.h:2632`) and Windows
+(child HWND + `WM_SIZE` placement); a draggable divider (Q4, still open); a live
+URL/title back to the tab (previous plan §10.4); agent-driven control (§10.3).
+
