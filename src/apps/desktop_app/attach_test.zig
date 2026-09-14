@@ -403,3 +403,58 @@ test "resolveAttachTarget returns AutoStartDisabled when --no-auto-start and no 
     });
     try testing.expectError(error.AutoStartDisabled, result);
 }
+
+test "auto-spawn persists state.json so the next launch attaches instead of spawning" {
+    if (builtin.os.tag == .windows) return;
+    if (!fileExists("/usr/bin/env")) return error.SkipZigTest; // fake nalar needs python3
+    const allocator = testing.allocator;
+
+    // Squatter on the well-known port: healthy but serves no webapp, so the
+    // first launch must skip it and spawn its own daemon on an ephemeral
+    // port (the :51165 half of the reported bug).
+    var squatter = try bindMockServer(.health_only);
+    defer squatter.stop();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
+    const state_path = try std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], "state.json" });
+    defer allocator.free(state_path);
+
+    const fake_nalar = try writeFakeNalar(allocator, &tmp);
+    defer allocator.free(fake_nalar);
+
+    // First launch: no state file, well-known port unusable → spawn.
+    const first = try attach.resolveAttachTarget(allocator, testing.io, .{
+        .state_path = state_path,
+        .default_port = squatter.port,
+        .no_auto_start = false,
+        .nalar_path = fake_nalar,
+    });
+    defer allocator.free(first.host);
+    try testing.expect(first.we_spawned);
+    try testing.expect(first.port != squatter.port);
+
+    // The spawn must have recorded itself: the state file on disk points at
+    // the freshly spawned port. Without this, the next launch only probes
+    // the state file (stale/missing) + the well-known port and spawns a
+    // SECOND daemon (the :8081 half of the reported bug).
+    const recorded = try nalarcore.state_file.readStateFile(allocator, testing.io, state_path);
+    try testing.expect(recorded != null);
+    const state = recorded.?;
+    defer nalarcore.state_file.freeState(allocator, state);
+    try testing.expectEqual(first.port, state.port);
+
+    // Second launch: with auto-start disabled (so a spawn is impossible),
+    // the desktop must attach to the recorded daemon — proving the state
+    // file alone is enough to avoid a duplicate.
+    const second = try attach.resolveAttachTarget(allocator, testing.io, .{
+        .state_path = state_path,
+        .default_port = squatter.port,
+        .no_auto_start = true,
+    });
+    defer allocator.free(second.host);
+    try testing.expect(!second.we_spawned);
+    try testing.expectEqual(first.port, second.port);
+}

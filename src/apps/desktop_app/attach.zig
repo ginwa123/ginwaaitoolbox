@@ -21,6 +21,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
+const helpers = @import("helpers");
 const subprocess = @import("subprocess.zig");
 const path_resolve = @import("path_resolve.zig");
 const port = @import("port.zig");
@@ -232,6 +233,28 @@ fn autoSpawnAndWaitForHealth(
         return error.AutoSpawnFailed;
     }
 
+    // 6. Persist state.json so the NEXT launch finds this daemon via step 1
+    //    instead of spawning a duplicate. Without this, every launch that
+    //    lands on an ephemeral port is invisible to the next one (which
+    //    only probes the state file + the well-known port), so each
+    //    `--browser` click leaks another detached daemon — e.g. :51165
+    //    then :8081 side by side. Best-effort: the daemon is already
+    //    healthy and usable, so a write failure only warns.
+    const state: nalarcore.state_file.State = .{
+        .pid = child.pid,
+        .port = spawn_port,
+        .host = "127.0.0.1",
+        .started_at = helpers.unixTimestamp(),
+        .version = "0.4.0",
+        .static_dir = if (opts.static_dir.len > 0) opts.static_dir else null,
+    };
+    nalarcore.state_file.writeStateFile(allocator, io, opts.state_path, state) catch |err| {
+        std.log.warn(
+            "Spawned nalar on port {d} but could not write state file {s}: {s} — the next launch may spawn a duplicate",
+            .{ spawn_port, opts.state_path, @errorName(err) },
+        );
+    };
+
     return .{
         .host = try allocator.dupe(u8, "127.0.0.1"),
         .port = spawn_port,
@@ -252,8 +275,9 @@ fn chooseSpawnPort(allocator: std.mem.Allocator, io: std.Io, preferred: u16) u16
     if (free.port == preferred) return preferred;
     // Tell the user how to get back to the well-known port — otherwise
     // every launch keeps spawning a fresh daemon on a random port because
-    // the squatter never goes away and (unlike `nalar service start`) a
-    // spawned daemon writes no state file for the next launch to find.
+    // the squatter never goes away. The spawned daemon's port is recorded
+    // in the state file (step 6 of the auto-spawn path) so the next launch
+    // attaches to it instead of spawning again.
     std.log.warn(
         "Port {d} is already in use by a server that does not serve the webapp; spawning on {d} instead",
         .{ preferred, free.port },
