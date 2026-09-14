@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A new agent tool `set_pull_request` attaches a pull/merge-request URL to the current session (persisted in a new `sessions.pr_url` column, multi-provider: GitHub, GitLab, generic). Once set, the ChatView right panel switches to **PR mode** and shows all file changes of that PR (read-only), instead of the working-tree changes.
+**Goal:** A new agent tool `set_pull_request` attaches a pull/merge-request URL to the current session (persisted in new `sessions.pr_url` + `sessions.pr_provider` columns, multi-provider: GitHub, GitLab, generic). Once set, the ChatView right panel switches to **PR mode** and shows all file changes of that PR (read-only), instead of the working-tree changes.
 
 **Why this shape:** mirrors the proven `set_git_worktree` → `sessions.git_worktree_cwd` → `effectiveCwd` → sidebar chain (Migration 046, `tools_exec_set_git_worktree.zig:49-68`, `llm_history.updateSessionGitWorktreeCwd`). Every layer below is a copy of that precedent with `pr_url` substituted — low design risk. Provider support is a small strategy layer because PR creation today is GitHub-only (`gh` CLI in `git_pr_create.zig`) and there are **zero** `glab`/GitLab/Gitea references in `src/`.
 
@@ -44,8 +44,8 @@
 
 ## 1. Design decisions (locked)
 
-1. **Tool semantics = attach, not create.** `set_pull_request` takes an *existing* PR/MR URL and binds it to the session (mirrors `set_git_worktree` attach semantics). Creation stays in `gh pr create` / `CreatePrDialog`. Params: `pr_url` (required), `provider?` (`github|gitlab|generic`, default auto-detect), `base?`/`head?` (generic-forge fallback only), `clear?` (unbind, mirrors worktree `clear`), `verify?` (default true — see 3).
-2. **Schema = one column.** `sessions.pr_url TEXT` (nullable, `""` = unset). Provider + number are *derived from the URL at read time* — no extra columns, no migration churn later.
+1. **Tool semantics = attach only (confirmed 2026-09-14).** `set_pull_request` takes an *existing* PR/MR URL and binds it to the session (mirrors `set_git_worktree` attach semantics). Creation stays in `gh pr create` / `CreatePrDialog` — no create strategy in this plan. Params: `pr_url` (required), `provider?` (`github|gitlab|generic`, default auto-detect), `base?`/`head?` (generic-forge fallback only), `clear?` (unbind, mirrors worktree `clear`), `verify?` (default true — see 3).
+2. **Schema = two columns.** `sessions.pr_url TEXT` + `sessions.pr_provider TEXT` (nullable, `""` = unset). The tool stores the *effective* provider at write time (explicit override, else auto-detected) — reads stay deterministic. Rationale: host-based detection fails on self-hosted forges (GitHub Enterprise on a custom domain looks `generic`; a self-hosted GitLab without the `/-/merge_requests/` path is ambiguous), so re-deriving on every read would misroute. The endpoint still re-derives from the URL as a fallback when `pr_provider` is empty (old rows). PR number stays derived (never stored).
 3. **Verify is best-effort.** `verify=true` runs the provider CLI `view` command (`gh pr view <url> --json number,baseRefName,headRefName` / `glab mr view <url>`). CLI missing → persist anyway with `<warning>cli-not-found</warning>` in the envelope (degraded, panel will error later with guidance). CLI present + PR not found/auth fail → `<error>`, do NOT persist.
 4. **One diff endpoint, full text.** `GET /api/git/pr/diff?path=&pr_url=` returns the *whole* unified diff; the frontend splits per file with a new pure `splitDiffByFile()` and reuses `parseUnifiedDiff` per file. Avoids N+1 requests and reuses the tested parser.
 5. **Provider strategy (backend, in endpoint + tool verify):**
@@ -61,9 +61,9 @@
 
 | File | Action | Why |
 |---|---|---|
-| `src/migrations/migration.zig` | EDIT | Migration 086 `pr_url TEXT` via `addColumnIfMissing` + registry entry in `allMigrations` |
+| `src/migrations/migration.zig` | EDIT | Migration 086 `pr_url TEXT` + `pr_provider TEXT` via `addColumnIfMissing` + registry entry in `allMigrations` |
 | `src/models/session.zig` | EDIT | `pr_url: ?[]u8 = null` + init/clone/deinit |
-| `src/agentic_loop/llm_history.zig` | EDIT | `SessionTableInfo` + `getSession` SELECT (`COALESCE(s.pr_url,'')`) + `SessionMessageResponse` + `getSessionMessagesSorted` select + `SessionBroadcastInfo` + new `updateSessionPrUrl` (+ SSE `action="updated"`) |
+| `src/agentic_loop/llm_history.zig` | EDIT | `SessionTableInfo` + `getSession` SELECT (`COALESCE(s.pr_url,'')`, `COALESCE(s.pr_provider,'')`) + `SessionMessageResponse` + `getSessionMessagesSorted` select + `SessionBroadcastInfo` + new `updateSessionPrUrl(url, provider)` (+ SSE `action="updated"`) |
 | `src/http_handlers/http_response.zig` | EDIT | `SessionMessagesResponse.pr_url` + `makeSessionMessagesResponse` |
 | `src/http_handlers/session_messages_get.zig` | EDIT | Pass through `pr_url` (mirrors `git_worktree_cwd` line) |
 | `src/modules/agent/tools/set_pull_request.zig` | NEW | Input struct, `AgentTool` schema, URL normalize/validate, provider detect, verify via CLI, `<pull_request>` XML envelopes |
@@ -88,17 +88,17 @@
 
 ### Phase 0 — Column + plumbing (no behaviour change)
 - [ ] Task 0.1: Migration 086 (`addColumnIfMissing(sessions, pr_url, TEXT)`) + registry entry. Zig migration test (apply on scratch DB, assert column exists).
-- [ ] Task 0.2: Thread `pr_url` through `models/session.zig`, `SessionTableInfo`, `getSession` SELECT, `SessionMessageResponse`, `SessionBroadcastInfo`, `updateSessionPrUrl` (+ SSE broadcast mirroring worktree setter). `http_response` + `session_messages_get` passthrough. Frontend `api/index.ts` type only.
-- [ ] Task 0.3: Functional `session_pr_url_test.py` (red): harness boot → messages response contains `pr_url: ""` default on old session; direct `UPDATE sessions SET pr_url` → response reflects it. (Tool/endpoint land later; this proves the column + wire.)
+- [ ] Task 0.2: Thread `pr_url` + `pr_provider` through `models/session.zig`, `SessionTableInfo`, `getSession` SELECT, `SessionMessageResponse`, `SessionBroadcastInfo`, `updateSessionPrUrl(url, provider)` (+ SSE broadcast mirroring worktree setter). `http_response` + `session_messages_get` passthrough. Frontend `api/index.ts` types only.
+- [ ] Task 0.3: Functional `session_pr_url_test.py` (red): harness boot → messages response contains `pr_url: ""` + `pr_provider: ""` defaults on old session; direct `UPDATE sessions SET pr_url, pr_provider` → response reflects both. (Tool/endpoint land later; this proves the columns + wire.)
 
 ### Phase 1 — set_pull_request tool
 - [ ] Task 1.1: `pr_provider.zig` pure core + unit tests: `normalizePrUrl` (strip creds/suffixes), `detectProvider` (github/gitlab/generic), `parsePrRef` (owner/repo/number or MR iid) for github + gitlab URL shapes (incl. `/-/merge_requests/`).
 - [ ] Task 1.2: `set_pull_request.zig` (schema, validators, verify via `gh`/`glab` view, `<pull_request>` envelopes with `<url>/<provider>/<number>/<verified>` + `<warning>`/`<error>`).
-- [ ] Task 1.3: `tools_exec_set_pull_request.zig` + registration (`tools_equipped`, `tools.zig`) + persist via `updateSessionPrUrl` (clear→null). Zig test: exec persists + broadcasts (mock db like worktree exec test).
+- [ ] Task 1.3: `tools_exec_set_pull_request.zig` + registration (`tools_equipped`, `tools.zig`) + persist URL + effective provider via `updateSessionPrUrl` (clear→both null). Zig test: exec persists both + broadcasts (mock db like worktree exec test).
 - [ ] Task 1.4: Manual QA matrix (requires auth): `gh` present/absent × github URL valid/invalid; `glab` × gitlab URL; generic URL + base/head. Record results in PR description.
 
 ### Phase 2 — PR diff endpoint
-- [ ] Task 2.1: `git_pr_diff.zig` (`GET /api/git/pr/diff`): normalize → provider strategy (gh / glab / pure-git fetch+diff / generic base...head), bounded 1MB diff cap, error mapping (not-a-repo→404, CLI-missing→422 with install hint, PR-not-found/auth→502 with provider message). Route in `main.zig`.
+- [ ] Task 2.1: `git_pr_diff.zig` (`GET /api/git/pr/diff`): normalize → provider = stored `pr_provider` when the session has one (endpoint reads it via the same session lookup), else re-derive from URL → strategy (gh / glab / pure-git fetch+diff / generic base...head), bounded 1MB diff cap, error mapping (not-a-repo→404, CLI-missing→422 with install hint, PR-not-found/auth→502 with provider message). Route in `main.zig`.
 - [ ] Task 2.2: Functional generic-mode test (no network): fixture repo with `main` + feature branch, `pr_url=https://git.example.com/o/r/pull/1` + `base=main&head=<branch>` → diff contains expected hunks; unknown file/branch → clean error JSON (covers empty-slice-NULL + validator wire modes).
 
 ### Phase 3 — Panel PR mode (frontend)
@@ -124,7 +124,7 @@
 | Vitest | `splitDiffByFile.spec.ts` | multi-file/rename/new/deleted splits |
 | Vitest | `SidebarDiffPanel.pr.spec.ts` | PR mode list+diff, no stage buttons, retry on error, worktree mode unchanged when empty |
 | Vitest | `ChatView.prSidebar.spec.ts` | prUrl prop passed, refresh extension present |
-| Functional | `session_pr_url_test.py` | column default + wire passthrough + generic-mode diff on fixture repo (no network) |
+| Functional | `session_pr_url_test.py` | column defaults + wire passthrough (url + provider) + generic-mode diff on fixture repo (no network) |
 | Manual | QA matrix | gh/glab present/absent × valid/invalid URLs (auth-required, recorded in PR) |
 | Typecheck | `vue-tsc --build` + zig cross-compile checks | no regressions |
 
@@ -132,7 +132,7 @@
 
 ## 5. Risks / open questions (for human review)
 
-1. **Attach-only vs create?** Plan assumes the tool binds an *existing* PR URL. If you want the tool to also *create* the PR (wrapping `gh pr create`/`glab mr create`), that's +2 tasks (create strategy per provider + tests) — confirm attach-only.
+1. ~~Attach-only vs create?~~ Answered 2026-09-14: **attach-only**, no create strategy.
 2. **REST setter for pr_url?** Only the agent tool writes today (single owner, like `git_worktree_cwd`). `CreatePrDialog` won't auto-bind the session — follow-up if wanted.
 3. **Session-list `pr_url`?** Same gap as `git_worktree_cwd` (list endpoint lacks it). Needed only if a non-ChatView UI shows PR state — confirm not needed.
 4. **glab availability?** `gh` is already assumed on PATH; `glab` becomes a second soft dependency (degraded mode when absent). Acceptable, or vendor both?
