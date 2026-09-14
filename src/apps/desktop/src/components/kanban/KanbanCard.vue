@@ -34,24 +34,27 @@
 import WorkspaceItemTaskCard from '../workspace/WorkspaceItemTaskCard.vue'
 import type { Task, WorkspaceItem } from '../../stores/workspaces'
 
-const props = withDefaults(defineProps<{
-  task: Task
-  workspaceId: string
-  itemId: string
-  // Optional: the parent WorkspaceItem (for forwarded events from
-  // <WorkspaceItemTaskCard> that need the full item context —
-  // currently unused, but accepted for forward compatibility if a
-  // future routine-task action needs the item.path).
-  item?: WorkspaceItem
-  // Absolute path used as the root for `@`-trigger file pickers in
-  // the descendant <WorkspaceItemTaskCard>'s description preview +
-  // any future editor embedded directly on the card. Optional —
-  // falls back to '' (no @path resolution) when the kanban has no
-  // path set (legacy kanbans).
-  cwd?: string
-}>(), {
-  cwd: '',
-})
+const props = withDefaults(
+  defineProps<{
+    task: Task
+    workspaceId: string
+    itemId: string
+    // Optional: the parent WorkspaceItem (for forwarded events from
+    // <WorkspaceItemTaskCard> that need the full item context —
+    // currently unused, but accepted for forward compatibility if a
+    // future routine-task action needs the item.path).
+    item?: WorkspaceItem
+    // Absolute path used as the root for `@`-trigger file pickers in
+    // the descendant <WorkspaceItemTaskCard>'s description preview +
+    // any future editor embedded directly on the card. Optional —
+    // falls back to '' (no @path resolution) when the kanban has no
+    // path set (legacy kanbans).
+    cwd?: string
+  }>(),
+  {
+    cwd: '',
+  },
+)
 
 const emit = defineEmits<{
   dragstart: [taskId: string]
@@ -59,6 +62,7 @@ const emit = defineEmits<{
   // Pass-through events from <WorkspaceItemTaskCard>.
   selectTask: [taskId: string]
   openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
+  openTaskDetailInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
@@ -100,6 +104,7 @@ const handleDragEnd = () => {
       :cwd="cwd"
       @select-task="(id) => emit('selectTask', id)"
       @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
+      @open-task-detail-in-background="(payload) => emit('openTaskDetailInBackground', payload)"
       @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
       @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"

@@ -119,6 +119,7 @@ const emit = defineEmits<{
   // Pass-through from KanbanCard (which re-emits from WorkspaceItemTask).
   selectTask: [taskId: string]
   openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
+  openTaskDetailInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
@@ -838,6 +839,9 @@ const handleColumnDrop = (event: DragEvent) => {
               :style="isDragging ? 'opacity: 0.4;' : ''"
               @select-task="(id) => emit('selectTask', id)"
               @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
+              @open-task-detail-in-background="
+                (payload) => emit('openTaskDetailInBackground', payload)
+              "
               @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
               @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
               @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"

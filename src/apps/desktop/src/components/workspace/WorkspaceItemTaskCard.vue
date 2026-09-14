@@ -36,6 +36,7 @@ import { useTaskActions, type TaskComponentProps } from '../../composables/useTa
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import { stopSession } from '../../api'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -103,6 +104,7 @@ const emit = defineEmits<{
   // the matching task — we only emit the id.
   viewTaskDetail: [taskId: string]
   openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
+  openTaskDetailInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
 }>()
 
 // Shared logic — event handlers, drop indicator.
@@ -133,6 +135,38 @@ const openTaskMenuInBackground = () => {
   })
 }
 
+const openTaskDetailMenuInBackground = () => {
+  closeTaskMenu()
+  emit('openTaskDetailInBackground', {
+    workspaceId: props.workspaceId,
+    itemId: props.itemId,
+    taskId: props.task.id,
+  })
+}
+
+// Right-click "Stop agent" — visible only while a worker runs on
+// this task (processingState[task.id] === true, same key the
+// SessionSlider + detail Start-agent button use). Calls the same
+// POST /api/llm/session/:id/stop the chat's Stop button uses
+// (task.id == session_id per Migration 052). Idempotent server-side;
+// the SSE `worker deleted` event clears processingState so the menu
+// item + slider disappear without further action.
+const isAgentRunning = computed(() => processingState.value[props.task.id] === true)
+const isStoppingAgent = ref(false)
+
+const stopAgentFromMenu = async () => {
+  closeTaskMenu()
+  if (!isAgentRunning.value || isStoppingAgent.value) return
+  isStoppingAgent.value = true
+  try {
+    await stopSession(props.task.id)
+  } catch (err) {
+    console.error('Failed to stop agent from card menu:', err)
+  } finally {
+    isStoppingAgent.value = false
+  }
+}
+
 // Local-only handler — opens the per-task detail dialog. NOT in
 // useTaskActions because that composable is shared with the row
 // variant (sidebar list) which doesn't render the info button. CRITICAL:
@@ -159,7 +193,7 @@ const handleViewTaskDetail = (event: MouseEvent) => {
 // the dropIndicator in place when the type stripe is absent).
 function typeAccentShadow(): string {
   const t = props.task.task_type
-  if (t === 'memory') return 'inset 3px 0 0 0 rgb(96, 165, 250)'   // blue-400
+  if (t === 'memory') return 'inset 3px 0 0 0 rgb(96, 165, 250)' // blue-400
   return ''
 }
 
@@ -229,7 +263,11 @@ function formatRelativeTime(input: Date | string | number | null | undefined): s
     // an explicit 'Z' (UTC). For ISO strings ('...Z' / '...+00:00')
     // the Date ctor handles them natively.
     const normalized = input.includes('T') ? input : input.replace(' ', 'T')
-    d = new Date(normalized.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(normalized) ? normalized : normalized + 'Z')
+    d = new Date(
+      normalized.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(normalized)
+        ? normalized
+        : normalized + 'Z',
+    )
   } else {
     d = new Date(input)
   }
@@ -269,9 +307,7 @@ const lastUpdated = computed<Date | string | null>(() => {
 // The rendered "X ago" string. Computed once per lastUpdated change
 // so the card doesn't re-format on every re-render. Empty string
 // when no timestamp is present.
-const lastUpdatedLabel = computed<string>(() =>
-  formatRelativeTime(lastUpdated.value),
-)
+const lastUpdatedLabel = computed<string>(() => formatRelativeTime(lastUpdated.value))
 
 // Visible tags for the chip row (Migration 067). Caps at 3 to
 // keep the card compact; the "+N more" affordance covers the rest.
@@ -339,8 +375,12 @@ const gitBranchBadge = computed<string | null>(() => {
     :data-has-agent-error="agentError ? 'true' : undefined"
     data-task-card
     :style="{
-      color: workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text)',
-      backgroundColor: workspacesStore.activeTaskId === task.id ? 'var(--semantic-active-bg)' : 'var(--semantic-card-bg)',
+      color:
+        workspacesStore.activeTaskId === task.id ? 'var(--color-aqua)' : 'var(--semantic-text)',
+      backgroundColor:
+        workspacesStore.activeTaskId === task.id
+          ? 'var(--semantic-active-bg)'
+          : 'var(--semantic-card-bg)',
       boxShadow: cardBoxShadow,
     }"
     @click="handleSelectTask"
@@ -356,18 +396,18 @@ const gitBranchBadge = computed<string | null>(() => {
          hover-revealed with a small subtle background pill on hover. -->
     <div class="flex items-center gap-2 min-w-0">
       <!-- single branch — per-task routines deleted (Migration 084). -->
-<!-- (standard content unwrapped) -->
-        <span
-          v-if="processingState[task.id]"
-          class="w-4 h-4 flex items-center justify-center shrink-0"
-          data-testid="task-spinner"
-        >
-          <div
-            class="w-3 h-3 border-2 rounded-full animate-spin"
-            style="border-color: var(--color-yellow); border-top-color: transparent"
-          ></div>
-        </span>
-        <!-- Kanban notification icon (Chunk 6 of
+      <!-- (standard content unwrapped) -->
+      <span
+        v-if="processingState[task.id]"
+        class="w-4 h-4 flex items-center justify-center shrink-0"
+        data-testid="task-spinner"
+      >
+        <div
+          class="w-3 h-3 border-2 rounded-full animate-spin"
+          style="border-color: var(--color-yellow); border-top-color: transparent"
+        ></div>
+      </span>
+      <!-- Kanban notification icon (Chunk 6 of
              docs/plans/2026-07-26-kanban-task-notification-icon.md).
              8px orange-400 dot with a 4-pulse glow when the AI has
              finished a turn (finish_reason=stop) and the user
@@ -385,14 +425,18 @@ const gitBranchBadge = computed<string | null>(() => {
              a steady glow; iteration-fill-mode: forwards keeps the
              final 0% state (steady, no glow) so the user has a
              consistent "always visible" affordance. -->
-        <span
-          v-else-if="task.needs_human_review && task.last_finish_reason === 'stop'"
-          class="w-2 h-2 rounded-full shrink-0"
-          style="background-color: rgb(251, 146, 60); box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.6); animation: needs-review-pulse 2.4s ease-out 4 forwards;"
-          title="AI finished — awaiting your review"
-          data-testid="task-needs-review"
-        />
-        <!-- Kanban notification icon (Chunk 6) — green "reviewed"
+      <span
+        v-else-if="task.needs_human_review && task.last_finish_reason === 'stop'"
+        class="w-2 h-2 rounded-full shrink-0"
+        style="
+          background-color: rgb(251, 146, 60);
+          box-shadow: 0 0 0 0 rgba(251, 146, 60, 0.6);
+          animation: needs-review-pulse 2.4s ease-out 4 forwards;
+        "
+        title="AI finished — awaiting your review"
+        data-testid="task-needs-review"
+      />
+      <!-- Kanban notification icon (Chunk 6) — green "reviewed"
              checkmark. Shown when last_finish_reason='stop' AND
              needs_human_review=false (i.e. user has touched the
              task since the AI finished). Defensive: we also gate
@@ -400,17 +444,27 @@ const gitBranchBadge = computed<string | null>(() => {
              needs_human_review=false + finish_reason='tool_calls'
              state doesn't paint a phantom "reviewed" checkmark
              during a session-status flip. -->
-        <span
-          v-else-if="task.last_finish_reason === 'stop'"
-          class="shrink-0 text-green-500"
-          title="Reviewed"
-          data-testid="task-reviewed"
+      <span
+        v-else-if="task.last_finish_reason === 'stop'"
+        class="shrink-0 text-green-500"
+        title="Reviewed"
+        data-testid="task-reviewed"
+      >
+        <svg
+          class="w-3 h-3"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          stroke-width="2.5"
         >
-          <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </span>
-        <!-- 2026-08-29 agent-error-indicator (task_1787985074550_0):
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+          />
+        </svg>
+      </span>
+      <!-- 2026-08-29 agent-error-indicator (task_1787985074550_0):
              additive to spinner / pulse / checkmark because retry chains
              fire WHILE the worker is still active. Tooltip shows the
              same headline + retry chip the ChatView's AgentErrorCard
@@ -418,107 +472,142 @@ const gitBranchBadge = computed<string | null>(() => {
              which surface they're on. Respects prefers-reduced-motion
              (no animation when requested — see the `agent-error-pulse`
              keyframes in the scoped <style> block). -->
+      <span
+        v-if="agentError"
+        class="relative shrink-0 error-icon-wrap"
+        data-testid="task-agent-error"
+      >
         <span
-          v-if="agentError"
-          class="relative shrink-0 error-icon-wrap"
-          data-testid="task-agent-error"
+          class="error-pulse w-3.5 h-3.5 rounded-full flex items-center justify-center"
+          style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red)"
+          aria-label="Agent error — click card to view detail"
         >
-          <span
-            class="error-pulse w-3.5 h-3.5 rounded-full flex items-center justify-center"
-            style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red);"
-            aria-label="Agent error — click card to view detail"
+          <span style="color: var(--color-red); font-size: 10px; line-height: 1" aria-hidden="true"
+            >⚠</span
           >
-            <span style="color: var(--color-red); font-size: 10px; line-height: 1;" aria-hidden="true">⚠</span>
-          </span>
-          <!-- Hover tooltip — same parsing as AgentErrorCard but trimmed
+        </span>
+        <!-- Hover tooltip — same parsing as AgentErrorCard but trimmed
                (no server-detail block; the kanban-tooltip is too small
                for the raw body — the full detail lives in ChatView). -->
-          <div
-            class="error-tooltip absolute left-0 top-full mt-1.5 w-[280px] z-50 rounded-lg p-2 pointer-events-none opacity-0 invisible transition-opacity duration-150"
-            style="background: #0e0e0c; border: 1px solid rgba(196, 116, 110, 0.45); box-shadow: 0 4px 16px rgba(0,0,0,0.4);"
-            role="tooltip"
-            data-testid="task-agent-error-tooltip"
-          >
-            <div class="flex items-center gap-2 mb-1.5">
-              <span style="color: var(--color-red); font-size: 11px;" aria-hidden="true">⚠</span>
-              <span class="text-[11px] font-medium" style="color: var(--color-red);">Agent error</span>
-              <span
-                v-if="errorRetryLabel"
-                class="text-[10px] px-1.5 py-0.5 rounded-full"
-                style="background: rgba(196, 116, 110, 0.18); color: #e8928c;"
-                data-testid="task-agent-error-retry"
-              >retry {{ errorRetryLabel }}</span>
-            </div>
-            <div class="text-[11px] leading-snug" style="color: var(--semantic-text-muted);" data-testid="task-agent-error-headline">
-              {{ errorHeadline }}
-            </div>
+        <div
+          class="error-tooltip absolute left-0 top-full mt-1.5 w-[280px] z-50 rounded-lg p-2 pointer-events-none opacity-0 invisible transition-opacity duration-150"
+          style="
+            background: #0e0e0c;
+            border: 1px solid rgba(196, 116, 110, 0.45);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+          "
+          role="tooltip"
+          data-testid="task-agent-error-tooltip"
+        >
+          <div class="flex items-center gap-2 mb-1.5">
+            <span style="color: var(--color-red); font-size: 11px" aria-hidden="true">⚠</span>
+            <span class="text-[11px] font-medium" style="color: var(--color-red)">Agent error</span>
+            <span
+              v-if="errorRetryLabel"
+              class="text-[10px] px-1.5 py-0.5 rounded-full"
+              style="background: rgba(196, 116, 110, 0.18); color: #e8928c"
+              data-testid="task-agent-error-retry"
+              >retry {{ errorRetryLabel }}</span
+            >
           </div>
-        </span>
-        <!-- Card variant: bullet is HIDDEN (the card itself signals
+          <div
+            class="text-[11px] leading-snug"
+            style="color: var(--semantic-text-muted)"
+            data-testid="task-agent-error-headline"
+          >
+            {{ errorHeadline }}
+          </div>
+        </div>
+      </span>
+      <!-- Card variant: bullet is HIDDEN (the card itself signals
              a task — the dot is visual noise in the modern-
              minimalist design). The v-else-if is mutually exclusive
              with the spinner above (never both at once). -->
-        <!-- (intentionally no bullet span here in card variant) -->
-        <!-- Pin indicator (always visible when pinned). -->
-        <span
-          v-if="task.is_pinned"
-          class="w-3 h-3 flex items-center justify-center shrink-0 text-yellow-400"
-          title="Pinned"
-          data-testid="task-pin-indicator"
-        >
-          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
-          </svg>
-        </span>
-        <span
-          class="flex-1 min-w-0 text-sm font-medium leading-snug truncate"
-        >{{ task.name }}</span>
-        <button
-          @click="handlePinToggle($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg]"
-          :class="task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'"
-          :title="task.is_pinned ? 'Unpin task' : 'Pin task'"
-          data-testid="task-pin-toggle"
-        >
-          <svg v-if="task.is_pinned" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
-          </svg>
-          <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z" />
-          </svg>
-        </button>
-        <button
-          @click="handleRenameTask($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-blue-400"
-          style="color: var(--semantic-text-dim);"
-          title="Rename Task"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-        </button>
-        <!-- Info / view detail button (hover-revealed). Opens the
+      <!-- (intentionally no bullet span here in card variant) -->
+      <!-- Pin indicator (always visible when pinned). -->
+      <span
+        v-if="task.is_pinned"
+        class="w-3 h-3 flex items-center justify-center shrink-0 text-yellow-400"
+        title="Pinned"
+        data-testid="task-pin-indicator"
+      >
+        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+          <path
+            d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+          />
+        </svg>
+      </span>
+      <span class="flex-1 min-w-0 text-sm font-medium leading-snug truncate">{{ task.name }}</span>
+      <button
+        @click="handlePinToggle($event)"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg]"
+        :class="
+          task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'
+        "
+        :title="task.is_pinned ? 'Unpin task' : 'Pin task'"
+        data-testid="task-pin-toggle"
+      >
+        <svg v-if="task.is_pinned" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+          <path
+            d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+          />
+        </svg>
+        <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
+          />
+        </svg>
+      </button>
+      <button
+        @click="handleRenameTask($event)"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-blue-400"
+        style="color: var(--semantic-text-dim)"
+        title="Rename Task"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+          />
+        </svg>
+      </button>
+      <!-- Info / view detail button (hover-revealed). Opens the
              KanbanTaskDetailDialog via the host (KanbanView). -->
-        <button
-          @click="handleViewTaskDetail($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
-          style="color: var(--semantic-text-dim);"
-          title="View task details"
-          data-testid="view-task-detail-btn"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </button>
-        <button
-          @click="handleDeleteTask($event)"
-          class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
-          style="color: var(--semantic-text-dim);"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
+      <button
+        @click="handleViewTaskDetail($event)"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
+        style="color: var(--semantic-text-dim)"
+        title="View task details"
+        data-testid="view-task-detail-btn"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+          />
+        </svg>
+      </button>
+      <button
+        @click="handleDeleteTask($event)"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
+        style="color: var(--semantic-text-dim)"
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M6 18L18 6M6 6l12 12"
+          />
+        </svg>
+      </button>
     </div>
     <!-- Description preview. Renders the markdown via <MarkdownDescription>
          (which handles bold/italic/headings/images/@path chips). The
@@ -530,7 +619,7 @@ const gitBranchBadge = computed<string | null>(() => {
     <div
       v-if="task.description"
       class="text-[11px] leading-relaxed pr-1 w-full text-left line-clamp-2"
-      style="color: var(--semantic-text-muted); max-height: 3rem; overflow: hidden;"
+      style="color: var(--semantic-text-muted); max-height: 3rem; overflow: hidden"
       data-testid="task-description"
     >
       <MarkdownDescription
@@ -560,9 +649,10 @@ const gitBranchBadge = computed<string | null>(() => {
       <span
         v-if="extraImagesCount > 0"
         class="absolute bottom-1 right-1 text-[10px] px-1.5 py-0.5 rounded font-medium"
-        style="background: rgba(0,0,0,0.6); color: #fff;"
+        style="background: rgba(0, 0, 0, 0.6); color: #fff"
         data-testid="task-image-more"
-      >+{{ extraImagesCount }}</span>
+        >+{{ extraImagesCount }}</span
+      >
     </div>
     <!-- Tags row (Migration 067 — kanban task tags feature).
          Up to 3 chips visible; "+N more" link if more (opens the
@@ -587,7 +677,7 @@ const gitBranchBadge = computed<string | null>(() => {
         v-if="extraTagsCount > 0"
         type="button"
         class="text-[10px] underline"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         @click.stop="emit('viewTaskDetail', task.id)"
         :data-testid="`task-tags-more`"
       >
@@ -602,7 +692,7 @@ const gitBranchBadge = computed<string | null>(() => {
     <div
       v-if="lastUpdatedLabel || typeBadge || gitBranchBadge || agentError"
       class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap self-start w-full"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       data-testid="task-meta"
     >
       <!-- Last-updated time pill. Single SVG clock icon + text.
@@ -611,10 +701,21 @@ const gitBranchBadge = computed<string | null>(() => {
         v-if="lastUpdatedLabel"
         class="inline-flex items-center gap-1"
         data-testid="task-meta-updated"
-        :title="typeof lastUpdated === 'string' ? lastUpdated : (lastUpdated instanceof Date ? lastUpdated.toISOString() : '')"
+        :title="
+          typeof lastUpdated === 'string'
+            ? lastUpdated
+            : lastUpdated instanceof Date
+              ? lastUpdated.toISOString()
+              : ''
+        "
       >
         <svg class="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+          />
         </svg>
         <span>{{ lastUpdatedLabel }}</span>
       </span>
@@ -668,7 +769,7 @@ const gitBranchBadge = computed<string | null>(() => {
       <span
         v-if="agentError"
         class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
-        style="background: rgba(196,116,110,0.12); color: var(--color-red);"
+        style="background: rgba(196, 116, 110, 0.12); color: var(--color-red)"
         data-testid="task-meta-agent-error"
       >
         <span aria-hidden="true">⚠</span>
@@ -679,7 +780,11 @@ const gitBranchBadge = computed<string | null>(() => {
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
+      show-details
+      :show-stop="isAgentRunning"
       @open="openTaskMenuInBackground"
+      @open-details="openTaskDetailMenuInBackground"
+      @stop="stopAgentFromMenu"
     />
   </button>
 </template>
@@ -722,9 +827,15 @@ const gitBranchBadge = computed<string | null>(() => {
    animation — same pattern as `needs-review-pulse` above). */
 @media (prefers-reduced-motion: no-preference) {
   @keyframes agent-error-pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(196, 116, 110, 0.7); }
-    70%  { box-shadow: 0 0 0 8px rgba(196, 116, 110, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(196, 116, 110, 0); }
+    0% {
+      box-shadow: 0 0 0 0 rgba(196, 116, 110, 0.7);
+    }
+    70% {
+      box-shadow: 0 0 0 8px rgba(196, 116, 110, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(196, 116, 110, 0);
+    }
   }
   .error-pulse {
     animation: agent-error-pulse 1.8s ease-out 3 forwards;
@@ -744,7 +855,7 @@ const gitBranchBadge = computed<string | null>(() => {
    active agent error. The data-attribute is bound on the root
    <button> by the script section above; the selector targets the
    attribute value so it never leaks outside this card. */
-button[data-has-agent-error="true"] {
+button[data-has-agent-error='true'] {
   border-color: rgba(196, 116, 110, 0.55);
   box-shadow: 0 0 0 1px rgba(196, 116, 110, 0.25);
 }
