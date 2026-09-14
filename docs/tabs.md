@@ -17,9 +17,10 @@ param.
 |---|---|
 | Click a chat / workspace item / task | Opens it in a tab (or focuses the tab that already shows it) |
 | `Ctrl/Cmd+click`, middle click | Opens it in a **background** tab — you stay where you are |
-| `+` (end of the strip) | Opens the chats list ("new tab page"); focuses it if it is already open |
+| `+` (end of the strip) | Opens a blank **browser tab** (address bar focused); focuses it if it is already open |
 | Click a tab | Switches to it |
 | Click `×` on a tab, or middle-click a tab | Closes it |
+| An http(s) link clicked in chat / Settings | Opens in a browser tab and (when that tab has no live window) in a Nalar-owned browser window (see `openExternal` below) |
 | Right-click a tab | Close tab / Close other tabs / Close tabs to the right |
 | Drag a tab | Reorders; the order is saved |
 | Wheel over the strip | Scrolls the strip sideways |
@@ -33,6 +34,27 @@ Switching tabs re-mounts the view (one view is live at a time — see
 "Rendering model" below). Chat history, scroll position, in-flight stream
 content, queued messages and your unsent composer text all survive that.
 
+### The browser window
+
+A browser tab's page does not render inside the app. It renders in a real
+top-level webview in its own OS window, opened by `nalar-desktop --browser
+<url>` — not an iframe, not the app window — with an injected
+address/←/→/↻ bar. Any site works (GitHub, Google, `localhost:5173`), and
+cookies and sign-in persist in the engine's store.
+
+**Window re-use rule:** at most ONE auto-managed window per tab — a repeat
+open focuses/keeps it. The primary button is always enabled and its label
+follows the state (`Open browser window` / `Open another window`), because
+we cannot raise another process's window: clicking the label is the explicit
+opt-in for a second view. Spawned windows **survive quitting the app** (they
+are independent windows and need no `nalar` server).
+
+The bar is part of the page's document, so a page can cover or strip it:
+removal is recovered by a MutationObserver with a bounded budget (5
+removals), then the observer disconnects — zero idle CPU either way, no
+timers and no polling anywhere. Window state is fetched on demand (view
+mount/activation or after an action), never polled.
+
 ## Shortcuts
 
 The guaranteed map is the `Shift+Alt` namespace, because a page cannot
@@ -40,7 +62,7 @@ override the chords a browser reserves:
 
 | Keys | Action |
 |---|---|
-| `Shift+Alt+T` | New tab |
+| `Shift+Alt+T` | New browser tab |
 | `Shift+Alt+W` | Close the active tab |
 | `Shift+Alt+Z` | Reopen the last closed tab (stack of 10) |
 | `Shift+Alt+→` / `Shift+Alt+←` | Next / previous tab (wraps) |
@@ -114,6 +136,8 @@ Two navigations that mean the same target focus one tab:
 | `view=workspace&itemId=I/chat/T` — a task chat on a **design** item | `ws:W:<bare I>[:P]` (the item's tab — the chat is a dialog *inside* that view) |
 | `view=workspace&itemId=I/chat/T` — a task chat on any other item type, **kanban included** | `ws:W:<bare I>:chat:T` (its own tab) |
 | legacy `view=task&task=T` | `chat:T` |
+| `view=browser` (**no** `url`) | `browser:new` |
+| `view=browser&url=…` | `browser:<full url>` |
 
 **A task is a session** (`task.id == session.id`, migration 052), but where it
 renders decides its tab:
@@ -138,6 +162,12 @@ receives the backend's real id on the first message. The tab follows that change
 **in place** (same tab id, same position, new key) — it is never left behind as a
 dead pointer, and no duplicate tab appears.
 
+A browser tab is a **launcher + record** for a Nalar-owned webview window, 1 tab
+: 1 window. The window owns history and cookies (the engine does), so the tab
+stores neither. The URL is part of the tab identity, so opening the same URL
+twice focuses the existing tab instead of opening a second one — a documented
+deviation from Chrome.
+
 ### Tab labels
 
 Labels are **resolved live from the stores**, not frozen when the tab opens:
@@ -156,6 +186,8 @@ only lands after the API answers.
   *before* the bus exists and would silently never attach)
 * chats list / settings / kanban settings → "Chats" / "Settings" / "Kanban
   settings"
+* browser tab → `hostOf(url)` (e.g. `github.com`, `localhost:5173`); a blank
+  one → "New tab", glyph 🌐
 * anything still unknown → a kind fallback ("Workspace", "Chat")
 
 The resolved label is written back to the tab, so a reload (before the tree has
@@ -204,6 +236,11 @@ tab), so with tabs **off** a card click shows the chat in place of the board
 — exactly how agent and folder task chats already behaved. Reverting the
 modal itself is a `git revert`, not a setting.
 
+A browser tab still works with the strip off — `?view=browser&url=…` still
+renders the body, and `openExternal` (chat's PR link, Settings → Open web)
+still opens the Nalar window with the same re-use rule (it uses the fixed
+bridge id `external`).
+
 ## Rendering model (and why it is not `KeepAlive`)
 
 Exactly one view is mounted at a time; switching tabs is navigation. The
@@ -229,7 +266,15 @@ per-session composer drafts.
 | `src/apps/desktop/src/composables/useTabShortcuts.ts` | The key map + listener |
 | `src/apps/desktop/src/components/AppLayout.vue` | Mounts the strip, owns the route funnel and the router calls |
 | `src/apps/desktop/src/components/file/FileInput.vue` | Optional `draftKey` — drafts survive the remount a tab switch causes |
+| `src/apps/desktop/src/helpers/browserUrl.ts` | Pure address rules (`normalizeAddressInput`, `isHttpUrl`, `hostOf`) |
+| `src/apps/desktop/src/helpers/browserBridge.ts` | The typed bridge seam over `window.nalarBrowser` + absent-bridge degradation |
+| `src/apps/desktop/src/helpers/openExternal.ts` | http(s) → browser tab/window; anything else → `window.open` |
+| `src/apps/desktop/src/components/browser/BrowserTabView.vue` | The tab body (launcher + record for the window) |
+| `src/apps/desktop_app/browser_bridge.zig` | The three `webview_bind` bindings + the shell-side window handles |
+| `src/apps/desktop_app/browser_chrome.js` | The injected address bar (embedded verbatim into the binary) |
+| `src/apps/desktop_app/cli.zig` | `--browser` flag (http(s)-only, validated at parse time) |
 
 Tests: `__tests__/tabTarget.spec.ts`, `tabsStore.spec.ts`, `TabBar.spec.ts`,
 `AppLayout.tabs.spec.ts`, `tabDraft.spec.ts`, `useTabShortcuts.spec.ts`,
-`tabsSettingsToggle.spec.ts`.
+`tabsSettingsToggle.spec.ts`, `browserUrl.spec.ts`, `browserBridge.spec.ts`,
+`BrowserTabView.spec.ts`, `openExternal.spec.ts`, `browserChrome.spec.ts`.
