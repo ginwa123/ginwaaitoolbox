@@ -580,6 +580,8 @@ test "getSessionPrFields reads pr_url + pr_provider straight from sessions row" 
     try ctx.db.exec(alloc, "INSERT INTO sessions (id, name, status, pr_url, pr_provider) VALUES ('s_pr', 'PR', 'active', 'https://github.com/o/r/pull/7', 'github')", &.{});
 
     const fields = try llm_history.getSessionPrFields(alloc, &ctx.db, "s_pr");
+    defer alloc.free(fields.pr_url);
+    defer alloc.free(fields.pr_provider);
     try testing.expectEqualStrings("https://github.com/o/r/pull/7", fields.pr_url);
     try testing.expectEqualStrings("github", fields.pr_provider);
 

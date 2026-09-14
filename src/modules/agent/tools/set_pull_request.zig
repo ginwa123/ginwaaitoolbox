@@ -1,0 +1,377 @@
+const std = @import("std");
+const schemas = @import("schemas.zig");
+const ToolProperty = schemas.ToolProperty;
+const ToolParameters = schemas.ToolParameters;
+const AgentToolFunction = schemas.AgentToolFunction;
+const AgentTool = schemas.AgentTool;
+const pr_provider = @import("pr_provider.zig");
+const PrProvider = pr_provider.PrProvider;
+
+/// Input structure for set_pull_request tool (attach-only: binds an
+/// EXISTING pull/merge-request URL to the session; it never creates one).
+pub const SetPullRequestInput = struct {
+    /// Normalized PR/MR URL, e.g. `https://github.com/acme/app/pull/42`
+    /// or `https://gitlab.com/group/sub/repo/-/merge_requests/7`.
+    /// Required unless `clear=true`. Credentials in the URL are stripped
+    /// before persistence. Forge UI suffixes (`/files`, `/commits/...`)
+    /// are stripped by normalization.
+    pr_url: []const u8 = "",
+    /// Optional provider override: "github" | "gitlab" | "generic".
+    /// Empty (the default) = auto-detect from the URL. Pass an explicit
+    /// value for self-hosted forges whose host does not reveal the
+    /// provider (e.g. GitHub Enterprise on a custom domain).
+    provider: []const u8 = "",
+    /// Optional base ref for `generic`-provider diffs (e.g. "main").
+    /// Ignored for github/gitlab (base comes from the forge). Falls
+    /// back to auto-detect when empty.
+    base: []const u8 = "",
+    /// Optional head ref for `generic`-provider diffs (e.g. a branch
+    /// name). Ignored for github/gitlab. Defaults to the current
+    /// branch when empty.
+    head: []const u8 = "",
+    /// When true, unbind the session's PR (clears pr_url + pr_provider).
+    /// All other fields are ignored when true.
+    clear: bool = false,
+    /// When true (default), confirm the PR exists via the provider CLI
+    /// (`gh pr view` / `glab mr view`) before persisting. A missing CLI
+    /// degrades to persist-with-warning; a CLI-reported not-found/auth
+    /// failure is a hard error and nothing is persisted.
+    verify: bool = true,
+    /// The session_id this PR is bound to. The LLM does NOT supply
+    /// this — the exec wrapper injects `ctx.session_id` at call time.
+    session_id: []const u8 = "",
+};
+
+pub const set_pull_request_tool_system_prompt =
+    \\## Set Pull Request Tool — Behavior (MANDATORY when applicable)
+    \\When the human asks to attach, link, or review a pull request /
+    \\merge request for the current session, call `set_pull_request`
+    \\with the PR URL. This binds the PR to the session so the chat's
+    \\right panel shows the PR's file changes. The tool is attach-only:
+    \\it never creates a PR (creation stays with `gh pr create` /
+    \\`glab mr create` via bash, or the Create-PR dialog).
+    \\
+    \\- `pr_url` is required (unless `clear=true`). Paste the full URL.
+    \\- Leave `provider` empty unless the forge is self-hosted and
+    \\  auto-detection could misroute (e.g. GitHub Enterprise on a
+    \\  custom domain → pass `provider="github"`).
+    \\- For non-GitHub/non-GitLab forges the provider is `generic` and
+    \\  the panel diffs `base...head` locally — pass both when the
+    \\  defaults (auto-detected base, current branch) are wrong.
+    \\- Pass `clear=true` to unbind before attaching a different PR.
+    \\
+;
+
+pub const set_pull_request_tool = AgentTool{
+    .type = "function",
+    .function = .{
+        .name = "set_pull_request",
+        .description =
+            \\Attach an existing pull/merge-request URL to the current session so the chat's right panel shows the PR's file changes. Works for GitHub (gh CLI), GitLab (glab CLI, incl. self-hosted), and generic forges (pure-git base...head diff, no CLI needed). This tool never creates a PR — only binds one. Pass clear=true to unbind the current PR.
+        ,
+        .parameters = .{
+            .type = "object",
+            .properties = &.{
+                .{
+                    .name = "pr_url",
+                    .type = "string",
+                    .description = "Full PR/MR URL, e.g. https://github.com/acme/app/pull/42. Required unless clear=true. Credentials and /files, /commits UI suffixes are stripped automatically.",
+                },
+                .{
+                    .name = "provider",
+                    .type = "string",
+                    .description = "Optional override: \"github\", \"gitlab\", or \"generic\". Empty = auto-detect from the URL. Needed for self-hosted forges whose host does not reveal the provider.",
+                },
+                .{
+                    .name = "base",
+                    .type = "string",
+                    .description = "Optional base ref for generic-provider diffs (e.g. \"main\"). Ignored for github/gitlab.",
+                },
+                .{
+                    .name = "head",
+                    .type = "string",
+                    .description = "Optional head ref for generic-provider diffs. Ignored for github/gitlab. Defaults to the current branch.",
+                },
+                .{
+                    .name = "clear",
+                    .type = "boolean",
+                    .description = "If true, unbind the session's PR (clears pr_url + pr_provider). All other fields are ignored when true. Default: false.",
+                },
+                .{
+                    .name = "verify",
+                    .type = "boolean",
+                    .description = "If true (default), confirm the PR exists via gh/glab before persisting. Missing CLI degrades to persist-with-warning; not-found/auth failure is a hard error.",
+                },
+            },
+            .required = &.{},
+        },
+        .system_prompt = set_pull_request_tool_system_prompt,
+    },
+};
+
+// ─── XML helpers ─────────────────────────────────────────────────────────
+//
+// Local `xmlEscape` duplicated per project convention (see
+// show_preview.zig, kanban_list.zig).
+
+fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+    for (s) |c| {
+        switch (c) {
+            '<' => try result.appendSlice(allocator, "&lt;"),
+            '>' => try result.appendSlice(allocator, "&gt;"),
+            '&' => try result.appendSlice(allocator, "&amp;"),
+            '"' => try result.appendSlice(allocator, "&quot;"),
+            '\'' => try result.appendSlice(allocator, "&apos;"),
+            else => try result.append(allocator, c),
+        }
+    }
+    return try result.toOwnedSlice(allocator);
+}
+
+fn tag(allocator: std.mem.Allocator, xml: *std.ArrayList(u8), name: []const u8, value: []const u8) !void {
+    const esc = try xmlEscape(allocator, value);
+    defer allocator.free(esc);
+    try xml.appendSlice(allocator, "<");
+    try xml.appendSlice(allocator, name);
+    try xml.appendSlice(allocator, ">");
+    try xml.appendSlice(allocator, esc);
+    try xml.appendSlice(allocator, "</");
+    try xml.appendSlice(allocator, name);
+    try xml.appendSlice(allocator, ">");
+}
+
+/// Success envelope for attach. `number` is null for generic.
+/// `warning` is null when verification was clean.
+pub fn successSetToXml(
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+    url: []const u8,
+    provider: PrProvider,
+    number: ?[]const u8,
+    verified: bool,
+    warning: ?[]const u8,
+    base: []const u8,
+    head: []const u8,
+) ![]u8 {
+    var xml: std.ArrayList(u8) = .empty;
+    errdefer xml.deinit(allocator);
+    try xml.appendSlice(allocator, "<pull_request>");
+    try tag(allocator, &xml, "session_id", session_id);
+    try xml.appendSlice(allocator, "<attached>true</attached>");
+    try tag(allocator, &xml, "url", url);
+    try tag(allocator, &xml, "provider", provider.toString());
+    if (number) |n| try tag(allocator, &xml, "number", n);
+    try xml.appendSlice(allocator, if (verified) "<verified>true</verified>" else "<verified>false</verified>");
+    if (warning) |w| try tag(allocator, &xml, "warning", w);
+    // Echo generic-mode refs for reference (the pr/diff endpoint accepts
+    // the same values as ?base=/?head= overrides; otherwise it
+    // auto-detects). Omitted when empty.
+    if (base.len > 0) try tag(allocator, &xml, "base", base);
+    if (head.len > 0) try tag(allocator, &xml, "head", head);
+    try xml.appendSlice(allocator, "</pull_request>");
+    return try xml.toOwnedSlice(allocator);
+}
+
+pub fn successClearToXml(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    var xml: std.ArrayList(u8) = .empty;
+    errdefer xml.deinit(allocator);
+    try xml.appendSlice(allocator, "<pull_request>");
+    try tag(allocator, &xml, "session_id", session_id);
+    try xml.appendSlice(allocator, "<cleared>true</cleared>");
+    try xml.appendSlice(allocator, "</pull_request>");
+    return try xml.toOwnedSlice(allocator);
+}
+
+pub fn xmlError(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    var xml: std.ArrayList(u8) = .empty;
+    errdefer xml.deinit(allocator);
+    try xml.appendSlice(allocator, "<pull_request><error>");
+    const esc = try xmlEscape(allocator, msg);
+    defer allocator.free(esc);
+    try xml.appendSlice(allocator, esc);
+    try xml.appendSlice(allocator, "</error></pull_request>");
+    return try xml.toOwnedSlice(allocator);
+}
+
+// ─── Validators (pure, no IO) ────────────────────────────────────────────
+
+/// Validate the raw pr_url. Returns null on success, error text otherwise.
+pub fn validatePrUrl(url: []const u8) ?[]const u8 {
+    if (url.len == 0) return "pr_url cannot be empty";
+    if (url.len > 2048) return "pr_url exceeds 2048 characters";
+    if (std.mem.indexOfScalar(u8, url, 0) != null) return "pr_url contains null byte";
+    const trimmed = std.mem.trim(u8, url, " \t\r\n");
+    if (std.mem.indexOf(u8, trimmed, "://") == null) return "pr_url must be an absolute URL (missing scheme)";
+    if (!(std.mem.startsWith(u8, trimmed, "http://") or std.mem.startsWith(u8, trimmed, "https://"))) return "pr_url must use http(s)";
+    return null;
+}
+
+/// Validate the provider override ("" = auto-detect).
+pub fn validateProviderOverride(provider: []const u8) ?[]const u8 {
+    if (provider.len == 0) return null;
+    if (PrProvider.fromString(provider) == null) return "provider must be \"github\", \"gitlab\", or \"generic\"";
+    return null;
+}
+
+// ─── Verify (IO: provider CLI) ───────────────────────────────────────────
+
+pub const VerifyOutcome = enum { verified, cli_missing, failed };
+
+/// Confirm the PR exists via the provider CLI. `generic` has no CLI —
+/// always `cli_missing` (persist with a "not verified" warning).
+/// A missing CLI binary is `cli_missing` (degraded persist); any other
+/// non-zero exit is `failed` (do not persist). `detail` is owned on
+/// `failed` (stderr, trimmed, 512-byte cap).
+pub fn verifyPr(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    provider: PrProvider,
+    url: []const u8,
+) !struct { outcome: VerifyOutcome, detail: []const u8 } {
+    const argv: []const []const u8 = switch (provider) {
+        .github => &.{ "gh", "pr", "view", url, "--json", "number,url" },
+        .gitlab => &.{ "glab", "mr", "view", url },
+        .generic => return .{ .outcome = .cli_missing, .detail = "" },
+    };
+    const res = std.process.run(allocator, io, .{ .argv = argv }) catch |err| {
+        // Spawn failure = CLI not installed (or not on PATH).
+        if (err == error.FileNotFound) return .{ .outcome = .cli_missing, .detail = "" };
+        const d = try std.fmt.allocPrint(allocator, "verify spawn failed: {s}", .{@errorName(err)});
+        return .{ .outcome = .failed, .detail = d };
+    };
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
+    if (res.term.exited == 0) return .{ .outcome = .verified, .detail = "" };
+    const err_text = std.mem.trim(u8, res.stderr, " \t\r\n");
+    const cap = @min(err_text.len, 512);
+    const d = try allocator.dupe(u8, err_text[0..cap]);
+    return .{ .outcome = .failed, .detail = d };
+}
+
+// ─── Execute ─────────────────────────────────────────────────────────────
+
+/// Attach (or clear) the session's PR binding. Returns the inner
+/// `<pull_request>` XML string (owned). The exec wrapper persists
+/// `<url>` + `<provider>` to the session on success.
+pub fn executeSetPullRequestToString(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    session_id: []const u8,
+    input: SetPullRequestInput,
+) ![]u8 {
+    if (input.clear) {
+        return try successClearToXml(allocator, session_id);
+    }
+    if (validatePrUrl(input.pr_url)) |err| return try xmlError(allocator, err);
+    if (validateProviderOverride(input.provider)) |err| return try xmlError(allocator, err);
+
+    const normalized = try pr_provider.normalizePrUrl(allocator, input.pr_url);
+    defer allocator.free(normalized);
+
+    const provider: PrProvider = if (input.provider.len > 0)
+        PrProvider.fromString(input.provider).?
+    else
+        pr_provider.detectProvider(normalized);
+
+    var number: ?[]const u8 = null;
+    if (provider != .generic) {
+        const ref = pr_provider.parsePrRef(normalized, provider) orelse {
+            const msg = try std.fmt.allocPrint(allocator, "pr_url does not look like a {s} pull/merge-request URL: {s}", .{ provider.toString(), normalized });
+            defer allocator.free(msg);
+            return try xmlError(allocator, msg);
+        };
+        number = ref.number;
+    }
+
+    var verified = false;
+    var warning: ?[]const u8 = null;
+    defer if (warning) |w| allocator.free(w);
+    if (input.verify) {
+        const v = try verifyPr(allocator, io, provider, normalized);
+        switch (v.outcome) {
+            .verified => verified = true,
+            .cli_missing => {
+                const cli = if (provider == .github) "gh" else "glab";
+                warning = try std.fmt.allocPrint(allocator, "{s} CLI not found: PR persisted without verification (panel will report fetch errors)", .{cli});
+            },
+            .failed => {
+                defer allocator.free(v.detail);
+                const msg = try std.fmt.allocPrint(allocator, "PR verification failed: {s}", .{v.detail});
+                defer allocator.free(msg);
+                return try xmlError(allocator, msg);
+            },
+        }
+    }
+
+    return try successSetToXml(allocator, session_id, normalized, provider, number, verified, warning, input.base, input.head);
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────
+
+test "set_pull_request tool definition has correct name" {
+    try std.testing.expectEqualStrings("set_pull_request", set_pull_request_tool.function.name);
+}
+
+test "validatePrUrl rejects empty, non-url, non-http" {
+    try std.testing.expect(validatePrUrl("") != null);
+    try std.testing.expect(validatePrUrl("not a url") != null);
+    try std.testing.expect(validatePrUrl("ftp://host/x") != null);
+    try std.testing.expect(validatePrUrl("https://github.com/a/b/pull/1") == null);
+}
+
+test "validateProviderOverride accepts empty + known, rejects unknown" {
+    try std.testing.expect(validateProviderOverride("") == null);
+    try std.testing.expect(validateProviderOverride("github") == null);
+    try std.testing.expect(validateProviderOverride("gitlab") == null);
+    try std.testing.expect(validateProviderOverride("generic") == null);
+    try std.testing.expect(validateProviderOverride("bitbucket") != null);
+}
+
+test "execute clear returns cleared envelope" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const out = try executeSetPullRequestToString(alloc, io, "s1", .{ .clear = true });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<cleared>true</cleared>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<session_id>s1</session_id>") != null);
+}
+
+test "execute invalid url returns error envelope" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const out = try executeSetPullRequestToString(alloc, io, "s1", .{ .pr_url = "nope", .verify = false });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+}
+
+test "execute github url without verify returns attach envelope" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const out = try executeSetPullRequestToString(alloc, io, "s9", .{ .pr_url = "https://github.com/acme/app/pull/42/files", .verify = false });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<attached>true</attached>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<url>https://github.com/acme/app/pull/42</url>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<provider>github</provider>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<number>42</number>") != null);
+}
+
+test "execute generic url without verify returns attach envelope without number" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const out = try executeSetPullRequestToString(alloc, io, "s1", .{ .pr_url = "https://git.corp.example.com/a/b/changes/9", .verify = false });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<provider>generic</provider>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "<number>") == null);
+}
