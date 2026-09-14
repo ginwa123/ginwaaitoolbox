@@ -2779,6 +2779,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     //   zig-out/bin/nalar-desktop        → /usr/local/bin/nalar-desktop
     //   zig-out/bin/nalar (service)      → /usr/local/bin/nalar
     //   packaging/linux/nalar.desktop    → /usr/share/applications/nalar.desktop
+    //   packaging/linux/nalar-browser.desktop → /usr/share/applications/nalar-browser.desktop
     //   src/apps/desktop/public/favicon.ico → /usr/share/pixmaps/nalar.ico
     //
     // The service copy is REQUIRED, not optional: the desktop resolves
@@ -2819,7 +2820,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     linux_app_step.dependOn(&copy_nalar_svc.step);
     const install_desktop_file = b.addSystemCommand(&.{
         "/bin/sh", "-c",
-        "mkdir -p /usr/share/applications && cp packaging/linux/nalar.desktop /usr/share/applications/nalar.desktop && chmod 644 /usr/share/applications/nalar.desktop",
+        "mkdir -p /usr/share/applications && cp packaging/linux/nalar.desktop /usr/share/applications/nalar.desktop && chmod 644 /usr/share/applications/nalar.desktop && cp packaging/linux/nalar-browser.desktop /usr/share/applications/nalar-browser.desktop && chmod 644 /usr/share/applications/nalar-browser.desktop",
     });
     install_desktop_file.step.dependOn(&copy_desktop_bin.step);
     install_desktop_file.step.dependOn(&copy_nalar_svc.step);

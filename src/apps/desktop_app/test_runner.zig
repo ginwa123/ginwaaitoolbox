@@ -12,6 +12,7 @@
 test {
     _ = @import("port_test.zig");
     _ = @import("cli_test.zig");
+    _ = @import("browser.zig");
     _ = @import("path_resolve_test.zig");
     _ = @import("subprocess_test.zig");
     _ = @import("extraction_test.zig");

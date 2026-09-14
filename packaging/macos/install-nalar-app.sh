@@ -6,13 +6,20 @@
 # service sitting next to itself (Contents/MacOS/nalar); a lone
 # nalar-desktop cannot start its backend.
 #
+# Also assembles Nalar Browser.app: same binaries, but the bundle
+# executable is a small `nalar-browser` shim that execs
+# `nalar-desktop --browser`, so a double-click opens the attached
+# nalar URL in the default browser tab instead of a webview window.
+#
 # Usage:
-#   packaging/macos/install-nalar-app.sh <sourcedir> [destappdir]
+#   packaging/macos/install-nalar-app.sh <sourcedir> [destappdir] [browserappdir]
 #
 #   <sourcedir>   dir holding `nalar-desktop` + `nalar`
 #                 (e.g. zig-out/bin from `zig build nalar-desktop`).
 #   [destappdir]  destination bundle, default ~/Applications/Nalar.app.
 #                 CI passes a staging dir (bin-stage-*/Nalar.app) instead.
+#   [browserappdir] destination browser bundle,
+#                 default ~/Applications/Nalar Browser.app.
 #
 # Post-assembly the script clears the quarantine xattr and applies an
 # ad-hoc signature (both best-effort) so a first double-click doesn't
@@ -31,6 +38,7 @@ fi
 
 SRC_DIR="$1"
 DEST_APP="${2:-$HOME/Applications/Nalar.app}"
+DEST_BROWSER_APP="${3:-$HOME/Applications/Nalar Browser.app}"
 
 for bin in nalar-desktop nalar; do
     if [[ ! -f "${SRC_DIR}/${bin}" ]]; then
@@ -63,3 +71,29 @@ codesign --force --deep -s - "${DEST_APP}" 2>/dev/null || true
 
 echo "Installed Nalar.app -> ${DEST_APP}"
 echo "Spotlight/Launchpad will index it as 'Nalar' (reindex can take ~1 min on first install)."
+
+# Nalar Browser.app: same payload plus a `nalar-browser` shim that
+# forwards to `nalar-desktop --browser`. The browser plist points
+# CFBundleExecutable at the shim so Launchpad shows a distinct
+# "Nalar Browser" entry that opens a default-browser tab.
+PLIST_BROWSER_SRC="${SCRIPT_DIR}/Info.browser.plist"
+if [[ -f "${PLIST_BROWSER_SRC}" ]]; then
+    rm -rf "${DEST_BROWSER_APP}"
+    mkdir -p "${DEST_BROWSER_APP}/Contents/MacOS" "${DEST_BROWSER_APP}/Contents/Resources"
+    cp "${SRC_DIR}/nalar-desktop" "${DEST_BROWSER_APP}/Contents/MacOS/nalar-desktop"
+    cp "${SRC_DIR}/nalar"         "${DEST_BROWSER_APP}/Contents/MacOS/nalar"
+    chmod +x "${DEST_BROWSER_APP}/Contents/MacOS/nalar-desktop" "${DEST_BROWSER_APP}/Contents/MacOS/nalar"
+    cat > "${DEST_BROWSER_APP}/Contents/MacOS/nalar-browser" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+exec "${HERE}/nalar-desktop" --browser "$@"
+SHIM
+    chmod +x "${DEST_BROWSER_APP}/Contents/MacOS/nalar-browser"
+    cp "${PLIST_BROWSER_SRC}" "${DEST_BROWSER_APP}/Contents/Info.plist"
+    xattr -dr com.apple.quarantine "${DEST_BROWSER_APP}" 2>/dev/null || true
+    codesign --force --deep -s - "${DEST_BROWSER_APP}" 2>/dev/null || true
+    echo "Installed Nalar Browser.app -> ${DEST_BROWSER_APP}"
+else
+    echo "Info.browser.plist missing next to script: ${PLIST_BROWSER_SRC} (skipping browser bundle)" >&2
+fi

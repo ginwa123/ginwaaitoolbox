@@ -68,13 +68,14 @@ $htmlDir = Join-Path $nalarRoot "html"
 $legacyWebappDir = Join-Path $nalarRoot "webapp"
 $startMenuDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
 $startMenuLink = Join-Path $startMenuDir "Nalar.lnk"
+$startMenuBrowserLinkUninstall = Join-Path $startMenuDir "Nalar Browser.lnk"
 $desktopLink = Join-Path ([Environment]::GetFolderPath("Desktop")) "Nalar.lnk"
 
 if ($Uninstall) {
     if (Test-Path $binDir) { Remove-Item $binDir -Recurse -Force }
     if (Test-Path $htmlDir) { Remove-Item $htmlDir -Recurse -Force }
     if (Test-Path $legacyWebappDir) { Remove-Item $legacyWebappDir -Recurse -Force }
-    foreach ($link in @($startMenuLink, $desktopLink)) {
+    foreach ($link in @($startMenuLink, $startMenuBrowserLinkUninstall, $desktopLink)) {
         if (Test-Path $link) { Remove-Item $link -Force }
     }
     Write-Output "Uninstalled Nalar (removed $binDir, $htmlDir and shortcuts)."
@@ -116,9 +117,10 @@ if (Test-Path (Join-Path $htmlSrc "index.html")) {
     Write-Warning "html/index.html not found in $SourceDir -- desktop falls back to embedded-asset temp extraction."
 }
 
-# Start Menu shortcut (per-user, no admin). WScript.Shell is inbox on
+# Start Menu shortcuts (per-user, no admin). WScript.Shell is inbox on
 # every Windows since 2000; IconLocation points at the exe itself
 # (no separate .ico shipped -- the exe carries the app icon).
+# Two entries: Nalar (webview) + Nalar Browser (--browser tab).
 $shell = New-Object -ComObject WScript.Shell
 $lnk = $shell.CreateShortcut($startMenuLink)
 $lnk.TargetPath = Join-Path $binDir "nalar-desktop.exe"
@@ -126,6 +128,15 @@ $lnk.WorkingDirectory = $binDir
 $lnk.Description = "Nalar Desktop - agent workspace"
 $lnk.IconLocation = (Join-Path $binDir "nalar-desktop.exe") + ",0"
 $lnk.Save()
+
+$startMenuBrowserLink = Join-Path $startMenuDir "Nalar Browser.lnk"
+$blnk = $shell.CreateShortcut($startMenuBrowserLink)
+$blnk.TargetPath = Join-Path $binDir "nalar-desktop.exe"
+$blnk.Arguments = "--browser"
+$blnk.WorkingDirectory = $binDir
+$blnk.Description = "Nalar Browser - open agent workspace in default browser tab"
+$blnk.IconLocation = (Join-Path $binDir "nalar-desktop.exe") + ",0"
+$blnk.Save()
 
 if ($DesktopShortcut) {
     $dlnk = $shell.CreateShortcut($desktopLink)
