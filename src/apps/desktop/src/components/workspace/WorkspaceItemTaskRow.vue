@@ -33,8 +33,10 @@
 // drop indicator) now lives in composables/useTaskActions.ts.
 import { inject, ref, computed, type Ref } from 'vue'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { useContextMenu } from '../../composables/useContextMenu'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 import SessionSlider from '../SessionSlider.vue'
+import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 // 2026-08-29 agent-error-row (task_1787985074550_0) — sidebar
 // variant of the kanban-card indicator. Same store + helper as the
 // kanban card (Task 5); single source of truth so the indicator
@@ -76,6 +78,7 @@ const isActive = computed(() =>
 
 const emit = defineEmits<{
   selectTask: [taskId: string]
+  openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // (pinned-tasks feature): emitted by the pin/unpin button. Payload
@@ -93,6 +96,25 @@ const {
   handleRenameTask,
   handlePinToggle,
 } = useTaskActions(props, emit)
+
+// Right-click "Open in new tab" for this task. The menu position
+// lives in useContextMenu; the task ids come from props. The event
+// bubbles up (sidebar list or kanban board) where the host builds
+// the task chat URL and opens a real browser tab.
+const { menuPos, openAt, close: closeTaskMenu } = useContextMenu()
+
+const onTaskContextMenu = (event: MouseEvent) => {
+  openAt(event)
+}
+
+const openTaskMenuInBackground = () => {
+  closeTaskMenu()
+  emit('openTaskInBackground', {
+    workspaceId: props.workspaceId,
+    itemId: props.itemId,
+    taskId: props.task.id,
+  })
+}
 
 // 2026-08-29 agent-error-row — reactive read of the latest agent
 // error keyed by task.id == session_id (migration 052 invariant).
@@ -121,6 +143,7 @@ const errorRetryLabel = computed(() =>
       boxShadow: dropIndicatorBoxShadow,
     }"
     @click="handleSelectTask"
+    @contextmenu.prevent="onTaskContextMenu"
   >
     <!-- single branch — per-task routines deleted (Migration 084,
      plan 2026-09-10-workspace-items-routines). All tasks render
@@ -244,6 +267,12 @@ const errorRetryLabel = computed(() =>
          level covers "any task on this item is busy"; this covers
          "this specific task is busy". Both can render at once. -->
     <SessionSlider :session-id="task.id" test-id="task-spinner" />
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      @open="openTaskMenuInBackground"
+    />
   </button>
 </template>
 

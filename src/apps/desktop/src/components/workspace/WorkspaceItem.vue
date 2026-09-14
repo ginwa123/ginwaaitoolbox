@@ -3,11 +3,13 @@ import { computed, inject, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { WorkspaceItem } from '../../stores/workspaces'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { useContextMenu } from '../../composables/useContextMenu'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import WorkspaceItemTaskRow from './WorkspaceItemTaskRow.vue'
 import DesignPageRow from './DesignPageRow.vue'
 import type { DesignPage } from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 
 const workspacesStore = useWorkspacesStore()
 
@@ -57,6 +59,7 @@ const emit = defineEmits<{
   // pure pass-through (see handleSelectTask / handleDeleteTask /
   // handleRenameTask below).
   selectTask: [taskId: string]
+  openTaskInBackground: [payload: { workspaceId: string; itemId: string; itemType?: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // The user must click to fetch the next page of tasks for this
@@ -201,6 +204,43 @@ const handleAddTask = (event: Event) => {
 // here. No business logic; pure forwarding.
 const handleSelectTask = (taskId: string) => {
   emit('selectTask', taskId)
+}
+
+// Right-click "Open in new tab" on the item row itself. Same payload
+// as the Ctrl/Cmd+click path below — Sidebar opens a real tab.
+const { menuPos, openAt, close: closeItemMenu } = useContextMenu()
+
+const itemMenuPayload = () => ({
+  workspaceId: props.workspaceId,
+  itemId: props.item.id,
+  name: props.item.name,
+  itemType: props.item.item_type,
+})
+
+const onItemRowContextMenu = (event: MouseEvent) => {
+  openAt(event)
+}
+
+const onItemRowAuxClick = (event: MouseEvent) => {
+  if (event.button !== 1) return
+  event.preventDefault()
+  emit('openItemInBackground', itemMenuPayload())
+}
+
+const openItemMenuInBackground = () => {
+  closeItemMenu()
+  emit('openItemInBackground', itemMenuPayload())
+}
+
+// Right-click "Open in new tab" on a task row. The row only knows
+// workspaceId/itemId/taskId — the item_type is filled in here so
+// Sidebar can build the task chat URL without touching store state.
+const handleOpenTaskInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  taskId: string
+}) => {
+  emit('openTaskInBackground', { ...payload, itemType: props.item.item_type })
 }
 
 const handleDeleteTask = (
@@ -525,6 +565,8 @@ const handlePinnedDrop = (event: DragEvent) => {
       <div class="flex items-center group/item">
         <button
           @click="handleClick($event)"
+          @auxclick="onItemRowAuxClick"
+          @contextmenu.prevent="onItemRowContextMenu"
           class="relative flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
           :style="isCurrentMainView
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`
@@ -697,6 +739,7 @@ const handlePinnedDrop = (event: DragEvent) => {
             :drop-indicator="dropIndicatorFor(task.id)"
             draggable="true"
             @select-task="handleSelectTask"
+            @open-task-in-background="handleOpenTaskInBackground"
             @delete-task="handleDeleteTask"
             @rename-task="handleRenameTask"
             @pin-task="handlePinTask"
@@ -711,6 +754,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           :item-id="item.id"
           :data-task-id="task.id"
           @select-task="handleSelectTask"
+          @open-task-in-background="handleOpenTaskInBackground"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
           @pin-task="handlePinTask"
@@ -809,5 +853,11 @@ const handlePinnedDrop = (event: DragEvent) => {
         </button>
       </div>
     </div>
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      @open="openItemMenuInBackground"
+    />
   </li>
 </template>

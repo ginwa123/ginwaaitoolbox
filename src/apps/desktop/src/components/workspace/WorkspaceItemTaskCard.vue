@@ -31,9 +31,11 @@
 import { inject, ref, computed, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useAgentErrorStore } from '../../stores/agentError'
+import { useContextMenu } from '../../composables/useContextMenu'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
+import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -100,6 +102,7 @@ const emit = defineEmits<{
   // feature). The host (KanbanView) opens the dialog locally with
   // the matching task — we only emit the id.
   viewTaskDetail: [taskId: string]
+  openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
 }>()
 
 // Shared logic — event handlers, drop indicator.
@@ -110,6 +113,25 @@ const {
   handleRenameTask,
   handlePinToggle,
 } = useTaskActions(props, emit)
+
+// Right-click "Open in new tab" for this task. The menu position
+// lives in useContextMenu; the task ids come from props. The event
+// bubbles up (sidebar list or kanban board) where the host builds
+// the task chat URL and opens a real browser tab.
+const { menuPos, openAt, close: closeTaskMenu } = useContextMenu()
+
+const onTaskContextMenu = (event: MouseEvent) => {
+  openAt(event)
+}
+
+const openTaskMenuInBackground = () => {
+  closeTaskMenu()
+  emit('openTaskInBackground', {
+    workspaceId: props.workspaceId,
+    itemId: props.itemId,
+    taskId: props.task.id,
+  })
+}
 
 // Local-only handler — opens the per-task detail dialog. NOT in
 // useTaskActions because that composable is shared with the row
@@ -322,6 +344,7 @@ const gitBranchBadge = computed<string | null>(() => {
       boxShadow: cardBoxShadow,
     }"
     @click="handleSelectTask"
+    @contextmenu.prevent="onTaskContextMenu"
     @mouseenter="isHovered = true"
     @mouseleave="isHovered = false"
   >
@@ -652,6 +675,12 @@ const gitBranchBadge = computed<string | null>(() => {
         <span>{{ errorRetryLabel ? `${errorRetryLabel} retries` : 'workflow halted' }}</span>
       </span>
     </div>
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      @open="openTaskMenuInBackground"
+    />
   </button>
 </template>
 

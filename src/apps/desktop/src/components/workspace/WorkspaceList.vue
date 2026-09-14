@@ -40,6 +40,7 @@ const emit = defineEmits<{
   addWorkspace: []
   addTask: [workspaceId: string, item: WorkspaceItem]
   selectTask: [taskId: string]
+  openTaskInBackground: [payload: { workspaceId: string; itemId: string; itemType?: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // NEW (design-pages-in-workspace-tree plan, 2026-08-06): design
@@ -215,6 +216,15 @@ const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
 
 const handleSelectTask = (taskId: string) => {
   emit('selectTask', taskId)
+}
+
+const handleOpenTaskInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  itemType?: string
+  taskId: string
+}) => {
+  emit('openTaskInBackground', payload)
 }
 
 const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
@@ -657,6 +667,7 @@ const handleItemDragEnd = () => {
             @delete="handleDeleteItem(workspace.id, $event.id)"
             @add-task="handleAddTask(workspace.id, $event)"
             @select-task="handleSelectTask"
+            @open-task-in-background="handleOpenTaskInBackground"
             @delete-task="handleDeleteTask"
             @rename-task="handleRenameTask"
             @load-more-tasks="handleLoadMoreTasks"

@@ -41,6 +41,7 @@ import {
 } from '../composables/useCodeEditor'
 import { useDesignHandlers } from '../composables/useDesignHandlers'
 import { buildTaskUrlQuery } from '../helpers/buildTaskUrlQuery'
+import { openInNewTab } from '../helpers/openInNewTab'
 import { buildItemIdWithChat, parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 
 const router = useRouter()
@@ -1760,6 +1761,25 @@ const handleKanbanSelectTask = (taskId: string) => {
   sidebarRef.value?.selectTask(taskId)
 }
 
+// Right-click "Open in new tab" on a kanban card. Builds the task
+// chat URL from the card's explicit ids and opens a real browser
+// tab — no store mutation, the board stays put.
+const handleKanbanOpenTaskInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  taskId: string
+}) => {
+  const query = buildTaskUrlQuery({
+    taskId: payload.taskId,
+    activeWorkspaceId: payload.workspaceId || activeWorkspace?.value?.id || null,
+    activeWorkspaceItemId: payload.itemId || null,
+    activeDesignPageId: null,
+    activeItemType: 'kanban',
+    currentQuery: route.query,
+  })
+  openInNewTab(router, { path: '/app', query })
+}
+
 const handleKanbanDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
   sidebarRef.value?.deleteTask(workspaceId, itemId, taskId)
 }
@@ -2516,6 +2536,7 @@ defineExpose({
         @request-rename-column="handleKanbanRequestRenameColumn"
         @request-delete-column="handleKanbanRequestDeleteColumn"
         @select-task="handleKanbanSelectTask"
+        @open-task-in-background="handleKanbanOpenTaskInBackground"
         @delete-task="handleKanbanDeleteTask"
         @rename-task="handleKanbanRenameTask"
         @pin-task="handleKanbanPinTask"

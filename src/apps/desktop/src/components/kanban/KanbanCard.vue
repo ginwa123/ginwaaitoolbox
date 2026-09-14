@@ -58,6 +58,7 @@ const emit = defineEmits<{
   dragend: []
   // Pass-through events from <WorkspaceItemTaskCard>.
   selectTask: [taskId: string]
+  openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
@@ -98,6 +99,7 @@ const handleDragEnd = () => {
       :item-id="itemId"
       :cwd="cwd"
       @select-task="(id) => emit('selectTask', id)"
+      @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
       @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
       @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
