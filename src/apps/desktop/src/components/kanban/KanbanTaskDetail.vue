@@ -1108,7 +1108,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
 <template>
   <div
     v-if="show && (task || isCreateMode)"
-    class="kanban-task-detail w-full flex flex-col overflow-hidden"
+    class="kanban-task-detail w-full flex flex-col"
     style="
       background-color: var(--semantic-card-bg);
       border: 1px solid var(--color-border);
@@ -1119,22 +1119,48 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
     data-testid="kanban-task-detail-dialog"
     data-kanban-task-detail
   >
-    <!-- Inline panel Card. Same inner layout as the former modal
-         card (max-w-2xl removed — the host side panel controls the
-         width). No Teleport / backdrop / fixed positioning: the
-         host (KanbanView) renders this inline in its detail side
-         panel so the board stays visible next to the form. -->
-    <!-- Header -->
-    <div class="px-5 pt-5 pb-4 shrink-0" style="border-bottom: 1px solid var(--color-border)">
+    <!-- Inline panel Card. The host (KanbanView) controls the width
+         via its full-cover view — no Teleport / backdrop / fixed
+         positioning here. Header + actions are sticky so they stay
+         reachable while the host container scrolls. -->
+    <!-- Header — sticky so Back/Close stay reachable on long
+         forms (the host cover container scrolls, not this card). -->
+    <div
+      class="px-5 pt-5 pb-4 shrink-0 sticky top-0 z-10"
+      style="
+        border-bottom: 1px solid var(--color-border);
+        background-color: var(--semantic-card-bg);
+      "
+    >
       <div class="flex items-center justify-between gap-3">
-        <h3
-          :id="isCreateMode ? 'kanban-task-detail-create-title' : 'kanban-task-detail-title'"
-          class="text-base font-semibold flex items-center gap-2"
-          style="color: var(--semantic-text)"
-        >
-          <span aria-hidden="true">{{ isCreateMode ? '➕' : '✏️' }}</span>
-          {{ isCreateMode ? 'New task' : 'Task details' }}
-        </h3>
+        <div class="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            @click="handleClose"
+            data-testid="kanban-task-detail-back"
+            class="shrink-0 h-8 px-2 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors duration-200 hover:opacity-80"
+            style="color: var(--semantic-text-muted)"
+            title="Back to board"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M15 19l-7-7 7-7"
+              />
+            </svg>
+            <span>Back</span>
+          </button>
+          <h3
+            :id="isCreateMode ? 'kanban-task-detail-create-title' : 'kanban-task-detail-title'"
+            class="text-base font-semibold flex items-center gap-2 truncate"
+            style="color: var(--semantic-text)"
+          >
+            <span aria-hidden="true">{{ isCreateMode ? '➕' : '✏️' }}</span>
+            {{ isCreateMode ? 'New task' : 'Task details' }}
+          </h3>
+        </div>
         <button
           type="button"
           @click="handleClose"
@@ -1353,7 +1379,7 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
                  counter, @-trigger file picker, and image previews —
                  the dialog just passes the v-model and the cwd. -->
       <div>
-        <div class="flex items-center justify-between mb-1">
+        <div class="mb-1">
           <label
             for="kanban-task-detail-description"
             class="block text-xs font-medium"
@@ -1361,13 +1387,6 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
           >
             Description
           </label>
-          <span
-            class="text-[10px]"
-            style="color: var(--semantic-text-dim)"
-            data-testid="kanban-task-detail-description-counter"
-          >
-            {{ description.length }} chars
-          </span>
         </div>
         <p class="text-[11px] mb-2" style="color: var(--semantic-text-dim)">
           Markdown supported. Type <span class="font-mono">@</span> to link a file. Paste or attach
@@ -1751,14 +1770,16 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
       </div>
     </div>
 
-    <!-- Actions. Secondary buttons (Cancel, Start agent / Create
-               task & run agent) share the same outline + muted-text
-               style for visual consistency. The primary button
-               (Save / Create task) keeps the gradient so the user can
-               tell at a glance which action is the default commit. -->
+    <!-- Actions — sticky so Save/Cancel stay reachable on long
+         forms (the host cover container scrolls, not this card).
+         Secondary buttons (Cancel, Start agent / Create task & run
+         agent) share the same outline + muted-text style for visual
+         consistency. The primary button (Save / Create task) keeps
+         the gradient so the user can tell at a glance which action
+         is the default commit. -->
     <div
-      class="px-5 py-4 shrink-0 flex justify-end gap-2"
-      style="border-top: 1px solid var(--color-border)"
+      class="px-5 py-4 shrink-0 sticky bottom-0 z-10 flex justify-end gap-2"
+      style="border-top: 1px solid var(--color-border); background-color: var(--semantic-card-bg)"
     >
       <button
         type="button"
