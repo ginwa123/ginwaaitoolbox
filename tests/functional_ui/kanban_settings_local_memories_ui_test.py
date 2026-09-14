@@ -54,11 +54,24 @@ def _create_kanban(
 def _kanban_settings_url(
     h: UIHarness, kanban_id: str, tab: str | None = None
 ) -> str:
-    """Kanban Settings is a path route: /app/kanban/:itemId/settings."""
+    """Kanban Settings is a path route: /app/kanban/:itemId/settings.
+
+    The inner Columns/Agent switch lives in `?section=` — `?tab=` is
+    owned by the browser-style tab mode (tab_<id>), so writing `?tab=`
+    here would collide with it (the Agent tab looked unclickable).
+    """
     base = f"/app/kanban/{kanban_id}/settings"
     if tab:
-        base += f"?tab={tab}"
+        base += f"?section={tab}"
     return h.web_url(base)
+
+
+def _kanban_settings_legacy_url(
+    h: UIHarness, kanban_id: str, tab: str
+) -> str:
+    """Legacy pre-tab-mode URL shape (`?tab=<section>`) — kept for the
+    backward-compat test below."""
+    return h.web_url(f"/app/kanban/{kanban_id}/settings?tab={tab}")
 
 
 def _wait_for_agent_panel(page, timeout_ms: int = 20000) -> None:
@@ -189,7 +202,7 @@ def test_legacy_memories_tab_param_lands_on_agent(ui_harness: UIHarness, page) -
     try:
         kanban_id = _create_kanban(h, ws_id, path=tmpdir)
 
-        page.goto(_kanban_settings_url(h, kanban_id, tab="memories"), wait_until="domcontentloaded", timeout=30000)
+        page.goto(_kanban_settings_legacy_url(h, kanban_id, tab="memories"), wait_until="domcontentloaded", timeout=30000)
         # Should land on Agent panel, not columns.
         _wait_for_agent_panel(page)
 
@@ -197,6 +210,51 @@ def test_legacy_memories_tab_param_lands_on_agent(ui_harness: UIHarness, page) -
         assert page.locator('[data-testid="kanban-settings-page-column-list"]').count() == 0
         # Agent panel should be visible.
         assert page.locator('[data-testid="kanban-settings-page-agent-panel"]').count() > 0
+    finally:
+        try:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def test_agent_tab_click_coexists_with_browser_tab_id(ui_harness: UIHarness, page) -> None:
+    """Regression: clicking Agent with `?tab=tab_xxx` (browser tab-mode ID)
+    in the URL must open the Agent panel and preserve the browser tab ID.
+
+    Before the fix the settings page owned `?tab=` for its inner
+    Columns/Agent switch, so a browser tab-mode URL like
+    `?tab=tab_mu0lle6j940yz` forced the getter back to columns and the
+    click clobbered the browser ID — the Agent tab looked unclickable.
+    The inner switch now lives in `?section=`.
+    """
+    h = ui_harness
+    ws_id = _create_workspace(h)
+    tmpdir = tempfile.mkdtemp(prefix="nalar-kanban-mem-test-")
+    try:
+        kanban_id = _create_kanban(h, ws_id, path=tmpdir)
+
+        # Open with a synthetic browser tab ID, as tab-mode would.
+        page.goto(
+            h.web_url(f"/app/kanban/{kanban_id}/settings?tab=tab_regression123"),
+            wait_until="domcontentloaded",
+            timeout=30000,
+        )
+        page.locator('[data-testid="kanban-settings-page-tabs"]').wait_for(timeout=15000, state="visible")
+        # Starts on columns (browser ID is not a settings section).
+        page.locator('[data-testid="kanban-settings-page-column-list"]').wait_for(timeout=15000, state="visible")
+
+        # Click Agent — must open the panel (this was the dead click).
+        page.locator('[data-testid="kanban-settings-page-tab-agent"]').click()
+        _wait_for_agent_panel(page)
+
+        # The section must survive alongside a valid browser tab ID. Note:
+        # the synthetic tab_regression123 ID is replaced with a real one
+        # by the tab store on boot (unknown IDs are claimed and rewritten
+        # — by design); what matters is the click works and *a* browser
+        # tab ID coexists with section=agent instead of clobbering it.
+        assert "section=agent" in page.url, f"Agent section missing from URL: {page.url}"
+        assert "tab=tab_" in page.url, f"Browser tab ID missing: {page.url}"
     finally:
         try:
             import shutil

@@ -116,7 +116,10 @@ export function stripTabParam(query: Record<string, unknown> | null | undefined)
   return normalizeQuery(query, false)
 }
 
-function normalizeQuery(query: Record<string, unknown> | null | undefined, keepTab: boolean): TabQuery {
+function normalizeQuery(
+  query: Record<string, unknown> | null | undefined,
+  keepTab: boolean,
+): TabQuery {
   const out: TabQuery = {}
   if (!query) return out
   for (const [key, value] of Object.entries(query)) {
@@ -133,7 +136,10 @@ function normalizeQuery(query: Record<string, unknown> | null | undefined, keepT
 }
 
 /** The query to navigate to for `tab`, i.e. its target plus the tab's name. */
-export function withTabParam(query: Record<string, unknown> | null | undefined, tabId: string): TabQuery {
+export function withTabParam(
+  query: Record<string, unknown> | null | undefined,
+  tabId: string,
+): TabQuery {
   const out = stripTabParam(query)
   if (tabId) out.tab = tabId
   return out
@@ -220,7 +226,11 @@ export function isBackgroundOpenEvent(event: {
 }
 
 /** `false` means: leave the URL alone and render exactly as before. */
-export function shouldTabify(path: string, query: Record<string, unknown> | null | undefined): boolean {  const view = stripTabParam(query).view ?? ''
+export function shouldTabify(
+  path: string,
+  query: Record<string, unknown> | null | undefined,
+): boolean {
+  const view = stripTabParam(query).view ?? ''
   if (OVERLAY_VIEWS.includes(view)) return false
   if (NON_VIEW.includes(view)) return false
   return true
@@ -270,20 +280,14 @@ export function fallbackTitle(kind: TabKind): string {
  * Agent tab. Browser tab IDs (`tab_…`) and non-settings paths pass
  * through untouched; an explicit `?section=` always wins.
  */
-const KANBAN_SETTINGS_LEGACY_TABS = new Set([
-  'columns',
-  'agent',
-  'tools',
-  'knowledge',
-  'memories',
-])
+const KANBAN_SETTINGS_LEGACY_TABS = new Set(['columns', 'agent', 'tools', 'knowledge', 'memories'])
 
 export function migrateLegacySettingsTab(
   path: string,
   query: Record<string, unknown> | null | undefined,
 ): Record<string, unknown> {
   if (!KANBAN_SETTINGS_RE.test(path)) return query ?? {}
-  const q: Record<string, unknown> = { ...(query ?? {}) }
+  const q: Record<string, unknown> = { ...query }
   const rawSection = q.section
   const section = Array.isArray(rawSection) ? rawSection[0] : rawSection
   if (typeof section === 'string' && section !== '') return q
@@ -348,7 +352,8 @@ function coerceTab(value: unknown): Tab | null {
   const query = stripTabParam(asRecord(entry.query) ?? {})
   const path = asString(entry.path) || '/app'
   const title = asString(entry.title) || fallbackTitle(kindOf(path, query))
-  const createdAt = typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt) ? entry.createdAt : 0
+  const createdAt =
+    typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt) ? entry.createdAt : 0
   return {
     id,
     key: asString(entry.key) || tabKeyOf(path, query),
@@ -415,6 +420,6 @@ export function parseTabList(raw: string | null | undefined): PersistedTabs {
 
   const first = tabs[0]
   const activeId = asString(root.active)
-  const active = first && tabs.some((tab) => tab.id === activeId) ? activeId : (first ? first.id : '')
+  const active = first && tabs.some((tab) => tab.id === activeId) ? activeId : first ? first.id : ''
   return { active, tabs, closed: closed.slice(0, MAX_CLOSED) }
 }
