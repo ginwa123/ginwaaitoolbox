@@ -44,7 +44,7 @@ import {
 } from '../helpers/tabTarget'
 import { getWindowId } from '../helpers/windowId'
 import { browserTabTitle } from '../helpers/browserUrl'
-import { closeBrowserWindow } from '../helpers/browserBridge'
+import { closeBrowserPane, closeBrowserWindow } from '../helpers/browserBridge'
 import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 import { useSseBus } from '../helpers/sseBus'
 
@@ -315,6 +315,13 @@ export const useTabsStore = defineStore('tabs', () => {
       // Fire-and-forget — the strip must never wait on the shell.
       // Never throws (the bridge degrades when absent).
       void closeBrowserWindow(tab.id)
+      // Closing a tab must not leave its page running: leaving a tab only
+      // hides the in-app pane (the page SURVIVES so re-entering is instant),
+      // but closing destroys the view. The window path above stays — it is
+      // the live path on macOS/Windows. Fire-and-forget, never throws,
+      // degrades when the pane is absent. Only here: never on tab switch,
+      // reorder, or app quit.
+      void closeBrowserPane()
     }
     const wasActive = activeTabId.value === id
     const remaining = tabs.value.filter((candidate) => candidate.id !== id)

@@ -1,8 +1,9 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createApp } from 'vue'
 
 import { MAX_TABS, type Tab } from '../helpers/tabTarget'
+import { __setBrowserBridgeForTests, __setBrowserPaneForTests } from '../helpers/browserBridge'
 import { __resetWindowIdForTests } from '../helpers/windowId'
 import { __dispatchSseBus, __resetSseBus, installSseBus } from '../helpers/sseBus'
 import { useTabsStore } from '../stores/tabs'
@@ -57,6 +58,11 @@ describe('tabs store', () => {
     installStorage()
     __resetWindowIdForTests()
     setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    __setBrowserBridgeForTests(null)
+    __setBrowserPaneForTests(null)
   })
 
   it('boots with exactly one home tab, active, tab mode on', () => {
@@ -176,6 +182,44 @@ describe('tabs store', () => {
     const tabs = useTabsStore()
     expect(tabs.close('tab_nope')).toBeNull()
     expect(tabs.tabCount).toBe(1)
+  })
+
+  it('closing a browser tab destroys its pane view and window; a chat tab touches neither', async () => {
+    let paneCloses = 0
+    const windowCloses: unknown[] = []
+    __setBrowserPaneForTests({
+      show: async () => ({ ok: true, visible: true }),
+      hide: async () => ({ ok: true, visible: false }),
+      status: async () => ({ supported: true, visible: true }),
+      close: async () => {
+        paneCloses += 1
+        return { ok: true, visible: false }
+      },
+    })
+    __setBrowserBridgeForTests({
+      open: async () => ({ ok: true, alive: 1 }),
+      status: async () => ({ alive: 0 }),
+      close: async (tabId: string) => {
+        windowCloses.push(tabId)
+        return { ok: true }
+      },
+    })
+    const tabs = useTabsStore()
+    const chatTab = tabs.open({ query: chat('sa') })
+    const browserTab = tabs.openBrowserTab('https://example.com')
+
+    // Closing the browser tab must not leave the page running: the pane
+    // view is destroyed (pane close) and the window path still runs.
+    tabs.close(browserTab.id)
+    await Promise.resolve()
+    expect(paneCloses).toBe(1)
+    expect(windowCloses).toEqual([browserTab.id])
+
+    // A chat tab owns no page: neither surface is touched.
+    tabs.close(chatTab.id)
+    await Promise.resolve()
+    expect(paneCloses).toBe(1)
+    expect(windowCloses).toHaveLength(1)
   })
 
   it('closes everything to the right, then everything else', () => {

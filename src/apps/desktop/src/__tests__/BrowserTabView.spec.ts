@@ -1,9 +1,10 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 
 import BrowserTabView from '../components/browser/BrowserTabView.vue'
+import { BrowserPaneKey } from '../composables/useBrowserPane'
 import {
   __setBrowserBridgeForTests,
   __setBrowserPaneForTests,
@@ -133,7 +134,7 @@ describe('BrowserTabView', () => {
     expect(wrapper.emitted('navigate')).toBeUndefined()
   })
 
-  it('shows the pane note — and no window affordance — when the pane is available', async () => {
+  it('hides the card under the native view when the pane is visible', async () => {
     const pane = recordingPaneStub(true)
     __setBrowserPaneForTests(pane)
     __setBrowserBridgeForTests({
@@ -147,17 +148,79 @@ describe('BrowserTabView', () => {
     await flushPromises()
     await nextTick()
 
-    expect(wrapper.find('[data-testid="browser-pane-note"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="browser-pane-note"]').text()).toContain(
-      'Showing in the pane below',
-    )
-    expect(wrapper.find('[data-testid="browser-window-status"]').text()).toBe('pane visible')
+    // The native view covers the tab body: the full-bleed placeholder stays
+    // (the shell reports its rect), while the card — URL row, status, note,
+    // actions — hides beneath it.
+    expect(wrapper.find('[data-testid="browser-pane-body"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="browser-url"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="browser-window-status"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="browser-pane-note"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="browser-open-system"]').exists()).toBe(false)
     // Q3: no separate-window affordance anywhere in the UI.
     expect(wrapper.find('[data-testid="browser-open-window"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="browser-open-fallback"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="browser-bridge-missing"]').exists()).toBe(false)
     // The card itself never spawns: showing is the composable's job.
     expect(pane.shown).toHaveLength(0)
+  })
+
+  it('shows the card with the pane note when the pane is ready but hidden', async () => {
+    const pane = recordingPaneStub(false)
+    __setBrowserPaneForTests(pane)
+    __setBrowserBridgeForTests({
+      open: async () => ({ ok: true, alive: 1 }),
+      status: async () => ({ alive: 0 }),
+      close: async () => ({ ok: true }),
+    })
+    const tabs = useTabsStore()
+    tabs.openBrowserTab('https://example.com')
+    const wrapper = mount(BrowserTabView)
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="browser-pane-body"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="browser-pane-note"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="browser-pane-note"]').text()).toContain(
+      'Showing in the pane below',
+    )
+    expect(wrapper.find('[data-testid="browser-window-status"]').text()).toBe('pane hidden')
+    expect(wrapper.find('[data-testid="browser-open-fallback"]').exists()).toBe(false)
+    // The card itself never spawns: showing is the composable's job.
+    expect(pane.shown).toHaveLength(0)
+  })
+
+  it('registers its body with the layout pane api and follows its visibility', async () => {
+    __setBrowserBridgeForTests(null)
+    __setBrowserPaneForTests(null)
+    const tabs = useTabsStore()
+    tabs.openBrowserTab('https://example.com')
+    const paneVisible = ref(true)
+    const hosts: unknown[] = []
+    const wrapper = mount(BrowserTabView, {
+      global: {
+        provide: {
+          [BrowserPaneKey]: {
+            paneVisible,
+            setPaneHost: (el: Element | null) => {
+              hosts.push(el)
+            },
+          },
+        },
+      },
+    })
+    await flushPromises()
+    await nextTick()
+
+    // The body element is handed to the composable for rect reporting …
+    const body = wrapper.find('[data-testid="browser-pane-body"]')
+    expect(body.exists()).toBe(true)
+    expect(hosts[hosts.length - 1]).toBe(body.element)
+    // … and the card hides while the provided visibility is true.
+    expect(wrapper.find('[data-testid="browser-url"]').exists()).toBe(false)
+
+    paneVisible.value = false
+    await nextTick()
+    expect(wrapper.find('[data-testid="browser-url"]').exists()).toBe(true)
   })
 
   it('offers the window fallback when the pane is missing but the bridge exists', async () => {

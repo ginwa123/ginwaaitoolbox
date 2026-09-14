@@ -30,21 +30,51 @@ export interface NalarBrowserLike {
 }
 
 /**
- * The pane triple the shell installs on the APP window (Linux only for now):
+ * The pane globals the shell installs on the APP window (Linux only for now):
  *
- *   window.nalarBrowserPaneShow(tabId, url) → { ok, visible, error? }
- *   window.nalarBrowserPaneHide()            → { ok, visible }
- *   window.nalarBrowserPaneStatus()          → { supported, visible }
+ *   window.nalarBrowserPaneShow(tabId, url, x, y, width, height) → { ok, visible, rect, error? }
+ *   window.nalarBrowserPaneRect(x, y, width, height)             → { ok, visible, rect }
+ *   window.nalarBrowserPaneHide()                                → { ok, visible, rect }
+ *   window.nalarBrowserPaneClose()                               → { ok, visible, rect }
+ *   window.nalarBrowserPaneStatus()                              → { supported, visible, uri_len, rect }
+ *
+ * x/y/width/height are window coordinates in CSS px (1:1 with GTK logical
+ * px); the shell clamps them. Show places the pane at the reported rect;
+ * Rect moves/resizes it without navigating; Hide leaves the tab (the page
+ * SURVIVES); Close destroys the view when the tab is closed (nothing keeps
+ * running in the background).
  *
  * Same flat-name rule as the window triple above: `window[name]` is written
- * verbatim by the vendored glue, so these are three separate globals, not a
+ * verbatim by the vendored glue, so these are separate globals, not a
  * namespace. Off Linux / in a plain-browser dev session / in an older shell
- * they are `undefined` — a normal state the UI falls back from, never throws.
+ * (which only has the show/hide/status triple) the newer ones are
+ * `undefined` — a normal state the UI falls back from, never throws.
  */
+export interface BrowserPaneRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 export interface NalarBrowserPaneLike {
-  show: (tabId: string, url: string) => Promise<{ ok: boolean; visible: boolean; error?: string }>
+  show: (
+    tabId: string,
+    url: string,
+    x?: number,
+    y?: number,
+    width?: number,
+    height?: number,
+  ) => Promise<{ ok: boolean; visible: boolean; error?: string }>
   hide: () => Promise<{ ok: boolean; visible: boolean }>
   status: () => Promise<{ supported: boolean; visible: boolean }>
+  /** Move/resize only, no navigation. Absent on older shells — optional. */
+  rect?: (x: number, y: number, width: number, height: number) => Promise<{
+    ok: boolean
+    visible: boolean
+  }>
+  /** Destroy the view (tab closed). Absent on older shells — optional. */
+  close?: () => Promise<{ ok: boolean; visible: boolean }>
 }
 
 /** The globals the shell actually binds, plus the object shape if present. */
@@ -56,6 +86,8 @@ export interface NalarBrowserGlobals {
   nalarBrowserPaneShow?: NalarBrowserPaneLike['show']
   nalarBrowserPaneHide?: NalarBrowserPaneLike['hide']
   nalarBrowserPaneStatus?: NalarBrowserPaneLike['status']
+  nalarBrowserPaneRect?: NalarBrowserPaneLike['rect']
+  nalarBrowserPaneClose?: NalarBrowserPaneLike['close']
 }
 
 export interface BrowserBridgeStatus {
@@ -86,6 +118,16 @@ export interface BrowserPaneStatus {
   available: boolean
   supported: boolean
   visible: boolean
+}
+
+export interface BrowserPaneRectResult {
+  available: boolean
+  ok: boolean
+}
+
+export interface BrowserPaneCloseResult {
+  available: boolean
+  ok: boolean
 }
 
 let testOverride: NalarBrowserLike | null | undefined
@@ -148,7 +190,14 @@ function paneFromGlobals(): NalarBrowserPaneLike | null {
     const show = scope.nalarBrowserPaneShow
     const hide = scope.nalarBrowserPaneHide
     const status = scope.nalarBrowserPaneStatus
-    if (show && hide && status) return { show, hide, status }
+    // Presence is the show/hide/status triple: an older shell has exactly
+    // that, and still counts as a pane (rect/close degrade below).
+    if (show && hide && status) {
+      const pane: NalarBrowserPaneLike = { show, hide, status }
+      if (scope.nalarBrowserPaneRect) pane.rect = scope.nalarBrowserPaneRect
+      if (scope.nalarBrowserPaneClose) pane.close = scope.nalarBrowserPaneClose
+      return pane
+    }
   }
   return null
 }
@@ -205,11 +254,20 @@ export function browserPaneAvailable(): boolean {
   return readPane() !== null
 }
 
-export async function showBrowserPane(tabId: string, url: string): Promise<BrowserPaneShowResult> {
+export async function showBrowserPane(
+  tabId: string,
+  url: string,
+  rect?: BrowserPaneRect,
+): Promise<BrowserPaneShowResult> {
   const pane = readPane()
   if (!pane) return { available: false, ok: false, visible: false }
   try {
-    const result = await pane.show(tabId, url)
+    // The rect travels only when the caller has one: older stubs (and the
+    // older shell) take exactly (tabId, url), and the shell clamps whatever
+    // coordinates it receives.
+    const result = rect
+      ? await pane.show(tabId, url, rect.x, rect.y, rect.width, rect.height)
+      : await pane.show(tabId, url)
     return {
       available: true,
       ok: result.ok === true,
@@ -229,6 +287,41 @@ export async function hideBrowserPane(): Promise<BrowserPaneHideResult> {
     return { available: true, ok: result.ok === true, visible: result.visible === true }
   } catch {
     return { available: true, ok: false, visible: false }
+  }
+}
+
+/**
+ * Move/resize the pane without navigating. Degrades to
+ * `{ available:false }` with no pane at all, and to `{ available:true,
+ * ok:false }` on an older shell whose triple has no rect global — either
+ * way it never throws.
+ */
+export async function rectBrowserPane(rect: BrowserPaneRect): Promise<BrowserPaneRectResult> {
+  const pane = readPane()
+  if (!pane) return { available: false, ok: false }
+  if (!pane.rect) return { available: true, ok: false }
+  try {
+    const result = await pane.rect(rect.x, rect.y, rect.width, rect.height)
+    return { available: true, ok: result.ok === true }
+  } catch {
+    return { available: true, ok: false }
+  }
+}
+
+/**
+ * Destroy the pane view (the tab was closed — nothing may keep running).
+ * Same degrade contract as rectBrowserPane: absent pane, or an older shell
+ * without the close global, resolves to ok:false and never throws.
+ */
+export async function closeBrowserPane(): Promise<BrowserPaneCloseResult> {
+  const pane = readPane()
+  if (!pane) return { available: false, ok: false }
+  if (!pane.close) return { available: true, ok: false }
+  try {
+    const result = await pane.close()
+    return { available: true, ok: result.ok === true }
+  } catch {
+    return { available: true, ok: false }
   }
 }
 
