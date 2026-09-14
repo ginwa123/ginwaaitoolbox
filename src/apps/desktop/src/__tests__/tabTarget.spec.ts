@@ -6,6 +6,7 @@ import {
   homeTab,
   isBackgroundOpenEvent,
   kindOf,
+  migrateLegacySettingsTab,
   newTabId,
   parseTabList,
   shouldTabify,
@@ -307,5 +308,61 @@ describe('getWindowId', () => {
     const first = getWindowId()
     expect(first).toMatch(/^w_/)
     expect(getWindowId()).toBe(first)
+  })
+})
+
+describe('migrateLegacySettingsTab', () => {
+  const KS = '/app/kanban/item_1/settings'
+
+  it('moves legacy ?tab=memories to ?section=agent', () => {
+    expect(migrateLegacySettingsTab(KS, { tab: 'memories' })).toEqual({
+      section: 'agent',
+    })
+  })
+
+  it('moves legacy ?tab=tools and ?tab=knowledge to ?section=agent', () => {
+    expect(migrateLegacySettingsTab(KS, { tab: 'tools' })).toEqual({
+      section: 'agent',
+    })
+    expect(migrateLegacySettingsTab(KS, { tab: 'knowledge' })).toEqual({
+      section: 'agent',
+    })
+  })
+
+  it('moves legacy ?tab=agent to ?section=agent', () => {
+    expect(migrateLegacySettingsTab(KS, { tab: 'agent' })).toEqual({
+      section: 'agent',
+    })
+  })
+
+  it('drops legacy ?tab=columns (default stays clean)', () => {
+    expect(migrateLegacySettingsTab(KS, { tab: 'columns' })).toEqual({})
+  })
+
+  it('leaves browser tab IDs (?tab=tab_xxx) untouched', () => {
+    expect(migrateLegacySettingsTab(KS, { tab: 'tab_mu0lle6j940yz' })).toEqual({
+      tab: 'tab_mu0lle6j940yz',
+    })
+  })
+
+  it('leaves unknown ?tab= values untouched', () => {
+    expect(migrateLegacySettingsTab(KS, { tab: 'totally-bogus' })).toEqual({
+      tab: 'totally-bogus',
+    })
+  })
+
+  it('prefers an explicit ?section= over legacy ?tab=', () => {
+    expect(
+      migrateLegacySettingsTab(KS, { section: 'agent', tab: 'tab_abc' }),
+    ).toEqual({ section: 'agent', tab: 'tab_abc' })
+  })
+
+  it('ignores non-settings paths', () => {
+    expect(migrateLegacySettingsTab('/app', { tab: 'memories' })).toEqual({
+      tab: 'memories',
+    })
+    expect(
+      migrateLegacySettingsTab('/app/settings', { tab: 'agent' }),
+    ).toEqual({ tab: 'agent' })
   })
 })

@@ -283,3 +283,62 @@ test "ensurePersistentIn: zero assets still publishes a reusable dir" {
     try testing.expect(dirExists(dir1));
 }
 
+test "ensurePersistentStableIn: one stable path across versions, versioned dirs intact" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = try tmpBase(&tmp, &path_buf);
+
+    const v1 = [_]extraction.AssetEntry{
+        .{ .path = "/index.html", .content = "<html>v1</html>", .mime = "text/html" },
+    };
+    const v2 = [_]extraction.AssetEntry{
+        .{ .path = "/index.html", .content = "<html>v2</html>", .mime = "text/html" },
+    };
+
+    const s1 = try extraction.ensurePersistentStableIn(allocator, base, &v1);
+    defer allocator.free(s1);
+
+    // The handed-out path is the stable link, not a versioned hash dir.
+    try testing.expectEqualStrings("current", std.fs.path.basename(s1));
+    try readBackAndExpect(s1, "index.html", "<html>v1</html>");
+
+    const s2 = try extraction.ensurePersistentStableIn(allocator, base, &v2);
+    defer allocator.free(s2);
+
+    // Same stable string after an upgrade; it now serves the new version.
+    try testing.expectEqualStrings(s1, s2);
+    try readBackAndExpect(s2, "index.html", "<html>v2</html>");
+
+    // The link really is a symlink pointing at the v2 versioned dir.
+    const hash2 = try extraction.ensurePersistentIn(allocator, base, &v2);
+    defer allocator.free(hash2);
+    const link_target = try readLinkTarget(s2);
+    defer allocator.free(link_target);
+    try testing.expectEqualStrings(std.fs.path.basename(hash2), link_target);
+
+    // The old versioned dir is untouched behind the link.
+    const hash1 = try extraction.ensurePersistentIn(allocator, base, &v1);
+    defer allocator.free(hash1);
+    try readBackAndExpect(hash1, "index.html", "<html>v1</html>");
+
+    // Same assets again: stable path unchanged, still serving.
+    const s3 = try extraction.ensurePersistentStableIn(allocator, base, &v2);
+    defer allocator.free(s3);
+    try testing.expectEqualStrings(s1, s3);
+    try readBackAndExpect(s3, "index.html", "<html>v2</html>");
+}
+
+/// Read a symlink's target into a caller-owned slice via libc readlink.
+fn readLinkTarget(link_path: []const u8) ![]const u8 {
+    const allocator = testing.allocator;
+    var link_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const link_z = copyToNull(&link_buf, link_path);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = std.c.readlink(link_z, &buf, buf.len);
+    if (n <= 0) return error.ReadlinkFailed;
+    return try allocator.dupe(u8, buf[0..@intCast(n)]);
+}
+

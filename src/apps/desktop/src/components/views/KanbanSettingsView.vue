@@ -64,29 +64,55 @@ const emit = defineEmits<{
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-// Active tab is URL-backed (?tab=columns|agent). Clicking a tab
-// calls `router.replace` to update the query so reload + deep-link both
-// work. Default to 'columns' when the query is missing or unknown —
-// keeps the URL clean (no ?tab=columns in the default state).
-// Legacy `?tab=tools` / `?tab=knowledge` / `?tab=memories`
-// (pre-unified tabs) are mapped to `agent` so old bookmarks / shared
-// links still land correctly.
+// Active tab is URL-backed (?section=columns|agent). `section` is used
+// instead of `tab` because `?tab=<tabId>` is owned by the browser-style
+// tab mode (helpers/tabTarget.ts, stores/tabs.ts) — sharing the key meant
+// a URL like `?tab=tab_xxx` fell through to 'columns' and clicking Agent
+// clobbered the browser tab ID, so the tab store snapped the URL back
+// and the Agent tab looked unclickable. Default to 'columns' when the
+// query is missing or unknown — keeps the URL clean (no ?section=columns
+// in the default state).
+// Legacy `?tab=agent|tools|knowledge|memories|columns` (pre tab-mode)
+// links still land correctly; any other `?tab=` value (notably the
+// `tab_<id>` browser IDs) is ignored so the browser tab stays intact.
 const settingsMode = computed<SettingsMode>({
   get: () => {
-    const raw = route.query.tab
-    const s = Array.isArray(raw) ? raw[0] : raw
-    if (s === 'tools' || s === 'knowledge' || s === 'memories') return 'agent'
-    return (VALID_TABS as readonly string[]).includes(s ?? '')
-      ? (s as SettingsMode)
-      : 'columns'
+    const readSection = (v: unknown): SettingsMode | null => {
+      const s = Array.isArray(v) ? v[0] : v
+      if (s === 'tools' || s === 'knowledge' || s === 'memories') return 'agent'
+      return (VALID_TABS as readonly string[]).includes(s ?? '')
+        ? (s as SettingsMode)
+        : null
+    }
+    // Canonical param first.
+    const fromSection = readSection(route.query.section)
+    if (fromSection) return fromSection
+    // Legacy fallback — only for known settings values, never for
+    // browser tab IDs.
+    const fromLegacyTab = readSection(route.query.tab)
+    if (fromLegacyTab) return fromLegacyTab
+    return 'columns'
   },
   set: (next) => {
     const rest = { ...route.query }
     if (next === 'columns') {
-      // Default tab — strip from URL to keep it tidy.
+      // Default tab — strip from URL to keep it tidy. Never touch
+      // `tab` (the browser tab ID owned by the tab store).
+      delete rest.section
       delete rest.tab
+      // Preserve a browser tab ID if one is present: the legacy `tab`
+      // key may hold either a settings value or a browser ID — only
+      // restore it when it looks like a browser ID.
+      const rawTab = route.query.tab
+      const s = Array.isArray(rawTab) ? rawTab[0] : rawTab
+      if (typeof s === 'string' && s.startsWith('tab_')) rest.tab = s
     } else {
-      rest.tab = next
+      rest.section = next
+      // If the legacy `tab` key holds a settings value, drop it so the
+      // URL doesn't carry two sources of truth. A browser tab ID stays.
+      const rawTab = route.query.tab
+      const s = Array.isArray(rawTab) ? rawTab[0] : rawTab
+      if (typeof s !== 'string' || !s.startsWith('tab_')) delete rest.tab
     }
     void router.replace({ query: rest })
   },
@@ -491,7 +517,7 @@ const goBack = () => {
 // kanban's settings to another's starts on the Columns tab, not the
 // Agent tab that the previous kanban had selected). The URL
 // is the source of truth, so we use `router.replace` to strip the
-// ?tab= query rather than mutating the computed directly.
+// ?section= query rather than mutating the computed directly.
 watch(
   () => itemId.value,
   () => {

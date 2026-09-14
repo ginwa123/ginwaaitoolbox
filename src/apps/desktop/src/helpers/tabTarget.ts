@@ -255,6 +255,52 @@ export function fallbackTitle(kind: TabKind): string {
   }
 }
 
+/**
+ * Legacy kanban-settings deep links used `?tab=<section>` for the inner
+ * Columns/Agent switch (`columns|agent`, plus the pre-unified
+ * `tools|knowledge|memories`). That key is now owned by browser tab-mode
+ * (`?tab=<tabId>`), and the settings page moved to `?section=` — but
+ * `syncFromTarget` (the single navigation funnel) would otherwise claim
+ * a legacy `?tab=memories` as an unknown browser tab ID and rewrite it
+ * to a fresh `tab_xxx` before the page ever sees it, silently dropping
+ * the section. This migration runs first in the funnel: on the
+ * kanban-settings path, a `?tab=` holding a legacy section value is
+ * moved to `?section=` (with the `tools|knowledge|memories` → `agent`
+ * collapse the view itself uses) so old bookmarks keep landing on the
+ * Agent tab. Browser tab IDs (`tab_…`) and non-settings paths pass
+ * through untouched; an explicit `?section=` always wins.
+ */
+const KANBAN_SETTINGS_LEGACY_TABS = new Set([
+  'columns',
+  'agent',
+  'tools',
+  'knowledge',
+  'memories',
+])
+
+export function migrateLegacySettingsTab(
+  path: string,
+  query: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (!KANBAN_SETTINGS_RE.test(path)) return query ?? {}
+  const q: Record<string, unknown> = { ...(query ?? {}) }
+  const rawSection = q.section
+  const section = Array.isArray(rawSection) ? rawSection[0] : rawSection
+  if (typeof section === 'string' && section !== '') return q
+  const rawTab = q.tab
+  const tab = Array.isArray(rawTab) ? rawTab[0] : rawTab
+  if (typeof tab !== 'string' || !KANBAN_SETTINGS_LEGACY_TABS.has(tab)) return q
+  const mapped = tab === 'tools' || tab === 'knowledge' || tab === 'memories' ? 'agent' : tab
+  if (mapped === 'columns') {
+    // Default section — keep the URL clean (the view strips it too).
+    delete q.section
+  } else {
+    q.section = mapped
+  }
+  delete q.tab
+  return q
+}
+
 let idSequence = 0
 
 /** Unique per creation; the counter keeps two same-millisecond tabs apart. */

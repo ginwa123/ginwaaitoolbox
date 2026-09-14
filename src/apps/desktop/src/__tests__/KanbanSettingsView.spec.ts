@@ -343,13 +343,26 @@ describe('KanbanSettingsView', () => {
     expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-knowledge"]')).toBeNull()
   })
 
-  it('mounts AgentView as the active body when ?tab=agent is in the URL', async () => {
+  it('mounts AgentView as the active body when ?section=agent is in the URL', async () => {
     seedWorkspaces({ ...baseItem, path: null })
-    setupRoute({ tab: 'agent' })
+    setupRoute({ section: 'agent' })
     mountView()
     await flushPromises()
     const tab = findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')
     expect(tab).not.toBeNull()
+    const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
+    expect(panel).not.toBeNull()
+    // Columns body should NOT be rendered.
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
+    ).toBeNull()
+  })
+
+  it('mounts AgentView for legacy ?tab=agent (backward compat, pre tab-mode)', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ tab: 'agent' })
+    mountView()
+    await flushPromises()
     const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
     expect(panel).not.toBeNull()
     // Columns body should NOT be rendered.
@@ -389,15 +402,58 @@ describe('KanbanSettingsView', () => {
     ).toBeNull()
   })
 
-  it('calls router.replace with {query:{tab:"agent"}} when the Agent tab is clicked', async () => {
+  it('calls router.replace with {query:{section:"agent"}} when the Agent tab is clicked', async () => {
     seedWorkspaces()
     const { router } = setupRoute({})
     mountView()
     await flushPromises()
     clickInDom('[data-testid="kanban-settings-page-tab-agent"]')
     expect(router.replace).toHaveBeenCalledWith(
-      expect.objectContaining({ query: expect.objectContaining({ tab: 'agent' }) }),
+      expect.objectContaining({ query: expect.objectContaining({ section: 'agent' }) }),
     )
+  })
+
+  it('preserves the browser tab ID (?tab=tab_xxx) when the Agent tab is clicked', async () => {
+    // Regression: browser-style tab mode owns `?tab=<tabId>`. Clicking
+    // Agent must write `?section=agent` alongside it, never clobber it.
+    seedWorkspaces()
+    const { router } = setupRoute({ tab: 'tab_mu0lle6j940yz' })
+    mountView()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-settings-page-tab-agent"]')
+    expect(router.replace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({ section: 'agent', tab: 'tab_mu0lle6j940yz' }),
+      }),
+    )
+  })
+
+  it('stays on columns when ?tab= holds a browser tab ID (tab-mode coexistence)', async () => {
+    // The exact URL from the bug report:
+    // /app/kanban/<id>/settings?tab=tab_mu0lle6j940yz — the settings
+    // getter must ignore the browser ID (fall back to columns) rather
+    // than crash or misroute.
+    seedWorkspaces()
+    setupRoute({ tab: 'tab_mu0lle6j940yz' })
+    mountView()
+    await flushPromises()
+    const columnsList = findInDom<HTMLElement>(
+      '[data-testid="kanban-settings-page-column-list"]',
+    )
+    expect(columnsList).not.toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]'),
+    ).toBeNull()
+  })
+
+  it('prefers ?section= over legacy ?tab= when both are present', async () => {
+    seedWorkspaces({ ...baseItem, path: null })
+    setupRoute({ section: 'agent', tab: 'tab_mu0lle6j940yz' })
+    mountView()
+    await flushPromises()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]'),
+    ).not.toBeNull()
   })
 
   it('falls back to columns when ?tab= has an unknown value', async () => {
@@ -415,7 +471,7 @@ describe('KanbanSettingsView', () => {
 
   it('renders Local Memories inside Agent tab when kanban has a path', async () => {
     seedWorkspaces({ ...baseItem, path: '/tmp/some-folder' })
-    setupRoute({ tab: 'agent' })
+    setupRoute({ section: 'agent' })
     mountView()
     await flushPromises()
     const memoriesSection = findInDom<HTMLElement>(
@@ -428,7 +484,7 @@ describe('KanbanSettingsView', () => {
 
   it('shows no-path hint inside Agent tab when kanban has no path', async () => {
     seedWorkspaces({ ...baseItem, path: null })
-    setupRoute({ tab: 'agent' })
+    setupRoute({ section: 'agent' })
     mountView()
     await flushPromises()
     const noPath = findInDom<HTMLElement>(
@@ -452,7 +508,7 @@ describe('KanbanSettingsView', () => {
 
   it('renders the memories section wrapper inside Agent panel', async () => {
     seedWorkspaces({ ...baseItem, path: '/tmp/some-folder' })
-    setupRoute({ tab: 'agent' })
+    setupRoute({ section: 'agent' })
     mountView()
     await flushPromises()
     const section = findInDom<HTMLElement>(

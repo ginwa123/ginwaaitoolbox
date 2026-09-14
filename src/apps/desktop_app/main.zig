@@ -104,7 +104,7 @@ pub fn main(init: std.process.Init) !void {
             std.log.info("smoke: using installed webapp at {s} (no extraction)", .{installed});
             return;
         }
-        const webapp_dir = extraction.ensurePersistent(allocator, webapp_assets.assets) catch |err| {
+        const webapp_dir = extraction.ensurePersistentStable(allocator, webapp_assets.assets) catch |err| {
             std.log.err("smoke: webapp materialisation failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -145,7 +145,10 @@ pub fn main(init: std.process.Init) !void {
     //    working with no per-run temp extraction.
     //
     //    Otherwise materialise the embedded assets into a PERSISTENT,
-    //    content-addressed per-user dir (extraction.ensurePersistent).
+    //    content-addressed per-user dir and hand out its stable
+    //    `<base>/current` symlink (extraction.ensurePersistentStable), so
+    //    `ps` always shows one path no matter how many versioned `<hash>`
+    //    dirs sit behind the link.
     //
     //    That dir is NEVER deleted by the desktop, and that is load
     //    bearing. The nalar daemon spawned below is deliberately detached
@@ -163,7 +166,7 @@ pub fn main(init: std.process.Init) !void {
         webapp_dir = installed;
         std.log.info("Using installed webapp at {s}", .{webapp_dir});
     } else {
-        webapp_dir = extraction.ensurePersistent(allocator, webapp_assets.assets) catch |err| {
+        webapp_dir = extraction.ensurePersistentStable(allocator, webapp_assets.assets) catch |err| {
             std.log.err("Failed to materialise webapp assets: {s}", .{@errorName(err)});
             return err;
         };

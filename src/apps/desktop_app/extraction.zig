@@ -226,6 +226,103 @@ pub fn ensurePersistentIn(
     return final_dir;
 }
 
+/// Name of the stable symlink inside the persistent base dir. The symlink
+/// points at the current `<hash>` dir, so the path handed to
+/// `nalar --static-dir` is a single stable string (`<base>/current`)
+/// instead of a hash that changes on every webapp rebuild. `ps` output,
+/// state files, and docs can all name one path.
+///
+/// The versioned `<hash>` dirs stay behind the link (same atomic-publish
+/// guarantees as `ensurePersistentIn`): a running daemon canonicalizes the
+/// link via `realPath` at boot and stays pinned to its boot version across
+/// a flip, so an upgrade can never tear a live server into a 404 window.
+/// A fresh boot picks up whatever the link points at.
+pub const stable_link_name = "current";
+
+/// `ensurePersistent` with a stable return path: materialise the assets
+/// into `<base>/<hash>` as usual, then atomically point `<base>/current`
+/// at it and return the `<base>/current` path. The caller owns the
+/// returned slice and must `allocator.free` it — but must NEVER delete
+/// either the link or its target.
+///
+/// Windows falls back to the versioned dir (symlinks need a privilege most
+/// installs don't have; the installed `html/` path is already stable
+/// there, so nothing is lost).
+pub fn ensurePersistentStable(allocator: std.mem.Allocator, assets: anytype) ![]u8 {
+    const base = persistentBaseDir(allocator);
+    defer allocator.free(base);
+    return ensurePersistentStableIn(allocator, base, assets);
+}
+
+/// `ensurePersistentStable` with an explicit base dir. Split out so tests
+/// can point it at a tmpDir instead of the user's real data dir.
+pub fn ensurePersistentStableIn(
+    allocator: std.mem.Allocator,
+    base: []const u8,
+    assets: anytype,
+) ![]u8 {
+    if (builtin.os.tag == .windows) return ensurePersistentIn(allocator, base, assets);
+
+    const hash_dir = try ensurePersistentIn(allocator, base, assets);
+    defer allocator.free(hash_dir);
+
+    const stable = try std.fs.path.join(allocator, &.{ base, stable_link_name });
+    errdefer allocator.free(stable);
+
+    // Relative target (the hash basename) keeps the link relocatable and
+    // `readlink` output short.
+    const target = std.fs.path.basename(hash_dir);
+    pointSymlinkAt(allocator, stable, target) catch |err| {
+        std.log.warn("stable webapp link {s} -> {s} failed ({s}); using versioned dir", .{
+            stable, target, @errorName(err),
+        });
+        return try allocator.dupe(u8, hash_dir);
+    };
+    return stable;
+}
+
+/// Atomically point `link_path` at `target` via a temp symlink + rename.
+/// `target` is stored as given (callers pass the hash basename, making the
+/// link relative). A leftover temp link from a killed run is unlinked
+/// first — never deleted as a tree, since it is a symlink, not a dir.
+fn pointSymlinkAt(allocator: std.mem.Allocator, link_path: []const u8, target: []const u8) !void {
+    const pid: u64 = switch (builtin.os.tag) {
+        .windows => @intFromPtr(std.c.getpid()),
+        else => @intCast(std.c.getpid()),
+    };
+    const tmp_link = try std.fmt.allocPrint(allocator, "{s}.tmp-{d}", .{ link_path, pid });
+    defer allocator.free(tmp_link);
+
+    if (pathExistsAbs(tmp_link)) unlinkAbsolute(tmp_link);
+    try symlinkAbsolute(target, tmp_link);
+    errdefer unlinkAbsolute(tmp_link);
+
+    renameAbsolute(tmp_link, link_path) catch |err| switch (err) {
+        // `link_path` is a real dir, not a symlink — refuse to clobber
+        // user data; the caller falls back to the versioned dir.
+        error.TargetExists => return error.LinkTargetIsDir,
+        else => return err,
+    };
+}
+
+/// `symlink(2)` via libc. Both paths must be NUL-terminated scratch copies.
+fn symlinkAbsolute(target: []const u8, link_path: []const u8) !void {
+    var target_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    var link_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const target_z = copyToNull(&target_buf, target);
+    const link_z = copyToNull(&link_buf, link_path);
+    const rc = std.c.symlink(target_z, link_z);
+    if (rc == 0) return;
+    return error.SymlinkFailed;
+}
+
+/// Best-effort `unlink(2)` for a symlink path. Never follows the link.
+fn unlinkAbsolute(path: []const u8) void {
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const path_z = copyToNull(&path_buf, path);
+    _ = std.c.unlink(path_z);
+}
+
 /// Per-user base dir for the persistent webapp copies. Deliberately NOT a
 /// temp dir: `$XDG_RUNTIME_DIR` / `$TMPDIR` are wiped on logout and by
 /// tmpfiles reapers, which would resurrect the very 404 this fixes even
