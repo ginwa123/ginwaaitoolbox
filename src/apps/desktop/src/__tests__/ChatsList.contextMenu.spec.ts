@@ -55,8 +55,12 @@ describe('ChatsList — right-click context menu', () => {
     expect(menu).toBeTruthy()
     const item = document.body.querySelector('[data-testid="chat-menu-open-new-tab"]') as HTMLButtonElement
     expect(item?.textContent).toContain('Open in new tab')
+    expect(item?.querySelector('span[aria-hidden="true"]')).toBeTruthy()
+    expect(tabsStore.enabled).toBe(false)
     item.click()
     await nextTick()
+    // Explicit open opts into tab mode (defaults OFF) so the new tab is visible.
+    expect(tabsStore.enabled).toBe(true)
     expect(spy).toHaveBeenCalledOnce()
     expect(spy.mock.calls[0]?.[0]).toMatchObject({ query: { view: 'chat', session: 'chat_1' } })
     expect(document.body.querySelector('[data-testid="chat-menu"]')).toBeNull()
