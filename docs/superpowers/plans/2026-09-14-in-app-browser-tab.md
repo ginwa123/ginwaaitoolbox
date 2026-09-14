@@ -469,6 +469,12 @@ still loads its tabs.
 Backend on **8080** (never 8081); UI via `pnpm --dir src/apps/desktop dev` (5173) with
 `VITE_API_PROXY_TARGET=http://localhost:8080`:
 
+The bridge has its own repeatable check that needs no UI:
+`python3 scripts/browser-bridge-probe.py` boots the real engine in connect mode
+against a probe page and asserts open → alive → close → gone (needs a display;
+exit 3 = skipped). Run it after touching `browser_bridge.zig`, and on each new
+platform.
+
 - [ ] `+` → blank browser tab, address bar focused, tab labelled `New tab` / 🌐.
 - [ ] Type `github.com` → a **Nalar window** opens on GitHub; the bar shows the URL;
   a link inside works; ← returns; ↻ reloads; **sign in to GitHub** and confirm the
@@ -641,6 +647,62 @@ the shell through `webview_bind` — no HTTP route, no port, no token.
    a `closeTabFromMenu(id)` call. Worth knowing for any future edit to a
    template attribute with `;` in it.
 
+### Post-review fix (2026-09-14, from the human's manual check)
+
+**Symptom.** In the running desktop app a browser tab rendered, but
+"Open browser window" did nothing at all — no window, no error.
+
+**Cause.** The shell bound `"nalarBrowser.open"` / `".status"` / `".close"`.
+The vendored glue (`vendor/webview/webview.h`, `Webview_.prototype.onBind`)
+does `window[name] = …` with the name **verbatim** — there is no namespace
+walking — so it created `window["nalarBrowser.open"]` and left
+`window.nalarBrowser` **undefined**. The shell was wired; the SPA could not see
+it, correctly reported "unavailable", and the primary button was a silent no-op.
+A live probe in the real engine confirms the shape: `flat_bindings=true
+object_shape=undefined`.
+
+**Fix (two parts).**
+
+1. The three bindings are now flat identifiers — `nalarBrowserOpen`,
+   `nalarBrowserStatus`, `nalarBrowserClose` — which is the only spelling the
+   glue can expose as a property of `window`. `helpers/browserBridge.ts` is the
+   single seam and composes the object-shaped API from them (accepting either
+   spelling), so the rest of the frontend is unchanged.
+2. **No silent no-op.** When there is no bridge at all (a plain-browser dev
+   session, an older shell), the primary button says and does "Open in system
+   browser", an inline line explains why, and a blank tab's Enter hands the
+   address to the system browser instead of navigating and doing nothing.
+
+**Tests that lock it** (all of which fail against the shipped code):
+`__tests__/webviewBindGlue.spec.ts` extracts the REAL glue out of
+`vendor/webview/webview.h`, executes it, and asserts (a) a flat name becomes
+`window.<name>`, (b) a dotted name stays a flat property and leaves
+`window.nalarBrowser` undefined, (c) the posted request is
+`{id, method, params:[tabId,url]}` — exactly what `parseParams` reads — and
+(d) the Zig source binds exactly three flat names. Plus
+`browserBridge.spec.ts` (flat globals, and a half-installed shell reads as
+absent) and `BrowserTabView.spec.ts` (the fallback + the hint).
+
+**Live end-to-end gate** (new, needs a display — not a CI gate):
+`python3 scripts/browser-bridge-probe.py` runs the real engine in connect mode
+against a probe page that calls the three globals exactly as the SPA does.
+Recorded result:
+
+```
+flat_bindings=true object_shape=undefined
+open={"ok":true,"alive":1}
+status={"alive":1}
+close={"ok":true}
+status_after_close={"alive":0}
+PASS
+```
+
+**Lesson worth keeping:** a binding whose name the JS glue cannot expose is not
+caught by a signature test, a unit test on either side, or a source grep — only
+by executing the glue or the engine. That is why (a) the glue spec exists and (b)
+the "bridge absent" path now has a visible, working fallback instead of a
+silent one.
+
 ### Gates
 
 * `zig build test:desktop-app --summary all` — **62/62 pass** (was 56; the new
@@ -649,12 +711,12 @@ the shell through `webview_bind` — no HTTP route, no port, no token.
 * `zig build check:desktop-cross --summary all` — **4/4**: the bridge's per-OS
   liveness probe compiles for **x86_64-windows-gnu, aarch64-macos and
   x86_64-linux**. This gate is what caught deviation 6.
-* `pnpm --dir src/apps/desktop exec vitest run` — **371 files / 3290 tests:
-  4 failed, 3286 passed.** The 4 failures are exactly the pre-existing set
+* `pnpm --dir src/apps/desktop exec vitest run` — **373 files / 3310 tests:
+  4 failed, 3306 passed.** The 4 failures are exactly the pre-existing set
   recorded *before* any edit (4 failed / 3247 passed of 3251): 
   `FilePickerDialog.windows`, `WorkspaceItemHideTasksForDesign`,
   `workspacesStoreNormalizeTaskDates`, `workspacesStoreNormalizeTaskImageUrls`.
-  **+39 new passes, 0 regressions.**
+  **+59 new passes, 0 regressions.**
 * `pnpm --dir src/apps/desktop run build` (vite + `vue-tsc`) — green;
   `run lint:check` (oxlint + eslint) — **0 errors, 0 warnings**.
 * `pytest tests/functional/desktop_browser_flag_test.py` — 1 passed (the static

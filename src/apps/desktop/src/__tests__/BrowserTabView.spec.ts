@@ -140,6 +140,44 @@ describe('BrowserTabView', () => {
     expect(opened).toHaveLength(2)
   })
 
+  it('falls back to the system browser — and says why — when there is no bridge', async () => {
+    // A plain-browser dev session (or an older shell) has no bridge at all.
+    // The primary action must still DO something and must explain itself; this
+    // is the "cannot click?" report from the human's manual check.
+    __setBrowserBridgeForTests(null)
+    const tabs = useTabsStore()
+    tabs.openBrowserTab('https://example.com')
+    const spy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(BrowserTabView)
+    await flushPromises()
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="browser-bridge-missing"]').exists()).toBe(true)
+    const primary = wrapper.find('[data-testid="browser-open-window"]')
+    expect(primary.text()).toBe('Open in system browser')
+
+    await primary.trigger('click')
+    expect(spy).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener')
+  })
+
+  it('hands a blank-tab address to the system browser when there is no bridge', async () => {
+    __setBrowserBridgeForTests(null)
+    const tabs = useTabsStore()
+    tabs.openBrowserTab()
+    const spy = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = mount(BrowserTabView)
+    await flushPromises()
+
+    await wrapper.find('[data-testid="browser-address"]').setValue('example.com')
+    await wrapper.find('[data-testid="browser-address"]').trigger('keydown.enter')
+    await flushPromises()
+
+    // The tab still records the address …
+    expect(tabs.activeTab?.query.url).toBe('https://example.com')
+    // … and the user gets the page instead of nothing.
+    expect(spy).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener')
+  })
+
   it('opens the url in the system browser from the secondary button', async () => {
     __setBrowserBridgeForTests({
       open: async () => ({ ok: true, alive: 1 }),

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  __resetBrowserBridgeForTests,
   __setBrowserBridgeForTests,
   browserBridgeAvailable,
   browserStatus,
@@ -70,6 +71,60 @@ describe('browserBridge', () => {
     })
     await expect(browserStatus('tab_1')).resolves.toEqual({ available: false, alive: false })
     await expect(closeBrowserWindow('tab_1')).resolves.toBeUndefined()
+  })
+
+  it('reads the flat globals the shell actually binds', async () => {
+    // The vendored glue sets `window[name]` verbatim (there is no namespace
+    // walking), so the shell binds nalarBrowserOpen/Status/Close. Binding
+    // "nalarBrowser.open" created `window["nalarBrowser.open"]` and left
+    // window.nalarBrowser undefined — the shipped bug this test locks out.
+    const scope = globalThis as unknown as Record<string, unknown>
+    const calls: unknown[] = []
+    __resetBrowserBridgeForTests()
+    scope.nalarBrowserOpen = async (tabId: string, url: string) => {
+      calls.push(['open', tabId, url])
+      return { ok: true, alive: 1 }
+    }
+    scope.nalarBrowserStatus = async (tabId: string) => {
+      calls.push(['status', tabId])
+      return { alive: 1 }
+    }
+    scope.nalarBrowserClose = async (tabId: string) => {
+      calls.push(['close', tabId])
+      return { ok: true }
+    }
+    try {
+      expect(browserBridgeAvailable()).toBe(true)
+      await expect(openBrowserWindow('tab_9', 'https://example.com')).resolves.toEqual({
+        available: true,
+        ok: true,
+        error: undefined,
+      })
+      await expect(browserStatus('tab_9')).resolves.toEqual({ available: true, alive: true })
+      await closeBrowserWindow('tab_9')
+      expect(calls).toEqual([
+        ['open', 'tab_9', 'https://example.com'],
+        ['status', 'tab_9'],
+        ['close', 'tab_9'],
+      ])
+    } finally {
+      delete scope.nalarBrowserOpen
+      delete scope.nalarBrowserStatus
+      delete scope.nalarBrowserClose
+    }
+  })
+
+  it('needs all three flat globals to call the bridge present', async () => {
+    const scope = globalThis as unknown as Record<string, unknown>
+    __resetBrowserBridgeForTests()
+    scope.nalarBrowserOpen = async () => ({ ok: true, alive: 1 })
+    try {
+      // A half-installed shell must read as absent, not as "open exists".
+      expect(browserBridgeAvailable()).toBe(false)
+      await expect(browserStatus('tab_1')).resolves.toEqual({ available: false, alive: false })
+    } finally {
+      delete scope.nalarBrowserOpen
+    }
   })
 
   it('degrades when the bridge rejects, with no unhandled rejection', async () => {

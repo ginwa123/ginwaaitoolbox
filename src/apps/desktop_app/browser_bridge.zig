@@ -5,9 +5,19 @@
 // The APP window (the one rendering our own SPA) gets exactly three bound JS
 // functions via `webview_bind`:
 //
-//     window.nalarBrowser.open(tabId, url)   → { ok, alive, error? }
-//     window.nalarBrowser.status(tabId)      → { alive }
-//     window.nalarBrowser.close(tabId)       → { ok }
+//     window.nalarBrowserOpen(tabId, url)   → { ok, alive, error? }
+//     window.nalarBrowserStatus(tabId)      → { alive }
+//     window.nalarBrowserClose(tabId)       → { ok }
+//
+// FLAT names, on purpose. The vendored glue
+// (`vendor/webview/webview.h`, `Webview_.prototype.onBind`) does
+// `window[name] = …` with the name VERBATIM — there is no namespace walking —
+// so binding "nalarBrowser.open" creates the property `window["nalarBrowser.open"]`
+// and leaves `window.nalarBrowser` undefined, i.e. a bridge the SPA can never
+// reach. (Found live: the button did nothing because the frontend correctly saw
+// "no bridge".) `helpers/browserBridge.ts` composes the object-shaped API from
+// these three globals and `tests/.../webviewBindGlue.spec.ts` locks the rule by
+// executing the real glue.
 //
 // The callback runs INSIDE this process — no HTTP route, no port, no token,
 // nothing another local process can reach (plan §3.2). That is also why the
@@ -93,9 +103,11 @@ pub const Bridge = struct {
         self.installed = true;
         self.w = w;
         const arg: ?*anyopaque = @ptrCast(self);
-        _ = webview_lib.webview_bind(w, "nalarBrowser.open", onOpen, arg);
-        _ = webview_lib.webview_bind(w, "nalarBrowser.status", onStatus, arg);
-        _ = webview_lib.webview_bind(w, "nalarBrowser.close", onClose, arg);
+        // Flat names — see the file header: the vendored glue writes
+        // `window[name]` verbatim, so a dotted name would be unreachable.
+        _ = webview_lib.webview_bind(w, "nalarBrowserOpen", onOpen, arg);
+        _ = webview_lib.webview_bind(w, "nalarBrowserStatus", onStatus, arg);
+        _ = webview_lib.webview_bind(w, "nalarBrowserClose", onClose, arg);
     }
 
     pub fn windowCount(self: *const Bridge) usize {
@@ -446,11 +458,17 @@ test "browser bridge: binds exactly the three browser functions" {
     const body = tail[0 .. std.mem.indexOf(u8, tail, "\n    pub fn ") orelse tail.len];
 
     const names = [_][]const u8{
-        "nalarBrowser.open",
-        "nalarBrowser.status",
-        "nalarBrowser.close",
+        "nalarBrowserOpen",
+        "nalarBrowserStatus",
+        "nalarBrowserClose",
     };
     for (names) |name| {
+        // A binding name must be a single JS identifier: the vendored glue does
+        // `window[name] = …` VERBATIM (no namespace walking), so "a.b" would
+        // create `window["a.b"]` and leave `window.a` undefined — a bridge the
+        // SPA cannot see. That is a real bug this repo shipped once; the
+        // frontend spec `webviewBindGlue.spec.ts` executes the glue itself.
+        try testing.expect(std.mem.indexOfScalar(u8, name, '.') == null);
         if (std.mem.indexOf(u8, body, name) == null) {
             std.debug.print("!! browser_bridge.zig does not bind {s} !!\n", .{name});
             return error.BrowserBindingMissing;

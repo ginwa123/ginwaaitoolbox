@@ -15,7 +15,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { normalizeAddressInput } from '../../helpers/browserUrl'
-import { browserStatus, openBrowserWindow } from '../../helpers/browserBridge'
+import {
+  browserBridgeAvailable,
+  browserStatus,
+  openBrowserWindow,
+} from '../../helpers/browserBridge'
 import { useTabsStore } from '../../stores/tabs'
 
 const emit = defineEmits<{
@@ -31,6 +35,8 @@ const raw = ref('')
 const error = ref('')
 const alive = ref(false)
 const copied = ref(false)
+/** False when this document has no shell bridge (plain browser / old shell). */
+const bridgeReady = ref(browserBridgeAvailable())
 
 async function refreshStatus(): Promise<void> {
   const current = tab.value
@@ -40,8 +46,10 @@ async function refreshStatus(): Promise<void> {
   }
   try {
     const st = await browserStatus(current.id)
+    bridgeReady.value = st.available
     alive.value = st.alive
   } catch {
+    bridgeReady.value = browserBridgeAvailable()
     alive.value = false
   }
 }
@@ -68,12 +76,35 @@ async function submitAddress(): Promise<void> {
   error.value = ''
   tabsStore.navigateBrowserTab(current.id, r.url)
   emit('navigate')
+  if (!browserBridgeAvailable()) {
+    // No shell to ask: hand the address to the system browser rather than
+    // navigating the tab and leaving the user with nothing.
+    systemOpen(r.url)
+    return
+  }
   try {
     await openBrowserWindow(current.id, r.url)
   } catch {
     /* the bridge never throws, but the tab target is already applied */
   }
   await refreshStatus()
+}
+
+/**
+ * The primary action is never disabled (§3 window re-use rule) and never a
+ * no-op: with no bridge it does the only thing that can work here.
+ */
+const primaryLabel = computed(() => {
+  if (!bridgeReady.value) return 'Open in system browser'
+  return alive.value ? 'Open another window' : 'Open browser window'
+})
+
+function onPrimary(): void {
+  if (!bridgeReady.value) {
+    openInSystem()
+    return
+  }
+  void openWindow()
 }
 
 async function openWindow(): Promise<void> {
@@ -88,14 +119,17 @@ async function openWindow(): Promise<void> {
   await refreshStatus()
 }
 
-function openInSystem(): void {
-  const target = url.value
+function systemOpen(target: string): void {
   if (!target) return
   try {
     window.open(target, '_blank', 'noopener')
   } catch {
     /* popup blocked — never throw out of a click handler */
   }
+}
+
+function openInSystem(): void {
+  systemOpen(url.value)
 }
 
 async function copyUrl(): Promise<void> {
@@ -184,15 +218,25 @@ async function copyUrl(): Promise<void> {
       >
         {{ alive ? '1 window open' : 'no window open' }}
       </p>
+      <p
+        v-if="!bridgeReady"
+        data-testid="browser-bridge-missing"
+        class="text-sm"
+        :style="{ color: 'var(--semantic-text-muted)' }"
+      >
+        This page has no shell bridge, so a Nalar browser window cannot be
+        opened from here — opening in your system browser instead. Use the
+        Nalar desktop app for an in-app window.
+      </p>
       <div class="flex gap-2">
         <button
           type="button"
           data-testid="browser-open-window"
           class="rounded-lg px-4 py-2 text-sm font-medium"
           :style="{ backgroundColor: 'var(--color-violet)', color: '#fff' }"
-          @click="openWindow"
+          @click="onPrimary"
         >
-          {{ alive ? 'Open another window' : 'Open browser window' }}
+          {{ primaryLabel }}
         </button>
         <button
           type="button"
