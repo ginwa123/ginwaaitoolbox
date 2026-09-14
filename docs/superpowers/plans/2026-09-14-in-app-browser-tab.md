@@ -4,6 +4,9 @@
 > go-ahead at `in_review_planning`. Nothing in this document has been
 > implemented; every line number below was verified by reading `main` at
 > `b7c2d39e`.
+>
+> **Plan PR:** #489, branch `worktree/task-1789376475404` (docs only — merging it
+> lands this plan, not the feature).
 
 > **For agentic workers:** this is a *planning* artefact. Before implementing, use
 > subagent-driven-development / executing-plans. Steps use checkbox (`- [ ]`)
