@@ -112,6 +112,54 @@ thing that removes that ceiling is a browser view owned by the desktop shell
 itself instead of by the page (§7.1, a multi-week per-OS project, deliberately not
 part of this plan).
 
+### 1.4 Why an in-page browser hits a wall — the mechanism, measured
+
+Asked directly by the reviewer: *"why we cannot act like a browser?"* Here is the
+whole answer, with headers fetched over the wire on 2026-09-14:
+
+```
+$ curl -sI https://github.com/          → x-frame-options: deny
+                                          content-security-policy: … frame-ancestors 'none' …
+$ curl -sI https://www.google.com/      → x-frame-options: SAMEORIGIN
+$ curl -sI https://example.com/         → (no framing headers)
+$ curl -sI https://docs.python.org/3/   → (no framing headers)
+```
+
+1. **The app already *is* a browser engine.** The desktop shell is WebKitGTK /
+   WKWebView / WebView2 rendering our Vue SPA. There is no missing engine, no
+   missing network stack, no missing HTML/CSS/JS support.
+2. **What it is missing is a second *top-level* browsing context.** Our engine view
+   is occupied by the app itself. Showing a site *and* keeping the app on screen at
+   the same time needs a second context, and there are only two places to put one:
+   **(a) nested inside our document** — that is an `iframe`, and **(b) a sibling
+   native view in the window** — that is what §7.1/§7.2 are, and it is native
+   shell code, not HTML.
+3. **The `iframe` route is where GitHub and Google say no — and it is enforced by
+   our own engine.** `X-Frame-Options` / `frame-ancestors` are **anti-clickjacking
+   policies for nested browsing contexts**; the engine checks them inside the
+   browser process, before layout, and there is deliberately no JS API, no config
+   flag and no setting to bypass them. The sender for both sites is measured above.
+   This is not a Nalar limitation — **a real Chrome fails the same way**, which is
+   why "open github.com in an iframe" is refused in any ordinary browser too.
+4. **So a page either gets a top-level context (real browser, needs native views)
+   or it gets `way B` (our backend fetches it, and we are then a *substitute* for
+   the browser's network layer — no cookies, no page origin, no POST, no
+   downloads).** There is no third option that is both safe and richer; the
+   tempting one (serve the proxied page from our own origin so the frame is not
+   third-party) is analysed and rejected in §7.3 — it hands a hostile page our
+   app's origin and API.
+5. **The `way B` claims were checked, not assumed.** A cookie-less fetch of
+   `https://www.google.com/search?q=zig+lang&num=10` returned 91 KB of
+   server-rendered HTML containing result markup and **no** consent/CAPTCHA/
+   "enable JavaScript" interstitial — so the reviewer's "search Google" case really
+   does render through the fallback path (in this region; §9 keeps the caveat).
+
+The short version: **browsers are allowed to show anything because a tab *is* a
+top-level view. A page inside a page is not, and that rule is the web's, not
+ours.** We can be that top-level view — that is §7.1 (in the strip, multi-week) or
+§7.2 (its own window, small). What we cannot do is make an `iframe` behave like a
+tab.
+
 ---
 
 ## 2. Why the current tab system already accepts a new kind
@@ -801,7 +849,7 @@ production hits, both inside `openExternal.ts` and `PreviewContentRenderer.vue`.
 
 Fully specified here so it can be picked up without re-research.
 
-### 7.1 The only route to a *fully* regular browser: a shell-owned browser view
+### 7.1 The full fix: a browser view **in the window**, so the tab really is a tab
 
 This is the honest answer to "browse like a regular browser" in the strong sense
 (Google/GitHub **signed in**, downloads, any site, no proxy). It is not a
@@ -813,28 +861,62 @@ desktop shell:
   engine *can* host more views, and the C API is already bound
   (`webview_set_html`, `webview_eval`, `webview_bind`, `webview_get_window` —
   `webview_lib.zig:69-73`, all unused), but the shell never creates a second one
-  and has no frame that the Vue tab strip could host it in (a native widget cannot
-  be positioned inside DOM content — the strip is HTML).
-* **The shape of the work.** A shell-owned chrome: a native container (GTK
-  `GtkNotebook` / macOS `NSTabView`+`WKWebView` / Windows `WebView2` in a child
-  HWND) holding one engine view per browser tab, with the SPA's own webview as
-  just another page. That implies (a) a non-blocking event loop in the Zig shell,
-  (b) per-OS view parenting and teardown, (c) a JS↔Zig bridge (`webview_bind`) so
-  the SPA can ask the shell to open/close/activate a browser page and receive its
-  title and URL back, (d) deciding what happens to the *existing* Vue tab strip —
-  two strips (native browser tabs + app tabs) would be incoherent, so the strip
-  most likely has to become shell-owned entirely, which retires
+  and cannot position a native widget inside DOM content — the strip is HTML, so
+  the page view has to be a *sibling* of the app's own webview in the window, not
+  a child of the document (§1.4).
+* **The shape of the work.** A shell-owned container (GTK `GtkBox`/`GtkNotebook`
+  around the existing `GtkWindow` child — `webview_get_window` already returns the
+  native handle; macOS `WKWebView` as an `NSWindow` subview; Windows `WebView2` in
+  a child HWND) holding one engine view per browser tab, with the SPA as just
+  another view. That implies (a) a non-blocking event loop in the Zig shell,
+  (b) per-OS view parenting, focus/z-order and teardown, (c) a JS↔Zig bridge
+  (`webview_bind`) so the SPA can ask the shell to create/close/activate a page
+  view, tell it its rectangle, and receive title/URL/loading back, (d) a decision
+  about the *existing* Vue strip — two strips (native browser tabs + app tabs)
+  would be incoherent, so the strip most likely becomes shell-drawn, which retires
   `helpers/tabTarget.ts`, `stores/tabs.ts`, `TabBar.vue` and their tests as the
   source of truth.
 * **Effort and risk.** Multi-week, cross-platform, and it touches the shell every
   release ships. Its own plan and its own card — it should **not** be folded into
   this one, because it is a rewrite of the tab model rather than a new tab kind.
 * **Recommendation.** Ship this plan first (it delivers search + GitHub + tabs +
-  history in days, and the whole renderer/SSRF/relay layer is throw-away-free if
-  7.1 later lands: the probe/guard work stays useful as the "open a link" path).
-  Then decide on 7.1 as a separate card if sign-in matters.
+  history in days, and none of the probe/guard/relay work is wasted — it stays as
+  the "open a link" path and as the fallback for way-B pages). Then decide on 7.1
+  as a separate card if sign-in matters.
 
-### 7.2 Everything else
+### 7.2 The cheap real browser: a native **window** (sign-in works today)
+
+Halfway between this plan and 7.1, and worth naming because it is small:
+
+* `desktop_app/cli.zig` already builds a window from a URL
+  (`webview_navigate` at `webview_lib.zig:125`); a `--browser <url>` mode skips
+  attach/auto-spawn and just opens a native window on the given address.
+* Spawned as its **own process** from the SPA (the shell already spawns a detached
+  nalar — `attach.zig:195-206` is the pattern), it needs **no** refactor of the
+  blocking loop, no bridge, no geometry sync. It is a real engine view on a real
+  top-level address, so `X-Frame-Options` does not apply, cookies and sign-in work,
+  downloads work, JS-heavy sites work.
+* Cost: it is a **separate OS window**, not a tab in the strip, and it should get
+  its own persistent website-data directory or logins are lost per launch.
+* This is the option to reach for if "signed in everywhere" matters more than
+  "inside the strip". It could also ship as the toolbar's "Open in system browser"
+  target, replacing the OS browser with a Nalar-owned one.
+
+### 7.3 Rejected alternative: serve the proxied page from our own origin
+
+Worth recording so it is not re-proposed: point the iframe at
+`http://127.0.0.1:<port>/browse/<encoded-url>` and have the backend reverse-proxy
+the site. That *does* defeat `X-Frame-Options` (we are the server, so the frame is
+not third-party), and the frame would be same-origin with the app — which is
+exactly why it is rejected. Same-origin means the proxied page's JavaScript could
+read `localStorage`, call `POST /api/...` as the user and drive the whole app.
+Sandboxing it (`sandbox="allow-scripts"`, no `allow-same-origin`) makes it an
+opaque origin again — which is precisely the way-B downgrade we already have
+(no cookies, no same-origin `fetch`) — but now with a second, worse proxy in the
+path. There is no version of this that is both safe and more capable than §4's two
+render paths.
+
+### 7.4 Everything else
 
 1. **Downloads, uploads, `method="POST"` forms through the proxied path,
    `target=_blank` from the direct path** (the last two need `allow-popups` + a
@@ -845,8 +927,9 @@ desktop shell:
    the per-tab force toggle.
 4. **A cookie/session model for the proxied path** — the reviewer did not ask for
    sign-in, and forwarding the user's cookies to an arbitrary host from a loopback
-   endpoint is a security decision, not a feature. If it is ever wanted, it must be
-   an isolated jar with an explicit UI warning, not the app's own session.
+   endpoint is a security decision, not a feature. If it is ever wanted it must be
+   an isolated jar with an explicit UI warning, not the app's own session — or, far
+   better, §7.2/§7.1 which give a real engine view instead.
 5. **Tab duplicate / pin / mute** — the strip has no concept of these yet.
 
 ---
@@ -896,7 +979,7 @@ desktop shell:
 | The proxy becomes a mini web-proxy that rots as sites change | Broken pages on the fallback path | The proxy is a **fallback**, never the primary path; the direct iframe carries the common case; the badge + system-browser button set expectations |
 | SSRF from the new outbound-fetch endpoint | Local API / metadata read from the renderer | Scheme allowlist + private-range blocklist + final-URL revalidation + no credentials + cap + timeout; pinned over the real wire in 10.1 |
 | Third-party cookies / storage blocked in WebKitGTK | Logged-in sites stay signed out inside the app | Direct path keeps the site's own origin; document the limit; system-browser escape hatch |
-| Proxied pages' JS breaks (NULL origin ⇒ `fetch`/XHR blocked by CORS) | Some sites look partly broken | Badge states it; force-direct toggle; §7.2 item 1 / §7.1 |
+| Proxied pages' JS breaks (NULL origin ⇒ `fetch`/XHR blocked by CORS) | Some sites look partly broken | Badge states it; force-direct toggle; §7.4 item 1 / §7.1 |
 | `frameable` prediction disagrees with the engine | Blank/failed frame with no explanation | Force-proxy toggle + error page with both escape hatches |
 | Engine differences (WebKitGTK vs WKWebView vs WebView2) in `sandbox` handling | Inconsistent behaviour across OSes | Capability-independent design (no engine APIs), honest banner, and a documented fallback: "if this page looks wrong, open it in your browser" |
 | Proxy returns hostile HTML into our own document | XSS in the app | The proxied body only ever enters a `srcdoc` frame **without** `allow-same-origin` — NULL origin, no parent access (the `PreviewContentRenderer` contract, `:37-42`) |
@@ -979,10 +1062,11 @@ form submits, so searching from inside a proxied page works too. The one thing
 that cannot be delivered inside an iframe is **sign-in**, because the site itself
 forbids being embedded and we refuse to forward your cookies to a third party from
 a local endpoint. §1.3 is the plain-language statement of exactly what works and
-what does not, and §7.1 is the (separate, multi-week, shell-level) project that
-removes the ceiling. **If "signed in everywhere" is a requirement, say so and I
-will write that plan as its own card before implementation starts** — it changes
-who owns the tab strip, so it should not be smuggled into this one.
+what does not, **§1.4 explains the mechanism with the measured response headers**,
+and §7.1/§7.2 are the (separate) projects that remove the ceiling. **If "signed in
+everywhere" is a requirement, say so and I will write that plan as its own
+card before implementation starts** — it changes who owns the tab strip, so it
+should not be smuggled into this one.
 
 **A3 — Google.** Locked as `SEARCH_URL_TEMPLATE`. §9 records the one region caveat
 (Google's consent/JS-only page for cookie-less requests) and the one-line fallback.
@@ -990,10 +1074,19 @@ who owns the tab strip, so it should not be smuggled into this one.
 ### Still open (non-blocking)
 
 **Q4 — do you want the §7.1 shell-owned browser planned as its own card now?** It
-is the only route to sign-in/downloads/any-site fidelity, and it is a rewrite of
-the tab model rather than a new tab kind. Default if unanswered: **no** — this plan
-ships first, and 7.1 is picked up only if the limited view proves insufficient in
-daily use.
+is the only route to sign-in/downloads/any-site fidelity *inside the strip*, and it
+is a rewrite of the tab model rather than a new tab kind. Default if unanswered:
+**no** — this plan ships first, and 7.1 is picked up only if the limited view proves
+insufficient in daily use.
+
+**Q5 — should §7.2 (a Nalar-owned browser *window*, `--browser <url>`) be folded
+into this plan instead of being a follow-up?** It is the small option that makes
+sign-in, downloads and JS-heavy sites work today, at the cost of being its own OS
+window rather than a tab. Folding it in would add roughly one task here (a CLI flag
++ a spawn path + a persistent website-data dir + "Open in Nalar browser" on the
+toolbar and the error page) and would give the feature a working answer for
+"signed in everywhere" without waiting for 7.1. Default if unanswered: **follow-up**
+(§7.2 as written).
 
 ---
 
