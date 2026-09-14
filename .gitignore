@@ -10,6 +10,9 @@ zig-out
 /.worktree
 
 # === Frontend dependencies + builds ===
+# A root-level node_modules appears when a tool (vitest's cacheDir) resolves from
+# the repo root instead of an app dir — never tracked.
+/node_modules
 /src/apps/kerjabot/node_modules
 /src/apps/kerjabot/dist
 /src/apps/desktop/node_modules
