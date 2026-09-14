@@ -561,6 +561,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/git/worktree/info", ai_mod.http_handlers.gitWorktreeInfoHandler);
     try gs.router.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
     try gs.router.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
+    try gs.router.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
     try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     // File download for the `present_files` agent tool card
     // (PresentFiles.vue). Literal path under a fresh `/api/files/`
