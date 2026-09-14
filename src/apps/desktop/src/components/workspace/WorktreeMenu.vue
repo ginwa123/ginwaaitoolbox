@@ -5,16 +5,17 @@
  * Shows different actions based on whether a worktree is bound:
  *
  * With worktree (`hasWorktree=true`):
- *   - 🔀 "Create a PR"    — emits 'create-pr' so the parent opens CreatePrDialog
- *   - 📁 "View in folder" — emits 'view-folder' (parent copies worktree path to clipboard)
- *   - 🗑️ "Clear worktree" — emits 'clear' so the parent sends the LLM a system message
+ *   - 🔀 "Create a PR"    — currently disabled (frontend-only)
+ *   - 📁 "View in folder" — currently disabled (frontend-only)
+ *   - 🗑️ "Clear worktree" — currently disabled (frontend-only)
  *
  * Without worktree (`hasWorktree=false`):
  *   - 🌳 "Create worktree" — emits 'create-worktree' (parent opens CreateWorktreeDialog)
- *   - 📁 "Open in folder" — emits 'view-folder' (parent copies session cwd to clipboard)
+ *   - 📁 "Open in folder" — currently disabled (frontend-only, same feature as "View in folder")
  *   - 🔄 "Refresh status" — emits 'refresh' so the parent re-fetches git status
  *
  * The menu closes itself after any action via the parent's v-if binding.
+ * Disabled items stay visible but cannot be clicked.
  */
 import { ref, onMounted, onUnmounted } from 'vue'
 
@@ -62,7 +63,11 @@ const onViewFolder = () => {
   emit('close')
 }
 const onClear = () => {
-  if (confirm('Clear the worktree binding? This removes the worktree directory and unbinds the session.')) {
+  if (
+    confirm(
+      'Clear the worktree binding? This removes the worktree directory and unbinds the session.',
+    )
+  ) {
     emit('clear')
     emit('close')
   }
@@ -81,10 +86,7 @@ const onCreateWorktree = () => {
   <div
     ref="menuRef"
     class="absolute bottom-full mb-2 left-0 min-w-[200px] rounded-lg shadow-lg z-20 overflow-hidden"
-    style="
-      background-color: var(--semantic-card-bg);
-      border: 1px solid var(--color-border);
-    "
+    style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
   >
     <!-- Header — shows current branch and (optional) status. Gives the
          user context for what they're acting on. -->
@@ -98,19 +100,25 @@ const onCreateWorktree = () => {
     >
       <div class="flex items-center gap-1.5">
         <span>🌿</span>
-        <span style="font-family: monospace;">{{ branch || 'detached' }}</span>
+        <span style="font-family: monospace">{{ branch || 'detached' }}</span>
       </div>
-      <div v-if="status" class="mt-0.5 normal-case tracking-normal" style="color: var(--semantic-text-muted)">
+      <div
+        v-if="status"
+        class="mt-0.5 normal-case tracking-normal"
+        style="color: var(--semantic-text-muted)"
+      >
         {{ status }}
       </div>
     </div>
 
-    <!-- Worktree-bound actions -->
+    <!-- Worktree-bound actions — all three temporarily disabled via frontend only. -->
     <template v-if="hasWorktree">
       <button
         data-testid="worktree-menu-create-pr"
         @click="onCreatePr"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        disabled
+        title="Disabled"
+        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text)"
       >
         <span>🔀</span>
@@ -119,7 +127,9 @@ const onCreateWorktree = () => {
       <button
         data-testid="worktree-menu-view-folder"
         @click="onViewFolder"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        disabled
+        title="Disabled"
+        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
         <span>📁</span>
@@ -128,7 +138,9 @@ const onCreateWorktree = () => {
       <button
         data-testid="worktree-menu-clear"
         @click="onClear"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        disabled
+        title="Disabled"
+        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--color-red); border-top: 1px solid var(--color-border)"
       >
         <span>🗑️</span>
@@ -150,7 +162,9 @@ const onCreateWorktree = () => {
       <button
         data-testid="worktree-menu-view-folder"
         @click="onViewFolder"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        disabled
+        title="Disabled"
+        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
         <span>📁</span>
