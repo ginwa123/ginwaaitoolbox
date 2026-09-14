@@ -469,6 +469,11 @@ const router = useRouter()
 // embedded/peek mode — the peek panel owns the right edge there.
 const chatSidebar = useChatRightSidebar(props.type ?? 'chat')
 const chatSidebarRef = ref<InstanceType<typeof ChatRightSidebar> | null>(null)
+// Attached PR URL for the sidebar's PR-changes mode (set_pull_request
+// tool). Empty = worktree-changes mode. Re-synced with the worktree
+// binding so a mid-chat attach/clear flips the panel without reload.
+const chatPrUrl = ref('')
+const chatPrProvider = ref('')
 
 async function onChatSidebarSubmitReview(message: string) {
   if (!sessionId.value || !effectiveCwd.value) return
@@ -487,6 +492,8 @@ async function refreshWorktreeBinding() {
     const data = await api.getChatHistory(sessionId.value, 1)
     if (data.git_worktree_cwd !== undefined) gitWorktreeCwd.value = data.git_worktree_cwd
     if (data.cwd) sessionCwd.value = data.cwd
+    if (data.pr_url !== undefined) chatPrUrl.value = data.pr_url ?? ''
+    if (data.pr_provider !== undefined) chatPrProvider.value = data.pr_provider ?? ''
   } catch (err) {
     console.warn('[ChatView] worktree binding refresh failed:', err)
   }
@@ -496,7 +503,8 @@ async function refreshWorktreeBinding() {
 // just changed (bound or cleared) — re-sync so effectiveCwd (and the
 // sidebar's cwd prop) follows the worktree immediately.
 function maybeRefreshWorktreeBinding(role: string, toolName?: string) {
-  if (role === 'tool' && toolName === 'set_git_worktree') void refreshWorktreeBinding()
+  if (role === 'tool' && (toolName === 'set_git_worktree' || toolName === 'set_pull_request'))
+    void refreshWorktreeBinding()
 }
 
 async function onChatSidebarRefresh() {
@@ -1582,6 +1590,16 @@ const loadChatHistory = async (loadMore = false) => {
 
     if (!loadMore && data.git_worktree_cwd !== undefined) {
       gitWorktreeCwd.value = data.git_worktree_cwd
+    }
+
+    // Attached-PR binding for the sidebar's PR-changes mode. Loaded
+    // here (mount) and re-synced by refreshWorktreeBinding() so a
+    // mid-chat attach/clear flips the panel without a reload.
+    if (!loadMore && data.pr_url !== undefined) {
+      chatPrUrl.value = data.pr_url ?? ''
+    }
+    if (!loadMore && data.pr_provider !== undefined) {
+      chatPrProvider.value = data.pr_provider ?? ''
     }
 
     // 2026-08-07-profile-persist-read — load the persisted profile
@@ -4099,6 +4117,8 @@ const compactSession = async () => {
       v-if="!embedded"
       ref="chatSidebarRef"
       :cwd="effectiveCwd"
+      :pr-url="chatPrUrl"
+      :pr-provider="chatPrProvider"
       :open="chatSidebar.isOpen.value"
       :width="chatSidebar.width.value"
       :min-width="chatSidebar.MIN_WIDTH"

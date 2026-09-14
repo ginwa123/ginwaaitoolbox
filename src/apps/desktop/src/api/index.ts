@@ -4050,6 +4050,32 @@ export async function readGitFile(
   )
 }
 
+// PR Diff API — full unified diff for the PR attached to a session
+// (set_pull_request tool). Consumed by the ChatView right panel's
+// PR mode, which splits per file client-side.
+export interface GitPrDiff {
+  pr_url: string
+  base: string
+  head: string
+  diff_content: string // Full unified diff output
+  truncated: boolean
+}
+
+export async function getPrDiff(
+  cwd: string,
+  prUrl: string,
+  opts?: { provider?: string; base?: string; head?: string },
+): Promise<GitPrDiff> {
+  const params = new URLSearchParams({
+    path: cwd,
+    pr_url: prUrl,
+  })
+  if (opts?.provider) params.set('provider', opts.provider)
+  if (opts?.base) params.set('base', opts.base)
+  if (opts?.head) params.set('head', opts.head)
+  return await apiFetch<GitPrDiff>(`/git/pr/diff?${params.toString()}`)
+}
+
 // Read file content API (for CodeEditor)
 export interface ReadFileResponse {
   content: string
