@@ -130,7 +130,7 @@ describe('TabBar', () => {
     void first
   })
 
-  it('uses the task name for standalone task-chat items, the item name for kanban', async () => {
+  it('names a task-chat tab after the task, and a board tab after the item', async () => {
     const store = useTabsStore()
     const workspaces = useWorkspacesStore()
     workspaces.workspaces = [
@@ -148,25 +148,29 @@ describe('TabBar', () => {
             id: 'item_8',
             name: 'Worker agent',
             item_type: 'agent',
-            tasks: [{ id: 'task_9', name: 'Fix CI on macOS' }],
+            tasks: [{ id: 'task_10', name: 'Triage failing jobs' }],
           },
         ],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any,
     ]
 
-    // kanban: the dialog lives inside the board, so the tab is the board
+    // kanban: the task chat IS the view (its own tab), so the tab is the task…
     store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' } })
-    // agent: the task chat IS the view, so the tab is the task
-    store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_8/chat/task_9' } })
+    // …while the bare board tab keeps the item's name
+    store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' } })
+    // agent: same rule
+    store.open({ query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_8/chat/task_10' } })
     const wrapper = mount(TabBar)
     await nextTick()
 
     const labels = wrapper.findAll('[role="tab"]').map((tab) => tab.text())
-    expect(labels[1]).toContain('Sprint board')
+    expect(labels[1]).toContain('Fix CI on macOS')
     expect(labels[1]).toContain('▦')
-    expect(labels[2]).toContain('Fix CI on macOS')
-    expect(labels[2]).toContain('🤖')
+    expect(labels[2]).toContain('Sprint board')
+    expect(labels[2]).toContain('▦')
+    expect(labels[3]).toContain('Triage failing jobs')
+    expect(labels[3]).toContain('🤖')
   })
 
   it('keeps the generic label while the tree has not loaded, then corrects itself', async () => {

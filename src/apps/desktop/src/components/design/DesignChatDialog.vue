@@ -4,10 +4,10 @@
   full-width behind a dimmed+blurred backdrop). Click backdrop /
   press Esc / click ✕ to close.
 
-  Mirrors the KanbanChatDialog component (plan
-  2026-08-06-kanban-chat-as-dialog) — same Teleport pattern, same
-  sizing, same close affordances. The only differences are:
-    - testid prefix: `design-chat-dialog-*` (not `kanban-chat-dialog-*`)
+  Same Teleport-modal pattern, sizing and close affordances the
+  kanban chat used before it became a tab (plan
+  2026-08-06-kanban-chat-as-dialog). The differences from that design are:
+    - testid prefix: `design-chat-dialog-*`
     - pageName prop: shown in the header alongside the task name
     - The header reads "Design Chat: <pageName>" when pageName is set,
       otherwise falls back to the task name (matches the FK rewrite
@@ -33,9 +33,9 @@
       cwd           string        (→ ChatView :cwd)
     emits:
       update:show   [value: boolean]  (v-model:show)
-      close         []                (backward compat with KanbanChatDialog-style binding)
+      close         []                (backward compat with the v-model:show binding style)
 
-  Sizing (2026-08-06 polish): mirrors KanbanChatDialog 3rd bump
+  Sizing (2026-08-06 polish): 3rd bump
     - 98vw × 95vh
     - max 1600px × 1200px
     - min 800px × 540px
@@ -101,8 +101,7 @@ watch(
 
 // Header title: prefer the pageName (matches the FK pair name pattern)
 // when set, otherwise fall back to the task name. Mirrors the
-// "Design Chat: <pageName>" naming used elsewhere (DesignView,
-// KanbanChatDialog).
+// "Design Chat: <pageName>" naming used elsewhere (DesignView).
 const headerTitle = (): string => {
   if (props.pageName) return `Design Chat: ${props.pageName}`
   return props.task?.name || 'Chat'
@@ -115,8 +114,8 @@ const headerTitle = (): string => {
       Wrapper fills the viewport. Uses explicit positioning
       (inset-0) for the backdrop layer, then centers the dialog
       panel via absolute top/left + transform translate(-50%, -50%).
-      Same pattern as KanbanChatDialog — more bulletproof than
-      `flex items-center justify-center` in teleported environments.
+      More bulletproof than `flex items-center justify-center`
+      in teleported environments.
     -->
     <div
       v-if="show"
@@ -141,10 +140,10 @@ const headerTitle = (): string => {
 
       <!--
         Dialog panel. Explicit centering: top:50%, left:50%, then
-        translate(-50%, -50%) to truly center. Sizing matches the
-        KanbanChatDialog 3rd bump (98vw × 95vh, max 1600×1200) so
-        both dialogs feel consistent. OPAQUE background so the
-        canvas behind reads as a surface behind the panel.
+        translate(-50%, -50%) to truly center. Sizing is the
+        98vw × 95vh (max 1600×1200) 3rd bump, so the design and the
+        kanban settings dialogs feel consistent. OPAQUE background so
+        the canvas behind reads as a surface behind the panel.
         @click.stop prevents inner clicks from bubbling to the backdrop.
       -->
       <div
@@ -168,8 +167,8 @@ const headerTitle = (): string => {
         @click.stop
       >
         <!--
-          Header — same gradient + layout as KanbanChatDialog so
-          the two dialogs feel consistent. Header carries the
+          Header — the same gradient + layout the other centred
+          dialogs use, so they feel consistent. Carries the
           page name + ✕ (ChatView's internal header is suppressed
           via :show-header="false").
         -->

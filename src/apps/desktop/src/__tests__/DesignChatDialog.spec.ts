@@ -1,6 +1,8 @@
 // DesignChatDialog — centred modal dialog that wraps <ChatView> for the
-// design page chat. Mirrors the KanbanChatDialog implementation
-// (see plan 2026-08-06-design-chat-as-dialog). Each design page is
+// design page chat. Kept as a modal after the kanban chat became a tab:
+// the design chat is opened from a canvas header button and by an FK-driven
+// auto-open, not by a per-card click (see plan
+// 2026-08-06-design-chat-as-dialog). Each design page is
 // paired 1:1 with a workspace_item_tasks row (per the FK plan
 // 2026-07-28-design-page-workspace-item-task-fk.md), so the chat task
 // is the same Task type the kanban path uses — the only difference
@@ -327,9 +329,9 @@ describe('DesignChatDialog', () => {
   })
 
   // Lock in the sizing so future refactors don't shrink it.
-  // Same numbers as KanbanChatDialog (3rd bump, 2026-08-06) — the
-  // user explicitly asked to make design's chatview dialog bigger
-  // the same way they did for kanban mode.
+  // The 3rd bump numbers (2026-08-06) — the user explicitly asked to
+  // make design's chatview dialog bigger, the same way they did for the
+  // kanban chat while it was still a dialog.
   describe('dialog sizing', () => {
     it('uses 98vw width + 95vh height for viewport-relative sizing', async () => {
       wrapper = mountDialog({

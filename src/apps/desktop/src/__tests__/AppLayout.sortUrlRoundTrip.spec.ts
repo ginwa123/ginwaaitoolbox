@@ -44,20 +44,31 @@ import {
   __setSseBusGlobalClient,
 } from '../helpers/sseBus'
 import type { SseClient, SseState } from '../helpers/sseClient'
+import { useTabsStore } from '../stores/tabs'
 
 // Stub vue-router (AppLayout uses useRoute()/useRouter() for URL
 // sync). Mirrors AppLayout.kanbanChatDialog.spec.ts:33-53.
-const { useRouteMock, useRouterMock } = vi.hoisted(() => ({
-  useRouteMock: vi.fn(() => ({
-    query: {} as Record<string, string>,
-    path: '/app',
-    fullPath: '/app',
-  })),
-  useRouterMock: vi.fn(() => ({
-    replace: vi.fn(),
-    push: vi.fn(),
-  })),
-}))
+const { useRouteMock, useRouterMock, routerReplaceCalls } = vi.hoisted(() => {
+  // Shared across mounts so a test can inspect what AppLayout navigated to
+  // (useRouter() hands back a fresh object per mount, so a per-mount spy would
+  // be unreachable from the test body).
+  const routerReplaceCalls: Array<{ path?: string; query?: Record<string, string> }> = []
+  return {
+    routerReplaceCalls,
+    useRouteMock: vi.fn(() => ({
+      query: {} as Record<string, string>,
+      path: '/app',
+      fullPath: '/app',
+    })),
+    useRouterMock: vi.fn(() => ({
+      replace: vi.fn((target: { path?: string; query?: Record<string, string> }) => {
+        routerReplaceCalls.push(target)
+        return Promise.resolve()
+      }),
+      push: vi.fn(),
+    })),
+  }
+})
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
   return { ...actual, useRouter: useRouterMock, useRoute: useRouteMock }
@@ -108,6 +119,13 @@ function mountAppLayout(): ReturnType<typeof mount> {
         KanbanView: true,
         DesignView: true,
         Chats: true,
+        // `@click` stands in for the in-chat ✕, which emits `close`. With tab
+        // mode off that routes through handleCloseTaskView's legacy path — the
+        // only remaining caller of the savedSortsParam contract.
+        ChatView: {
+          template: `<div data-testid="chatview-stub" @click="$emit('close')" />`,
+          props: ['chatId', 'chatName', 'cwd', 'showHeader'],
+        },
       },
     },
   })
@@ -188,24 +206,22 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     vi.useFakeTimers()
+    routerReplaceCalls.length = 0
   })
 
   afterEach(() => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     __resetSseBus()
-    document
-      .querySelectorAll('[data-testid="kanban-chat-dialog"]')
-      .forEach((el) => el.remove())
-    document
-      .querySelectorAll('[data-testid="kanban-chat-dialog-root"]')
-      .forEach((el) => el.remove())
-   
   })
 
  
 
-  it('preserves ?sorts= when the user opens a kanban task and closes the chat dialog', async () => {
+  it('tab mode off: restores ?sorts= from the snapshot when the chat closes', async () => {
+    // Tab mode off is the ONLY remaining caller of the savedSortsParam
+    // contract: with tabs on, the board tab carries its own ?sorts= and the
+    // chat closes back onto it (see AppLayout.tabs.spec.ts).
+    localStorage.setItem('nalar-tabs-enabled', 'false')
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [{
@@ -224,37 +240,33 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
 
     const wrapper = mountAppLayout()
     await flushPromises()
+    expect(useTabsStore().enabled).toBe(false)
 
-    // Simulate the active task state (the chat dialog mounts).
+    // Simulate the active task state (the chat view mounts).
     store.setActiveTask(TASK_ID)
     await nextTick()
-    expect(
-      document.querySelector('[data-testid="kanban-chat-dialog"]'),
-    ).not.toBeNull()
+    expect(wrapper.find('[data-testid="chatview-stub"]').exists()).toBe(true)
 
-    // Close the dialog. AppLayout's handleCloseTaskView must read
-    // savedSortsParam, write sorts=col_a:name:asc back into the
-    // URL, then clear the snapshot so a subsequent close doesn't
-    // accidentally restore a stale sort.
-    const dialog = document.querySelector('[data-testid="kanban-chat-dialog"]')
-    expect(dialog).not.toBeNull()
-    const closeBtn = dialog!.querySelector('[data-testid="kanban-chat-dialog-close"]')
-    expect(closeBtn).not.toBeNull()
-    ;(closeBtn as HTMLButtonElement).click()
+    // Close the chat. handleCloseTaskView must read savedSortsParam, write
+    // sorts=col_a:name:asc back into the URL, then clear the snapshot so a
+    // subsequent close doesn't accidentally restore a stale sort.
+    routerReplaceCalls.length = 0
+    await wrapper.find('[data-testid="chatview-stub"]').trigger('click')
     await nextTick()
 
     // The store field must be cleared (consumed on close) so a
     // subsequent close-without-a-fresh-task-open doesn't carry a
     // stale snapshot forward.
     expect(store.savedSortsParam).toBe('')
+    const sorted = routerReplaceCalls.find((call) => call.query && 'sorts' in call.query)
+    expect(sorted?.query?.sorts).toBe('col_a:name:asc')
+    expect(sorted?.query?.view).toBe('workspace')
 
- 
-
-     
     wrapper.unmount()
   })
 
-  it('handleCloseTaskView does NOT set sorts= when no snapshot was taken (snapshot empty)', async () => {
+  it('tab mode off: does NOT set sorts= when no snapshot was taken (snapshot empty)', async () => {
+    localStorage.setItem('nalar-tabs-enabled', 'false')
     const store = useWorkspacesStore()
     store.workspaces = [
       { id: WS_ID, name: 'WS', items: [{
@@ -278,17 +290,15 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     store.setActiveTask(TASK_ID)
     await nextTick()
 
-    // Find + click the close button on the teleported dialog.
-    const dialog = document.querySelector('[data-testid="kanban-chat-dialog"]')
-    expect(dialog).not.toBeNull()
-    const closeBtn = dialog!.querySelector('[data-testid="kanban-chat-dialog-close"]')
-    expect(closeBtn).not.toBeNull()
-    ;(closeBtn as HTMLButtonElement).click()
+    // Close the chat through the in-chat ✕.
+    routerReplaceCalls.length = 0
+    await wrapper.find('[data-testid="chatview-stub"]').trigger('click')
     await nextTick()
 
     // Snapshot was empty, must still be empty (nothing to consume,
-    // nothing to write).
+    // nothing to write), and no navigation may carry a sorts= param.
     expect(store.savedSortsParam).toBe('')
+    expect(routerReplaceCalls.every((call) => !(call.query && 'sorts' in call.query))).toBe(true)
 
     wrapper.unmount()
   })

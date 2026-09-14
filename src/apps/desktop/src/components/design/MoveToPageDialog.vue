@@ -14,7 +14,7 @@
   would error with SamePage on the backend anyway).
 
   Why Teleport to body: matches the existing centered-modal pattern
-  (KanbanTaskDetailDialog, KanbanChatDialog). Escapes the design
+  (KanbanTaskDetailDialog, DesignChatDialog). Escapes the design
   canvas's overflow / transform contexts.
 
   Public API:

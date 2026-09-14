@@ -97,13 +97,18 @@ function mountApp(): VueWrapper {
         // they are the two things this spec interacts with.
         GitFileViewer: true,
         SkillDetail: true,
-        ChatView: { template: '<div data-testid="chatview-stub" />', props: ['chatId', 'chatName', 'cwd'] },
+        // The `@click` stands in for ChatView's in-chat ✕, which emits
+        // `close`. The kanban chat routes that emit through
+        // handleCloseTaskView, so these tests can assert it closes the tab.
+        ChatView: {
+          template: `<div data-testid="chatview-stub" @click="$emit('close')" />`,
+          props: ['chatId', 'chatName', 'cwd', 'showHeader'],
+        },
         StandardTaskChatView: true,
         Chats: { template: '<div data-testid="chats-stub" />' },
         SettingsView: true,
         CodeEditor: true,
         KanbanView: { template: '<div data-testid="kanban-stub" />' },
-        KanbanChatDialog: true,
         DesignChatDialog: true,
         DesignView: { template: '<div data-testid="design-stub" />' },
         AgentView: { template: '<div data-testid="agent-stub" />' },
@@ -151,8 +156,12 @@ describe('AppLayout — tab mode', () => {
     vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
     vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
     vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({ entries: [], path: '/', absolute: '/', home: '/' } as any)
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '' } as any)
 
@@ -246,9 +255,17 @@ describe('AppLayout — tab mode', () => {
     expect(replaceCalls.length).toBe(settled)
   })
 
-  it('keeps one tab when opening task chats inside a kanban item', async () => {
-    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
-    mountApp()
+  it('gives a kanban task chat its own tab, and closing it returns to the board tab', async () => {
+    setRoute('/app', {
+      view: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_7',
+      // A per-column sort the user had applied. `sorts` is excluded from tab
+      // IDENTITY, so it rides whichever tab the URL belongs to — which is how
+      // the board keeps its own sort while a chat tab is open.
+      sorts: 'col_a:name:asc',
+    })
+    const app = mountApp()
     await settle()
     const tabs = useTabsStore()
     const workspaces = useWorkspacesStore()
@@ -261,7 +278,10 @@ describe('AppLayout — tab mode', () => {
             id: 'item_7',
             name: 'AGENTIC_KANBAN',
             item_type: 'kanban',
-            tasks: [{ id: 'task_9', name: 'fix-husky-vue-build' }],
+            tasks: [
+              { id: 'task_9', name: 'fix-husky-vue-build' },
+              { id: 'task_10', name: 'second card' },
+            ],
           },
         ],
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -270,25 +290,60 @@ describe('AppLayout — tab mode', () => {
     workspaces.setActiveWorkspaceItem('item_7')
     await settle()
     // precondition for the whole test: the item type must be resolvable, which
-    // is what tells the funnel a task chat belongs to this tab
+    // is what tells the funnel where a task chat renders
     expect(workspaces.activeWorkspaceItem?.item_type).toBe('kanban')
     expect(tabs.tabCount).toBe(2)
+    const boardTabId = tabs.activeTabId
     expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+    expect(tabs.activeTab?.query.sorts).toBe('col_a:name:asc')
+    expect(app.find('[data-testid="kanban-stub"]').exists()).toBe(true)
 
-    // opening a card must NOT spawn a tab per card
-    for (const taskId of ['task_9', 'task_10', 'task_11']) {
-      setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: `item_7/chat/${taskId}` })
-      await settle()
-    }
-    expect(tabs.tabCount).toBe(2)
-    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
-    expect(tabs.activeTab?.query.itemId).toBe('item_7/chat/task_11')
+    // A card click does two things (Sidebar.handleSelectTask): it sets the
+    // store, then it pushes the URL. The store half is what selects the chat
+    // BODY; the URL half is what gives it a tab. Reproduce both — a bare
+    // setRoute() would only exercise the funnel, leaving activeTask unset.
+    workspaces.setActiveTask('task_9')
+    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_9' })
+    await settle()
+    expect(tabs.tabCount).toBe(3)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+    expect(tabs.activeTabId).not.toBe(boardTabId)
     expect(route.query.tab).toBe(tabs.activeTabId)
+    // exactly ONE body renders: the chat. The board must not be stacked under it.
+    expect(app.findAll('[data-testid="chatview-stub"]')).toHaveLength(1)
+    expect(app.find('[data-testid="kanban-stub"]').exists()).toBe(false)
 
-    // going back to the bare board keeps the same tab
-    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7' })
+    // a second card is a second tab — never a re-use of the first
+    workspaces.setActiveTask('task_10')
+    setRoute('/app', { view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7/chat/task_10' })
+    await settle()
+    expect(tabs.tabCount).toBe(4)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_10')
+    expect(app.findAll('[data-testid="chatview-stub"]')).toHaveLength(1)
+    expect(app.find('[data-testid="kanban-stub"]').exists()).toBe(false)
+
+    // the in-chat ✕ (ChatView emits `close` → handleCloseTaskView) closes the
+    // OWNING TAB and falls back to the tab on its left. It must NOT rewrite the
+    // chat tab's target to the bare board and strand it as a stale pointer.
+    await app.find('[data-testid="chatview-stub"]').trigger('click')
+    await settle()
+    expect(tabs.tabCount).toBe(3)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7:chat:task_9')
+    expect(app.find('[data-testid="chatview-stub"]').exists()).toBe(true)
+    expect(app.find('[data-testid="kanban-stub"]').exists()).toBe(false)
+
+    // closing the last chat tab lands on the BOARD tab
+    await app.find('[data-testid="chatview-stub"]').trigger('click')
     await settle()
     expect(tabs.tabCount).toBe(2)
+    expect(tabs.activeTabId).toBe(boardTabId)
+    expect(tabs.activeTab?.key).toBe('ws:ws_1:item_7')
+    expect(route.query.itemId).toBe('item_7')
+    // the board tab still carries the sort the chat tab never touched
+    expect(tabs.activeTab?.query.sorts).toBe('col_a:name:asc')
+    expect(route.query.sorts).toBe('col_a:name:asc')
+    expect(app.find('[data-testid="kanban-stub"]').exists()).toBe(true)
+    expect(app.find('[data-testid="chatview-stub"]').exists()).toBe(false)
   })
 
   it('repairs a ?tab= that names a different target', async () => {
@@ -395,7 +450,12 @@ describe('AppLayout — tab mode', () => {
     await wrapper.find(`[data-testid="tab-item-${background?.id}"]`).trigger('click')
     await settle()
     expect(tabs.activeTabId).toBe(background?.id)
-    expect(route.query).toEqual({ view: 'workspace', workspaceId: 'ws_1', itemId: 'item_7', tab: background?.id })
+    expect(route.query).toEqual({
+      view: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_7',
+      tab: background?.id,
+    })
     expect(workspaces.activeWorkspaceItemId).toBe('item_7')
   })
 
@@ -412,7 +472,9 @@ describe('AppLayout — tab mode', () => {
     expect(synthetic?.key).toBe('chat:session-1789000000000')
 
     // the backend assigns the real id on the first message → update-chat-id
-    const app = wrapper.vm as unknown as { handleUpdateChatId: (oldId: string, newId: string) => void }
+    const app = wrapper.vm as unknown as {
+      handleUpdateChatId: (oldId: string, newId: string) => void
+    }
     app.handleUpdateChatId('session-1789000000000', 'real-7')
     setRoute('/app', { view: 'chat', session: 'real-7' })
     await settle()

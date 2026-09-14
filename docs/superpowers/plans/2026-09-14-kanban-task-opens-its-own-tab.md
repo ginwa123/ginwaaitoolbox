@@ -1,5 +1,9 @@
 # Kanban task opens its OWN tab (in-app, browser-style)
 
+> **Status: DONE — implemented on this branch.** See
+> `## Implementation status` at the bottom for what shipped, the test
+> baseline, and the deviations from this plan.
+
 > **Status: PLAN ONLY — not executed, and now SELF-CONTAINED.**
 > Rev 2 (2026-09-14): the sibling card *"make KanbanChatdialog not a dialog, so
 > refactore to KanbanChat"* is being **DROPPED**, so rev 1's hard dependency is
@@ -520,3 +524,82 @@ redundant with the tab label, but it is the only close affordance when tab mode 
 off. The alternative is `:show-header="false"` (matching `StandardTaskChatView`)
 and relying on the tab strip's ×, at the cost of a dead end in tab-off mode. Say
 the word and Task 2/3 adjust; the rest of the plan is unaffected.
+
+---
+
+## Implementation status (executed 2026-09-14)
+
+**Shipped.** Clicking a kanban task card opens that task's chat in its own tab,
+activated, with the board tab left open. The modal is gone.
+
+| Plan task | Status | Notes |
+|---|---|---|
+| 1 — tab identity | ✅ | `DIALOG_ITEM_TYPES` is now `['design', 'kanban-settings']`; `'kanban'` removed. |
+| 2 — modal → view | ✅ in-place, **no new component** | The chat is a `v-else-if` branch before `KanbanView` rendering `ChatView` directly (see deviation 1). `KanbanChatDialog.vue` + its spec deleted; the `kanbanChatDialogOpen` ref/watcher deleted. |
+| 3 — close closes the tab | ✅ | Item-type-scoped early branch in `handleCloseTaskView`, exactly as specified. |
+| 4 — docs | ✅ | `docs/tabs.md` (identity table, "a task is a session", "Turning it off"), `docs/SPEC.md` §3.7.7 banner + new §3.7.7.1, superseded banner on the 2026-08-06 design spec. |
+| 5 — tests + gates | ✅ | See below. |
+| Task 4 (Ctrl+click background open) | ⬜ not started | Still out of scope, spec unchanged in §7. |
+
+### Deviations from the plan
+
+1. **§6 Task 2 said "add `components/kanban/KanbanChat.vue`" (copied from the
+   dropped branch). Not done, deliberately.** Mounting `ChatView` directly with
+   `:show-header="true"` gives the task name + a working `✕` with **zero** new
+   files and one fewer abstraction to keep in sync. If the visual review wants
+   the dropped branch's richer header, add the wrapper then.
+2. **§6 Task 3's guard also required `tabsStore.enabled`, `kind === 'workspace'`
+   and a `/chat/<taskId>` suffix.** Implemented as specified — and an adjacent
+   pre-existing bug was found while wiring it: **agent** items already give their
+   task chat its own tab key, and `AgentChatView`'s `✕` still goes through the
+   legacy `router.replace`, so the same orphan-tab bug is live for agent items
+   today. Left alone (out of scope) and documented in §7.
+3. **`tabKeyVariants` simplified.** Its "other reading" was hardcoded to
+   `'kanban'`, which stopped being a dialog type — so the else-branch became a
+   guaranteed no-op. It now returns a single variant unless the item is a dialog
+   type. Pure simplification: no behaviour change for any input.
+4. **§9 risk "`savedSortsParam` no longer load-bearing in tab mode" needed a test
+   rewrite, not just a comment.** `AppLayout.sortUrlRoundTrip.spec.ts` drove the
+   close through the deleted modal's ✕. Both its tests now run with tab mode
+   **off** (the only remaining caller of the snapshot contract) and close
+   through the chat view's real `close` emit; the tabs-ON side of the same
+   contract (the board tab keeps its own `?sorts=`) is asserted in
+   `AppLayout.tabs.spec.ts` instead.
+5. **Found + fixed a lint trap.** The repo's post-edit prettier hook reformats an
+   edited file, which can split a line out from under an
+   `// eslint-disable-next-line`. Existing disable comments in the touched specs
+   were repaired/orphaned; the `as any` that had been papering over a mock that
+   already matches `FolderInfo` was simply removed.
+
+### Gates (all run on this branch)
+
+| Gate | Result |
+|---|---|
+| `pnpm test` | **4 failed / 3233 passed** — byte-identical to the pre-change baseline. The 4 are pre-existing and unrelated: `FilePickerDialog.windows` (Windows-only path, running on Linux), `WorkspaceItemHideTasksForDesign`, `workspacesStoreNormalizeTaskDates`, `workspacesStoreNormalizeTaskImageUrls`. |
+| `pnpm run build` (vue-tsc + vite) | exit 0 |
+| `pnpm run lint` (oxlint + eslint) | exit 0 |
+| `rg KanbanChatDialog src/` | 0 hits |
+
+### Test surface changed
+
+- **New** `AppLayout.kanbanChatTab.spec.ts` (5 tests) — replaces
+  `AppLayout.kanbanChatDialog.spec.ts`. Asserts the gate, the chat body props
+  (`chat-id` = task id, `show-header` true), per-task remount, and — the point of
+  the file — that the board is **never** rendered alongside the chat.
+- **Deleted** `KanbanChatDialog.spec.ts` (13 tests, all modal chrome).
+- **Rewritten** `AppLayout.tabs.spec.ts` *"gives a kanban task chat its own tab,
+  and closing it returns to the board tab"* (tab per card, ✕ closes the owning
+  tab, returns to the board tab with its `?sorts=` intact).
+- **Flipped** `tabTarget.spec.ts` (kanban key + `taskChatRendersInItemTab`),
+  `tabsStore.spec.ts` (separate tab per card; cold-boot key already canonical for
+  kanban, with the adoption machinery now covered via `design`),
+  `TabBar.spec.ts` (a kanban task-chat tab is named after the **task**).
+- **Reframed** `AppLayout.kanban.spec.ts` (chat replaces the board — not a
+  3-column layout) and `AppLayout.standardTaskChat.spec.ts` (a kanban task is not
+  routed through the standard branch — discriminates on chat id, since both
+  branches mount a `ChatView`).
+
+### Not verified here
+
+The §11 manual checklist (real browser/webview, port **5173**) has **not** been
+run — it needs a human at the window. Everything above is jsdom + static gates.
